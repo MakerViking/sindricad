@@ -1,0 +1,24 @@
+# node / vite
+node_modules/
+dist/
+*.tsbuildinfo
+
+# rust / tauri
+src-tauri/target/
+src-tauri/gen/
+
+# python sidecar
+sidecar/.venv/
+__pycache__/
+*.pyc
+
+# playwright / test artifacts
+.playwright-mcp/
+fission-*.png
+green-select.png
+
+# python venv (any location)
+.venv/
+
+# os
+.DS_Store

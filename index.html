@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fission</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="titlebar">
+        <span class="brand">Fission</span>
+        <nav id="menubar"></nav>
+        <span id="context-tab" class="context-tab">SOLID</span>
+        <span id="docname" class="docname">Untitled</span>
+        <div class="spacer"></div>
+        <label class="units" title="Display units (geometry is stored in mm)">
+          Units
+          <select id="unit">
+            <option value="mm">mm</option>
+            <option value="cm">cm</option>
+            <option value="in">in</option>
+          </select>
+        </label>
+        <span id="status" class="status">connecting…</span>
+      </header>
+      <div id="ribbon"></div>
+      <div id="main">
+        <aside id="browser"></aside>
+        <div id="viewport">
+          <canvas id="canvas"></canvas>
+          <aside id="palette" class="palette hidden"></aside>
+          <div id="prompt" class="prompt hidden"></div>
+          <div id="viewcontrols">
+            <button data-view="iso" title="Isometric">ISO</button>
+            <button data-view="top" title="Top">Top</button>
+            <button data-view="front" title="Front">Front</button>
+            <button data-view="right" title="Right">Right</button>
+            <button id="fit" title="Fit to view">Fit</button>
+            <button id="proj" title="Toggle projection">Persp</button>
+          </div>
+        </div>
+        <aside id="inspector"></aside>
+      </div>
+      <footer id="timeline"></footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

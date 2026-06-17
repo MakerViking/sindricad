@@ -1,0 +1,12 @@
+[project]
+name = "fission-sidecar"
+version = "0.1.0"
+description = "Fission geometry sidecar — build123d on OpenCASCADE, served over a localhost WebSocket"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "build123d>=0.9",
+    "websockets>=13",
+]
+
+[tool.uv]
+# OCP/OpenCASCADE wheels lag the newest CPython; pin to 3.12 for the venv.
