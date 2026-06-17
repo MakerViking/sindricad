@@ -28,7 +28,7 @@ export async function saveDocumentAs(store: DocumentStore) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await save({
-      filters: [{ name: "Fission Document", extensions: ["json"] }],
+      filters: [{ name: "Verxa Document", extensions: ["json"] }],
       defaultPath: store.filePath ?? `${store.fileName}.json`,
     });
     if (path) {
@@ -46,7 +46,7 @@ export async function openDocument(store: DocumentStore) {
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await open({
       multiple: false,
-      filters: [{ name: "Fission Document", extensions: ["json"] }],
+      filters: [{ name: "Verxa Document", extensions: ["json"] }],
     });
     if (typeof path === "string") {
       store.load(await readTextFile(path));

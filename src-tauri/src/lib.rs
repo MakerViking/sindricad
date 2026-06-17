@@ -1,4 +1,4 @@
-//! Fission Tauri shell entry. Spawns the Python geometry sidecar on startup and
+//! Verxa Tauri shell entry. Spawns the Python geometry sidecar on startup and
 //! kills it on exit. The frontend talks to the sidecar over a localhost
 //! WebSocket directly (not Tauri IPC); Rust only owns the window, native
 //! dialogs, and the sidecar lifecycle.
@@ -27,7 +27,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building Fission");
+        .expect("error while building Verxa");
 
     app.run(|app_handle, event| {
         if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {

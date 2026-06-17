@@ -1,7 +1,7 @@
 {
-  "name": "fission",
+  "name": "verxa",
   "version": "0.1.0",
-  "description": "Fission — a Fusion-style parametric CAD app driving build123d",
+  "description": "Verxa — a Fusion-style parametric CAD app driving build123d",
   "type": "module",
   "scripts": {
     "dev": "vite",

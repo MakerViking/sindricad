@@ -262,7 +262,7 @@ wheels = [
 ]
 
 [[package]]
-name = "fission-sidecar"
+name = "verxa-sidecar"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

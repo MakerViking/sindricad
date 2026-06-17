@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Fission",
+  "productName": "Verxa",
   "version": "0.1.0",
-  "identifier": "dev.fission.cad",
+  "identifier": "dev.verxa.cad",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Fission",
+        "title": "Verxa",
         "width": 1280,
         "height": 800,
         "minWidth": 800,

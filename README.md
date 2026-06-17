@@ -1,13 +1,13 @@
-# Fission
+# Verxa
 
-A Fusion-360-style **parametric solid modeler** for Linux. Fission is not a
+A Fusion-360-style **parametric solid modeler** for Linux. Verxa is not a
 geometry kernel — it's a Fusion-style front-end that drives
 [**build123d**](https://github.com/gumyr/build123d) (Python, on the OpenCASCADE
 kernel). build123d does extrude, fillet, chamfer, loft, revolve, mirror as
-one-liners and exports STEP/STL/3MF natively; Fission owns the UI, the feature
+one-liners and exports STEP/STL/3MF natively; Verxa owns the UI, the feature
 tree, and the plumbing.
 
-> Codename **Fission** — an antonym pun on Fusion.
+> Codename **Verxa** — an antonym pun on Fusion.
 
 ## Architecture
 

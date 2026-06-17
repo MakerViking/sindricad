@@ -12,9 +12,9 @@
 //!   SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", MODE="0666"
 //! then `sudo udevadm control --reload && sudo udevadm trigger`. If `spacenavd`
 //! or the 3Dconnexion driver is running it may already hold the device — stop it
-//! to let Fission read it directly.
+//! to let Verxa read it directly.
 //!
-//! Set FISSION_SPACEMOUSE_DEBUG=1 to log raw reports for tuning.
+//! Set VERXA_SPACEMOUSE_DEBUG=1 to log raw reports for tuning.
 
 use std::thread;
 use std::time::Duration;
@@ -53,7 +53,7 @@ pub fn start(app: AppHandle) {
 }
 
 fn stream(app: &AppHandle) -> Result<(), String> {
-    let debug = std::env::var("FISSION_SPACEMOUSE_DEBUG").is_ok();
+    let debug = std::env::var("VERXA_SPACEMOUSE_DEBUG").is_ok();
     let api = HidApi::new().map_err(|e| e.to_string())?;
     let info = api
         .device_list()

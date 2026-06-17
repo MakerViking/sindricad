@@ -7,7 +7,7 @@
 export type Unit = "mm" | "cm" | "in";
 
 const FACTOR: Record<Unit, number> = { mm: 1, cm: 10, in: 25.4 };
-const KEY = "fission.unit";
+const KEY = "verxa.unit";
 
 let current: Unit = readStored();
 const listeners = new Set<() => void>();
