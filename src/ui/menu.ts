@@ -8,6 +8,7 @@ export interface MenuItem {
   onClick?: () => void;
   separator?: boolean;
   disabled?: () => boolean;
+  checked?: () => boolean; // shows a ✓ when true (re-evaluated each time the menu opens)
 }
 
 export interface MenuDef {
@@ -75,17 +76,26 @@ export class Menubar {
       this.close();
       item.onClick?.();
     });
-    // refresh disabled state when the popup opens
+    // refresh disabled / checked state when the popup opens
     el.dataset.dynDisabled = item.disabled ? "1" : "";
     (el as any)._isDisabled = item.disabled;
+    (el as any)._isChecked = item.checked;
+    (el as any)._labelEl = label;
+    (el as any)._baseLabel = item.label;
     return el;
   }
 
   private open(popup: HTMLDivElement, btn: HTMLElement) {
-    // reflect any dynamic disabled state before showing
+    // reflect any dynamic disabled / checked state before showing
     popup.querySelectorAll<HTMLButtonElement>(".menu-item").forEach((el) => {
       const fn = (el as any)._isDisabled as (() => boolean) | undefined;
       el.toggleAttribute("disabled", !!fn?.());
+      const chk = (el as any)._isChecked as (() => boolean) | undefined;
+      if (chk) {
+        const labelEl = (el as any)._labelEl as HTMLElement;
+        const base = (el as any)._baseLabel as string;
+        labelEl.textContent = (chk() ? "✓ " : "    ") + base;
+      }
     });
     popup.classList.remove("hidden");
     btn.classList.add("active");

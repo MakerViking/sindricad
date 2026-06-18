@@ -6,13 +6,15 @@
 //! (`spacemouse:motion`, `spacemouse:button`); the frontend maps them onto the
 //! camera + actions.
 //!
-//! Linux permissions: reading the HID device usually needs a udev rule, e.g.
-//! `/etc/udev/rules.d/99-spacemouse.rules`:
-//!   SUBSYSTEM=="usb", ATTRS{idVendor}=="256f", MODE="0666"
-//!   SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", MODE="0666"
-//! then `sudo udevadm control --reload && sudo udevadm trigger`. If `spacenavd`
-//! or the 3Dconnexion driver is running it may already hold the device — stop it
-//! to let Verxa read it directly.
+//! Linux permissions: hidapi opens the `/dev/hidrawN` node, so the udev rule
+//! MUST target `SUBSYSTEM=="hidraw"` — a `SUBSYSTEM=="usb"` rule changes the usb
+//! node, not hidraw, and will NOT grant access. See `packaging/99-spacemouse.rules`:
+//!   KERNEL=="hidraw*", ATTRS{idVendor}=="046d", MODE="0660", GROUP="input", TAG+="uaccess"
+//!   KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0660", GROUP="input", TAG+="uaccess"
+//! Install: copy to `/etc/udev/rules.d/`, then
+//! `sudo udevadm control --reload && sudo udevadm trigger`, then replug. If
+//! `spacenavd` or the 3Dconnexion driver is running it may already hold the
+//! device — stop it to let Verxa read it directly.
 //!
 //! Set VERXA_SPACEMOUSE_DEBUG=1 to log raw reports for tuning.
 

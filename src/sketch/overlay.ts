@@ -28,6 +28,7 @@ export interface WorldRegion {
 
 export const CURVE_COLOR = 0x5b9bff; // under-constrained blue
 export const PREVIEW_COLOR = 0xffffff;
+export const SELECT_COLOR = 0xff9d3b; // selected sketch entity (orange)
 export const DIM_COLOR = 0x8fa4bd; // muted blue-gray for dimension annotations
 const FILL_COLOR = 0x3a7bd5;
 

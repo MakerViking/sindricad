@@ -16,6 +16,9 @@ interface Motion { tx: number; ty: number; tz: number; rx: number; ry: number; r
 const ZERO: Motion = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
 
 export interface SpaceMouseConfig {
+  // "object" = puck manipulates the model (3Dconnexion/Fusion default); "camera"
+  // = puck flies the camera (inverse of object on pan + orbit).
+  mode: "object" | "camera";
   deadzone: number; // ignore |axis| below this (jitter)
   panSens: number; // world units per axis-unit per ms
   zoomSens: number;
@@ -24,7 +27,14 @@ export interface SpaceMouseConfig {
   invert: { panX: boolean; panY: boolean; zoom: boolean; orbitAz: boolean; orbitPolar: boolean };
 }
 
+const MODE_KEY = "verxa.spacemouse.mode";
+function readStoredMode(): "object" | "camera" {
+  const v = typeof localStorage !== "undefined" && localStorage.getItem(MODE_KEY);
+  return v === "camera" ? "camera" : "object"; // default: Fusion-style object mode
+}
+
 const CONFIG: SpaceMouseConfig = {
+  mode: readStoredMode(),
   deadzone: 24,
   panSens: 0.00006,
   zoomSens: 0.0001,
@@ -37,6 +47,20 @@ const CONFIG: SpaceMouseConfig = {
 export function setSpaceMouseConfig(patch: Partial<SpaceMouseConfig>) {
   Object.assign(CONFIG, patch);
   if (patch.invert) Object.assign(CONFIG.invert, patch.invert);
+}
+
+export function getSpaceMouseMode(): "object" | "camera" {
+  return CONFIG.mode;
+}
+
+/** Switch navigation mode (object vs camera) and persist the choice. */
+export function setSpaceMouseMode(mode: "object" | "camera") {
+  CONFIG.mode = mode;
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function initSpaceMouse(
@@ -72,17 +96,19 @@ export async function initSpaceMouse(
     // if the device stopped sending (missed the centering report), decay to zero
     const m = now - lastEvent > CONFIG.staleMs ? ZERO : motion;
     const controls = viewport.rig.controls;
+    // object mode manipulates the model → inverse of camera mode on pan + orbit
+    const modeSign = CONFIG.mode === "object" ? -1 : 1;
 
     // pan: cap slide left/right (tx) + up/down (tz)
     const px = dz(m.tx), py = dz(m.tz);
     if (px || py) {
       controls.truck(
-        sgn(CONFIG.invert.panX) * px * CONFIG.panSens * dt,
-        sgn(CONFIG.invert.panY) * py * CONFIG.panSens * dt,
+        modeSign * sgn(CONFIG.invert.panX) * px * CONFIG.panSens * dt,
+        modeSign * sgn(CONFIG.invert.panY) * py * CONFIG.panSens * dt,
         false,
       );
     }
-    // zoom: cap push/pull (ty)
+    // zoom: cap push/pull (ty) — direction is its own preference, not mode-dependent
     const z = dz(m.ty);
     if (z) controls.dolly(sgn(CONFIG.invert.zoom) * z * CONFIG.zoomSens * dt, false);
 
@@ -90,8 +116,8 @@ export async function initSpaceMouse(
     const az = dz(m.rz), pol = dz(m.rx);
     if (az || pol) {
       controls.rotate(
-        sgn(CONFIG.invert.orbitAz) * az * CONFIG.orbitSens * dt,
-        sgn(CONFIG.invert.orbitPolar) * pol * CONFIG.orbitSens * dt,
+        modeSign * sgn(CONFIG.invert.orbitAz) * az * CONFIG.orbitSens * dt,
+        modeSign * sgn(CONFIG.invert.orbitPolar) * pol * CONFIG.orbitSens * dt,
         false,
       );
     }

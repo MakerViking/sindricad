@@ -1,0 +1,15 @@
+# Verxa SpaceMouse access — let the logged-in user read the 3Dconnexion HID device.
+#
+# Verxa reads the SpaceMouse via hidapi, which opens the /dev/hidrawN node.
+# The rule MUST therefore target SUBSYSTEM=="hidraw" (a SUBSYSTEM=="usb" rule
+# changes the usb node, NOT the hidraw node, and will not help).
+#
+# Install:
+#   sudo cp packaging/99-spacemouse.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+# Then unplug/replug the SpaceMouse (or it takes effect on next plug).
+
+# Older Logitech-branded 3Dconnexion devices (e.g. SpaceNavigator 046d:c626)
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", MODE="0660", GROUP="input", TAG+="uaccess"
+# Current 3Dconnexion vendor id
+KERNEL=="hidraw*", ATTRS{idVendor}=="256f", MODE="0660", GROUP="input", TAG+="uaccess"

@@ -10,7 +10,7 @@ import { Inspector } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
-import { initSpaceMouse, setSpaceMouseConfig } from "./input/spacemouse";
+import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { saveDocument, saveDocumentAs, openDocument, exportModel } from "./io/files";
 import { Menubar } from "./ui/menu";
 import { SketchOverlay } from "./sketch/overlay";
@@ -61,8 +61,16 @@ const tree = new BrowserTree(document.getElementById("browser")!, store);
 const inspector = new Inspector(document.getElementById("inspector")!, store);
 
 // --- File menu + document-name titlebar ---
-function newDocument() {
-  if (store.dirty && !confirm("Discard unsaved changes and start a new document?")) return;
+async function newDocument() {
+  // window.confirm is a no-op in Tauri's WebKitGTK webview — use the native dialog.
+  if (store.dirty) {
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    const ok = await ask("Discard unsaved changes and start a new document?", {
+      title: "New Document",
+      kind: "warning",
+    });
+    if (!ok) return;
+  }
   if (sketch.active) sketch.cancel();
   store.newDocument();
 }
@@ -70,13 +78,20 @@ new Menubar(document.getElementById("menubar")!, [
   {
     label: "File",
     items: [
-      { label: "New", shortcut: "Ctrl+N", onClick: newDocument },
+      { label: "New", shortcut: "Ctrl+N", onClick: () => void newDocument() },
       { label: "Open…", shortcut: "Ctrl+O", onClick: () => void openDocument(store) },
       { separator: true, label: "" },
       { label: "Save", shortcut: "Ctrl+S", onClick: () => void saveDocument(store) },
       { label: "Save As…", shortcut: "Ctrl+Shift+S", onClick: () => void saveDocumentAs(store) },
       { separator: true, label: "" },
       { label: "Export…", shortcut: "Ctrl+E", onClick: () => void exportModel(store, geometry) },
+    ],
+  },
+  {
+    label: "View",
+    items: [
+      { label: "SpaceMouse: Move Object", checked: () => getSpaceMouseMode() === "object", onClick: () => setSpaceMouseMode("object") },
+      { label: "SpaceMouse: Move Camera", checked: () => getSpaceMouseMode() === "camera", onClick: () => setSpaceMouseMode("camera") },
     ],
   },
 ]);
@@ -508,7 +523,7 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
-  if (k === "n") { e.preventDefault(); newDocument(); }
+  if (k === "n") { e.preventDefault(); void newDocument(); }
   else if (k === "o") { e.preventDefault(); void openDocument(store); }
   else if (k === "s" && e.shiftKey) { e.preventDefault(); void saveDocumentAs(store); }
   else if (k === "s") { e.preventDefault(); void saveDocument(store); }

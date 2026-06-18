@@ -7,7 +7,7 @@ import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
 import type { Feature, PlaneSpec, SketchConstraint } from "../types";
 import { SketchPlane } from "./plane";
-import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR } from "./overlay";
+import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
 import { SketchDimensions } from "./sketchDimensions";
 import { entityDims, type DimField } from "./entityDims";
@@ -68,6 +68,8 @@ export class SketchMode {
   private arcEnd: THREE.Vector2 | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
   private filletFirst: number | null = null; // first line picked for a sketch fillet
+  private selected = new Set<string>(); // selected entity ids (select tool)
+  private ctxMenu: HTMLDivElement | null = null; // right-click delete menu
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private lastDof = -1;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
@@ -91,6 +93,7 @@ export class SketchMode {
   private boundMove: (e: PointerEvent) => void;
   private boundUp: (e: PointerEvent) => void;
   private boundKey: (e: KeyboardEvent) => void;
+  private boundContext: (e: MouseEvent) => void;
 
   constructor(
     private viewport: Viewport,
@@ -104,6 +107,7 @@ export class SketchMode {
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
     this.boundKey = (e) => this.onKey(e);
+    this.boundContext = (e) => this.onContextMenu(e);
   }
 
   // --- lifecycle ---------------------------------------------------------
@@ -116,6 +120,7 @@ export class SketchMode {
     // load existing entities if editing
     this.entities = [];
     this.constraints = [];
+    this.selected.clear();
     this.lastDof = -1;
     this.conflict = false;
     if (editId) {
@@ -134,6 +139,7 @@ export class SketchMode {
     el.addEventListener("pointerdown", this.boundDown);
     el.addEventListener("pointermove", this.boundMove);
     el.addEventListener("pointerup", this.boundUp);
+    el.addEventListener("contextmenu", this.boundContext);
     window.addEventListener("keydown", this.boundKey, true);
 
     this.overlay.update(store.document, this.editingId ?? "__active__");
@@ -172,7 +178,10 @@ export class SketchMode {
     el.removeEventListener("pointerdown", this.boundDown);
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerup", this.boundUp);
+    el.removeEventListener("contextmenu", this.boundContext);
     window.removeEventListener("keydown", this.boundKey, true);
+    this.closeCtxMenu();
+    this.selected.clear();
     this.dragFrom = null;
     this.pendingDrag = null;
     this.dim.hide();
@@ -206,6 +215,8 @@ export class SketchMode {
     this.pendingDrag = null;
     this.dim.hide();
     this.overlay.setPreview([]);
+    this.closeCtxMenu();
+    if (this.selected.size) { this.selected.clear(); this.refreshActive(); }
     this.onState?.();
   }
 
@@ -289,7 +300,22 @@ export class SketchMode {
       if (gp) {
         this.dragFrom = gp.clone();
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
+        return;
       }
+      // no draggable vertex under the cursor → (de)select the entity body
+      const raw = this.planePoint(e) ?? p;
+      const idx = pickEntity(this.entities, raw, this.pickTol());
+      if (idx >= 0) {
+        const id = this.entities[idx].id;
+        if (e.shiftKey) {
+          if (!this.selected.delete(id)) this.selected.add(id);
+        } else {
+          this.selected = new Set([id]);
+        }
+      } else if (!e.shiftKey) {
+        this.selected.clear();
+      }
+      this.refreshActive();
       return;
     }
     if (this.tool === "arc") return this.arcClick(p);
@@ -416,6 +442,13 @@ export class SketchMode {
 
   private onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return; // typing in a dim field
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (this.tool === "select" && this.selected.size) {
+        e.preventDefault();
+        this.deleteSelected();
+      }
+      return;
+    }
     if (e.key === "Escape") {
       e.preventDefault();
       if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length) {
@@ -427,6 +460,9 @@ export class SketchMode {
         this.splinePts = [];
         this.dim.hide();
         this.overlay.setPreview([]);
+      } else if (this.selected.size) {
+        this.selected.clear();
+        this.refreshActive();
       } else {
         this.setTool("select");
       }
@@ -578,7 +614,15 @@ export class SketchMode {
   }
 
   private activeCurves(): THREE.Object3D[] {
-    const objs = curveObjects(this.entities, this.plane, this.activeColor());
+    const objs: THREE.Object3D[] = [];
+    if (this.selected.size) {
+      const normal = this.entities.filter((e) => !this.selected.has(e.id));
+      const chosen = this.entities.filter((e) => this.selected.has(e.id));
+      if (normal.length) objs.push(...curveObjects(normal, this.plane, this.activeColor()));
+      if (chosen.length) objs.push(...curveObjects(chosen, this.plane, SELECT_COLOR));
+    } else {
+      objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
+    }
     if (this.dimsVisible) objs.push(...dimensionLineObjects(this.entities, this.plane));
     return objs;
   }
@@ -592,7 +636,7 @@ export class SketchMode {
     return this.viewport.pixelWorldSize(this.plane.origin) * 9;
   }
   /** raw (unsnapped) cursor point on the sketch plane */
-  private planePoint(e: PointerEvent): THREE.Vector2 | null {
+  private planePoint(e: MouseEvent): THREE.Vector2 | null {
     const w = this.viewport.screenToPlane(e.clientX, e.clientY, this.plane.plane);
     return w ? this.plane.to2D(w) : null;
   }
@@ -606,6 +650,64 @@ export class SketchMode {
       preview.push(...curveObjects([this.entities[this.filletFirst]], this.plane, 0x33aaff));
     if (idx >= 0) preview.push(...curveObjects([this.entities[idx]], this.plane, 0xff5555));
     this.overlay.setPreview(preview);
+  }
+
+  // --- selection delete (select tool) -----------------------------------
+  /** Remove the selected entities, prune now-dangling constraints, then rebuild
+   *  + re-solve via the shared modify tail. */
+  private deleteSelected() {
+    if (!this.selected.size) return;
+    this.entities = this.entities.filter((en) => !this.selected.has(en.id));
+    this.selected.clear();
+    this.closeCtxMenu();
+    this.afterModify();
+  }
+
+  /** Right-click in select mode: select the entity under the cursor (if any) and
+   *  offer Delete. Leaves camera navigation alone when nothing is hit/selected. */
+  private onContextMenu(e: MouseEvent) {
+    if (!this.active || this.tool !== "select") return;
+    const raw = this.planePoint(e);
+    const idx = raw ? pickEntity(this.entities, raw, this.pickTol()) : -1;
+    if (idx >= 0) {
+      const id = this.entities[idx].id;
+      if (!this.selected.has(id)) { this.selected = new Set([id]); this.refreshActive(); }
+    }
+    if (!this.selected.size) return; // nothing to act on → let nav handle it
+    e.preventDefault();
+    this.showCtxMenu(e.clientX, e.clientY);
+  }
+
+  private showCtxMenu(x: number, y: number) {
+    this.closeCtxMenu();
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    const n = this.selected.size;
+    const item = document.createElement("div");
+    item.className = "ctx-item";
+    item.textContent = n > 1 ? `Delete ${n} entities` : "Delete";
+    item.addEventListener("click", () => this.deleteSelected());
+    menu.appendChild(item);
+    document.body.appendChild(menu);
+    const r = menu.getBoundingClientRect();
+    if (r.bottom > innerHeight) menu.style.top = `${y - r.height}px`;
+    if (r.right > innerWidth) menu.style.left = `${x - r.width}px`;
+    this.ctxMenu = menu;
+    const dismiss = (ev: PointerEvent) => {
+      if (this.ctxMenu && !this.ctxMenu.contains(ev.target as Node)) this.closeCtxMenu();
+    };
+    (menu as unknown as { _dismiss: (ev: PointerEvent) => void })._dismiss = dismiss;
+    window.addEventListener("pointerdown", dismiss, true);
+  }
+
+  private closeCtxMenu() {
+    if (!this.ctxMenu) return;
+    const dismiss = (this.ctxMenu as unknown as { _dismiss?: (ev: PointerEvent) => void })._dismiss;
+    if (dismiss) window.removeEventListener("pointerdown", dismiss, true);
+    this.ctxMenu.remove();
+    this.ctxMenu = null;
   }
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());

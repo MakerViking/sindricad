@@ -150,12 +150,13 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   const key = (x: number, y: number) =>
     `${Math.round(x / EPS)},${Math.round(y / EPS)}`;
 
-  // adjacency: node -> list of {to, used flag index}
+  // adjacency: node key -> list of neighbor keys (multiset; parallel edges kept)
   const nodes = new Map<string, THREE.Vector2>();
   const adj = new Map<string, string[]>();
   const link = (ax: number, ay: number, bx: number, by: number) => {
     const ka = key(ax, ay);
     const kb = key(bx, by);
+    if (ka === kb) return; // drop zero-length segments (would self-loop a node)
     if (!nodes.has(ka)) nodes.set(ka, new THREE.Vector2(ax, ay));
     if (!nodes.has(kb)) nodes.set(kb, new THREE.Vector2(bx, by));
     (adj.get(ka) ?? adj.set(ka, []).get(ka)!).push(kb);
@@ -163,24 +164,51 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   };
   for (const s of segs) link(s.x1, s.y1, s.x2, s.y2);
 
-  // only handle the simple case: every node has degree 2 (single closed loop)
-  for (const [, neigh] of adj) {
-    if (neigh.length !== 2) return [];
+  // 1. prune dangling chains: iteratively drop degree-1 nodes and their single
+  //    incident edge until none remain. This removes overshoots / stray open
+  //    segments so they no longer void the whole profile.
+  const removeEdge = (a: string, b: string) => {
+    const la = adj.get(a);
+    if (la) { const i = la.indexOf(b); if (i >= 0) la.splice(i, 1); }
+    const lb = adj.get(b);
+    if (lb) { const i = lb.indexOf(a); if (i >= 0) lb.splice(i, 1); }
+  };
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [n, neigh] of adj) {
+      if (neigh.length === 1) {
+        removeEdge(n, neigh[0]);
+        changed = true;
+      }
+    }
   }
-  // walk the cycle
-  const start = adj.keys().next().value as string | undefined;
-  if (!start) return [];
-  const loop: THREE.Vector2[] = [];
-  let prev: string | null = null;
-  let cur = start;
-  const guard = segs.length + 2;
-  for (let i = 0; i < guard; i++) {
-    loop.push(nodes.get(cur)!);
-    const neigh = adj.get(cur)!;
-    const next = neigh[0] === prev ? neigh[1] : neigh[0];
-    prev = cur;
-    cur = next;
-    if (cur === start) break;
+
+  // 2. trace each remaining connected component as a simple cycle. Only the
+  //    clean case (every surviving node has degree 2) yields a loop — this
+  //    supports multiple disjoint profiles in one sketch. Junctions (degree > 2,
+  //    e.g. self-intersections) are left for future planar-face work rather than
+  //    voiding everything.
+  const visited = new Set<string>();
+  const loops: THREE.Vector2[][] = [];
+  const guard = adj.size + 2;
+  for (const [startKey, startNeigh] of adj) {
+    if (startNeigh.length === 0 || visited.has(startKey)) continue;
+    const loop: THREE.Vector2[] = [];
+    let prev: string | null = null;
+    let cur: string | null = startKey;
+    let ok = true;
+    for (let i = 0; i < guard && cur; i++) {
+      const neigh: string[] = adj.get(cur)!;
+      if (neigh.length !== 2) { ok = false; break; } // junction → skip component
+      visited.add(cur);
+      loop.push(nodes.get(cur)!);
+      const next: string = neigh[0] === prev ? neigh[1] : neigh[0];
+      prev = cur;
+      cur = next;
+      if (cur === startKey) break;
+    }
+    if (ok && loop.length >= 3) loops.push(loop);
   }
-  return loop.length >= 3 ? [loop] : [];
+  return loops;
 }
