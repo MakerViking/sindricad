@@ -14,6 +14,7 @@ import { resolveEntities } from "./resolve";
 import {
   detectRegions,
   entityPolyline,
+  pointInRegion,
   type Region,
 } from "./region";
 import { dimensionSegments } from "./entityDims";
@@ -24,6 +25,8 @@ export interface WorldRegion {
   region: Region;
   plane: SketchPlane;
   centroid3D: THREE.Vector3;
+  interior3D: THREE.Vector3; // a point inside the material — selection anchor
+  fill?: THREE.Mesh; // the fill mesh, for hover/selection recoloring
 }
 
 export const CURVE_COLOR = 0x5b9bff; // under-constrained blue
@@ -55,19 +58,45 @@ const FILL_MAT = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
   depthWrite: false,
 });
+const FILL_HOVER_MAT = new THREE.MeshBasicMaterial({
+  color: FILL_COLOR,
+  transparent: true,
+  opacity: 0.34,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+const FILL_SELECTED_MAT = new THREE.MeshBasicMaterial({
+  color: SELECT_COLOR,
+  transparent: true,
+  opacity: 0.34,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
 
 export class SketchOverlay {
   readonly group = new THREE.Group();
   private committed = new THREE.Group();
   private fills = new THREE.Group();
+  private activeFills = new THREE.Group(); // profile fills for the active (hidden) sketch
   private activeSketch = new THREE.Group(); // active sketch's committed curves
   private previewGroup = new THREE.Group(); // the rubber-band, rebuilt per move
   private snapMarker: THREE.Mesh;
   private planeCache = new Map<string, SketchPlane>();
-  regions: WorldRegion[] = [];
+  regions: WorldRegion[] = []; // committed-sketch regions
+  private activeRegions: WorldRegion[] = []; // active-sketch regions (sketch mode)
+  // selection is a set of world interior points (parametric: re-resolved each rebuild
+  // against region material, so it survives sketch edits and the sketch→model swap)
+  private selectedRegionPoints: [number, number, number][] = [];
+  private hovered: WorldRegion | null = null;
 
   constructor() {
-    this.group.add(this.committed, this.fills, this.activeSketch, this.previewGroup);
+    this.group.add(
+      this.committed,
+      this.fills,
+      this.activeFills,
+      this.activeSketch,
+      this.previewGroup,
+    );
     this.group.renderOrder = 10;
 
     this.snapMarker = new THREE.Mesh(
@@ -111,14 +140,92 @@ export class SketchOverlay {
         this.committed.add(obj);
       }
       for (const region of detectRegions(f.id, ents)) {
-        this.fills.add(fillMesh(region, plane));
-        this.regions.push({
+        const wr: WorldRegion = {
           sketchId: f.id,
           region,
           plane,
           centroid3D: plane.to3D(region.centroid.x, region.centroid.y),
-        });
+          interior3D: plane.to3D(region.interior.x, region.interior.y),
+        };
+        wr.fill = fillMesh(region, plane, this.fillMaterial(wr));
+        this.fills.add(wr.fill);
+        this.regions.push(wr);
       }
+    }
+  }
+
+  /** Profile fills for the active sketch being edited (which `update()` hides).
+   *  Sketch mode calls this so areas are visible + selectable while drawing. */
+  setActiveRegions(regions: Region[], plane: SketchPlane, sketchId = "__active__") {
+    this.clearGroup(this.activeFills);
+    this.activeRegions = [];
+    for (const region of regions) {
+      const wr: WorldRegion = {
+        sketchId,
+        region,
+        plane,
+        centroid3D: plane.to3D(region.centroid.x, region.centroid.y),
+        interior3D: plane.to3D(region.interior.x, region.interior.y),
+      };
+      wr.fill = fillMesh(region, plane, this.fillMaterial(wr));
+      this.activeFills.add(wr.fill);
+      this.activeRegions.push(wr);
+    }
+  }
+
+  private fillMaterial(wr: WorldRegion): THREE.MeshBasicMaterial {
+    if (this.isRegionSelected(wr)) return FILL_SELECTED_MAT;
+    if (this.hovered === wr) return FILL_HOVER_MAT;
+    return FILL_MAT;
+  }
+
+  // --- region (area) selection: shared by the sketch and the extrude tool ---
+  /** committed regions whose material is selected (what the extrude tool consumes) */
+  selectedRegions(): WorldRegion[] {
+    return this.regions.filter((wr) => this.isRegionSelected(wr));
+  }
+  isRegionSelected(wr: WorldRegion): boolean {
+    return this.selectedRegionPoints.some((p) =>
+      pointInRegion(wr.plane.to2D(new THREE.Vector3(p[0], p[1], p[2])), wr.region),
+    );
+  }
+  /** Toggle a region's selection. `additive` (Ctrl/Shift) keeps the rest; a plain
+   *  click replaces the whole selection with just this region. */
+  toggleRegionSelection(wr: WorldRegion, additive: boolean) {
+    const sel = this.isRegionSelected(wr);
+    const c = wr.interior3D;
+    if (!additive) {
+      this.selectedRegionPoints = sel && this.selectedRegionPoints.length === 1 ? [] : [[c.x, c.y, c.z]];
+    } else if (sel) {
+      this.selectedRegionPoints = this.selectedRegionPoints.filter(
+        (p) => !pointInRegion(wr.plane.to2D(new THREE.Vector3(p[0], p[1], p[2])), wr.region),
+      );
+    } else {
+      this.selectedRegionPoints.push([c.x, c.y, c.z]);
+    }
+    this.recolorFills();
+  }
+  clearRegionSelection() {
+    if (!this.selectedRegionPoints.length) return;
+    this.selectedRegionPoints = [];
+    this.recolorFills();
+  }
+  /** Hover-highlight one region's fill (or clear with null). */
+  setHoverRegion(wr: WorldRegion | null) {
+    if (this.hovered === wr) return;
+    this.hovered = wr;
+    this.recolorFills();
+  }
+  /** active-sketch region whose material contains the 2D sketch point (sketch mode) */
+  activeRegionAt(p: THREE.Vector2): WorldRegion | null {
+    for (const wr of this.activeRegions) {
+      if (pointInRegion(p, wr.region)) return wr;
+    }
+    return null;
+  }
+  private recolorFills() {
+    for (const wr of [...this.regions, ...this.activeRegions]) {
+      if (wr.fill) wr.fill.material = this.fillMaterial(wr);
     }
   }
 
@@ -206,11 +313,14 @@ function constructionLine(points: THREE.Vector3[]): THREE.Line {
   return line;
 }
 
-function fillMesh(region: Region, plane: SketchPlane): THREE.Mesh {
+function fillMesh(region: Region, plane: SketchPlane, material: THREE.Material): THREE.Mesh {
   const shape = new THREE.Shape(region.loop.map((p) => p.clone()));
+  for (const h of region.holes) {
+    shape.holes.push(new THREE.Path(h.map((p) => p.clone())));
+  }
   const geo = new THREE.ShapeGeometry(shape);
   geo.applyMatrix4(plane.basisMatrix()); // ShapeGeometry is local XY -> plane
-  const mesh = new THREE.Mesh(geo, FILL_MAT);
+  const mesh = new THREE.Mesh(geo, material);
   mesh.renderOrder = 11;
   return mesh;
 }

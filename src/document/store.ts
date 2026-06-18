@@ -33,7 +33,10 @@ export class DocumentStore {
   private isDirty = false; // unsaved changes since last save/open/new
   private rollback: number | null = null; // # of active features (null = all); timeline marker
   private suppressed = new Set<string>(); // feature ids skipped on rebuild (suppress)
+  private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
+  private rebuilding = false; // a rebuild round-trip is in flight
+  private rebuildQueued = false; // a newer rebuild was requested while one was in flight
   private build: RebuildState = {
     building: false,
     result: null,
@@ -199,6 +202,16 @@ export class DocumentStore {
     this.emitDoc();
     this.scheduleRebuild(true);
   }
+
+  // --- live preview (un-committed feature, e.g. a fillet being dragged) ---
+  /** Show `feature` appended to the built tree without recording undo or marking
+   *  dirty. Pass null to clear it (reverts to the committed model). Rebuilds
+   *  immediately and coalesces in-flight requests so a drag stays live (no
+   *  debounce wait) without flooding OCCT. */
+  setPreview(feature: Feature | null) {
+    this.preview = feature;
+    this.scheduleRebuild(true);
+  }
   /** reorder: move feature `id` to position `toIndex` in the timeline. */
   moveFeature(id: string, toIndex: number) {
     this.mutate((d) => {
@@ -272,28 +285,45 @@ export class DocumentStore {
     const features = this.doc.features
       .slice(0, this.rollbackIndex)
       .filter((f) => !this.suppressed.has(f.id));
+    if (this.preview) features.push(this.preview);
     return { parameters: this.doc.parameters, features };
   }
 
   async rebuildNow() {
-    this.build = { ...this.build, building: true };
-    this.emitBuild();
-    const reply = await this.geometry.rebuild(this.effectiveDoc());
-    if (reply.ok) {
-      this.build = {
-        building: false,
-        result: reply.result,
-        errorFeatureId: null,
-        errorMessage: null,
-      };
-    } else {
-      this.build = {
-        building: false,
-        result: this.build.result, // keep last good mesh on screen
-        errorFeatureId: reply.error.feature_id ?? null,
-        errorMessage: reply.error.message,
-      };
+    // Serialize rebuilds: if one is already in flight, just mark that another is
+    // wanted. When the current one finishes it drains to the LATEST effectiveDoc.
+    // This keeps live previews (fillet drag) responsive without overlapping or
+    // out-of-order sidecar round-trips.
+    if (this.rebuilding) {
+      this.rebuildQueued = true;
+      return;
     }
-    this.emitBuild();
+    this.rebuilding = true;
+    try {
+      do {
+        this.rebuildQueued = false;
+        this.build = { ...this.build, building: true };
+        this.emitBuild();
+        const reply = await this.geometry.rebuild(this.effectiveDoc());
+        if (reply.ok) {
+          this.build = {
+            building: false,
+            result: reply.result,
+            errorFeatureId: null,
+            errorMessage: null,
+          };
+        } else {
+          this.build = {
+            building: false,
+            result: this.build.result, // keep last good mesh on screen
+            errorFeatureId: reply.error.feature_id ?? null,
+            errorMessage: reply.error.message,
+          };
+        }
+        this.emitBuild();
+      } while (this.rebuildQueued);
+    } finally {
+      this.rebuilding = false;
+    }
   }
 }

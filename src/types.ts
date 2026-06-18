@@ -55,7 +55,9 @@ export type Feature =
       sketch: string;
       distance: Num;
       operation: "new" | "join" | "cut";
-      // world centroid of the chosen profile region (sidecar picks that face)
+      // interior points of the chosen profile areas (sidecar resolves each to a
+      // face, with holes, and unions them). `region` is the legacy single-area form.
+      regions?: [number, number, number][];
       region?: [number, number, number];
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }

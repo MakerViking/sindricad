@@ -77,14 +77,28 @@ def rebuild(document):
                 sketches[f["id"]] = _build_sketch(f, val)
 
             elif t == "extrude":
-                sk = sketches[f["sketch"]]
+                entry = sketches[f["sketch"]]
+                sk = entry["sketch"]
                 if sk is None:
                     raise ValueError("sketch has no closed profile to extrude")
-                target = sk
-                region = f.get("region")
-                if region:  # extrude only the profile under this world point
-                    p = Vector(*region)
-                    target = min(sk.faces(), key=lambda fc: (fc.center() - p).length)
+                # region points (one per selected area) pick + combine specific
+                # profiles; a ring (annulus) keeps its hole, several areas union.
+                pts = f.get("regions")
+                if not pts and f.get("region"):
+                    pts = [f["region"]]
+                if pts:
+                    sel = []
+                    for p in pts:
+                        rf = _region_face_at(entry["faces"], Vector(*p))
+                        if rf is not None:
+                            sel.append(rf)
+                    if not sel:
+                        raise ValueError("no profile found under the selected area")
+                    target = sel[0]
+                    for s in sel[1:]:
+                        target = target + s
+                else:
+                    target = sk  # whole sketch
                 solid = extrude(target, amount=val(f["distance"]))
                 op = f.get("operation", "new")
                 if part is None or op == "new":
@@ -106,7 +120,7 @@ def rebuild(document):
                 part = part + mirror(part, about=PLANES[f["plane"]])
 
             elif t == "revolve":
-                sk = sketches[f["sketch"]]
+                sk = sketches[f["sketch"]]["sketch"]
                 part = revolve(
                     sk,
                     axis=AXES[f.get("axis", "Z")],
@@ -114,7 +128,7 @@ def rebuild(document):
                 )
 
             elif t == "loft":
-                part = loft([sketches[s] for s in f["sketches"]])
+                part = loft([sketches[s]["sketch"] for s in f["sketches"]])
 
             else:
                 raise ValueError(f"unknown feature type: {t}")
@@ -134,6 +148,11 @@ def rebuild(document):
 
 def _build_sketch(f, val):
     """Build a 2D sketch and locate it onto its plane (algebra mode).
+
+    Returns {"sketch": union, "faces": [located per-loop faces]}. The union is the
+    whole profile (revolve/loft/whole-extrude); `faces` keeps each closed loop as
+    its own located Face so region selection can recover nested profiles (a ring,
+    an inner disk) that the union collapses.
 
     Primitives (rectangle/circle) become faces directly. Free-form `line`
     segments are assembled into closed wires and turned into faces, so an
@@ -177,12 +196,48 @@ def _build_sketch(f, val):
         faces.extend(_faces_from_edges(edges))
 
     if not faces:
-        return None  # open/reference-only sketch — valid, just not extrudable yet
+        return {"sketch": None, "faces": []}  # open/reference-only sketch
 
     sk = faces[0]
     for fc in faces[1:]:
         sk = sk + fc
-    return plane * sk  # locate the 2D sketch onto its plane
+    sk = plane * sk  # locate the 2D sketch onto its plane
+
+    # each loop, located onto the plane, as an individual Face for region picking
+    located_faces = []
+    for fc in faces:
+        for face in (plane * fc).faces():
+            located_faces.append(face)
+    return {"sketch": sk, "faces": located_faces}
+
+
+def _region_face_at(faces, P):
+    """Pick the planar region containing point P and cut out its nested holes.
+
+    `faces` are the located per-loop faces. The region's outer boundary is the
+    smallest-area face that contains P; any face strictly inside that outer face is
+    a hole (so concentric circles give a ring). Falls back to the nearest face by
+    center when P isn't inside any face (robustness for tessellation drift)."""
+    if not faces:
+        return None
+    containing = [fc for fc in faces if _face_contains(fc, P)]
+    if not containing:
+        return min(faces, key=lambda fc: (fc.center() - P).length)
+    outer = min(containing, key=lambda fc: fc.area)
+    region = outer
+    for fc in faces:
+        if fc is outer:
+            continue
+        if fc.area < outer.area and _face_contains(outer, fc.center()):
+            region = region - fc
+    return region
+
+
+def _face_contains(face, p):
+    try:
+        return bool(face.is_inside(p))
+    except Exception:
+        return False
 
 
 def _faces_from_edges(edges):

@@ -40,7 +40,9 @@ const CONFIG: SpaceMouseConfig = {
   zoomSens: 0.0001,
   orbitSens: 0.0000022,
   staleMs: 120,
-  invert: { panX: false, panY: false, zoom: false, orbitAz: false, orbitPolar: false },
+  // orbit felt inverted on the real puck (translation/pan was correct) — flip both
+  // orbit axes by default. Tunable live: window.spaceMouseConfig({ invert: { orbitAz:false } }).
+  invert: { panX: false, panY: false, zoom: false, orbitAz: true, orbitPolar: true },
 };
 
 /** Live-tune from the console: window.spaceMouseConfig({ orbitSens: 0.000004 }). */

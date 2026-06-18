@@ -17,6 +17,7 @@ import { compileAndSolve } from "./sketchSolve";
 import { resolveEntities, toSketchEntity } from "./resolve";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
+import { detectRegions } from "./region";
 
 export type SketchTool =
   | "select"
@@ -121,6 +122,7 @@ export class SketchMode {
     this.entities = [];
     this.constraints = [];
     this.selected.clear();
+    this.overlay.clearRegionSelection(); // fresh session: drop any stale area selection
     this.lastDof = -1;
     this.conflict = false;
     if (editId) {
@@ -198,6 +200,7 @@ export class SketchMode {
     this.arcEnd = null;
     this.splinePts = [];
     this.tool = "select";
+    this.overlay.setActiveRegions([], this.plane); // drop active-sketch fills (committed ones re-render)
     if (this.store) this.overlay.update(this.store.document);
     this.onState?.();
   }
@@ -225,6 +228,12 @@ export class SketchMode {
   private refreshActive() {
     this.entityVersion++; // bump guards in-flight constraint solves against staleness
     this.overlay.setActiveSketch(this.activeCurves());
+    // profile-area fills for the active sketch (hidden from overlay.update),
+    // so areas are visible + selectable while drawing
+    this.overlay.setActiveRegions(
+      detectRegions(this.editingId ?? "__active__", this.entities),
+      this.plane,
+    );
     this.candidates = candidatesFromEntities(this.entities);
     if (this.dimsVisible) this.dims.show(this.entities, this.plane);
     else this.dims.hide();
@@ -312,8 +321,19 @@ export class SketchMode {
         } else {
           this.selected = new Set([id]);
         }
-      } else if (!e.shiftKey) {
+        this.refreshActive();
+        return;
+      }
+      // no entity under the cursor → try selecting a profile AREA to extrude
+      const wr = this.overlay.activeRegionAt(raw);
+      if (wr) {
+        this.overlay.toggleRegionSelection(wr, e.shiftKey || e.ctrlKey || e.metaKey);
+        return;
+      }
+      // empty space → clear both entity and area selection
+      if (!e.shiftKey) {
         this.selected.clear();
+        this.overlay.clearRegionSelection();
       }
       this.refreshActive();
       return;
@@ -414,6 +434,10 @@ export class SketchMode {
       }
       const hit = this.snapAt(e.clientX, e.clientY);
       this.showSnap(hit);
+      if (this.tool === "select") {
+        const raw = this.planePoint(e); // hover-highlight a profile area
+        this.overlay.setHoverRegion(raw ? this.overlay.activeRegionAt(raw) : null);
+      }
       return;
     }
     const hit = this.snapAt(e.clientX, e.clientY);

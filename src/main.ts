@@ -19,9 +19,10 @@ import { SketchPlane } from "./sketch/plane";
 import { DimInput } from "./sketch/dimInput";
 import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
+import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
-import type { Feature, PlaneDef, PlaneSpec, Selector } from "./types";
+import type { Feature, PlaneDef, PlaneSpec } from "./types";
 
 // --- core singletons ---
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -35,6 +36,7 @@ const overlay = new SketchOverlay();
 viewport.addToScene(overlay.group);
 const sketch = new SketchMode(viewport, overlay);
 const extrude = new ExtrudeTool(viewport, overlay, store);
+const edgeFeature = new EdgeFeatureTool(viewport, store);
 
 (window as any).viewport = viewport;
 (window as any).store = store;
@@ -42,6 +44,7 @@ const extrude = new ExtrudeTool(viewport, overlay, store);
 (window as any).sketch = sketch;
 (window as any).overlay = overlay;
 (window as any).extrude = extrude;
+(window as any).edgeFeature = edgeFeature;
 (window as any).solveSketch = solveSketch;
 void initSolver(); // warm up the constraint solver WASM
 
@@ -114,7 +117,7 @@ timeline.onEdit = (id) => editFeature(id);
 tree.onSelect = selectFeature;
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
-  if (!sketch.active && !extrude.active) sketch.enter(plane, store);
+  if (!sketch.active && !extrude.active && !edgeFeature.active) sketch.enter(plane, store);
 };
 
 // --- sketch visibility (Fusion-style: a sketch consumed by a feature hides by
@@ -146,7 +149,7 @@ store.onDocChange(() => {
 
 // --- selected-edge hint: tells you pre-selection is usable by Fillet/Chamfer ---
 viewport.onSelectionChange = () => {
-  if (sketch.active || extrude.active || planePick || edgePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || planePick) return;
   const n = viewport.selectedEdgeSelectors().length;
   setPrompt(n ? `${n} edge${n > 1 ? "s" : ""} selected — Fillet or Chamfer to apply · Esc to clear` : null);
 };
@@ -242,88 +245,13 @@ projBtn.addEventListener("click", () => {
 
 // --- interactive plane pick (base plane quad or a planar body face) ---
 let planePick = false;
-let edgePick = false;
 
-// Interactive edge selection (fillet/chamfer): hover highlights edges, click
-// picks one, then the caller asks for a radius/distance.
-const edgeDim = new DimInput();
-function pickEdgeInteractive(promptText: string, onPick: (sel: Selector) => void) {
-  if (sketch.active || extrude.active || planePick || edgePick) return;
-  edgePick = true;
-  viewport.suspendPicking = true; // we drive our own edge-only picking
-  viewport.emphasizeEdges(true); // light up all edges so they're easy to see/target
-  setPrompt(promptText);
-  const onMove = (e: PointerEvent) => {
-    const hit = viewport.pickEdgeAt(e.clientX, e.clientY);
-    viewport.hoverEdge(hit?.line ?? null);
-  };
-  const onDown = (e: PointerEvent) => {
-    if (e.button !== 0) return;
-    const hit = viewport.pickEdgeAt(e.clientX, e.clientY);
-    if (!hit) return; // missed an edge — let the click orbit/do nothing
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    cleanup();
-    requestAnimationFrame(() => onPick(hit.selector));
-  };
-  const onEsc = (e: KeyboardEvent) => {
-    if (e.key === "Escape") cleanup();
-  };
-  const cleanup = () => {
-    edgePick = false;
-    viewport.suspendPicking = false;
-    viewport.emphasizeEdges(false); // restore normal dark edges
-    viewport.clearHover();
-    canvas.removeEventListener("pointermove", onMove);
-    canvas.removeEventListener("pointerdown", onDown, true);
-    window.removeEventListener("keydown", onEsc, true);
-    setPrompt(null);
-  };
-  canvas.addEventListener("pointermove", onMove);
-  canvas.addEventListener("pointerdown", onDown, true);
-  window.addEventListener("keydown", onEsc, true);
-}
-
-// Prompt for a dimension (radius/distance), then create the fillet/chamfer
-// feature targeting `edges` (one selector or several from a pre-selection).
-function applyEdgeFeature(
-  kind: "fillet" | "chamfer",
-  edges: Selector | Selector[],
-) {
-  const rect = canvas.getBoundingClientRect();
-  edgeDim.position(rect.left + rect.width / 2, rect.top + rect.height / 2 - 40);
-  const field = kind === "fillet" ? { name: "radius", label: "R" } : { name: "distance", label: "D" };
-  edgeDim.show([{ ...field, kind: "length" }], () => {
-    const v = edgeDim.getValue(field.name) ?? (kind === "fillet" ? 2 : 1);
-    edgeDim.hide();
-    setPrompt(null);
-    viewport.clearSelection();
-    const feature =
-      kind === "fillet"
-        ? { id: store.nextId(), type: "fillet", edges, radius: v }
-        : { id: store.nextId(), type: "chamfer", edges, distance: v };
-    store.addFeature(feature as Feature);
-  });
-  setPrompt(`Type a ${kind} ${field.name} + Enter · Esc to cancel`);
-}
-
-function startEdgeFeature(kind: "fillet" | "chamfer") {
-  // pre-selection: if edges are already selected (Ctrl-click to add), use them
-  const pre = viewport.selectedEdgeSelectors();
-  if (pre.length) {
-    applyEdgeFeature(kind, pre.length === 1 ? pre[0] : pre);
-    return;
-  }
-  pickEdgeInteractive(
-    `Select an edge to ${kind} (Ctrl-click first to pre-select several), then type a ${kind === "fillet" ? "radius" : "distance"}`,
-    (edges) => applyEdgeFeature(kind, edges),
-  );
-}
-
-const startFillet = () => startEdgeFeature("fillet");
-const startChamfer = () => startEdgeFeature("chamfer");
+// Interactive Fillet / Chamfer: pick an edge (or use a Ctrl-click pre-selection),
+// then drag an arrow to scrub the radius/distance with a live sidecar preview.
+const startFillet = () => edgeFeature.start("fillet", (id) => id && selectFeature(id));
+const startChamfer = () => edgeFeature.start("chamfer", (id) => id && selectFeature(id));
 function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
-  if (sketch.active || extrude.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || planePick) return;
   planePick = true;
   viewport.showAllPlanes(true);
   viewport.suspendPicking = true;
@@ -391,7 +319,7 @@ function offsetPlane() {
 }
 
 function startExtrude() {
-  if (sketch.active || extrude.active) return;
+  if (sketch.active || extrude.active || edgeFeature.active) return;
   if (overlay.regions.length === 0) {
     setStatus("Extrude: create a sketch with a closed profile first", "");
     return;
@@ -498,7 +426,7 @@ installKeymap((a) => {
       void saveDocument(store);
       break;
     case "escape":
-      if (!sketch.active && !extrude.active) {
+      if (!sketch.active && !extrude.active && !edgeFeature.active) {
         viewport.clearSelection();
         selectFeature(null);
       }
@@ -512,7 +440,7 @@ installKeymap((a) => {
 // delete selected feature
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement) return;
-  if (sketch.active || extrude.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || planePick) return;
   if ((e.key === "Delete" || e.key === "Backspace") && selectedFeature) {
     store.removeFeature(selectedFeature);
     selectFeature(null);

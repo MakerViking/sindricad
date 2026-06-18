@@ -1,28 +1,31 @@
-// Interactive Extrude (Fusion-style): pick a profile region, then set the
-// distance by moving the cursor along the profile normal (with a live solid
-// preview + an arrow manipulator + a numeric box). Operation auto-selects:
-// New Body when nothing exists, Join when adding (positive), Cut when removing
-// (negative, preview turns red). Commit builds it authoritatively in the sidecar.
+// Interactive Extrude (Fusion-style): select one or more profile AREAS, then set
+// the distance by moving the cursor along the profile normal (live solid preview +
+// arrow manipulator + numeric box). Areas can be pre-selected in the sketch or
+// picked here: plain click picks one and starts the depth drag, Ctrl-click adds
+// more (Enter to confirm the set). A ring (annulus) area previews/extrudes as a
+// tube; selecting several areas unions them. Operation auto-selects: New Body when
+// nothing exists, Join when adding (positive), Cut when removing (negative → red).
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { SketchOverlay, WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { Feature } from "../types";
-import { pointInLoop } from "../sketch/region";
+import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
-import { disposeObject } from "../viewport/dispose";
+import { distanceAlongAxis } from "./manipulator";
 
 type Phase = "pick" | "drag";
 
 export class ExtrudeTool {
   active = false;
   private phase: Phase = "pick";
-  private region: WorldRegion | null = null;
+  private selected: WorldRegion[] = [];
   private distance = 10;
-  private preview: THREE.Mesh | null = null;
-  private previewKey = ""; // depth+sign of the built preview geometry
+  private preview: THREE.Group | null = null;
+  private previewMat: THREE.MeshStandardMaterial | null = null;
+  private previewKey = ""; // depth+sign+selection of the built preview geometry
   private arrow: THREE.ArrowHelper | null = null;
   private dim = new DimInput();
   private hitScratch = new THREE.Vector3();
@@ -46,27 +49,34 @@ export class ExtrudeTool {
     if (this.active) return;
     this.active = true;
     this.phase = "pick";
-    this.region = null;
     this.onDone = onDone;
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
     el.addEventListener("pointerdown", this.boundDown);
     window.addEventListener("keydown", this.boundKey, true);
-    setPrompt("Select a profile to extrude");
+    // honour any areas pre-selected in the sketch
+    this.selected = this.overlay.selectedRegions();
+    if (this.selected.length) {
+      this.beginDrag();
+    } else {
+      setPrompt("Select a profile to extrude · Ctrl-click adds areas · Enter to confirm");
+    }
   }
 
   private onMove(e: PointerEvent) {
     if (this.phase === "pick") {
       const r = this.regionUnder(e.clientX, e.clientY);
+      this.overlay.setHoverRegion(r);
       this.viewport.domElement.style.cursor = r ? "pointer" : "default";
       return;
     }
-    // drag: distance follows cursor projection onto the normal axis
-    if (!this.region) return;
+    if (!this.selected.length) return;
+    const plane = this.selected[0].plane;
+    const anchor = this.anchor();
     if (!this.dim.isUserDriven("distance")) {
       const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const d = distanceAlongAxis(ray, this.region.centroid3D, this.region.plane.n);
+      const d = distanceAlongAxis(ray, anchor, plane.n);
       this.distance = d;
       this.dim.updateFromCursor({ distance: Math.abs(d) });
     } else {
@@ -83,14 +93,12 @@ export class ExtrudeTool {
       const r = this.regionUnder(e.clientX, e.clientY);
       if (!r) return;
       e.preventDefault();
-      this.region = r;
-      this.phase = "drag";
-      this.distance = 10;
-      this.dim.show([{ name: "distance", label: "D" }], () => this.commit());
-      setPrompt(
-        "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
-      );
-      this.updatePreview();
+      const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+      this.overlay.toggleRegionSelection(r, additive);
+      this.selected = this.overlay.selectedRegions();
+      // plain click picks one area and goes straight to depth; Ctrl-click keeps
+      // accumulating (Enter confirms the set)
+      if (!additive && this.selected.length) this.beginDrag();
     } else {
       e.preventDefault();
       this.commit();
@@ -103,10 +111,22 @@ export class ExtrudeTool {
       return;
     }
     if (e.key === "Escape") this.cancel();
+    else if (e.key === "Enter" && this.phase === "pick" && this.selected.length) this.beginDrag();
+  }
+
+  private beginDrag() {
+    this.phase = "drag";
+    this.distance = 10;
+    this.overlay.setHoverRegion(null);
+    this.dim.show([{ name: "distance", label: "D" }], () => this.commit());
+    setPrompt(
+      "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
+    );
+    this.updatePreview();
   }
 
   // --- geometry helpers ---
-  /** the front-most region whose 2D loop contains the cursor (nearest to camera) */
+  /** the front-most region whose material (loop minus holes) contains the cursor */
   private regionUnder(cx: number, cy: number): WorldRegion | null {
     const ray = this.viewport.rayFrom(cx, cy).ray;
     let best: WorldRegion | null = null;
@@ -114,7 +134,7 @@ export class ExtrudeTool {
     for (const wr of this.overlay.regions) {
       if (!ray.intersectPlane(wr.plane.plane, this.hitScratch)) continue;
       const p2d = wr.plane.to2D(this.hitScratch);
-      if (!pointInLoop(p2d, wr.region.loop)) continue;
+      if (!pointInRegion(p2d, wr.region)) continue;
       const d = ray.origin.distanceToSquared(this.hitScratch);
       if (d < bestDist) {
         bestDist = d;
@@ -124,58 +144,64 @@ export class ExtrudeTool {
     return best;
   }
 
+  /** average of the selected areas' interior points — the arrow anchor */
+  private anchor(): THREE.Vector3 {
+    const a = new THREE.Vector3();
+    for (const wr of this.selected) a.add(wr.interior3D);
+    return a.divideScalar(this.selected.length || 1);
+  }
+
   private updatePreview() {
-    if (!this.region) return;
-    const plane = this.region.plane;
+    if (!this.selected.length) return;
     const sign = this.distance >= 0 ? 1 : -1;
     const depth = Math.abs(this.distance);
     const cut = sign < 0;
 
-    // only rebuild the (relatively expensive) extrude geometry when depth/sign
-    // actually changed — the cursor fires many moves at the same depth.
-    const key = `${depth.toFixed(3)}:${sign}`;
+    const ids = this.selected
+      .map((s) => `${s.sketchId}:${s.interior3D.x.toFixed(2)},${s.interior3D.y.toFixed(2)}`)
+      .join("|");
+    const key = `${depth.toFixed(3)}:${sign}:${ids}`;
     if (key !== this.previewKey) {
       this.previewKey = key;
-      const shape = new THREE.Shape(this.region.region.loop.map((p) => p.clone()));
-      const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, steps: 1 });
-      geo.applyMatrix4(plane.basisMatrix(sign)); // local +Z -> plane normal (flipped on cut)
-      if (!this.preview) {
-        this.preview = new THREE.Mesh(
-          geo,
-          new THREE.MeshStandardMaterial({
-            transparent: true,
-            opacity: 0.5,
-            metalness: 0.1,
-            roughness: 0.6,
-          }),
-        );
-        this.viewport.addToScene(this.preview);
-      } else {
-        this.preview.geometry.dispose();
-        this.preview.geometry = geo;
+      this.disposePreviewGeom();
+      if (!this.previewMat) {
+        this.previewMat = new THREE.MeshStandardMaterial({
+          transparent: true,
+          opacity: 0.5,
+          metalness: 0.1,
+          roughness: 0.6,
+        });
       }
+      this.preview = new THREE.Group();
+      for (const wr of this.selected) {
+        const shape = new THREE.Shape(wr.region.loop.map((p) => p.clone()));
+        for (const h of wr.region.holes) {
+          shape.holes.push(new THREE.Path(h.map((p) => p.clone())));
+        }
+        const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, steps: 1 });
+        geo.applyMatrix4(wr.plane.basisMatrix(sign)); // local +Z -> plane normal (flipped on cut)
+        this.preview.add(new THREE.Mesh(geo, this.previewMat));
+      }
+      this.viewport.addToScene(this.preview);
     }
-    if (this.preview) {
-      (this.preview.material as THREE.MeshStandardMaterial).color.set(
-        cut ? 0xff5c5c : 0x5b9bff,
-      );
-    }
+    this.previewMat?.color.set(cut ? 0xff5c5c : 0x5b9bff);
 
-    // arrow manipulator along the normal
+    // arrow manipulator along the (shared) normal, anchored at the selection center
+    const plane = this.selected[0].plane;
+    const anchor = this.anchor();
     const dir = plane.n.clone().multiplyScalar(sign);
     if (!this.arrow) {
-      this.arrow = new THREE.ArrowHelper(dir, this.region.centroid3D, depth || 1, 0xffd24a, 6, 3);
+      this.arrow = new THREE.ArrowHelper(dir, anchor, depth || 1, 0xffd24a, 6, 3);
       this.viewport.addToScene(this.arrow);
     } else {
-      this.arrow.position.copy(this.region.centroid3D);
+      this.arrow.position.copy(anchor);
       this.arrow.setDirection(dir);
       this.arrow.setLength(Math.max(depth, 1), 6, 3);
     }
   }
 
   // Deliberate MVP heuristic: New Body when the doc has no solid yet, else
-  // Join/Cut by drag sign. A fuller version would consider the specific body
-  // and whether the profile actually intersects it (needs sketch-on-face).
+  // Join/Cut by drag sign.
   private currentOperation(): "new" | "join" | "cut" {
     const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
     if (!hasSolid) return "new";
@@ -183,21 +209,21 @@ export class ExtrudeTool {
   }
 
   private commit() {
-    if (!this.region) return this.cancel();
+    if (!this.selected.length) return this.cancel();
     const v = this.dim.getValue("distance");
     if (v != null) this.distance = Math.sign(this.distance || 1) * v;
     if (Math.abs(this.distance) < 1e-3) return; // ignore zero
-    const c = this.region.centroid3D;
     const feature: Feature = {
       id: this.store.nextId(),
       type: "extrude",
-      sketch: this.region.sketchId,
+      sketch: this.selected[0].sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: this.currentOperation(),
-      region: [c.x, c.y, c.z],
+      regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
     };
     const id = feature.id;
     this.store.addFeature(feature);
+    this.overlay.clearRegionSelection();
     this.cleanup();
     this.onDone?.(id);
   }
@@ -214,35 +240,29 @@ export class ExtrudeTool {
     window.removeEventListener("keydown", this.boundKey, true);
     el.style.cursor = "default";
     this.dim.hide();
-    if (this.preview) {
-      this.viewport.removeFromScene(this.preview);
-      disposeObject(this.preview);
-      this.preview = null;
-    }
+    this.disposePreviewGeom();
+    this.previewMat?.dispose();
+    this.previewMat = null;
     this.previewKey = "";
     if (this.arrow) {
       this.viewport.removeFromScene(this.arrow);
       this.arrow.dispose();
       this.arrow = null;
     }
+    this.overlay.setHoverRegion(null);
     this.viewport.suspendPicking = false;
     this.active = false;
-    this.region = null;
+    this.selected = [];
     setPrompt(null);
   }
-}
 
-/** signed distance along `dir` (unit) of the closest point on the axis to the ray */
-function distanceAlongAxis(
-  ray: THREE.Ray,
-  origin: THREE.Vector3,
-  dir: THREE.Vector3,
-): number {
-  const w0 = ray.origin.clone().sub(origin);
-  const b = ray.direction.dot(dir);
-  const d = ray.direction.dot(w0);
-  const e = dir.dot(w0);
-  const denom = 1 - b * b; // a=c=1 (unit vectors)
-  if (Math.abs(denom) < 1e-6) return -e;
-  return (e - b * d) / denom; // signed param along dir
+  /** remove + dispose the preview group's geometries (the material is reused) */
+  private disposePreviewGeom() {
+    if (!this.preview) return;
+    this.viewport.removeFromScene(this.preview);
+    for (const child of this.preview.children) {
+      if (child instanceof THREE.Mesh) child.geometry.dispose();
+    }
+    this.preview = null;
+  }
 }
