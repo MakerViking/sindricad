@@ -1559,4 +1559,35 @@ mod tests {
         assert!((r.bbox.min[2] - 5.0).abs() < 0.1, "z min ~5 (plane origin), got {}", r.bbox.min[2]);
         assert!((r.bbox.max[2] - 15.0).abs() < 0.1, "z max ~15, got {}", r.bbox.max[2]);
     }
+
+    /// Capstone: build the app's actual default model (EXAMPLE_BRACKET from
+    /// src/document/example.ts) on the Rust kernel and check it matches the Python
+    /// sidecar. Rect 40x20 extrude 5, circle r3 @ (-12,0) extrude-cut, fillet on
+    /// the axis-Z edges r2. Python reference: 11 faces, bbox -20..20 / -10..10 /
+    /// 0..5. (tris/edges are a generous range -- the fillet blend tessellation
+    /// differs between OCCT 7.9.3 here and the sidecar's 7.8.1.)
+    #[test]
+    fn example_bracket_matches_python() {
+        let doc = json!({
+            "parameters": { "width": 40, "height": 20, "thickness": 5, "hole_d": 6 },
+            "features": [
+                { "id": "f1", "type": "sketch", "plane": "XY", "entities": [
+                    { "type": "rectangle", "width": "width", "height": "height", "x": 0, "y": 0 } ]},
+                { "id": "f2", "type": "extrude", "sketch": "f1", "distance": "thickness", "operation": "new" },
+                { "id": "f3", "type": "sketch", "plane": "XY", "entities": [
+                    { "type": "circle", "radius": 3, "x": -12, "y": 0 } ]},
+                { "id": "f4", "type": "extrude", "sketch": "f3", "distance": "thickness", "operation": "cut" },
+                { "id": "f5", "type": "fillet", "edges": { "kind": "edge", "by": "axis", "axis": "Z" }, "radius": 2 }
+            ]
+        });
+        let r = geom_rebuild(doc).expect("example bracket builds on the Rust kernel");
+        let tris = r.mesh.indices.len() / 3;
+        assert_eq!(r.mesh.face_ids.len(), tris, "one faceId per triangle");
+        assert_eq!(distinct_faces(&r), 11, "example bracket -> 11 faces (matches Python)");
+        assert!((r.bbox.min[0] + 20.0).abs() < 0.05 && (r.bbox.max[0] - 20.0).abs() < 0.05, "x -20..20");
+        assert!((r.bbox.min[1] + 10.0).abs() < 0.05 && (r.bbox.max[1] - 10.0).abs() < 0.05, "y -10..10");
+        assert!(r.bbox.min[2].abs() < 0.05 && (r.bbox.max[2] - 5.0).abs() < 0.05, "z 0..5");
+        assert!(tris > 100, "has real tessellation, got {tris} tris");
+        assert!((20..=40).contains(&r.edges.len()), "edge count near Python's 27, got {}", r.edges.len());
+    }
 }
