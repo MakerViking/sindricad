@@ -29,3 +29,6 @@ serde_json = "1"
 # fork under third_party/ patched for 7.9.
 opencascade = { path = "../third_party/opencascade-rs/crates/opencascade", default-features = false }
 opencascade-sys = { path = "../third_party/opencascade-rs/crates/opencascade-sys", default-features = false }
+# glam re-exported by opencascade for DVec3 used in the document->geometry mapping.
+# MUST match the fork's glam (0.24) so DVec3 unifies across the crate boundary.
+glam = "0.24"

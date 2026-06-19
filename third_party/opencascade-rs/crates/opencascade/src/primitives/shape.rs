@@ -2,7 +2,8 @@ use crate::{
     mesh::{Mesh, Mesher},
     primitives::{
         make_axis_1, make_axis_2, make_dir, make_point, make_point2d, make_vec, BooleanShape,
-        Compound, Edge, EdgeIterator, Face, FaceIterator, ShapeType, Shell, Solid, Vertex, Wire,
+        Compound, Edge, EdgeIterator, Face, FaceIterator, FaceOrientation, ShapeType, Shell, Solid,
+        Vertex, Wire,
     },
     Error,
 };
@@ -924,6 +925,124 @@ impl Shape {
         make_hole.pin_mut().Build();
 
         Self::from_shape(make_hole.pin_mut().Shape())
+    }
+}
+
+/// Per-B-rep-face triangulation, in world coordinates, tagged with the face's
+/// index in `Shape::faces()` iteration order. Mirrors the payload the Python
+/// sidecar (`sidecar/tessellate.py`) produces: one `face_id` per triangle so the
+/// frontend can map a clicked triangle back to its whole CAD face.
+#[derive(Debug, Clone)]
+pub struct FaceMesh {
+    /// Index of this face in `Shape::faces()` order.
+    pub face_id: u32,
+    /// Flat world-space vertex positions `[x, y, z, ...]`.
+    pub positions: Vec<f64>,
+    /// Triangle index triples `[i, j, k, ...]`, already wound so client-side
+    /// normal computation points outward (REVERSED faces are flipped).
+    pub indices: Vec<u32>,
+}
+
+/// A B-rep edge sampled as a polyline of world-space points.
+#[derive(Debug, Clone)]
+pub struct EdgePolyline {
+    /// Stable per-edge id (`e0`, `e1`, ... in `Shape::edges()` order).
+    pub id: String,
+    /// `n + 1` points spanning the whole edge from start to end.
+    pub points: Vec<DVec3>,
+}
+
+impl Shape {
+    /// Mesh the whole solid, then read each B-rep face's triangulation back into
+    /// world space, tagging every triangle with its face index. This is the
+    /// in-crate equivalent of the loop in `src-tauri/src/geom.rs` and of the
+    /// Python sidecar's `tessellate()` — it needs `self.inner` (the `pub(crate)`
+    /// TopoDS), which is why it lives in the fork rather than the consumer.
+    ///
+    /// REVERSED faces have their winding flipped so client `computeVertexNormals`
+    /// yields outward normals, matching `sidecar/tessellate.py`.
+    pub fn tessellate_faces(&self, triangulation_tolerance: f64) -> Result<Vec<FaceMesh>, Error> {
+        // Mesh in place: BRepMesh stores the triangulation on the shared TShape,
+        // which we then read back per face below.
+        let mesher = ffi::b_rep_mesh::IncrementalMesh_new(&self.inner, triangulation_tolerance);
+        if !mesher.IsDone() {
+            return Err(Error::TriangulationFailed);
+        }
+        let triangulated = Shape::from_shape(mesher.Shape());
+
+        let mut out = Vec::new();
+        for (face_id, face) in triangulated.faces().enumerate() {
+            let mut location = ffi::top_loc::Location_new();
+            let handle = ffi::b_rep::BRep_Tool_Triangulation(&face.inner, location.pin_mut());
+            let tri = match ffi::poly::Handle_Poly_Triangulation_Get(&handle) {
+                Ok(tri) => tri,
+                Err(_) => continue, // degenerate face with no triangulation — skip it
+            };
+
+            let trsf = ffi::top_loc::TopLoc_Location_Transformation(&location);
+
+            let mut positions: Vec<f64> = Vec::new();
+            for i in 1..=tri.NbNodes() {
+                let mut p = ffi::poly::Poly_Triangulation_Node(tri, i);
+                p.pin_mut().Transform(&trsf);
+                positions.push(p.X());
+                positions.push(p.Y());
+                positions.push(p.Z());
+            }
+
+            let reversed = face.orientation() != FaceOrientation::Forward;
+            let mut indices: Vec<u32> = Vec::new();
+            for i in 1..=tri.NbTriangles() {
+                let t = tri.Triangle(i);
+                let a = (t.Value(1) - 1) as u32;
+                let b = (t.Value(2) - 1) as u32;
+                let c = (t.Value(3) - 1) as u32;
+                if reversed {
+                    indices.extend_from_slice(&[c, b, a]);
+                } else {
+                    indices.extend_from_slice(&[a, b, c]);
+                }
+            }
+
+            out.push(FaceMesh { face_id: face_id as u32, positions, indices });
+        }
+
+        Ok(out)
+    }
+
+    /// Sample every B-rep edge as a polyline of `n + 1` world-space points
+    /// spanning the whole edge. Ports `sidecar/tessellate.py:edge_polylines`:
+    /// walk each edge's parameter range start->end at evenly spaced parameters.
+    ///
+    /// Shared edges are de-duplicated via an `IndexedMapOfShape` so a closed solid
+    /// yields each edge once (matching build123d's `shape.edges()`); a raw
+    /// `TopExp_Explorer` over edges would visit each shared edge once per adjacent
+    /// face (e.g. a box would report 24 edges instead of 12).
+    pub fn edge_polylines(&self, n: usize) -> Vec<EdgePolyline> {
+        let n = n.max(1);
+
+        let mut edge_map = ffi::top_tools::new_indexed_map_of_shape();
+        ffi::top_exp::TopExp::MapShapes(
+            &self.inner,
+            ffi::top_abs::TopAbs_ShapeEnum::TopAbs_EDGE,
+            edge_map.pin_mut(),
+        );
+
+        let mut out = Vec::new();
+        for k in 1..=edge_map.Extent() {
+            let edge = ffi::topo_ds::Edge(edge_map.FindKey(k));
+            let curve = ffi::b_rep_adaptor::BRepAdaptor_Curve_new(edge);
+            let first = curve.FirstParameter();
+            let last = curve.LastParameter();
+            let mut points = Vec::with_capacity(n + 1);
+            for j in 0..=n {
+                let u = first + (last - first) * (j as f64 / n as f64);
+                let p = ffi::b_rep_adaptor::BRepAdaptor_Curve_value(&curve, u);
+                points.push(dvec3(p.X(), p.Y(), p.Z()));
+            }
+            out.push(EdgePolyline { id: format!("e{}", k - 1), points });
+        }
+        out
     }
 }
 
