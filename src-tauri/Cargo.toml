@@ -32,3 +32,7 @@ opencascade-sys = { path = "../third_party/opencascade-rs/crates/opencascade-sys
 # glam re-exported by opencascade for DVec3 used in the document->geometry mapping.
 # MUST match the fork's glam (0.24) so DVec3 unifies across the crate boundary.
 glam = "0.24"
+# 3MF export: OCCT has no 3MF writer (only STEP/STL/IGES via the fork). build123d
+# uses its Mesher for 3MF; we instead tessellate the solid and write the mesh as a
+# 3MF (zip of 3D model XML) via this crate. Mirrors sidecar/exporters.py's 3mf path.
+threemf = "0.8"

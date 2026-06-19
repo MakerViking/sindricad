@@ -33,10 +33,19 @@ export class TauriGeometry implements GeometryBackend {
   }
 
   async export(
-    _doc: CadDocument,
-    _format: ExportFormat,
-    _path: string,
+    doc: CadDocument,
+    format: ExportFormat,
+    path: string,
   ): Promise<{ ok: boolean; path?: string; message?: string }> {
-    throw new Error("export not supported in the Rust geometry spike");
+    try {
+      const written = await invoke<string>("geom_export", {
+        document: doc,
+        format,
+        path,
+      });
+      return { ok: true, path: written };
+    } catch (e) {
+      return { ok: false, message: String(e) };
+    }
   }
 }

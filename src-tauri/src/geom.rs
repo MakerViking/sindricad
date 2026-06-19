@@ -66,6 +66,85 @@ pub fn geom_rebuild(document: serde_json::Value) -> Result<RebuildResult, String
     Ok(tessellate(&shape))
 }
 
+/// Rust-backend export. Rebuilds the shape from `document` (same `build` as
+/// `geom_rebuild`) and writes it to `path` in `format` ("step"/"stl"/"3mf",
+/// case-insensitive). Returns the written path. Wired as a Tauri command; the
+/// frontend's `TauriGeometry.export` calls it as
+/// `invoke("geom_export", { document, format, path })`.
+///
+/// This is the Rust port of `sidecar/exporters.py`:
+///   - STEP / STL use the fork's high-level `Shape::write_step` / `write_stl`
+///     (build123d's `export_step` / `export_stl`).
+///   - 3MF has no OCCT writer; build123d uses its `Mesher`. We instead tessellate
+///     the solid and write the mesh via the `threemf` crate (a zip of 3D model
+///     XML). Units are millimeters on both sides.
+#[tauri::command]
+pub fn geom_export(
+    document: serde_json::Value,
+    format: String,
+    path: String,
+) -> Result<String, String> {
+    let doc: Document = serde_json::from_value(document).map_err(|e| e.to_string())?;
+    let shape = build(&doc)?;
+
+    match format.to_lowercase().as_str() {
+        "step" | "stp" => shape
+            .write_step(&path)
+            .map_err(|e| format!("STEP export failed: {e}"))?,
+        "stl" => shape
+            .write_stl(&path)
+            .map_err(|e| format!("STL export failed: {e}"))?,
+        "3mf" => write_3mf(&shape, &path)?,
+        other => return Err(format!("unknown export format: {other}")),
+    }
+
+    Ok(path)
+}
+
+/// Tessellate `shape` and write it as a 3MF file. OCCT cannot write 3MF, so we
+/// build a single welded mesh from the per-face triangulation (`tessellate_faces`,
+/// the same source `geom_rebuild` uses for rendering) and serialize it with the
+/// `threemf` crate. The 3MF default unit is millimeter, matching our model.
+fn write_3mf(shape: &Shape, path: &str) -> Result<(), String> {
+    use threemf::model::mesh::{Triangle, Triangles, Vertex, Vertices};
+    use threemf::Mesh;
+
+    let mut vertices: Vec<Vertex> = Vec::new();
+    let mut triangles: Vec<Triangle> = Vec::new();
+
+    // Each FaceMesh has its own vertex space; offset its indices into the shared
+    // vertex list as we concatenate faces (face ids are irrelevant for export).
+    let face_meshes = shape
+        .tessellate_faces(TESSELLATION_TOLERANCE)
+        .map_err(|e| format!("3MF tessellation failed: {e}"))?;
+    for fm in face_meshes {
+        let base = vertices.len();
+        for p in fm.positions.chunks_exact(3) {
+            vertices.push(Vertex { x: p[0], y: p[1], z: p[2] });
+        }
+        for tri in fm.indices.chunks_exact(3) {
+            triangles.push(Triangle {
+                v1: base + tri[0] as usize,
+                v2: base + tri[1] as usize,
+                v3: base + tri[2] as usize,
+            });
+        }
+    }
+
+    if triangles.is_empty() {
+        return Err("nothing to export — the part has no geometry".to_string());
+    }
+
+    let mesh = Mesh {
+        vertices: Vertices { vertex: vertices },
+        triangles: Triangles { triangle: triangles },
+    };
+
+    let file = std::fs::File::create(path).map_err(|e| format!("3MF export failed: {e}"))?;
+    threemf::write(file, mesh).map_err(|e| format!("3MF export failed: {e}"))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Document model (mirrors src/types.ts; only the fields Phase 1 consumes).
 // ---------------------------------------------------------------------------
@@ -827,6 +906,66 @@ fn tessellate(shape: &Shape) -> RebuildResult {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A 20×20×10 box document (rectangle on XY, extruded 10) — shared by the
+    /// rebuild and export tests.
+    fn box_doc() -> serde_json::Value {
+        json!({
+            "parameters": {},
+            "features": [
+                { "id": "s1", "type": "sketch", "plane": "XY", "entities": [
+                    { "type": "rectangle", "width": 20, "height": 20 }
+                ]},
+                { "id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new" }
+            ]
+        })
+    }
+
+    /// Export the box to STEP / STL / 3MF in a temp dir; each file must exist and
+    /// be non-empty, with format-specific sanity checks: STEP carries the
+    /// ISO-10303 header, 3MF is a zip (PK magic) holding the 3D model XML. Mirrors
+    /// `sidecar/exporters.py`'s three formats.
+    #[test]
+    fn export_box_step_stl_3mf() {
+        let dir = std::env::temp_dir().join(format!("verxa_export_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let step = dir.join("box.step");
+        let stl = dir.join("box.stl");
+        let mf = dir.join("box.3mf");
+
+        let step_s = step.to_string_lossy().into_owned();
+        let stl_s = stl.to_string_lossy().into_owned();
+        let mf_s = mf.to_string_lossy().into_owned();
+
+        assert_eq!(geom_export(box_doc(), "step".into(), step_s.clone()).unwrap(), step_s);
+        assert_eq!(geom_export(box_doc(), "stl".into(), stl_s.clone()).unwrap(), stl_s);
+        assert_eq!(geom_export(box_doc(), "3mf".into(), mf_s.clone()).unwrap(), mf_s);
+
+        let step_bytes = std::fs::read(&step).unwrap();
+        let stl_bytes = std::fs::read(&stl).unwrap();
+        let mf_bytes = std::fs::read(&mf).unwrap();
+
+        assert!(!step_bytes.is_empty(), "STEP file is empty");
+        assert!(!stl_bytes.is_empty(), "STL file is empty");
+        assert!(!mf_bytes.is_empty(), "3MF file is empty");
+
+        let step_text = String::from_utf8_lossy(&step_bytes);
+        assert!(step_text.contains("ISO-10303"), "STEP missing ISO-10303 header");
+
+        // 3MF is a zip archive (local-file-header magic "PK\x03\x04"). Verify the
+        // magic and that the central directory references the 3D model part.
+        assert_eq!(&mf_bytes[..2], b"PK", "3MF is not a zip archive");
+        let mf_text = String::from_utf8_lossy(&mf_bytes);
+        assert!(mf_text.contains("3D/model.model"), "3MF missing 3D model part");
+
+        // case-insensitivity + unknown-format error path.
+        assert!(geom_export(box_doc(), "STL".into(), stl_s.clone()).is_ok());
+        let err = geom_export(box_doc(), "obj".into(), stl_s).unwrap_err();
+        assert!(err.contains("unknown export format"), "got: {err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// One sketch (rectangle 20×20 on XY) + one extrude (distance 10, op new)
     /// must reproduce what the Python sidecar produces for the same doc: a box —

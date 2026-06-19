@@ -17,7 +17,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         // Rust geometry spike: callable as invoke("geom_rebuild") when the
         // frontend runs with VITE_GEOM=rust (else it uses the Python sidecar).
-        .invoke_handler(tauri::generate_handler![geom::geom_rebuild])
+        .invoke_handler(tauri::generate_handler![geom::geom_rebuild, geom::geom_export])
         .setup(|app| {
             match Sidecar::spawn() {
                 Ok(s) => {
