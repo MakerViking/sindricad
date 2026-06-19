@@ -24,9 +24,9 @@ export const AXIS_LABELS: Record<AxisName, string> = {
   rx: "Tilt/pitch (Rx)", ry: "Tilt sideways/roll (Ry)", rz: "Twist (Rz)",
 };
 
-export type ActionName = "panX" | "panY" | "zoom" | "orbitAz" | "orbitPolar";
+export type ActionName = "panX" | "panY" | "zoom" | "orbitAz" | "orbitPolar" | "roll";
 export const ACTION_LABELS: Record<ActionName, string> = {
-  panX: "Pan ←→", panY: "Pan ↑↓", zoom: "Zoom", orbitAz: "Rotate ←→", orbitPolar: "Rotate ↑↓",
+  panX: "Pan ←→", panY: "Pan ↑↓", zoom: "Zoom", orbitAz: "Rotate ←→", orbitPolar: "Rotate ↑↓", roll: "Roll ↻",
 };
 
 export interface AxisBinding { src: AxisName; invert: boolean }
@@ -40,9 +40,10 @@ export interface SpaceMouseConfig {
   zoomSens: number;
   orbitSens: number; // radians per axis-unit per ms
   staleMs: number; // no event for this long ⇒ motion treated as zero
-  // each camera action ← one raw axis (+ invert). Defaults match the historical
-  // hardcoded mapping but every action is now remappable (so e.g. "sideways
-  // rotation" can be bound to Ry, which used to be ignored entirely).
+  // each camera action ← one raw axis (+ invert). All six axes map by default:
+  // 3 translations (pan X/Y, zoom) + 3 rotations (yaw, pitch, roll). Ry — the
+  // sideways tilt that used to be ignored — drives roll (its 3Dconnexion-
+  // conventional action); every action is freely remappable in the settings UI.
   bind: Record<ActionName, AxisBinding>;
 }
 
@@ -59,6 +60,7 @@ const DEFAULTS: SpaceMouseConfig = {
     zoom: { src: "ty", invert: false },
     orbitAz: { src: "rz", invert: true },
     orbitPolar: { src: "rx", invert: true },
+    roll: { src: "ry", invert: false },
   },
 };
 
@@ -192,6 +194,9 @@ export async function initSpaceMouse(
     if (az || pol) {
       controls.rotate(modeSign * az * CONFIG.orbitSens * dt, modeSign * pol * CONFIG.orbitSens * dt, false);
     }
+
+    const roll = val(b.roll, m);
+    if (roll) viewport.rig.roll(modeSign * roll * CONFIG.orbitSens * dt);
   };
   requestAnimationFrame(loop);
 }

@@ -279,13 +279,36 @@ export class SpaceMouseSettings {
       const b = cfg.bind[a];
       return (b.invert ? -1 : 1) * dz(m[b.src]);
     };
-    // drive the cube with the orbit bindings, ~50x the camera gain so it reads at
-    // this scale. Sign mirrors object mode (the cube IS the object).
-    const k = cfg.orbitSens * dt * 50;
-    const az = -val("orbitAz") * k;
-    const pol = -val("orbitPolar") * k;
+
+    // Drive the cube with EVERY mapped action so any gesture gives feedback:
+    // rotate accumulates (the thing being tested); pan/zoom nudge then spring
+    // back so they read as "live while held". Gains are scaled up from the
+    // camera sensitivities so motion is visible at this small size.
+    // Rotate — sign mirrors object mode (the cube IS the object).
+    const kr = cfg.orbitSens * dt * 50;
+    const az = -val("orbitAz") * kr;
+    const pol = -val("orbitPolar") * kr;
+    const fwd = t.cam.getWorldDirection(new THREE.Vector3());
+    const right = fwd.clone().cross(t.up).normalize();
+    const screenUp = right.clone().cross(fwd).normalize();
     if (az) t.cube.rotateOnWorldAxis(t.up, az);
-    if (pol) t.cube.rotateOnWorldAxis(t.cam.getWorldDirection(new THREE.Vector3()).cross(t.up).normalize(), pol);
+    if (pol) t.cube.rotateOnWorldAxis(right, pol);
+    const rollc = -val("roll") * kr;
+    if (rollc) t.cube.rotateOnWorldAxis(fwd, rollc); // bank around the view axis
+
+    // Pan — translate in the camera's screen plane.
+    const kp = cfg.panSens * dt * 70;
+    t.cube.position.addScaledVector(right, val("panX") * kp).addScaledVector(screenUp, val("panY") * kp);
+    // Zoom — scale the cube (pushing in shrinks it, as if it recedes).
+    const kz = cfg.zoomSens * dt * 35;
+    if (val("zoom")) t.cube.scale.multiplyScalar(1 - val("zoom") * kz);
+
+    // Spring pan + zoom back toward home (rotation is left accumulated).
+    const decay = Math.min(1, 0.07 * (dt / 16));
+    t.cube.position.multiplyScalar(1 - decay);
+    const s = THREE.MathUtils.clamp(t.cube.scale.x + (1 - t.cube.scale.x) * decay, 0.45, 2.4);
+    t.cube.scale.setScalar(s);
+
     t.renderer.render(t.scene, t.cam);
   }
 }

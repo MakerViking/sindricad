@@ -25,6 +25,10 @@ export interface CameraRig {
   /** orient to an arbitrary view direction (eye = target + dir·d), with a chosen
    *  world up. Used by the ViewCube for corners/edges and for redefined sides. */
   setViewDir(dir: THREE.Vector3, up: THREE.Vector3): void;
+  /** Roll (bank) the view around the forward / screen-into-monitor axis by
+   *  `angle` radians. camera-controls has no native roll, so we rotate the
+   *  camera up-vector about the view direction and re-apply it. */
+  roll(angle: number): void;
   lookAtPlane(
     origin: THREE.Vector3,
     normal: THREE.Vector3,
@@ -236,6 +240,20 @@ export function createCameraRig(
     restoreUp() {
       persp.up.set(0, 0, 1);
       ortho.up.set(0, 0, 1);
+      controls.updateCameraUp();
+    },
+    roll(angle) {
+      if (!angle) return;
+      const fwd = controls
+        .getTarget(new THREE.Vector3())
+        .sub(controls.getPosition(new THREE.Vector3()));
+      if (fwd.lengthSq() < 1e-9) return;
+      fwd.normalize();
+      // bank both cameras' up about the view axis, then let camera-controls
+      // re-derive orientation from the new up (position/target unchanged → the
+      // image rolls in place).
+      persp.up.applyAxisAngle(fwd, angle).normalize();
+      ortho.up.applyAxisAngle(fwd, angle).normalize();
       controls.updateCameraUp();
     },
   };
