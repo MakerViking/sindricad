@@ -3,12 +3,68 @@
 // in the XY plane and cameras use up = +Z.
 
 import * as THREE from "three";
+import { niceStep } from "../ui/units";
 
 export interface SceneBundle {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   modelGroup: THREE.Group; // rebuilt geometry lives here
   planes: Record<"XY" | "XZ" | "YZ", THREE.Mesh>;
+  grid: AdaptiveGrid;
+}
+
+/** A ground grid (XY plane) whose spacing snaps to nice 1/2/5×10ⁿ mm values and
+ *  rescales with zoom, recentred on the camera target so it always fills the view
+ *  with round-number lines. Two layers: dim minor + brighter major (every 5th). */
+export class AdaptiveGrid {
+  readonly group = new THREE.Group();
+  step = 1; // current minor-line spacing in mm
+  private minor: THREE.GridHelper | null = null;
+  private major: THREE.GridHelper | null = null;
+  private key = "";
+
+  constructor(scene: THREE.Scene) {
+    scene.add(this.group);
+  }
+
+  /** worldPerPixel = world mm covered by one screen pixel at the target. */
+  update(targetX: number, targetY: number, worldPerPixel: number) {
+    const cell = niceStep(worldPerPixel * 64); // ~64px minor cells
+    const majorCell = cell * 5;
+    const cx = Math.round(targetX / majorCell) * majorCell;
+    const cy = Math.round(targetY / majorCell) * majorCell;
+    const k = `${cell}:${cx}:${cy}`;
+    if (k === this.key) return;
+    this.key = k;
+    this.step = cell;
+    this.rebuild(cell);
+    this.group.position.set(cx, cy, 0);
+  }
+
+  private rebuild(cell: number) {
+    this.dispose();
+    const cells = 100; // extent = cell*100 (covers several screens)
+    // center-line color == grid color so GridHelper draws no misplaced axes
+    // (the world AxesHelper shows the real origin axes).
+    this.minor = new THREE.GridHelper(cell * cells, cells, 0x23272e, 0x23272e);
+    this.major = new THREE.GridHelper(cell * cells, cells / 5, 0x3a4048, 0x3a4048);
+    for (const g of [this.minor, this.major]) {
+      g.rotateX(Math.PI / 2); // GridHelper is XZ by default → lay flat on XY
+      (g.material as THREE.Material).depthWrite = false;
+      g.renderOrder = -2;
+      this.group.add(g);
+    }
+  }
+
+  private dispose() {
+    for (const g of [this.minor, this.major]) {
+      if (!g) continue;
+      this.group.remove(g);
+      g.geometry.dispose();
+      (g.material as THREE.Material).dispose();
+    }
+    this.minor = this.major = null;
+  }
 }
 
 export function createScene(canvas: HTMLCanvasElement): SceneBundle {
@@ -27,11 +83,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   scene.add(fill);
   scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x202428, 0.6));
 
-  // --- Z-up ground grid in the XY plane ---
-  const grid = new THREE.GridHelper(400, 40, 0x3a4048, 0x2a2f35);
-  grid.rotateX(Math.PI / 2); // GridHelper is XZ by default; lay it flat on XY
-  (grid.material as THREE.Material).depthWrite = false;
-  scene.add(grid);
+  // --- Z-up adaptive ground grid in the XY plane (rescales with zoom) ---
+  const grid = new AdaptiveGrid(scene);
 
   // axes: X red, Y green, Z blue
   const axes = new THREE.AxesHelper(20);
@@ -51,7 +104,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const modelGroup = new THREE.Group();
   scene.add(modelGroup);
 
-  return { renderer, scene, modelGroup, planes };
+  return { renderer, scene, modelGroup, planes, grid };
 }
 
 function makePlane(color: number, kind: "XY" | "XZ" | "YZ"): THREE.Mesh {

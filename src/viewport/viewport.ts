@@ -13,6 +13,7 @@ const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
 const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
 import { Highlighter } from "./highlight";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
+import { niceStep } from "../ui/units";
 
 export class Viewport {
   readonly scene: SceneBundle;
@@ -82,6 +83,19 @@ export class Viewport {
       if (e.button !== 0 || this.dragMoved) return;
       this.handleClick(e);
     });
+    // Explicit wheel zoom for BOTH projections (camera-controls' built-in wheel
+    // DOLLY didn't zoom in perspective under WebKitGTK). deltaMode-normalized so
+    // line/page-mode wheels (some webviews) still produce a sensible step.
+    c.addEventListener(
+      "wheel",
+      (e) => {
+        e.preventDefault();
+        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1; // lines/pages -> px
+        const dy = Math.max(-240, Math.min(240, e.deltaY * unit));
+        this.rig.zoomBy(Math.pow(1.0016, dy)); // >1 (scroll down) zooms out
+      },
+      { passive: false },
+    );
   }
 
   private handleHover(e: PointerEvent) {
@@ -453,6 +467,12 @@ export class Viewport {
     return (2 * Math.tan((pc.fov * Math.PI) / 180 / 2) * dist) / rect.height;
   }
 
+  /** A clean drag/cursor snap step (nice 1/2/5 mm) for the current zoom at a world
+   *  point, so manipulator + sketch values read 5/1/0.5/0.1 mm, not 0.3425. */
+  snapStep(at: THREE.Vector3): number {
+    return niceStep(this.pixelWorldSize(at) * 8); // ~8px granularity
+  }
+
   private resize() {
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(1, rect.width);
@@ -484,6 +504,9 @@ export class Viewport {
       this.rig.update(dt);
     }
     this.gizmoBusyLast = gizmoBusy;
+    // keep the ground grid spacing/extent matched to the current zoom + pan
+    const t = this.rig.controls.getTarget(this.scratchTarget);
+    this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t));
     this.scene.renderer.render(this.scene.scene, this.rig.active);
     this.gizmo?.render(); // advances the gizmo animation + draws the overlay
     requestAnimationFrame(this.loop);

@@ -12,6 +12,7 @@ import type { DocumentStore } from "../document/store";
 import type { Feature, Selector } from "../types";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
+import { snap } from "../ui/units";
 import { distanceAlongAxis } from "./manipulator";
 
 type Phase = "pick" | "drag";
@@ -103,9 +104,11 @@ export class EdgeFeatureTool {
     if (this.grabbing) {
       const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
       const proj = distanceAlongAxis(ray, this.anchor, this.axis);
-      // snap the drag to 0.1mm steps (Fusion-style); type a value for finer control
+      // snap to a clean step that scales with zoom (5/1/0.5/0.1mm), so the
+      // radius/distance reads as a round number rather than 0.3425.
       const raw = this.grabValue + (proj - this.grabProj);
-      const stepped = Math.max(0.1, Math.round(raw * 10) / 10);
+      const step = this.viewport.snapStep(this.anchor);
+      const stepped = Math.max(step, snap(raw, step));
       if (stepped === this.value) return; // same step — don't re-trigger an OCCT rebuild
       this.value = stepped;
       this.dim.updateFromCursor({ [this.field.name]: this.value });

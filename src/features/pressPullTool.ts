@@ -15,6 +15,7 @@ import type { DocumentStore } from "../document/store";
 import type { Feature, Selector } from "../types";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
+import { snap } from "../ui/units";
 import { distanceAlongAxis } from "./manipulator";
 
 type Phase = "pick" | "drag";
@@ -96,7 +97,7 @@ export class PressPullTool {
       const proj = distanceAlongAxis(ray, this.anchor, this.axis);
       // snap the drag to 0.1mm steps (Fusion-style); type a value for finer control
       const raw = this.grabValue + (proj - this.grabProj);
-      const stepped = Math.round(raw * 10) / 10;
+      const stepped = snap(raw, this.viewport.snapStep(this.anchor));
       if (stepped === this.value) return; // same step — don't re-trigger an OCCT rebuild
       this.value = stepped;
       this.dim.updateFromCursor({ distance: Math.abs(this.value) });

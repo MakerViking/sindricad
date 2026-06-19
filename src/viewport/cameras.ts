@@ -16,6 +16,10 @@ export interface CameraRig {
   toggleProjection(): void;
   resize(w: number, h: number): void;
   update(dt: number): boolean;
+  /** Zoom by a multiplicative factor (>1 = zoom out, <1 = zoom in). Works in BOTH
+   *  projections via absolute dolly/zoom, so it's immune to the wheel-action
+   *  ambiguity that left perspective unable to zoom in WebKitGTK. */
+  zoomBy(factor: number): void;
   fit(box: THREE.Box3, enableTransition?: boolean): void;
   setStandardView(view: StandardView): void;
   lookAtPlane(
@@ -63,12 +67,14 @@ export function createCameraRig(
   // ViewCube, standard views, and orbit all behave in CAD (Z-up) space.
   controls.updateCameraUp();
 
-  // Fusion mouse map
+  // Fusion mouse map. Wheel is handled explicitly by the viewport (rig.zoomBy)
+  // rather than camera-controls' built-in action: its perspective DOLLY wheel was
+  // unreliable in the WebKitGTK webview, and an absolute dolly/zoom is robust.
   const A = CameraControls.ACTION;
   controls.mouseButtons.left = A.NONE; // left reserved for selection
   controls.mouseButtons.middle = A.ROTATE;
   controls.mouseButtons.right = A.TRUCK;
-  controls.mouseButtons.wheel = A.DOLLY;
+  controls.mouseButtons.wheel = A.NONE;
 
   // Shift+middle => pan (swap orbit<->truck on the middle button)
   window.addEventListener("keydown", (e) => {
@@ -80,12 +86,6 @@ export function createCameraRig(
 
   controls.dollyToCursor = true;
   controls.setTarget(0, 0, 0, false);
-
-  function setWheelForProjection() {
-    controls.mouseButtons.wheel = usingOrtho
-      ? CameraControls.ACTION.ZOOM
-      : CameraControls.ACTION.DOLLY;
-  }
 
   const rig: CameraRig = {
     controls,
@@ -118,7 +118,6 @@ export function createCameraRig(
       active = to;
       controls.camera = to as THREE.PerspectiveCamera & THREE.OrthographicCamera;
       controls.updateCameraUp();
-      setWheelForProjection();
     },
     resize(w: number, h: number) {
       const aspect2 = w / h;
@@ -131,6 +130,16 @@ export function createCameraRig(
     },
     update(dt: number) {
       return controls.update(dt);
+    },
+    zoomBy(factor: number) {
+      const f = Math.max(0.1, Math.min(10, factor));
+      if (usingOrtho) {
+        // ortho: scale the zoom property (zoom in => larger zoom)
+        controls.zoomTo(Math.max(1e-4, ortho.zoom / f), false);
+      } else {
+        // perspective: change the absolute distance to the target (dolly)
+        controls.dollyTo(Math.max(0.01, controls.distance * f), false);
+      }
     },
     fit(box: THREE.Box3, enableTransition = true) {
       // Manual fit that PRESERVES the current view direction. (camera-controls'

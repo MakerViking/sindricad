@@ -56,6 +56,23 @@ export function round(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
+/** Nearest "nice" step (1/2/5 × 10ⁿ) to a rough magnitude — used for the adaptive
+ *  grid spacing and for snapping drag/cursor values to clean numbers. */
+export function niceStep(rough: number): number {
+  if (!(rough > 0) || !isFinite(rough)) return 1;
+  const exp = Math.floor(Math.log10(rough));
+  const base = rough / Math.pow(10, exp); // 1..10
+  const nice = base < 1.5 ? 1 : base < 3.5 ? 2 : base < 7.5 ? 5 : 10;
+  return nice * Math.pow(10, exp);
+}
+
+/** Snap a value to a step, then strip float fuzz so it reads as a clean number
+ *  (e.g. 0.30000001 → 0.3). */
+export function snap(v: number, step: number): number {
+  if (!(step > 0)) return round(v);
+  return round(Math.round(v / step) * step);
+}
+
 export type FieldKind = "length" | "angle";
 
 /** numeric value to show in a field: angles stay in degrees, lengths convert */
