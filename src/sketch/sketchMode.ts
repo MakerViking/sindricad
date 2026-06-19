@@ -13,6 +13,7 @@ import { SketchDimensions } from "./sketchDimensions";
 import { entityDims, type DimField } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
 import { newEntityId } from "./id";
+import { circumcenter } from "./arc";
 import { compileAndSolve } from "./sketchSolve";
 import { resolveEntities, toSketchEntity } from "./resolve";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
@@ -23,9 +24,17 @@ export type SketchTool =
   | "select"
   | "line"
   | "rectangle"
+  | "centerRectangle"
   | "circle"
+  | "circle2"
+  | "circle3"
   | "arc"
   | "spline"
+  | "polygon"
+  | "slot"
+  | "point"
+  | "mirror"
+  | "dimension"
   | "trim"
   | "fillet"
   | "offset"
@@ -35,7 +44,12 @@ export type SketchTool =
   | "vertical"
   | "parallel"
   | "perpendicular"
-  | "equal";
+  | "equal"
+  | "tangent"
+  | "coincident"
+  | "concentric"
+  | "symmetric"
+  | "midpoint";
 
 const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "horizontal",
@@ -43,6 +57,11 @@ const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "parallel",
   "perpendicular",
   "equal",
+  "tangent",
+  "coincident",
+  "concentric",
+  "symmetric",
+  "midpoint",
 ]);
 const MODIFY_TOOLS = new Set<SketchTool>([
   "trim",
@@ -50,6 +69,8 @@ const MODIFY_TOOLS = new Set<SketchTool>([
   "offset",
   "extend",
   "break",
+  "mirror",
+  "dimension",
   ...CONSTRAINT_TOOLS,
 ]);
 
@@ -68,6 +89,8 @@ export class SketchMode {
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
   private arcEnd: THREE.Vector2 | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
+  private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants)
+  private polygonSides = 6; // n for the polygon tool
   private filletFirst: number | null = null; // first line picked for a sketch fillet
   private selected = new Set<string>(); // selected entity ids (select tool)
   private ctxMenu: HTMLDivElement | null = null; // right-click delete menu
@@ -199,6 +222,9 @@ export class SketchMode {
     this.arcStart = null;
     this.arcEnd = null;
     this.splinePts = [];
+    this.clickPts = [];
+    this.pendingEndpoint = null;
+    this.pendingEndpoint2 = null;
     this.tool = "select";
     this.overlay.setActiveRegions([], this.plane); // drop active-sketch fills (committed ones re-render)
     if (this.store) this.overlay.update(this.store.document);
@@ -207,6 +233,9 @@ export class SketchMode {
 
   // --- tools -------------------------------------------------------------
   setTool(t: SketchTool) {
+    // Mirror operates on the current multi-selection, so keep it; every other
+    // tool starts from a clean slate.
+    const keepSelection = t === "mirror";
     this.tool = t;
     this.base = null;
     this.chainStart = null;
@@ -219,7 +248,10 @@ export class SketchMode {
     this.dim.hide();
     this.overlay.setPreview([]);
     this.closeCtxMenu();
-    if (this.selected.size) { this.selected.clear(); this.refreshActive(); }
+    this.clickPts = [];
+    this.pendingEndpoint = null;
+    this.pendingEndpoint2 = null;
+    if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     this.onState?.();
   }
 
@@ -340,6 +372,14 @@ export class SketchMode {
     }
     if (this.tool === "arc") return this.arcClick(p);
     if (this.tool === "spline") return this.splineClick(p);
+    if (this.tool === "point") return this.pointClick(p);
+    if (this.tool === "polygon") return this.polygonClick(p);
+    if (this.tool === "slot") return this.slotClick(p);
+    if (this.tool === "circle2") return this.circle2Click(p);
+    if (this.tool === "circle3") return this.circle3Click(p);
+    if (this.tool === "centerRectangle") return this.centerRectClick(p);
+    if (this.tool === "mirror") return this.mirrorClick(p);
+    if (this.tool === "dimension") return this.dimensionClick(p);
     if (this.tool === "trim") return this.trimClick(p);
     if (this.tool === "fillet") return this.filletClick(p);
     if (this.tool === "offset") return this.offsetClick(p);
@@ -421,6 +461,277 @@ export class SketchMode {
     this.overlay.setPreview([this.entityCurve({ type: "spline", id: "", points: pts })]);
   }
 
+  /** rubber-band preview for the multi-click primitive tools */
+  private multiClickPreview(cursor: THREE.Vector2) {
+    const pv: ResolvedEntity[] = [];
+    if (this.tool === "polygon" && this.clickPts.length === 1) {
+      pv.push(...this.polygonLines(this.clickPts[0], cursor).map((e) => ({ ...e, id: "" })));
+    } else if (this.tool === "slot") {
+      if (this.clickPts.length === 1) {
+        const a = this.clickPts[0];
+        pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
+      } else if (this.clickPts.length === 2) {
+        const [a, b] = this.clickPts;
+        pv.push(...this.slotEntities(a, b, this.slotHalfWidth(a, b, cursor)));
+      }
+    } else if (this.tool === "circle2" && this.clickPts.length === 1) {
+      const a = this.clickPts[0];
+      const ctr = a.clone().add(cursor).multiplyScalar(0.5);
+      pv.push({ type: "circle", id: "", radius: a.distanceTo(cursor) / 2, x: ctr.x, y: ctr.y });
+    } else if (this.tool === "circle3") {
+      if (this.clickPts.length === 1) {
+        const a = this.clickPts[0];
+        pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
+      } else if (this.clickPts.length === 2) {
+        const cc = circumcenter(this.clickPts[0], this.clickPts[1], cursor);
+        if (cc) pv.push({ type: "circle", id: "", radius: cc.distanceTo(cursor), x: cc.x, y: cc.y });
+      }
+    } else if (this.tool === "centerRectangle" && this.clickPts.length === 1) {
+      const c = this.clickPts[0];
+      const w = Math.abs(cursor.x - c.x) * 2, h = Math.abs(cursor.y - c.y) * 2;
+      pv.push({ type: "rectangle", id: "", width: w, height: h, x: c.x, y: c.y });
+    }
+    this.overlay.setPreview(pv.map((e) => this.entityCurve(e)));
+  }
+
+  // --- point: a single click drops a reference/snap point ---------------
+  private pointClick(p: THREE.Vector2) {
+    const ent: ResolvedEntity = { type: "point", id: newEntityId(), x: p.x, y: p.y };
+    if (this.constructionMode) ent.construction = true;
+    this.entities.push(ent);
+    this.refreshActive();
+    this.overlay.setPreview([]);
+    this.requestSolve();
+    this.onState?.();
+  }
+
+  // --- polygon: click center, then a vertex point → inscribed n-gon ------
+  private polygonClick(p: THREE.Vector2) {
+    if (!this.clickPts.length) {
+      this.clickPts = [p.clone()];
+      return;
+    }
+    const center = this.clickPts[0];
+    this.commitPolygon(center, p);
+    this.clickPts = [];
+    this.overlay.setPreview([]);
+  }
+  /** the n line entities of an inscribed regular polygon (first vertex at `vertex`) */
+  private polygonLines(center: THREE.Vector2, vertex: THREE.Vector2): ResolvedEntity[] {
+    const n = Math.max(3, this.polygonSides);
+    const r = center.distanceTo(vertex);
+    if (r < 1e-4) return [];
+    const a0 = Math.atan2(vertex.y - center.y, vertex.x - center.x);
+    const pts: THREE.Vector2[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = a0 + (i / n) * Math.PI * 2;
+      pts.push(new THREE.Vector2(center.x + Math.cos(a) * r, center.y + Math.sin(a) * r));
+    }
+    const out: ResolvedEntity[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      out.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+    }
+    return out;
+  }
+  private commitPolygon(center: THREE.Vector2, vertex: THREE.Vector2) {
+    const lines = this.polygonLines(center, vertex);
+    if (!lines.length) return;
+    for (const l of lines) {
+      l.id = newEntityId();
+      if (this.constructionMode) l.construction = true;
+      this.entities.push(l);
+    }
+    this.refreshActive();
+    this.requestSolve();
+    this.onState?.();
+  }
+
+  // --- slot: two center points, then a width point → rounded slot --------
+  private slotClick(p: THREE.Vector2) {
+    if (this.clickPts.length < 2) {
+      this.clickPts.push(p.clone());
+      return;
+    }
+    // third click sets the half-width (distance from the slot axis)
+    const [a, b] = this.clickPts;
+    const w = this.slotHalfWidth(a, b, p);
+    this.commitSlot(a, b, w);
+    this.clickPts = [];
+    this.overlay.setPreview([]);
+  }
+  private slotHalfWidth(a: THREE.Vector2, b: THREE.Vector2, cursor: THREE.Vector2): number {
+    const dir = b.clone().sub(a);
+    const len = dir.length() || 1;
+    dir.divideScalar(len);
+    const n = new THREE.Vector2(-dir.y, dir.x);
+    return Math.max(0.5, Math.abs(cursor.clone().sub(a).dot(n)));
+  }
+  /** two straight sides + two end arcs of a rounded slot (axis a→b, radius w) */
+  private slotEntities(a: THREE.Vector2, b: THREE.Vector2, w: number): ResolvedEntity[] {
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    if (len < 1e-4 || w < 1e-4) return [];
+    dir.divideScalar(len);
+    const n = new THREE.Vector2(-dir.y, dir.x).multiplyScalar(w);
+    const a1 = a.clone().add(n), a2 = a.clone().sub(n);
+    const b1 = b.clone().add(n), b2 = b.clone().sub(n);
+    // arc through-points: the far tip of each semicircular cap
+    const aTip = a.clone().sub(dir.clone().multiplyScalar(w));
+    const bTip = b.clone().add(dir.clone().multiplyScalar(w));
+    return [
+      { type: "line", id: "", x1: a1.x, y1: a1.y, x2: b1.x, y2: b1.y },
+      { type: "arc", id: "", x1: b1.x, y1: b1.y, x2: b2.x, y2: b2.y, mx: bTip.x, my: bTip.y },
+      { type: "line", id: "", x1: b2.x, y1: b2.y, x2: a2.x, y2: a2.y },
+      { type: "arc", id: "", x1: a2.x, y1: a2.y, x2: a1.x, y2: a1.y, mx: aTip.x, my: aTip.y },
+    ];
+  }
+  private commitSlot(a: THREE.Vector2, b: THREE.Vector2, w: number) {
+    const ents = this.slotEntities(a, b, w);
+    if (!ents.length) return;
+    for (const e of ents) {
+      e.id = newEntityId();
+      if (this.constructionMode) e.construction = true;
+      this.entities.push(e);
+    }
+    this.refreshActive();
+    this.requestSolve();
+    this.onState?.();
+  }
+
+  // --- circle by 2 points (diameter endpoints) --------------------------
+  private circle2Click(p: THREE.Vector2) {
+    if (!this.clickPts.length) {
+      this.clickPts = [p.clone()];
+      return;
+    }
+    const a = this.clickPts[0];
+    const center = a.clone().add(p).multiplyScalar(0.5);
+    const r = a.distanceTo(p) / 2;
+    this.commitCircle(center, r);
+    this.clickPts = [];
+    this.overlay.setPreview([]);
+  }
+
+  // --- circle through 3 points ------------------------------------------
+  private circle3Click(p: THREE.Vector2) {
+    this.clickPts.push(p.clone());
+    if (this.clickPts.length < 3) return;
+    const [a, b, c] = this.clickPts;
+    const cc = circumcenter(a, b, c);
+    this.clickPts = [];
+    this.overlay.setPreview([]);
+    if (!cc) return; // collinear
+    this.commitCircle(cc, cc.distanceTo(a));
+  }
+
+  private commitCircle(center: THREE.Vector2, r: number) {
+    if (r < 1e-4) return;
+    const ent: ResolvedEntity = { type: "circle", id: newEntityId(), radius: r, x: center.x, y: center.y };
+    if (this.constructionMode) ent.construction = true;
+    this.entities.push(ent);
+    this.refreshActive();
+    this.requestSolve();
+    this.onState?.();
+  }
+
+  // --- center rectangle: click center, then a corner --------------------
+  private centerRectClick(p: THREE.Vector2) {
+    if (!this.clickPts.length) {
+      this.clickPts = [p.clone()];
+      return;
+    }
+    const center = this.clickPts[0];
+    const w = Math.abs(p.x - center.x) * 2;
+    const h = Math.abs(p.y - center.y) * 2;
+    this.clickPts = [];
+    this.overlay.setPreview([]);
+    if (w < 1e-4 || h < 1e-4) return;
+    const ent: ResolvedEntity = { type: "rectangle", id: newEntityId(), width: w, height: h, x: center.x, y: center.y };
+    if (this.constructionMode) ent.construction = true;
+    this.entities.push(ent);
+    this.refreshActive();
+    this.requestSolve();
+    this.onState?.();
+  }
+
+  // --- mirror: click a line; reflect the multi-selection across it -------
+  private mirrorClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    if (idx < 0 || this.entities[idx].type !== "line") return;
+    const axis = this.entities[idx] as Extract<ResolvedEntity, { type: "line" }>;
+    const chosen = this.entities.filter((e) => this.selected.has(e.id) && e.id !== axis.id);
+    if (!chosen.length) return; // nothing selected to mirror
+    const a = new THREE.Vector2(axis.x1, axis.y1);
+    const b = new THREE.Vector2(axis.x2, axis.y2);
+    for (const e of chosen) this.entities.push(this.reflectEntity(e, a, b));
+    this.selected.clear();
+    this.afterModify();
+  }
+  /** reflect a 2D point across the infinite line through a→b */
+  private reflectPoint(x: number, y: number, a: THREE.Vector2, b: THREE.Vector2): { x: number; y: number } {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy || 1;
+    const t = ((x - a.x) * dx + (y - a.y) * dy) / len2;
+    const px = a.x + t * dx, py = a.y + t * dy; // foot of perpendicular
+    return { x: 2 * px - x, y: 2 * py - y };
+  }
+  /** a reflected COPY of an entity (fresh id) across the line a→b */
+  private reflectEntity(e: ResolvedEntity, a: THREE.Vector2, b: THREE.Vector2): ResolvedEntity {
+    const rp = (x: number, y: number) => this.reflectPoint(x, y, a, b);
+    const id = newEntityId();
+    const c = e.construction ? { construction: true } : {};
+    if (e.type === "line") {
+      const p1 = rp(e.x1, e.y1), p2 = rp(e.x2, e.y2);
+      return { type: "line", id, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, ...c };
+    }
+    if (e.type === "circle") {
+      const ctr = rp(e.x, e.y);
+      return { type: "circle", id, radius: e.radius, x: ctr.x, y: ctr.y, ...c };
+    }
+    if (e.type === "rectangle") {
+      // a reflected axis-aligned rectangle stays axis-aligned: reflect the center
+      const ctr = rp(e.x, e.y);
+      return { type: "rectangle", id, width: e.width, height: e.height, x: ctr.x, y: ctr.y, ...c };
+    }
+    if (e.type === "arc") {
+      // reflection flips orientation, so the through-point reflects too
+      const p1 = rp(e.x1, e.y1), p2 = rp(e.x2, e.y2), m = rp(e.mx, e.my);
+      return { type: "arc", id, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, mx: m.x, my: m.y, ...c };
+    }
+    if (e.type === "spline") {
+      return { type: "spline", id, points: e.points.map((q) => rp(q.x, q.y)), ...c };
+    }
+    // point
+    const q = rp((e as Extract<ResolvedEntity, { type: "point" }>).x, (e as Extract<ResolvedEntity, { type: "point" }>).y);
+    return { type: "point", id, x: q.x, y: q.y, ...c };
+  }
+
+  // --- dimension: click an entity, type a driving value -----------------
+  private dimensionClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    if (idx < 0) return;
+    const e = this.entities[idx];
+    if (e.type === "line") {
+      const cur = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+      this.dim.show([{ name: "length", label: "L", kind: "length" }], () => {
+        const mm = this.dim.getValue("length") ?? cur;
+        this.dim.hide();
+        this.setDrivingDimension({ type: "distance", line: e.id, value: mm });
+      });
+      this.dim.updateFromCursor({ length: cur }); // seed with the current length
+    } else if (e.type === "circle") {
+      const cur = e.radius * 2;
+      this.dim.show([{ name: "diameter", label: "⌀", kind: "length" }], () => {
+        const mm = this.dim.getValue("diameter") ?? cur;
+        this.dim.hide();
+        this.setDrivingDimension({ type: "diameter", circle: e.id, value: mm });
+      });
+      this.dim.updateFromCursor({ diameter: cur }); // seed with the current diameter
+    }
+    // rectangles/arcs/splines: no single driving dim in v1
+  }
+
   private onPointerMove(e: PointerEvent) {
     if (this.active && MODIFY_TOOLS.has(this.tool)) {
       this.modifyHover(e);
@@ -453,6 +764,11 @@ export class SketchMode {
       this.splinePreview(hit.p);
       return;
     }
+    if (this.tool === "polygon" || this.tool === "slot" || this.tool === "circle2" ||
+        this.tool === "circle3" || this.tool === "centerRectangle") {
+      this.multiClickPreview(hit.p);
+      return;
+    }
 
     if (this.base) {
       const geom = this.computeGeometry(this.base, hit.p);
@@ -475,13 +791,17 @@ export class SketchMode {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length) {
+      if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length ||
+          this.clickPts.length || this.pendingEndpoint || this.pendingEndpoint2) {
         this.base = null;
         this.chainStart = null;
         this.arcStart = null;
         this.arcEnd = null;
         this.filletFirst = null;
         this.splinePts = [];
+        this.clickPts = [];
+        this.pendingEndpoint = null;
+        this.pendingEndpoint2 = null;
         this.dim.hide();
         this.overlay.setPreview([]);
       } else if (this.selected.size) {
@@ -788,11 +1108,20 @@ export class SketchMode {
   /** add a persistent geometric constraint and re-solve (the solver maintains
    *  all constraints together, not just the one you applied). */
   private constraintClick(p: THREE.Vector2) {
+    const t = this.tool;
+    // point-based constraints pick the nearest endpoint, not an entity body
+    if (t === "coincident" || t === "symmetric" || t === "midpoint") {
+      return this.pointConstraintClick(p);
+    }
+    if (t === "tangent") return this.tangentClick(p);
+    if (t === "concentric") return this.concentricClick(p);
+
+    // line-based constraints (horizontal/vertical/parallel/perpendicular/equal)
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.entities[idx].type !== "line") return;
     const id = this.entities[idx].id;
-    if (this.tool === "horizontal") this.addConstraint({ type: "horizontal", line: id });
-    else if (this.tool === "vertical") this.addConstraint({ type: "vertical", line: id });
+    if (t === "horizontal") this.addConstraint({ type: "horizontal", line: id });
+    else if (t === "vertical") this.addConstraint({ type: "vertical", line: id });
     else {
       // two-line constraints: first click stores, second applies
       if (this.filletFirst == null) {
@@ -802,10 +1131,104 @@ export class SketchMode {
       const a = this.entities[this.filletFirst]?.id;
       this.filletFirst = null;
       if (!a || a === id) return;
-      if (this.tool === "parallel") this.addConstraint({ type: "parallel", l1: a, l2: id });
-      else if (this.tool === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a, l2: id });
-      else if (this.tool === "equal") this.addConstraint({ type: "equal", l1: a, l2: id });
+      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a, l2: id });
+      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a, l2: id });
+      else if (t === "equal") this.addConstraint({ type: "equal", l1: a, l2: id });
     }
+  }
+
+  /** nearest addressable endpoint (line/arc/spline end, or a point entity) to p */
+  private pickEndpoint(p: THREE.Vector2): { id: string; idx: number } | null {
+    const tol = this.pickTol();
+    let best: { id: string; idx: number } | null = null;
+    let bestD = tol * tol;
+    const consider = (id: string, idx: number, x: number, y: number) => {
+      const dx = x - p.x, dy = y - p.y, d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = { id, idx }; }
+    };
+    for (const e of this.entities) {
+      if (e.type === "line") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
+      else if (e.type === "arc") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
+      else if (e.type === "point") consider(e.id, 0, e.x, e.y);
+      else if (e.type === "spline") { consider(e.id, 0, e.points[0].x, e.points[0].y); const l = e.points.length - 1; consider(e.id, 1, e.points[l].x, e.points[l].y); }
+    }
+    return best;
+  }
+
+  // coincident/symmetric/midpoint all start from an endpoint pick. We stash the
+  // first pick (and, for symmetric, the second) on filletFirst-style state.
+  private pendingEndpoint: { id: string; idx: number } | null = null;
+  private pendingEndpoint2: { id: string; idx: number } | null = null;
+  private pointConstraintClick(p: THREE.Vector2) {
+    const t = this.tool;
+    if (t === "midpoint") {
+      // pick a point/endpoint, then a line
+      if (!this.pendingEndpoint) {
+        const ep = this.pickEndpoint(p);
+        if (ep) this.pendingEndpoint = ep;
+        return;
+      }
+      const idx = pickEntity(this.entities, p, this.pickTol());
+      const e = idx >= 0 ? this.entities[idx] : null;
+      const ep = this.pendingEndpoint;
+      this.pendingEndpoint = null;
+      if (e?.type === "line" && e.id !== ep.id) this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: e.id });
+      return;
+    }
+    if (t === "coincident") {
+      const ep = this.pickEndpoint(p);
+      if (!ep) return;
+      if (!this.pendingEndpoint) { this.pendingEndpoint = ep; return; }
+      const a = this.pendingEndpoint;
+      this.pendingEndpoint = null;
+      if (a.id !== ep.id) this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
+      return;
+    }
+    // symmetric: pick endpoint A, endpoint B, then the axis line
+    if (!this.pendingEndpoint) {
+      const ep = this.pickEndpoint(p);
+      if (ep) this.pendingEndpoint = ep;
+      return;
+    }
+    if (!this.pendingEndpoint2) {
+      const ep = this.pickEndpoint(p);
+      if (ep && ep.id !== this.pendingEndpoint.id) this.pendingEndpoint2 = ep;
+      return;
+    }
+    // third click: the symmetry axis line
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    const e = idx >= 0 ? this.entities[idx] : null;
+    const a = this.pendingEndpoint, b = this.pendingEndpoint2;
+    this.pendingEndpoint = null;
+    this.pendingEndpoint2 = null;
+    if (e?.type === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: e.id });
+  }
+
+  private tangentClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    if (idx < 0) return;
+    const e = this.entities[idx];
+    if (this.filletFirst == null) {
+      // store first pick if it's a line or a circle
+      if (e.type === "line" || e.type === "circle") this.filletFirst = idx;
+      return;
+    }
+    const first = this.entities[this.filletFirst];
+    this.filletFirst = null;
+    if (!first || first.id === e.id) return;
+    const line = first.type === "line" ? first : e.type === "line" ? e : null;
+    const circle = first.type === "circle" ? first : e.type === "circle" ? e : null;
+    if (line && circle) this.addConstraint({ type: "tangent", line: line.id, circle: circle.id });
+  }
+
+  private concentricClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    if (idx < 0 || this.entities[idx].type !== "circle") return;
+    if (this.filletFirst == null) { this.filletFirst = idx; return; }
+    const a = this.entities[this.filletFirst];
+    this.filletFirst = null;
+    const b = this.entities[idx];
+    if (a && a.id !== b.id && a.type === "circle") this.addConstraint({ type: "concentric", c1: a.id, c2: b.id });
   }
 
   private addConstraint(c: SketchConstraint) {
@@ -818,11 +1241,26 @@ export class SketchMode {
   private pruneConstraints() {
     const lineIds = new Set(this.entities.filter((e) => e.type === "line").map((e) => e.id));
     const circleIds = new Set(this.entities.filter((e) => e.type === "circle").map((e) => e.id));
+    // entities that own an addressable endpoint (line/arc/spline/point)
+    const endIds = new Set(
+      this.entities
+        .filter((e) => e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "point")
+        .map((e) => e.id),
+    );
+    // entities that own a center (circle/arc), for concentric
+    const centerIds = new Set(
+      this.entities.filter((e) => e.type === "circle" || e.type === "arc").map((e) => e.id),
+    );
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return lineIds.has(c.line);
         case "parallel": case "perpendicular": case "equal": return lineIds.has(c.l1) && lineIds.has(c.l2);
         case "diameter": return circleIds.has(c.circle);
+        case "tangent": return lineIds.has(c.line) && circleIds.has(c.circle);
+        case "coincident": return endIds.has(c.e1) && endIds.has(c.e2);
+        case "concentric": return centerIds.has(c.c1) && centerIds.has(c.c2);
+        case "midpoint": return endIds.has(c.e) && lineIds.has(c.line);
+        case "symmetric": return endIds.has(c.e1) && endIds.has(c.e2) && lineIds.has(c.line);
       }
     });
   }
@@ -899,6 +1337,7 @@ export class SketchMode {
       else if (e.type === "circle") consider(e.x, e.y);
       else if (e.type === "arc") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
       else if (e.type === "spline") for (const q of e.points) consider(q.x, q.y);
+      else if (e.type === "point") consider(e.x, e.y);
       else if (e.type === "rectangle") {
         const hw = e.width / 2, hh = e.height / 2;
         consider(e.x - hw, e.y - hh); consider(e.x + hw, e.y - hh);

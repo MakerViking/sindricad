@@ -68,6 +68,13 @@ export function resolveEntities(
         points: e.points.map((p) => ({ x: resolveNum(p.x, params), y: resolveNum(p.y, params) })),
         ...c,
       });
+    } else if (e.type === "point") {
+      out.push({
+        type: "point", id,
+        x: resolveNum(e.x, params),
+        y: resolveNum(e.y, params),
+        ...c,
+      });
     }
   }
   return out;
@@ -83,5 +90,6 @@ export function toSketchEntity(e: ResolvedEntity): SketchEntity {
     return { type: "arc", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, mx: e.mx, my: e.my, ...c };
   if (e.type === "spline")
     return { type: "spline", id: e.id, points: e.points.map((p) => ({ x: p.x, y: p.y })), ...c };
+  if (e.type === "point") return { type: "point", id: e.id, x: e.x, y: e.y, ...c };
   return { type: "line", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, ...c };
 }

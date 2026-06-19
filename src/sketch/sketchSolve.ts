@@ -62,6 +62,7 @@ export async function compileAndSolve(
   const arcMap = new Map<string, { ourS: string; ourE: string; center: string; startIsOurS: boolean }>();
   const splineMap = new Map<string, string[]>(); // spline entity id -> fit-point ids
   const rectMap = new Map<string, string[]>(); // rectangle entity id -> 4 corner points
+  const pointMap = new Map<string, string>(); // point entity id -> its solver point
 
   for (const e of entities) {
     if (e.type === "line") {
@@ -109,10 +110,30 @@ export async function compileAndSolve(
       // endpoints are mergeable (chain with lines); interior points are unique
       const last = e.points.length - 1;
       splineMap.set(e.id, e.points.map((p, k) => getPoint(p.x, p.y, k === 0 || k === last)));
+    } else if (e.type === "point") {
+      // a sketch point is mergeable so it can snap onto / coincide with geometry
+      pointMap.set(e.id, getPoint(e.x, e.y, true));
     }
   }
 
   const isLine = (id: string) => ends.has(id);
+  // resolve an entity endpoint (0 = start, 1 = end) to its solver point id.
+  // lines + arcs have two endpoints; a point entity has just one (index ignored).
+  const endpointPoint = (entId: string, idx: number): string | undefined => {
+    const ln = ends.get(entId);
+    if (ln) return idx === 0 ? ln[0] : ln[1];
+    const ar = arcMap.get(entId);
+    if (ar) return idx === 0 ? ar.ourS : ar.ourE;
+    const pt = pointMap.get(entId);
+    if (pt) return pt;
+    const sp = splineMap.get(entId);
+    if (sp) return idx === 0 ? sp[0] : sp[sp.length - 1];
+    return undefined;
+  };
+  // resolve a circle/arc center to its solver point id
+  const centerPoint = (entId: string): string | undefined =>
+    centers.get(entId) ?? arcMap.get(entId)?.center;
+  const isCircle = (id: string) => centers.has(id);
   constraints.forEach((c, i) => {
     const id = `k${i}`; // user constraint ids never collide with `~` implicit ones
     if (c.type === "horizontal") { if (isLine(c.line)) cons.push({ id, type: "horizontal", line: c.line }); }
@@ -122,6 +143,26 @@ export async function compileAndSolve(
     else if (c.type === "equal") { if (isLine(c.l1) && isLine(c.l2)) cons.push({ id, type: "equal", l1: c.l1, l2: c.l2 }); }
     else if (c.type === "distance") { const e = ends.get(c.line); if (e) cons.push({ id, type: "distance", a: e[0], b: e[1], value: c.value }); }
     else if (c.type === "diameter") { if (centers.has(c.circle)) cons.push({ id, type: "diameter", circle: c.circle, value: c.value }); }
+    else if (c.type === "tangent") { if (isLine(c.line) && isCircle(c.circle)) cons.push({ id, type: "tangentLC", line: c.line, circle: c.circle }); }
+    else if (c.type === "coincident") {
+      const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
+      if (a && b) cons.push({ id, type: "coincident", a, b });
+    }
+    else if (c.type === "concentric") {
+      const a = centerPoint(c.c1), b = centerPoint(c.c2);
+      if (a && b) cons.push({ id, type: "coincident", a, b });
+    }
+    else if (c.type === "midpoint") {
+      const p = endpointPoint(c.e, c.p);
+      if (p && isLine(c.line)) {
+        cons.push({ id: `${id}a`, type: "pointOnLine", p, line: c.line });
+        cons.push({ id: `${id}b`, type: "pointOnPerpBisector", p, line: c.line });
+      }
+    }
+    else if (c.type === "symmetric") {
+      const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
+      if (a && b && isLine(c.line)) cons.push({ id, type: "symmetric", a, b, line: c.line });
+    }
   });
 
   let dragInput: { point: string; x: number; y: number } | undefined;
@@ -181,6 +222,10 @@ export async function compileAndSolve(
       const ids = splineMap.get(e.id);
       if (!ids) return e;
       return { ...e, points: ids.map((id, k) => r.points[id] ?? e.points[k]) };
+    }
+    if (e.type === "point") {
+      const p = r.points[pointMap.get(e.id)!];
+      return p ? { ...e, x: p.x, y: p.y } : e;
     }
     return e;
   });

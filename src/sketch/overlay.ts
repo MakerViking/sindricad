@@ -276,10 +276,27 @@ export function curveObjects(
 ): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   for (const e of ents) {
+    if (e.type === "point") {
+      out.push(pointMarker(plane.to3D(e.x, e.y), e.construction ? 0xffa64d : color));
+      continue;
+    }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
     out.push(e.construction ? constructionLine(pts) : polyline(pts, color));
   }
   return out;
+}
+
+/** a small "+" glyph (two short crossed segments) marking a sketch point */
+function pointMarker(at: THREE.Vector3, color: number): THREE.Object3D {
+  const s = 0.9;
+  const pts = [
+    new THREE.Vector3(at.x - s, at.y, at.z), new THREE.Vector3(at.x + s, at.y, at.z),
+    new THREE.Vector3(at.x, at.y - s, at.z), new THREE.Vector3(at.x, at.y + s, at.z),
+  ];
+  const g = new THREE.BufferGeometry().setFromPoints(pts);
+  const seg = new THREE.LineSegments(g, lineMat(color));
+  seg.renderOrder = 13;
+  return seg;
 }
 
 export function polyline(points: THREE.Vector3[], color: number): THREE.Line {

@@ -20,7 +20,9 @@ export type SketchEntity =
   | { type: "line"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; construction?: boolean }
   | { type: "arc"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; mx: Num; my: Num; construction?: boolean }
   // fit-point spline: interpolates a smooth curve through its points (≥2)
-  | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean };
+  | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean }
+  // a sketch point: reference/snap geometry only — never forms a profile
+  | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean };
 
 // 2D sketch constraints, solved by planegcs. Entities are referenced by their
 // stable id (see sketch/id.ts) — never array index — so edit operations that
@@ -33,7 +35,18 @@ export type SketchConstraint =
   | { type: "perpendicular"; l1: string; l2: string }
   | { type: "equal"; l1: string; l2: string }
   | { type: "distance"; line: string; value: number }
-  | { type: "diameter"; circle: string; value: number };
+  | { type: "diameter"; circle: string; value: number }
+  // tangent: a line and a circle/arc touch (line tangent to the circle)
+  | { type: "tangent"; line: string; circle: string }
+  // coincident: two entity endpoints share a position. `e1`/`e2` are entity ids;
+  // `p1`/`p2` are the endpoint index (0 = start, 1 = end) on each.
+  | { type: "coincident"; e1: string; p1: number; e2: string; p2: number }
+  // concentric: two circles/arcs share a center
+  | { type: "concentric"; c1: string; c2: string }
+  // midpoint: a point (endpoint of `e`/`p`) sits at the midpoint of a line
+  | { type: "midpoint"; e: string; p: number; line: string }
+  // symmetric: two endpoints mirror across a line (the symmetry axis)
+  | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string };
 
 export type Plane3 = "XY" | "XZ" | "YZ";
 export type Axis3 = "X" | "Y" | "Z";

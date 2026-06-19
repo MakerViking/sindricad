@@ -188,6 +188,14 @@ const SKETCH_PROMPTS: Record<string, string> = {
   circle: "Circle: click center, then radius · type ⌀ · Enter · Esc",
   arc: "Arc: click start, click end, then click a point it passes through · Esc",
   spline: "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
+  point: "Point: click to place a reference point (snaps + constrains) · Esc",
+  polygon: "Polygon: click the center, then a vertex (6-sided, inscribed) · Esc",
+  slot: "Slot: click the two arc centers, then a point for the width · Esc",
+  circle2: "Circle (2-point): click two points on the diameter · Esc",
+  circle3: "Circle (3-point): click three points the circle passes through · Esc",
+  centerRectangle: "Center Rectangle: click the center, then a corner · Esc",
+  mirror: "Mirror: with entities selected, click a line to mirror across · Esc",
+  dimension: "Dimension: click a line (length) or circle (⌀), type a value + Enter · Esc",
   trim: "Trim: click a curve to remove it (trimmed to nearest crossings) · Esc",
   fillet: "Fillet: click two lines, then type a radius + Enter · Esc",
   offset: "Offset: click a curve, then type an offset distance + Enter · Esc",
@@ -198,6 +206,11 @@ const SKETCH_PROMPTS: Record<string, string> = {
   parallel: "Parallel: click two lines to make the 2nd parallel to the 1st · Esc",
   perpendicular: "Perpendicular: click two lines · Esc",
   equal: "Equal: click two lines to make the 2nd the same length as the 1st · Esc",
+  tangent: "Tangent: click a line and a circle to make them tangent · Esc",
+  coincident: "Coincident: click two endpoints to make them coincide · Esc",
+  concentric: "Concentric: click two circles to share a center · Esc",
+  midpoint: "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
+  symmetric: "Symmetric: click two endpoints, then the symmetry axis line · Esc",
 };
 
 // --- sketch mode state -> UI (ribbon context, palette, prompt) ---
@@ -344,7 +357,10 @@ function editFeature(id: string) {
 }
 
 // --- ribbon / keymap actions ---
-const SKETCH_TOOLS = new Set(["line", "rectangle", "circle", "arc", "spline"]);
+const SKETCH_TOOLS = new Set([
+  "line", "rectangle", "centerRectangle", "circle", "circle2", "circle3",
+  "arc", "polygon", "slot", "spline", "point",
+]);
 // sketch MODIFY tools (ribbon action -> sketch tool name)
 const SKETCH_MODIFY: Record<string, SketchTool> = {
   trim: "trim",
@@ -352,11 +368,18 @@ const SKETCH_MODIFY: Record<string, SketchTool> = {
   offset: "offset",
   extend: "extend",
   break: "break",
+  "mirror-sketch": "mirror",
+  dimension: "dimension",
   horizontal: "horizontal",
   vertical: "vertical",
   parallel: "parallel",
   perpendicular: "perpendicular",
   equal: "equal",
+  tangent: "tangent",
+  coincident: "coincident",
+  concentric: "concentric",
+  midpoint: "midpoint",
+  symmetric: "symmetric",
 };
 function handleAction(action: string) {
   // sketch CREATE tools: switch tool while sketching, else start a sketch with it
@@ -431,6 +454,9 @@ installKeymap((a) => {
       break;
     case "presspull":
       handleAction(a);
+      break;
+    case "dimension":
+      if (sketch.active) handleAction("dimension");
       break;
     case "undo":
       store.undo();

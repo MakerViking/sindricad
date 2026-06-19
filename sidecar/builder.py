@@ -295,6 +295,8 @@ def _build_sketch(f, val):
             pts = [(val(p["x"]), val(p["y"]), 0) for p in e.get("points", [])]
             if len(pts) >= 2:
                 edges.append(Edge.make_spline(pts))
+        elif et == "point":
+            continue  # a sketch point is reference/snap-only, never part of a profile
 
     if edges:
         faces.extend(_faces_from_edges(edges))

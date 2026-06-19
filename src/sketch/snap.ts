@@ -100,6 +100,8 @@ export function candidatesFromEntities(
       add(e.mx, e.my, "midpoint", 80);
     } else if (e.type === "spline") {
       for (const p of e.points) add(p.x, p.y, "endpoint", 100); // fit points snap
+    } else if (e.type === "point") {
+      add(e.x, e.y, "endpoint", 110); // a placed point is a strong snap target
     }
   }
   return out;
@@ -111,4 +113,5 @@ export type ResolvedEntity =
   | { type: "rectangle"; id: string; width: number; height: number; x: number; y: number; construction?: boolean }
   | { type: "circle"; id: string; radius: number; x: number; y: number; construction?: boolean }
   | { type: "arc"; id: string; x1: number; y1: number; x2: number; y2: number; mx: number; my: number; construction?: boolean }
-  | { type: "spline"; id: string; points: { x: number; y: number }[]; construction?: boolean };
+  | { type: "spline"; id: string; points: { x: number; y: number }[]; construction?: boolean }
+  | { type: "point"; id: string; x: number; y: number; construction?: boolean };

@@ -52,9 +52,15 @@ const SKETCH: Group[] = [
     items: [
       { action: "line", label: "Line", iconName: "line", key: "L" },
       { action: "rectangle", label: "Rectangle", iconName: "rectangle", key: "R" },
+      { action: "centerRectangle", label: "Center Rect", iconName: "centerRectangle" },
       { action: "circle", label: "Circle", iconName: "circle", key: "C" },
+      { action: "circle2", label: "Circle 2-Pt", iconName: "circle2" },
+      { action: "circle3", label: "Circle 3-Pt", iconName: "circle3" },
       { action: "arc", label: "Arc", iconName: "arc", key: "A" },
+      { action: "polygon", label: "Polygon", iconName: "polygon" },
+      { action: "slot", label: "Slot", iconName: "slot" },
       { action: "spline", label: "Spline", iconName: "spline" },
+      { action: "point", label: "Point", iconName: "point" },
     ],
   },
   {
@@ -65,6 +71,8 @@ const SKETCH: Group[] = [
       { action: "extend", label: "Extend", iconName: "extend" },
       { action: "offset", label: "Offset", iconName: "offset", key: "O" },
       { action: "break", label: "Break", iconName: "break" },
+      { action: "mirror-sketch", label: "Mirror", iconName: "mirror" },
+      { action: "dimension", label: "Dimension", iconName: "dimension", key: "D" },
     ],
   },
   {
@@ -75,6 +83,11 @@ const SKETCH: Group[] = [
       { action: "parallel", label: "Parallel", iconName: "parallel" },
       { action: "perpendicular", label: "Perpendic.", iconName: "perpendicular" },
       { action: "equal", label: "Equal", iconName: "equal" },
+      { action: "tangent", label: "Tangent", iconName: "tangent" },
+      { action: "coincident", label: "Coincident", iconName: "coincident" },
+      { action: "concentric", label: "Concentric", iconName: "concentric" },
+      { action: "midpoint", label: "Midpoint", iconName: "midpoint" },
+      { action: "symmetric", label: "Symmetric", iconName: "symmetric" },
     ],
   },
 ];

@@ -31,7 +31,11 @@ export type SConstraint =
   | { id: string; type: "perpendicular"; l1: string; l2: string }
   | { id: string; type: "equal"; l1: string; l2: string }
   | { id: string; type: "distance"; a: PointId; b: PointId; value: number }
-  | { id: string; type: "diameter"; circle: string; value: number };
+  | { id: string; type: "diameter"; circle: string; value: number }
+  | { id: string; type: "tangentLC"; line: string; circle: string }
+  | { id: string; type: "pointOnLine"; p: PointId; line: string }
+  | { id: string; type: "pointOnPerpBisector"; p: PointId; line: string }
+  | { id: string; type: "symmetric"; a: PointId; b: PointId; line: string };
 
 export interface SolveInput {
   points: SPoint[];
@@ -145,5 +149,13 @@ function toGcsConstraint(c: SConstraint): any {
       return { id: c.id, type: "p2p_distance", p1_id: c.a, p2_id: c.b, distance: c.value };
     case "diameter":
       return { id: c.id, type: "circle_diameter", c_id: c.circle, diameter: c.value };
+    case "tangentLC":
+      return { id: c.id, type: "tangent_lc", l_id: c.line, c_id: c.circle };
+    case "pointOnLine":
+      return { id: c.id, type: "point_on_line_pl", p_id: c.p, l_id: c.line };
+    case "pointOnPerpBisector":
+      return { id: c.id, type: "point_on_perp_bisector_pl", p_id: c.p, l_id: c.line };
+    case "symmetric":
+      return { id: c.id, type: "p2p_symmetric_ppl", p1_id: c.a, p2_id: c.b, l_id: c.line };
   }
 }

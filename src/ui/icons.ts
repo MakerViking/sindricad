@@ -10,6 +10,11 @@ const PATHS: Record<string, string> = {
   spline: `<path d="M3 17 C 7 5, 11 5, 13 12 S 19 19, 21 7" fill="none"/><circle cx="3" cy="17" r="1.5" fill="currentColor"/><circle cx="13" cy="12" r="1.5" fill="currentColor"/><circle cx="21" cy="7" r="1.5" fill="currentColor"/>`,
   polygon: `<polygon points="12,3 20,9 17,19 7,19 4,9"/>`,
   point: `<circle cx="12" cy="12" r="2.2" fill="currentColor"/>`,
+  slot: `<path d="M8 8 A 4 4 0 0 0 8 16 L16 16 A 4 4 0 0 0 16 8 Z"/>`,
+  centerRectangle: `<rect x="4" y="6" width="16" height="12" rx="0.5"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="12" y1="9" x2="12" y2="15"/>`,
+  circle2: `<circle cx="12" cy="12" r="8"/><circle cx="4.5" cy="12" r="1.4" fill="currentColor"/><circle cx="19.5" cy="12" r="1.4" fill="currentColor"/>`,
+  circle3: `<circle cx="12" cy="12" r="8"/><circle cx="12" cy="4" r="1.4" fill="currentColor"/><circle cx="19" cy="16" r="1.4" fill="currentColor"/><circle cx="5" cy="16" r="1.4" fill="currentColor"/>`,
+  dimension: `<line x1="4" y1="7" x2="4" y2="17"/><line x1="20" y1="7" x2="20" y2="17"/><line x1="4" y1="12" x2="20" y2="12"/><path d="M7 9l-3 3 3 3"/><path d="M17 9l3 3-3 3"/>`,
 
   // sketch modify
   trim: `<path d="M5 5l6 6"/><path d="M19 5l-6 6"/><path d="M11 13l-6 6"/><circle cx="13" cy="13" r="2"/>`,
@@ -43,6 +48,11 @@ const PATHS: Record<string, string> = {
   parallel: `<line x1="6" y1="20" x2="12" y2="4"/><line x1="13" y1="20" x2="19" y2="4"/>`,
   perpendicular: `<path d="M5 4v15h15"/><line x1="5" y1="14" x2="10" y2="14"/><line x1="10" y1="14" x2="10" y2="19"/>`,
   equal: `<line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/>`,
+  tangent: `<circle cx="9" cy="14" r="5"/><line x1="3" y1="5" x2="21" y2="9"/>`,
+  coincident: `<circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>`,
+  concentric: `<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor"/>`,
+  symmetric: `<line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/><circle cx="6" cy="12" r="2"/><circle cx="18" cy="12" r="2"/>`,
+  midpoint: `<line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2" fill="currentColor"/>`,
 };
 
 export function icon(name: string): string {
