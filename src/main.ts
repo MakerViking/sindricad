@@ -12,6 +12,7 @@ import { Ribbon } from "./ui/ribbon";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
+import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { saveDocument, saveDocumentAs, openDocument, exportModel } from "./io/files";
 import { Menubar } from "./ui/menu";
 import { SketchOverlay } from "./sketch/overlay";
@@ -82,6 +83,7 @@ async function newDocument() {
   if (sketch.active) sketch.cancel();
   store.newDocument();
 }
+const spaceMouseSettings = new SpaceMouseSettings();
 new Menubar(document.getElementById("menubar")!, [
   {
     label: "File",
@@ -100,6 +102,8 @@ new Menubar(document.getElementById("menubar")!, [
     items: [
       { label: "SpaceMouse: Move Object", checked: () => getSpaceMouseMode() === "object", onClick: () => setSpaceMouseMode("object") },
       { label: "SpaceMouse: Move Camera", checked: () => getSpaceMouseMode() === "camera", onClick: () => setSpaceMouseMode("camera") },
+      { separator: true, label: "" },
+      { label: "3D Mouse Settings…", onClick: () => spaceMouseSettings.open() },
     ],
   },
 ]);

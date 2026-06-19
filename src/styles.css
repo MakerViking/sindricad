@@ -1161,3 +1161,202 @@ button.finish:hover {
   outline: none;
   border-color: var(--accent-hot);
 }
+
+/* ---- modal dialog (3D Mouse settings) ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-panel {
+  background: var(--panel, #16181d);
+  border: 1px solid var(--line, #262a31);
+  border-radius: var(--r-lg, 10px);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  width: min(720px, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--text, #e6e8ec);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line, #262a31);
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim, #9aa3af);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--r-sm, 6px);
+}
+.modal-close:hover {
+  background: var(--raised, #22262e);
+  color: var(--text, #e6e8ec);
+}
+.modal-body {
+  padding: 14px 16px;
+  overflow: auto;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line, #262a31);
+}
+.btn {
+  background: var(--raised, #22262e);
+  color: var(--text, #e6e8ec);
+  border: 1px solid var(--line-strong, #323843);
+  border-radius: var(--r-sm, 6px);
+  padding: 6px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--raised-2, #2a2f38);
+}
+.btn-primary {
+  background: var(--accent, #ff7a3c);
+  border-color: var(--accent, #ff7a3c);
+  color: var(--on-accent, #160a04);
+  font-weight: 600;
+}
+.btn-primary:hover {
+  background: var(--accent-hot, #ff9a5c);
+}
+
+/* ---- 3D mouse settings ---- */
+.sm-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+.sm-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sm-section {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-mute, #6b7280);
+  margin-top: 8px;
+}
+.sm-section:first-child {
+  margin-top: 0;
+}
+.sm-hint {
+  font-size: 11px;
+  color: var(--text-dim, #9aa3af);
+}
+.sm-axis-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.sm-axis-label {
+  font-size: 11px;
+  color: var(--text-dim, #9aa3af);
+}
+.sm-axis-track {
+  position: relative;
+  height: 8px;
+  background: var(--panel-2, #1c1f26);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.sm-axis-track::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong, #323843);
+}
+.sm-axis-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  background: var(--accent, #ff7a3c);
+  border-radius: 4px;
+}
+.sm-test {
+  width: 240px;
+  height: 170px;
+  border: 1px solid var(--line, #262a31);
+  border-radius: var(--r-md, 8px);
+  background: var(--bg, #0e0f12);
+}
+.sm-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 52px;
+  align-items: center;
+  gap: 8px;
+}
+.sm-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent, #ff7a3c);
+}
+.sm-slabel {
+  font-size: 11px;
+  color: var(--text-dim, #9aa3af);
+}
+.sm-sval {
+  font-size: 11px;
+  color: var(--text-mute, #6b7280);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.sm-radio {
+  font-size: 12px;
+  margin-right: 14px;
+  cursor: pointer;
+}
+.sm-map-row {
+  display: grid;
+  grid-template-columns: 84px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.sm-map-label {
+  font-size: 11px;
+  color: var(--text-dim, #9aa3af);
+}
+.sm-select {
+  background: var(--panel-2, #1c1f26);
+  color: var(--text, #e6e8ec);
+  border: 1px solid var(--line-strong, #323843);
+  border-radius: var(--r-sm, 6px);
+  padding: 4px 6px;
+  font-size: 11px;
+}
+.sm-inv {
+  font-size: 11px;
+  color: var(--text-dim, #9aa3af);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}
