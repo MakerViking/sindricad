@@ -7,7 +7,7 @@
 export type Unit = "mm" | "cm" | "in";
 
 const FACTOR: Record<Unit, number> = { mm: 1, cm: 10, in: 25.4 };
-const KEY = "verxa.unit";
+const KEY = "sindricad.unit";
 
 let current: Unit = readStored();
 const listeners = new Set<() => void>();

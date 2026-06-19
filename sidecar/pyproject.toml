@@ -1,7 +1,7 @@
 [project]
-name = "verxa-sidecar"
+name = "sindricad-sidecar"
 version = "0.1.0"
-description = "Verxa geometry sidecar — build123d on OpenCASCADE, served over a localhost WebSocket"
+description = "SindriCAD geometry sidecar — build123d on OpenCASCADE, served over a localhost WebSocket"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "build123d>=0.9",

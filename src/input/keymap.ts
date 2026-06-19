@@ -60,9 +60,15 @@ export function installKeymap(onAction: (a: KeyAction) => void) {
     if (k === "f" && e.shiftKey) return; // reserve
     if (k === "f") {
       // F is Fillet in Fusion; we also expose Fit on the dedicated button.
+      e.preventDefault();
       return onAction("fillet");
     }
     const action = KEYS[k];
-    if (action) onAction(action);
+    if (action) {
+      // Stop the keystroke from also landing in any input a tool focuses in
+      // response (e.g. Press/Pull's dimension box) — otherwise "q" types into it.
+      e.preventDefault();
+      onAction(action);
+    }
   });
 }

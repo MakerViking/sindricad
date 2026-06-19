@@ -54,7 +54,13 @@ def resolve_faces(part, sel):
         )
     if by == "nearest":
         p = Vector(*sel["point"])
-        return [min(part.faces(), key=lambda f: (f.center() - p).length)]
+        # distance to the face SURFACE, not its center: a cylinder's center sits
+        # on its axis (far from the clicked wall), so center-distance mis-picks
+        # curved faces. Fall back to center-distance if distance_to is unavailable.
+        try:
+            return [min(part.faces(), key=lambda f: f.distance_to(p))]
+        except Exception:
+            return [min(part.faces(), key=lambda f: (f.center() - p).length)]
     if by == "all":
         return part.faces()
     raise ValueError(f"unknown face selector: {by}")

@@ -7,7 +7,21 @@ import type { CadDocument, ExportFormat, RebuildReply } from "../types";
 type Pending = (msg: any) => void;
 type StatusListener = (connected: boolean) => void;
 
-export class Geometry {
+// The surface the rest of the app depends on. Both the websocket `Geometry`
+// and the in-process `TauriGeometry` implement this, so callers stay agnostic
+// to which backend is wired up (see VITE_GEOM in main.ts).
+export interface GeometryBackend {
+  rebuild(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
+  export(
+    doc: CadDocument,
+    format: ExportFormat,
+    path: string,
+  ): Promise<{ ok: boolean; path?: string; message?: string }>;
+  onStatus(fn: StatusListener): () => void;
+  readonly connected: boolean;
+}
+
+export class Geometry implements GeometryBackend {
   private ws: WebSocket | null = null;
   private readonly url: string;
   private pending = new Map<string, Pending>();

@@ -1,8 +1,9 @@
-//! Verxa Tauri shell entry. Spawns the Python geometry sidecar on startup and
+//! SindriCAD Tauri shell entry. Spawns the Python geometry sidecar on startup and
 //! kills it on exit. The frontend talks to the sidecar over a localhost
 //! WebSocket directly (not Tauri IPC); Rust only owns the window, native
 //! dialogs, and the sidecar lifecycle.
 
+mod geom;
 mod sidecar;
 mod spacemouse;
 
@@ -14,6 +15,9 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Rust geometry spike: callable as invoke("geom_rebuild") when the
+        // frontend runs with VITE_GEOM=rust (else it uses the Python sidecar).
+        .invoke_handler(tauri::generate_handler![geom::geom_rebuild])
         .setup(|app| {
             match Sidecar::spawn() {
                 Ok(s) => {
@@ -27,7 +31,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building Verxa");
+        .expect("error while building SindriCAD");
 
     app.run(|app_handle, event| {
         if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {

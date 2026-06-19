@@ -5,7 +5,7 @@
 // writes the file directly (no fs round-trip through the webview).
 
 import type { DocumentStore } from "../document/store";
-import type { Geometry } from "../geometry/client";
+import type { GeometryBackend } from "../geometry/client";
 import type { ExportFormat } from "../types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
@@ -28,7 +28,7 @@ export async function saveDocumentAs(store: DocumentStore) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await save({
-      filters: [{ name: "Verxa Document", extensions: ["json"] }],
+      filters: [{ name: "SindriCAD Document", extensions: ["json"] }],
       defaultPath: store.filePath ?? `${store.fileName}.json`,
     });
     if (path) {
@@ -46,7 +46,7 @@ export async function openDocument(store: DocumentStore) {
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await open({
       multiple: false,
-      filters: [{ name: "Verxa Document", extensions: ["json"] }],
+      filters: [{ name: "SindriCAD Document", extensions: ["json"] }],
     });
     if (typeof path === "string") {
       store.load(await readTextFile(path));
@@ -58,7 +58,7 @@ export async function openDocument(store: DocumentStore) {
   }
 }
 
-export async function exportModel(store: DocumentStore, geometry: Geometry) {
+export async function exportModel(store: DocumentStore, geometry: GeometryBackend) {
   if (!isTauri()) {
     console.warn("export needs the native app (a real filesystem path)");
     return;

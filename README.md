@@ -1,13 +1,13 @@
-# Verxa
+# SindriCAD
 
-A Fusion-360-style **parametric solid modeler** for Linux. Verxa is not a
+A Fusion-360-style **parametric solid modeler** for Linux. SindriCAD is not a
 geometry kernel — it's a Fusion-style front-end that drives
 [**build123d**](https://github.com/gumyr/build123d) (Python, on the OpenCASCADE
 kernel). build123d does extrude, fillet, chamfer, loft, revolve, mirror as
-one-liners and exports STEP/STL/3MF natively; Verxa owns the UI, the feature
+one-liners and exports STEP/STL/3MF natively; SindriCAD owns the UI, the feature
 tree, and the plumbing.
 
-> Codename **Verxa** — an antonym pun on Fusion.
+> Named for **Sindri**, the dwarven smith of Norse myth.
 
 ## Architecture
 

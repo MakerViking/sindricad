@@ -24,7 +24,9 @@ from build123d import (
     Edge,
     Wire,
     Face,
+    Solid,
     Compound,
+    GeomType,
     extrude,
     fillet,
     chamfer,
@@ -33,7 +35,7 @@ from build123d import (
     loft,
 )
 
-from geom_select import resolve_edges
+from geom_select import resolve_edges, resolve_faces
 
 PLANES = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
@@ -116,6 +118,14 @@ def rebuild(document):
                 edges = resolve_edges(part, f["edges"])
                 part = chamfer(edges, length=val(f["distance"]))
 
+            elif t == "press-pull":
+                if part is None:
+                    raise ValueError("Press/Pull needs an existing body")
+                faces = resolve_faces(part, f["face"])
+                if not faces:
+                    raise ValueError("no face found to press/pull")
+                part = _press_pull(part, faces[0], val(f["distance"]))
+
             elif t == "mirror":
                 part = part + mirror(part, about=PLANES[f["plane"]])
 
@@ -144,6 +154,100 @@ def rebuild(document):
         part = Compound(list(part))
 
     return part, errors
+
+
+def _press_pull(part, face, d):
+    """Push/pull a single solid face by signed distance `d` (mm).
+
+    Both planar and cylindrical faces use OCCT's local surface offset: the picked
+    face moves along its normal and the adjacent side walls stretch to follow (the
+    "true" Press/Pull — +d grows the body / boss, -d shrinks it). We deliberately
+    do NOT extrude-and-boolean: that creates coincident faces when the face has
+    holes (e.g. the top of a holed plate) and OCCT's boolean spins forever on it.
+
+    Offsets are clamped away from the degenerate point (collapsing a hole's radius
+    or pushing a face clean through the body), which otherwise SEGFAULTs OCCT. The
+    server's per-rebuild timeout is the final backstop for anything that slips by.
+
+    Non-cylinder curved surfaces (cone/sphere/spline/…) are rejected: OCCT's local
+    offset is too unreliable on them to risk taking down the sidecar.
+    """
+    if abs(d) < 1e-9:
+        return part
+    try:
+        gt = face.geom_type
+    except Exception:
+        gt = None
+    if gt == GeomType.PLANE:
+        return _offset_face(part, face, _clamp_planar(part, face, d))
+    if gt == GeomType.CYLINDER:
+        return _offset_face(part, face, _clamp_cylinder(face, d))
+    raise ValueError("Press/Pull supports flat and cylindrical faces only")
+
+
+def _clamp_cylinder(face, d):
+    """Cap |d| to 90% of the cylinder radius so an inward offset can't collapse the
+    radius to ~0 (which segfaults OCCT)."""
+    try:
+        r = float(face.radius)
+    except Exception:
+        return d
+    if r > 1e-6:
+        limit = 0.9 * r
+        d = max(-limit, min(limit, d))
+    return d
+
+
+def _clamp_planar(part, face, d):
+    """For an inward push (−, toward the body), cap it to 90% of the body's extent
+    along the face normal so the face can't be pushed clean through the solid."""
+    if d >= 0:
+        return d  # pulling outward is always safe
+    try:
+        n = face.normal_at()
+        proj = [v.X * n.X + v.Y * n.Y + v.Z * n.Z for v in part.vertices()]
+        thickness = max(proj) - min(proj)
+    except Exception:
+        return d
+    if thickness > 1e-6:
+        d = max(d, -0.9 * thickness)
+    return d
+
+
+def _offset_face(part, face, d):
+    """Local single-face surface offset via OCCT (BRepOffset in Skin mode with a
+    per-face offset, global offset 0). Returns a fixed-up Solid. Used for curved
+    Press/Pull (e.g. resizing a cylindrical hole)."""
+    import OCP.BRepOffset as _bro
+    from OCP.GeomAbs import GeomAbs_JoinType
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopoDS import TopoDS
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+
+    mk = _bro.BRepOffset_MakeOffset()
+    # GeomAbs_Intersection join is what makes a local single-face offset close up
+    # cleanly against the neighbouring faces (the Arc join fails here).
+    mk.Initialize(
+        part.wrapped,
+        0.0,
+        1e-4,
+        _bro.BRepOffset_Mode.BRepOffset_Skin,
+        False,
+        False,
+        GeomAbs_JoinType.GeomAbs_Intersection,
+        False,
+        False,
+    )
+    mk.SetOffsetOnFace(face.wrapped, d)
+    mk.MakeOffsetShape()
+    if not mk.IsDone():
+        raise ValueError("can't offset this face by that amount")
+    sh = mk.Shape()
+    # the offset yields a Shell; wrap it back into a Solid so downstream booleans,
+    # tessellation and export all see a uniform solid.
+    if sh.ShapeType() == TopAbs_ShapeEnum.TopAbs_SHELL:
+        sh = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(sh)).Solid()
+    return Solid(sh)
 
 
 def _build_sketch(f, val):

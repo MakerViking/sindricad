@@ -10,7 +10,7 @@ import { buildModel, disposeModel, setEdgeResolution, type ModelView } from "./r
 import { Picker, type Hit, type EdgeHit } from "./picking";
 
 const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
-const EDGE_PICKABLE = new THREE.Color(0x66d9ff); // bright "selectable" edge (fillet/chamfer mode)
+const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
 import { Highlighter } from "./highlight";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 
@@ -134,6 +134,22 @@ export class Viewport {
     });
   }
 
+  /** Pre-selection for Press/Pull: if exactly one face is selected, return its
+   *  selector + surface normal + centroid anchor (else null). */
+  selectedFaceForPressPull(): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3 } | null {
+    if (!this.highlighter || !this.model) return null;
+    const faces = this.highlighter.getSelectedFaces();
+    if (faces.length !== 1) return null;
+    const faceId = faces[0];
+    const anchor = this.faceCentroidWorld(faceId);
+    const normal = this.faceNormalWorld(faceId);
+    return {
+      selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
+      normal,
+      anchor,
+    };
+  }
+
   setModel(result: RebuildResult, fit = false) {
     // dispose previous model first (full-rebuild memory hygiene)
     if (this.model) {
@@ -234,6 +250,32 @@ export class Viewport {
     return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model, this.resolution);
   }
 
+  /** Face pick for the Press/Pull tool: raycast the solid and return a face
+   *  selector (nearest-to-the-clicked-point, so it survives topology renumbering),
+   *  the world-space surface normal at the hit, and the hit point itself (used as
+   *  the drag anchor so the arrow pops out where you clicked). */
+  pickFaceForPressPull(
+    clientX: number,
+    clientY: number,
+  ): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3 } | null {
+    if (!this.model) return null;
+    const ray = this.rayFrom(clientX, clientY);
+    const hit = ray.intersectObject(this.model.mesh, false)[0];
+    if (!hit || !hit.face) return null;
+    const mesh = this.model.mesh;
+    const pos = mesh.geometry.getAttribute("position");
+    const a = new THREE.Vector3().fromBufferAttribute(pos, hit.face.a);
+    const b = new THREE.Vector3().fromBufferAttribute(pos, hit.face.b);
+    const c = new THREE.Vector3().fromBufferAttribute(pos, hit.face.c);
+    const normal = b.sub(a).cross(c.sub(a)).normalize().transformDirection(mesh.matrixWorld).normalize();
+    const anchor = hit.point.clone();
+    return {
+      selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
+      normal,
+      anchor,
+    };
+  }
+
   /** Hover-highlight a specific edge line (or clear with null). */
   hoverEdge(line: import("three/examples/jsm/lines/Line2.js").Line2 | null) {
     this.highlighter?.clearHover();
@@ -287,6 +329,31 @@ export class Viewport {
     }
     if (seen.size) acc.divideScalar(seen.size);
     return acc.applyMatrix4(mesh.matrixWorld);
+  }
+
+  /** Area-weighted average normal of a B-rep face (world space) — averaging its
+   *  triangles' normals. For a planar face this is the exact normal; for a curved
+   *  face it's a representative outward direction. */
+  private faceNormalWorld(faceId: number): THREE.Vector3 {
+    const mesh = this.model!.mesh;
+    const pos = mesh.geometry.getAttribute("position");
+    const index = mesh.geometry.getIndex()!;
+    const ids = this.model!.faceIds;
+    const acc = new THREE.Vector3();
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    for (let t = 0; t < ids.length; t++) {
+      if (ids[t] !== faceId) continue;
+      a.fromBufferAttribute(pos, index.getX(t * 3));
+      b.fromBufferAttribute(pos, index.getX(t * 3 + 1));
+      c.fromBufferAttribute(pos, index.getX(t * 3 + 2));
+      n.copy(b.sub(a).cross(c.sub(a))); // length = 2× triangle area → area-weighted
+      acc.add(n);
+    }
+    if (acc.lengthSq() < 1e-12) acc.set(0, 0, 1);
+    return acc.normalize().transformDirection(mesh.matrixWorld).normalize();
   }
 
   /** a reusable Raycaster aimed at the given client coords (no allocation) */

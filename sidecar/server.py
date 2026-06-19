@@ -1,4 +1,4 @@
-"""Verxa geometry sidecar — WebSocket loop + dispatch.
+"""SindriCAD geometry sidecar — WebSocket loop + dispatch.
 
 Protocol: one JSON request/response per message, matched by `id`.
   rebuild -> tessellated mesh (+ per-tri faceIds) + edge polylines + bbox
@@ -27,6 +27,7 @@ import multiprocessing as mp
 import signal
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 import websockets
 
@@ -35,8 +36,15 @@ import occt_smp
 HOST = "127.0.0.1"
 PORT = 8765
 
+# A single geometry op (rebuild/tessellate/export) must finish within this many
+# seconds. OCCT can spin forever or segfault on degenerate input (e.g. a face
+# offset that collapses a hole); the timeout + worker recycling turns that into a
+# clean, recoverable error instead of a frozen app.
+JOB_TIMEOUT = 25.0
+
 # the worker-process pool; set in main(). Heavy ops are dispatched here.
 _pool: ProcessPoolExecutor | None = None
+_mp_ctx = None  # the 'spawn' context, kept so we can rebuild the pool after a crash
 
 
 # --- worker process (separate interpreter) ---------------------------------
@@ -125,6 +133,49 @@ def _reply_for(req_id, res):
     return _ok(req_id, res)
 
 
+def _new_pool():
+    """Create a fresh single-worker pool and kick off its warm-up."""
+    pool = ProcessPoolExecutor(max_workers=1, mp_context=_mp_ctx, initializer=_worker_init)
+    try:
+        pool.submit(_warmup)  # spawn + warm the worker now
+    except Exception:
+        pass
+    return pool
+
+
+def _kill_pool(pool):
+    """Forcibly terminate a pool's worker process(es) — used to stop a worker that's
+    spinning on a runaway OCCT call, since shutdown() alone would wait for it."""
+    try:
+        for p in list(getattr(pool, "_processes", {}).values()):
+            try:
+                p.kill()
+            except Exception:
+                pass
+    finally:
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+
+async def _run(loop, fn, *args):
+    """Run a heavy job in the worker pool with a hard timeout. On timeout (runaway
+    OCCT) or a worker crash (segfault), recycle the pool and return a clean error
+    dict so the socket stays alive and the app keeps working."""
+    global _pool
+    try:
+        fut = loop.run_in_executor(_pool, fn, *args)
+        return await asyncio.wait_for(fut, timeout=JOB_TIMEOUT)
+    except asyncio.TimeoutError:
+        _kill_pool(_pool)
+        _pool = _new_pool()
+        return {"error": {"message": "operation timed out — geometry too complex or degenerate"}}
+    except BrokenProcessPool:
+        _pool = _new_pool()
+        return {"error": {"message": "the geometry kernel crashed on this operation"}}
+
+
 async def handle(ws):
     loop = asyncio.get_running_loop()
     async for raw in ws:
@@ -139,13 +190,11 @@ async def handle(ws):
         try:
             if op == "rebuild":
                 tol = req.get("tolerance", 0.1)
-                res = await loop.run_in_executor(_pool, _rebuild_job, req["document"], tol)
+                res = await _run(loop, _rebuild_job, req["document"], tol)
                 await ws.send(_reply_for(req_id, res))
 
             elif op == "export":
-                res = await loop.run_in_executor(
-                    _pool, _export_job, req["document"], req["format"], req["path"]
-                )
+                res = await _run(loop, _export_job, req["document"], req["format"], req["path"])
                 await ws.send(_reply_for(req_id, res))
 
             elif op == "ping":
@@ -159,18 +208,18 @@ async def handle(ws):
 
 
 async def main():
-    global _pool
+    global _pool, _mp_ctx
     _die_with_parent()
-    ctx = mp.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=1, mp_context=ctx, initializer=_worker_init) as pool:
-        _pool = pool
-        loop = asyncio.get_running_loop()
-        # spawn + warm the worker now so the first rebuild is fast (fire-and-forget)
-        asyncio.ensure_future(loop.run_in_executor(pool, _warmup))
+    _mp_ctx = mp.get_context("spawn")
+    _pool = _new_pool()
+    try:
         async with websockets.serve(handle, HOST, PORT):
             # readiness signal the Rust shell waits for before connecting
             print(f"LISTENING {PORT}", flush=True)
             await asyncio.Future()  # run forever
+    finally:
+        _kill_pool(_pool)
+
 
 
 if __name__ == "__main__":

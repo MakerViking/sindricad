@@ -4,7 +4,7 @@
 // listeners (viewport, timeline, tree).
 
 import type { CadDocument, Feature, RebuildResult } from "../types";
-import type { Geometry } from "../geometry/client";
+import type { GeometryBackend } from "../geometry/client";
 
 export interface RebuildState {
   building: boolean;
@@ -45,7 +45,7 @@ export class DocumentStore {
   };
 
   constructor(
-    private geometry: Geometry,
+    private geometry: GeometryBackend,
     initial: CadDocument,
   ) {
     this.doc = clone(initial);

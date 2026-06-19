@@ -27,7 +27,7 @@ export interface SpaceMouseConfig {
   invert: { panX: boolean; panY: boolean; zoom: boolean; orbitAz: boolean; orbitPolar: boolean };
 }
 
-const MODE_KEY = "verxa.spacemouse.mode";
+const MODE_KEY = "sindricad.spacemouse.mode";
 function readStoredMode(): "object" | "camera" {
   const v = typeof localStorage !== "undefined" && localStorage.getItem(MODE_KEY);
   return v === "camera" ? "camera" : "object"; // default: Fusion-style object mode

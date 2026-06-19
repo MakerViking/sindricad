@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Verxa",
+  "productName": "SindriCAD",
   "version": "0.1.0",
-  "identifier": "dev.verxa.cad",
+  "identifier": "dev.sindricad.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Verxa",
+        "title": "SindriCAD",
         "width": 1280,
         "height": 800,
         "minWidth": 800,

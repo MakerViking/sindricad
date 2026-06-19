@@ -8,10 +8,10 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { BASE_COLOR, type ModelView } from "./render";
 
 const EDGE_BASE = new THREE.Color(0x1b1f24);
-const HOVER = new THREE.Color(0xff9933); // orange (under cursor)
-// vivid green for SELECTED — clearly distinct from the dark idle edges, the
-// cyan "pickable" emphasis, and the orange hover, and robust over remote/compressed displays.
-const SELECT = new THREE.Color(0x2bff88);
+const HOVER = new THREE.Color(0xffd089); // pale hot amber (under cursor)
+// molten amber for SELECTED (the Forge accent) — distinct from the paler hover
+// and the muted-ember "pickable" emphasis; reads as forged/locked-in.
+const SELECT = new THREE.Color(0xff7a3c);
 
 export class Highlighter {
   private hoveredEdge: Line2 | null = null;
@@ -83,6 +83,11 @@ export class Highlighter {
   /** the currently selected edge lines (for pre-selected fillet/chamfer). */
   getSelectedEdges(): Line2[] {
     return [...this.selectedEdges];
+  }
+
+  /** the currently selected face ids (for pre-selected press/pull). */
+  getSelectedFaces(): number[] {
+    return [...this.selectedFaces];
   }
 
   clearSelection() {

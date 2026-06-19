@@ -32,6 +32,7 @@ const MODEL: Group[] = [
   {
     label: "MODIFY",
     items: [
+      { action: "presspull", label: "Press/Pull", iconName: "presspull", key: "Q" },
       { action: "fillet", label: "Fillet", iconName: "fillet", key: "F" },
       { action: "chamfer", label: "Chamfer", iconName: "chamfer" },
       { action: "mirror", label: "Mirror", iconName: "mirror" },

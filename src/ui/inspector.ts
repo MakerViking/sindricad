@@ -18,6 +18,7 @@ const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>
   extrude: [["distance", "Distance", "length"]],
   fillet: [["radius", "Radius", "length"]],
   chamfer: [["distance", "Length", "length"]],
+  "press-pull": [["distance", "Distance", "length"]],
   revolve: [["angle", "Angle", "angle"]],
 };
 
@@ -52,7 +53,13 @@ export class Inspector {
     }
 
     // --- selected feature editor ---
-    if (!this.selectedId) return;
+    if (!this.selectedId) {
+      const hint = document.createElement("div");
+      hint.className = "empty-state";
+      hint.textContent = "Select a feature in the timeline or browser to edit its values.";
+      this.el.appendChild(hint);
+      return;
+    }
     const f = doc.features.find((x) => x.id === this.selectedId);
     if (!f) return;
 

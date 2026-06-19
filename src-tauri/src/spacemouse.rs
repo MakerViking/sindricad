@@ -14,9 +14,9 @@
 //! Install: copy to `/etc/udev/rules.d/`, then
 //! `sudo udevadm control --reload && sudo udevadm trigger`, then replug. If
 //! `spacenavd` or the 3Dconnexion driver is running it may already hold the
-//! device — stop it to let Verxa read it directly.
+//! device — stop it to let SindriCAD read it directly.
 //!
-//! Set VERXA_SPACEMOUSE_DEBUG=1 to log raw reports for tuning.
+//! Set SINDRICAD_SPACEMOUSE_DEBUG=1 to log raw reports for tuning.
 
 use std::thread;
 use std::time::Duration;
@@ -55,7 +55,7 @@ pub fn start(app: AppHandle) {
 }
 
 fn stream(app: &AppHandle) -> Result<(), String> {
-    let debug = std::env::var("VERXA_SPACEMOUSE_DEBUG").is_ok();
+    let debug = std::env::var("SINDRICAD_SPACEMOUSE_DEBUG").is_ok();
     let api = HidApi::new().map_err(|e| e.to_string())?;
     let info = api
         .device_list()

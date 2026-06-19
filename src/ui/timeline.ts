@@ -38,6 +38,15 @@ export class Timeline {
     const track = document.createElement("div");
     track.className = "timeline-track";
 
+    if (features.length === 0 && !build.building) {
+      const empty = document.createElement("div");
+      empty.className = "timeline-empty";
+      empty.textContent = "Your modeling history will appear here. Start with a Sketch.";
+      track.appendChild(empty);
+      this.el.appendChild(track);
+      return;
+    }
+
     features.forEach((f, i) => {
       if (i === rollback) track.appendChild(this.marker());
       track.appendChild(this.node(f, i, i >= rollback));

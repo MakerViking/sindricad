@@ -114,6 +114,13 @@ export class BrowserTree {
     this.el.appendChild(head);
 
     if (collapsed) return;
+    if (items.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state tree-child";
+      empty.textContent = name === "Bodies" ? "No bodies yet" : `No ${name.toLowerCase()} yet`;
+      this.el.appendChild(empty);
+      return;
+    }
     for (const it of items) {
       const row = document.createElement("div");
       row.className = "feature-row tree-child";

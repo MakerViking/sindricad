@@ -27,6 +27,7 @@ const PATHS: Record<string, string> = {
   // modeling modify
   chamfer: `<path d="M4 20V12l8-8h8" fill="none"/>`,
   mirror: `<line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5z"/>`,
+  presspull: `<path d="M4 16l6-3 8 3-6 3z" fill="none"/><path d="M10 13V4m0 0l-3 3m3-3l3 3"/>`,
 
   // file / general
   save: `<path d="M5 4h11l3 3v13H5z"/><rect x="8" y="4" width="6" height="5"/><rect x="8" y="13" width="8" height="5"/>`,

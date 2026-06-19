@@ -2,6 +2,7 @@ import "./styles.css";
 import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
+import { TauriGeometry } from "./geometry/tauriClient";
 import { DocumentStore } from "./document/store";
 import { EXAMPLE_BRACKET } from "./document/example";
 import { Timeline } from "./ui/timeline";
@@ -20,6 +21,7 @@ import { DimInput } from "./sketch/dimInput";
 import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
+import { PressPullTool } from "./features/pressPullTool";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
 import type { Feature, PlaneDef, PlaneSpec } from "./types";
@@ -29,7 +31,7 @@ const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const contextTab = document.getElementById("context-tab")!;
 const viewport = new Viewport(canvas);
-const geometry = new Geometry();
+const geometry = import.meta.env.VITE_GEOM === "rust" ? new TauriGeometry() : new Geometry();
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
 
 const overlay = new SketchOverlay();
@@ -37,6 +39,7 @@ viewport.addToScene(overlay.group);
 const sketch = new SketchMode(viewport, overlay);
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
+const pressPull = new PressPullTool(viewport, store);
 
 (window as any).viewport = viewport;
 (window as any).store = store;
@@ -45,6 +48,7 @@ const edgeFeature = new EdgeFeatureTool(viewport, store);
 (window as any).overlay = overlay;
 (window as any).extrude = extrude;
 (window as any).edgeFeature = edgeFeature;
+(window as any).pressPull = pressPull;
 (window as any).solveSketch = solveSketch;
 void initSolver(); // warm up the constraint solver WASM
 
@@ -117,7 +121,7 @@ timeline.onEdit = (id) => editFeature(id);
 tree.onSelect = selectFeature;
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
-  if (!sketch.active && !extrude.active && !edgeFeature.active) sketch.enter(plane, store);
+  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active) sketch.enter(plane, store);
 };
 
 // --- sketch visibility (Fusion-style: a sketch consumed by a feature hides by
@@ -149,7 +153,7 @@ store.onDocChange(() => {
 
 // --- selected-edge hint: tells you pre-selection is usable by Fillet/Chamfer ---
 viewport.onSelectionChange = () => {
-  if (sketch.active || extrude.active || edgeFeature.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planePick) return;
   const n = viewport.selectedEdgeSelectors().length;
   setPrompt(n ? `${n} edge${n > 1 ? "s" : ""} selected — Fillet or Chamfer to apply · Esc to clear` : null);
 };
@@ -250,8 +254,14 @@ let planePick = false;
 // then drag an arrow to scrub the radius/distance with a live sidecar preview.
 const startFillet = () => edgeFeature.start("fillet", (id) => id && selectFeature(id));
 const startChamfer = () => edgeFeature.start("chamfer", (id) => id && selectFeature(id));
+// Interactive Press/Pull: pick a solid face, then drag an arrow along its normal
+// to add/cut material (planar) or offset a curved face — with a live preview.
+const startPressPull = () => {
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active) return;
+  pressPull.start((id) => id && selectFeature(id));
+};
 function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
-  if (sketch.active || extrude.active || edgeFeature.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planePick) return;
   planePick = true;
   viewport.showAllPlanes(true);
   viewport.suspendPicking = true;
@@ -319,7 +329,7 @@ function offsetPlane() {
 }
 
 function startExtrude() {
-  if (sketch.active || extrude.active || edgeFeature.active) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active) return;
   if (overlay.regions.length === 0) {
     setStatus("Extrude: create a sketch with a closed profile first", "");
     return;
@@ -382,6 +392,9 @@ function handleAction(action: string) {
     case "chamfer":
       startChamfer();
       break;
+    case "presspull":
+      startPressPull();
+      break;
     case "mirror":
       store.addFeature({ id: store.nextId(), type: "mirror", plane: "YZ" } as Feature);
       break;
@@ -416,6 +429,9 @@ installKeymap((a) => {
     case "chamfer":
       handleAction(a);
       break;
+    case "presspull":
+      handleAction(a);
+      break;
     case "undo":
       store.undo();
       break;
@@ -426,7 +442,7 @@ installKeymap((a) => {
       void saveDocument(store);
       break;
     case "escape":
-      if (!sketch.active && !extrude.active && !edgeFeature.active) {
+      if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active) {
         viewport.clearSelection();
         selectFeature(null);
       }
@@ -440,7 +456,7 @@ installKeymap((a) => {
 // delete selected feature
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement) return;
-  if (sketch.active || extrude.active || edgeFeature.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planePick) return;
   if ((e.key === "Delete" || e.key === "Backspace") && selectedFeature) {
     store.removeFeature(selectedFeature);
     selectFeature(null);

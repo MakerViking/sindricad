@@ -86,7 +86,7 @@ def test_exports():
 
 
 if __name__ == "__main__":
-    print("Verxa sidecar smoke test")
+    print("SindriCAD sidecar smoke test")
     test_rebuild()
     test_error_naming()
     test_exports()

@@ -1,7 +1,7 @@
 {
-  "name": "verxa",
+  "name": "sindricad",
   "version": "0.1.0",
-  "description": "Verxa — a Fusion-style parametric CAD app driving build123d",
+  "description": "SindriCAD — a Fusion-style parametric CAD app driving build123d",
   "type": "module",
   "scripts": {
     "dev": "vite",

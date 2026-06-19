@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the Verxa SpaceMouse hidraw udev rule and apply it to the currently
+# Install the SindriCAD SpaceMouse hidraw udev rule and apply it to the currently
 # connected 3Dconnexion device — no replug/reboot needed. Run with sudo:
 #   sudo sh /home/thomash/Koding/projects/Verxa/packaging/setup-spacemouse.sh
 set -e

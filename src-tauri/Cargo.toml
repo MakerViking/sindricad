@@ -1,13 +1,13 @@
 [package]
-name = "verxa"
+name = "sindricad"
 version = "0.1.0"
-description = "Verxa — a Fusion-style parametric CAD app driving build123d"
+description = "SindriCAD — a Fusion-style parametric CAD app driving build123d"
 authors = ["you"]
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "verxa_lib"
+name = "sindricad_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -20,3 +20,12 @@ tauri-plugin-fs = "2"
 libc = "0.2"
 hidapi = "2"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Geometry-in-Rust spike: link the SYSTEM OCCT (default-features=false disables the
+# from-source `builtin` build). Requires OCCT >= 7.8 installed (Arch: `opencascade`).
+# Published 0.2.0 (2023) can't system-link cleanly & its vendored OCCT 7.8 won't
+# configure under cmake 4. Upstream `main` targets OCCT 7.8 and does not compile
+# against system OCCT 7.9.3 (TopoDS class→namespace etc.), so we vendor a local
+# fork under third_party/ patched for 7.9.
+opencascade = { path = "../third_party/opencascade-rs/crates/opencascade", default-features = false }
+opencascade-sys = { path = "../third_party/opencascade-rs/crates/opencascade-sys", default-features = false }

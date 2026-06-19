@@ -62,6 +62,11 @@ export type Feature =
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }
   | { id: string; type: "chamfer"; edges: Selector | Selector[]; distance: Num }
+  // Press/Pull a single solid face. `distance` is signed (the tool sets the sign
+  // from the drag direction); `operation` is derived from the sign for the
+  // timeline label. Planar faces extrude+boolean (boss/pocket); curved faces
+  // offset the surface (e.g. resize a hole).
+  | { id: string; type: "press-pull"; face: Selector; distance: Num; operation: "join" | "cut" }
   | { id: string; type: "mirror"; plane: Plane3 }
   | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num }
   | { id: string; type: "loft"; sketches: string[] };
