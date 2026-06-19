@@ -129,9 +129,16 @@ impl Wire {
         Self::from_make_wire(make_wire)
     }
 
+    /// Does this wire form a closed loop (first vertex == last vertex)? Mirrors
+    /// build123d's `Wire.is_closed`; used to keep only closed free-form sketch
+    /// loops as profile faces.
+    pub fn is_closed(&self) -> bool {
+        const TOL: f64 = 1e-6;
+        ffi::b_rep_class::wire_is_closed(&self.inner, TOL)
+    }
+
     #[must_use]
-    pub fn mirror_along_axis(&self, axis_origin: DVec3, axis_dir: DVec3) -> Self {
-        let axis_dir = make_dir(axis_dir);
+    pub fn mirror_along_axis(&self, axis_origin: DVec3, axis_dir: DVec3) -> Self {        let axis_dir = make_dir(axis_dir);
         let axis = ffi::gp::gp_Ax1_new(&make_point(axis_origin), &axis_dir);
 
         let mut transform = ffi::gp::new_transform();

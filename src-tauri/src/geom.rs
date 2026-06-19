@@ -20,7 +20,8 @@
 //! The output JSON mirrors `RebuildResult` in `src/types.ts`.
 
 use glam::{dvec3, DVec3};
-use opencascade::primitives::{Edge, Face, IntoShape, Shape, SurfaceType, Wire};
+use opencascade::angle::Angle;
+use opencascade::primitives::{Edge, EdgeConnection, Face, IntoShape, Shape, Solid, SurfaceType, Wire};
 use opencascade::workplane::Workplane;
 use serde::Serialize;
 
@@ -110,12 +111,17 @@ fn num_field(obj: &serde_json::Value, key: &str, params: &std::collections::Hash
 // ---------------------------------------------------------------------------
 
 /// A built sketch: the union profile face (whole-sketch extrude) — or None if the
-/// sketch has no closed profile — plus the sketch plane's normal, which is the
-/// extrude direction (build123d's `extrude(sk, amount=d)` prisms along the plane
-/// normal, NOT the face's own orientation normal). (Region/interior-point
-/// selection is deferred: we always extrude the whole sketch, see report.)
+/// sketch has no closed profile — plus the per-loop located faces (for region
+/// selection) and the sketch plane's normal, which is the extrude direction
+/// (build123d's `extrude(sk, amount=d)` prisms along the plane normal, NOT the
+/// face's own orientation normal).
 struct BuiltSketch {
     face: Option<Face>,
+    /// Each closed loop of the sketch, located onto its plane, as an individual
+    /// Face. Region/interior-point selection recovers nested profiles (a ring, an
+    /// inner disk) from these that the unioned `face` collapses. Mirrors
+    /// builder.py's `_build_sketch` "faces" list.
+    loops: Vec<Face>,
     normal: DVec3,
 }
 
@@ -136,16 +142,45 @@ fn build(doc: &Document) -> Result<Shape, String> {
                 let entry = sketches
                     .get(sketch_id)
                     .ok_or_else(|| format!("extrude references unknown sketch '{sketch_id}'"))?;
-                let face = entry
-                    .face
-                    .as_ref()
-                    .ok_or_else(|| "sketch has no closed profile to extrude".to_string())?;
 
                 let distance = num_field(f, "distance", params);
-                // Whole-sketch extrude along the sketch plane normal (regions
-                // deferred). Matches build123d's `extrude(sk, amount=d)`.
-                let solid = face.extrude(entry.normal * distance);
-                let solid_shape = solid.into_shape();
+                let dir = entry.normal * distance;
+
+                // Region points (one per selected area) pick + combine specific
+                // profiles; a ring (annulus) keeps its hole, several areas union.
+                // `regions` is the list form, `region` the legacy single-point one.
+                // No region points -> extrude the whole-sketch union face.
+                let mut pts: Vec<DVec3> = Vec::new();
+                if let Some(arr) = f.get("regions").and_then(|v| v.as_array()) {
+                    for p in arr {
+                        pts.push(json_point(p));
+                    }
+                } else if let Some(p) = f.get("region") {
+                    pts.push(json_point(p));
+                }
+
+                let solid_shape: Shape = if pts.is_empty() {
+                    let face = entry
+                        .face
+                        .as_ref()
+                        .ok_or_else(|| "sketch has no closed profile to extrude".to_string())?;
+                    face.extrude(dir).into_shape()
+                } else {
+                    // Build a solid per picked region (outer loop minus its nested
+                    // holes), then union the per-region solids. Mirrors builder.py's
+                    // `_region_face_at` + summed extrude.
+                    let mut acc: Option<Shape> = None;
+                    for p in &pts {
+                        let region = region_face_at(&entry.loops, *p)
+                            .ok_or_else(|| "no profile found under the selected area".to_string())?;
+                        let solid = region.extrude(dir).into_shape();
+                        acc = Some(match acc {
+                            None => solid,
+                            Some(existing) => existing.union(&solid).into(),
+                        });
+                    }
+                    acc.ok_or_else(|| "no profile found under the selected area".to_string())?
+                };
 
                 let op = f.get("operation").and_then(|v| v.as_str()).unwrap_or("new");
                 part = Some(match (&part, op) {
@@ -227,6 +262,64 @@ fn build(doc: &Document) -> Result<Shape, String> {
                     .ok_or_else(|| "no face found to press/pull".to_string())?;
                 let distance = num_field(f, "distance", params);
                 part = Some(press_pull(existing, face, distance)?);
+            }
+            "revolve" => {
+                let sketch_id = f.get("sketch").and_then(|v| v.as_str()).unwrap_or("");
+                let entry = sketches
+                    .get(sketch_id)
+                    .ok_or_else(|| format!("revolve references unknown sketch '{sketch_id}'"))?;
+                let face = entry
+                    .face
+                    .as_ref()
+                    .ok_or_else(|| "sketch has no closed profile to revolve".to_string())?;
+
+                // Axis defaults to Z, angle to a full 360° turn — matching
+                // builder.py's `revolve(sk, axis=AXES[..], revolution_arc=..)`.
+                let axis = f.get("axis").and_then(|v| v.as_str()).unwrap_or("Z");
+                let axis_dir = match axis {
+                    "X" => DVec3::X,
+                    "Y" => DVec3::Y,
+                    "Z" => DVec3::Z,
+                    other => return Err(format!("unknown revolve axis '{other}'")),
+                };
+                let angle_deg = match f.get("angle") {
+                    None | Some(serde_json::Value::Null) => 360.0,
+                    Some(_) => num_field(f, "angle", params),
+                };
+                // OCCT's `Face::revolve` takes None for a full turn; a partial arc
+                // is given in radians. Revolve about the axis through the origin.
+                let angle = if (angle_deg - 360.0).abs() < 1e-9 {
+                    None
+                } else {
+                    Some(Angle::Degrees(angle_deg))
+                };
+                let solid = face.revolve(DVec3::ZERO, axis_dir, angle);
+                part = Some(solid.into_shape());
+            }
+            "loft" => {
+                let ids = f
+                    .get("sketches")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| "loft missing 'sketches' list".to_string())?;
+                // Loft through each section's outer profile wire. Mirrors
+                // builder.py's `loft([sketches[s] for s in f["sketches"]])`.
+                let mut wires: Vec<Wire> = Vec::new();
+                for id in ids {
+                    let sid = id.as_str().unwrap_or("");
+                    let entry = sketches
+                        .get(sid)
+                        .ok_or_else(|| format!("loft references unknown sketch '{sid}'"))?;
+                    let face = entry
+                        .face
+                        .as_ref()
+                        .ok_or_else(|| format!("loft section '{sid}' has no closed profile"))?;
+                    wires.push(face.outer_wire());
+                }
+                if wires.len() < 2 {
+                    return Err("loft needs at least two sections".to_string());
+                }
+                let solid = Solid::loft(wires.iter());
+                part = Some(solid.into_shape());
             }
             // Defer/skip every other feature type so the model still renders.
             other => {
@@ -426,19 +519,19 @@ fn clone_shape(shape: &Shape) -> Shape {
     shape.translated(DVec3::ZERO)
 }
 
-/// Build a sketch's union profile face on a BASE plane (XY/XZ/YZ). Rectangle and
-/// circle primitives only; line/arc/spline entities and derived (PlaneDef) planes
-/// are skipped (deferred). Construction geometry is skipped.
+/// Build a sketch's profile on its plane. Handles the BASE planes (XY/XZ/YZ) and
+/// derived PlaneDef planes ({origin, normal, xdir}). Primitives (rectangle,
+/// circle) plus free-form curves (line, arc, spline) are supported: free-form
+/// edges are assembled into closed wires -> faces, so an interactively-drawn
+/// polyline / arc / spline profile extrudes like in Fusion. Construction geometry
+/// is skipped. Returns the unioned profile face (whole-sketch extrude) plus each
+/// closed loop located onto the plane (region selection).
 fn build_sketch(f: &serde_json::Value, params: &std::collections::HashMap<String, f64>) -> BuiltSketch {
-    let plane = f.get("plane");
-    let wp = match plane.and_then(|v| v.as_str()) {
-        Some("XY") => Workplane::xy(),
-        Some("XZ") => Workplane::xz(),
-        Some("YZ") => Workplane::yz(),
-        _ => {
-            // Derived PlaneDef plane: deferred — no profile.
-            eprintln!("geom: skipping sketch on non-base/derived plane");
-            return BuiltSketch { face: None, normal: DVec3::Z };
+    let wp = match plane_of(f.get("plane"), params) {
+        Some(wp) => wp,
+        None => {
+            eprintln!("geom: skipping sketch on unrecognized plane");
+            return BuiltSketch { face: None, loops: Vec::new(), normal: DVec3::Z };
         }
     };
     let normal = wp.normal();
@@ -447,6 +540,7 @@ fn build_sketch(f: &serde_json::Value, params: &std::collections::HashMap<String
     let entities = f.get("entities").and_then(|v| v.as_array()).unwrap_or(&empty);
 
     let mut faces: Vec<Face> = Vec::new();
+    let mut edges: Vec<Edge> = Vec::new(); // free-form line/arc/spline edges
     for e in entities {
         if e.get("construction").and_then(|v| v.as_bool()).unwrap_or(false) {
             continue; // construction geometry is reference-only, not a profile
@@ -466,24 +560,165 @@ fn build_sketch(f: &serde_json::Value, params: &std::collections::HashMap<String
                 let r = num_field(e, "radius", params);
                 faces.push(wp.circle(x, y, r).to_face());
             }
-            // line/arc/spline free-form curves are deferred.
+            "line" => {
+                let p1 = wp.to_world_pos(dvec3(num_field(e, "x1", params), num_field(e, "y1", params), 0.0));
+                let p2 = wp.to_world_pos(dvec3(num_field(e, "x2", params), num_field(e, "y2", params), 0.0));
+                edges.push(Edge::segment(p1, p2));
+            }
+            "arc" => {
+                // 3-point arc: start -> through (mx,my) -> end.
+                let p1 = wp.to_world_pos(dvec3(num_field(e, "x1", params), num_field(e, "y1", params), 0.0));
+                let pm = wp.to_world_pos(dvec3(num_field(e, "mx", params), num_field(e, "my", params), 0.0));
+                let p2 = wp.to_world_pos(dvec3(num_field(e, "x2", params), num_field(e, "y2", params), 0.0));
+                edges.push(Edge::arc(p1, pm, p2));
+            }
+            "spline" => {
+                let pts: Vec<DVec3> = e
+                    .get("points")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|p| wp.to_world_pos(dvec3(num_field(p, "x", params), num_field(p, "y", params), 0.0)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if pts.len() >= 2 {
+                    edges.push(Edge::spline_from_points(pts, None));
+                }
+            }
             other => {
                 eprintln!("geom: skipping sketch entity type '{other}'");
             }
         }
     }
 
-    if faces.is_empty() {
-        return BuiltSketch { face: None, normal };
+    // Assemble free-form edges into closed-loop faces (builder.py `_faces_from_edges`).
+    if !edges.is_empty() {
+        faces.extend(faces_from_edges(edges));
     }
 
+    if faces.is_empty() {
+        return BuiltSketch { face: None, loops: Vec::new(), normal };
+    }
+
+    // The per-loop located faces (already on the plane) for region selection.
+    // `clone` via a no-op translate since Face isn't Clone.
+    let loops: Vec<Face> = faces.iter().map(clone_face).collect();
+
     // Union the profile faces into one (a circle inside a rectangle becomes a
-    // ring after the boolean fuse + subtract; for now a plain union of the loops,
-    // matching builder.py's `sk = faces[0] + faces[1] + ...`). build123d's `+`
-    // on overlapping faces yields the outer profile minus inner holes when one
-    // contains another; we approximate that with subtract-when-contained below.
+    // ring; disjoint loops union), matching builder.py's `sk = faces[0] + ...`.
     let face = combine_faces(faces);
-    BuiltSketch { face: Some(face), normal }
+    BuiltSketch { face: Some(face), loops, normal }
+}
+
+/// Resolve a sketch's plane spec to a `Workplane`. A string id selects a BASE
+/// plane (XY/XZ/YZ); an object {origin, normal, xdir} builds a derived plane
+/// (sketch-on-face / offset plane), mirroring builder.py's `_plane_of`.
+fn plane_of(spec: Option<&serde_json::Value>, params: &std::collections::HashMap<String, f64>) -> Option<Workplane> {
+    match spec {
+        Some(serde_json::Value::String(s)) => match s.as_str() {
+            "XY" => Some(Workplane::xy()),
+            "XZ" => Some(Workplane::xz()),
+            "YZ" => Some(Workplane::yz()),
+            _ => None,
+        },
+        Some(obj @ serde_json::Value::Object(_)) => {
+            let origin = obj.get("origin").map(|v| json_point(v))?;
+            let normal = obj.get("normal").map(|v| json_point(v))?;
+            let xdir = obj.get("xdir").map(|v| json_point(v))?;
+            let _ = params; // PlaneDef components are literals in the document
+            let mut wp = Workplane::new(xdir, normal);
+            wp.set_translation(origin);
+            Some(wp)
+        }
+        _ => None,
+    }
+}
+
+/// Read a `[x, y, z]` array from JSON into a DVec3 (missing components -> 0).
+fn json_point(v: &serde_json::Value) -> DVec3 {
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return DVec3::ZERO,
+    };
+    let c = |i: usize| arr.get(i).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    dvec3(c(0), c(1), c(2))
+}
+
+/// Assemble free-form edges into faces from their closed loops. Connects edges
+/// sharing exact endpoints into wires (OCCT `ConnectEdgesToWires`), keeps the
+/// closed ones, and turns each into a face. Mirrors builder.py's
+/// `_faces_from_edges` (`Wire.combine` + closed filter + `_face_from_wire`).
+fn faces_from_edges(edges: Vec<Edge>) -> Vec<Face> {
+    // Build a wire from the edges in document order (they're drawn connected
+    // end-to-end). BRepBuilderAPI_MakeWire connects edges by coincident vertices
+    // with its own tolerance — the same path the fork's bottle example uses with
+    // arcs. If the edges happen to be unordered, fall back to topological
+    // connection (build123d's tolerance-based `Wire.combine`).
+    let wire = Wire::from_edges(edges.iter());
+    if wire.is_closed() {
+        return vec![wire.to_face()];
+    }
+    let reconnected = Wire::from_unordered_edges(edges.iter(), EdgeConnection::default());
+    if reconnected.is_closed() {
+        return vec![reconnected.to_face()];
+    }
+    eprintln!("geom: free-form sketch edges do not form a closed loop; skipping");
+    Vec::new()
+}
+
+/// Pick the region containing `p` (smallest-area located loop that contains it)
+/// and cut out its nested holes (a loop strictly inside it becomes a hole, so
+/// concentric circles give a ring). Falls back to the nearest loop by center when
+/// `p` is inside none. Mirrors builder.py's `_region_face_at`.
+fn region_face_at(loops: &[Face], p: DVec3) -> Option<Face> {
+    if loops.is_empty() {
+        return None;
+    }
+    let containing: Vec<&Face> = loops.iter().filter(|fc| fc.contains_point(p)).collect();
+
+    let outer: &Face = if containing.is_empty() {
+        // Robustness: nearest loop by center when the point isn't inside any.
+        loops
+            .iter()
+            .min_by(|a, b| {
+                let da = (a.center_of_mass() - p).length();
+                let db = (b.center_of_mass() - p).length();
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap()
+    } else {
+        // Smallest-area containing loop is the region's outer boundary.
+        containing
+            .into_iter()
+            .min_by(|a, b| a.surface_area().partial_cmp(&b.surface_area()).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap()
+    };
+
+    let outer_area = outer.surface_area();
+    // Collect the holes: smaller loops whose center lies inside the outer loop.
+    let holes: Vec<&Face> = loops
+        .iter()
+        .filter(|fc| !std::ptr::eq(*fc, outer))
+        .filter(|fc| fc.surface_area() < outer_area && outer.contains_point(fc.center_of_mass()))
+        .collect();
+
+    if holes.is_empty() {
+        return Some(clone_face(outer));
+    }
+
+    let mut result: Shape = clone_face(outer).into_shape();
+    for hole in holes {
+        result = result.subtract(&clone_face(hole).into_shape()).into();
+    }
+    // The outer-minus-holes boolean yields a single ring Face (wrapped in a
+    // compound), so pull it out rather than expecting a bare Face.
+    result_to_single_face(result)
+}
+
+/// Make an owned copy of a Face (so it can be consumed in two places).
+fn clone_face(face: &Face) -> Face {
+    face.clone()
 }
 
 /// Build a rectangle face centered at local (x, y) on the workplane, sized w×h.
@@ -532,10 +767,16 @@ fn combine_faces(faces: Vec<Face>) -> Face {
             result = result.union(&f_shape).into();
         }
     }
-    result.as_face().unwrap_or_else(|| {
-        // Boolean produced a non-Face (e.g. compound); fall back to the first face.
-        panic!("combine_faces: profile boolean did not yield a single face")
-    })
+    result_to_single_face(result)
+        .expect("combine_faces: profile boolean produced no face")
+}
+
+/// Reduce a boolean result to its single profile Face. A face-vs-face boolean
+/// (subtract/union) yields a Compound wrapping one face (a ring keeps its hole as
+/// an inner wire of that one face), so `Shape::as_face` returns None — pull the
+/// face out of the compound instead.
+fn result_to_single_face(shape: Shape) -> Option<Face> {
+    shape.as_face().or_else(|| shape.faces().next())
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +929,35 @@ mod tests {
                 {"id":"e1","type":"extrude","sketch":"s1","distance":10,"operation":"new"},
                 {"id":"s2","type":"sketch","plane":"XY","entities":[{"type":"rectangle","width":10,"height":10,"x":15}]},
                 {"id":"e2","type":"extrude","sketch":"s2","distance":10,"operation":"join"}]})),
+            // Phase 3 cross-check cases (compare against /tmp/xcheck_phase3.py output).
+            ("polyline_square", json!({"parameters":{},"features":[
+                {"id":"s1","type":"sketch","plane":"XY","entities":[
+                    {"type":"line","x1":0,"y1":0,"x2":20,"y2":0},
+                    {"type":"line","x1":20,"y1":0,"x2":20,"y2":20},
+                    {"type":"line","x1":20,"y1":20,"x2":0,"y2":20},
+                    {"type":"line","x1":0,"y1":20,"x2":0,"y2":0}]},
+                {"id":"e1","type":"extrude","sketch":"s1","distance":10,"operation":"new"}]})),
+            ("arc_profile", json!({"parameters":{},"features":[
+                {"id":"s1","type":"sketch","plane":"XY","entities":[
+                    {"type":"line","x1":-10,"y1":0,"x2":10,"y2":0},
+                    {"type":"arc","x1":10,"y1":0,"mx":0,"my":10,"x2":-10,"y2":0}]},
+                {"id":"e1","type":"extrude","sketch":"s1","distance":5,"operation":"new"}]})),
+            ("revolve_360", json!({"parameters":{},"features":[
+                {"id":"s1","type":"sketch","plane":"XZ","entities":[{"type":"rectangle","width":4,"height":10,"x":10,"y":0}]},
+                {"id":"r1","type":"revolve","sketch":"s1","axis":"Z","angle":360}]})),
+            ("loft_two", json!({"parameters":{},"features":[
+                {"id":"s1","type":"sketch","plane":"XY","entities":[{"type":"rectangle","width":20,"height":20}]},
+                {"id":"s2","type":"sketch","plane":{"origin":[0,0,30],"normal":[0,0,1],"xdir":[1,0,0]},
+                    "entities":[{"type":"rectangle","width":10,"height":10}]},
+                {"id":"l1","type":"loft","sketches":["s1","s2"]}]})),
+            ("region_inner_disk", json!({"parameters":{},"features":[
+                {"id":"s1","type":"sketch","plane":"XY","entities":[
+                    {"type":"rectangle","width":40,"height":40},{"type":"circle","radius":8}]},
+                {"id":"e1","type":"extrude","sketch":"s1","distance":10,"operation":"new","regions":[[0,0,0]]}]})),
+            ("region_outer_ring", json!({"parameters":{},"features":[
+                {"id":"s1","type":"sketch","plane":"XY","entities":[
+                    {"type":"rectangle","width":40,"height":40},{"type":"circle","radius":8}]},
+                {"id":"e1","type":"extrude","sketch":"s1","distance":10,"operation":"new","regions":[[15,15,0]]}]})),
         ];
         for (name, doc) in cases {
             let r = geom_rebuild(doc).expect("rebuild");
@@ -704,9 +974,10 @@ mod tests {
         }
     }
 
-    /// Genuinely unsupported feature types (revolve/loft) are skipped, not
-    /// errored: the box still builds. (fillet/chamfer/mirror/press-pull are now
-    /// implemented and tested separately.)
+    /// Genuinely unsupported feature types (e.g. `sweep`, `shell`) are skipped,
+    /// not errored: the box still builds. (sketch/extrude/fillet/chamfer/mirror/
+    /// press-pull/revolve/loft/region-extrude are all implemented and tested
+    /// separately.)
     #[test]
     fn unsupported_features_are_skipped() {
         let doc = json!({
@@ -716,14 +987,14 @@ mod tests {
                     { "type": "rectangle", "width": "len", "height": "len" }
                 ]},
                 { "id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new" },
-                { "id": "r1", "type": "revolve", "sketch": "s1", "angle": 90 },
-                { "id": "l1", "type": "loft", "sketches": ["s1"] }
+                { "id": "x1", "type": "sweep" },
+                { "id": "x2", "type": "shell" }
             ]
         });
 
         let result = geom_rebuild(doc).expect("rebuild");
         let tris = result.mesh.indices.len() / 3;
-        assert_eq!(tris, 12, "still a plain box (revolve/loft skipped)");
+        assert_eq!(tris, 12, "still a plain box (sweep/shell skipped)");
         // Parameter resolution worked: 20×20 rectangle.
         let span_x = result.bbox.max[0] - result.bbox.min[0];
         assert!((span_x - 20.0).abs() < 0.05, "param-driven width ~20, got {span_x}");
@@ -942,5 +1213,211 @@ mod tests {
         ]});
         let r = geom_rebuild(doc).expect("cylindrical side press-pull is supported");
         assert!(distinct_faces(&r) >= 3, "still a cylinder-ish solid");
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 3: free-form curves, revolve, loft, region extrude, derived
+    // planes. Counts/bbox are cross-checked against the Python sidecar
+    // (sidecar/builder.py, OCCT 7.8.1 vs the Rust path's OCCT 7.9.3). Face
+    // count + bbox are version-stable and asserted exactly; tessellation
+    // node/triangle counts on curved geometry can differ slightly so we keep
+    // those loose. The cross-check numbers are inline per test.
+    // ---------------------------------------------------------------------
+
+    /// A closed polyline (4 line segments) -> a 20×20 square profile, extruded 10.
+    /// Python: 6 faces, 12 edges, bbox 0..20 / 0..20 / 0..10 (same as a box).
+    #[test]
+    fn polyline_square_extrude() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch", "plane": "XY", "entities": [
+                { "type": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0 },
+                { "type": "line", "x1": 20, "y1": 0, "x2": 20, "y2": 20 },
+                { "type": "line", "x1": 20, "y1": 20, "x2": 0, "y2": 20 },
+                { "type": "line", "x1": 0, "y1": 20, "x2": 0, "y2": 0 }
+            ]},
+            { "id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new" }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 6, "closed polyline square -> 6 faces");
+        assert_eq!(r.edges.len(), 12, "square prism -> 12 edges");
+        let span = [
+            r.bbox.max[0] - r.bbox.min[0],
+            r.bbox.max[1] - r.bbox.min[1],
+            r.bbox.max[2] - r.bbox.min[2],
+        ];
+        assert!((span[0] - 20.0).abs() < 0.05, "x span ~20, got {}", span[0]);
+        assert!((span[1] - 20.0).abs() < 0.05, "y span ~20, got {}", span[1]);
+        assert!((span[2] - 10.0).abs() < 0.05, "z span ~10, got {}", span[2]);
+    }
+
+    /// A profile that mixes a straight base line with a 3-point arc (a "D" half-
+    /// disk): line from (-10,0) to (10,0), arc back through (0,10). Python: 4
+    /// faces, 6 edges, bbox x -10..10, y 0..10, z 0..5.
+    #[test]
+    fn arc_profile_extrude() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch", "plane": "XY", "entities": [
+                { "type": "line", "x1": -10, "y1": 0, "x2": 10, "y2": 0 },
+                { "type": "arc", "x1": 10, "y1": 0, "mx": 0, "my": 10, "x2": -10, "y2": 0 }
+            ]},
+            { "id": "e1", "type": "extrude", "sketch": "s1", "distance": 5, "operation": "new" }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 4, "arc half-disk prism -> 4 faces (Python: 4)");
+        let span_x = r.bbox.max[0] - r.bbox.min[0];
+        let span_y = r.bbox.max[1] - r.bbox.min[1];
+        let span_z = r.bbox.max[2] - r.bbox.min[2];
+        assert!((span_x - 20.0).abs() < 0.1, "x span ~20, got {span_x}");
+        assert!((span_y - 10.0).abs() < 0.2, "y span ~10 (arc apex), got {span_y}");
+        assert!((span_z - 5.0).abs() < 0.15, "z span ~5, got {span_z}");
+    }
+
+    /// A spline-topped profile closed by a base line, extruded. The spline fits
+    /// (-10,0)->(-5,8)->(5,8)->(10,0). Python: 4 faces, 6 edges; the apex y is
+    /// ~9.09 (spline overshoots the control points). We assert the version-stable
+    /// face count + the x span and a sane positive y apex.
+    #[test]
+    fn spline_profile_extrude() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch", "plane": "XY", "entities": [
+                { "type": "spline", "points": [
+                    { "x": -10, "y": 0 }, { "x": -5, "y": 8 },
+                    { "x": 5, "y": 8 }, { "x": 10, "y": 0 } ] },
+                { "type": "line", "x1": 10, "y1": 0, "x2": -10, "y2": 0 }
+            ]},
+            { "id": "e1", "type": "extrude", "sketch": "s1", "distance": 5, "operation": "new" }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 4, "spline-topped prism -> 4 faces (Python: 4)");
+        let span_x = r.bbox.max[0] - r.bbox.min[0];
+        let span_y = r.bbox.max[1] - r.bbox.min[1];
+        let span_z = r.bbox.max[2] - r.bbox.min[2];
+        assert!((span_x - 20.0).abs() < 0.25, "x span ~20, got {span_x}");
+        // Python apex ~9.09; allow a band (curved meshing differs by OCCT version).
+        assert!((8.5..9.7).contains(&span_y), "spline apex y in [8.5,9.7], got {span_y}");
+        assert!((span_z - 5.0).abs() < 0.25, "z span ~5, got {span_z}");
+    }
+
+    /// Revolve a 4×10 rectangle (centered at x=10 on the XZ plane) a full 360°
+    /// about the Z axis -> a tube/ring (annulus of revolution). Python: 4 faces
+    /// (inner + outer cylinder, top + bottom ring), 6 edges, bbox -12..12 in x,y,
+    /// -5..5 in z.
+    #[test]
+    fn revolve_rect_full_turn() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch", "plane": "XZ",
+              "entities": [{ "type": "rectangle", "width": 4, "height": 10, "x": 10, "y": 0 }] },
+            { "id": "r1", "type": "revolve", "sketch": "s1", "axis": "Z", "angle": 360 }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 4, "full revolve tube -> 4 faces (Python: 4)");
+        let span_x = r.bbox.max[0] - r.bbox.min[0];
+        let span_y = r.bbox.max[1] - r.bbox.min[1];
+        let span_z = r.bbox.max[2] - r.bbox.min[2];
+        assert!((span_x - 24.0).abs() < 0.3, "x span -12..12 = 24, got {span_x}");
+        assert!((span_y - 24.0).abs() < 0.3, "y span -12..12 = 24, got {span_y}");
+        assert!((span_z - 10.0).abs() < 0.15, "z span -5..5 = 10, got {span_z}");
+    }
+
+    /// Revolve the same rectangle only 90°: a quarter tube. Python: 6 faces,
+    /// 12 edges, bbox 0..12 in x and y, -5..5 in z.
+    #[test]
+    fn revolve_rect_quarter_turn() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch", "plane": "XZ",
+              "entities": [{ "type": "rectangle", "width": 4, "height": 10, "x": 10, "y": 0 }] },
+            { "id": "r1", "type": "revolve", "sketch": "s1", "axis": "Z", "angle": 90 }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 6, "quarter revolve -> 6 faces (Python: 6)");
+        let span_x = r.bbox.max[0] - r.bbox.min[0];
+        let span_z = r.bbox.max[2] - r.bbox.min[2];
+        assert!((span_x - 12.0).abs() < 0.3, "x span 0..12 = 12, got {span_x}");
+        assert!((span_z - 10.0).abs() < 0.15, "z span -5..5 = 10, got {span_z}");
+    }
+
+    /// Loft a 20×20 square (XY, z=0) up to a 10×10 square on a derived plane at
+    /// z=30: a tapered box. Python: 6 faces, 12 edges, bbox -10..10 in x,y and
+    /// 0..30 in z. (Also exercises a derived PlaneDef plane for the top section.)
+    #[test]
+    fn loft_two_sections() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch", "plane": "XY",
+              "entities": [{ "type": "rectangle", "width": 20, "height": 20 }] },
+            { "id": "s2", "type": "sketch",
+              "plane": { "origin": [0, 0, 30], "normal": [0, 0, 1], "xdir": [1, 0, 0] },
+              "entities": [{ "type": "rectangle", "width": 10, "height": 10 }] },
+            { "id": "l1", "type": "loft", "sketches": ["s1", "s2"] }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 6, "tapered box loft -> 6 faces (Python: 6)");
+        assert_eq!(r.edges.len(), 12, "tapered box loft -> 12 edges (Python: 12)");
+        let span_x = r.bbox.max[0] - r.bbox.min[0];
+        let span_z = r.bbox.max[2] - r.bbox.min[2];
+        assert!((span_x - 20.0).abs() < 0.5, "x span ~20 (widest section), got {span_x}");
+        assert!((span_z - 30.0).abs() < 0.5, "z span 0..30 = 30, got {span_z}");
+    }
+
+    /// Multi-region extrude: a 40×40 square with a concentric r=8 circle gives two
+    /// loops. An interior point at the center picks the INNER DISK; a point in a
+    /// corner picks the OUTER RING (square minus the disk). The two must differ.
+    /// Python: inner disk = 3 faces, bbox -8..8; outer ring = 7 faces, bbox -20..20.
+    #[test]
+    fn extrude_region_inner_disk_vs_outer_ring() {
+        let two_loops = || {
+            json!([
+                { "id": "s1", "type": "sketch", "plane": "XY", "entities": [
+                    { "type": "rectangle", "width": 40, "height": 40 },
+                    { "type": "circle", "radius": 8 } ] }
+            ])
+        };
+
+        // Inner disk: interior point at the center is inside the circle.
+        let mut inner = two_loops().as_array().unwrap().clone();
+        inner.push(json!({ "id": "e1", "type": "extrude", "sketch": "s1",
+            "distance": 10, "operation": "new", "regions": [[0, 0, 0]] }));
+        let r_inner = geom_rebuild(json!({ "parameters": {}, "features": inner })).expect("rebuild inner");
+        assert_eq!(distinct_faces(&r_inner), 3, "inner disk -> 3 faces (Python: 3)");
+        let inner_x = r_inner.bbox.max[0] - r_inner.bbox.min[0];
+        assert!((inner_x - 16.0).abs() < 0.1, "inner disk x span ~16 (r=8), got {inner_x}");
+
+        // Outer ring: interior point in a corner is inside the square but outside
+        // the circle, so the picked region is the square with the circle as a hole.
+        let mut outer = two_loops().as_array().unwrap().clone();
+        outer.push(json!({ "id": "e1", "type": "extrude", "sketch": "s1",
+            "distance": 10, "operation": "new", "regions": [[15, 15, 0]] }));
+        let r_outer = geom_rebuild(json!({ "parameters": {}, "features": outer })).expect("rebuild outer");
+        assert_eq!(distinct_faces(&r_outer), 7, "outer ring -> 7 faces (Python: 7)");
+        let outer_x = r_outer.bbox.max[0] - r_outer.bbox.min[0];
+        assert!((outer_x - 40.0).abs() < 0.1, "outer ring x span ~40, got {outer_x}");
+
+        // The two picks genuinely differ (disk is solid+small, ring is large+holed).
+        assert_ne!(
+            distinct_faces(&r_inner),
+            distinct_faces(&r_outer),
+            "inner-disk and outer-ring region picks must differ"
+        );
+        assert!(outer_x > inner_x + 10.0, "outer ring is much wider than the inner disk");
+    }
+
+    /// A sketch on a derived PlaneDef plane (origin z=5, normal +Z) extruded 10:
+    /// a box floating at z 5..15. Python: 6 faces, 12 edges, bbox -10..10 in x,y,
+    /// 5..15 in z. Confirms `plane_of` honors the plane origin.
+    #[test]
+    fn sketch_on_derived_plane() {
+        let doc = json!({ "parameters": {}, "features": [
+            { "id": "s1", "type": "sketch",
+              "plane": { "origin": [0, 0, 5], "normal": [0, 0, 1], "xdir": [1, 0, 0] },
+              "entities": [{ "type": "rectangle", "width": 20, "height": 20 }] },
+            { "id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new" }
+        ]});
+        let r = geom_rebuild(doc).expect("rebuild");
+        assert_eq!(distinct_faces(&r), 6, "box on derived plane -> 6 faces");
+        assert_eq!(r.edges.len(), 12, "box on derived plane -> 12 edges");
+        let span_x = r.bbox.max[0] - r.bbox.min[0];
+        assert!((span_x - 20.0).abs() < 0.05, "x span ~20, got {span_x}");
+        // The plane origin offset must lift the box to z 5..15.
+        assert!((r.bbox.min[2] - 5.0).abs() < 0.1, "z min ~5 (plane origin), got {}", r.bbox.min[2]);
+        assert!((r.bbox.max[2] - 15.0).abs() < 0.1, "z max ~15, got {}", r.bbox.max[2]);
     }
 }

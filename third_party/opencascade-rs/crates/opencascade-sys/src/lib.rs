@@ -3,6 +3,7 @@ pub mod b_rep_adaptor;
 pub mod b_rep_algo_api;
 pub mod b_rep_bnd_lib;
 pub mod b_rep_builder_api;
+pub mod b_rep_class;
 pub mod b_rep_feat;
 pub mod b_rep_fillet_api;
 pub mod b_rep_g_prop;

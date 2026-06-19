@@ -21,6 +21,12 @@ impl AsRef<Face> for Face {
     }
 }
 
+impl Clone for Face {
+    fn clone(&self) -> Self {
+        Self::from_face(&self.inner)
+    }
+}
+
 impl Face {
     pub(crate) fn from_face(face: &ffi::topo_ds::TopoDS_Face) -> Self {
         let inner = ffi::topo_ds::TopoDS_Face_to_owned(face);
@@ -399,9 +405,17 @@ impl Face {
         }
     }
 
+    /// Is `point` inside (or on the boundary of) this face? The point is projected
+    /// onto the face's surface and classified against its trimming wires. Mirrors
+    /// build123d's `Face.is_inside(point)`, used by region selection to pick the
+    /// located sub-loop face that contains an interior point.
+    pub fn contains_point(&self, point: DVec3) -> bool {
+        const TOL: f64 = 1e-4;
+        ffi::b_rep_class::face_contains_point(&self.inner, point.x, point.y, point.z, TOL)
+    }
+
     pub fn surface_area(&self) -> f64 {
         let mut props = ffi::g_prop::GProps_new();
-
         let inner_shape = ffi::topo_ds::cast_face_to_shape(&self.inner);
 
         let skip_shared = false;

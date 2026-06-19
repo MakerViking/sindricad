@@ -56,6 +56,7 @@ fn main() {
         "src/b_rep_algo_api.rs",
         "src/b_rep_bnd_lib.rs",
         "src/b_rep_builder_api.rs",
+        "src/b_rep_class.rs",
         "src/b_rep_feat.rs",
         "src/b_rep_fillet_api.rs",
         "src/b_rep_g_prop.rs",
@@ -119,6 +120,11 @@ fn main() {
     for bridge in rust_bridges {
         println!("cargo:rerun-if-changed={bridge}");
     }
+
+    // The C++ shim headers are #included by the generated cxx bridges but are not
+    // tracked by cxx_build, so edits to them would otherwise not trigger a
+    // recompile. Watch the whole include dir.
+    println!("cargo:rerun-if-changed=include");
 }
 
 struct OcctConfig {
