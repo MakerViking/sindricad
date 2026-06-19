@@ -3,11 +3,14 @@
 // of the app uses: setModel(), fit(), pick callbacks, projection/view toggles.
 
 import * as THREE from "three";
-import { ViewportGizmo } from "three-viewport-gizmo";
 import { createScene, type SceneBundle } from "./scene";
 import { createCameraRig, type CameraRig, type StandardView } from "./cameras";
 import { buildModel, disposeModel, setEdgeResolution, type ModelView } from "./render";
 import { Picker, type Hit, type EdgeHit } from "./picking";
+import { ViewCube, FACE_VIEWS } from "./viewCube";
+import { setPrompt } from "../ui/prompt";
+import type { DocumentStore } from "../document/store";
+import type { ViewCubeSide } from "../types";
 
 const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
 const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
@@ -18,7 +21,7 @@ import { niceStep } from "../ui/units";
 export class Viewport {
   readonly scene: SceneBundle;
   readonly rig: CameraRig;
-  private gizmo: ViewportGizmo | null = null;
+  private cube: ViewCube;
   private picker = new Picker();
   private highlighter: Highlighter | null = null;
   private model: ModelView | null = null;
@@ -26,6 +29,8 @@ export class Viewport {
   private resolution = new THREE.Vector2();
   private dragMoved = false;
   private downPos = { x: 0, y: 0 };
+  // "redefine cube side from a model face" pick mode (null = not active)
+  private setOverrideSide: ViewCubeSide | null = null;
 
   onHit: ((hit: Hit | null, shiftKey: boolean) => void) | null = null;
   onSelectionChange: (() => void) | null = null; // fired when edge/face selection changes
@@ -36,31 +41,35 @@ export class Viewport {
     const rect = canvas.getBoundingClientRect();
     this.rig = createCameraRig(canvas, rect.width / rect.height);
 
-    try {
-      this.gizmo = new ViewportGizmo(this.rig.active as any, this.scene.renderer, {
-        type: "cube",
-        // anchor to the viewport (its 128px DOM defaults to <body>, which puts
-        // the cube up in the titlebar); top-right of the 3D view, like Fusion
-        container: canvas.parentElement ?? document.body,
-        id: "viewcube",
-        placement: "top-right",
-        size: 112,
-        offset: { top: 16, right: 16, bottom: 16, left: 16 },
-      });
-      // NOTE: we deliberately do NOT call attachControls(): it's written for
-      // OrbitControls (reads controls.target, which yomotsu camera-controls
-      // doesn't have → undefined → crash on click). Instead we give the gizmo a
-      // real orbit target and hand it the camera while it animates (see loop()).
-      this.gizmo.target = this.rig.controls.getTarget(new THREE.Vector3());
-    } catch (e) {
-      console.warn("ViewCube unavailable:", e);
-      this.gizmo = null;
-    }
+    this.cube = new ViewCube(canvas, this.scene.renderer, {
+      applySide: (side) => this.applyCubeSide(side),
+      applyDir: (dir, up) => this.rig.setViewDir(dir, up),
+      getOverrides: () => this.store?.viewOverrides ?? {},
+      beginSetOverride: (side) => this.beginSetOverride(side),
+      resetOverride: (side) => {
+        this.store?.setViewOverride(side, null);
+        this.cube.refreshOverrideMarks();
+      },
+    });
 
     this.resize();
     window.addEventListener("resize", () => this.resize());
     this.installPointer();
     this.loop();
+  }
+
+  // The document store is wired lazily (the Viewport is constructed before the
+  // store in main.ts). Persisted ViewCube overrides live on the document.
+  private storeSubscribed = false;
+  private get store(): DocumentStore | undefined {
+    const s = (window as any).store as DocumentStore | undefined;
+    if (s && !this.storeSubscribed) {
+      this.storeSubscribed = true;
+      // refresh the cube's redefined-side markers whenever the document changes
+      // (open file, undo/redo, override set/reset).
+      s.onDocChange(() => this.cube.refreshOverrideMarks());
+    }
+    return s;
   }
 
   private installPointer() {
@@ -81,6 +90,14 @@ export class Viewport {
     });
     c.addEventListener("pointerup", (e) => {
       if (e.button !== 0 || this.dragMoved) return;
+      // 1) a click landing on the ViewCube corner orients the view (and never
+      //    falls through to model picking).
+      if (this.cube.handleLeftClick(e.clientX, e.clientY)) return;
+      // 2) if we're redefining a cube side, the next model click captures a face.
+      if (this.setOverrideSide) {
+        this.captureOverrideFace(e);
+        return;
+      }
       this.handleClick(e);
     });
     // Explicit wheel zoom for BOTH projections (camera-controls' built-in wheel
@@ -99,6 +116,12 @@ export class Viewport {
   }
 
   private handleHover(e: PointerEvent) {
+    // while redefining a cube side, hover-highlight the model face under the
+    // cursor (so the user sees which face they'll capture).
+    if (this.setOverrideSide) {
+      this.hoverFaceAt(e.clientX, e.clientY);
+      return;
+    }
     if (this.suspendPicking) return;
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -385,11 +408,77 @@ export class Viewport {
 
   toggleProjection() {
     this.rig.toggleProjection();
-    if (this.gizmo) this.gizmo.camera = this.rig.active as any;
   }
 
   setStandardView(v: StandardView) {
+    // toolbar buttons + SpaceMouse route here; honor a redefined side so "Top"
+    // means whatever the user mapped, not the world default.
+    const side = v as ViewCubeSide;
+    if (this.applyOverride(side)) return;
     this.rig.setStandardView(v);
+  }
+
+  // ---- ViewCube side application + redefinition ----------------------------
+
+  /** Apply a cube side: a user override if one exists, else the default view. */
+  private applyCubeSide(side: ViewCubeSide) {
+    if (this.applyOverride(side)) return;
+    this.rig.setStandardView(FACE_VIEWS[side].view);
+  }
+
+  /** If `side` has an override, orient that stored face toward the camera and
+   *  return true; otherwise return false. */
+  private applyOverride(side: ViewCubeSide): boolean {
+    const ov = this.store?.viewOverrides?.[side];
+    if (!ov) return false;
+    const normal = new THREE.Vector3(...ov.normal);
+    const up = new THREE.Vector3(...ov.up);
+    this.rig.setViewDir(normal, up);
+    return true;
+  }
+
+  /** Enter "pick a model face to redefine this cube side" mode. */
+  private beginSetOverride(side: ViewCubeSide) {
+    this.setOverrideSide = side;
+    setPrompt(`Click a model face to set as "${FACE_VIEWS[side].label}" (Esc to cancel)`);
+    // listen once for Escape to cancel
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        this.cancelSetOverride();
+        window.removeEventListener("keydown", onKey);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+  }
+
+  private cancelSetOverride() {
+    this.setOverrideSide = null;
+    this.clearHover();
+    setPrompt(null);
+  }
+
+  /** Capture the clicked model face's plane as the active side's override. */
+  private captureOverrideFace(e: PointerEvent) {
+    const side = this.setOverrideSide!;
+    const plane = this.pickFacePlane(e.clientX, e.clientY);
+    if (!plane) {
+      setPrompt("No face there — click a model face (Esc to cancel)");
+      return;
+    }
+    // store the face normal (faces the camera when this side is applied) and an
+    // up derived from the face's in-plane x axis (xdir × normal = in-plane up).
+    const normal = new THREE.Vector3(...plane.normal).normalize();
+    const xdir = new THREE.Vector3(...plane.xdir).normalize();
+    const up = new THREE.Vector3().crossVectors(normal, xdir).normalize();
+    if (up.lengthSq() < 1e-6) up.set(0, 0, 1);
+    this.store?.setViewOverride(side, {
+      normal: [normal.x, normal.y, normal.z],
+      up: [up.x, up.y, up.z],
+    });
+    this.cube.refreshOverrideMarks();
+    this.cancelSetOverride();
+    // immediately snap to the newly-defined side so the user sees the result
+    this.applyCubeSide(side);
   }
 
   clearSelection() {
@@ -485,41 +574,20 @@ export class Viewport {
     // radius by the device pixel ratio.)
     this.resolution.set(w, h);
     setEdgeResolution(this.model, this.resolution);
-    this.gizmo?.update();
   }
 
-  private gizmoBusyLast = false;
   private scratchTarget = new THREE.Vector3();
   private loop = () => {
     const dt = this.clock.getDelta();
-    const g = this.gizmo as any;
-    // While the ViewCube is animating/dragging it drives the camera directly;
-    // running camera-controls in the same frame would fight it. So we skip the
-    // controls update during that time, then adopt the gizmo's final pose so
-    // subsequent orbit/zoom continues smoothly from there.
-    if (g) this.rig.controls.getTarget(g.target); // keep orbit pivot synced
-    const gizmoBusy = !!(g && (g.animating || g._dragging));
-    if (!gizmoBusy) {
-      if (this.gizmoBusyLast) this.adoptCameraIntoControls(); // gizmo just finished
-      this.rig.update(dt);
-    }
-    this.gizmoBusyLast = gizmoBusy;
+    void this.store; // lazily wire the store subscription once it exists
+    // The ViewCube drives the camera through camera-controls' own animated
+    // setLookAt, so we just always advance the controls — no busy/adopt dance.
+    this.rig.update(dt);
     // keep the ground grid spacing/extent matched to the current zoom + pan
     const t = this.rig.controls.getTarget(this.scratchTarget);
     this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t));
     this.scene.renderer.render(this.scene.scene, this.rig.active);
-    this.gizmo?.render(); // advances the gizmo animation + draws the overlay
+    this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
     requestAnimationFrame(this.loop);
   };
-
-  /** Sync camera-controls' internal state to wherever the gizmo left the camera. */
-  private adoptCameraIntoControls() {
-    const cam = this.rig.active;
-    const t = this.rig.controls.getTarget(this.scratchTarget);
-    void this.rig.controls.setLookAt(
-      cam.position.x, cam.position.y, cam.position.z,
-      t.x, t.y, t.z,
-      false,
-    );
-  }
 }

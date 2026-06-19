@@ -3,7 +3,7 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, RebuildResult } from "../types";
+import type { CadDocument, Feature, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend } from "../geometry/client";
 
 export interface RebuildState {
@@ -246,6 +246,27 @@ export class DocumentStore {
   }
   get canRedo() {
     return this.redoStack.length > 0;
+  }
+
+  // --- ViewCube side redefinitions (don't affect geometry, so no rebuild) ---
+  /** the current per-side overrides (live object on the document; treat as read-only). */
+  get viewOverrides(): Partial<Record<ViewCubeSide, ViewOverride>> {
+    return this.doc.viewOverrides ?? {};
+  }
+  /** redefine a cube side from a model face (null clears it). Records undo, marks
+   *  dirty + emits doc-change so the titlebar and listeners update. No rebuild:
+   *  overrides don't affect geometry (effectiveDoc ignores them). */
+  setViewOverride(side: ViewCubeSide, override: ViewOverride | null) {
+    this.undoStack.push(clone(this.doc));
+    this.redoStack = [];
+    if (override) {
+      (this.doc.viewOverrides ??= {})[side] = override;
+    } else if (this.doc.viewOverrides) {
+      delete this.doc.viewOverrides[side];
+      if (Object.keys(this.doc.viewOverrides).length === 0) delete this.doc.viewOverrides;
+    }
+    this.markDirty();
+    this.emitDoc();
   }
 
   // --- serialization ---

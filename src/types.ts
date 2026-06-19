@@ -86,9 +86,23 @@ export type Feature =
 
 export type FeatureType = Feature["type"];
 
+// A redefined ViewCube side: the model face the user mapped to a cube side. The
+// stored face is oriented toward the camera when that side is clicked. `normal`
+// faces out of the model surface; `up` is the in-view up direction (screen +Y).
+export type ViewCubeSide =
+  | "front"
+  | "back"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom";
+export type ViewOverride = { normal: [number, number, number]; up: [number, number, number] };
+
 export interface CadDocument {
   parameters: Params;
   features: Feature[];
+  // optional per-side ViewCube redefinitions; persisted with the document.
+  viewOverrides?: Partial<Record<ViewCubeSide, ViewOverride>>;
 }
 
 export interface RebuildResult {

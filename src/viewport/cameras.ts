@@ -22,6 +22,9 @@ export interface CameraRig {
   zoomBy(factor: number): void;
   fit(box: THREE.Box3, enableTransition?: boolean): void;
   setStandardView(view: StandardView): void;
+  /** orient to an arbitrary view direction (eye = target + dir·d), with a chosen
+   *  world up. Used by the ViewCube for corners/edges and for redefined sides. */
+  setViewDir(dir: THREE.Vector3, up: THREE.Vector3): void;
   lookAtPlane(
     origin: THREE.Vector3,
     normal: THREE.Vector3,
@@ -190,6 +193,28 @@ export function createCameraRig(
       const t = controls.getTarget(new THREE.Vector3());
       const n = new THREE.Vector3(x, y, z).normalize().multiplyScalar(d);
       controls.setPosition(t.x + n.x, t.y + n.y, t.z + n.z, true);
+    },
+    setViewDir(dir, up) {
+      // orient to a free direction with a chosen up. The camera keeps using +Z
+      // up afterward for orbiting unless `up` differs; for the cube's axis views
+      // (up = +Z) this matches setStandardView, and for top/bottom (up = ±Y) it
+      // squares correctly. We set the camera up so the framing is upright.
+      const d = Math.max(controls.distance, 50);
+      const n = dir.clone().normalize();
+      const u = up.clone().normalize();
+      persp.up.copy(u);
+      ortho.up.copy(u);
+      controls.updateCameraUp();
+      const t = controls.getTarget(new THREE.Vector3());
+      controls.setLookAt(
+        t.x + n.x * d,
+        t.y + n.y * d,
+        t.z + n.z * d,
+        t.x,
+        t.y,
+        t.z,
+        true,
+      );
     },
     lookAtPlane(origin, normal, up) {
       // Square the camera to a sketch plane: up = sketch +Y, look down -normal.
