@@ -174,6 +174,35 @@ impl Edge {
 
         EdgeType::from(curve.GetType())
     }
+
+    /// Centroid (center of mass) of the edge, via OCCT's linear properties.
+    /// Matches build123d's `edge.center()` — used for selector de-duplication and
+    /// nearest-edge picking in `geom_select`.
+    pub fn center(&self) -> DVec3 {
+        let mut props = ffi::g_prop::GProps_new();
+        let shape = ffi::topo_ds::cast_edge_to_shape(&self.inner);
+        let skip_shared = false;
+        let use_triangulation = false;
+        ffi::b_rep_g_prop::BRepGProp::LinearProperties(
+            shape,
+            props.pin_mut(),
+            skip_shared,
+            use_triangulation,
+        );
+        let c = ffi::g_prop::GProp_GProps_CentreOfMass(&props);
+        dvec3(c.X(), c.Y(), c.Z())
+    }
+
+    /// Unit direction of a straight (line) edge, or `None` for non-line edges.
+    /// Used by the "axis" edge selector (edges parallel to X/Y/Z).
+    pub fn line_direction(&self) -> Option<DVec3> {
+        let curve = ffi::b_rep_adaptor::BRepAdaptor_Curve_new(&self.inner);
+        if EdgeType::from(curve.GetType()) != EdgeType::Line {
+            return None;
+        }
+        let dir = ffi::b_rep_adaptor::BRepAdaptor_Curve_line_direction(&curve);
+        Some(dvec3(dir.X(), dir.Y(), dir.Z()))
+    }
 }
 
 pub struct ApproximationSegmentIterator {

@@ -79,6 +79,8 @@ mod inner {
         pub fn new_transform() -> UniquePtr<gp_Trsf>;
         #[rust_name = "set_mirror_axis"]
         pub fn SetMirror(self: Pin<&mut gp_Trsf>, axis: &gp_Ax1);
+        #[rust_name = "set_mirror_plane"]
+        pub fn SetMirror(self: Pin<&mut gp_Trsf>, plane: &gp_Ax2);
         pub fn SetRotation(self: Pin<&mut gp_Trsf>, axis: &gp_Ax1, angle: f64);
         pub fn SetScale(self: Pin<&mut gp_Trsf>, point: &gp_Pnt, scale: f64);
         pub fn SetTranslation(self: Pin<&mut gp_Trsf>, point1: &gp_Pnt, point2: &gp_Pnt);

@@ -689,6 +689,50 @@ impl Shape {
         }
     }
 
+    /// Local single-face surface offset (the "true" Press/Pull). The picked
+    /// `face` moves along its normal by `distance` and the adjacent side walls
+    /// stretch to follow. Ports `sidecar/builder.py:_offset_face`: BRepOffset in
+    /// Skin mode with global offset 0 + a per-face offset, GeomAbs_Intersection
+    /// join (the join that closes a local single-face offset cleanly), then the
+    /// resulting shell is rebuilt into a solid.
+    ///
+    /// Returns `Err` (rather than crashing) when OCCT can't perform the offset.
+    pub fn offset_face(&self, face: &Face, distance: f64) -> Result<Self, Error> {
+        let mut mk = ffi::b_rep_offset::BRepOffset_MakeOffset_new();
+        ffi::b_rep_offset::BRepOffset_MakeOffset_initialize(
+            mk.pin_mut(),
+            &self.inner,
+            0.0,
+            1e-4,
+            ffi::b_rep_offset_api::BRepOffset_Mode::BRepOffset_Skin,
+            false,
+            false,
+            ffi::geom_abs::GeomAbs_JoinType::GeomAbs_Intersection,
+            false,
+            false,
+        );
+        ffi::b_rep_offset::BRepOffset_MakeOffset_set_offset_on_face(
+            mk.pin_mut(),
+            &face.inner,
+            distance,
+        );
+        ffi::b_rep_offset::BRepOffset_MakeOffset_make(mk.pin_mut());
+        if !ffi::b_rep_offset::BRepOffset_MakeOffset_is_done(&mk) {
+            return Err(Error::OffsetFaceFailed);
+        }
+
+        let result = Self::from_shape(ffi::b_rep_offset::BRepOffset_MakeOffset_shape(&mk));
+        // The offset yields a Shell; rebuild it into a Solid so downstream
+        // booleans / tessellation / export all see a uniform solid.
+        if result.shape_type() == ShapeType::Shell {
+            let shell_inner = ffi::topo_ds::Shell(&result.inner);
+            let mut make_solid =
+                ffi::b_rep_builder_api::BRepBuilderAPI_MakeSolid_new(shell_inner);
+            return Ok(Self::from_shape(make_solid.pin_mut().Shape()));
+        }
+        Ok(result)
+    }
+
     #[must_use]
     pub fn union(&self, other: &Shape) -> BooleanShape {
         let mut fuse_operation =
@@ -866,6 +910,18 @@ impl Shape {
         self.with_transform(|trsf| {
             let axis_1 = make_axis_1(origin, dir);
             trsf.set_mirror_axis(&axis_1);
+        })
+    }
+
+    /// Create a mirrored copy of this shape reflected across a PLANE, defined by
+    /// a point on the plane and the plane's normal. (Unlike `mirrored`, which
+    /// reflects about a line/axis — a 180° rotation — this is a true planar
+    /// reflection, matching build123d's `mirror(obj, about=Plane)`.)
+    #[must_use]
+    pub fn mirrored_about_plane(&self, origin: DVec3, normal: DVec3) -> Self {
+        self.with_transform(|trsf| {
+            let plane = make_axis_2(origin, normal);
+            trsf.set_mirror_plane(&plane);
         })
     }
 

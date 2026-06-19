@@ -365,6 +365,40 @@ impl Face {
         CompoundFace::from_compound(compound)
     }
 
+    /// The geometric type of this face's underlying surface (plane, cylinder,
+    /// sphere, …). Mirrors build123d's `face.geom_type`; used by Press/Pull to
+    /// branch planar vs. cylindrical local offsets.
+    pub fn surface_type(&self) -> SurfaceType {
+        let surface = ffi::b_rep_adaptor::BRepAdaptor_Surface_new(&self.inner);
+        SurfaceType::from(surface.GetType())
+    }
+
+    /// Radius of a cylindrical face, or `None` if the face is not a cylinder.
+    /// Used to clamp inward Press/Pull so it can't collapse the radius (segfault).
+    pub fn cylinder_radius(&self) -> Option<f64> {
+        let surface = ffi::b_rep_adaptor::BRepAdaptor_Surface_new(&self.inner);
+        if SurfaceType::from(surface.GetType()) != SurfaceType::Cylinder {
+            return None;
+        }
+        Some(ffi::b_rep_adaptor::BRepAdaptor_Surface_cylinder_radius(&surface))
+    }
+
+    /// Distance from a point to this face's underlying surface (not its center),
+    /// via point-on-surface projection. Mirrors build123d's `face.distance_to(p)`
+    /// — a cylinder's center sits on its axis (far from the clicked wall), so
+    /// center-distance mis-picks curved faces; surface distance fixes that.
+    pub fn distance_to(&self, point: DVec3) -> f64 {
+        let surface = ffi::b_rep::BRep_Tool_Surface(&self.inner);
+        let projector =
+            ffi::geom_api::GeomAPI_ProjectPointOnSurf_new(&make_point(point), &surface);
+        if projector.NbPoints() > 0 {
+            projector.LowerDistance()
+        } else {
+            // No projection (degenerate): fall back to center distance.
+            (self.center_of_mass() - point).length()
+        }
+    }
+
     pub fn surface_area(&self) -> f64 {
         let mut props = ffi::g_prop::GProps_new();
 
@@ -529,6 +563,42 @@ pub enum FaceOrientation {
     Reversed,
     Internal,
     External,
+}
+
+/// The geometric type of a face's underlying surface (subset of
+/// `GeomAbs_SurfaceType`). Mirrors build123d's `GeomType`.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum SurfaceType {
+    Plane,
+    Cylinder,
+    Cone,
+    Sphere,
+    Torus,
+    BezierSurface,
+    BSplineSurface,
+    SurfaceOfRevolution,
+    SurfaceOfExtrusion,
+    OffsetSurface,
+    OtherSurface,
+}
+
+impl From<ffi::geom_abs::GeomAbs_SurfaceType> for SurfaceType {
+    fn from(surface_type: ffi::geom_abs::GeomAbs_SurfaceType) -> Self {
+        use ffi::geom_abs::GeomAbs_SurfaceType as S;
+        match surface_type {
+            S::GeomAbs_Plane => Self::Plane,
+            S::GeomAbs_Cylinder => Self::Cylinder,
+            S::GeomAbs_Cone => Self::Cone,
+            S::GeomAbs_Sphere => Self::Sphere,
+            S::GeomAbs_Torus => Self::Torus,
+            S::GeomAbs_BezierSurface => Self::BezierSurface,
+            S::GeomAbs_BSplineSurface => Self::BSplineSurface,
+            S::GeomAbs_SurfaceOfRevolution => Self::SurfaceOfRevolution,
+            S::GeomAbs_SurfaceOfExtrusion => Self::SurfaceOfExtrusion,
+            S::GeomAbs_OffsetSurface => Self::OffsetSurface,
+            _ => Self::OtherSurface,
+        }
+    }
 }
 
 impl From<ffi::top_abs::TopAbs_Orientation> for FaceOrientation {

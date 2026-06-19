@@ -9,6 +9,7 @@ pub mod b_rep_g_prop;
 pub mod b_rep_int_curve_surface;
 pub mod b_rep_lib;
 pub mod b_rep_mesh;
+pub mod b_rep_offset;
 pub mod b_rep_offset_api;
 pub mod b_rep_prim_api;
 pub mod b_rep_tools;

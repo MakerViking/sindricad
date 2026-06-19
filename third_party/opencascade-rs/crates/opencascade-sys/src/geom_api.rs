@@ -36,5 +36,7 @@ mod inner {
             surface: &Handle_Geom_Surface,
         ) -> UniquePtr<GeomAPI_ProjectPointOnSurf>;
         pub fn LowerDistanceParameters(self: &GeomAPI_ProjectPointOnSurf, u: &mut f64, v: &mut f64);
+        pub fn LowerDistance(self: &GeomAPI_ProjectPointOnSurf) -> f64;
+        pub fn NbPoints(self: &GeomAPI_ProjectPointOnSurf) -> i32;
     }
 }
