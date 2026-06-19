@@ -17,14 +17,14 @@ import { Menubar } from "./ui/menu";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
 import { SketchPlane } from "./sketch/plane";
-import { DimInput } from "./sketch/dimInput";
 import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { PressPullTool } from "./features/pressPullTool";
+import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
-import type { Feature, PlaneDef, PlaneSpec } from "./types";
+import type { Feature, PlaneSpec } from "./types";
 
 // --- core singletons ---
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -40,6 +40,7 @@ const sketch = new SketchMode(viewport, overlay);
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
+const planeOffset = new PlaneOffsetTool(viewport);
 
 (window as any).viewport = viewport;
 (window as any).store = store;
@@ -121,7 +122,7 @@ timeline.onEdit = (id) => editFeature(id);
 tree.onSelect = selectFeature;
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
-  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active) sketch.enter(plane, store);
+  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) sketch.enter(plane, store);
 };
 
 // --- sketch visibility (Fusion-style: a sketch consumed by a feature hides by
@@ -153,7 +154,7 @@ store.onDocChange(() => {
 
 // --- selected-edge hint: tells you pre-selection is usable by Fillet/Chamfer ---
 viewport.onSelectionChange = () => {
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || planePick) return;
   const n = viewport.selectedEdgeSelectors().length;
   setPrompt(n ? `${n} edge${n > 1 ? "s" : ""} selected — Fillet or Chamfer to apply · Esc to clear` : null);
 };
@@ -270,11 +271,11 @@ const startChamfer = () => edgeFeature.start("chamfer", (id) => id && selectFeat
 // Interactive Press/Pull: pick a solid face, then drag an arrow along its normal
 // to add/cut material (planar) or offset a curved face — with a live preview.
 const startPressPull = () => {
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active) return;
   pressPull.start((id) => id && selectFeature(id));
 };
 function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || planePick) return;
   planePick = true;
   viewport.showAllPlanes(true);
   viewport.suspendPicking = true;
@@ -319,30 +320,18 @@ function startSketch(tool?: SketchTool) {
   });
 }
 
-// Offset Plane: pick a plane/face, type an offset, sketch on the offset plane.
-const offsetDim = new DimInput();
+// Offset Plane: pick a plane/face, then drag an arrow (or type) to set the offset,
+// with a live ghost of the resulting plane; commit sketches on the offset plane.
 function offsetPlane() {
   pickPlaneInteractive("Select a plane or face to offset from", (spec) => {
-    const src = new SketchPlane(spec);
-    const rect = canvas.getBoundingClientRect();
-    offsetDim.position(rect.left + rect.width / 2, rect.top + rect.height / 2 - 40);
-    offsetDim.show([{ name: "offset", label: "Offset", kind: "length" }], () => {
-      const d = offsetDim.getValue("offset") ?? 10;
-      offsetDim.hide();
-      const o = src.origin.clone().addScaledVector(src.n, d);
-      const def: PlaneDef = {
-        origin: [o.x, o.y, o.z],
-        normal: [src.n.x, src.n.y, src.n.z],
-        xdir: [src.u.x, src.u.y, src.u.z],
-      };
-      sketch.enter(def, store);
+    planeOffset.start(new SketchPlane(spec), (def) => {
+      if (def) sketch.enter(def, store);
     });
-    setPrompt("Type an offset distance + Enter (along the plane normal)");
   });
 }
 
 function startExtrude() {
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active) return;
   if (overlay.regions.length === 0) {
     setStatus("Extrude: create a sketch with a closed profile first", "");
     return;
@@ -468,7 +457,7 @@ installKeymap((a) => {
       void saveDocument(store);
       break;
     case "escape":
-      if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active) {
+      if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) {
         viewport.clearSelection();
         selectFeature(null);
       }
@@ -482,7 +471,7 @@ installKeymap((a) => {
 // delete selected feature
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement) return;
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planePick) return;
+  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || planePick) return;
   if ((e.key === "Delete" || e.key === "Backspace") && selectedFeature) {
     store.removeFeature(selectedFeature);
     selectFeature(null);
