@@ -1345,12 +1345,33 @@ button.finish:hover {
   color: var(--text-dim, #9aa3af);
 }
 .sm-select {
-  background: var(--panel-2, #1c1f26);
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--panel-2, #1c1f26);
+  /* custom caret since we removed the native one */
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim, #9aa3af) 50%),
+    linear-gradient(135deg, var(--text-dim, #9aa3af) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
   color: var(--text, #e6e8ec);
   border: 1px solid var(--line-strong, #323843);
   border-radius: var(--r-sm, 6px);
-  padding: 4px 6px;
+  padding: 5px 26px 5px 8px;
   font-size: 11px;
+  cursor: pointer;
+}
+.sm-select:hover {
+  border-color: #3d4452;
+}
+.sm-select:focus {
+  outline: none;
+  border-color: var(--accent, #ff7a3c);
+}
+/* darken the native option popup (WebKitGTK renders it light by default) */
+.sm-select option {
+  background-color: var(--panel-2, #1c1f26);
+  color: var(--text, #e6e8ec);
 }
 .sm-inv {
   font-size: 11px;

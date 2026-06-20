@@ -166,8 +166,9 @@ export async function initSpaceMouse(
   });
 
   const dz = (v: number) => (Math.abs(v) < CONFIG.deadzone ? 0 : v);
-  /** signed, deadzoned value of the raw axis a binding points at */
-  const val = (b: AxisBinding, m: Motion) => (b.invert ? -1 : 1) * dz(m[b.src]);
+  /** signed, deadzoned value of the raw axis a binding points at (0 if unbound) */
+  const val = (b: AxisBinding | undefined, m: Motion) =>
+    b ? (b.invert ? -1 : 1) * dz(m[b.src]) : 0;
   let last = performance.now();
 
   const loop = () => {

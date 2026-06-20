@@ -68,6 +68,7 @@ export function createCameraRig(
 
   let usingOrtho = false;
   let active: THREE.Camera = persp;
+  let rollAngle = 0; // persistent view bank (radians), re-applied each update()
 
   const controls = new CameraControls(persp, dom);
   // camera-controls assumes Y-up by default; tell it we orbit around +Z so the
@@ -136,7 +137,17 @@ export function createCameraRig(
       ortho.updateProjectionMatrix();
     },
     update(dt: number) {
-      return controls.update(dt);
+      const moved = controls.update(dt);
+      // Apply the persistent roll AFTER camera-controls positions the camera.
+      // update() always rewrites the orientation from its own spherical state,
+      // so re-banking every frame is idempotent — no drift, no position change,
+      // and it never touches camera.up (so it can't fight the sketch-plane up
+      // handling or desync camera-controls, which the old updateCameraUp roll did).
+      if (rollAngle !== 0) {
+        active.rotateZ(rollAngle); // camera local +Z is the view axis → banks in place
+        active.updateMatrixWorld();
+      }
+      return moved || rollAngle !== 0;
     },
     zoomBy(factor: number) {
       const f = Math.max(0.1, Math.min(10, factor));
@@ -183,6 +194,7 @@ export function createCameraRig(
       );
     },
     setStandardView(view: StandardView) {
+      rollAngle = 0;
       const d = Math.max(controls.distance, 50);
       const dirs: Record<StandardView, [number, number, number]> = {
         front: [0, -1, 0],
@@ -199,6 +211,7 @@ export function createCameraRig(
       controls.setPosition(t.x + n.x, t.y + n.y, t.z + n.z, true);
     },
     setViewDir(dir, up) {
+      rollAngle = 0;
       // orient to a free direction with a chosen up. The camera keeps using +Z
       // up afterward for orbiting unless `up` differs; for the cube's axis views
       // (up = +Z) this matches setStandardView, and for top/bottom (up = ±Y) it
@@ -221,6 +234,7 @@ export function createCameraRig(
       );
     },
     lookAtPlane(origin, normal, up) {
+      rollAngle = 0;
       // Square the camera to a sketch plane: up = sketch +Y, look down -normal.
       persp.up.copy(up);
       ortho.up.copy(up);
@@ -238,23 +252,15 @@ export function createCameraRig(
       );
     },
     restoreUp() {
+      rollAngle = 0;
       persp.up.set(0, 0, 1);
       ortho.up.set(0, 0, 1);
       controls.updateCameraUp();
     },
     roll(angle) {
-      if (!angle) return;
-      const fwd = controls
-        .getTarget(new THREE.Vector3())
-        .sub(controls.getPosition(new THREE.Vector3()));
-      if (fwd.lengthSq() < 1e-9) return;
-      fwd.normalize();
-      // bank both cameras' up about the view axis, then let camera-controls
-      // re-derive orientation from the new up (position/target unchanged → the
-      // image rolls in place).
-      persp.up.applyAxisAngle(fwd, angle).normalize();
-      ortho.up.applyAxisAngle(fwd, angle).normalize();
-      controls.updateCameraUp();
+      // accumulate; the bank is re-applied every frame in update(). Cheap and
+      // safe — no camera-controls state is touched here.
+      rollAngle += angle;
     },
   };
 

@@ -578,16 +578,23 @@ export class Viewport {
 
   private scratchTarget = new THREE.Vector3();
   private loop = () => {
-    const dt = this.clock.getDelta();
-    void this.store; // lazily wire the store subscription once it exists
-    // The ViewCube drives the camera through camera-controls' own animated
-    // setLookAt, so we just always advance the controls — no busy/adopt dance.
-    this.rig.update(dt);
-    // keep the ground grid spacing/extent matched to the current zoom + pan
-    const t = this.rig.controls.getTarget(this.scratchTarget);
-    this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t));
-    this.scene.renderer.render(this.scene.scene, this.rig.active);
-    this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
+    // Never let a single bad frame kill the loop: if any step throws, log and
+    // keep scheduling, so a transient camera/geometry glitch can't freeze the
+    // whole app (the rAF used to be unreachable after a throw).
+    try {
+      const dt = this.clock.getDelta();
+      void this.store; // lazily wire the store subscription once it exists
+      // The ViewCube drives the camera through camera-controls' own animated
+      // setLookAt, so we just always advance the controls — no busy/adopt dance.
+      this.rig.update(dt);
+      // keep the ground grid spacing/extent matched to the current zoom + pan
+      const t = this.rig.controls.getTarget(this.scratchTarget);
+      this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t));
+      this.scene.renderer.render(this.scene.scene, this.rig.active);
+      this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
+    } catch (e) {
+      console.error("[viewport] render loop frame error (continuing):", e);
+    }
     requestAnimationFrame(this.loop);
   };
 }

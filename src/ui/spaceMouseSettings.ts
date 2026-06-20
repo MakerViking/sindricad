@@ -277,6 +277,7 @@ export class SpaceMouseSettings {
     const dz = (v: number) => (Math.abs(v) < cfg.deadzone ? 0 : v);
     const val = (a: ActionName) => {
       const b = cfg.bind[a];
+      if (!b) return 0; // tolerate a missing binding instead of crashing the loop
       return (b.invert ? -1 : 1) * dz(m[b.src]);
     };
 
