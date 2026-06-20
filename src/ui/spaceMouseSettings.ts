@@ -297,17 +297,24 @@ export class SpaceMouseSettings {
     const rollc = -val("roll") * kr;
     if (rollc) t.cube.rotateOnWorldAxis(fwd, rollc); // bank around the view axis
 
-    // Pan — translate in the camera's screen plane.
-    const kp = cfg.panSens * dt * 70;
-    t.cube.position.addScaledVector(right, val("panX") * kp).addScaledVector(screenUp, val("panY") * kp);
-    // Zoom — scale the cube (pushing in shrinks it, as if it recedes).
-    const kz = cfg.zoomSens * dt * 35;
-    if (val("zoom")) t.cube.scale.multiplyScalar(1 - val("zoom") * kz);
+    // Pan — nudge in the screen plane, then spring back. Gentle gain + a hard
+    // clamp so the cube can never leave the little preview (this is a feel test,
+    // not a 1:1 move).
+    const kp = cfg.panSens * dt * 0.3;
+    t.cube.position
+      .addScaledVector(right, val("panX") * kp)
+      .addScaledVector(screenUp, val("panY") * kp);
+    const PAN_LIMIT = 1.3;
+    if (t.cube.position.length() > PAN_LIMIT) t.cube.position.setLength(PAN_LIMIT);
+    // Zoom — scale gently; bound the per-frame step so a hard push can't invert
+    // the cube (negative scale).
+    const zd = THREE.MathUtils.clamp(val("zoom") * cfg.zoomSens * dt * 3, -0.08, 0.08);
+    if (zd) t.cube.scale.multiplyScalar(1 - zd);
 
-    // Spring pan + zoom back toward home (rotation is left accumulated).
+    // Spring pan + zoom back toward home so they read as "live while held".
     const decay = Math.min(1, 0.07 * (dt / 16));
     t.cube.position.multiplyScalar(1 - decay);
-    const s = THREE.MathUtils.clamp(t.cube.scale.x + (1 - t.cube.scale.x) * decay, 0.45, 2.4);
+    const s = THREE.MathUtils.clamp(t.cube.scale.x + (1 - t.cube.scale.x) * decay, 0.6, 1.6);
     t.cube.scale.setScalar(s);
 
     t.renderer.render(t.scene, t.cam);

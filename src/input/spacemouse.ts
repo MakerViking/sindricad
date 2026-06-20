@@ -113,8 +113,12 @@ export function getSpaceMouseConfig(): SpaceMouseConfig {
 /** Merge a patch into the live config and persist (used by the settings UI and
  *  the devtools console: window.spaceMouseConfig({ orbitSens: 4e-6 })). */
 export function setSpaceMouseConfig(patch: Partial<SpaceMouseConfig>) {
-  Object.assign(CONFIG, patch);
-  if (patch.bind) Object.assign(CONFIG.bind, patch.bind);
+  // Pull `bind` out FIRST: a blanket Object.assign(CONFIG, patch) would replace
+  // CONFIG.bind wholesale with the (usually single-action) partial, wiping every
+  // other binding. Merge the rest, then merge bind per-action into the existing one.
+  const { bind, ...rest } = patch;
+  Object.assign(CONFIG, rest);
+  if (bind) Object.assign(CONFIG.bind, bind);
   persist();
 }
 
