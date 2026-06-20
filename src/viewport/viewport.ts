@@ -232,37 +232,16 @@ export class Viewport {
   }
 
   /**
-   * Raycast the three plane quads. `intersectObjects` returns hits sorted
-   * nearest-first, so we pick the plane actually under the cursor. Only when
-   * several are hit at nearly the same depth (clicking near the origin/axes,
-   * where the ray grazes two near-coplanar planes) do we tie-break to the one
-   * whose normal most faces the camera.
+   * Raycast the three plane quads and return the plane whose surface is nearest
+   * the camera under the cursor — i.e. the one you're pointing at.
+   * `intersectObjects` returns hits sorted nearest-first, so hits[0] is it.
    */
   pickPlane(clientX: number, clientY: number): Plane3 | null {
     this.rayFrom(clientX, clientY);
     const meshes = (["XY", "XZ", "YZ"] as Plane3[]).map((k) => this.scene.planes[k]);
     const hits = this.sharedRaycaster.intersectObjects(meshes, false);
     if (!hits.length) return null;
-    const NORMAL: Record<Plane3, THREE.Vector3> = {
-      XY: new THREE.Vector3(0, 0, 1),
-      XZ: new THREE.Vector3(0, 1, 0),
-      YZ: new THREE.Vector3(1, 0, 0),
-    };
-    const viewDir = this.rig.active.getWorldDirection(new THREE.Vector3());
-    // candidates = hits within a small depth tolerance of the nearest hit
-    const d0 = hits[0].distance;
-    let best: Plane3 | null = null;
-    let bestFacing = -1;
-    for (const h of hits) {
-      if (h.distance > d0 + 1.5) break; // only near-equal-depth hits tie-break
-      const id = h.object.userData.plane as Plane3;
-      const facing = Math.abs(NORMAL[id].dot(viewDir));
-      if (facing > bestFacing) {
-        bestFacing = facing;
-        best = id;
-      }
-    }
-    return best;
+    return (hits[0].object.userData.plane as Plane3) ?? null;
   }
 
   /**
