@@ -19,6 +19,7 @@ import { resolveEntities, toSketchEntity } from "./resolve";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { detectRegions } from "./region";
+import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 
 export type SketchTool =
   | "select"
@@ -111,6 +112,7 @@ export class SketchMode {
   private gridSnap = true;
   private constructionMode = false;
   private dimsVisible = true;
+  private viewLocked = true; // lock the camera square to the sketch plane
   private dim: DimInput;
   private dims: SketchDimensions;
   private boundDown: (e: PointerEvent) => void;
@@ -170,6 +172,7 @@ export class SketchMode {
     this.overlay.update(store.document, this.editingId ?? "__active__");
     this.refreshActive();
     this.setTool("rectangle");
+    this.setViewLocked(this.viewLocked); // apply lock-to-plane preference
     if (this.constraints.length > 0) this.requestSolve(); // restore DOF state
     this.onState?.();
   }
@@ -215,6 +218,8 @@ export class SketchMode {
     this.overlay.setSnap(null);
     this.removeGrid();
     this.viewport.exitSketchView();
+    this.viewport.rig.setOrbitLocked(false); // restore free orbit in model mode
+    setSpaceMouseOrbitLocked(false);
     this.viewport.suspendPicking = false;
     this.active = false;
     this.base = null;
@@ -293,6 +298,14 @@ export class SketchMode {
   setDimensionsVisible(on: boolean) {
     this.dimsVisible = on;
     this.refreshActive(); // toggles both the dimension lines and the value labels
+  }
+  /** Lock the camera square to the sketch plane: re-square now and disable orbit
+   *  (mouse + SpaceMouse) so the view can't tilt off the plane. Unlock = free orbit. */
+  setViewLocked(on: boolean) {
+    this.viewLocked = on;
+    if (on) this.viewport.enterSketchView(this.plane.origin, this.plane.n, this.plane.v);
+    this.viewport.rig.setOrbitLocked(on);
+    setSpaceMouseOrbitLocked(on);
   }
   /** re-square the camera to the active sketch plane (palette "Look At") */
   lookAt() {

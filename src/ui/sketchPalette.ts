@@ -1,7 +1,7 @@
 // The Sketch Palette (Fusion's right-docked panel shown while sketching).
 // Toggles control drawing/display options; "Look At" re-squares the camera.
 
-export type PaletteToggle = "construction" | "grid" | "snap" | "profile" | "dimensions";
+export type PaletteToggle = "lockView" | "construction" | "grid" | "snap" | "profile" | "dimensions";
 
 interface ToggleDef {
   key: PaletteToggle;
@@ -9,6 +9,7 @@ interface ToggleDef {
   default: boolean;
 }
 const TOGGLES: ToggleDef[] = [
+  { key: "lockView", label: "Lock to Plane", default: true },
   { key: "construction", label: "Construction", default: false },
   { key: "grid", label: "Sketch Grid", default: true },
   { key: "snap", label: "Snap", default: true },

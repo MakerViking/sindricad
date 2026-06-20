@@ -131,6 +131,13 @@ export function getSpaceMouseMode(): "object" | "camera" {
   return CONFIG.mode;
 }
 
+// Sketch "lock to plane": suppress orbit + roll (keep pan + zoom) so the puck
+// can't tilt the view off the sketch plane.
+let orbitLocked = false;
+export function setSpaceMouseOrbitLocked(locked: boolean) {
+  orbitLocked = locked;
+}
+
 export function setSpaceMouseMode(mode: "object" | "camera") {
   CONFIG.mode = mode;
   persist();
@@ -196,12 +203,12 @@ export async function initSpaceMouse(
     if (z) controls.dolly(z * CONFIG.zoomSens * dt, false);
 
     const az = val(b.orbitAz, m), pol = val(b.orbitPolar, m);
-    if (az || pol) {
+    if (!orbitLocked && (az || pol)) {
       controls.rotate(modeSign * az * CONFIG.orbitSens * dt, modeSign * pol * CONFIG.orbitSens * dt, false);
     }
 
     const roll = val(b.roll, m);
-    if (roll) viewport.rig.roll(modeSign * roll * CONFIG.orbitSens * dt);
+    if (!orbitLocked && roll) viewport.rig.roll(modeSign * roll * CONFIG.orbitSens * dt);
   };
   requestAnimationFrame(loop);
 }

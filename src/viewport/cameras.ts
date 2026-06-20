@@ -29,6 +29,8 @@ export interface CameraRig {
    *  `angle` radians. camera-controls has no native roll, so we rotate the
    *  camera up-vector about the view direction and re-apply it. */
   roll(angle: number): void;
+  /** Lock out mouse orbit (sketch "lock to plane"); middle-drag pans instead. */
+  setOrbitLocked(locked: boolean): void;
   lookAtPlane(
     origin: THREE.Vector3,
     normal: THREE.Vector3,
@@ -69,6 +71,7 @@ export function createCameraRig(
   let usingOrtho = false;
   let active: THREE.Camera = persp;
   let rollAngle = 0; // persistent view bank (radians), re-applied each update()
+  let orbitLocked = false; // sketch "lock to plane": disable mouse orbit
 
   const controls = new CameraControls(persp, dom);
   // camera-controls assumes Y-up by default; tell it we orbit around +Z so the
@@ -86,10 +89,10 @@ export function createCameraRig(
 
   // Shift+middle => pan (swap orbit<->truck on the middle button)
   window.addEventListener("keydown", (e) => {
-    if (e.key === "Shift") controls.mouseButtons.middle = A.TRUCK;
+    if (e.key === "Shift" && !orbitLocked) controls.mouseButtons.middle = A.TRUCK;
   });
   window.addEventListener("keyup", (e) => {
-    if (e.key === "Shift") controls.mouseButtons.middle = A.ROTATE;
+    if (e.key === "Shift" && !orbitLocked) controls.mouseButtons.middle = A.ROTATE;
   });
 
   controls.dollyToCursor = true;
@@ -261,6 +264,11 @@ export function createCameraRig(
       // accumulate; the bank is re-applied every frame in update(). Cheap and
       // safe — no camera-controls state is touched here.
       rollAngle += angle;
+    },
+    setOrbitLocked(locked) {
+      orbitLocked = locked;
+      // middle-drag pans while locked (no orbit); restore orbit on unlock
+      controls.mouseButtons.middle = locked ? A.TRUCK : A.ROTATE;
     },
   };
 

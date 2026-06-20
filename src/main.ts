@@ -238,6 +238,7 @@ sketch.onState = () => {
 // --- sketch palette toggles -> sketch/overlay ---
 palette.onToggle = (key, value) => {
   switch (key) {
+    case "lockView": sketch.setViewLocked(value); break;
     case "construction": sketch.setConstruction(value); break;
     case "grid": sketch.setGridVisible(value); break;
     case "snap": sketch.setGridSnap(value); break;
