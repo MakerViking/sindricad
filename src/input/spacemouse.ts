@@ -59,7 +59,7 @@ const DEFAULTS: SpaceMouseConfig = {
     panY: { src: "tz", invert: false },
     zoom: { src: "ty", invert: false },
     orbitAz: { src: "rz", invert: true },
-    orbitPolar: { src: "rx", invert: true },
+    orbitPolar: { src: "rx", invert: false },
     roll: { src: "ry", invert: false },
   },
 };

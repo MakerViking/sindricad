@@ -286,15 +286,20 @@ export class SpaceMouseSettings {
     // back so they read as "live while held". Gains are scaled up from the
     // camera sensitivities so motion is visible at this small size.
     // Rotate — sign mirrors object mode (the cube IS the object).
+    // The cube shows what the MODEL appears to do = the inverse of the camera
+    // motion the real loop applies (which carries modeSign). So the cube
+    // coefficient is -modeSign: +1 in object mode, -1 in camera mode. Verified
+    // against the real viewport so the cube and model move the same screen way.
+    const ms = cfg.mode === "object" ? 1 : -1;
     const kr = cfg.orbitSens * dt * 50;
-    const az = -val("orbitAz") * kr;
-    const pol = -val("orbitPolar") * kr;
+    const az = ms * val("orbitAz") * kr;
+    const pol = ms * val("orbitPolar") * kr;
     const fwd = t.cam.getWorldDirection(new THREE.Vector3());
     const right = fwd.clone().cross(t.up).normalize();
     const screenUp = right.clone().cross(fwd).normalize();
     if (az) t.cube.rotateOnWorldAxis(t.up, az);
     if (pol) t.cube.rotateOnWorldAxis(right, pol);
-    const rollc = -val("roll") * kr;
+    const rollc = ms * val("roll") * kr;
     if (rollc) t.cube.rotateOnWorldAxis(fwd, rollc); // bank around the view axis
 
     // Pan — nudge in the screen plane, then spring back. Gentle gain + a hard
@@ -302,14 +307,14 @@ export class SpaceMouseSettings {
     // not a 1:1 move).
     const kp = cfg.panSens * dt * 0.3;
     t.cube.position
-      .addScaledVector(right, val("panX") * kp)
-      .addScaledVector(screenUp, val("panY") * kp);
+      .addScaledVector(right, ms * val("panX") * kp)
+      .addScaledVector(screenUp, ms * val("panY") * kp);
     const PAN_LIMIT = 1.3;
     if (t.cube.position.length() > PAN_LIMIT) t.cube.position.setLength(PAN_LIMIT);
     // Zoom — scale gently; bound the per-frame step so a hard push can't invert
     // the cube (negative scale).
     const zd = THREE.MathUtils.clamp(val("zoom") * cfg.zoomSens * dt * 3, -0.08, 0.08);
-    if (zd) t.cube.scale.multiplyScalar(1 - zd);
+    if (zd) t.cube.scale.multiplyScalar(1 + zd); // +zoom dollies in on the model → cube grows
 
     // Spring pan + zoom back toward home so they read as "live while held".
     const decay = Math.min(1, 0.07 * (dt / 16));
