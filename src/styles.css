@@ -85,7 +85,7 @@ body {
 
 #app {
   display: grid;
-  grid-template-rows: 36px 76px 1fr 132px;
+  grid-template-rows: 36px 76px 1fr 52px;
   height: 100vh;
 }
 
@@ -639,8 +639,11 @@ button.active {
 #timeline {
   background: linear-gradient(180deg, #131519 0%, var(--panel) 100%);
   border-top: 1px solid var(--line);
-  padding: var(--s-3) var(--s-4);
+  padding: 0 var(--s-3);
+  display: flex;
+  align-items: center;
   overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
 }
 
@@ -688,14 +691,14 @@ button.active {
 /* --- timeline track + nodes --- */
 .timeline-track {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   height: 100%;
   width: max-content;
 }
 .timeline-empty {
   display: flex;
   align-items: center;
-  height: 64px;
+  height: 38px;
   padding: 0 var(--s-3);
   color: var(--text-mute);
   font-size: 12px;
@@ -705,14 +708,14 @@ button.active {
   position: relative;
   flex: 0 0 auto;
   display: inline-flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  min-width: 72px;
-  height: 64px;
+  gap: 6px;
+  min-width: 0;
+  height: 38px;
   margin-right: var(--s-2);
-  padding: var(--s-1) var(--s-2);
+  padding: 0 10px 0 18px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -757,7 +760,8 @@ button.active {
 }
 .timeline-node .t-num {
   position: absolute;
-  top: 3px;
+  top: 50%;
+  transform: translateY(-50%);
   left: 6px;
   font-size: 9px;
   font-weight: 600;
@@ -768,7 +772,7 @@ button.active {
   color: var(--accent);
 }
 .timeline-node .glyph {
-  font-size: 19px;
+  font-size: 15px;
   line-height: 1;
 }
 .timeline-node .t-label {
@@ -783,6 +787,7 @@ button.active {
   position: relative;
   flex: 0 0 auto;
   width: 10px;
+  height: 38px;
   margin: 0 1px;
   cursor: ew-resize;
 }

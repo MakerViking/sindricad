@@ -39,7 +39,11 @@ const lineMats = new Map<number, THREE.LineBasicMaterial>();
 function lineMat(color: number): THREE.LineBasicMaterial {
   let m = lineMats.get(color);
   if (!m) {
-    m = new THREE.LineBasicMaterial({ color, depthTest: false });
+    // depthTest TRUE: WebKitGTK does not render LineBasicMaterial lines with
+    // depthTest:false (the grid/model edges, which use depthTest:true, render
+    // fine). The coplanar grids + the dimmed model all have depthWrite:false, so
+    // these lines never z-fight — they just paint on top via renderOrder.
+    m = new THREE.LineBasicMaterial({ color, depthTest: true });
     lineMats.set(color, m);
   }
   return m;
@@ -49,7 +53,7 @@ const CONSTRUCTION_MAT = new THREE.LineDashedMaterial({
   color: 0xffa64d,
   dashSize: 1.6,
   gapSize: 1.0,
-  depthTest: false,
+  depthTest: true,
 });
 const FILL_MAT = new THREE.MeshBasicMaterial({
   color: FILL_COLOR,
@@ -101,7 +105,7 @@ export class SketchOverlay {
 
     this.snapMarker = new THREE.Mesh(
       new THREE.RingGeometry(0.6, 1.0, 16),
-      new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: false }),
+      new THREE.MeshBasicMaterial({ color: 0xffaa33, depthTest: true }),
     );
     this.snapMarker.renderOrder = 30;
     this.snapMarker.visible = false;
