@@ -103,6 +103,16 @@ export interface CadDocument {
   features: Feature[];
   // optional per-side ViewCube redefinitions; persisted with the document.
   viewOverrides?: Partial<Record<ViewCubeSide, ViewOverride>>;
+  // --- non-geometry project state, persisted so reopening fully restores the
+  // session (the geometry rebuild ignores these; only parameters+features build).
+  /** file-format version, for future migrations (current = 1). */
+  version?: number;
+  /** feature ids currently suppressed (skipped on rebuild). */
+  suppressed?: string[];
+  /** timeline rollback marker: count of active features; absent/null = all built. */
+  rollback?: number | null;
+  /** explicit per-sketch show/hide overrides (id → visible). */
+  sketchVisibility?: Record<string, boolean>;
 }
 
 export interface RebuildResult {

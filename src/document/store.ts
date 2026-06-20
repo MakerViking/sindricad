@@ -22,6 +22,9 @@ const clone = (d: CadDocument): CadDocument =>
 
 const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
 
+/** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
+const FORMAT_VERSION = 1;
+
 export class DocumentStore {
   private doc: CadDocument;
   private undoStack: CadDocument[] = [];
@@ -33,6 +36,7 @@ export class DocumentStore {
   private isDirty = false; // unsaved changes since last save/open/new
   private rollback: number | null = null; // # of active features (null = all); timeline marker
   private suppressed = new Set<string>(); // feature ids skipped on rebuild (suppress)
+  private sketchVis = new Map<string, boolean>(); // explicit per-sketch show/hide overrides
   private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
   private rebuilding = false; // a rebuild round-trip is in flight
@@ -101,6 +105,7 @@ export class DocumentStore {
     this.doc = clone(EMPTY_DOCUMENT);
     this.rollback = null;
     this.suppressed.clear();
+    this.sketchVis.clear();
     this.path = null;
     this.isDirty = false;
     this.emitDoc();
@@ -269,15 +274,42 @@ export class DocumentStore {
     this.emitDoc();
   }
 
+  // --- sketch visibility overrides (explicit show/hide; no geometry effect) ---
+  /** explicit show/hide override for a sketch, or undefined if the user hasn't set one. */
+  sketchVisibilityOverride(id: string): boolean | undefined {
+    return this.sketchVis.get(id);
+  }
+  /** set an explicit show/hide override for a sketch (persisted with the document). */
+  setSketchVisibility(id: string, visible: boolean) {
+    this.sketchVis.set(id, visible);
+    this.markDirty();
+  }
+
   // --- serialization ---
   toJSON(): string {
-    return JSON.stringify(this.doc, null, 2);
+    // Persist the geometry doc PLUS the non-geometry project state that lives in
+    // the store (suppress set, rollback marker, sketch visibility) so reopening
+    // restores the full session. Empty state is omitted to keep files clean.
+    const out: CadDocument = { ...this.doc, version: FORMAT_VERSION };
+    if (this.suppressed.size) out.suppressed = [...this.suppressed];
+    if (this.rollback !== null) out.rollback = this.rollback;
+    if (this.sketchVis.size) out.sketchVisibility = Object.fromEntries(this.sketchVis);
+    return JSON.stringify(out, null, 2);
   }
   load(json: string) {
     const parsed = JSON.parse(json) as CadDocument;
     this.undoStack.push(clone(this.doc));
     this.redoStack = [];
-    this.doc = parsed;
+    // split persisted project state back out of the document; keep `this.doc`
+    // pure geometry (+ viewOverrides) so undo/rebuild stay unaffected by it.
+    this.suppressed = new Set(parsed.suppressed ?? []);
+    this.rollback = parsed.rollback ?? null;
+    this.sketchVis = new Map(Object.entries(parsed.sketchVisibility ?? {}));
+    this.doc = {
+      parameters: parsed.parameters ?? {},
+      features: parsed.features ?? [],
+      ...(parsed.viewOverrides ? { viewOverrides: parsed.viewOverrides } : {}),
+    };
     this.markDirty(); // openDocument clears this via markSaved() once the path is known
     this.emitDoc();
     this.scheduleRebuild(true);

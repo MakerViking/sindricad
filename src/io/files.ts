@@ -28,15 +28,15 @@ export async function saveDocumentAs(store: DocumentStore) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await save({
-      filters: [{ name: "SindriCAD Document", extensions: ["json"] }],
-      defaultPath: store.filePath ?? `${store.fileName}.json`,
+      filters: [{ name: "SindriCAD Document", extensions: ["sindri"] }],
+      defaultPath: store.filePath ?? `${store.fileName}.sindri`,
     });
     if (path) {
       await writeTextFile(path, json);
       store.markSaved(path);
     }
   } else {
-    downloadText(`${store.fileName}.json`, json);
+    downloadText(`${store.fileName}.sindri`, json);
   }
 }
 
@@ -46,7 +46,8 @@ export async function openDocument(store: DocumentStore) {
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await open({
       multiple: false,
-      filters: [{ name: "SindriCAD Document", extensions: ["json"] }],
+      // accept the branded .sindri plus legacy .json saves
+      filters: [{ name: "SindriCAD Document", extensions: ["sindri", "json"] }],
     });
     if (typeof path === "string") {
       store.load(await readTextFile(path));
@@ -99,7 +100,7 @@ function uploadText(): Promise<string | null> {
   return new Promise((resolve) => {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json,application/json";
+    input.accept = ".sindri,.json,application/json";
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) return resolve(null);

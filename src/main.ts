@@ -130,8 +130,8 @@ tree.onSketchOnPlane = (plane) => {
 };
 
 // --- sketch visibility (Fusion-style: a sketch consumed by a feature hides by
-// default so the solid's edges stay clear; toggle from the browser tree) ---
-const sketchVisOverride = new Map<string, boolean>(); // explicit show/hide
+// default so the solid's edges stay clear; toggle from the browser tree). The
+// explicit overrides live in the store so they persist with the .sindri file. ---
 function isSketchConsumed(id: string): boolean {
   return store.document.features.some(
     (f) =>
@@ -141,12 +141,12 @@ function isSketchConsumed(id: string): boolean {
   );
 }
 function isSketchVisible(id: string): boolean {
-  return sketchVisOverride.get(id) ?? !isSketchConsumed(id);
+  return store.sketchVisibilityOverride(id) ?? !isSketchConsumed(id);
 }
 overlay.sketchVisible = isSketchVisible;
 tree.isSketchVisible = isSketchVisible;
 tree.onToggleSketch = (id) => {
-  sketchVisOverride.set(id, !isSketchVisible(id));
+  store.setSketchVisibility(id, !isSketchVisible(id));
   if (!sketch.active) overlay.update(store.document);
   tree.refresh();
 };
