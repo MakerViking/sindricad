@@ -286,7 +286,16 @@ function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => v
   viewport.suspendPicking = true;
   setPrompt(promptText);
   const onMove = (e: PointerEvent) => {
-    viewport.hoverFaceAt(e.clientX, e.clientY); // highlight a selectable body face
+    // a face of the body takes priority over the base-plane quads behind it;
+    // highlight whichever the click would select so the target is obvious.
+    const face = viewport.pickFacePlane(e.clientX, e.clientY);
+    if (face) {
+      viewport.hoverFaceAt(e.clientX, e.clientY); // highlight a selectable body face
+      viewport.hoverPlane(null);
+    } else {
+      viewport.clearHover();
+      viewport.hoverPlane(viewport.pickPlane(e.clientX, e.clientY));
+    }
   };
   const onDown = (e: PointerEvent) => {
     if (e.button !== 0) return;

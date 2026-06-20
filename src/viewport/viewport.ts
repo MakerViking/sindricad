@@ -222,10 +222,21 @@ export class Viewport {
     }
   }
 
+  /** Brighten the plane under the cursor during plane-pick (null = none). */
+  hoverPlane(kind: Plane3 | null) {
+    for (const k of ["XY", "XZ", "YZ"] as Plane3[]) {
+      const m = this.scene.planes[k];
+      if (!m.visible) continue;
+      (m.material as THREE.MeshBasicMaterial).opacity = k === kind ? 0.36 : 0.14;
+    }
+  }
+
   /**
-   * Raycast the three plane quads. When several are hit (common near the origin
-   * / axes, where the ray is nearly coplanar with two of them), prefer the one
-   * whose normal most faces the camera — i.e. the plane you're looking at.
+   * Raycast the three plane quads. `intersectObjects` returns hits sorted
+   * nearest-first, so we pick the plane actually under the cursor. Only when
+   * several are hit at nearly the same depth (clicking near the origin/axes,
+   * where the ray grazes two near-coplanar planes) do we tie-break to the one
+   * whose normal most faces the camera.
    */
   pickPlane(clientX: number, clientY: number): Plane3 | null {
     this.rayFrom(clientX, clientY);
@@ -238,9 +249,12 @@ export class Viewport {
       YZ: new THREE.Vector3(1, 0, 0),
     };
     const viewDir = this.rig.active.getWorldDirection(new THREE.Vector3());
+    // candidates = hits within a small depth tolerance of the nearest hit
+    const d0 = hits[0].distance;
     let best: Plane3 | null = null;
     let bestFacing = -1;
     for (const h of hits) {
+      if (h.distance > d0 + 1.5) break; // only near-equal-depth hits tie-break
       const id = h.object.userData.plane as Plane3;
       const facing = Math.abs(NORMAL[id].dot(viewDir));
       if (facing > bestFacing) {
