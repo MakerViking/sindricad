@@ -37,6 +37,7 @@ export class DocumentStore {
   private rollback: number | null = null; // # of active features (null = all); timeline marker
   private suppressed = new Set<string>(); // feature ids skipped on rebuild (suppress)
   private sketchVis = new Map<string, boolean>(); // explicit per-sketch show/hide overrides
+  private bodyVis = new Map<string, boolean>(); // explicit per-body show/hide overrides (id → visible)
   private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
   private rebuilding = false; // a rebuild round-trip is in flight
@@ -106,6 +107,7 @@ export class DocumentStore {
     this.rollback = null;
     this.suppressed.clear();
     this.sketchVis.clear();
+    this.bodyVis.clear();
     this.path = null;
     this.isDirty = false;
     this.emitDoc();
@@ -285,6 +287,23 @@ export class DocumentStore {
     this.markDirty();
   }
 
+  // --- body visibility overrides (explicit show/hide; no geometry effect — just a
+  // re-render that filters the hidden body's faces out of the mesh, Fusion-style) ---
+  /** explicit show/hide override for a body, or undefined if unset. */
+  bodyVisibilityOverride(id: string): boolean | undefined {
+    return this.bodyVis.get(id);
+  }
+  /** true unless the user has hidden this body (bodies default to visible). */
+  isBodyVisible(id: string): boolean {
+    return this.bodyVis.get(id) ?? true;
+  }
+  /** show/hide a body; re-emits the build so the viewport re-renders (no rebuild). */
+  setBodyVisibility(id: string, visible: boolean) {
+    this.bodyVis.set(id, visible);
+    this.markDirty();
+    this.emitBuild();
+  }
+
   // --- serialization ---
   toJSON(): string {
     // Persist the geometry doc PLUS the non-geometry project state that lives in
@@ -294,6 +313,7 @@ export class DocumentStore {
     if (this.suppressed.size) out.suppressed = [...this.suppressed];
     if (this.rollback !== null) out.rollback = this.rollback;
     if (this.sketchVis.size) out.sketchVisibility = Object.fromEntries(this.sketchVis);
+    if (this.bodyVis.size) out.bodyVisibility = Object.fromEntries(this.bodyVis);
     return JSON.stringify(out, null, 2);
   }
   load(json: string) {
@@ -305,6 +325,7 @@ export class DocumentStore {
     this.suppressed = new Set(parsed.suppressed ?? []);
     this.rollback = parsed.rollback ?? null;
     this.sketchVis = new Map(Object.entries(parsed.sketchVisibility ?? {}));
+    this.bodyVis = new Map(Object.entries(parsed.bodyVisibility ?? {}));
     this.doc = {
       parameters: parsed.parameters ?? {},
       features: parsed.features ?? [],

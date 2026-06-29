@@ -70,21 +70,22 @@ def _rebuild_job(document, tolerance):
     """Worker: rebuild the document and tessellate. Returns a result dict, or
     {"error": {...}} on a feature failure. Args/return must stay picklable."""
     from builder import rebuild
-    from tessellate import tessellate, edge_polylines, bbox
+    from tessellate import tessellate_bodies, edge_polylines_by_body, bbox
 
-    part, errors = rebuild(document)
+    part, errors, bodies = rebuild(document)
     if errors:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
     if part is None:
         # no solid yet (e.g. only sketches exist) — not an error; the frontend
         # still renders sketch overlays.
-        return {"mesh": {"positions": [], "indices": [], "faceIds": []}, "edges": [], "bbox": None}
-    pos, idx, fids = tessellate(part, tolerance)
+        return {"mesh": {"positions": [], "indices": [], "faceIds": []}, "edges": [], "bbox": None, "bodies": []}
+    pos, idx, fids, meta = tessellate_bodies(bodies, tolerance)
     return {
         "mesh": {"positions": pos, "indices": idx, "faceIds": fids},
-        "edges": edge_polylines(part),
+        "edges": edge_polylines_by_body(bodies),
         "bbox": bbox(part),
+        "bodies": meta,
     }
 
 
@@ -93,11 +94,22 @@ def _export_job(document, fmt, path):
     from builder import rebuild
     from exporters import export
 
-    part, errors = rebuild(document)
+    part, errors, _bodies = rebuild(document)
     if errors:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
     return {"path": export(part, fmt, path)}
+
+
+def _import_job(path, fmt):
+    """Worker: read an external geometry file (STL/3MF/STEP/BREP) into an embeddable
+    BREP payload. Returns the `import` feature fields or {"error"}."""
+    from builder import import_geometry
+
+    try:
+        return import_geometry(path, fmt)
+    except Exception as ex:
+        return {"error": {"message": str(ex)}}
 
 
 # --- server process ---------------------------------------------------------
@@ -159,14 +171,14 @@ def _kill_pool(pool):
             pass
 
 
-async def _run(loop, fn, *args):
+async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
     """Run a heavy job in the worker pool with a hard timeout. On timeout (runaway
     OCCT) or a worker crash (segfault), recycle the pool and return a clean error
     dict so the socket stays alive and the app keeps working."""
     global _pool
     try:
         fut = loop.run_in_executor(_pool, fn, *args)
-        return await asyncio.wait_for(fut, timeout=JOB_TIMEOUT)
+        return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
         _kill_pool(_pool)
         _pool = _new_pool()
@@ -197,6 +209,12 @@ async def handle(ws):
                 res = await _run(loop, _export_job, req["document"], req["format"], req["path"])
                 await ws.send(_reply_for(req_id, res))
 
+            elif op == "import":
+                # a one-time import (mesh read + B-rep build) can run longer than a
+                # rebuild; give it a roomier budget than JOB_TIMEOUT.
+                res = await _run(loop, _import_job, req["path"], req["format"], timeout=90.0)
+                await ws.send(_reply_for(req_id, res))
+
             elif op == "ping":
                 await ws.send(_ok(req_id, {"pong": True}))
 
@@ -213,7 +231,12 @@ async def main():
     _mp_ctx = mp.get_context("spawn")
     _pool = _new_pool()
     try:
-        async with websockets.serve(handle, HOST, PORT):
+        # Raise the per-message cap well above the 1 MiB default: a rebuild ships
+        # the WHOLE document, and a document with an imported mesh embeds that
+        # body as a (potentially multi-MB) BREP string — at the default limit the
+        # server would slam the connection shut on the first real import, which
+        # the frontend sees as a permanent "connecting to sidecar".
+        async with websockets.serve(handle, HOST, PORT, max_size=512 * 1024 * 1024):
             # readiness signal the Rust shell waits for before connecting
             print(f"LISTENING {PORT}", flush=True)
             await asyncio.Future()  # run forever

@@ -12,7 +12,7 @@ import { getUnit, onUnitChange, toDisplay, fromDisplay, round, displayValue } fr
 import { resolveEntities, toSketchEntity } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
 
-type FieldKind = "length" | "angle";
+type FieldKind = "length" | "angle" | "count";
 // editable numeric fields per feature type: [field, label, kind]
 const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>> = {
   extrude: [["distance", "Distance", "length"]],
@@ -20,6 +20,17 @@ const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>
   chamfer: [["distance", "Length", "length"]],
   "press-pull": [["distance", "Distance", "length"]],
   revolve: [["angle", "Angle", "angle"]],
+  datumPlane: [["offset", "Offset", "length"]],
+  box: [["length", "Length", "length"], ["width", "Width", "length"], ["height", "Height", "length"]],
+  cylinder: [["radius", "Radius", "length"], ["height", "Height", "length"]],
+  sphere: [["radius", "Radius", "length"]],
+  shell: [["thickness", "Thickness", "length"]],
+  draft: [["angle", "Angle", "angle"]],
+  patternRect: [["countX", "Count X", "count"], ["countY", "Count Y", "count"], ["spacingX", "Spacing X", "length"], ["spacingY", "Spacing Y", "length"]],
+  patternCircular: [["count", "Count", "count"], ["angle", "Angle", "angle"]],
+  simplifyMesh: [["tolerance", "Angle tol", "angle"]],
+  scale: [["factor", "Factor", "count"]],
+  move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
 };
 
 export class Inspector {
@@ -90,20 +101,20 @@ export class Inspector {
     this.el.appendChild(title(`${FEATURE_META[f.type].label} · ${f.id}`, true));
     for (const [field, label, kind] of fields) {
       const cur = (f as any)[field] as Num | undefined;
-      const suffix = kind === "angle" ? "°" : ` ${unit}`;
-      // show converted number for literals; keep parameter-name strings as-is
+      const suffix = kind === "length" ? ` ${unit}` : kind === "angle" ? "°" : "";
+      // only lengths get unit conversion; angles + counts are shown raw
       const shown =
         typeof cur === "number"
-          ? String(kind === "angle" ? cur : round(toDisplay(cur)))
+          ? String(kind === "length" ? round(toDisplay(cur)) : cur)
           : (cur ?? "");
       this.el.appendChild(
         textRow(`${label}${suffix}`, String(shown), (raw) => {
           const asNum = parseFloat(raw);
           const isNum = raw !== "" && !Number.isNaN(asNum) && String(asNum) === raw;
           const val: Num = isNum
-            ? kind === "angle"
-              ? asNum
-              : fromDisplay(asNum)
+            ? kind === "length"
+              ? fromDisplay(asNum)
+              : asNum
             : raw; // a parameter name
           this.store.updateFeature(f.id, { [field]: val } as Partial<Feature>);
         }),

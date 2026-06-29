@@ -400,6 +400,30 @@ fn build(doc: &Document) -> Result<Shape, String> {
                 let solid = Solid::loft(wires.iter());
                 part = Some(solid.into_shape());
             }
+            // Primitive bodies (centered at the origin), mirroring builder.py's
+            // Box / Cylinder / Sphere. The Rust kernel is still single-body, so a
+            // primitive becomes the part if none exists yet, else it's unioned in.
+            "box" => {
+                let s = Shape::box_centered(
+                    num_field(f, "length", params),
+                    num_field(f, "width", params),
+                    num_field(f, "height", params),
+                );
+                part = Some(merge_body(part, s));
+            }
+            "cylinder" => {
+                let s = Shape::cylinder_centered(
+                    DVec3::ZERO,
+                    num_field(f, "radius", params),
+                    DVec3::Z,
+                    num_field(f, "height", params),
+                );
+                part = Some(merge_body(part, s));
+            }
+            "sphere" => {
+                let s = Shape::sphere(num_field(f, "radius", params)).build();
+                part = Some(merge_body(part, s));
+            }
             // Defer/skip every other feature type so the model still renders.
             other => {
                 eprintln!("geom: skipping unsupported feature type '{other}'");
@@ -408,6 +432,19 @@ fn build(doc: &Document) -> Result<Shape, String> {
     }
 
     part.ok_or_else(|| "document produced no geometry".to_string())
+}
+
+/// Add a fresh base body (a primitive) in the single-body Rust model: it becomes
+/// the part if none exists yet, else it's unioned in. (The Python multi-body
+/// kernel would keep it as a separate body — Rust multi-body is future work.)
+fn merge_body(part: Option<Shape>, s: Shape) -> Shape {
+    match part {
+        None => s,
+        Some(existing) => {
+            let fused: Shape = existing.union(&s).into();
+            fused.clean()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,6 +1043,32 @@ mod tests {
         // 12 edges, each sampled as a polyline.
         assert_eq!(result.edges.len(), 12, "box has 12 edges");
         assert!(result.edges.iter().all(|e| e.points.len() == EDGE_SAMPLES + 1));
+    }
+
+    /// Primitive bodies (box / cylinder / sphere) build directly, mirroring
+    /// builder.py's Box / Cylinder / Sphere (centered at the origin). A primitive
+    /// unioned onto an existing body merges (single-body Rust kernel).
+    #[test]
+    fn primitives_box_cylinder_sphere() {
+        let bx = geom_rebuild(json!({"parameters": {}, "features": [
+            { "id": "b", "type": "box", "length": 20, "width": 20, "height": 10 }]})).expect("box");
+        let distinct: std::collections::BTreeSet<u32> = bx.mesh.face_ids.iter().copied().collect();
+        assert_eq!(distinct.len(), 6, "box has 6 faces");
+        assert!(((bx.bbox.max[2] - bx.bbox.min[2]) - 10.0).abs() < 0.05, "box z span ~10");
+
+        let cy = geom_rebuild(json!({"parameters": {}, "features": [
+            { "id": "c", "type": "cylinder", "radius": 5, "height": 20 }]})).expect("cylinder");
+        assert!(!cy.mesh.positions.is_empty(), "cylinder produced geometry");
+        assert!(((cy.bbox.max[2] - cy.bbox.min[2]) - 20.0).abs() < 0.2, "cylinder z span ~20 (centered)");
+
+        let sp = geom_rebuild(json!({"parameters": {}, "features": [
+            { "id": "s", "type": "sphere", "radius": 8 }]})).expect("sphere");
+        assert!(((sp.bbox.max[0] - sp.bbox.min[0]) - 16.0).abs() < 0.3, "sphere diameter ~16");
+
+        let combo = geom_rebuild(json!({"parameters": {}, "features": [
+            { "id": "b", "type": "box", "length": 20, "width": 20, "height": 20 },
+            { "id": "c", "type": "cylinder", "radius": 4, "height": 40 }]})).expect("combo");
+        assert!(!combo.mesh.positions.is_empty(), "box+cylinder merged geometry");
     }
 
     /// A circle hole cut from a rectangle plate: rectangle extrude (new) then a

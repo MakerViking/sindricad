@@ -29,6 +29,7 @@ export class PressPullTool {
   active = false;
   private phase: Phase = "pick";
   private face: Selector = { kind: "face", by: "nearest", point: [0, 0, 0] };
+  private bodyId: string | null = null; // the body that owns the picked face
   private anchor = new THREE.Vector3(); // gizmo origin = the clicked point on the face
   private axis = new THREE.Vector3(0, 0, 1); // drag axis (unit) = face outward normal
   private quat = new THREE.Quaternion(); // Y -> current arrow direction
@@ -80,7 +81,7 @@ export class PressPullTool {
     // pre-selection: one face already selected → skip straight to the drag
     const pre = this.viewport.selectedFaceForPressPull();
     if (pre) {
-      this.beginDrag(pre.selector, pre.anchor, pre.normal);
+      this.beginDrag(pre.selector, pre.anchor, pre.normal, pre.bodyId);
     } else {
       setPrompt("Select a face to Press/Pull");
     }
@@ -116,7 +117,7 @@ export class PressPullTool {
       if (!hit) return; // missed the body — let the click orbit
       e.preventDefault();
       e.stopImmediatePropagation();
-      this.beginDrag(hit.selector, hit.anchor, hit.normal);
+      this.beginDrag(hit.selector, hit.anchor, hit.normal, hit.bodyId);
       return;
     }
     // drag phase: grabbing the handle scrubs; a clean click elsewhere commits
@@ -149,8 +150,9 @@ export class PressPullTool {
     if (e.key === "Escape") this.cancel();
   }
 
-  private beginDrag(face: Selector, anchor: THREE.Vector3, normal: THREE.Vector3) {
+  private beginDrag(face: Selector, anchor: THREE.Vector3, normal: THREE.Vector3, bodyId: string | null = null) {
     this.face = face;
+    this.bodyId = bodyId;
     this.anchor.copy(anchor);
     this.axis.copy(normal).normalize();
     this.phase = "drag";
@@ -239,6 +241,7 @@ export class PressPullTool {
       face: this.face,
       distance: v,
       operation: v >= 0 ? "join" : "cut",
+      body: this.bodyId ?? undefined,
     };
   }
 

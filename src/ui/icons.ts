@@ -28,11 +28,25 @@ const PATHS: Record<string, string> = {
   extrude: `<rect x="4" y="13" width="10" height="7"/><path d="M9 11V4m0 0l-3 3m3-3l3 3"/>`,
   revolve: `<path d="M12 4v16"/><ellipse cx="12" cy="12" rx="7" ry="3"/><path d="M5 12a7 3 0 0 0 14 0"/>`,
   loft: `<path d="M4 18h16M7 8h10M4 18l3-10M20 18L17 8"/>`,
+  sweep: `<circle cx="5" cy="18" r="2.4"/><path d="M5 18 C 5 9, 12 6, 20 6" fill="none"/><path d="M16 3l4 3-4 3"/>`,
 
   // modeling modify
   chamfer: `<path d="M4 20V12l8-8h8" fill="none"/>`,
   mirror: `<line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/><path d="M9 7L4 12l5 5z"/><path d="M15 7l5 5-5 5z"/>`,
   presspull: `<path d="M4 16l6-3 8 3-6 3z" fill="none"/><path d="M10 13V4m0 0l-3 3m3-3l3 3"/>`,
+  // body ops: split a body by a plane; boolean-combine bodies
+  split: `<rect x="4" y="7" width="16" height="10" rx="0.5"/><line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/>`,
+  combine: `<circle cx="9.5" cy="12" r="6"/><circle cx="14.5" cy="12" r="6"/>`,
+  shell: `<rect x="4" y="4" width="16" height="16" rx="1"/><rect x="8" y="8" width="8" height="8" rx="0.5" stroke-dasharray="2 2"/>`,
+  draft: `<path d="M7 20l4-16h2l4 16z" fill="none"/><line x1="5" y1="20" x2="19" y2="20"/>`,
+  pattern: `<rect x="4" y="4" width="5" height="5"/><rect x="15" y="4" width="5" height="5"/><rect x="4" y="15" width="5" height="5"/><rect x="15" y="15" width="5" height="5"/>`,
+  simplifyMesh: `<polygon points="12,3 21,8 21,16 12,21 3,16 3,8"/><path d="M3 8l9 5 9-5M12 13v8"/>`,
+  scale: `<path d="M4 10V4h6"/><path d="M20 14v6h-6"/><rect x="4" y="4" width="10" height="10" rx="0.5"/>`,
+  move: `<path d="M12 3v18M3 12h18"/><path d="M12 3l-3 3m3-3l3 3M12 21l-3-3m3 3l3-3M3 12l3-3m-3 3l3 3M21 12l-3-3m3 3l-3 3"/>`,
+  // insert / construct
+  import: `<path d="M12 3v11m0 0l-4-4m4 4l4-4"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>`,
+  datumPlane: `<path d="M3 9l9-4 9 4-9 4z"/><line x1="12" y1="13" x2="12" y2="20"/><circle cx="12" cy="20" r="1.4" fill="currentColor"/>`,
+  primitive: `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5"/><line x1="12" y1="12" x2="12" y2="21"/>`,
 
   // file / general
   save: `<path d="M5 4h11l3 3v13H5z"/><rect x="8" y="4" width="6" height="5"/><rect x="8" y="13" width="8" height="5"/>`,

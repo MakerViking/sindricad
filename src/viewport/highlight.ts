@@ -18,6 +18,7 @@ export class Highlighter {
   private hoveredFace: number | null = null;
   private selectedEdges = new Set<Line2>();
   private selectedFaces = new Set<number>();
+  private selectedBodies = new Set<string>();
   // idle (un-hovered, un-selected) edge color. Raised to a visible "selectable"
   // tint while the fillet/chamfer edge tool is active so you can SEE every edge.
   private edgeBase = EDGE_BASE.clone();
@@ -96,6 +97,54 @@ export class Highlighter {
     for (const f of this.selectedFaces) this.paintFace(f, BASE_COLOR);
     this.selectedEdges.clear();
     this.selectedFaces.clear();
+  }
+
+  // --- whole-body selection (Bodies selection mode) ---------------------------
+
+  toggleSelectBody(bodyId: string) {
+    if (this.selectedBodies.has(bodyId)) {
+      this.selectedBodies.delete(bodyId);
+      this.paintBody(bodyId, BASE_COLOR);
+    } else {
+      this.selectedBodies.add(bodyId);
+      this.paintBody(bodyId, SELECT);
+    }
+  }
+
+  /** select exactly this body (clearing any other body selection). */
+  selectOnlyBody(bodyId: string) {
+    this.clearBodySelection();
+    this.toggleSelectBody(bodyId);
+  }
+
+  getSelectedBodies(): string[] {
+    return [...this.selectedBodies];
+  }
+
+  clearBodySelection() {
+    for (const id of this.selectedBodies) this.paintBody(id, BASE_COLOR);
+    this.selectedBodies.clear();
+  }
+
+  /** paint every triangle whose faceId falls in the body's range. */
+  private paintBody(bodyId: string, color: THREE.Color) {
+    const body = this.view.bodies.find((b) => b.id === bodyId);
+    if (!body) return;
+    const lo = body.faceStart;
+    const hi = body.faceStart + body.faceCount;
+    const geo = this.view.mesh.geometry;
+    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
+    const index = geo.getIndex();
+    if (!colorAttr || !index) return;
+    const ids = this.view.faceIds;
+    for (let t = 0; t < ids.length; t++) {
+      if (ids[t] < lo || ids[t] >= hi) continue;
+      for (let k = 0; k < 3; k++) {
+        const v = index.getX(t * 3 + k);
+        colorAttr.setXYZ(v, color.r, color.g, color.b);
+      }
+    }
+    colorAttr.needsUpdate = true;
   }
 
   private paintFace(faceId: number, color: THREE.Color) {

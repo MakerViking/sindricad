@@ -25,8 +25,13 @@ export class Picker {
   private raycaster = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
   private scratch = new THREE.Vector3();
+  // screen-space distance (px) of the best edge hit from the last pickEdge() —
+  // lets pick() prefer a face over an edge unless the cursor is on the edge line.
+  private edgeScreenDist = Infinity;
 
-  /** edges take priority (thin targets); fall back to faces. */
+  /** General selection: a face wins over an edge unless the cursor is right on
+   *  the edge line (within EDGE_NEAR_PX). The dedicated edge tools call
+   *  pickEdgeAt() directly and keep the generous EDGE_PICK_THRESHOLD radius. */
   pick(
     clientX: number,
     clientY: number,
@@ -36,11 +41,10 @@ export class Picker {
     resolution: THREE.Vector2,
   ): Hit | null {
     const edge = this.pickEdge(clientX, clientY, rect, camera, view, resolution);
-    if (edge) return edge;
 
     this.raycaster.setFromCamera(this.ndc, camera); // ndc set by pickEdge
-    // face pick
     const fHits = this.raycaster.intersectObject(view.mesh, false);
+    let face: FaceHit | null = null;
     if (fHits.length) {
       const hit = fHits[0];
       const faceId = view.faceIds[hit.faceIndex ?? 0] ?? 0;
@@ -48,14 +52,12 @@ export class Picker {
       const normal =
         hit.normal?.clone().transformDirection(view.mesh.matrixWorld) ??
         new THREE.Vector3(0, 0, 1);
-      return {
-        kind: "face",
-        faceId,
-        selector: faceSelector(normal, point),
-      };
+      face = { kind: "face", faceId, selector: faceSelector(normal, point) };
     }
 
-    return null;
+    // edge only when on the line (or there's no face under the cursor at all)
+    if (edge && (this.edgeScreenDist <= EDGE_NEAR_PX || !face)) return edge;
+    return face;
   }
 
   /** Edge-only pick. Returns a precise single-edge (by:nearest) selector — used
@@ -94,6 +96,7 @@ export class Picker {
       const d = Math.hypot(sx - clientX, sy - clientY);
       if (d < bestD) { bestD = d; best = h; }
     }
+    this.edgeScreenDist = bestD; // used by pick() to decide edge vs face
 
     const line = best.object as Line2;
     const pts = line.userData.points as [number, number, number][];
@@ -110,6 +113,10 @@ export class Picker {
 // gives a comfortable ~13px grab radius. Candidates are then narrowed by screen
 // distance (see pickEdge), so a wide value stays precise.
 const EDGE_PICK_THRESHOLD = 26;
+// In general selection, only treat a click as an edge when the cursor is within
+// this many screen px of the edge line; otherwise a face under the cursor wins
+// (keeps thin faces selectable). Fillet/Chamfer (pickEdgeAt) ignore this.
+const EDGE_NEAR_PX = 7;
 
 function faceSelector(normal: THREE.Vector3, hit: THREE.Vector3): Selector {
   const n = normal.clone().normalize();

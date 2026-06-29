@@ -6,7 +6,7 @@
 
 import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
-import type { ExportFormat } from "../types";
+import type { ExportFormat, ImportFormat } from "../types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -40,18 +40,27 @@ export async function saveDocumentAs(store: DocumentStore) {
   }
 }
 
-export async function openDocument(store: DocumentStore) {
+export async function openDocument(store: DocumentStore, geometry: GeometryBackend) {
   if (isTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await open({
       multiple: false,
-      // accept the branded .sindri plus legacy .json saves
-      filters: [{ name: "SindriCAD Document", extensions: ["sindri", "json"] }],
+      // Fusion-style: Open takes our document AND mesh/CAD files (imported as a
+      // body), routed by extension below — so users can just "open" an STL.
+      filters: [
+        { name: "All supported", extensions: ["sindri", "json", "stl", "3mf", "step", "stp", "obj"] },
+        { name: "SindriCAD Document", extensions: ["sindri", "json"] },
+        { name: "Mesh / CAD", extensions: ["stl", "3mf", "step", "stp", "obj"] },
+      ],
     });
-    if (typeof path === "string") {
+    if (typeof path !== "string") return;
+    const ext = path.split(".").pop()?.toLowerCase();
+    if (ext === "sindri" || ext === "json") {
+      const { readTextFile } = await import("@tauri-apps/plugin-fs");
       store.load(await readTextFile(path));
       store.markSaved(path); // freshly opened == clean, with a known path
+    } else {
+      await importPath(store, geometry, path); // a mesh / CAD file → import as a body
     }
   } else {
     const text = await uploadText();
@@ -83,6 +92,69 @@ function extToFormat(path: string): ExportFormat {
   const ext = path.split(".").pop()?.toLowerCase();
   if (ext === "stl") return "stl";
   if (ext === "3mf") return "3mf";
+  return "step";
+}
+
+/** Import an external mesh / B-rep file (STL / 3MF / STEP / OBJ) as a new body.
+ *  The sidecar reads the file by path and returns an embeddable BREP payload, so
+ *  this needs the native app (a real filesystem path), like export. */
+export async function importModel(store: DocumentStore, geometry: GeometryBackend) {
+  if (!isTauri()) {
+    console.warn("import needs the native app (a real filesystem path)");
+    return;
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const path = await open({
+    multiple: false,
+    filters: [
+      { name: "All supported", extensions: ["stl", "3mf", "step", "stp", "obj"] },
+      { name: "STL", extensions: ["stl"] },
+      { name: "3MF", extensions: ["3mf"] },
+      { name: "STEP", extensions: ["step", "stp"] },
+      { name: "OBJ", extensions: ["obj"] },
+    ],
+  });
+  if (typeof path !== "string") return;
+  await importPath(store, geometry, path);
+}
+
+/** Import a specific mesh / CAD file path as a new body. Shared by the Import
+ *  Mesh command and by Open (when the chosen file isn't a .sindri document). */
+async function importPath(store: DocumentStore, geometry: GeometryBackend, path: string) {
+  const fmt = extToImportFormat(path);
+  const res = await geometry.importGeometry(path, fmt);
+  if (!res.ok) {
+    await reportError(`Couldn't import ${path.split(/[\\/]/).pop()}: ${res.message ?? "unreadable file"}`);
+    return;
+  }
+  store.addFeature({
+    id: store.nextId(),
+    type: "import",
+    format: fmt,
+    name: res.name,
+    brep: res.brep,
+    source: path,
+    solid: res.solid,
+  });
+}
+
+/** Surface an error to the user — a native dialog in the app, console otherwise.
+ *  (Import used to fail silently, which read as "nothing happened".) */
+async function reportError(msg: string) {
+  if (isTauri()) {
+    const { message } = await import("@tauri-apps/plugin-dialog");
+    await message(msg, { title: "SindriCAD", kind: "error" });
+  } else {
+    console.error(msg);
+  }
+}
+
+function extToImportFormat(path: string): ImportFormat {
+  const ext = path.split(".").pop()?.toLowerCase();
+  if (ext === "stl") return "stl";
+  if (ext === "3mf") return "3mf";
+  if (ext === "obj") return "obj";
+  if (ext === "brep") return "brep";
   return "step";
 }
 

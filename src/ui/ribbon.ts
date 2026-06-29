@@ -25,8 +25,10 @@ const MODEL: Group[] = [
     items: [
       { action: "sketch", label: "Sketch", iconName: "sketch", key: "S" },
       { action: "extrude", label: "Extrude", iconName: "extrude", key: "E" },
-      { action: "revolve", label: "Revolve", iconName: "revolve", soon: true },
-      { action: "loft", label: "Loft", iconName: "loft", soon: true },
+      { action: "revolve", label: "Revolve", iconName: "revolve" },
+      { action: "loft", label: "Loft", iconName: "loft" },
+      { action: "sweep", label: "Sweep", iconName: "sweep" },
+      { action: "primitive", label: "Primitive", iconName: "primitive" },
     ],
   },
   {
@@ -35,13 +37,28 @@ const MODEL: Group[] = [
       { action: "presspull", label: "Press/Pull", iconName: "presspull", key: "Q" },
       { action: "fillet", label: "Fillet", iconName: "fillet", key: "F" },
       { action: "chamfer", label: "Chamfer", iconName: "chamfer" },
+      { action: "shell", label: "Shell", iconName: "shell" },
+      { action: "draft", label: "Draft", iconName: "draft" },
+      { action: "scale", label: "Scale", iconName: "scale" },
+      { action: "move", label: "Move", iconName: "move" },
       { action: "mirror", label: "Mirror", iconName: "mirror" },
+      { action: "pattern", label: "Pattern", iconName: "pattern" },
+      { action: "split", label: "Split Body", iconName: "split" },
+      { action: "combine", label: "Combine", iconName: "combine" },
     ],
   },
   {
     label: "CONSTRUCT",
     items: [
       { action: "offset-plane", label: "Offset Plane", iconName: "offsetPlane" },
+      { action: "datum-plane", label: "Datum Plane", iconName: "datumPlane" },
+    ],
+  },
+  {
+    label: "INSERT",
+    items: [
+      { action: "import", label: "Import Mesh", iconName: "import" },
+      { action: "simplify-mesh", label: "Simplify Mesh", iconName: "simplifyMesh" },
     ],
   },
 ];

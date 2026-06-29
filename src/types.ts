@@ -79,10 +79,59 @@ export type Feature =
   // from the drag direction); `operation` is derived from the sign for the
   // timeline label. Planar faces extrude+boolean (boss/pocket); curved faces
   // offset the surface (e.g. resize a hole).
-  | { id: string; type: "press-pull"; face: Selector; distance: Num; operation: "join" | "cut" }
+  | { id: string; type: "press-pull"; face: Selector; distance: Num; operation: "join" | "cut"; body?: string }
   | { id: string; type: "mirror"; plane: Plane3 }
   | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num }
-  | { id: string; type: "loft"; sketches: string[] };
+  | { id: string; type: "loft"; sketches: string[] }
+  // Sweep a closed profile sketch along an open path sketch (a line/arc/spline).
+  | { id: string; type: "sweep"; profile: string; path: string; operation: "new" | "join" | "cut" }
+  // A persistent construction/datum plane in the timeline. Carries no geometry;
+  // sketches and splits reference it by id (resolved to its PlaneSpec on rebuild).
+  // `plane` is the source reference and `offset` shifts along its normal (mm), so
+  // the offset stays editable after creation; absent offset = coincident.
+  | { id: string; type: "datumPlane"; plane: PlaneSpec; offset?: number; name?: string }
+  // An imported body (STL/3MF/STEP/OBJ). The sewn/native solid is embedded as a
+  // base64 BREP string so the document is self-contained and rebuilds
+  // deterministically without the original file. `solid` is false for a
+  // non-watertight mesh (a surface body — reference / section / sketch-over only).
+  | {
+      id: string;
+      type: "import";
+      format: "stl" | "3mf" | "step" | "obj" | "brep";
+      name: string;
+      brep: string;
+      source?: string;
+      solid?: boolean;
+    }
+  // Cut a body by a plane. keep=top/bottom keeps one side; keep=both splits it
+  // into separate bodies. `body` targets a specific body (default: the active one);
+  // `bodies` cuts every listed body (used for "cut all visible bodies"). The
+  // cutting plane is either an inline `plane` or `planeId` (a datum plane by id).
+  | { id: string; type: "split"; plane?: PlaneSpec; planeId?: string; keep: "top" | "bottom" | "both"; body?: string; bodies?: string[] }
+  // Boolean-combine bodies. The target is modified in place; tool bodies are
+  // consumed unless keepTools. Omitted target/tools default to "all bodies".
+  | { id: string; type: "combine"; operation: "join" | "cut" | "intersect"; target?: string; tools?: string[]; keepTools?: boolean }
+  // Primitive bodies (centered at the origin). Each creates a new body; edit the
+  // dimensions in the inspector. Handy as boolean tool bodies for Combine.
+  | { id: string; type: "box"; length: Num; width: Num; height: Num }
+  | { id: string; type: "cylinder"; radius: Num; height: Num }
+  | { id: string; type: "sphere"; radius: Num }
+  // Hollow the active body to a wall thickness, removing the selected faces
+  // (none = a fully closed hollow).
+  | { id: string; type: "shell"; thickness: Num; faces?: Selector | Selector[] }
+  // Taper the selected faces by an angle about a neutral plane (pull axis).
+  | { id: string; type: "draft"; faces: Selector | Selector[]; angle: Num; axis: Axis3 }
+  // Replicate the active body on a grid / around an axis (copies are unioned).
+  | { id: string; type: "patternRect"; countX: Num; countY: Num; spacingX: Num; spacingY: Num }
+  | { id: string; type: "patternCircular"; count: Num; angle: Num; axis: Axis3 }
+  // Merge near-coplanar facets of an imported mesh (angular tolerance, degrees):
+  // recovers planar faces / reduces facet count. Coarsens curved regions.
+  | { id: string; type: "simplifyMesh"; tolerance: Num }
+  // Scale the active body uniformly about the origin (factor; 1 = unchanged).
+  | { id: string; type: "scale"; factor: Num }
+  // Move the active body — or the bodies listed in `bodies` (multi-select) —:
+  // translate (dx,dy,dz mm) + rotate (rx,ry,rz degrees, about origin).
+  | { id: string; type: "move"; dx: Num; dy: Num; dz: Num; rx: Num; ry: Num; rz: Num; bodies?: string[] };
 
 export type FeatureType = Feature["type"];
 
@@ -113,12 +162,17 @@ export interface CadDocument {
   rollback?: number | null;
   /** explicit per-sketch show/hide overrides (id → visible). */
   sketchVisibility?: Record<string, boolean>;
+  /** explicit per-body show/hide overrides (body id → visible). */
+  bodyVisibility?: Record<string, boolean>;
 }
 
 export interface RebuildResult {
   mesh: { positions: number[]; indices: number[]; faceIds: number[] };
-  edges: { id: string; points: [number, number, number][] }[];
+  edges: { id: string; points: [number, number, number][]; body?: string }[];
   bbox: { min: number[]; max: number[] };
+  // per-body metadata: which faceId range each body occupies in the merged mesh
+  // (lets the browser tree list bodies and picking map a face back to its body).
+  bodies?: { id: string; name: string; faceStart: number; faceCount: number }[];
 }
 
 export type RebuildReply =
@@ -126,3 +180,10 @@ export type RebuildReply =
   | { ok: false; error: { feature_id?: string; message: string } };
 
 export type ExportFormat = "step" | "stl" | "3mf";
+
+// Import: the format the user picks, and the sidecar's reply for an `import` op —
+// the embeddable BREP payload plus a little metadata for the new `import` feature.
+export type ImportFormat = "stl" | "3mf" | "step" | "obj" | "brep";
+export type ImportReply =
+  | { ok: true; brep: string; name: string; solid: boolean; faces: number }
+  | { ok: false; message: string };

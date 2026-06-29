@@ -1386,3 +1386,57 @@ button.finish:hover {
   gap: 3px;
   cursor: pointer;
 }
+
+/* --- small modal chooser (Split keep-mode, Combine operation) --- */
+.choice-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(2px);
+          backdrop-filter: blur(2px);
+}
+.choice-card {
+  background: var(--panel-2, #1c1f26);
+  border: 1px solid var(--line-strong, #323843);
+  border-radius: var(--r-lg, 10px);
+  box-shadow: var(--shadow-3);
+  padding: var(--s-5, 16px);
+  min-width: 280px;
+}
+.choice-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #e6e8ec);
+  margin-bottom: var(--s-4, 12px);
+}
+.choice-row {
+  display: flex;
+  gap: var(--s-3, 8px);
+}
+.choice-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 8px;
+  background: var(--raised, #22262e);
+  border: 1px solid var(--line, #262a31);
+  border-radius: var(--r-md, 8px);
+  color: var(--text, #e6e8ec);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--t-fast, 120ms) var(--ease), border-color var(--t-fast, 120ms) var(--ease);
+}
+.choice-btn:hover {
+  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
+  border-color: var(--accent, #ff7a3c);
+}
+.choice-btn small {
+  color: var(--text-mute, #6b7280);
+  font-size: 10px;
+}

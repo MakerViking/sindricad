@@ -228,22 +228,26 @@ export class ViewCube {
     this.group.quaternion.copy(mainCamera.quaternion).invert();
 
     const rect = this.canvas.getBoundingClientRect();
-    const dpr = this.renderer.getPixelRatio();
-    const px = SIZE * dpr;
-    const x = (rect.width - SIZE - MARGIN) * dpr;
-    const y = (rect.height - SIZE - MARGIN) * dpr; // WebGL viewport origin is bottom-left
+    // NOTE: renderer.setViewport/setScissor take CSS pixels and apply the
+    // renderer's pixelRatio internally — so we must NOT pre-multiply by it here.
+    // (Doing so applied pixelRatio twice, leaving a dpr²-sized viewport set for
+    // the next main render → the whole model rendered offset/oversized on any
+    // HiDPI / fractional-scaled display. Invisible at dpr=1.)
+    const x = rect.width - SIZE - MARGIN;
+    const y = rect.height - SIZE - MARGIN; // WebGL viewport origin is bottom-left
 
     const prevAutoClear = this.renderer.autoClear;
     this.renderer.autoClear = false;
-    this.renderer.setViewport(x, y, px, px);
-    this.renderer.setScissor(x, y, px, px);
+    this.renderer.setViewport(x, y, SIZE, SIZE);
+    this.renderer.setScissor(x, y, SIZE, SIZE);
     this.renderer.setScissorTest(true);
     this.renderer.clearDepth(); // draw the cube over the main scene
     this.renderer.render(this.scene, this.camera);
     this.renderer.setScissorTest(false);
     this.renderer.autoClear = prevAutoClear;
-    // restore the full viewport for the next main render
-    this.renderer.setViewport(0, 0, rect.width * dpr, rect.height * dpr);
+    // restore the full viewport for the next main render (CSS px; pixelRatio
+    // is applied by setViewport itself).
+    this.renderer.setViewport(0, 0, rect.width, rect.height);
   }
 
   // ---- pointer interaction -------------------------------------------------

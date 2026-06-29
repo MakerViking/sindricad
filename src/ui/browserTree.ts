@@ -6,6 +6,7 @@
 
 import type { DocumentStore } from "../document/store";
 import type { Plane3 } from "../types";
+import { contextMenu } from "./menu";
 
 export class BrowserTree {
   private el: HTMLElement;
@@ -18,6 +19,13 @@ export class BrowserTree {
   onSketchOnPlane: ((plane: Plane3) => void) | null = null;
   onToggleSketch: ((id: string) => void) | null = null;
   isSketchVisible: ((id: string) => boolean) | null = null;
+  onToggleBody: ((id: string) => void) | null = null;
+  isBodyVisible: ((id: string) => boolean) | null = null;
+  // body multi-selection (for Move): click selects, Ctrl/Cmd-click adds.
+  onSelectBody: ((id: string, additive: boolean) => void) | null = null;
+  isBodySelected: ((id: string) => boolean) | null = null;
+  // right-click a construction plane → cut all bodies by it.
+  onCutPlane: ((id: string) => void) | null = null;
 
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
@@ -45,13 +53,24 @@ export class BrowserTree {
   private render() {
     const doc = this.store.document;
     const errId = this.store.buildState.errorFeatureId;
-    const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
+    const result = this.store.buildState.result;
+    const hasSolid = (result?.mesh.positions.length ?? 0) > 0;
+    // real per-body list from the rebuild; fall back to a single implicit body
+    // when the backend didn't send body metadata but a solid exists.
+    const bodies: { id: string; name: string }[] = result?.bodies?.length
+      ? result.bodies.map((b) => ({ id: b.id, name: b.name }))
+      : hasSolid
+        ? [{ id: "body1", name: "Body1" }]
+        : [];
 
     // the tree only depends on these — onDocChange + onBuild both fire per edit,
     // so bail when nothing visible changed instead of rebuilding the DOM twice.
     const sketchIds = doc.features.filter((f) => f.type === "sketch").map((f) => f.id);
+    const datumIds = doc.features.filter((f) => f.type === "datumPlane").map((f) => f.id);
     const vis = sketchIds.map((id) => (this.isSketchVisible?.(id) ?? true) ? "1" : "0").join("");
-    const sig = `${sketchIds.join(",")}|${vis}|${hasSolid}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}`;
+    const bvis = bodies.map((b) => `${b.name}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}`).join(",");
+    const bsel = bodies.map((b) => (this.isBodySelected?.(b.id) ? "1" : "0")).join("");
+    const sig = `${sketchIds.join(",")}|${datumIds.join(",")}|${vis}|${bvis}|${bsel}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
@@ -68,8 +87,41 @@ export class BrowserTree {
       })),
     ]);
 
+    // --- Construction / datum planes (only when present) ---
+    const datums = doc.features.filter((f) => f.type === "datumPlane");
+    if (datums.length) {
+      this.folder(
+        "Planes",
+        "▱",
+        datums.map((f, i) => ({
+          label: (f as { name?: string }).name || `Plane${i + 1}`,
+          icon: "▱",
+          selected: this.selectedId === f.id,
+          error: errId === f.id,
+          onClick: () => this.onSelect?.(f.id),
+          onContext: (e: MouseEvent) =>
+            contextMenu(e.clientX, e.clientY, [
+              { label: "Cut all bodies", onClick: () => this.onCutPlane?.(f.id) },
+            ]),
+          title: "Construction plane — select it, then Split Body cuts by it · right-click to Cut",
+        })),
+      );
+    }
+
     // --- Bodies ---
-    this.folder("Bodies", "◆", hasSolid ? [{ label: "Body1", icon: "◆" }] : []);
+    this.folder(
+      "Bodies",
+      "◆",
+      bodies.map((b) => ({
+        label: b.name,
+        icon: "◆",
+        selected: this.isBodySelected?.(b.id) ?? false,
+        visible: this.isBodyVisible?.(b.id) ?? true,
+        onClick: (e) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
+        onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
+        title: "Click to select (Ctrl+click adds) · click the eye to show/hide",
+      })),
+    );
 
     // --- Sketches ---
     const sketches = doc.features.filter((f) => f.type === "sketch");
@@ -101,9 +153,10 @@ export class BrowserTree {
       error?: boolean;
       visible?: boolean;
       title?: string;
-      onClick?: () => void;
+      onClick?: (e: MouseEvent) => void;
       onDouble?: () => void;
       onToggleVis?: () => void;
+      onContext?: (e: MouseEvent) => void;
     }[],
   ) {
     const collapsed = this.collapsed.has(name);
@@ -134,8 +187,13 @@ export class BrowserTree {
         `<span class="tree-label"${hidden ? ' style="opacity:.45"' : ""}>${it.label}</span>` +
         `<span style="flex:1"></span>` +
         (it.onToggleVis ? `<span class="tree-eye" title="Show/hide">${it.visible === false ? "○" : "◉"}</span>` : "");
-      if (it.onClick) row.addEventListener("click", it.onClick);
+      if (it.onClick) row.addEventListener("click", (e) => it.onClick!(e));
       if (it.onDouble) row.addEventListener("dblclick", it.onDouble);
+      if (it.onContext)
+        row.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          it.onContext!(e);
+        });
       if (it.onToggleVis) {
         const eye = row.querySelector(".tree-eye")!;
         eye.addEventListener("click", (e) => {

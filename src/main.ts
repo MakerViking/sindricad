@@ -13,8 +13,10 @@ import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
-import { saveDocument, saveDocumentAs, openDocument, exportModel } from "./io/files";
+import { saveDocument, saveDocumentAs, openDocument, exportModel, importModel } from "./io/files";
 import { Menubar } from "./ui/menu";
+import { contextMenu } from "./ui/menu";
+import { choose } from "./ui/choice";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
 import { SketchPlane } from "./sketch/plane";
@@ -22,16 +24,19 @@ import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { PressPullTool } from "./features/pressPullTool";
+import { MoveTool } from "./features/moveTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
-import type { Feature, PlaneSpec } from "./types";
+import type { Feature, PlaneDef, PlaneSpec, Selector } from "./types";
 
 // --- core singletons ---
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const contextTab = document.getElementById("context-tab")!;
+
 const viewport = new Viewport(canvas);
+
 const geometry = import.meta.env.VITE_GEOM === "rust" ? new TauriGeometry() : new Geometry();
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
 
@@ -41,6 +46,7 @@ const sketch = new SketchMode(viewport, overlay);
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
+const moveTool = new MoveTool(viewport, store);
 const planeOffset = new PlaneOffsetTool(viewport);
 
 (window as any).viewport = viewport;
@@ -89,7 +95,9 @@ new Menubar(document.getElementById("menubar")!, [
     label: "File",
     items: [
       { label: "New", shortcut: "Ctrl+N", onClick: () => void newDocument() },
-      { label: "Open…", shortcut: "Ctrl+O", onClick: () => void openDocument(store) },
+      { label: "Open…", shortcut: "Ctrl+O", onClick: () => void openDocument(store, geometry) },
+      { separator: true, label: "" },
+      { label: "Import Mesh…", onClick: () => void importModel(store, geometry) },
       { separator: true, label: "" },
       { label: "Save", shortcut: "Ctrl+S", onClick: () => void saveDocument(store) },
       { label: "Save As…", shortcut: "Ctrl+Shift+S", onClick: () => void saveDocumentAs(store) },
@@ -120,10 +128,36 @@ function selectFeature(id: string | null) {
   timeline.select(id);
   tree.select(id);
   inspector.select(id);
+  viewport.highlightDatum(id); // brighten the matching construction plane (if any)
 }
 timeline.onSelect = selectFeature;
 timeline.onEdit = (id) => editFeature(id);
 tree.onSelect = selectFeature;
+// clicking a construction plane in the viewport selects it (so it can be cut by)
+viewport.onPickDatum = (id) => selectFeature(id);
+
+// right-click a model face → context menu. Uses face raycasting (not the
+// edge-priority picker), so it reliably targets thin faces like an inner ledge.
+canvas.addEventListener("contextmenu", (e) => {
+  if (toolBusy()) return;
+  if (viewport.cubeHitsRegion(e.clientX, e.clientY)) return; // ViewCube owns its corner
+  // right-click a construction plane → cut all visible bodies by it
+  const datumId = viewport.pickDatumAt(e.clientX, e.clientY);
+  if (datumId) {
+    e.preventDefault();
+    contextMenu(e.clientX, e.clientY, [
+      { label: "Cut all bodies", onClick: () => void startCutByPlane(datumId) },
+    ]);
+    return;
+  }
+  const face = viewport.pickFacePlane(e.clientX, e.clientY);
+  if (!face) return; // not over a face — leave the browser default
+  e.preventDefault();
+  contextMenu(e.clientX, e.clientY, [
+    { label: "Offset plane from face", onClick: () => offsetPlaneFromFace(face) },
+    { label: "Sketch on this face", onClick: () => { if (!toolBusy()) sketch.enter(face, store); } },
+  ]);
+});
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
   if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) sketch.enter(plane, store);
@@ -137,6 +171,7 @@ function isSketchConsumed(id: string): boolean {
     (f) =>
       (f.type === "extrude" && f.sketch === id) ||
       (f.type === "revolve" && f.sketch === id) ||
+      (f.type === "sweep" && (f.profile === id || f.path === id)) ||
       (f.type === "loft" && f.sketches.includes(id)),
   );
 }
@@ -151,6 +186,35 @@ tree.onToggleSketch = (id) => {
   tree.refresh();
 };
 
+// per-body show/hide (Fusion-style eye toggle); re-renders without a sidecar rebuild
+tree.isBodyVisible = (id) => store.isBodyVisible(id);
+tree.onToggleBody = (id) => {
+  store.setBodyVisibility(id, !store.isBodyVisible(id));
+  tree.refresh();
+};
+
+// body multi-selection (Bodies select mode) — viewport ↔ tree kept in sync
+tree.isBodySelected = (id) => viewport.getSelectedBodies().includes(id);
+tree.onSelectBody = (id, additive) => {
+  const cur = new Set(viewport.getSelectedBodies());
+  if (additive) cur.has(id) ? cur.delete(id) : cur.add(id);
+  else { cur.clear(); cur.add(id); }
+  viewport.setSelectedBodies([...cur]);
+};
+tree.onCutPlane = (id) => void startCutByPlane(id);
+viewport.onBodySelectionChange = () => {
+  tree.refresh();
+  if (toolBusy()) return;
+  const n = viewport.getSelectedBodies().length;
+  setPrompt(n ? `${n} bod${n > 1 ? "ies" : "y"} selected — Move (M) to drag · Esc to clear` : null);
+};
+// Esc clears the body selection while in Bodies mode
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && viewport.selecting === "bodies" && !toolBusy() && viewport.getSelectedBodies().length) {
+    viewport.setSelectedBodies([]);
+  }
+});
+
 // --- sketch overlays follow the document (when not actively sketching) ---
 store.onDocChange(() => {
   if (!sketch.active) overlay.update(store.document);
@@ -158,7 +222,7 @@ store.onDocChange(() => {
 
 // --- selected-edge hint: tells you pre-selection is usable by Fillet/Chamfer ---
 viewport.onSelectionChange = () => {
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || planePick) return;
+  if (toolBusy()) return;
   const n = viewport.selectedEdgeSelectors().length;
   setPrompt(n ? `${n} edge${n > 1 ? "s" : ""} selected — Fillet or Chamfer to apply · Esc to clear` : null);
 };
@@ -168,18 +232,47 @@ let firstModel = true;
 store.onBuild((s) => {
   if (s.result) {
     if (s.result.mesh.positions.length > 0) {
-      viewport.setModel(s.result, firstModel);
+      // hide the faces AND wireframe of any body the user toggled off (filtered
+      // in the render, no sidecar rebuild — setBodyVisibility re-emits the build).
+      const hidden = (s.result.bodies ?? [])
+        .filter((b) => !store.isBodyVisible(b.id))
+        .map((b) => b.id);
+      viewport.setModel(s.result, firstModel, hidden);
       firstModel = false;
     } else {
       viewport.clearModel();
     }
   }
+  syncDatumPlanes();
   if (s.errorMessage) {
     setStatus(`⚠ ${s.errorFeatureId ?? ""}: ${s.errorMessage}`, "error");
   } else if (!s.building) {
     setStatus("ready", "connected");
   }
 });
+
+// reflect the document's datum/construction planes as selectable quads in 3D.
+// Resolved client-side (source plane + offset along its normal) so no rebuild is
+// needed just to move/show a plane.
+function syncDatumPlanes() {
+  const planes = store.document.features
+    .filter((f): f is Extract<Feature, { type: "datumPlane" }> => f.type === "datumPlane")
+    .map((f) => {
+      const sp = new SketchPlane(f.plane);
+      const off = f.offset ?? 0;
+      return {
+        id: f.id,
+        origin: [
+          sp.origin.x + sp.n.x * off,
+          sp.origin.y + sp.n.y * off,
+          sp.origin.z + sp.n.z * off,
+        ] as [number, number, number],
+        normal: [sp.n.x, sp.n.y, sp.n.z] as [number, number, number],
+      };
+    });
+  viewport.setDatumPlanes(planes);
+  viewport.highlightDatum(selectedFeature);
+}
 
 geometry.onStatus((connected) => {
   if (!connected) setStatus("connecting to sidecar…", "error");
@@ -256,6 +349,15 @@ document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((btn) => {
 });
 document.getElementById("fit")!.addEventListener("click", () => viewport.fitView());
 
+// Faces / Bodies selection-filter toggle (Bodies mode = click whole bodies to move)
+const selBtn = document.getElementById("selmode") as HTMLButtonElement;
+selBtn.addEventListener("click", () => {
+  const next = viewport.selecting === "faces" ? "bodies" : "faces";
+  viewport.setSelectionMode(next);
+  selBtn.textContent = next === "bodies" ? "Bodies" : "Faces";
+  selBtn.classList.toggle("active", next === "bodies");
+});
+
 // unit selector (display/input only; geometry stays in mm)
 const unitSel = document.getElementById("unit") as HTMLSelectElement;
 unitSel.value = getUnit();
@@ -280,7 +382,7 @@ const startPressPull = () => {
   pressPull.start((id) => id && selectFeature(id));
 };
 function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || planePick) return;
+  if (toolBusy()) return;
   planePick = true;
   viewport.showAllPlanes(true);
   viewport.suspendPicking = true;
@@ -344,10 +446,368 @@ function offsetPlane() {
   });
 }
 
+// Datum Plane: pick a plane/face, position it (offset), then save a persistent
+// datum plane feature — it lands in the timeline + Planes folder and can be
+// reused as a sketch / split reference. We store the SOURCE plane + a scalar
+// offset (not a baked plane) so the offset stays editable in the inspector.
+function createDatumPlane() {
+  pickPlaneInteractive("Select a plane or face for the datum plane", (spec) => {
+    const src = new SketchPlane(spec);
+    planeOffset.start(src, (def) => {
+      if (!def) return;
+      const id = store.nextId();
+      store.addFeature({ id, type: "datumPlane", plane: spec, offset: offsetAlong(def, src) } as Feature);
+      selectFeature(id);
+    });
+  });
+}
+
+// Right-click → "Offset plane from face": same as Datum Plane but the source is
+// the right-clicked face (no separate pick step).
+function offsetPlaneFromFace(face: PlaneDef) {
+  if (toolBusy()) return;
+  const src = new SketchPlane(face);
+  planeOffset.start(src, (def) => {
+    if (!def) return;
+    const id = store.nextId();
+    store.addFeature({ id, type: "datumPlane", plane: face, offset: offsetAlong(def, src) } as Feature);
+    selectFeature(id);
+  });
+}
+
+// signed distance of an offset-tool result from its source plane, along the
+// source normal (mm) — the editable `offset` we store on the datum.
+function offsetAlong(def: PlaneDef, src: SketchPlane): number {
+  return (
+    (def.origin[0] - src.origin.x) * src.n.x +
+    (def.origin[1] - src.origin.y) * src.n.y +
+    (def.origin[2] - src.origin.z) * src.n.z
+  );
+}
+
+// Split Body: choose which side(s) to keep, then pick + position a cutting plane.
+// Reuses the plane picker + offset gizmo so the cut lands exactly where you want.
+async function startSplit() {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Split: create or import a body first", "");
+    return;
+  }
+  // "select that plane and cut": a selected construction plane cuts ALL visible
+  // bodies by id (startCutByPlane handles the keep-side prompt).
+  const sel = selectedFeature ? store.document.features.find((f) => f.id === selectedFeature) : null;
+  if (sel?.type === "datumPlane") return void startCutByPlane(sel.id);
+
+  const keep = await choose<"both" | "top" | "bottom">("Split Body — keep which side?", [
+    { value: "both", label: "Both", hint: "two bodies" },
+    { value: "top", label: "Top", hint: "+normal side" },
+    { value: "bottom", label: "Bottom", hint: "−normal side" },
+  ]);
+  if (!keep) return;
+  const bodies = store.buildState.result?.bodies ?? [];
+  let body: string | undefined;
+  if (bodies.length > 1) {
+    const picked = await chooseBody("Which body to split?", bodies);
+    if (!picked) return;
+    body = picked;
+  }
+  pickPlaneInteractive("Select a plane or face to cut by", (spec) => {
+    planeOffset.start(new SketchPlane(spec), (def) => {
+      if (def) store.addFeature({ id: store.nextId(), type: "split", plane: def, keep, body } as Feature);
+    });
+  });
+}
+
+// Cut ALL visible bodies by a construction plane (right-click a plane → Cut, or
+// select a plane + Split Body). Reuses the split feature with `planeId` + the list
+// of currently-visible body ids.
+async function startCutByPlane(planeId: string) {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Cut: create or import a body first", "");
+    return;
+  }
+  const keep = await choose<"both" | "top" | "bottom">("Cut — keep which side?", [
+    { value: "both", label: "Both", hint: "two bodies" },
+    { value: "top", label: "Top", hint: "+normal side" },
+    { value: "bottom", label: "Bottom", hint: "−normal side" },
+  ]);
+  if (!keep) return;
+  const ids = (store.buildState.result?.bodies ?? [])
+    .filter((b) => store.isBodyVisible(b.id))
+    .map((b) => b.id);
+  store.addFeature({ id: store.nextId(), type: "split", planeId, keep, bodies: ids } as Feature);
+}
+
+// Combine: boolean-join/cut/intersect bodies. With exactly two bodies the first
+// is the (kept) target and the second the tool; with more, you pick the target
+// and the tool body so cut/intersect direction is unambiguous.
+async function startCombine() {
+  if (toolBusy()) return;
+  const bodies = store.buildState.result?.bodies ?? [];
+  if (bodies.length < 2) {
+    setStatus("Combine: needs at least two bodies — model or import another", "");
+    return;
+  }
+  const op = await choose<"join" | "cut" | "intersect">("Combine bodies", [
+    { value: "join", label: "Join", hint: "union" },
+    { value: "cut", label: "Cut", hint: "subtract" },
+    { value: "intersect", label: "Intersect", hint: "overlap" },
+  ]);
+  if (!op) return;
+  let target = bodies[0].id;
+  if (bodies.length > 2) {
+    const t = await chooseBody("Target body (kept)", bodies);
+    if (!t) return;
+    target = t;
+  }
+  const candidates = bodies.filter((b) => b.id !== target);
+  let tools = candidates.map((b) => b.id);
+  if (candidates.length > 1) {
+    const tool = await chooseBody("Tool body (combined into the target)", candidates);
+    if (!tool) return;
+    tools = [tool];
+  }
+  store.addFeature({ id: store.nextId(), type: "combine", operation: op, target, tools } as Feature);
+}
+
+/** Pick one body by name from the rebuild's body list (returns its id). */
+function chooseBody(title: string, bodies: { id: string; name: string }[]): Promise<string | null> {
+  return choose<string>(title, bodies.map((b) => ({ value: b.id, label: b.name })));
+}
+
+// Simplify Mesh: merge near-coplanar facets of the active (imported) body into
+// fewer, larger faces. Tune the angular tolerance in the inspector (higher =
+// fewer faces, but coarsens curved regions).
+function startSimplifyMesh() {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Simplify Mesh: import or create a body first", "");
+    return;
+  }
+  store.addFeature({ id: store.nextId(), type: "simplifyMesh", tolerance: 1 } as Feature);
+}
+
+// Scale: resize the active body about the origin (handy for fixing the units of
+// an import). Default factor 1 — set it in the inspector.
+function startScale() {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Scale: create or import a body first", "");
+    return;
+  }
+  store.addFeature({ id: store.nextId(), type: "scale", factor: 1 } as Feature);
+}
+
+// Move: translate / rotate the active body. Defaults to no-op — set the offsets
+// and angles in the inspector.
+function startMove() {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Move: create or import a body first", "");
+    return;
+  }
+  const bodies = store.buildState.result?.bodies ?? [];
+  let ids = viewport.getSelectedBodies();
+  if (!ids.length && bodies.length) ids = [bodies[bodies.length - 1].id]; // none selected → active body
+  if (!ids.length) {
+    setStatus("Move: select a body first (Select: Bodies)", "");
+    return;
+  }
+  moveTool.start(ids, (id) => id && selectFeature(id));
+}
+
+// True when an interactive tool/mode owns the pointer — model commands bail so
+// they can't fire mid-sketch / mid-drag.
+function toolBusy(): boolean {
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || planePick;
+}
+
+// True when the current rebuild produced a solid body (something to modify).
+function hasBody(): boolean {
+  return (store.buildState.result?.mesh.positions.length ?? 0) > 0;
+}
+
+// Mirror: choose the symmetry plane (the backend honors XY/XZ/YZ; the old tool
+// was hard-coded to YZ). Mirrors the active body and unions the reflection.
+async function startMirror() {
+  if (toolBusy()) return;
+  const hasSolid = hasBody();
+  if (!hasSolid) {
+    setStatus("Mirror: create a body first", "");
+    return;
+  }
+  const plane = await choose<"XY" | "XZ" | "YZ">("Mirror across plane", [
+    { value: "XY", label: "XY" },
+    { value: "XZ", label: "XZ" },
+    { value: "YZ", label: "YZ" },
+  ]);
+  if (!plane) return;
+  store.addFeature({ id: store.nextId(), type: "mirror", plane } as Feature);
+}
+
+// Revolve: spin a sketch profile around the X/Y/Z axis (defaults to a full 360°;
+// edit the angle in the inspector for a partial revolve). Uses the selected
+// profile area, or the only one if the sketch has just a single profile.
+async function startRevolve() {
+  if (toolBusy()) return;
+  const regions = overlay.selectedRegions();
+  const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
+  if (!wr) {
+    setStatus("Revolve: select a sketch profile to revolve first", "");
+    return;
+  }
+  const axis = await choose<"X" | "Y" | "Z">("Revolve around axis", [
+    { value: "X", label: "X axis" },
+    { value: "Y", label: "Y axis" },
+    { value: "Z", label: "Z axis" },
+  ]);
+  if (!axis) return;
+  store.addFeature({ id: store.nextId(), type: "revolve", sketch: wr.sketchId, axis, angle: 360 } as Feature);
+}
+
+// Loft: blend through two or more free (un-consumed) sketch profiles, in timeline
+// order. Sketches already used by another feature are excluded.
+function startLoft() {
+  if (toolBusy()) return;
+  const free = store.document.features.filter(
+    (f) => f.type === "sketch" && !isSketchConsumed(f.id),
+  );
+  if (free.length < 2) {
+    setStatus("Loft: needs at least two un-consumed sketch profiles", "");
+    return;
+  }
+  store.addFeature({ id: store.nextId(), type: "loft", sketches: free.map((f) => f.id) } as Feature);
+}
+
+// Sweep: select a closed profile region, then pick a second (open) sketch as the
+// path. The profile should sit at the start of the path, roughly perpendicular.
+async function startSweep() {
+  if (toolBusy()) return;
+  const regions = overlay.selectedRegions();
+  const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
+  if (!wr) {
+    setStatus("Sweep: select a profile sketch region first", "");
+    return;
+  }
+  const all = store.document.features.filter((f) => f.type === "sketch");
+  const candidates = all.filter((f) => f.id !== wr.sketchId);
+  if (candidates.length === 0) {
+    setStatus("Sweep: add a second sketch with an open curve for the path", "");
+    return;
+  }
+  const label = (id: string) => `Sketch ${all.findIndex((f) => f.id === id) + 1}`;
+  let pathId = candidates[0].id;
+  if (candidates.length > 1) {
+    const picked = await choose<string>("Pick the path sketch", candidates.map((f) => ({ value: f.id, label: label(f.id) })));
+    if (!picked) return;
+    pathId = picked;
+  }
+  store.addFeature({ id: store.nextId(), type: "sweep", profile: wr.sketchId, path: pathId, operation: "new" } as Feature);
+}
+
+// Primitive: drop a Box / Cylinder / Sphere body at the origin (edit its size in
+// the inspector). Useful as a starting block or as a boolean tool body.
+async function startPrimitive() {
+  if (toolBusy()) return;
+  const shape = await choose<"box" | "cylinder" | "sphere">("Create primitive", [
+    { value: "box", label: "Box", hint: "l×w×h" },
+    { value: "cylinder", label: "Cylinder", hint: "r, h" },
+    { value: "sphere", label: "Sphere", hint: "r" },
+  ]);
+  if (!shape) return;
+  const id = store.nextId();
+  if (shape === "box") store.addFeature({ id, type: "box", length: 20, width: 20, height: 20 } as Feature);
+  else if (shape === "cylinder") store.addFeature({ id, type: "cylinder", radius: 10, height: 20 } as Feature);
+  else store.addFeature({ id, type: "sphere", radius: 10 } as Feature);
+}
+
+// One-shot face picker: highlight the face under the cursor, return its selector
+// on click (Esc cancels). Reused by Shell (open face) and Draft (taper face).
+function pickFaceInteractive(promptText: string, onPick: (sel: Selector) => void) {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Create or import a body first", "");
+    return;
+  }
+  planePick = true;
+  viewport.suspendPicking = true;
+  setPrompt(promptText);
+  const onMove = (e: PointerEvent) => void viewport.hoverFaceAt(e.clientX, e.clientY);
+  const onDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    const hit = viewport.pickFaceForPressPull(e.clientX, e.clientY);
+    if (!hit) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    cleanup();
+    requestAnimationFrame(() => onPick(hit.selector));
+  };
+  const onEsc = (e: KeyboardEvent) => {
+    if (e.key === "Escape") cleanup();
+  };
+  const cleanup = () => {
+    planePick = false;
+    viewport.suspendPicking = false;
+    viewport.clearHover();
+    canvas.removeEventListener("pointermove", onMove);
+    canvas.removeEventListener("pointerdown", onDown, true);
+    window.removeEventListener("keydown", onEsc, true);
+    setPrompt(null);
+  };
+  canvas.addEventListener("pointermove", onMove);
+  canvas.addEventListener("pointerdown", onDown, true);
+  window.addEventListener("keydown", onEsc, true);
+}
+
+// Shell: pick a face to open, hollow the body to a 2mm wall (edit thickness in
+// the inspector).
+function startShell() {
+  pickFaceInteractive("Select a face to open for the shell · Esc to cancel", (faces) => {
+    store.addFeature({ id: store.nextId(), type: "shell", thickness: 2, faces } as Feature);
+  });
+}
+
+// Draft: pick a face to taper by 5° about the body's base (pull +Z; edit the
+// angle in the inspector).
+function startDraft() {
+  pickFaceInteractive("Select a face to draft · Esc to cancel", (faces) => {
+    store.addFeature({ id: store.nextId(), type: "draft", faces, angle: 5, axis: "Z" } as Feature);
+  });
+}
+
+// Pattern: replicate the active body — rectangular grid or circular array. Edit
+// counts / spacing / angle in the inspector.
+async function startPattern() {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Pattern: create or import a body first", "");
+    return;
+  }
+  const kind = await choose<"rect" | "circular">("Pattern type", [
+    { value: "rect", label: "Rectangular", hint: "grid" },
+    { value: "circular", label: "Circular", hint: "around axis" },
+  ]);
+  if (!kind) return;
+  const id = store.nextId();
+  if (kind === "rect") {
+    store.addFeature({ id, type: "patternRect", countX: 3, countY: 1, spacingX: 30, spacingY: 30 } as Feature);
+  } else {
+    store.addFeature({ id, type: "patternCircular", count: 4, angle: 360, axis: "Z" } as Feature);
+  }
+}
+
 function startExtrude() {
   if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active) return;
   if (overlay.regions.length === 0) {
-    setStatus("Extrude: create a sketch with a closed profile first", "");
+    // Fusion parity: Extrude on a selected planar face extrudes that face — the
+    // same offset-a-face operation as Press/Pull — so route it there instead of
+    // demanding a sketch. Only fall back to the hint if nothing usable is picked.
+    if (viewport.selectedFaceForPressPull()) {
+      pressPull.start((id) => id && selectFeature(id));
+      return;
+    }
+    setStatus("Extrude: select a face, or create a sketch with a closed profile first", "");
     return;
   }
   extrude.start((id) => id && selectFeature(id));
@@ -422,20 +882,58 @@ function handleAction(action: string) {
       startPressPull();
       break;
     case "mirror":
-      store.addFeature({ id: store.nextId(), type: "mirror", plane: "YZ" } as Feature);
+      void startMirror();
+      break;
+    case "split":
+      void startSplit();
+      break;
+    case "combine":
+      void startCombine();
+      break;
+    case "datum-plane":
+      createDatumPlane();
+      break;
+    case "import":
+      void importModel(store, geometry);
       break;
     case "save":
       void saveDocument(store);
       break;
     case "open":
-      void openDocument(store);
+      void openDocument(store, geometry);
       break;
     case "export":
       void exportModel(store, geometry);
       break;
     case "revolve":
+      void startRevolve();
+      break;
     case "loft":
-      setStatus(`${action}: coming soon`, "");
+      startLoft();
+      break;
+    case "sweep":
+      void startSweep();
+      break;
+    case "primitive":
+      void startPrimitive();
+      break;
+    case "shell":
+      startShell();
+      break;
+    case "draft":
+      startDraft();
+      break;
+    case "pattern":
+      void startPattern();
+      break;
+    case "simplify-mesh":
+      startSimplifyMesh();
+      break;
+    case "scale":
+      startScale();
+      break;
+    case "move":
+      startMove();
       break;
   }
 }
@@ -485,7 +983,7 @@ installKeymap((a) => {
 // delete selected feature
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement) return;
-  if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || planePick) return;
+  if (toolBusy()) return;
   if ((e.key === "Delete" || e.key === "Backspace") && selectedFeature) {
     store.removeFeature(selectedFeature);
     selectFeature(null);
@@ -497,7 +995,7 @@ window.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
   if (k === "n") { e.preventDefault(); void newDocument(); }
-  else if (k === "o") { e.preventDefault(); void openDocument(store); }
+  else if (k === "o") { e.preventDefault(); void openDocument(store, geometry); }
   else if (k === "s" && e.shiftKey) { e.preventDefault(); void saveDocumentAs(store); }
   else if (k === "s") { e.preventDefault(); void saveDocument(store); }
   else if (k === "e") { e.preventDefault(); void exportModel(store, geometry); }

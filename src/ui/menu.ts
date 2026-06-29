@@ -115,3 +115,60 @@ function sep(): HTMLElement {
   s.className = "menu-sep";
   return s;
 }
+
+export interface CtxItem {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+}
+
+/** Pop a right-click context menu at (x,y) with the given items. Closes on an
+ *  outside pointerdown or Escape. Reuses the `.context-menu`/`.ctx-item` styling
+ *  shared with the timeline's feature menu. */
+export function contextMenu(x: number, y: number, items: CtxItem[]): void {
+  document.querySelectorAll(".context-menu.dynamic").forEach((m) => m.remove());
+  const menu = document.createElement("div");
+  menu.className = "context-menu dynamic";
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  const close = () => {
+    menu.remove();
+    document.removeEventListener("pointerdown", onDown, true);
+    window.removeEventListener("keydown", onKey, true);
+  };
+  const onDown = (e: PointerEvent) => {
+    if (!menu.contains(e.target as Node)) close();
+  };
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") close();
+  };
+
+  for (const it of items) {
+    const el = document.createElement("div");
+    el.className = "ctx-item";
+    el.textContent = it.label;
+    if (it.disabled) {
+      el.style.opacity = "0.45";
+      el.style.pointerEvents = "none";
+    } else {
+      el.addEventListener("click", () => {
+        close();
+        it.onClick();
+      });
+    }
+    menu.appendChild(el);
+  }
+  document.body.appendChild(menu);
+
+  // nudge back on-screen if it would overflow
+  const r = menu.getBoundingClientRect();
+  if (r.bottom > window.innerHeight) menu.style.top = `${Math.max(4, y - r.height)}px`;
+  if (r.right > window.innerWidth) menu.style.left = `${Math.max(4, x - r.width)}px`;
+
+  // defer listener install so the opening right-click doesn't immediately close it
+  setTimeout(() => {
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+  }, 0);
+}

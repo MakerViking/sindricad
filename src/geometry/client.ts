@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, ExportFormat, RebuildReply } from "../types";
+import type { CadDocument, ExportFormat, ImportFormat, ImportReply, RebuildReply } from "../types";
 
 type Pending = (msg: any) => void;
 type StatusListener = (connected: boolean) => void;
@@ -17,6 +17,9 @@ export interface GeometryBackend {
     format: ExportFormat,
     path: string,
   ): Promise<{ ok: boolean; path?: string; message?: string }>;
+  // Read an external geometry file into an embeddable BREP payload (for an
+  // `import` feature). Path-based: the sidecar reads the file directly.
+  importGeometry(path: string, format: ImportFormat): Promise<ImportReply>;
   onStatus(fn: StatusListener): () => void;
   readonly connected: boolean;
 }
@@ -117,5 +120,14 @@ export class Geometry implements GeometryBackend {
     const msg = await this.call("export", { document: doc, format, path });
     if (msg.ok) return { ok: true, path: msg.result.path };
     return { ok: false, message: msg.error?.message };
+  }
+
+  async importGeometry(path: string, format: ImportFormat): Promise<ImportReply> {
+    const msg = await this.call("import", { path, format });
+    if (msg.ok) {
+      const r = msg.result;
+      return { ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces };
+    }
+    return { ok: false, message: msg.error?.message ?? "import failed" };
   }
 }

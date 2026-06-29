@@ -60,6 +60,37 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5):
     return positions, indices, face_ids
 
 
+def tessellate_bodies(bodies, tolerance=0.1):
+    """Tessellate a list of bodies into ONE merged render payload, plus per-body
+    metadata. Face ids stay globally unique across bodies (running offset) so the
+    frontend can both highlight a clicked CAD face and map it back to its body.
+
+    bodies   : [{"id", "name", "shape"}]  (shape may be None for an empty body)
+    returns  : (positions, indices, face_ids, meta) where meta is
+               [{"id", "name", "faceStart", "faceCount"}].
+    """
+    positions = []
+    indices = []
+    face_ids = []
+    meta = []
+    face_base = 0
+    for b in bodies:
+        sh = b.get("shape")
+        if sh is None:
+            continue
+        pos, idx, fids = tessellate(sh, tolerance)
+        vbase = len(positions) // 3
+        positions.extend(pos)
+        indices.extend(i + vbase for i in idx)
+        n_faces = (max(fids) + 1) if fids else 0
+        face_ids.extend(fid + face_base for fid in fids)
+        meta.append(
+            {"id": b["id"], "name": b["name"], "faceStart": face_base, "faceCount": n_faces}
+        )
+        face_base += n_faces
+    return positions, indices, face_ids, meta
+
+
 def edge_polylines(shape, n=24):
     """Sample each edge as a polyline of n+1 points spanning the WHOLE edge.
 
@@ -71,6 +102,23 @@ def edge_polylines(shape, n=24):
     for i, e in enumerate(shape.edges()):
         pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
         out.append({"id": f"e{i}", "points": pts})
+    return out
+
+
+def edge_polylines_by_body(bodies, n=24):
+    """Like edge_polylines, but samples each body's edges and tags every polyline
+    with its body id — so the frontend can hide a hidden body's WIREFRAME too, not
+    just its faces. Ids stay globally unique via a running counter."""
+    out = []
+    k = 0
+    for b in bodies:
+        sh = b.get("shape")
+        if sh is None:
+            continue
+        for e in sh.edges():
+            pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
+            out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
+            k += 1
     return out
 
 

@@ -27,6 +27,10 @@ export class Viewport {
   private model: ModelView | null = null;
   private clock = new THREE.Clock();
   private resolution = new THREE.Vector2();
+  // persistent construction/datum planes (translucent quads, click to select)
+  private datumGroup = new THREE.Group();
+  private datumQuads: THREE.Mesh[] = [];
+  private selectedDatum: string | null = null;
   private dragMoved = false;
   private downPos = { x: 0, y: 0 };
   // "redefine cube side from a model face" pick mode (null = not active)
@@ -34,10 +38,20 @@ export class Viewport {
 
   onHit: ((hit: Hit | null, shiftKey: boolean) => void) | null = null;
   onSelectionChange: (() => void) | null = null; // fired when edge/face selection changes
+  onPickDatum: ((id: string) => void) | null = null; // fired when a datum plane quad is clicked
+  onBodySelectionChange: (() => void) | null = null; // fired when the body selection changes
+  // "faces" = pick faces/edges (default); "bodies" = pick whole bodies (to move).
+  private selectionMode: "faces" | "bodies" = "faces";
   suspendPicking = false;
+  // until the user drives the camera, the model is kept auto-framed on resize —
+  // this catches the canvas layout settling a frame or two after the first fit
+  // (common under remote desktops / fractional scaling), which would otherwise
+  // leave the model rendered off-centre and un-aimable.
+  private userMovedCamera = false;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.scene = createScene(canvas);
+    this.scene.scene.add(this.datumGroup);
     const rect = canvas.getBoundingClientRect();
     this.rig = createCameraRig(canvas, rect.width / rect.height);
 
@@ -54,6 +68,15 @@ export class Viewport {
 
     this.resize();
     window.addEventListener("resize", () => this.resize());
+    // Re-measure on ANY canvas size change, not just window resizes: the initial
+    // layout often settles a frame or two after construction (especially under
+    // remote desktops / fractional scaling), and without this the camera keeps a
+    // stale aspect and the first fit lands the model off-screen.
+    new ResizeObserver(() => this.resize()).observe(this.canvas);
+    // once the user drives the camera (orbit/pan/zoom), stop auto-framing.
+    this.rig.controls.addEventListener("controlstart", () => {
+      this.userMovedCamera = true;
+    });
     this.installPointer();
     this.loop();
   }
@@ -109,6 +132,7 @@ export class Viewport {
         e.preventDefault();
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1; // lines/pages -> px
         const dy = Math.max(-240, Math.min(240, e.deltaY * unit));
+        this.userMovedCamera = true;
         this.rig.zoomBy(Math.pow(1.0016, dy)); // >1 (scroll down) zooms out
       },
       { passive: false },
@@ -123,6 +147,7 @@ export class Viewport {
       return;
     }
     if (this.suspendPicking) return;
+    if (this.selectionMode === "bodies") return; // no face hover while picking bodies
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
     const hit = this.picker.pick(
@@ -140,16 +165,35 @@ export class Viewport {
 
   private handleClick(e: PointerEvent) {
     if (this.suspendPicking) return;
-    if (!this.model) return;
     const rect = this.canvas.getBoundingClientRect();
-    const hit = this.picker.pick(
-      e.clientX,
-      e.clientY,
-      rect,
-      this.rig.active,
-      this.model,
-      this.resolution,
-    );
+
+    // --- Bodies mode: a click selects the WHOLE body under the cursor ---
+    if (this.selectionMode === "bodies" && this.model && this.highlighter) {
+      const fh = this.rayFrom(e.clientX, e.clientY).intersectObject(this.model.mesh, false)[0];
+      const bodyId = fh ? this.faceIdToBodyId(this.model.faceIds[fh.faceIndex ?? 0] ?? 0) : null;
+      const add = e.ctrlKey || e.metaKey;
+      if (bodyId) {
+        if (add) this.highlighter.toggleSelectBody(bodyId);
+        else this.highlighter.selectOnlyBody(bodyId);
+      } else if (!add) {
+        this.highlighter.clearBodySelection();
+      }
+      this.onBodySelectionChange?.();
+      return;
+    }
+
+    const hit = this.model
+      ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model, this.resolution)
+      : null;
+    // a click on a construction plane (where it doesn't overlap the body) selects it
+    if (!hit && this.datumQuads.length) {
+      const dh = this.rayFrom(e.clientX, e.clientY).intersectObjects(this.datumQuads, false)[0];
+      if (dh) {
+        this.onPickDatum?.(dh.object.userData.datumId as string);
+        return;
+      }
+    }
+    if (!this.model) return;
     // Ctrl/Cmd-click adds to the selection; a plain click replaces it (Fusion).
     const add = e.ctrlKey || e.metaKey;
     if (this.highlighter) {
@@ -159,6 +203,127 @@ export class Viewport {
     }
     this.onHit?.(hit, e.shiftKey);
     this.onSelectionChange?.();
+  }
+
+  // ---- Bodies selection mode + body helpers --------------------------------
+
+  setSelectionMode(m: "faces" | "bodies") {
+    if (this.selectionMode === m) return;
+    this.selectionMode = m;
+    // switching clears the other kind of selection so paint never mixes
+    if (m === "bodies") this.highlighter?.clearSelection();
+    else {
+      this.highlighter?.clearBodySelection();
+      this.onBodySelectionChange?.();
+    }
+  }
+  get selecting(): "faces" | "bodies" {
+    return this.selectionMode;
+  }
+
+  /** which body owns a triangle's B-rep faceId (null if none). */
+  faceIdToBodyId(faceId: number): string | null {
+    for (const b of this.model?.bodies ?? []) {
+      if (faceId >= b.faceStart && faceId < b.faceStart + b.faceCount) return b.id;
+    }
+    return null;
+  }
+
+  getSelectedBodies(): string[] {
+    return this.highlighter?.getSelectedBodies() ?? [];
+  }
+
+  /** set the body selection from outside (e.g. the browser tree). */
+  setSelectedBodies(ids: string[]) {
+    if (!this.highlighter) return;
+    this.highlighter.clearBodySelection();
+    for (const id of ids) this.highlighter.toggleSelectBody(id);
+    this.onBodySelectionChange?.();
+  }
+
+  /** right-click hit-test against the construction-plane quads. */
+  pickDatumAt(clientX: number, clientY: number): string | null {
+    if (!this.datumQuads.length) return null;
+    const dh = this.rayFrom(clientX, clientY).intersectObjects(this.datumQuads, false)[0];
+    return dh ? (dh.object.userData.datumId as string) : null;
+  }
+
+  /** centroid (world) of the given bodies' vertices — the Move gizmo anchor. */
+  bodiesCentroid(ids: string[]): THREE.Vector3 {
+    const out = new THREE.Vector3();
+    if (!this.model) return out;
+    const set = new Set(ids);
+    const ranges = this.model.bodies.filter((b) => set.has(b.id));
+    if (!ranges.length) return out;
+    const inRange = (fid: number) =>
+      ranges.some((r) => fid >= r.faceStart && fid < r.faceStart + r.faceCount);
+    const pos = this.model.mesh.geometry.getAttribute("position");
+    const index = this.model.mesh.geometry.getIndex()!;
+    const fids = this.model.faceIds;
+    const seen = new Set<number>();
+    const tmp = new THREE.Vector3();
+    let n = 0;
+    for (let t = 0; t < fids.length; t++) {
+      if (!inRange(fids[t])) continue;
+      for (let k = 0; k < 3; k++) {
+        const v = index.getX(t * 3 + k);
+        if (seen.has(v)) continue;
+        seen.add(v);
+        out.add(tmp.fromBufferAttribute(pos, v));
+        n++;
+      }
+    }
+    if (n) out.divideScalar(n);
+    return out.applyMatrix4(this.model.mesh.matrixWorld);
+  }
+
+  /** True if (clientX,clientY) is over the ViewCube corner — so a right-click
+   *  there belongs to the cube, not the model. */
+  cubeHitsRegion(clientX: number, clientY: number): boolean {
+    return this.cube.hitsRegion(clientX, clientY);
+  }
+
+  /** Render the document's datum/construction planes as translucent quads that
+   *  can be clicked to select (and then cut by). */
+  setDatumPlanes(
+    planes: { id: string; origin: [number, number, number]; normal: [number, number, number] }[],
+  ) {
+    for (const q of this.datumQuads) {
+      this.datumGroup.remove(q);
+      q.geometry.dispose();
+      (q.material as THREE.Material).dispose();
+    }
+    this.datumQuads = [];
+    const up = new THREE.Vector3(0, 0, 1);
+    for (const p of planes) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xb98cff, // construction-plane lilac
+        transparent: true,
+        opacity: 0.12,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), mat);
+      m.position.set(p.origin[0], p.origin[1], p.origin[2]);
+      m.quaternion.setFromUnitVectors(
+        up,
+        new THREE.Vector3(p.normal[0], p.normal[1], p.normal[2]).normalize(),
+      );
+      m.renderOrder = -1;
+      m.userData.datumId = p.id;
+      this.datumGroup.add(m);
+      this.datumQuads.push(m);
+    }
+    this.highlightDatum(this.selectedDatum);
+  }
+
+  /** Brighten the selected construction plane; others stay faint. */
+  highlightDatum(id: string | null) {
+    this.selectedDatum = id;
+    for (const q of this.datumQuads) {
+      (q.material as THREE.MeshBasicMaterial).opacity =
+        q.userData.datumId === id ? 0.32 : 0.12;
+    }
   }
 
   /** Selectors for the currently selected edges (for pre-selected fillet/chamfer). */
@@ -173,7 +338,7 @@ export class Viewport {
 
   /** Pre-selection for Press/Pull: if exactly one face is selected, return its
    *  selector + surface normal + centroid anchor (else null). */
-  selectedFaceForPressPull(): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3 } | null {
+  selectedFaceForPressPull(): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.highlighter || !this.model) return null;
     const faces = this.highlighter.getSelectedFaces();
     if (faces.length !== 1) return null;
@@ -184,17 +349,18 @@ export class Viewport {
       selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
       normal,
       anchor,
+      bodyId: this.faceIdToBodyId(faceId),
     };
   }
 
-  setModel(result: RebuildResult, fit = false) {
+  setModel(result: RebuildResult, fit = false, hiddenBodies: string[] = []) {
     // dispose previous model first (full-rebuild memory hygiene)
     if (this.model) {
       this.scene.modelGroup.remove(this.model.mesh);
       for (const e of this.model.edges) this.scene.modelGroup.remove(e);
       disposeModel(this.model);
     }
-    this.model = buildModel(result, this.resolution);
+    this.model = buildModel(result, this.resolution, hiddenBodies);
     this.scene.modelGroup.add(this.model.mesh);
     for (const e of this.model.edges) this.scene.modelGroup.add(e);
     this.highlighter = new Highlighter(this.model);
@@ -287,7 +453,7 @@ export class Viewport {
   pickFaceForPressPull(
     clientX: number,
     clientY: number,
-  ): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3 } | null {
+  ): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.model) return null;
     const ray = this.rayFrom(clientX, clientY);
     const hit = ray.intersectObject(this.model.mesh, false)[0];
@@ -299,10 +465,12 @@ export class Viewport {
     const c = new THREE.Vector3().fromBufferAttribute(pos, hit.face.c);
     const normal = b.sub(a).cross(c.sub(a)).normalize().transformDirection(mesh.matrixWorld).normalize();
     const anchor = hit.point.clone();
+    const faceId = this.model.faceIds[hit.faceIndex ?? 0] ?? 0;
     return {
       selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
       normal,
       anchor,
+      bodyId: this.faceIdToBodyId(faceId),
     };
   }
 
@@ -567,6 +735,13 @@ export class Viewport {
     // radius by the device pixel ratio.)
     this.resolution.set(w, h);
     setEdgeResolution(this.model, this.resolution);
+    // Keep the model framed while the user hasn't taken over the camera. This is
+    // what corrects an off-centre first fit once the canvas size finally settles
+    // (the actual cause of "the model renders in the corner and I can't aim at
+    // it" under remote desktops / fractional scaling).
+    if (this.model && !this.userMovedCamera && w > 10 && h > 10) {
+      this.rig.fit(this.model.box, false);
+    }
   }
 
   private scratchTarget = new THREE.Vector3();

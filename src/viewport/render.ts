@@ -14,6 +14,8 @@ export interface ModelView {
   faceIds: number[]; // one B-rep face id per triangle (index = faceIndex)
   edges: Line2[]; // each carries userData.edgeId + points
   box: THREE.Box3;
+  // per-body faceId ranges (for faceId→body lookup + whole-body highlight)
+  bodies: { id: string; name: string; faceStart: number; faceCount: number }[];
 }
 
 // Base albedo is baked into vertex colors (material.color stays white) so
@@ -31,8 +33,31 @@ const EDGE_MATERIAL = () =>
 export function buildModel(
   result: RebuildResult,
   resolution: THREE.Vector2,
+  hiddenBodies: string[] = [],
 ): ModelView {
-  const { positions, indices, faceIds } = result.mesh;
+  const { positions } = result.mesh;
+  let { indices, faceIds } = result.mesh;
+  const hidden = new Set(hiddenBodies);
+
+  // Per-body visibility: drop triangles whose B-rep faceId falls in a hidden
+  // body's [faceStart, faceStart+faceCount) range. We filter the index buffer +
+  // the per-triangle faceIds together (positions stay whole — unreferenced verts
+  // are harmless), so faceId↔vertex math in viewport.ts stays valid.
+  if (hidden.size) {
+    const ranges = (result.bodies ?? [])
+      .filter((b) => hidden.has(b.id))
+      .map((b) => ({ start: b.faceStart, end: b.faceStart + b.faceCount }));
+    const isHidden = (fid: number) => ranges.some((r) => fid >= r.start && fid < r.end);
+    const keptIdx: number[] = [];
+    const keptFaceIds: number[] = [];
+    for (let t = 0; t < faceIds.length; t++) {
+      if (isHidden(faceIds[t])) continue;
+      keptIdx.push(indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2]);
+      keptFaceIds.push(faceIds[t]);
+    }
+    indices = keptIdx;
+    faceIds = keptFaceIds;
+  }
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute(
@@ -69,9 +94,11 @@ export function buildModel(
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = "model";
 
-  // edges as individual fat lines so picking can identify each one
+  // edges as individual fat lines so picking can identify each one (skip the
+  // edges of hidden bodies so a hidden body leaves no floating wireframe).
   const edges: Line2[] = [];
   for (const e of result.edges) {
+    if (e.body && hidden.has(e.body)) continue;
     const flat: number[] = [];
     for (const p of e.points) flat.push(p[0], p[1], p[2]);
     const lgeo = new LineGeometry();
@@ -91,7 +118,7 @@ export function buildModel(
     new THREE.Vector3(...result.bbox.max),
   );
 
-  return { mesh, faceIds, edges, box };
+  return { mesh, faceIds, edges, box, bodies: result.bodies ?? [] };
 }
 
 export function disposeModel(view: ModelView | null) {
