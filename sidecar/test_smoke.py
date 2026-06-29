@@ -397,6 +397,41 @@ def test_multibody_import_and_guards():
     print("  multibody-import OK: 2-object STL+3MF → 2 bodies each; organic mesh rejected cleanly")
 
 
+def test_interference():
+    """Two overlapping boxes (separate bodies) report one clash with the right
+    overlap volume; clear of each other they report none."""
+    from server import _interference_job
+
+    _s1, a = _box(1, 20, 20, 20, 0, 0, "new")
+    _s2, b = _box(3, 20, 20, 20, 10, 10, "new")
+    res = _interference_job({"parameters": {}, "features": a + b})
+    assert "error" not in res, res
+    pairs = res["pairs"]
+    assert len(pairs) == 1, f"expected 1 clash, got {len(pairs)} ({pairs})"
+    assert abs(pairs[0]["volume"] - 2000) < 1, f"overlap vol {pairs[0]['volume']}, want ~2000"
+
+    _s3, c = _box(3, 20, 20, 20, 40, 40, "new")
+    res2 = _interference_job({"parameters": {}, "features": a + c})
+    assert "error" not in res2, res2
+    assert len(res2["pairs"]) == 0, f"disjoint boxes should not clash, got {res2['pairs']}"
+    print(f"  interference OK: 1 clash (vol {pairs[0]['volume']:.0f} mm³); disjoint → 0")
+
+
+def test_remove_body():
+    """removeBody drops a body from the model: two separate boxes (body1, body2)
+    + a removeBody of body2 → only body1 remains."""
+    _s1, a = _box(1, 20, 20, 20, 0, 0, "new")
+    _s2, b = _box(3, 20, 20, 20, 40, 0, "new")
+    doc = {"parameters": {}, "features": a + b + [
+        {"id": "rm", "type": "removeBody", "bodies": ["body2"]},
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    assert len(bodies) == 1, f"removeBody should leave 1 body, got {len(bodies)}"
+    assert bodies[0]["id"] == "body1", f"wrong body kept: {bodies[0]['id']}"
+    print(f"  remove-body OK: 2 bodies → removeBody body2 → 1 body")
+
+
 if __name__ == "__main__":
     print("SindriCAD sidecar smoke test")
     test_rebuild()
@@ -416,4 +451,6 @@ if __name__ == "__main__":
     test_sweep()
     test_scale_and_move()
     test_multibody_import_and_guards()
+    test_interference()
+    test_remove_body()
     print("ALL PASS")

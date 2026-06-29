@@ -26,4 +26,5 @@ export const FEATURE_META: Record<FeatureType, { glyph: string; label: string }>
   simplifyMesh: { glyph: "⬡", label: "Simplify Mesh" },
   scale: { glyph: "⤢", label: "Scale" },
   move: { glyph: "✥", label: "Move" },
+  removeBody: { glyph: "🗑", label: "Remove Body" },
 };

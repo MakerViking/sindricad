@@ -61,7 +61,7 @@ export type PlaneDef = {
 export type PlaneSpec = Plane3 | PlaneDef;
 
 export type Feature =
-  | { id: string; type: "sketch"; plane: PlaneSpec; entities: SketchEntity[]; constraints?: SketchConstraint[] }
+  | { id: string; type: "sketch"; plane: PlaneSpec; entities: SketchEntity[]; constraints?: SketchConstraint[]; name?: string }
   | {
       id: string;
       type: "extrude";
@@ -131,7 +131,11 @@ export type Feature =
   | { id: string; type: "scale"; factor: Num }
   // Move the active body — or the bodies listed in `bodies` (multi-select) —:
   // translate (dx,dy,dz mm) + rotate (rx,ry,rz degrees, about origin).
-  | { id: string; type: "move"; dx: Num; dy: Num; dz: Num; rx: Num; ry: Num; rz: Num; bodies?: string[] };
+  | { id: string; type: "move"; dx: Num; dy: Num; dz: Num; rx: Num; ry: Num; rz: Num; bodies?: string[] }
+  // Remove bodies by id (Fusion "Remove"). Runs at its point in the timeline and
+  // drops the listed bodies from the model — the way to delete a body from the
+  // browser. Body ids are positional, so this is appended at the end.
+  | { id: string; type: "removeBody"; bodies: string[] };
 
 export type FeatureType = Feature["type"];
 
@@ -164,6 +168,9 @@ export interface CadDocument {
   sketchVisibility?: Record<string, boolean>;
   /** explicit per-body show/hide overrides (body id → visible). */
   bodyVisibility?: Record<string, boolean>;
+  /** explicit per-body display-name overrides (body id → name). Body ids are
+   *  positional, so a rename re-attaches if an upstream feature is reordered. */
+  bodyNames?: Record<string, string>;
 }
 
 export interface RebuildResult {

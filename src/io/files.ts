@@ -73,6 +73,30 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
     console.warn("export needs the native app (a real filesystem path)");
     return;
   }
+  // With several bodies, ask what to export: all merged, each as its own file, or
+  // one specific body. A single-body doc skips straight to the save dialog.
+  const bodies = store.buildState.result?.bodies ?? [];
+  const opts: { body?: string; separate?: boolean } = {};
+  if (bodies.length > 1) {
+    const { choose } = await import("../ui/choice");
+    const scope = await choose<"all" | "separate" | "one">("Export — which bodies?", [
+      { value: "all", label: "All in one file", hint: `${bodies.length} bodies merged` },
+      { value: "separate", label: "Each body separately", hint: `${bodies.length} files` },
+      { value: "one", label: "A specific body", hint: "pick one" },
+    ]);
+    if (!scope) return;
+    if (scope === "separate") {
+      opts.separate = true;
+    } else if (scope === "one") {
+      const picked = await choose<string>(
+        "Which body to export?",
+        bodies.map((b) => ({ value: b.id, label: b.name })),
+      );
+      if (!picked) return;
+      opts.body = picked;
+    }
+  }
+
   const { save } = await import("@tauri-apps/plugin-dialog");
   const path = await save({
     filters: [
@@ -80,12 +104,17 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
       { name: "STL", extensions: ["stl"] },
       { name: "3MF", extensions: ["3mf"] },
     ],
-    defaultPath: "part.step",
+    // "separate" derives one file per body as "<base>-<body>.<ext>", so name the base.
+    defaultPath: opts.separate ? "parts.step" : "part.step",
   });
   if (!path) return;
   const fmt = extToFormat(path);
-  const res = await geometry.export(store.document, fmt, path);
-  if (!res.ok) console.error("export failed:", res.message);
+  const res = await geometry.export(store.document, fmt, path, opts);
+  if (!res.ok) {
+    await reportError(`Export failed: ${res.message ?? "unknown error"}`);
+  } else if (res.paths && res.paths.length) {
+    await reportError(`Exported ${res.paths.length} bodies as separate files (…-<body>${path.slice(path.lastIndexOf("."))}).`);
+  }
 }
 
 function extToFormat(path: string): ExportFormat {

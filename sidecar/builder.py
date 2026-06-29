@@ -503,6 +503,12 @@ def rebuild(document):
             elif t == "combine":
                 _do_combine(f, bodies, find_body)
 
+            elif t == "removeBody":
+                # delete bodies by id (Fusion "Remove"); drop them from the list so
+                # they're not tessellated/exported. Unknown ids are silently ignored.
+                ids = set(f.get("bodies") or [])
+                bodies[:] = [b for b in bodies if b["id"] not in ids]
+
             else:
                 raise ValueError(f"unknown feature type: {t}")
 

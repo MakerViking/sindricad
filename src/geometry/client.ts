@@ -7,6 +7,16 @@ import type { CadDocument, ExportFormat, ImportFormat, ImportReply, RebuildReply
 type Pending = (msg: any) => void;
 type StatusListener = (connected: boolean) => void;
 
+// One overlapping body pair from an interference check.
+export interface ClashPair {
+  a: string;
+  b: string;
+  aName: string;
+  bName: string;
+  volume: number;
+  bbox: { min: [number, number, number]; max: [number, number, number] };
+}
+
 // The surface the rest of the app depends on. Both the websocket `Geometry`
 // and the in-process `TauriGeometry` implement this, so callers stay agnostic
 // to which backend is wired up (see VITE_GEOM in main.ts).
@@ -16,10 +26,13 @@ export interface GeometryBackend {
     doc: CadDocument,
     format: ExportFormat,
     path: string,
-  ): Promise<{ ok: boolean; path?: string; message?: string }>;
+    opts?: { body?: string; separate?: boolean },
+  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string }>;
   // Read an external geometry file into an embeddable BREP payload (for an
   // `import` feature). Path-based: the sidecar reads the file directly.
   importGeometry(path: string, format: ImportFormat): Promise<ImportReply>;
+  // Pairwise interference (clash) check among the document's bodies.
+  interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }>;
   onStatus(fn: StatusListener): () => void;
   readonly connected: boolean;
 }
@@ -116,9 +129,10 @@ export class Geometry implements GeometryBackend {
     doc: CadDocument,
     format: ExportFormat,
     path: string,
-  ): Promise<{ ok: boolean; path?: string; message?: string }> {
-    const msg = await this.call("export", { document: doc, format, path });
-    if (msg.ok) return { ok: true, path: msg.result.path };
+    opts: { body?: string; separate?: boolean } = {},
+  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string }> {
+    const msg = await this.call("export", { document: doc, format, path, body: opts.body, separate: opts.separate });
+    if (msg.ok) return { ok: true, path: msg.result.path, paths: msg.result.paths };
     return { ok: false, message: msg.error?.message };
   }
 
@@ -129,5 +143,11 @@ export class Geometry implements GeometryBackend {
       return { ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces };
     }
     return { ok: false, message: msg.error?.message ?? "import failed" };
+  }
+
+  async interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }> {
+    const msg = await this.call("interference", { document: doc });
+    if (msg.ok) return { ok: true, pairs: msg.result.pairs };
+    return { ok: false, message: msg.error?.message };
   }
 }

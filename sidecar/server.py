@@ -89,16 +89,81 @@ def _rebuild_job(document, tolerance):
     }
 
 
-def _export_job(document, fmt, path):
-    """Worker: rebuild + export to a file. Returns {"path"} or {"error"}."""
+def _export_job(document, fmt, path, body=None, separate=False):
+    """Worker: rebuild + export. Default exports the merged part to `path`; `body`
+    (a body id) exports just that body; `separate` writes EACH body to its own
+    '<base>-<name>.<ext>'. Returns {"path"} (+ {"paths"} for separate) or {"error"}."""
+    import os
+    import re
     from builder import rebuild
     from exporters import export
 
-    part, errors, _bodies = rebuild(document)
+    part, errors, bodies = rebuild(document)
     if errors:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+    live = [b for b in bodies if b.get("shape") is not None]
+
+    if separate:
+        if not live:
+            return {"error": {"message": "nothing to export — no bodies"}}
+        base, ext = os.path.splitext(path)
+        written, used = [], set()
+        for b in live:
+            name = re.sub(r"[^\w.-]+", "_", str(b["name"])).strip("_") or b["id"]
+            cand, i = name, 2
+            while cand in used:  # keep filenames unique if two bodies share a name
+                cand, i = f"{name}_{i}", i + 1
+            used.add(cand)
+            p = f"{base}-{cand}{ext}"
+            export(b["shape"], fmt, p)
+            written.append(p)
+        return {"path": path, "paths": written}
+
+    if body:
+        tgt = next((b for b in live if b["id"] == body), None)
+        if tgt is None:
+            return {"error": {"message": f"body '{body}' not found to export"}}
+        return {"path": export(tgt["shape"], fmt, path)}
+
     return {"path": export(part, fmt, path)}
+
+
+def _interference_job(document):
+    """Worker: rebuild + pairwise interference check among live bodies. Returns
+    {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
+    intersection volume above a tiny epsilon), with the overlap volume + bbox so the
+    frontend can report and zoom to each clash."""
+    from builder import rebuild, _bbox_overlap
+
+    part, errors, bodies = rebuild(document)
+    if errors:
+        e = errors[0]
+        return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+    live = [b for b in bodies if b.get("shape") is not None]
+    pairs = []
+    for i in range(len(live)):
+        for j in range(i + 1, len(live)):
+            a, b = live[i], live[j]
+            if not _bbox_overlap(a["shape"], b["shape"]):
+                continue  # cheap AABB reject before the (crashable) boolean
+            try:
+                common = a["shape"] & b["shape"]
+                vol = abs(getattr(common, "volume", 0.0) or 0.0)
+            except Exception:
+                continue  # tangent/degenerate intersection — treat as no clash
+            if vol <= 1e-6:
+                continue
+            bb = common.bounding_box()
+            pairs.append({
+                "a": a["id"], "b": b["id"], "aName": a["name"], "bName": b["name"],
+                "volume": vol,
+                "bbox": {
+                    "min": [bb.min.X, bb.min.Y, bb.min.Z],
+                    "max": [bb.max.X, bb.max.Y, bb.max.Z],
+                },
+            })
+    return {"pairs": pairs}
 
 
 def _import_job(path, fmt):
@@ -206,7 +271,11 @@ async def handle(ws):
                 await ws.send(_reply_for(req_id, res))
 
             elif op == "export":
-                res = await _run(loop, _export_job, req["document"], req["format"], req["path"])
+                res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False))
+                await ws.send(_reply_for(req_id, res))
+
+            elif op == "interference":
+                res = await _run(loop, _interference_job, req["document"])
                 await ws.send(_reply_for(req_id, res))
 
             elif op == "import":

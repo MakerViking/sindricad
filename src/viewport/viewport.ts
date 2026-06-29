@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { createScene, type SceneBundle } from "./scene";
 import { createCameraRig, type CameraRig, type StandardView } from "./cameras";
-import { buildModel, disposeModel, setEdgeResolution, type ModelView } from "./render";
+import { buildModel, disposeModel, setEdgeResolution, BASE_COLOR, type ModelView } from "./render";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
 import { setPrompt } from "../ui/prompt";
@@ -25,6 +25,9 @@ export class Viewport {
   private picker = new Picker();
   private highlighter: Highlighter | null = null;
   private model: ModelView | null = null;
+  // Z the ground grid sits at: the model's lowest point (so the grid is always a
+  // floor under the model), or 0 (world XY) when the document is empty.
+  private targetGridZ = 0;
   private clock = new THREE.Clock();
   private resolution = new THREE.Vector2();
   // persistent construction/datum planes (translucent quads, click to select)
@@ -229,6 +232,39 @@ export class Viewport {
     return null;
   }
 
+  // --- face-color analysis overlays (Inspect) ---------------------------------
+  // A view state painted into the per-face base color; it survives selection and
+  // re-applies after each rebuild (setModel). "component" = one hue per body;
+  // "draft" = shade by angle to the +Z build axis (overhangs red).
+  analysis: "none" | "component" | "draft" = "none";
+
+  setAnalysis(mode: "none" | "component" | "draft") {
+    this.analysis = mode;
+    this.applyAnalysis();
+  }
+
+  private applyAnalysis() {
+    if (!this.highlighter || !this.model) return;
+    if (this.analysis === "component") {
+      const hue = new Map<string, THREE.Color>();
+      this.model.bodies.forEach((b, i) =>
+        hue.set(b.id, new THREE.Color().setHSL((i * 0.137 + 0.05) % 1, 0.45, 0.55)),
+      );
+      this.highlighter.setBase((fid) => hue.get(this.faceIdToBodyId(fid) ?? "") ?? BASE_COLOR);
+    } else if (this.analysis === "draft") {
+      const up = new THREE.Vector3(0, 0, 1);
+      const OVERHANG = new THREE.Color(0xe24a3b); // down-facing (unprintable overhang)
+      const TOP = new THREE.Color(0x49c46a); // up-facing
+      const WALL = new THREE.Color(0x4aa3e2); // vertical wall
+      this.highlighter.setBase((fid) => {
+        const d = this.faceNormalWorld(fid).dot(up); // cos(angle to +Z)
+        return d < -0.05 ? OVERHANG : d > 0.05 ? TOP : WALL;
+      });
+    } else {
+      this.highlighter.setBase(() => BASE_COLOR);
+    }
+  }
+
   getSelectedBodies(): string[] {
     return this.highlighter?.getSelectedBodies() ?? [];
   }
@@ -364,6 +400,8 @@ export class Viewport {
     this.scene.modelGroup.add(this.model.mesh);
     for (const e of this.model.edges) this.scene.modelGroup.add(e);
     this.highlighter = new Highlighter(this.model);
+    this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
+    if (this.analysis !== "none") this.applyAnalysis();
     if (fit) this.rig.fit(this.model.box, true);
   }
 
@@ -374,6 +412,7 @@ export class Viewport {
     disposeModel(this.model);
     this.model = null;
     this.highlighter = null;
+    this.targetGridZ = 0; // no model → grid back on the world XY plane
   }
 
   fitView() {
@@ -492,6 +531,69 @@ export class Viewport {
     this.highlighter?.clearSelection();
     for (const f of faceIds) this.highlighter?.toggleSelectFace(f);
     for (const l of lines) this.highlighter?.toggleSelectEdge(l);
+  }
+
+  /** Section/clip: clip the model (faces + edges) by a plane, or clear with null.
+   *  Lost on the next rebuild (materials are recreated) — fine for an interactive
+   *  section that you set, look at, then close. */
+  setClipPlane(plane: THREE.Plane | null) {
+    this.scene.renderer.localClippingEnabled = !!plane;
+    const planes = plane ? [plane] : null;
+    if (this.model) {
+      (this.model.mesh.material as THREE.Material).clippingPlanes = planes;
+      for (const e of this.model.edges)
+        (e.material as unknown as { clippingPlanes: THREE.Plane[] | null }).clippingPlanes = planes;
+    }
+  }
+
+  /** The model's world bounding box (for placing the section plane), or null. */
+  modelBox(): THREE.Box3 | null {
+    return this.model?.box ?? null;
+  }
+
+  /** Mass/geometry properties of the given bodies (or the whole model if null),
+   *  computed from the tessellation: volume + center of mass (divergence theorem
+   *  over the triangles), surface area, and bounding box. */
+  bodyProperties(
+    ids: string[] | null,
+  ): { volume: number; area: number; com: THREE.Vector3; bbox: THREE.Box3; names: string[] } | null {
+    if (!this.model) return null;
+    const all = this.model.bodies;
+    const ranges = ids && ids.length ? all.filter((b) => ids.includes(b.id)) : all;
+    const inRange = (fid: number) =>
+      ranges.length === 0 || ranges.some((r) => fid >= r.faceStart && fid < r.faceStart + r.faceCount);
+    const pos = this.model.mesh.geometry.getAttribute("position");
+    const index = this.model.mesh.geometry.getIndex()!;
+    const fids = this.model.faceIds;
+    const mw = this.model.mesh.matrixWorld;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const bbox = new THREE.Box3().makeEmpty();
+    const com = new THREE.Vector3();
+    let area = 0;
+    let vol = 0;
+    for (let t = 0; t < fids.length; t++) {
+      if (!inRange(fids[t])) continue;
+      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
+      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
+      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
+      bbox.expandByPoint(a);
+      bbox.expandByPoint(b);
+      bbox.expandByPoint(c);
+      area += b.clone().sub(a).cross(c.clone().sub(a)).length() * 0.5;
+      const v = a.dot(b.clone().cross(c)) / 6; // signed tet (origin,a,b,c) volume
+      vol += v;
+      com.addScaledVector(a.clone().add(b).add(c), v / 4); // tet centroid · weight
+    }
+    if (Math.abs(vol) > 1e-9) com.divideScalar(vol);
+    return {
+      volume: Math.abs(vol),
+      area,
+      com,
+      bbox,
+      names: (ids && ids.length ? all.filter((x) => ids.includes(x.id)) : all).map((x) => x.name),
+    };
   }
 
   /** Face pick for the Press/Pull tool: raycast the solid and return a face
@@ -805,7 +907,7 @@ export class Viewport {
       this.rig.update(dt);
       // keep the ground grid spacing/extent matched to the current zoom + pan
       const t = this.rig.controls.getTarget(this.scratchTarget);
-      this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t));
+      this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t), this.targetGridZ);
       this.scene.renderer.render(this.scene.scene, this.rig.active);
       this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
     } catch (e) {

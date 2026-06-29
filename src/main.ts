@@ -27,9 +27,10 @@ import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { PressPullTool } from "./features/pressPullTool";
 import { MoveTool } from "./features/moveTool";
 import { MeasureTool } from "./features/measureTool";
+import { SectionTool } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { setPrompt } from "./ui/prompt";
-import { getUnit, setUnit, type Unit } from "./ui/units";
+import { getUnit, setUnit, toDisplay, round, type Unit } from "./ui/units";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "./types";
 
 // --- core singletons ---
@@ -50,6 +51,7 @@ const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
 const moveTool = new MoveTool(viewport, store);
 const measure = new MeasureTool(viewport);
+const section = new SectionTool(viewport);
 const planeOffset = new PlaneOffsetTool(viewport);
 
 (window as any).viewport = viewport;
@@ -214,6 +216,15 @@ tree.onSelectBody = (id, additive) => {
   viewport.setSelectedBodies([...cur]);
 };
 tree.onCutPlane = (id) => void startCutByPlane(id);
+// rename / delete from the browser tree. Sketches & planes are features → patch
+// or remove them; body names are display-only overrides; deleting a body appends
+// a removeBody feature (see store). All paths re-emit and re-render the tree.
+tree.onRenameSketch = (id, name) => store.updateFeature(id, { name } as Partial<Feature>);
+tree.onDeleteSketch = (id) => store.removeFeature(id);
+tree.onRenamePlane = (id, name) => store.updateFeature(id, { name } as Partial<Feature>);
+tree.onDeletePlane = (id) => store.removeFeature(id);
+tree.onRenameBody = (id, name) => store.setBodyName(id, name);
+tree.onDeleteBody = (id) => store.removeBody(id);
 viewport.onBodySelectionChange = () => {
   tree.refresh();
   if (toolBusy()) return;
@@ -620,10 +631,129 @@ function startMove() {
   moveTool.start(ids, (id) => id && selectFeature(id));
 }
 
-// True when an interactive tool/mode owns the pointer — model commands bail so
+// --- Inspect: Properties readout (volume / area / mass / center / bbox) ---
+let propsPanel: HTMLDivElement | null = null;
+let propsEsc: ((e: KeyboardEvent) => void) | null = null;
+function closeProperties() {
+  propsPanel?.remove();
+  propsPanel = null;
+  if (propsEsc) {
+    window.removeEventListener("keydown", propsEsc, true);
+    propsEsc = null;
+  }
+}
+function showProperties() {
+  if (!hasBody()) {
+    setStatus("Properties: create or import a body first", "");
+    return;
+  }
+  const sel = viewport.getSelectedBodies();
+  const p = viewport.bodyProperties(sel.length ? sel : null);
+  if (!p) return;
+  closeProperties();
+  const unit = getUnit();
+  const f = toDisplay(1);
+  const cm3 = p.volume / 1000; // mm³ → cm³ (mass at 1 g/cm³ baseline)
+  const title = sel.length === 1 ? p.names[0] : sel.length ? `${sel.length} bodies` : "All bodies";
+  const rows: [string, string][] = [
+    ["Volume", `${round(p.volume * f * f * f)} ${unit}³`],
+    ["Surface area", `${round(p.area * f * f)} ${unit}²`],
+    ["Mass (≈1 g/cm³)", `${round(cm3)} g`],
+    ["Center of mass", `${round(toDisplay(p.com.x))}, ${round(toDisplay(p.com.y))}, ${round(toDisplay(p.com.z))}`],
+    [
+      "Bounding box",
+      `${round(toDisplay(p.bbox.max.x - p.bbox.min.x))} × ${round(toDisplay(p.bbox.max.y - p.bbox.min.y))} × ${round(toDisplay(p.bbox.max.z - p.bbox.min.z))} ${unit}`,
+    ],
+  ];
+  const el = document.createElement("div");
+  el.className = "measure-panel";
+  el.innerHTML =
+    `<div class="measure-title">Properties — ${title}</div>` +
+    rows
+      .map(([k, v]) => `<div class="measure-row"><span class="measure-k">${k}</span><span class="measure-v">${v}</span></div>`)
+      .join("") +
+    `<div class="measure-hint">Select a body for its own properties · Esc to close</div>`;
+  document.body.appendChild(el);
+  propsPanel = el;
+  propsEsc = (e) => {
+    if (e.key === "Escape") closeProperties();
+  };
+  window.addEventListener("keydown", propsEsc, true);
+}
+
+let clashPanel: HTMLDivElement | null = null;
+let clashEsc: ((e: KeyboardEvent) => void) | null = null;
+function closeInterference() {
+  clashPanel?.remove();
+  clashPanel = null;
+  if (clashEsc) {
+    window.removeEventListener("keydown", clashEsc, true);
+    clashEsc = null;
+  }
+}
+async function showInterference() {
+  if (!hasBody()) {
+    setStatus("Interference: create or import a body first", "");
+    return;
+  }
+  if ((store.buildState.result?.bodies?.length ?? 0) < 2) {
+    setStatus("Interference: needs at least two bodies", "");
+    return;
+  }
+  setStatus("Checking interference…", "");
+  const res = await geometry.interference(store.document);
+  if (!res.ok) {
+    setStatus(`Interference check failed: ${res.message ?? "error"}`, "error");
+    return;
+  }
+  const pairs = res.pairs ?? [];
+  setStatus(
+    pairs.length ? `${pairs.length} interference${pairs.length > 1 ? "s" : ""} found` : "No interferences found",
+    pairs.length ? "error" : "connected",
+  );
+  closeInterference();
+  const unit = getUnit();
+  const f = toDisplay(1);
+  const el = document.createElement("div");
+  el.className = "measure-panel";
+  if (!pairs.length) {
+    el.innerHTML =
+      `<div class="measure-title">Interference</div>` +
+      `<div class="measure-row"><span class="measure-v">No overlapping bodies</span></div>` +
+      `<div class="measure-hint">Esc to close</div>`;
+  } else {
+    el.innerHTML =
+      `<div class="measure-title">Interference — ${pairs.length} clash${pairs.length > 1 ? "es" : ""}</div>` +
+      pairs
+        .map(
+          (p, i) =>
+            `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${p.aName} ∩ ${p.bName}</span><span class="measure-v">${round(p.volume * f * f * f)} ${unit}³</span></div>`,
+        )
+        .join("") +
+      `<div class="measure-hint">Click a clash to highlight the bodies · Esc to close</div>`;
+  }
+  document.body.appendChild(el);
+  clashPanel = el;
+  el.querySelectorAll<HTMLElement>(".clash-row").forEach((row) => {
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => {
+      const p = pairs[Number(row.dataset.i)];
+      viewport.setSelectionMode("bodies");
+      selBtn.textContent = "Bodies";
+      selBtn.classList.add("active");
+      viewport.setSelectedBodies([p.a, p.b]);
+    });
+  });
+  clashEsc = (e) => {
+    if (e.key === "Escape") closeInterference();
+  };
+  window.addEventListener("keydown", clashEsc, true);
+}
+
+
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || measure.active || planePick;
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || measure.active || section.active || planePick;
 }
 
 // True when the current rebuild produced a solid body (something to modify).
@@ -944,6 +1074,51 @@ function handleAction(action: string) {
         break;
       }
       measure.start();
+      break;
+    case "properties":
+      showProperties();
+      break;
+    case "section":
+      if (section.active) {
+        section.stop();
+        break;
+      }
+      if (!hasBody()) {
+        setStatus("Section: create or import a body first", "");
+        break;
+      }
+      void (async () => {
+        const ax = await choose<"X" | "Y" | "Z">("Section — cut along which axis?", [
+          { value: "Z", label: "Z", hint: "horizontal cut" },
+          { value: "X", label: "X" },
+          { value: "Y", label: "Y" },
+        ]);
+        if (ax) section.start(ax);
+      })();
+      break;
+    case "component-colors":
+      if (!hasBody()) {
+        setStatus("Component colors: create or import a body first", "");
+        break;
+      }
+      viewport.setAnalysis(viewport.analysis === "component" ? "none" : "component");
+      setStatus(viewport.analysis === "component" ? "Component colors on" : "Component colors off", "");
+      break;
+    case "draft-analysis":
+      if (!hasBody()) {
+        setStatus("Draft analysis: create or import a body first", "");
+        break;
+      }
+      viewport.setAnalysis(viewport.analysis === "draft" ? "none" : "draft");
+      setStatus(
+        viewport.analysis === "draft"
+          ? "Draft analysis: red = overhang (down-facing vs +Z), green = up, blue = wall"
+          : "Draft analysis off",
+        "",
+      );
+      break;
+    case "interference":
+      void showInterference();
       break;
     // --- global File / View commands (also reachable from the palette) ---
     case "new":

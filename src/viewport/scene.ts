@@ -27,8 +27,10 @@ export class AdaptiveGrid {
     scene.add(this.group);
   }
 
-  /** worldPerPixel = world mm covered by one screen pixel at the target. */
-  update(targetX: number, targetY: number, worldPerPixel: number) {
+  /** worldPerPixel = world mm covered by one screen pixel at the target.
+   *  gridZ = the height the grid sits at (the model's floor, or 0 when empty). */
+  update(targetX: number, targetY: number, worldPerPixel: number, gridZ = 0) {
+    this.group.position.z = gridZ; // track the model floor every frame, even if x/y/cell are cached
     const cell = niceStep(worldPerPixel * 64); // ~64px minor cells
     const majorCell = cell * 5;
     const cx = Math.round(targetX / majorCell) * majorCell;
@@ -38,7 +40,7 @@ export class AdaptiveGrid {
     this.key = k;
     this.step = cell;
     this.rebuild(cell);
-    this.group.position.set(cx, cy, 0);
+    this.group.position.set(cx, cy, gridZ);
   }
 
   private rebuild(cell: number) {

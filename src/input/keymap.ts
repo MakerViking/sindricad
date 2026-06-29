@@ -40,7 +40,8 @@ export function installKeymap(onAction: (a: KeyAction) => void) {
   window.addEventListener("keydown", (e) => {
     if (
       e.target instanceof HTMLInputElement ||
-      e.target instanceof HTMLTextAreaElement
+      e.target instanceof HTMLTextAreaElement ||
+      (e.target instanceof HTMLElement && e.target.isContentEditable)
     ) {
       return;
     }

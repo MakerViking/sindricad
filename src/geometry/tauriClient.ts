@@ -6,7 +6,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { CadDocument, ExportFormat, ImportFormat, ImportReply, RebuildReply, RebuildResult } from "../types";
-import type { GeometryBackend } from "./client";
+import type { ClashPair, GeometryBackend } from "./client";
 
 type StatusListener = (connected: boolean) => void;
 
@@ -36,7 +36,10 @@ export class TauriGeometry implements GeometryBackend {
     doc: CadDocument,
     format: ExportFormat,
     path: string,
-  ): Promise<{ ok: boolean; path?: string; message?: string }> {
+    _opts: { body?: string; separate?: boolean } = {},
+  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string }> {
+    // Per-body / separate export isn't wired into the Rust kernel yet — it exports
+    // the merged part. Use the default Python sidecar for per-body export.
     try {
       const written = await invoke<string>("geom_export", {
         document: doc,
@@ -53,5 +56,10 @@ export class TauriGeometry implements GeometryBackend {
   // new opencascade-rs FFI). Use the default Python sidecar to import for now.
   async importGeometry(_path: string, _format: ImportFormat): Promise<ImportReply> {
     return { ok: false, message: "geometry import isn't supported by the Rust backend yet — run without VITE_GEOM=rust" };
+  }
+
+  // Interference (clash) detection isn't wired into the Rust kernel yet.
+  async interference(_doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }> {
+    return { ok: false, message: "interference check isn't supported by the Rust backend yet — run without VITE_GEOM=rust" };
   }
 }

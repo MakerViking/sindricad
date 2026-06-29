@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import { BASE_COLOR, type ModelView } from "./render";
+import type { ModelView } from "./render";
 
 const EDGE_BASE = new THREE.Color(0x1b1f24);
 const HOVER = new THREE.Color(0xffd089); // pale hot amber (under cursor)
@@ -48,7 +48,7 @@ export class Highlighter {
   hoverFace(faceId: number | null) {
     if (this.hoveredFace === faceId) return;
     if (this.hoveredFace != null && !this.selectedFaces.has(this.hoveredFace)) {
-      this.paintFace(this.hoveredFace, BASE_COLOR);
+      this.restoreFace(this.hoveredFace);
     }
     this.hoveredFace = faceId;
     if (faceId != null && !this.selectedFaces.has(faceId)) {
@@ -74,7 +74,7 @@ export class Highlighter {
   toggleSelectFace(faceId: number) {
     if (this.selectedFaces.has(faceId)) {
       this.selectedFaces.delete(faceId);
-      this.paintFace(faceId, BASE_COLOR);
+      this.restoreFace(faceId);
     } else {
       this.selectedFaces.add(faceId);
       this.paintFace(faceId, SELECT);
@@ -94,7 +94,7 @@ export class Highlighter {
   clearSelection() {
     for (const e of this.selectedEdges)
       (e.material as LineMaterial).color.copy(this.edgeBase);
-    for (const f of this.selectedFaces) this.paintFace(f, BASE_COLOR);
+    for (const f of this.selectedFaces) this.restoreFace(f);
     this.selectedEdges.clear();
     this.selectedFaces.clear();
   }
@@ -104,7 +104,7 @@ export class Highlighter {
   toggleSelectBody(bodyId: string) {
     if (this.selectedBodies.has(bodyId)) {
       this.selectedBodies.delete(bodyId);
-      this.paintBody(bodyId, BASE_COLOR);
+      this.restoreBody(bodyId);
     } else {
       this.selectedBodies.add(bodyId);
       this.paintBody(bodyId, SELECT);
@@ -122,7 +122,7 @@ export class Highlighter {
   }
 
   clearBodySelection() {
-    for (const id of this.selectedBodies) this.paintBody(id, BASE_COLOR);
+    for (const id of this.selectedBodies) this.restoreBody(id);
     this.selectedBodies.clear();
   }
 
@@ -161,5 +161,79 @@ export class Highlighter {
       }
     }
     colorAttr.needsUpdate = true;
+  }
+
+  /** Restore one face's live color to its current base (BASE_COLOR, or the
+   *  component/draft analysis color if an analysis is active). */
+  private restoreFace(faceId: number) {
+    const geo = this.view.mesh.geometry;
+    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
+    const index = geo.getIndex();
+    if (!colorAttr || !index) return;
+    const ids = this.view.faceIds;
+    const base = this.view.baseColors;
+    for (let t = 0; t < ids.length; t++) {
+      if (ids[t] !== faceId) continue;
+      for (let k = 0; k < 3; k++) {
+        const v = index.getX(t * 3 + k);
+        colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+      }
+    }
+    colorAttr.needsUpdate = true;
+  }
+
+  /** Restore every face of a body to its base color. */
+  private restoreBody(bodyId: string) {
+    const body = this.view.bodies.find((b) => b.id === bodyId);
+    if (!body) return;
+    const lo = body.faceStart;
+    const hi = body.faceStart + body.faceCount;
+    const geo = this.view.mesh.geometry;
+    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
+    const index = geo.getIndex();
+    if (!colorAttr || !index) return;
+    const ids = this.view.faceIds;
+    const base = this.view.baseColors;
+    for (let t = 0; t < ids.length; t++) {
+      if (ids[t] < lo || ids[t] >= hi) continue;
+      for (let k = 0; k < 3; k++) {
+        const v = index.getX(t * 3 + k);
+        colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+      }
+    }
+    colorAttr.needsUpdate = true;
+  }
+
+  /** Set the per-face base color (component / draft analysis) and repaint every
+   *  non-selected face to it. Selected faces keep their highlight but their base
+   *  updates so they restore correctly on deselect. Pass `() => BASE_COLOR` to
+   *  clear an analysis. Body selections re-apply on top afterward. */
+  setBase(colorOf: (faceId: number) => THREE.Color) {
+    const geo = this.view.mesh.geometry;
+    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
+    const index = geo.getIndex();
+    if (!colorAttr || !index) return;
+    const ids = this.view.faceIds;
+    const base = this.view.baseColors;
+    const cache = new Map<number, THREE.Color>();
+    for (let t = 0; t < ids.length; t++) {
+      const fid = ids[t];
+      let col = cache.get(fid);
+      if (!col) {
+        col = colorOf(fid);
+        cache.set(fid, col);
+      }
+      const selected = this.selectedFaces.has(fid);
+      for (let k = 0; k < 3; k++) {
+        const v = index.getX(t * 3 + k);
+        base[v * 3] = col.r;
+        base[v * 3 + 1] = col.g;
+        base[v * 3 + 2] = col.b;
+        if (!selected) colorAttr.setXYZ(v, col.r, col.g, col.b);
+      }
+    }
+    colorAttr.needsUpdate = true;
+    // whole-body selections paint on top of the base — re-apply them
+    for (const id of this.selectedBodies) this.paintBody(id, SELECT);
   }
 }

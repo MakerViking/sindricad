@@ -59,6 +59,11 @@ export const MODEL: Group[] = [
     label: "INSPECT",
     items: [
       { action: "measure", label: "Measure", iconName: "measure" },
+      { action: "properties", label: "Properties", iconName: "properties" },
+      { action: "section", label: "Section", iconName: "section" },
+      { action: "interference", label: "Interference", iconName: "interference" },
+      { action: "component-colors", label: "Body Colors", iconName: "componentColors" },
+      { action: "draft-analysis", label: "Draft Analysis", iconName: "draftAnalysis" },
     ],
   },
   {

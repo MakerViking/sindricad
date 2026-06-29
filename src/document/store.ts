@@ -38,6 +38,7 @@ export class DocumentStore {
   private suppressed = new Set<string>(); // feature ids skipped on rebuild (suppress)
   private sketchVis = new Map<string, boolean>(); // explicit per-sketch show/hide overrides
   private bodyVis = new Map<string, boolean>(); // explicit per-body show/hide overrides (id → visible)
+  private bodyNames = new Map<string, string>(); // explicit per-body display-name overrides (id → name)
   private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
   private rebuilding = false; // a rebuild round-trip is in flight
@@ -108,6 +109,7 @@ export class DocumentStore {
     this.suppressed.clear();
     this.sketchVis.clear();
     this.bodyVis.clear();
+    this.bodyNames.clear();
     this.path = null;
     this.isDirty = false;
     this.emitDoc();
@@ -304,6 +306,27 @@ export class DocumentStore {
     this.emitBuild();
   }
 
+  // --- body name overrides (display-only; no geometry effect) -----------------
+  /** display-name override for a body, or undefined (→ use the rebuilt name). */
+  bodyName(id: string): string | undefined {
+    return this.bodyNames.get(id);
+  }
+  /** rename a body (display-only override; blank clears it). Re-emits the build so
+   *  the tree updates without a geometry rebuild — names don't affect geometry. */
+  setBodyName(id: string, name: string) {
+    const n = name.trim();
+    if (n) this.bodyNames.set(id, n);
+    else this.bodyNames.delete(id);
+    this.markDirty();
+    this.emitBuild();
+  }
+  /** delete a body by appending a removeBody feature at the END of the timeline
+   *  (so it operates on the final body list). Undoable like any feature. */
+  removeBody(bodyId: string) {
+    const feat: Feature = { id: this.nextId(), type: "removeBody", bodies: [bodyId] };
+    this.addFeature(feat, this.doc.features.length);
+  }
+
   // --- serialization ---
   toJSON(): string {
     // Persist the geometry doc PLUS the non-geometry project state that lives in
@@ -314,6 +337,7 @@ export class DocumentStore {
     if (this.rollback !== null) out.rollback = this.rollback;
     if (this.sketchVis.size) out.sketchVisibility = Object.fromEntries(this.sketchVis);
     if (this.bodyVis.size) out.bodyVisibility = Object.fromEntries(this.bodyVis);
+    if (this.bodyNames.size) out.bodyNames = Object.fromEntries(this.bodyNames);
     return JSON.stringify(out, null, 2);
   }
   load(json: string) {
@@ -326,6 +350,7 @@ export class DocumentStore {
     this.rollback = parsed.rollback ?? null;
     this.sketchVis = new Map(Object.entries(parsed.sketchVisibility ?? {}));
     this.bodyVis = new Map(Object.entries(parsed.bodyVisibility ?? {}));
+    this.bodyNames = new Map(Object.entries(parsed.bodyNames ?? {}));
     this.doc = {
       parameters: parsed.parameters ?? {},
       features: parsed.features ?? [],

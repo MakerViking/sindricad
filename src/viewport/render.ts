@@ -16,6 +16,10 @@ export interface ModelView {
   box: THREE.Box3;
   // per-body faceId ranges (for faceId→body lookup + whole-body highlight)
   bodies: { id: string; name: string; faceStart: number; faceCount: number }[];
+  // per-vertex base colors the highlighter restores to (component / draft analysis
+  // overwrite this; default = BASE_COLOR everywhere). Separate from the live color
+  // attribute, which hover/selection mutate on top.
+  baseColors: Float32Array;
 }
 
 // Base albedo is baked into vertex colors (material.color stays white) so
@@ -118,7 +122,7 @@ export function buildModel(
     new THREE.Vector3(...result.bbox.max),
   );
 
-  return { mesh, faceIds, edges, box, bodies: result.bodies ?? [] };
+  return { mesh, faceIds, edges, box, bodies: result.bodies ?? [], baseColors: colors.slice() };
 }
 
 export function disposeModel(view: ModelView | null) {
