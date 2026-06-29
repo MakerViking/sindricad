@@ -167,9 +167,20 @@ canvas.addEventListener("contextmenu", (e) => {
   const face = viewport.pickFacePlane(e.clientX, e.clientY);
   if (!face) return; // not over a face — leave the browser default
   e.preventDefault();
+  const hit = viewport.pickEntity(e.clientX, e.clientY);
+  const faceId = hit?.kind === "face" ? hit.faceId : null;
   contextMenu(e.clientX, e.clientY, [
     { label: "Offset plane from face", onClick: () => offsetPlaneFromFace(face) },
     { label: "Sketch on this face", onClick: () => { if (!toolBusy()) sketch.enter(face, store); } },
+    ...(faceId != null
+      ? [{
+          label: "Select coplanar faces",
+          onClick: () => {
+            const n = viewport.selectCoplanarFaces(faceId);
+            setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
+          },
+        }]
+      : []),
   ]);
 });
 tree.onEditSketch = (id) => editFeature(id);
@@ -252,6 +263,18 @@ viewport.onSelectionChange = () => {
 
 // --- rebuild pipeline -> viewport ---
 let firstModel = true;
+
+// resolve each body's assigned palette slot to a hex color for the viewport.
+function computeBodyPaint(): Record<string, string> {
+  const pal = store.colorPalette;
+  const out: Record<string, string> = {};
+  for (const b of store.buildState.result?.bodies ?? []) {
+    const slot = store.bodyColorSlot(b.id);
+    if (slot != null && pal[slot]) out[b.id] = pal[slot].color;
+  }
+  return out;
+}
+
 store.onBuild((s) => {
   if (s.result) {
     if (s.result.mesh.positions.length > 0) {
@@ -262,6 +285,7 @@ store.onBuild((s) => {
         .map((b) => b.id);
       viewport.setModel(s.result, firstModel, hidden);
       firstModel = false;
+      viewport.setBodyPaint(computeBodyPaint()); // apply assigned per-body colors
     } else {
       viewport.clearModel();
     }
@@ -750,6 +774,41 @@ async function showInterference() {
   window.addEventListener("keydown", clashEsc, true);
 }
 
+// Overhang-analysis settings: a small floating panel (build direction + support
+// threshold) shown while Draft Analysis is active. Display-only/transient — the
+// settings live on the viewport, not the document.
+let overhangPanel: HTMLDivElement | null = null;
+function closeOverhangSettings() {
+  overhangPanel?.remove();
+  overhangPanel = null;
+}
+function showOverhangSettings() {
+  closeOverhangSettings();
+  const { dir, threshold } = viewport.draftConfig;
+  const dirs = ["+Z", "-Z", "+X", "-X", "+Y", "-Y"];
+  const el = document.createElement("div");
+  el.className = "measure-panel";
+  el.innerHTML =
+    `<div class="measure-title">Overhang analysis</div>` +
+    `<div class="measure-row"><span class="measure-k">Build dir</span><select class="oh-dir">${dirs
+      .map((d) => `<option${d === dir ? " selected" : ""}>${d}</option>`)
+      .join("")}</select></div>` +
+    `<div class="measure-row"><span class="measure-k">Threshold</span><span><input class="oh-thr" type="range" min="0" max="90" step="1" value="${threshold}" style="width:96px;vertical-align:middle"> <span class="oh-val">${threshold}°</span></span></div>` +
+    `<div class="measure-row"><span class="measure-v" style="color:#e24a3b">red = unsupported overhang</span></div>` +
+    `<div class="measure-hint">Faces past this angle from horizontal need support · toggle Draft to close</div>`;
+  document.body.appendChild(el);
+  overhangPanel = el;
+  const dirSel = el.querySelector(".oh-dir") as HTMLSelectElement;
+  const thr = el.querySelector(".oh-thr") as HTMLInputElement;
+  const val = el.querySelector(".oh-val") as HTMLElement;
+  const apply = () => {
+    viewport.setDraftConfig(dirSel.value as "+X" | "-X" | "+Y" | "-Y" | "+Z" | "-Z", Number(thr.value));
+    val.textContent = `${thr.value}°`;
+  };
+  dirSel.addEventListener("change", apply);
+  thr.addEventListener("input", apply);
+}
+
 
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
@@ -1102,6 +1161,7 @@ function handleAction(action: string) {
         break;
       }
       viewport.setAnalysis(viewport.analysis === "component" ? "none" : "component");
+      closeOverhangSettings(); // leaving draft mode
       setStatus(viewport.analysis === "component" ? "Component colors on" : "Component colors off", "");
       break;
     case "draft-analysis":
@@ -1110,12 +1170,30 @@ function handleAction(action: string) {
         break;
       }
       viewport.setAnalysis(viewport.analysis === "draft" ? "none" : "draft");
-      setStatus(
-        viewport.analysis === "draft"
-          ? "Draft analysis: red = overhang (down-facing vs +Z), green = up, blue = wall"
-          : "Draft analysis off",
-        "",
-      );
+      if (viewport.analysis === "draft") {
+        const { dir, threshold } = viewport.draftConfig;
+        setStatus(`Overhang: red = unsupported below ${threshold}° from horizontal (build ${dir})`, "");
+        showOverhangSettings();
+      } else {
+        closeOverhangSettings();
+        setStatus("Draft analysis off", "");
+      }
+      break;
+    case "zebra":
+      if (!hasBody()) {
+        setStatus("Zebra: create or import a body first", "");
+        break;
+      }
+      viewport.setZebra(!viewport.zebraOn);
+      setStatus(viewport.zebraOn ? "Zebra stripes on (surface continuity)" : "Zebra off", "");
+      break;
+    case "curvature":
+      if (!hasBody()) {
+        setStatus("Curvature combs: create or import a body first", "");
+        break;
+      }
+      viewport.setCurvatureCombs(!viewport.combsOn);
+      setStatus(viewport.combsOn ? "Curvature combs on (edge bend visualization)" : "Curvature combs off", "");
       break;
     case "interference":
       void showInterference();

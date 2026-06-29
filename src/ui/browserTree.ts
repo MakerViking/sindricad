@@ -83,9 +83,10 @@ export class BrowserTree {
     const sLabels = sketches.map((f, i) => `${f.id}=${sketchLabel(f, i)}:${(this.isSketchVisible?.(f.id) ?? true) ? "1" : "0"}`).join(",");
     const pLabels = datums.map((f, i) => `${f.id}=${planeLabel(f, i)}`).join(",");
     const bLabels = bodies
-      .map((b) => `${b.id}=${bodyLabel(b)}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}${this.isBodySelected?.(b.id) ? ":s" : ""}`)
+      .map((b) => `${b.id}=${bodyLabel(b)}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}${this.isBodySelected?.(b.id) ? ":s" : ""}#${this.store.bodyColorSlot(b.id) ?? ""}`)
       .join(",");
-    const sig = `${sLabels}|${pLabels}|${bLabels}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}`;
+    const palSig = this.store.colorPalette.map((s) => `${s.name}:${s.color}`).join(",");
+    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
@@ -121,21 +122,31 @@ export class BrowserTree {
       );
     }
 
-    // --- Bodies ---
+    // --- Palette + Bodies ---
+    if (bodies.length) this.renderPalette();
     this.folder(
       "Bodies",
       "◆",
-      bodies.map((b) => ({
-        label: bodyLabel(b),
-        icon: "◆",
-        selected: this.isBodySelected?.(b.id) ?? false,
-        visible: this.isBodyVisible?.(b.id) ?? true,
-        onClick: (e: MouseEvent) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
-        onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
-        rename: this.onRenameBody ? (name: string) => this.onRenameBody!(b.id, name) : undefined,
-        onDelete: this.onDeleteBody ? () => this.onDeleteBody!(b.id) : undefined,
-        title: "Click to select (Ctrl+click adds) · double-click to rename · right-click for Rename / Delete · eye to show/hide",
-      })),
+      bodies.map((b) => {
+        const slot = this.store.bodyColorSlot(b.id);
+        const pal = this.store.colorPalette;
+        return {
+          label: bodyLabel(b),
+          icon: "◆",
+          swatch: slot != null && pal[slot] ? pal[slot].color : undefined,
+          selected: this.isBodySelected?.(b.id) ?? false,
+          visible: this.isBodyVisible?.(b.id) ?? true,
+          onClick: (e: MouseEvent) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
+          onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
+          extraMenu: [
+            ...pal.map((s, i) => ({ label: `Color: ${s.name}`, onClick: () => this.store.setBodyColorSlot(b.id, i) })),
+            { label: "Color: none", onClick: () => this.store.setBodyColorSlot(b.id, null) },
+          ],
+          rename: this.onRenameBody ? (name: string) => this.onRenameBody!(b.id, name) : undefined,
+          onDelete: this.onDeleteBody ? () => this.onDeleteBody!(b.id) : undefined,
+          title: "Click to select (Ctrl+click adds) · double-click to rename · right-click for Color / Rename / Delete · eye to show/hide",
+        };
+      }),
     );
 
     // --- Sketches ---
@@ -158,12 +169,42 @@ export class BrowserTree {
     );
   }
 
+  /** The filament palette: editable color slots (≤4 → the U1's toolheads). Click a
+   *  swatch to recolor a slot; double-click its name to rename. Bodies are assigned
+   *  to a slot, so editing one recolors everything using it. */
+  private renderPalette() {
+    const pal = this.store.colorPalette;
+    const collapsed = this.collapsed.has("Palette");
+    const head = document.createElement("div");
+    head.className = "tree-folder";
+    head.innerHTML = `<span class="tree-caret">${collapsed ? "▸" : "▾"}</span><span class="feature-icon">◳</span><span>Palette</span><span style="flex:1"></span><span class="tree-count">${pal.length}</span>`;
+    head.addEventListener("click", () => this.toggle("Palette"));
+    this.el.appendChild(head);
+    if (collapsed) return;
+    pal.forEach((slot, i) => {
+      const row = document.createElement("div");
+      row.className = "feature-row tree-child";
+      row.title = `Filament slot ${i + 1} → toolhead ${i + 1}`;
+      row.innerHTML =
+        `<input type="color" value="${slot.color}" class="pal-swatch" style="width:18px;height:18px;border:none;background:none;padding:0;cursor:pointer;vertical-align:middle">` +
+        `<span class="tree-label" style="margin-left:7px">${slot.name}</span>`;
+      const input = row.querySelector(".pal-swatch") as HTMLInputElement;
+      input.addEventListener("change", () => this.store.setPaletteSlot(i, { color: input.value }));
+      const label = row.querySelector(".tree-label") as HTMLElement;
+      label.addEventListener("dblclick", () =>
+        this.startInlineRename(label, slot.name, (name) => this.store.setPaletteSlot(i, { name })),
+      );
+      this.el.appendChild(row);
+    });
+  }
+
   private folder(
     name: string,
     icon: string,
     items: {
       label: string;
       icon: string;
+      swatch?: string; // a small colored chip before the label (assigned body color)
       dim?: boolean;
       selected?: boolean;
       error?: boolean;
@@ -200,8 +241,12 @@ export class BrowserTree {
       if (it.dim) row.style.opacity = "0.7";
       if (it.title) row.title = it.title;
       const hidden = it.onToggleVis && it.visible === false;
+      const swatch = it.swatch
+        ? `<span class="tree-swatch" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${it.swatch};border:1px solid #0007;margin-right:5px;vertical-align:middle"></span>`
+        : "";
       row.innerHTML =
         `<span class="feature-icon">${it.icon}</span>` +
+        swatch +
         `<span class="tree-label"${hidden ? ' style="opacity:.45"' : ""}>${it.label}</span>` +
         `<span style="flex:1"></span>` +
         (it.onToggleVis ? `<span class="tree-eye" title="Show/hide">${it.visible === false ? "○" : "◉"}</span>` : "");

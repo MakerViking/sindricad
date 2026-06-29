@@ -22,6 +22,15 @@ const clone = (d: CadDocument): CadDocument =>
 
 const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
 
+// Default filament palette (≤4 slots for the Snapmaker U1 toolchanger). Editable;
+// bodies/faces reference a slot index so it maps 1:1 to a physical toolhead.
+const DEFAULT_PALETTE: { name: string; color: string }[] = [
+  { name: "White", color: "#e8e8e8" },
+  { name: "Black", color: "#202020" },
+  { name: "Red", color: "#d23b30" },
+  { name: "Blue", color: "#3050c8" },
+];
+
 /** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
 const FORMAT_VERSION = 1;
 
@@ -39,6 +48,8 @@ export class DocumentStore {
   private sketchVis = new Map<string, boolean>(); // explicit per-sketch show/hide overrides
   private bodyVis = new Map<string, boolean>(); // explicit per-body show/hide overrides (id → visible)
   private bodyNames = new Map<string, string>(); // explicit per-body display-name overrides (id → name)
+  private palette: { name: string; color: string }[] = DEFAULT_PALETTE.map((s) => ({ ...s }));
+  private bodyColors = new Map<string, number>(); // per-body palette-slot assignment (id → slot index)
   private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
   private rebuilding = false; // a rebuild round-trip is in flight
@@ -110,6 +121,8 @@ export class DocumentStore {
     this.sketchVis.clear();
     this.bodyVis.clear();
     this.bodyNames.clear();
+    this.palette = DEFAULT_PALETTE.map((s) => ({ ...s }));
+    this.bodyColors.clear();
     this.path = null;
     this.isDirty = false;
     this.emitDoc();
@@ -327,6 +340,30 @@ export class DocumentStore {
     this.addFeature(feat, this.doc.features.length);
   }
 
+  // --- color palette + per-body color (multi-color; display + export metadata) -
+  /** the project's filament palette (≤4 slots map to U1 toolheads). */
+  get colorPalette(): { name: string; color: string }[] {
+    return this.palette;
+  }
+  /** edit a palette slot's name and/or hex color; re-emits for a live repaint. */
+  setPaletteSlot(i: number, patch: { name?: string; color?: string }) {
+    if (i < 0 || i >= this.palette.length) return;
+    this.palette[i] = { ...this.palette[i], ...patch };
+    this.markDirty();
+    this.emitBuild();
+  }
+  /** the palette slot assigned to a body, or undefined (→ default shade). */
+  bodyColorSlot(id: string): number | undefined {
+    return this.bodyColors.get(id);
+  }
+  /** assign a body to a palette slot (null clears it); display-only re-emit. */
+  setBodyColorSlot(id: string, slot: number | null) {
+    if (slot == null) this.bodyColors.delete(id);
+    else this.bodyColors.set(id, slot);
+    this.markDirty();
+    this.emitBuild();
+  }
+
   // --- serialization ---
   toJSON(): string {
     // Persist the geometry doc PLUS the non-geometry project state that lives in
@@ -338,6 +375,10 @@ export class DocumentStore {
     if (this.sketchVis.size) out.sketchVisibility = Object.fromEntries(this.sketchVis);
     if (this.bodyVis.size) out.bodyVisibility = Object.fromEntries(this.bodyVis);
     if (this.bodyNames.size) out.bodyNames = Object.fromEntries(this.bodyNames);
+    if (this.bodyColors.size) {
+      out.bodyColors = Object.fromEntries(this.bodyColors);
+      out.palette = this.palette; // only meaningful alongside assignments
+    }
     return JSON.stringify(out, null, 2);
   }
   load(json: string) {
@@ -351,6 +392,8 @@ export class DocumentStore {
     this.sketchVis = new Map(Object.entries(parsed.sketchVisibility ?? {}));
     this.bodyVis = new Map(Object.entries(parsed.bodyVisibility ?? {}));
     this.bodyNames = new Map(Object.entries(parsed.bodyNames ?? {}));
+    this.bodyColors = new Map(Object.entries(parsed.bodyColors ?? {}).map(([k, v]) => [k, Number(v)]));
+    this.palette = parsed.palette?.length ? parsed.palette.map((s) => ({ ...s })) : DEFAULT_PALETTE.map((s) => ({ ...s }));
     this.doc = {
       parameters: parsed.parameters ?? {},
       features: parsed.features ?? [],

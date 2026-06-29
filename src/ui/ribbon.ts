@@ -64,6 +64,8 @@ export const MODEL: Group[] = [
       { action: "interference", label: "Interference", iconName: "interference" },
       { action: "component-colors", label: "Body Colors", iconName: "componentColors" },
       { action: "draft-analysis", label: "Draft Analysis", iconName: "draftAnalysis" },
+      { action: "zebra", label: "Zebra", iconName: "zebra" },
+      { action: "curvature", label: "Curvature", iconName: "curvature" },
     ],
   },
   {

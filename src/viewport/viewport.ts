@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { createScene, type SceneBundle } from "./scene";
 import { createCameraRig, type CameraRig, type StandardView } from "./cameras";
 import { buildModel, disposeModel, setEdgeResolution, BASE_COLOR, type ModelView } from "./render";
+import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
 import { setPrompt } from "../ui/prompt";
@@ -235,12 +236,43 @@ export class Viewport {
   // --- face-color analysis overlays (Inspect) ---------------------------------
   // A view state painted into the per-face base color; it survives selection and
   // re-applies after each rebuild (setModel). "component" = one hue per body;
-  // "draft" = shade by angle to the +Z build axis (overhangs red).
+  // "draft" = overhang analysis: faces facing away from the build direction by
+  // more than the threshold (measured from straight-down) are flagged red.
   analysis: "none" | "component" | "draft" = "none";
+  // overhang config (transient view state, not persisted): build direction and
+  // the support threshold in degrees from horizontal (45° = typical FDM default).
+  private draftDir = new THREE.Vector3(0, 0, 1);
+  private draftThreshold = 45;
+  // per-body assigned colors (body id → hex) shown as the default base when no
+  // analysis overlay is active; pushed from main.ts on color change + rebuild.
+  private bodyPaint: Record<string, string> = {};
+  // zebra-stripe + curvature-comb overlays (display-only; re-applied on rebuild)
+  private zebra = false;
+  private zebraMat: THREE.ShaderMaterial | null = null;
+  private savedMat: THREE.Material | THREE.Material[] | null = null;
+  private combs = false;
+  private combsObj: THREE.LineSegments | null = null;
 
   setAnalysis(mode: "none" | "component" | "draft") {
     this.analysis = mode;
     this.applyAnalysis();
+  }
+
+  /** the current overhang build direction (as a sign+axis label) and threshold. */
+  get draftConfig(): { dir: "+X" | "-X" | "+Y" | "-Y" | "+Z" | "-Z"; threshold: number } {
+    const v = this.draftDir;
+    const dir = v.x > 0.5 ? "+X" : v.x < -0.5 ? "-X" : v.y > 0.5 ? "+Y" : v.y < -0.5 ? "-Y" : v.z < -0.5 ? "-Z" : "+Z";
+    return { dir, threshold: this.draftThreshold };
+  }
+
+  /** reconfigure overhang analysis (build direction + threshold°) and repaint. */
+  setDraftConfig(dir: "+X" | "-X" | "+Y" | "-Y" | "+Z" | "-Z", threshold: number) {
+    const map: Record<string, [number, number, number]> = {
+      "+X": [1, 0, 0], "-X": [-1, 0, 0], "+Y": [0, 1, 0], "-Y": [0, -1, 0], "+Z": [0, 0, 1], "-Z": [0, 0, -1],
+    };
+    this.draftDir.set(...map[dir]);
+    this.draftThreshold = Math.max(0, Math.min(90, threshold));
+    if (this.analysis === "draft") this.applyAnalysis();
   }
 
   private applyAnalysis() {
@@ -252,16 +284,81 @@ export class Viewport {
       );
       this.highlighter.setBase((fid) => hue.get(this.faceIdToBodyId(fid) ?? "") ?? BASE_COLOR);
     } else if (this.analysis === "draft") {
-      const up = new THREE.Vector3(0, 0, 1);
-      const OVERHANG = new THREE.Color(0xe24a3b); // down-facing (unprintable overhang)
+      const B = this.draftDir;
+      const OVERHANG = new THREE.Color(0xe24a3b); // unsupported overhang (red)
       const TOP = new THREE.Color(0x49c46a); // up-facing
-      const WALL = new THREE.Color(0x4aa3e2); // vertical wall
+      const WALL = new THREE.Color(0x4aa3e2); // wall / steep-enough downward
+      // a downward face is an overhang when its angle from straight-down (β) is
+      // below the threshold; β=0 is a flat ceiling (worst), β=90° is a vertical
+      // wall (fine). Equivalent to slicers' "support below <threshold>°".
       this.highlighter.setBase((fid) => {
-        const d = this.faceNormalWorld(fid).dot(up); // cos(angle to +Z)
-        return d < -0.05 ? OVERHANG : d > 0.05 ? TOP : WALL;
+        const c = this.faceNormalWorld(fid).dot(B); // cos(angle to build dir)
+        if (c >= -0.02) return c > 0.02 ? TOP : WALL; // up-facing or vertical
+        const beta = Math.acos(Math.min(1, -c)) * (180 / Math.PI); // 0..90, 0 = straight down
+        return beta < this.draftThreshold ? OVERHANG : WALL;
       });
     } else {
-      this.highlighter.setBase(() => BASE_COLOR);
+      // default appearance: assigned per-body colors, else the neutral shade
+      this.highlighter.setBase((fid) => {
+        const bid = this.faceIdToBodyId(fid);
+        const hex = bid ? this.bodyPaint[bid] : undefined;
+        return hex ? new THREE.Color(hex) : BASE_COLOR;
+      });
+    }
+  }
+
+  /** set the per-body assigned colors (body id → hex) and repaint if no analysis
+   *  overlay is currently masking them. */
+  setBodyPaint(map: Record<string, string>) {
+    this.bodyPaint = map;
+    if (this.analysis === "none") this.applyAnalysis();
+  }
+
+  /** Zebra-stripe continuity overlay: swaps the model material for a reflective
+   *  striped shader (restored on toggle-off / re-applied after rebuild). */
+  get zebraOn(): boolean {
+    return this.zebra;
+  }
+  get combsOn(): boolean {
+    return this.combs;
+  }
+  setZebra(on: boolean) {
+    this.zebra = on;
+    this.applyZebra();
+  }
+  private applyZebra() {
+    if (!this.model) return;
+    const mesh = this.model.mesh;
+    if (this.zebra) {
+      if (!this.zebraMat) this.zebraMat = makeZebraMaterial();
+      if (mesh.material !== this.zebraMat) {
+        this.savedMat = mesh.material;
+        mesh.material = this.zebraMat;
+      }
+    } else if (this.zebraMat && mesh.material === this.zebraMat) {
+      if (this.savedMat) mesh.material = this.savedMat;
+      this.savedMat = null;
+    }
+  }
+
+  /** Curvature-comb overlay along edges (rebuilt from the current model). */
+  setCurvatureCombs(on: boolean) {
+    this.combs = on;
+    this.applyCombs();
+  }
+  private applyCombs() {
+    if (this.combsObj) {
+      this.scene.modelGroup.remove(this.combsObj);
+      this.combsObj.geometry.dispose();
+      (this.combsObj.material as THREE.Material).dispose();
+      this.combsObj = null;
+    }
+    if (this.combs && this.model) {
+      const seg = buildCurvatureCombs(this.model, this.model.box);
+      if (seg) {
+        this.combsObj = seg;
+        this.scene.modelGroup.add(seg);
+      }
     }
   }
 
@@ -401,7 +498,9 @@ export class Viewport {
     for (const e of this.model.edges) this.scene.modelGroup.add(e);
     this.highlighter = new Highlighter(this.model);
     this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
-    if (this.analysis !== "none") this.applyAnalysis();
+    this.applyAnalysis(); // paints the analysis overlay, or assigned body colors when "none"
+    if (this.zebra) this.applyZebra();
+    if (this.combs) this.applyCombs();
     if (fit) this.rig.fit(this.model.box, true);
   }
 
@@ -413,6 +512,13 @@ export class Viewport {
     this.model = null;
     this.highlighter = null;
     this.targetGridZ = 0; // no model → grid back on the world XY plane
+    this.savedMat = null; // its material died with the model
+    if (this.combsObj) {
+      this.scene.modelGroup.remove(this.combsObj);
+      this.combsObj.geometry.dispose();
+      (this.combsObj.material as THREE.Material).dispose();
+      this.combsObj = null;
+    }
   }
 
   fitView() {
@@ -531,6 +637,30 @@ export class Viewport {
     this.highlighter?.clearSelection();
     for (const f of faceIds) this.highlighter?.toggleSelectFace(f);
     for (const l of lines) this.highlighter?.toggleSelectEdge(l);
+  }
+
+  /** Smart select (Plasticity-style): select every face coplanar with the given
+   *  one. Switches to face mode, clears the current selection, selects the set,
+   *  fires onSelectionChange. Returns the count selected. */
+  selectCoplanarFaces(faceId: number): number {
+    if (!this.model || !this.highlighter) return 0;
+    this.setSelectionMode("faces");
+    const n0 = this.faceNormalWorld(faceId);
+    const c0 = this.faceCentroidWorld(faceId);
+    const d0 = n0.dot(c0); // plane offset along the normal
+    const diag = this.model.box.getSize(new THREE.Vector3()).length() || 1;
+    const tol = 1e-3 * diag + 1e-4;
+    this.highlighter.clearSelection();
+    let count = 0;
+    for (const fid of new Set(this.model.faceIds)) {
+      const n = this.faceNormalWorld(fid);
+      if (n.dot(n0) < 0.999) continue; // parallel + same facing
+      if (Math.abs(n.dot(this.faceCentroidWorld(fid)) - d0) > tol) continue; // same plane
+      this.highlighter.toggleSelectFace(fid);
+      count++;
+    }
+    this.onSelectionChange?.();
+    return count;
   }
 
   /** Section/clip: clip the model (faces + edges) by a plane, or clear with null.

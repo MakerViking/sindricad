@@ -23,6 +23,8 @@ const PATHS: Record<string, string> = {
   componentColors: `<rect x="3" y="3" width="9" height="9" rx="1"/><rect x="12" y="12" width="9" height="9" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/>`,
   draftAnalysis: `<path d="M5 4 L5 20 L19 20"/><line x1="5" y1="20" x2="17" y2="6"/><polyline points="13,6 17,6 17,10"/>`,
   interference: `<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>`,
+  zebra: `<path d="M3 21 L9 3"/><path d="M9 21 L15 3"/><path d="M15 21 L21 3"/>`,
+  curvature: `<path d="M3 17 Q12 3 21 17" fill="none"/><line x1="7" y1="11" x2="6" y2="7"/><line x1="12" y1="8" x2="12" y2="3.5"/><line x1="17" y1="11" x2="18" y2="7"/>`,
 
   // sketch modify
   trim: `<path d="M5 5l6 6"/><path d="M19 5l-6 6"/><path d="M11 13l-6 6"/><circle cx="13" cy="13" r="2"/>`,

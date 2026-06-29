@@ -171,6 +171,10 @@ export interface CadDocument {
   /** explicit per-body display-name overrides (body id → name). Body ids are
    *  positional, so a rename re-attaches if an upstream feature is reordered. */
   bodyNames?: Record<string, string>;
+  /** filament palette (≤4 slots for the U1 toolchanger); slot index → name+hex. */
+  palette?: { name: string; color: string }[];
+  /** per-body palette-slot assignment (body id → slot index into `palette`). */
+  bodyColors?: Record<string, number>;
 }
 
 export interface RebuildResult {
