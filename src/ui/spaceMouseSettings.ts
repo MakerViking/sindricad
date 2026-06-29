@@ -308,7 +308,8 @@ export class SpaceMouseSettings {
     const kp = cfg.panSens * dt * 0.3;
     t.cube.position
       .addScaledVector(right, ms * val("panX") * kp)
-      .addScaledVector(screenUp, ms * val("panY") * kp);
+      // vertical pan is inverted vs the model's truck convention (Pan ←→ isn't)
+      .addScaledVector(screenUp, -ms * val("panY") * kp);
     const PAN_LIMIT = 1.3;
     if (t.cube.position.length() > PAN_LIMIT) t.cube.position.setLength(PAN_LIMIT);
     // Zoom — scale gently; bound the per-frame step so a hard push can't invert
