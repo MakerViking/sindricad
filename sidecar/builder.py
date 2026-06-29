@@ -366,14 +366,7 @@ def rebuild(document):
                 else:
                     target = sk  # whole sketch
                 solid = extrude(target, amount=val(f["distance"]))
-                op = f.get("operation", "new")
-                act = active()
-                if act is None or op == "new":
-                    new_body(solid)
-                elif op == "join":
-                    act["shape"] = act["shape"] + solid
-                elif op == "cut":
-                    act["shape"] = act["shape"] - solid
+                _boolean_into_bodies(bodies, solid, f.get("operation", "new"), new_body)
 
             elif t == "fillet":
                 act = require_active("Fillet")
@@ -538,6 +531,46 @@ def rebuild(document):
     return part, errors, out_bodies
 
 
+def _bbox_overlap(a, b, tol=1e-6):
+    """Cheap AABB overlap test (no boolean, can't crash)."""
+    ba, bb = a.bounding_box(), b.bounding_box()
+    return (
+        ba.min.X <= bb.max.X + tol and ba.max.X >= bb.min.X - tol
+        and ba.min.Y <= bb.max.Y + tol and ba.max.Y >= bb.min.Y - tol
+        and ba.min.Z <= bb.max.Z + tol and ba.max.Z >= bb.min.Z - tol
+    )
+
+
+def _boolean_into_bodies(bodies, solid, op, new_body):
+    """Fusion-style extrude operation: New Body adds a separate body; Join / Cut /
+    Intersect boolean the new solid against EVERY existing body it overlaps — so an
+    extrude that bridges two bodies merges both. Join with nothing to act on just
+    adds a new body."""
+    if op == "new":
+        new_body(solid)
+        return
+    hits = [b for b in bodies if b.get("shape") is not None and _bbox_overlap(b["shape"], solid)]
+    if op == "join":
+        if not hits:
+            new_body(solid)
+            return
+        merged = solid
+        for b in hits:
+            merged = merged + b["shape"]
+        name = hits[0]["name"]
+        for b in hits:
+            bodies.remove(b)
+        new_body(merged, name)
+    elif op == "cut":
+        for b in hits:
+            b["shape"] = b["shape"] - solid
+    elif op == "intersect":
+        for b in hits:
+            b["shape"] = b["shape"] & solid
+    else:
+        raise ValueError(f"unknown extrude operation: {op}")
+
+
 def _do_split(f, bodies, find_body, active, new_body, datums):
     """Cut a body by a plane. keep=top/bottom keeps one side (replaces the body);
     keep=both splits it into separate bodies. `bodies` cuts every listed body
@@ -686,20 +719,15 @@ def _draft(shape, faces, angle_deg, axis):
 
 
 def _press_pull(part, face, d):
-    """Push/pull a single solid face by signed distance `d` (mm).
+    """Push/pull a single solid face by signed distance `d` (mm): +d grows the body
+    (boss), -d cuts inward (pocket).
 
-    Both planar and cylindrical faces use OCCT's local surface offset: the picked
-    face moves along its normal and the adjacent side walls stretch to follow (the
-    "true" Press/Pull — +d grows the body / boss, -d shrinks it). We deliberately
-    do NOT extrude-and-boolean: that creates coincident faces when the face has
-    holes (e.g. the top of a holed plate) and OCCT's boolean spins forever on it.
-
-    Offsets are clamped away from the degenerate point (collapsing a hole's radius
-    or pushing a face clean through the body), which otherwise SEGFAULTs OCCT. The
-    server's per-rebuild timeout is the final backstop for anything that slips by.
-
-    Non-cylinder curved surfaces (cone/sphere/spline/…) are rejected: OCCT's local
-    offset is too unreliable on them to risk taking down the sidecar.
+    PLANAR faces extrude the face region into a prism and boolean it (union for +d,
+    subtract for -d). This is far more robust than a local surface offset
+    (BRepOffset), which SEGFAULTs on faceted / split imported faces — and it handles
+    holed faces fine in practice. CYLINDRICAL faces still use the local offset (to
+    resize a hole/boss cleanly). Other curved surfaces are rejected — OCCT's offset
+    is too unreliable on them to risk taking down the sidecar.
     """
     if abs(d) < 1e-9:
         return part
@@ -708,9 +736,8 @@ def _press_pull(part, face, d):
     except Exception:
         gt = None
     if gt == GeomType.PLANE:
-        # A lone mesh facet (a tiny planar triangle on a dense imported body) is
-        # also GeomType.PLANE, but BRepOffset on it spins OCCT forever. Reject it
-        # cleanly instead of freezing until the server timeout fires.
+        # A lone mesh facet (a tiny planar triangle on a dense imported body):
+        # reject cleanly rather than extrude a degenerate sliver.
         try:
             if len(part.faces()) > 300 and face.area < 1.0:
                 raise ValueError(
@@ -721,7 +748,11 @@ def _press_pull(part, face, d):
             raise
         except Exception:
             pass
-        return _offset_face(part, face, _clamp_planar(part, face, d))
+        dd = _clamp_planar(part, face, d)  # cap an inward push so it can't go through
+        if abs(dd) < 1e-9:
+            return part
+        prism = extrude(face, dd)  # +dd outward (boss), -dd inward (pocket)
+        return (part + prism) if dd > 0 else (part - prism)
     if gt == GeomType.CYLINDER:
         return _offset_face(part, face, _clamp_cylinder(face, d))
     raise ValueError("Press/Pull supports flat and cylindrical faces only")

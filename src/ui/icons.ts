@@ -16,6 +16,9 @@ const PATHS: Record<string, string> = {
   circle3: `<circle cx="12" cy="12" r="8"/><circle cx="12" cy="4" r="1.4" fill="currentColor"/><circle cx="19" cy="16" r="1.4" fill="currentColor"/><circle cx="5" cy="16" r="1.4" fill="currentColor"/>`,
   dimension: `<line x1="4" y1="7" x2="4" y2="17"/><line x1="20" y1="7" x2="20" y2="17"/><line x1="4" y1="12" x2="20" y2="12"/><path d="M7 9l-3 3 3 3"/><path d="M17 9l3 3-3 3"/>`,
 
+  // inspect
+  measure: `<rect x="3" y="9" width="18" height="6" rx="0.5"/><line x1="7" y1="9" x2="7" y2="12"/><line x1="11" y1="9" x2="11" y2="12.5"/><line x1="15" y1="9" x2="15" y2="12"/><line x1="19" y1="9" x2="19" y2="12.5"/>`,
+
   // sketch modify
   trim: `<path d="M5 5l6 6"/><path d="M19 5l-6 6"/><path d="M11 13l-6 6"/><circle cx="13" cy="13" r="2"/>`,
   offset: `<rect x="7" y="7" width="10" height="10"/><rect x="3.5" y="3.5" width="17" height="17" stroke-dasharray="2 2"/>`,

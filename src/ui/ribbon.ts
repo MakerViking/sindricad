@@ -18,8 +18,9 @@ interface Group {
   label: string;
   items: Item[];
 }
+export type { Item, Group };
 
-const MODEL: Group[] = [
+export const MODEL: Group[] = [
   {
     label: "CREATE",
     items: [
@@ -55,6 +56,12 @@ const MODEL: Group[] = [
     ],
   },
   {
+    label: "INSPECT",
+    items: [
+      { action: "measure", label: "Measure", iconName: "measure" },
+    ],
+  },
+  {
     label: "INSERT",
     items: [
       { action: "import", label: "Import Mesh", iconName: "import" },
@@ -63,7 +70,7 @@ const MODEL: Group[] = [
   },
 ];
 
-const SKETCH: Group[] = [
+export const SKETCH: Group[] = [
   {
     label: "CREATE",
     items: [
@@ -109,54 +116,95 @@ const SKETCH: Group[] = [
   },
 ];
 
+// Collapse priority: lower numbers fold into the "⋯ More" overflow first. PALETTE
+// and FINISH are pinned (never collapse — Finish Sketch must stay reachable).
+const PRIORITY: Record<string, number> = {
+  CREATE: 100,
+  MODIFY: 90,
+  INSPECT: 45,
+  CONSTRUCT: 40,
+  INSERT: 30,
+  CONSTRAINTS: 20,
+};
+const PINNED = new Set(["PALETTE", "FINISH"]);
+
+interface GroupMeta {
+  el: HTMLElement;
+  label: string;
+  items: Item[];
+  priority: number;
+  pinned: boolean;
+}
+interface Ctx {
+  el: HTMLElement;
+  groups: GroupMeta[];
+  overflowBtn: HTMLButtonElement;
+}
+
 export class Ribbon {
   onAction: ((action: string) => void) | null = null;
-  private model: HTMLElement;
-  private sketch: HTMLElement;
+  private model: Ctx;
+  private sketch: Ctx;
+  private current: Ctx;
+  private collapsed: GroupMeta[] = [];
+  private overflowPopup: HTMLDivElement | null = null;
 
   constructor(container: HTMLElement) {
     this.model = this.buildContext(MODEL, false);
     this.sketch = this.buildContext(SKETCH, true);
-    container.append(this.model, this.sketch);
+    container.append(this.model.el, this.sketch.el);
+    this.current = this.model;
     this.setContext("model");
+    // priority+ overflow: re-pack whenever the ribbon's width changes
+    new ResizeObserver(() => this.reflow()).observe(container);
   }
 
   setContext(ctx: RibbonContext) {
-    this.model.classList.toggle("hidden", ctx !== "model");
-    this.sketch.classList.toggle("hidden", ctx !== "sketch");
+    this.model.el.classList.toggle("hidden", ctx !== "model");
+    this.sketch.el.classList.toggle("hidden", ctx !== "sketch");
+    this.current = ctx === "model" ? this.model : this.sketch;
+    this.closeOverflow();
+    this.reflow();
   }
 
   setActiveSketchTool(tool: string) {
-    this.sketch.querySelectorAll<HTMLElement>("[data-action]").forEach((b) => {
+    this.sketch.el.querySelectorAll<HTMLElement>("[data-action]").forEach((b) => {
       b.classList.toggle("active", b.dataset.action === tool);
     });
   }
 
-  private buildContext(groups: Group[], isSketch: boolean): HTMLElement {
-    const ctx = document.createElement("div");
-    ctx.className = "ribbon-context";
-    for (const g of groups) ctx.appendChild(this.buildGroup(g));
+  private buildContext(groups: Group[], isSketch: boolean): Ctx {
+    const el = document.createElement("div");
+    el.className = "ribbon-context";
+    const metas: GroupMeta[] = [];
+    const add = (g: Group) => {
+      const m = this.buildGroup(g);
+      el.appendChild(m.el);
+      metas.push(m);
+    };
+    for (const g of groups) add(g);
+
+    const overflowBtn = document.createElement("button");
+    overflowBtn.className = "ribbon-overflow hidden";
+    overflowBtn.title = "More tools";
+    overflowBtn.textContent = "⋯";
+    overflowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleOverflow();
+    });
+    el.appendChild(overflowBtn);
+
     if (isSketch) {
       const spacer = document.createElement("div");
       spacer.className = "ribbon-spacer";
-      ctx.appendChild(spacer);
-      ctx.appendChild(
-        this.buildGroup({
-          label: "PALETTE",
-          items: [{ action: "palette", label: "Sketch Palette", iconName: "palette", kind: "toggle" }],
-        }),
-      );
-      ctx.appendChild(
-        this.buildGroup({
-          label: "FINISH",
-          items: [{ action: "finish", label: "Finish Sketch", iconName: "check", kind: "finish" }],
-        }),
-      );
+      el.appendChild(spacer);
+      add({ label: "PALETTE", items: [{ action: "palette", label: "Sketch Palette", iconName: "palette", kind: "toggle" }] });
+      add({ label: "FINISH", items: [{ action: "finish", label: "Finish Sketch", iconName: "check", kind: "finish" }] });
     }
-    return ctx;
+    return { el, groups: metas, overflowBtn };
   }
 
-  private buildGroup(g: Group): HTMLElement {
+  private buildGroup(g: Group): GroupMeta {
     const group = document.createElement("div");
     group.className = "ribbon-group";
     const tools = document.createElement("div");
@@ -176,6 +224,96 @@ export class Ribbon {
     label.className = "ribbon-group-label";
     label.textContent = g.label;
     group.append(tools, label);
-    return group;
+    return {
+      el: group,
+      label: g.label,
+      items: g.items,
+      priority: PINNED.has(g.label) ? Infinity : (PRIORITY[g.label] ?? 50),
+      pinned: PINNED.has(g.label),
+    };
+  }
+
+  /** priority+ pack: collapse lowest-priority panels into the overflow dropdown
+   *  until the row fits the available width. */
+  private reflow() {
+    const ctx = this.current;
+    if (ctx.el.classList.contains("hidden")) return;
+    for (const g of ctx.groups) g.el.classList.remove("collapsed");
+    ctx.overflowBtn.classList.add("hidden");
+
+    const available = ctx.el.clientWidth - 12;
+    const widths = ctx.groups.map((g) => g.el.offsetWidth); // measured with all shown
+    let total = widths.reduce((a, b) => a + b, 0);
+    if (total <= available) {
+      this.collapsed = [];
+      this.closeOverflow();
+      return;
+    }
+    total += 40; // reserve the overflow button
+    const order = ctx.groups
+      .map((g, i) => ({ g, i }))
+      .filter((x) => !x.g.pinned)
+      .sort((a, b) => a.g.priority - b.g.priority || b.i - a.i); // low priority, then rightmost
+    const collapsed: GroupMeta[] = [];
+    for (const { g, i } of order) {
+      if (total <= available) break;
+      g.el.classList.add("collapsed");
+      total -= widths[i];
+      collapsed.unshift(g);
+    }
+    this.collapsed = collapsed;
+    ctx.overflowBtn.classList.toggle("hidden", collapsed.length === 0);
+    if (this.overflowPopup) this.buildOverflowPopup(); // keep an open popup in sync
+  }
+
+  private toggleOverflow() {
+    if (this.overflowPopup) this.closeOverflow();
+    else this.buildOverflowPopup();
+  }
+
+  private buildOverflowPopup() {
+    this.closeOverflow();
+    if (!this.collapsed.length) return;
+    const pop = document.createElement("div");
+    pop.className = "ribbon-overflow-popup";
+    for (const g of this.collapsed) {
+      const lab = document.createElement("div");
+      lab.className = "ribbon-overflow-label";
+      lab.textContent = g.label;
+      pop.appendChild(lab);
+      for (const it of g.items) {
+        const b = document.createElement("button");
+        b.className = "ribbon-overflow-item";
+        b.innerHTML = `${icon(it.iconName)}<span>${it.label}</span>`;
+        b.addEventListener("click", () => {
+          this.closeOverflow();
+          this.onAction?.(it.action);
+        });
+        pop.appendChild(b);
+      }
+    }
+    const r = this.current.overflowBtn.getBoundingClientRect();
+    pop.style.position = "fixed";
+    pop.style.top = `${r.bottom + 2}px`;
+    pop.style.right = `${Math.max(4, window.innerWidth - r.right)}px`;
+    document.body.appendChild(pop);
+    this.overflowPopup = pop;
+    setTimeout(() => {
+      const onDown = (e: PointerEvent) => {
+        if (this.overflowPopup && !this.overflowPopup.contains(e.target as Node) && e.target !== this.current.overflowBtn) {
+          this.closeOverflow();
+        }
+      };
+      document.addEventListener("pointerdown", onDown, true);
+      (pop as unknown as { _cleanup: () => void })._cleanup = () =>
+        document.removeEventListener("pointerdown", onDown, true);
+    }, 0);
+  }
+
+  private closeOverflow() {
+    if (!this.overflowPopup) return;
+    (this.overflowPopup as unknown as { _cleanup?: () => void })._cleanup?.();
+    this.overflowPopup.remove();
+    this.overflowPopup = null;
   }
 }

@@ -296,6 +296,72 @@ body {
 .ribbon-spacer {
   flex: 1;
 }
+/* priority+ overflow: collapsed panels + the "⋯ More" button + its dropdown */
+.ribbon-group.collapsed {
+  display: none;
+}
+.ribbon-overflow {
+  align-self: center;
+  height: 52px;
+  min-width: 30px;
+  margin: 0 4px;
+  background: none;
+  border: 1px solid var(--line, #23272e);
+  border-radius: var(--r-md, 8px);
+  color: var(--text, #e6e9ee);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ribbon-overflow:hover {
+  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
+  border-color: var(--accent, #ff7a3c);
+}
+.ribbon-overflow.hidden {
+  display: none;
+}
+.ribbon-overflow-popup {
+  z-index: 3000;
+  min-width: 180px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--panel-2, #1b1f24);
+  border: 1px solid var(--line-strong, #3a4048);
+  border-radius: var(--r-md, 8px);
+  box-shadow: var(--shadow-3, 0 16px 48px rgba(0, 0, 0, 0.5));
+  padding: var(--s-1, 4px);
+  animation: pop-in var(--t-fast, 0.12s) var(--ease, ease);
+}
+.ribbon-overflow-label {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-mute, #6b7280);
+}
+.ribbon-overflow-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--r-sm, 6px);
+  color: var(--text, #e6e9ee);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ribbon-overflow-item:hover {
+  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
+  color: var(--accent-hot, #ff9a5c);
+}
+.ribbon-overflow-item svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
 .ribbon-group {
   display: flex;
   flex-direction: column;
@@ -1439,4 +1505,113 @@ button.finish:hover {
 .choice-btn small {
   color: var(--text-mute, #6b7280);
   font-size: 10px;
+}
+
+/* --- Cmd-K command palette --- */
+.cmdk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+.cmdk-card {
+  width: min(560px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2, #1b1f24);
+  border: 1px solid var(--line-strong, #3a4048);
+  border-radius: var(--r-lg, 12px);
+  box-shadow: var(--shadow-3, 0 16px 48px rgba(0, 0, 0, 0.5));
+  overflow: hidden;
+  animation: pop-in var(--t-fast, 0.12s) var(--ease, ease);
+}
+.cmdk-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text, #e6e9ee);
+  font: inherit;
+  font-size: 15px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line, #23272e);
+}
+.cmdk-list {
+  overflow-y: auto;
+  padding: 6px;
+}
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  color: var(--text, #e6e9ee);
+}
+.cmdk-item.active {
+  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
+  color: var(--accent-hot, #ff9a5c);
+}
+.cmdk-label {
+  flex: 1;
+}
+.cmdk-group {
+  font-size: 11px;
+  color: var(--text-mute, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cmdk-key {
+  font-size: 11px;
+  color: var(--text-mute, #6b7280);
+  font-variant-numeric: tabular-nums;
+}
+.cmdk-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-mute, #6b7280);
+}
+
+/* --- Measure (Inspect) readout panel --- */
+.measure-panel {
+  position: fixed;
+  top: 128px;
+  right: 268px;
+  z-index: 1500;
+  min-width: 180px;
+  background: var(--panel-2, #1b1f24);
+  border: 1px solid var(--line-strong, #3a4048);
+  border-radius: var(--r-md, 8px);
+  box-shadow: var(--shadow-3, 0 16px 48px rgba(0, 0, 0, 0.5));
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text, #e6e9ee);
+}
+.measure-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--accent-hot, #ff9a5c);
+}
+.measure-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 0;
+}
+.measure-k {
+  color: var(--text-mute, #6b7280);
+}
+.measure-v {
+  font-variant-numeric: tabular-nums;
+}
+.measure-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-mute, #6b7280);
 }

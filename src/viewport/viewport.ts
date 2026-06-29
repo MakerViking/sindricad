@@ -446,6 +446,54 @@ export class Viewport {
     return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model, this.resolution);
   }
 
+  // --- Measure (Inspect): pick a face/edge and read its size ----------------
+
+  /** Pick the face or edge under the cursor (face-vs-edge gated like selection). */
+  pickEntity(clientX: number, clientY: number): Hit | null {
+    if (!this.model) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return this.picker.pick(clientX, clientY, rect, this.rig.active, this.model, this.resolution);
+  }
+
+  /** World-space area (mm²) of a B-rep face = Σ its triangle areas. */
+  faceArea(faceId: number): number {
+    const mesh = this.model!.mesh;
+    const pos = mesh.geometry.getAttribute("position");
+    const index = mesh.geometry.getIndex()!;
+    const ids = this.model!.faceIds;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    let area = 0;
+    for (let t = 0; t < ids.length; t++) {
+      if (ids[t] !== faceId) continue;
+      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mesh.matrixWorld);
+      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mesh.matrixWorld);
+      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mesh.matrixWorld);
+      area += b.clone().sub(a).cross(c.clone().sub(a)).length() / 2;
+    }
+    return area;
+  }
+
+  /** Face readout: area + world centroid + outward normal. */
+  measureFace(faceId: number): { area: number; centroid: THREE.Vector3; normal: THREE.Vector3 } {
+    return {
+      area: this.faceArea(faceId),
+      centroid: this.faceCentroidWorld(faceId),
+      normal: this.faceNormalWorld(faceId),
+    };
+  }
+
+  /** Highlight exactly these faces + edges (used by the Measure tool). */
+  measureHighlight(
+    faceIds: number[],
+    lines: import("three/examples/jsm/lines/Line2.js").Line2[],
+  ) {
+    this.highlighter?.clearSelection();
+    for (const f of faceIds) this.highlighter?.toggleSelectFace(f);
+    for (const l of lines) this.highlighter?.toggleSelectEdge(l);
+  }
+
   /** Face pick for the Press/Pull tool: raycast the solid and return a face
    *  selector (nearest-to-the-clicked-point, so it survives topology renumbering),
    *  the world-space surface normal at the hit, and the hit point itself (used as

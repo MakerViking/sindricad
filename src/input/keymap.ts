@@ -13,7 +13,6 @@ export type KeyAction =
   | "dimension"
   | "move"
   | "presspull"
-  | "construction"
   | "trim"
   | "palette"
   | "sketch"
@@ -33,7 +32,6 @@ const KEYS: Record<string, KeyAction> = {
   d: "dimension",
   m: "move",
   q: "presspull",
-  x: "construction",
   t: "trim",
   s: "sketch",
 };

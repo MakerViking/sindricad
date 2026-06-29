@@ -9,6 +9,7 @@ import { Timeline } from "./ui/timeline";
 import { BrowserTree } from "./ui/browserTree";
 import { Inspector } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
+import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
@@ -25,6 +26,7 @@ import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { PressPullTool } from "./features/pressPullTool";
 import { MoveTool } from "./features/moveTool";
+import { MeasureTool } from "./features/measureTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
@@ -47,6 +49,7 @@ const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
 const moveTool = new MoveTool(viewport, store);
+const measure = new MeasureTool(viewport);
 const planeOffset = new PlaneOffsetTool(viewport);
 
 (window as any).viewport = viewport;
@@ -70,6 +73,15 @@ void initSpaceMouse(viewport, (pressed) => {
 // --- UI ---
 const ribbon = new Ribbon(document.getElementById("ribbon")!);
 ribbon.onAction = handleAction;
+
+// Cmd/Ctrl-K command palette — search + run any command (discoverability safety net)
+const cmdk = new CommandPalette(handleAction);
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+    e.preventDefault();
+    cmdk.toggle(sketch.active ? "sketch" : "model");
+  }
+});
 const palette = new SketchPalette(document.getElementById("palette")!);
 const timeline = new Timeline(document.getElementById("timeline")!, store);
 const tree = new BrowserTree(document.getElementById("browser")!, store);
@@ -341,32 +353,23 @@ palette.onToggle = (key, value) => {
 };
 palette.onLookAt = () => sketch.lookAt();
 
-// --- view controls ---
+// --- view controls (all routed through handleAction so the command palette,
+// keymap and buttons share one dispatch) ---
 document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((btn) => {
-  btn.addEventListener("click", () =>
-    viewport.setStandardView(btn.dataset.view as StandardView),
-  );
+  btn.addEventListener("click", () => handleAction(btn.dataset.view as string));
 });
-document.getElementById("fit")!.addEventListener("click", () => viewport.fitView());
+document.getElementById("fit")!.addEventListener("click", () => handleAction("fit"));
 
 // Faces / Bodies selection-filter toggle (Bodies mode = click whole bodies to move)
 const selBtn = document.getElementById("selmode") as HTMLButtonElement;
-selBtn.addEventListener("click", () => {
-  const next = viewport.selecting === "faces" ? "bodies" : "faces";
-  viewport.setSelectionMode(next);
-  selBtn.textContent = next === "bodies" ? "Bodies" : "Faces";
-  selBtn.classList.toggle("active", next === "bodies");
-});
+selBtn.addEventListener("click", () => handleAction("selmode"));
 
 // unit selector (display/input only; geometry stays in mm)
 const unitSel = document.getElementById("unit") as HTMLSelectElement;
 unitSel.value = getUnit();
 unitSel.addEventListener("change", () => setUnit(unitSel.value as Unit));
 const projBtn = document.getElementById("proj") as HTMLButtonElement;
-projBtn.addEventListener("click", () => {
-  viewport.toggleProjection();
-  projBtn.textContent = viewport.rig.isOrtho() ? "Ortho" : "Persp";
-});
+projBtn.addEventListener("click", () => handleAction("persp"));
 
 // --- interactive plane pick (base plane quad or a planar body face) ---
 let planePick = false;
@@ -620,7 +623,7 @@ function startMove() {
 // True when an interactive tool/mode owns the pointer — model commands bail so
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || planePick;
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || measure.active || planePick;
 }
 
 // True when the current rebuild produced a solid body (something to modify).
@@ -935,6 +938,40 @@ function handleAction(action: string) {
     case "move":
       startMove();
       break;
+    case "measure":
+      if (!hasBody()) {
+        setStatus("Measure: create or import a body first", "");
+        break;
+      }
+      measure.start();
+      break;
+    // --- global File / View commands (also reachable from the palette) ---
+    case "new":
+      void newDocument();
+      break;
+    case "saveas":
+      void saveDocumentAs(store);
+      break;
+    case "fit":
+      viewport.fitView();
+      break;
+    case "iso":
+    case "top":
+    case "front":
+    case "right":
+      viewport.setStandardView(action as StandardView);
+      break;
+    case "persp":
+      viewport.toggleProjection();
+      projBtn.textContent = viewport.rig.isOrtho() ? "Ortho" : "Persp";
+      break;
+    case "selmode": {
+      const next = viewport.selecting === "faces" ? "bodies" : "faces";
+      viewport.setSelectionMode(next);
+      selBtn.textContent = next === "bodies" ? "Bodies" : "Faces";
+      selBtn.classList.toggle("active", next === "bodies");
+      break;
+    }
   }
 }
 

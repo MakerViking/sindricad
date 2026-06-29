@@ -15,8 +15,10 @@ import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { distanceAlongAxis } from "./manipulator";
+import { choose } from "../ui/choice";
 
 type Phase = "pick" | "drag";
+type Op = "new" | "join" | "cut" | "intersect";
 
 export class ExtrudeTool {
   active = false;
@@ -101,7 +103,7 @@ export class ExtrudeTool {
       if (!additive && this.selected.length) this.beginDrag();
     } else {
       e.preventDefault();
-      this.commit();
+      void this.commit();
     }
   }
 
@@ -118,7 +120,7 @@ export class ExtrudeTool {
     this.phase = "drag";
     this.distance = 10;
     this.overlay.setHoverRegion(null);
-    this.dim.show([{ name: "distance", label: "D" }], () => this.commit());
+    this.dim.show([{ name: "distance", label: "D" }], () => void this.commit());
     setPrompt(
       "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
     );
@@ -200,25 +202,46 @@ export class ExtrudeTool {
     }
   }
 
-  // Deliberate MVP heuristic: New Body when the doc has no solid yet, else
-  // Join/Cut by drag sign.
-  private currentOperation(): "new" | "join" | "cut" {
+  // Default operation: New Body when the doc has no solid yet, else Join/Cut by
+  // drag sign. When a solid exists the user confirms/overrides via a modal.
+  private currentOperation(): Op {
     const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
     if (!hasSolid) return "new";
     return this.distance >= 0 ? "join" : "cut";
   }
 
-  private commit() {
+  private committing = false;
+  private async commit() {
+    if (this.committing) return;
     if (!this.selected.length) return this.cancel();
     const v = this.dim.getValue("distance");
     if (v != null) this.distance = Math.sign(this.distance || 1) * v;
     if (Math.abs(this.distance) < 1e-3) return; // ignore zero
+    let op = this.currentOperation();
+    // when a body already exists, let the user state the operation (Fusion-style):
+    // New Body avoids any boolean (and the kernel crash on hard geometry).
+    const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
+    if (hasSolid) {
+      this.committing = true;
+      const guess = op;
+      const opts: { value: Op; label: string; hint: string }[] = [
+        { value: "join", label: "Join", hint: "merge" },
+        { value: "cut", label: "Cut", hint: "remove" },
+        { value: "new", label: "New Body", hint: "separate" },
+        { value: "intersect", label: "Intersect", hint: "keep overlap" },
+      ];
+      opts.sort((a, b) => (a.value === guess ? -1 : b.value === guess ? 1 : 0)); // default first
+      const chosen = await choose<Op>("Extrude — operation", opts);
+      this.committing = false;
+      if (!chosen) return; // modal cancelled — keep the tool active
+      op = chosen;
+    }
     const feature: Feature = {
       id: this.store.nextId(),
       type: "extrude",
       sketch: this.selected[0].sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
-      operation: this.currentOperation(),
+      operation: op,
       regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
     };
     const id = feature.id;

@@ -255,6 +255,24 @@ def test_presspull_targets_owning_body():
     print(f"  press-pull targets owning body OK: body1 z_max {bb1['max'][2]:.0f}, body2 {bb2['max'][2]:.0f}")
 
 
+def test_extrude_operation_multibody():
+    """extrude `join` booleans against EVERY body it overlaps (Fusion-style) so a
+    bridging extrude merges them; `new` keeps the extrude as a separate body."""
+    _s1, a = _box(1, 20, 20, 10)  # body1: x=-10..10, z=0..10
+    s2 = {"id": "s2", "type": "sketch", "plane": "XY",
+          "entities": [{"type": "rectangle", "width": 10, "height": 10, "x": 5}]}  # overlaps body1
+    join = {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 10, "operation": "join"}
+    part, err, bodies = rebuild({"parameters": {}, "features": a + [s2, join]})
+    assert not err, err
+    assert len(bodies) == 1, f"join should merge overlapping bodies → 1, got {len(bodies)}"
+
+    new = {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 10, "operation": "new"}
+    part, err, bodies = rebuild({"parameters": {}, "features": a + [s2, new]})
+    assert not err, err
+    assert len(bodies) == 2, f"new body should stay separate → 2, got {len(bodies)}"
+    print("  extrude operation OK: join→1 merged body, new→2 separate bodies")
+
+
 def test_primitives():
     """Box / Cylinder / Sphere create independent bodies; a cylinder cut into a box
     via Combine makes a hole (the primitive-as-tool-body workflow)."""
@@ -391,6 +409,7 @@ if __name__ == "__main__":
     test_datum_offset_and_split_by_id()
     test_split_all_and_move_bodies()
     test_presspull_targets_owning_body()
+    test_extrude_operation_multibody()
     test_primitives()
     test_modify_tools()
     test_simplify_mesh()

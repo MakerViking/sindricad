@@ -67,7 +67,7 @@ export type Feature =
       type: "extrude";
       sketch: string;
       distance: Num;
-      operation: "new" | "join" | "cut";
+      operation: "new" | "join" | "cut" | "intersect";
       // interior points of the chosen profile areas (sidecar resolves each to a
       // face, with holes, and unions them). `region` is the legacy single-area form.
       regions?: [number, number, number][];
