@@ -13,6 +13,16 @@ inline std::unique_ptr<gp_Dir> BRepAdaptor_Curve_line_direction(const BRepAdapto
   return std::unique_ptr<gp_Dir>(new gp_Dir(curve.Line().Direction()));
 }
 
+// Radius of a circular edge (only valid when GetType() == GeomAbs_Circle).
+inline Standard_Real BRepAdaptor_Curve_circle_radius(const BRepAdaptor_Curve &curve) {
+  return curve.Circle().Radius();
+}
+
+// Center of a circular edge (only valid when GetType() == GeomAbs_Circle).
+inline std::unique_ptr<gp_Pnt> BRepAdaptor_Curve_circle_center(const BRepAdaptor_Curve &curve) {
+  return std::unique_ptr<gp_Pnt>(new gp_Pnt(curve.Circle().Location()));
+}
+
 // Radius of a cylindrical surface (only valid when GetType() == GeomAbs_Cylinder).
 inline Standard_Real BRepAdaptor_Surface_cylinder_radius(const BRepAdaptor_Surface &surface) {
   return surface.Cylinder().Radius();

@@ -203,6 +203,73 @@ impl Edge {
         let dir = ffi::b_rep_adaptor::BRepAdaptor_Curve_line_direction(&curve);
         Some(dvec3(dir.X(), dir.Y(), dir.Z()))
     }
+
+    /// Curve (arc) length of the edge, via OCCT linear mass properties — the same
+    /// `BRepGProp::LinearProperties` path `center()` uses, returning the total mass
+    /// (length) instead of the centre of mass. Used by the selector-v2 fingerprint
+    /// resolver (`EdgeFingerprint.length`).
+    pub fn length(&self) -> f64 {
+        let mut props = ffi::g_prop::GProps_new();
+        let shape = ffi::topo_ds::cast_edge_to_shape(&self.inner);
+        ffi::b_rep_g_prop::BRepGProp::LinearProperties(shape, props.pin_mut(), false, false);
+        props.Mass()
+    }
+
+    /// Point on the curve at `fraction` of its parameter range (0.0 = start, 1.0 =
+    /// end). For lines/circles/arcs (uniform parameterization) this equals
+    /// build123d's arc-length `position_at`; for bsplines/ellipses it differs
+    /// slightly (parameter != arc length), which the resolver's positional
+    /// tolerance absorbs. Used for the fingerprint midpoint (`position_at(0.5)`).
+    pub fn position_at(&self, fraction: f64) -> DVec3 {
+        let curve = ffi::b_rep_adaptor::BRepAdaptor_Curve_new(&self.inner);
+        let u0 = curve.FirstParameter();
+        let u1 = curve.LastParameter();
+        let p = ffi::b_rep_adaptor::BRepAdaptor_Curve_value(&curve, u0 + (u1 - u0) * fraction);
+        dvec3(p.X(), p.Y(), p.Z())
+    }
+
+    /// Unit tangent at `fraction` of the parameter range, by central finite
+    /// difference of `position_at` (epsilon = 1e-3 of the parameter span). Avoids a
+    /// `D1` FFI binding; well within the resolver's angular tolerance (~1.1deg). NOT
+    /// sign-normalized — the caller decides orientation handling.
+    pub fn tangent_at(&self, fraction: f64) -> DVec3 {
+        let curve = ffi::b_rep_adaptor::BRepAdaptor_Curve_new(&self.inner);
+        let u0 = curve.FirstParameter();
+        let u1 = curve.LastParameter();
+        let span = u1 - u0;
+        let eps = 1e-3;
+        let sample = |frac: f64| -> DVec3 {
+            let p = ffi::b_rep_adaptor::BRepAdaptor_Curve_value(&curve, u0 + span * frac);
+            dvec3(p.X(), p.Y(), p.Z())
+        };
+        let d = sample((fraction + eps).min(1.0)) - sample((fraction - eps).max(0.0));
+        if d.length() > 1e-12 {
+            d.normalize()
+        } else {
+            d
+        }
+    }
+
+    /// Radius of a circular edge, or `None` for non-circular curves (guarded by
+    /// `edge_type` — OCCT's `Circle()` throws otherwise).
+    pub fn circle_radius(&self) -> Option<f64> {
+        let curve = ffi::b_rep_adaptor::BRepAdaptor_Curve_new(&self.inner);
+        if EdgeType::from(curve.GetType()) != EdgeType::Circle {
+            return None;
+        }
+        Some(ffi::b_rep_adaptor::BRepAdaptor_Curve_circle_radius(&curve))
+    }
+
+    /// Center of a circular edge — the true arc center (distinct from `center()`'s
+    /// centre-of-mass for a partial arc), or `None` for non-circular curves.
+    pub fn circle_center(&self) -> Option<DVec3> {
+        let curve = ffi::b_rep_adaptor::BRepAdaptor_Curve_new(&self.inner);
+        if EdgeType::from(curve.GetType()) != EdgeType::Circle {
+            return None;
+        }
+        let c = ffi::b_rep_adaptor::BRepAdaptor_Curve_circle_center(&curve);
+        Some(dvec3(c.X(), c.Y(), c.Z()))
+    }
 }
 
 pub struct ApproximationSegmentIterator {

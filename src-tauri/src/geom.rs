@@ -21,7 +21,7 @@
 
 use glam::{dvec3, DVec3};
 use opencascade::angle::Angle;
-use opencascade::primitives::{Edge, EdgeConnection, Face, IntoShape, Shape, Solid, SurfaceType, Wire};
+use opencascade::primitives::{Edge, EdgeConnection, EdgeType, Face, IntoShape, Shape, Solid, SurfaceType, Wire};
 use opencascade::workplane::Workplane;
 use serde::Serialize;
 
@@ -45,11 +45,31 @@ pub struct Bbox {
     max: [f64; 3],
 }
 
+/// A selector-resolution diagnostic (selector v2). Mirrors `ResolveDiag` in
+/// `src/types.ts`: surfaced when a selector resolved with low confidence or took a
+/// lossy / best-effort path, WITHOUT failing the build. The TS interface uses
+/// `feature_id` (snake_case), so the field names map directly — no `rename_all`.
+#[derive(Serialize)]
+pub struct ResolveDiag {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feature_id: Option<String>,
+    kind: &'static str,
+    resolved: u32,
+    confidence: f64,
+    lossy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct RebuildResult {
     mesh: Mesh,
     edges: Vec<EdgeOut>,
     bbox: Bbox,
+    // selector-resolution diagnostics (selector v2); omitted when empty so a v1
+    // result is byte-identical to before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<ResolveDiag>,
 }
 
 const TESSELLATION_TOLERANCE: f64 = 0.1;
@@ -62,8 +82,11 @@ const EDGE_SAMPLES: usize = 24;
 #[tauri::command]
 pub fn geom_rebuild(document: serde_json::Value) -> Result<RebuildResult, String> {
     let doc: Document = serde_json::from_value(document).map_err(|e| e.to_string())?;
-    let shape = build(&doc)?;
-    Ok(tessellate(&shape))
+    let mut diagnostics: Vec<ResolveDiag> = Vec::new();
+    let shape = build(&doc, &mut diagnostics)?;
+    let mut result = tessellate(&shape);
+    result.diagnostics = diagnostics;
+    Ok(result)
 }
 
 /// Rust-backend export. Rebuilds the shape from `document` (same `build` as
@@ -85,7 +108,8 @@ pub fn geom_export(
     path: String,
 ) -> Result<String, String> {
     let doc: Document = serde_json::from_value(document).map_err(|e| e.to_string())?;
-    let shape = build(&doc)?;
+    // Export doesn't surface resolver diagnostics; discard them.
+    let shape = build(&doc, &mut Vec::new())?;
 
     match format.to_lowercase().as_str() {
         "step" | "stp" => shape
@@ -204,7 +228,7 @@ struct BuiltSketch {
     normal: DVec3,
 }
 
-fn build(doc: &Document) -> Result<Shape, String> {
+fn build(doc: &Document, diags: &mut Vec<ResolveDiag>) -> Result<Shape, String> {
     let params = &doc.parameters;
     let mut sketches: std::collections::HashMap<String, BuiltSketch> = std::collections::HashMap::new();
     let mut part: Option<Shape> = None;
@@ -289,7 +313,7 @@ fn build(doc: &Document) -> Result<Shape, String> {
                 let sel = f
                     .get("edges")
                     .ok_or_else(|| "fillet missing 'edges' selector".to_string())?;
-                let edges = resolve_edges(existing, sel)?;
+                let edges = resolve_edges(existing, sel, diags, feature_id(f))?;
                 if edges.is_empty() {
                     return Err("fillet selector matched no edges".to_string());
                 }
@@ -303,7 +327,7 @@ fn build(doc: &Document) -> Result<Shape, String> {
                 let sel = f
                     .get("edges")
                     .ok_or_else(|| "chamfer missing 'edges' selector".to_string())?;
-                let edges = resolve_edges(existing, sel)?;
+                let edges = resolve_edges(existing, sel, diags, feature_id(f))?;
                 if edges.is_empty() {
                     return Err("chamfer selector matched no edges".to_string());
                 }
@@ -335,7 +359,7 @@ fn build(doc: &Document) -> Result<Shape, String> {
                 let sel = f
                     .get("face")
                     .ok_or_else(|| "press-pull missing 'face' selector".to_string())?;
-                let faces = resolve_faces(existing, sel)?;
+                let faces = resolve_faces(existing, sel, diags, feature_id(f))?;
                 let face = faces
                     .first()
                     .ok_or_else(|| "no face found to press/pull".to_string())?;
@@ -454,23 +478,48 @@ fn merge_body(part: Option<Shape>, s: Shape) -> Shape {
 // never stored indices. This is SindriCAD's topological-naming mitigation.
 // ---------------------------------------------------------------------------
 
-/// Two edge/face centers are "the same" within this tolerance (for de-duping a
-/// union of selectors), matching geom_select.py's `round(c, 4)` key.
-const SELECT_EPS: f64 = 1e-4;
+// --- selector-v2 scoring tolerances & weights (mirror geom_select.py) ---------
+// World mm; the positional tolerance is bbox-relative so it scales with the part.
+const ANG_TOL: f64 = 0.02; // ~1.1deg slack on (1 - |dot|) for dir/normal
+const POS_DRIFT: f64 = 0.5; // mm of absolute positional drift budget
+const REL_DRIFT: f64 = 1e-3; // + this * bbox diagonal
+const LEN_REL_TOL: f64 = 0.02; // 2% on length / radius
+const AREA_REL_TOL: f64 = 0.05; // 5% on area
+const TIE_BAND: f64 = 0.15; // runner-up within 15% of best => a genuine tie (needs nth)
+const ACCEPT_MAX: f64 = 2.5; // best cost above this => resolvable but marginal (lossy)
+// per-normalized-error-term weights
+const W_POS: f64 = 3.0;
+const W_DIR: f64 = 2.0;
+const W_LEN: f64 = 1.0;
+const W_RAD: f64 = 2.0;
+const W_AREA: f64 = 1.0;
+const W_TYPE: f64 = 4.0;
 
-/// Resolve an edge selector — or a JSON LIST of selectors (union, de-duplicated
-/// by edge center) — to a set of edges of `part`. Mirrors
-/// `geom_select.resolve_edges`.
-fn resolve_edges(part: &Shape, sel: &serde_json::Value) -> Result<Vec<Edge>, String> {
-    // A list of selectors (multi-edge fillet/chamfer): union, de-duplicated.
+/// The feature's `id` (used to tag resolver diagnostics), or `None`.
+fn feature_id(f: &serde_json::Value) -> Option<&str> {
+    f.get("id").and_then(|v| v.as_str())
+}
+
+/// Resolve an edge selector — or a JSON LIST of selectors (union, de-duplicated by
+/// geometric key) — to a set of edges of `part`. Mirrors
+/// `geom_select.resolve_edges`. `diags`/`fid` collect low-confidence v2 matches
+/// without failing the build.
+fn resolve_edges(
+    part: &Shape,
+    sel: &serde_json::Value,
+    diags: &mut Vec<ResolveDiag>,
+    fid: Option<&str>,
+) -> Result<Vec<Edge>, String> {
+    // A list of selectors (multi-edge fillet/chamfer): union, de-duplicated by the
+    // rounded mid+length key so concentric edges (same center) are NOT collapsed.
     if let Some(list) = sel.as_array() {
-        let mut seen_centers: Vec<DVec3> = Vec::new();
+        let mut seen: Vec<[i64; 4]> = Vec::new();
         let mut out: Vec<Edge> = Vec::new();
         for s in list {
-            for e in resolve_edges(part, s)? {
-                let c = e.center();
-                if !seen_centers.iter().any(|p| (*p - c).length() < SELECT_EPS) {
-                    seen_centers.push(c);
+            for e in resolve_edges(part, s, diags, fid)? {
+                let k = edge_dedup_key(&e);
+                if !seen.contains(&k) {
+                    seen.push(k);
                     out.push(e);
                 }
             }
@@ -510,15 +559,71 @@ fn resolve_edges(part: &Shape, sel: &serde_json::Value) -> Result<Vec<Edge>, Str
                 .map(|e| vec![e])
                 .ok_or_else(|| "no edges to select from".to_string())
         }
-        // v2 discriminating selectors — only the Python sidecar resolves these.
-        "match" | "tangentChain" | "ofFace" => Err(v2_unsupported(by)),
+        // v2: ONE edge by scored geometric fingerprint.
+        "match" => {
+            let fp = sel
+                .get("fp")
+                .ok_or_else(|| "edge match selector missing 'fp'".to_string())?;
+            let tol_pos = POS_DRIFT + REL_DRIFT * bbox_diag(part);
+            let edges = unique_edges(part);
+            let costs: Vec<f64> = edges.iter().map(|e| edge_cost(e, fp, tol_pos)).collect();
+            let keys: Vec<[i64; 4]> = edges.iter().map(edge_canon_key).collect();
+            let (idx, conf, lossy, reason) = resolve_one(&costs, &keys, nth_field(sel));
+            push_diag(diags, fid, "edge", idx.is_some() as u32, conf, lossy, reason);
+            Ok(idx.and_then(|i| edges.into_iter().nth(i)).into_iter().collect())
+        }
+        // v2: all edges bounding a fingerprint-matched face.
+        "ofFace" => {
+            let face_fp = sel
+                .get("face")
+                .ok_or_else(|| "ofFace selector missing 'face'".to_string())?;
+            let faces = faces_matching(part, face_fp, diags, fid, None);
+            let mut seen: Vec<[i64; 4]> = Vec::new();
+            let mut out: Vec<Edge> = Vec::new();
+            for f in &faces {
+                for e in f.edges() {
+                    let k = edge_dedup_key(&e);
+                    if !seen.contains(&k) {
+                        seen.push(k);
+                        out.push(e);
+                    }
+                }
+            }
+            Ok(out)
+        }
+        // v2: a seed edge + its tangent-continuous chain.
+        "tangentChain" => {
+            let fp = sel
+                .get("seed")
+                .ok_or_else(|| "tangentChain selector missing 'seed'".to_string())?;
+            let tol_pos = POS_DRIFT + REL_DRIFT * bbox_diag(part);
+            let edges = unique_edges(part);
+            let costs: Vec<f64> = edges.iter().map(|e| edge_cost(e, fp, tol_pos)).collect();
+            let keys: Vec<[i64; 4]> = edges.iter().map(edge_canon_key).collect();
+            let (idx, conf, lossy, reason) = resolve_one(&costs, &keys, None);
+            let seed = match idx {
+                Some(i) => i,
+                None => {
+                    push_diag(diags, fid, "edge", 0, 0.0, true, Some("tangentChain seed not found"));
+                    return Ok(Vec::new());
+                }
+            };
+            let chain = tangent_chain(&edges, seed);
+            push_diag(diags, fid, "edge", chain.len() as u32, conf, lossy, reason);
+            Ok(take_indices(edges, &chain))
+        }
         other => Err(format!("unknown edge selector: {other}")),
     }
 }
 
 /// Resolve a face selector to a set of faces of `part`. Mirrors
 /// `geom_select.resolve_faces`.
-fn resolve_faces(part: &Shape, sel: &serde_json::Value) -> Result<Vec<Face>, String> {
+fn resolve_faces(
+    part: &Shape,
+    sel: &serde_json::Value,
+    diags: &mut Vec<ResolveDiag>,
+    fid: Option<&str>,
+) -> Result<Vec<Face>, String> {
     let by = sel.get("by").and_then(|v| v.as_str()).unwrap_or("");
     match by {
         "normal" => {
@@ -543,23 +648,354 @@ fn resolve_faces(part: &Shape, sel: &serde_json::Value) -> Result<Vec<Face>, Str
                 .map(|f| vec![f])
                 .ok_or_else(|| "no faces to select from".to_string())
         }
-        // v2 discriminating selectors — only the Python sidecar resolves these.
-        "match" => Err(v2_unsupported(by)),
+        // v2: ONE face by scored geometric fingerprint.
+        "match" => {
+            let fp = sel
+                .get("fp")
+                .ok_or_else(|| "face match selector missing 'fp'".to_string())?;
+            Ok(faces_matching(part, fp, diags, fid, nth_field(sel)))
+        }
         other => Err(format!("unknown face selector: {other}")),
     }
 }
 
-/// The v2 discriminating selectors (`match` / `tangentChain` / `ofFace`) re-find
-/// ONE entity by a scored geometric fingerprint, which lives only in the Python
-/// sidecar's resolver (`geom_select.py`). The Rust spike kernel hasn't ported it,
-/// so refuse with a clear, actionable message instead of the generic
-/// "unknown selector" error — which would otherwise read as a malformed document
-/// rather than a known backend gap. Mirrors the import/interference guards in
-/// `tauriClient.ts`.
-fn v2_unsupported(by: &str) -> String {
-    format!(
-        "selector by:'{by}' (v2 fingerprint match) isn't supported by the Rust backend yet — run without VITE_GEOM=rust"
-    )
+/// Resolve a face fingerprint to (at most) one face, recording a diagnostic.
+/// Shared by the face `match` selector and the edge `ofFace` selector. Mirrors
+/// `geom_select._faces_matching`.
+fn faces_matching(
+    part: &Shape,
+    fp: &serde_json::Value,
+    diags: &mut Vec<ResolveDiag>,
+    fid: Option<&str>,
+    nth: Option<usize>,
+) -> Vec<Face> {
+    let tol_pos = POS_DRIFT + REL_DRIFT * bbox_diag(part);
+    let faces = unique_faces(part);
+    let costs: Vec<f64> = faces.iter().map(|f| face_cost(f, fp, tol_pos)).collect();
+    let keys: Vec<[i64; 4]> = faces.iter().map(face_canon_key).collect();
+    let (idx, conf, lossy, reason) = resolve_one(&costs, &keys, nth);
+    push_diag(diags, fid, "face", idx.is_some() as u32, conf, lossy, reason);
+    idx.and_then(|i| faces.into_iter().nth(i)).into_iter().collect()
+}
+
+// --- scoring primitives (mirror geom_select.py) ------------------------------
+
+/// Bounding-box diagonal length (>=1.0), for the bbox-relative position tolerance.
+fn bbox_diag(part: &Shape) -> f64 {
+    let bb = opencascade::bounding_box::aabb(part);
+    if bb.is_void() {
+        return 1.0;
+    }
+    let d = (bb.max() - bb.min()).length();
+    if d > 0.0 {
+        d
+    } else {
+        1.0
+    }
+}
+
+/// De-duplicate `part.edges()` by geometric key. OCCT's `Shape::edges()` yields a
+/// shared edge once per incident face; the resolver must score each unique edge
+/// once (as build123d's `part.edges()` does), else a clean match degrades into a
+/// spurious tie against its own twin (wrong confidence + a bogus lossy flag).
+fn unique_edges(part: &Shape) -> Vec<Edge> {
+    let mut seen: Vec<[i64; 4]> = Vec::new();
+    let mut out: Vec<Edge> = Vec::new();
+    for e in part.edges() {
+        let k = edge_dedup_key(&e);
+        if !seen.contains(&k) {
+            seen.push(k);
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// De-duplicate `part.faces()` by geometric key — same per-incident duplication as
+/// `unique_edges` (a face can surface more than once via the shape's iterators).
+fn unique_faces(part: &Shape) -> Vec<Face> {
+    let mut seen: Vec<[i64; 4]> = Vec::new();
+    let mut out: Vec<Face> = Vec::new();
+    for f in part.faces() {
+        let k = face_dedup_key(&f);
+        if !seen.contains(&k) {
+            seen.push(k);
+            out.push(f);
+        }
+    }
+    out
+}
+
+fn face_dedup_key(f: &Face) -> [i64; 4] {
+    let p = f.center_of_mass();
+    [r4(p.x), r4(p.y), r4(p.z), r4(f.surface_area())]
+}
+
+/// Symmetric relative error, matching `_rel_err`.
+fn rel_err(a: f64, b: f64) -> f64 {
+    let d = a.abs().max(b.abs()).max(1e-9);
+    (a - b).abs() / d
+}
+
+/// Make the first non-tiny component positive, so +dir and -dir hash the same
+/// (edges are unoriented). Mirrors `_sign_normalize`.
+fn sign_normalize(d: DVec3) -> DVec3 {
+    for c in [d.x, d.y, d.z] {
+        if c.abs() > 1e-9 {
+            return if c > 0.0 { d } else { -d };
+        }
+    }
+    d
+}
+
+/// Read a `[x,y,z]` array from a fingerprint field.
+fn fp_vec3(fp: &serde_json::Value, key: &str) -> Option<DVec3> {
+    let a = fp.get(key)?.as_array()?;
+    if a.len() < 3 {
+        return None;
+    }
+    Some(dvec3(a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?))
+}
+
+fn fp_f64(fp: &serde_json::Value, key: &str) -> Option<f64> {
+    fp.get(key).and_then(|v| v.as_f64())
+}
+
+fn fp_str<'a>(fp: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    fp.get(key).and_then(|v| v.as_str())
+}
+
+fn nth_field(sel: &serde_json::Value) -> Option<usize> {
+    sel.get("nth").and_then(|v| v.as_u64()).map(|n| n as usize)
+}
+
+/// Coarse curve class matching `EdgeFingerprint.curve`.
+fn edge_curve(e: &Edge) -> &'static str {
+    match e.edge_type() {
+        EdgeType::Line => "line",
+        EdgeType::Circle => "circle",
+        EdgeType::Ellipse => "ellipse",
+        EdgeType::BezierCurve | EdgeType::BSplineCurve => "bspline",
+        _ => "other",
+    }
+}
+
+/// Coarse surface class matching `FaceFingerprint.surface`.
+fn face_surface(f: &Face) -> &'static str {
+    match f.surface_type() {
+        SurfaceType::Plane => "plane",
+        SurfaceType::Cylinder => "cylinder",
+        SurfaceType::Cone => "cone",
+        SurfaceType::Sphere => "sphere",
+        SurfaceType::Torus => "torus",
+        SurfaceType::BezierSurface | SurfaceType::BSplineSurface => "bspline",
+        _ => "other",
+    }
+}
+
+fn edge_mid(e: &Edge) -> DVec3 {
+    e.position_at(0.5)
+}
+
+fn edge_dir(e: &Edge) -> DVec3 {
+    sign_normalize(e.tangent_at(0.5))
+}
+
+/// Score an edge against an `EdgeFingerprint` (lower = better). Mirrors `_edge_cost`.
+fn edge_cost(e: &Edge, fp: &serde_json::Value, tol_pos: f64) -> f64 {
+    let mut cost =
+        W_POS * (edge_mid(e) - fp_vec3(fp, "mid").unwrap_or(DVec3::ZERO)).length() / tol_pos;
+    if let Some(dir) = fp_vec3(fp, "dir") {
+        let dot = edge_dir(e).dot(dir.normalize()).abs(); // unoriented
+        cost += W_DIR * (1.0 - dot) / ANG_TOL;
+    }
+    if let Some(len) = fp_f64(fp, "length") {
+        cost += W_LEN * rel_err(e.length(), len) / LEN_REL_TOL;
+    }
+    if let Some(curve) = fp_str(fp, "curve") {
+        if edge_curve(e) != curve {
+            cost += W_TYPE;
+        }
+    }
+    if edge_curve(e) == "circle" {
+        if let (Some(r), Some(fr)) = (e.circle_radius(), fp_f64(fp, "radius")) {
+            cost += W_RAD * rel_err(r, fr) / LEN_REL_TOL;
+        }
+        if let (Some(c), Some(fc)) = (e.circle_center(), fp_vec3(fp, "center")) {
+            cost += W_POS * (c - fc).length() / tol_pos; // kills concentrics
+        }
+    }
+    cost
+}
+
+/// Score a face against a `FaceFingerprint` (lower = better). Mirrors `_face_cost`.
+fn face_cost(f: &Face, fp: &serde_json::Value, tol_pos: f64) -> f64 {
+    let mut cost =
+        W_POS * (f.center_of_mass() - fp_vec3(fp, "centroid").unwrap_or(DVec3::ZERO)).length() / tol_pos;
+    if let Some(normal) = fp_vec3(fp, "normal") {
+        let dot = f.normal_at_center().normalize().dot(normal.normalize()); // signed
+        cost += W_DIR * (1.0 - dot) / ANG_TOL;
+    }
+    if let Some(area) = fp_f64(fp, "area") {
+        cost += W_AREA * rel_err(f.surface_area(), area) / AREA_REL_TOL;
+    }
+    if let Some(surface) = fp_str(fp, "surface") {
+        if face_surface(f) != surface {
+            cost += W_TYPE;
+        }
+    }
+    if let Some(fr) = fp_f64(fp, "radius") {
+        if let Some(r) = f.cylinder_radius() {
+            cost += W_RAD * rel_err(r, fr) / LEN_REL_TOL;
+        }
+    }
+    cost
+}
+
+/// Rebuild-stable canonical key (rounded mid + length, ×1e3) for tie-break order.
+/// Mirrors `_canonical_key_edge`.
+fn edge_canon_key(e: &Edge) -> [i64; 4] {
+    let p = edge_mid(e);
+    [r3(p.x), r3(p.y), r3(p.z), r3(e.length())]
+}
+
+/// List de-dup key (rounded mid + length, ×1e4) — keeps concentric edges (same
+/// center, different length). Mirrors `_edge_dedup_key`.
+fn edge_dedup_key(e: &Edge) -> [i64; 4] {
+    let p = edge_mid(e);
+    [r4(p.x), r4(p.y), r4(p.z), r4(e.length())]
+}
+
+fn face_canon_key(f: &Face) -> [i64; 4] {
+    let p = f.center_of_mass();
+    [r3(p.x), r3(p.y), r3(p.z), r3(f.surface_area())]
+}
+
+fn r3(v: f64) -> i64 {
+    (v * 1e3).round() as i64
+}
+fn r4(v: f64) -> i64 {
+    (v * 1e4).round() as i64
+}
+
+/// Pick the lowest-cost candidate by INDEX (best-effort, never fails). A near-tie
+/// (runner-up within `TIE_BAND`) is broken by `nth` over the canonical key order.
+/// Returns `(index, confidence, lossy, reason)`. Mirrors `_resolve_one`.
+fn resolve_one(
+    costs: &[f64],
+    keys: &[[i64; 4]],
+    nth: Option<usize>,
+) -> (Option<usize>, f64, bool, Option<&'static str>) {
+    if costs.is_empty() {
+        return (None, 0.0, true, Some("no candidates on this body"));
+    }
+    let mut order: Vec<usize> = (0..costs.len()).collect();
+    order.sort_by(|&a, &b| costs[a].partial_cmp(&costs[b]).unwrap_or(std::cmp::Ordering::Equal));
+    let best = order[0];
+    let best_cost = costs[best];
+    let runner = if order.len() > 1 { costs[order[1]] } else { f64::INFINITY };
+    let margin = if runner.is_finite() {
+        (runner - best_cost) / (runner + 1e-9)
+    } else {
+        1.0
+    };
+
+    if margin < TIE_BAND {
+        let mut tied: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&i| (costs[i] - best_cost) / (runner + 1e-9) < TIE_BAND)
+            .collect();
+        tied.sort_by(|&a, &b| keys[a].cmp(&keys[b]));
+        let idx = nth.filter(|&k| k < tied.len()).unwrap_or(0);
+        let reason = if nth.is_some() { "tie broken by nth" } else { "tie; canonical-first" };
+        return (Some(tied[idx]), margin, nth.is_none(), Some(reason));
+    }
+
+    let lossy = best_cost > ACCEPT_MAX;
+    (Some(best), margin, lossy, if lossy { Some("marginal match") } else { None })
+}
+
+/// Append a diagnostic only when the match is lossy or low-confidence (<0.5),
+/// matching `_push_diag`.
+fn push_diag(
+    diags: &mut Vec<ResolveDiag>,
+    fid: Option<&str>,
+    kind: &'static str,
+    resolved: u32,
+    confidence: f64,
+    lossy: bool,
+    reason: Option<&'static str>,
+) {
+    if !(lossy || confidence < 0.5) {
+        return;
+    }
+    diags.push(ResolveDiag {
+        feature_id: fid.map(|s| s.to_string()),
+        kind,
+        resolved,
+        confidence: (confidence * 1e3).round() / 1e3,
+        lossy,
+        reason: reason.map(|s| s.to_string()),
+    });
+}
+
+/// Take the edges at `idxs` (in order) out of `edges` by ownership. `idxs` must be
+/// unique (tangent_chain guarantees it).
+fn take_indices(edges: Vec<Edge>, idxs: &[usize]) -> Vec<Edge> {
+    let mut slots: Vec<Option<Edge>> = edges.into_iter().map(Some).collect();
+    idxs.iter()
+        .filter_map(|&i| slots.get_mut(i).and_then(|s| s.take()))
+        .collect()
+}
+
+/// Grow a tangent-continuous chain from the seed index: edges connected through a
+/// shared endpoint whose tangents are collinear within `ANG_TOL`. Best-effort BFS
+/// (OCCT has no tangent walker). Visited tracked by INDEX — safe here because every
+/// edge appears once in `edges` and the seed is an index into that same list (the
+/// build123d-identity gotcha that forces geometric keys in the sidecar doesn't bite
+/// when we never cross two separate edge collections). Mirrors `_tangent_chain`.
+fn tangent_chain(edges: &[Edge], seed: usize) -> Vec<usize> {
+    let ends: Vec<(DVec3, DVec3)> =
+        edges.iter().map(|e| (e.start_point(), e.end_point())).collect();
+    let tangent_at_point = |e: &Edge, p: DVec3| -> DVec3 {
+        let (a, b) = (e.start_point(), e.end_point());
+        let t = if (a - p).length() < (b - p).length() {
+            e.tangent_at(0.0)
+        } else {
+            e.tangent_at(1.0)
+        };
+        sign_normalize(t)
+    };
+
+    let mut seen = vec![false; edges.len()];
+    seen[seed] = true;
+    let mut chain = vec![seed];
+    let mut frontier = vec![seed];
+    while let Some(cur) = frontier.pop() {
+        let (a, b) = ends[cur];
+        for i in 0..edges.len() {
+            if seen[i] {
+                continue;
+            }
+            let (ea, eb) = ends[i];
+            for shared in [a, b] {
+                if (ea - shared).length() < 1e-6 || (eb - shared).length() < 1e-6 {
+                    if tangent_at_point(&edges[cur], shared)
+                        .dot(tangent_at_point(&edges[i], shared))
+                        .abs()
+                        > 1.0 - ANG_TOL
+                    {
+                        seen[i] = true;
+                        chain.push(i);
+                        frontier.push(i);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    chain
 }
 
 /// Read a `[x, y, z]` point/direction array from a selector field.
@@ -953,7 +1389,7 @@ fn tessellate(shape: &Shape) -> RebuildResult {
         Bbox { min: [min.x, min.y, min.z], max: [max.x, max.y, max.z] }
     };
 
-    RebuildResult { mesh: Mesh { positions, indices, face_ids }, edges, bbox }
+    RebuildResult { mesh: Mesh { positions, indices, face_ids }, edges, bbox, diagnostics: Vec::new() }
 }
 
 #[cfg(test)]
@@ -1369,7 +1805,7 @@ mod tests {
         // Helper: rebuild and find the (single) cylindrical face's radius.
         fn hole_radius(doc: serde_json::Value) -> f64 {
             let parsed: Document = serde_json::from_value(doc).unwrap();
-            let shape = build(&parsed).expect("build");
+            let shape = build(&parsed, &mut Vec::new()).expect("build");
             shape
                 .faces()
                 .find_map(|f| f.cylinder_radius())
@@ -1669,5 +2105,216 @@ mod tests {
         assert!(r.bbox.min[2].abs() < 0.05 && (r.bbox.max[2] - 5.0).abs() < 0.05, "z 0..5");
         assert!(tris > 100, "has real tessellation, got {tris} tris");
         assert!((20..=40).contains(&r.edges.len()), "edge count near Python's 27, got {}", r.edges.len());
+    }
+
+    // ---------------------------------------------------------------------
+    // Selector v2: the fingerprint resolver ported from sidecar/geom_select.py.
+    // These mirror sidecar/test_selector_v2.py (the 6 oracle cases) on solids
+    // built in-process. Assertions key on GEOMETRY (picked radius / centroid),
+    // not tessellation counts, so the OCCT 7.9.3-vs-7.8.1 skew is a non-issue.
+    // ---------------------------------------------------------------------
+
+    /// Build an EdgeFingerprint JSON from a real edge, using the same resolver
+    /// helpers (the Rust analog of test_selector_v2.py `edge_fp`).
+    fn edge_fp(e: &Edge) -> serde_json::Value {
+        let m = edge_mid(e);
+        let d = edge_dir(e);
+        let mut fp = json!({
+            "mid": [m.x, m.y, m.z],
+            "dir": [d.x, d.y, d.z],
+            "length": e.length(),
+            "curve": edge_curve(e),
+        });
+        if edge_curve(e) == "circle" {
+            if let Some(r) = e.circle_radius() {
+                fp["radius"] = json!(r);
+            }
+            if let Some(c) = e.circle_center() {
+                fp["center"] = json!([c.x, c.y, c.z]);
+            }
+        }
+        fp
+    }
+
+    fn face_fp(f: &Face) -> serde_json::Value {
+        let c = f.center_of_mass();
+        let n = f.normal_at_center().normalize();
+        json!({ "centroid": [c.x, c.y, c.z], "normal": [n.x, n.y, n.z], "area": f.surface_area() })
+    }
+
+    fn no_diag() -> Vec<ResolveDiag> {
+        Vec::new()
+    }
+
+    /// `match` picks ONE edge where the legacy `axis` selector grabs all 4 parallel.
+    #[test]
+    fn v2_match_picks_one_edge_where_axis_grabs_all() {
+        let part = Shape::box_centered(20.0, 20.0, 10.0);
+
+        let x_edges =
+            resolve_edges(&part, &json!({"kind":"edge","by":"axis","axis":"X"}), &mut no_diag(), None)
+                .unwrap();
+        // axis grabs the WHOLE parallel set (>=4; the legacy path doesn't de-dup
+        // OCCT's per-incident-face edge twins) — the contrast is that `match`
+        // below picks exactly ONE.
+        assert!(x_edges.len() >= 4, "axis X should grab the whole parallel set");
+
+        // the top-front X edge (y>0, z>0): match it specifically.
+        let target = part
+            .edges()
+            .find(|e| {
+                edge_curve(e) == "line"
+                    && edge_dir(e).x.abs() > 0.99
+                    && edge_mid(e).y > 0.0
+                    && edge_mid(e).z > 0.0
+            })
+            .expect("a top-front X edge");
+        let tmid = edge_mid(&target);
+
+        let got = resolve_edges(
+            &part,
+            &json!({"kind":"edge","by":"match","fp": edge_fp(&target)}),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(got.len(), 1, "match should pick exactly 1 edge");
+        let m = edge_mid(&got[0]);
+        assert!(
+            (m - tmid).length() < 1e-3,
+            "match picked the wrong X edge: {m:?} vs {tmid:?}"
+        );
+    }
+
+    /// `ofFace` returns exactly the edges bounding the matched (top) face.
+    #[test]
+    fn v2_offace_returns_face_edges() {
+        let part = Shape::box_centered(20.0, 20.0, 10.0);
+        let tf = part
+            .faces()
+            .max_by(|a, b| a.center_of_mass().z.partial_cmp(&b.center_of_mass().z).unwrap())
+            .unwrap();
+        let tz = tf.center_of_mass().z;
+
+        let got = resolve_edges(
+            &part,
+            &json!({"kind":"edge","by":"ofFace","face": face_fp(&tf)}),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(got.len(), 4, "ofFace(top) should be 4 edges");
+        assert!(
+            got.iter().all(|e| (edge_mid(e).z - tz).abs() < 0.05),
+            "ofFace edges must lie on the top face"
+        );
+    }
+
+    /// Concentric top circles of a pipe are disambiguated by radius/center, and a
+    /// LIST of both selectors keeps BOTH through de-dup (the old center-only key
+    /// dropped one).
+    #[test]
+    fn v2_concentric_disambiguated_and_dedup() {
+        let tube: Shape = Shape::cylinder_centered(DVec3::ZERO, 10.0, DVec3::Z, 10.0)
+            .subtract(&Shape::cylinder_centered(DVec3::ZERO, 5.0, DVec3::Z, 10.0))
+            .into();
+
+        let top: Vec<Edge> = unique_edges(&tube)
+            .into_iter()
+            .filter(|e| edge_curve(e) == "circle" && (edge_mid(e).z - 5.0).abs() < 0.05)
+            .collect();
+        assert_eq!(top.len(), 2, "expected 2 concentric top circles");
+        let outer = top
+            .iter()
+            .max_by(|a, b| a.circle_radius().unwrap().partial_cmp(&b.circle_radius().unwrap()).unwrap())
+            .unwrap();
+        let inner = top
+            .iter()
+            .min_by(|a, b| a.circle_radius().unwrap().partial_cmp(&b.circle_radius().unwrap()).unwrap())
+            .unwrap();
+
+        let got_outer = resolve_edges(
+            &tube,
+            &json!({"kind":"edge","by":"match","fp": edge_fp(outer)}),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        let got_inner = resolve_edges(
+            &tube,
+            &json!({"kind":"edge","by":"match","fp": edge_fp(inner)}),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        assert!((got_outer[0].circle_radius().unwrap() - 10.0).abs() < 0.05, "match should pick r=10");
+        assert!((got_inner[0].circle_radius().unwrap() - 5.0).abs() < 0.05, "match should pick r=5");
+
+        // a LIST of both selectors must keep BOTH.
+        let both = resolve_edges(
+            &tube,
+            &json!([
+                {"kind":"edge","by":"match","fp": edge_fp(outer)},
+                {"kind":"edge","by":"match","fp": edge_fp(inner)},
+            ]),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        let mut radii: Vec<f64> =
+            both.iter().map(|e| (e.circle_radius().unwrap() * 10.0).round() / 10.0).collect();
+        radii.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(radii, vec![5.0, 10.0], "concentric de-dup dropped an edge");
+    }
+
+    /// `face` match picks the top face.
+    #[test]
+    fn v2_face_match_picks_top() {
+        let part = Shape::box_centered(20.0, 20.0, 10.0);
+        let tf = part
+            .faces()
+            .max_by(|a, b| a.center_of_mass().z.partial_cmp(&b.center_of_mass().z).unwrap())
+            .unwrap();
+        let tz = tf.center_of_mass().z;
+
+        let got = resolve_faces(
+            &part,
+            &json!({"kind":"face","by":"match","fp": face_fp(&tf)}),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(got.len(), 1, "face match should pick one face");
+        assert!((got[0].center_of_mass().z - tz).abs() < 1e-3, "and it should be the top face");
+    }
+
+    /// On a box (edges meet at 90deg) a tangentChain is just the seed.
+    #[test]
+    fn v2_tangentchain_on_box_is_single_edge() {
+        let part = Shape::box_centered(20.0, 20.0, 10.0);
+        let seed = part.edges().find(|e| edge_curve(e) == "line").expect("a line edge");
+        let got = resolve_edges(
+            &part,
+            &json!({"kind":"edge","by":"tangentChain","seed": edge_fp(&seed)}),
+            &mut no_diag(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(got.len(), 1, "box tangentChain should be 1 edge (no tangent neighbours)");
+    }
+
+    /// A fingerprint far from any real edge resolves best-effort (returns the
+    /// closest) and records a lossy diagnostic tagged with the feature id.
+    #[test]
+    fn v2_bad_match_is_best_effort_with_diagnostic() {
+        let part = Shape::box_centered(20.0, 20.0, 10.0);
+        let mut diag = no_diag();
+        let bad = json!({"kind":"edge","by":"match",
+            "fp": {"mid":[100,100,100],"dir":[1,0,0],"length":999,"curve":"line"}});
+        let got = resolve_edges(&part, &bad, &mut diag, Some("f9")).unwrap();
+        assert_eq!(got.len(), 1, "best-effort match still returns a candidate");
+        assert!(!diag.is_empty(), "expected a diagnostic");
+        assert!(diag[0].lossy, "the diagnostic should be lossy");
+        assert_eq!(diag[0].feature_id.as_deref(), Some("f9"), "tagged with the feature id");
     }
 }

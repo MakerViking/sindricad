@@ -22,6 +22,8 @@ mod inner {
         pub fn BRepAdaptor_Curve_line_direction(
             curve: &BRepAdaptor_Curve,
         ) -> UniquePtr<gp_Dir>;
+        pub fn BRepAdaptor_Curve_circle_radius(curve: &BRepAdaptor_Curve) -> f64;
+        pub fn BRepAdaptor_Curve_circle_center(curve: &BRepAdaptor_Curve) -> UniquePtr<gp_Pnt>;
 
         type BRepAdaptor_Surface;
         #[cxx_name = "construct_unique"]
