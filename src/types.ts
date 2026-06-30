@@ -4,12 +4,43 @@
 export type Params = Record<string, number>;
 export type Num = number | string; // literal or parameter name
 
+export type Vec3 = [number, number, number];
+
+// A geometric "fingerprint" of an edge/face: enough scalar invariants to re-find
+// THIS one entity on a freshly rebuilt body — robust to small kernel drift and to
+// symmetric duplicates (which share some, but not all, invariants). The resolver
+// scores candidates on whichever fields are present (see sidecar/geom_select.py),
+// so a bare {mid,dir} already beats the old single-point `nearest`.
+export interface EdgeFingerprint {
+  mid: Vec3; // midpoint (curve parameter 0.5), world mm
+  dir: Vec3; // unit tangent at 0.5, sign-normalized (edges are unoriented)
+  length?: number; // curve length, mm
+  curve?: "line" | "circle" | "ellipse" | "bspline" | "other";
+  radius?: number; // circle/arc radius, mm — disambiguates concentric arcs
+  center?: Vec3; // arc/circle center, mm
+}
+export interface FaceFingerprint {
+  centroid: Vec3; // area centroid, world mm
+  normal: Vec3; // unit outward normal at the centroid (oriented)
+  area?: number; // mm^2
+  surface?: "plane" | "cylinder" | "cone" | "sphere" | "torus" | "bspline" | "other";
+  radius?: number; // cylinder/sphere/cone radius, mm
+}
+
 export type Selector =
   | { kind: "edge"; by: "axis"; axis: "X" | "Y" | "Z" }
   | { kind: "edge"; by: "nearest"; point: [number, number, number] }
   | { kind: "edge"; by: "all" }
   | { kind: "face"; by: "normal"; dir: [number, number, number] }
-  | { kind: "face"; by: "nearest"; point: [number, number, number] };
+  | { kind: "face"; by: "nearest"; point: [number, number, number] }
+  // --- v2: discriminating, drift-robust selection ---
+  // `match` re-finds ONE entity by scored geometric fingerprint; `nth` breaks a
+  // genuine tie (symmetric twins) by a rebuild-stable canonical order.
+  | { kind: "edge"; by: "match"; fp: EdgeFingerprint; nth?: number }
+  | { kind: "face"; by: "match"; fp: FaceFingerprint; nth?: number }
+  // structural forms — encode intent instead of N independent point-picks:
+  | { kind: "edge"; by: "tangentChain"; seed: EdgeFingerprint } // an edge + its tangent-continuous chain
+  | { kind: "edge"; by: "ofFace"; face: FaceFingerprint }; // all edges bounding a face
 
 // construction geometry is referenceable but does NOT form profiles.
 // arc = 3 points: start (1), end (2), and a point it passes through (m).
@@ -177,6 +208,19 @@ export interface CadDocument {
   bodyColors?: Record<string, number>;
 }
 
+// Optional per-selector resolution diagnostic (selector v2). Lets a rebuild surface
+// a low-confidence / best-effort match WITHOUT failing the build; downstream tooling
+// (e.g. an importer deciding parametric-vs-captured) reads it. Code that ignores
+// `diagnostics` behaves exactly as before.
+export interface ResolveDiag {
+  feature_id?: string;
+  kind: "edge" | "face";
+  resolved: number; // how many entities the selector matched
+  confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
+  lossy: boolean; // a marginal / drift-path match was taken
+  reason?: string;
+}
+
 export interface RebuildResult {
   mesh: { positions: number[]; indices: number[]; faceIds: number[] };
   edges: { id: string; points: [number, number, number][]; body?: string }[];
@@ -184,6 +228,8 @@ export interface RebuildResult {
   // per-body metadata: which faceId range each body occupies in the merged mesh
   // (lets the browser tree list bodies and picking map a face back to its body).
   bodies?: { id: string; name: string; faceStart: number; faceCount: number }[];
+  // selector-resolution diagnostics, when any selector resolved with low confidence.
+  diagnostics?: ResolveDiag[];
 }
 
 export type RebuildReply =

@@ -275,7 +275,7 @@ def import_geometry(path, fmt):
 # --- rebuild -----------------------------------------------------------------
 
 
-def rebuild(document):
+def rebuild(document, diagnostics=None):
     """Return (part, errors, bodies).
 
     part    : the merged build123d solid/compound of all bodies, or None.
@@ -283,6 +283,11 @@ def rebuild(document):
               build so the timeline can flag it red, Fusion-style.
     bodies  : ordered list of {id, name, shape} — one per live body (for per-body
               tessellation and the browser tree).
+
+    diagnostics : optional list; when given, low-confidence selector-v2 (`by:"match"`)
+              resolutions append a ResolveDiag dict to it. Resolution is best-effort
+              and never fails the build on a shaky match, so callers that don't pass a
+              list are completely unaffected.
     """
     params = document.get("parameters", {})
 
@@ -370,12 +375,12 @@ def rebuild(document):
 
             elif t == "fillet":
                 act = require_active("Fillet")
-                edges = resolve_edges(act["shape"], f["edges"])
+                edges = resolve_edges(act["shape"], f["edges"], diag=diagnostics, feature_id=f.get("id"))
                 act["shape"] = fillet(edges, radius=val(f["radius"]))
 
             elif t == "chamfer":
                 act = require_active("Chamfer")
-                edges = resolve_edges(act["shape"], f["edges"])
+                edges = resolve_edges(act["shape"], f["edges"], diag=diagnostics, feature_id=f.get("id"))
                 act["shape"] = chamfer(edges, length=val(f["distance"]))
 
             elif t == "press-pull":
@@ -385,7 +390,7 @@ def rebuild(document):
                 act = find_body(f["body"]) if f.get("body") else require_active("Press/Pull")
                 if act is None:
                     raise ValueError("Press/Pull: the target body no longer exists")
-                faces = resolve_faces(act["shape"], f["face"])
+                faces = resolve_faces(act["shape"], f["face"], diag=diagnostics, feature_id=f.get("id"))
                 if not faces:
                     raise ValueError("no face found to press/pull")
                 act["shape"] = _press_pull(act["shape"], faces[0], val(f["distance"]))
@@ -452,12 +457,12 @@ def rebuild(document):
 
             elif t == "shell":
                 act = require_active("Shell")
-                openings = resolve_faces(act["shape"], f["faces"]) if f.get("faces") else []
+                openings = resolve_faces(act["shape"], f["faces"], diag=diagnostics, feature_id=f.get("id")) if f.get("faces") else []
                 act["shape"] = _shell(act["shape"], val(f["thickness"]), openings)
 
             elif t == "draft":
                 act = require_active("Draft")
-                faces = resolve_faces(act["shape"], f["faces"])
+                faces = resolve_faces(act["shape"], f["faces"], diag=diagnostics, feature_id=f.get("id"))
                 if not faces:
                     raise ValueError("no face found to draft")
                 act["shape"] = _draft(act["shape"], faces, val(f["angle"]), f.get("axis", "Z"))

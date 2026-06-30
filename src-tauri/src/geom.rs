@@ -510,6 +510,8 @@ fn resolve_edges(part: &Shape, sel: &serde_json::Value) -> Result<Vec<Edge>, Str
                 .map(|e| vec![e])
                 .ok_or_else(|| "no edges to select from".to_string())
         }
+        // v2 discriminating selectors — only the Python sidecar resolves these.
+        "match" | "tangentChain" | "ofFace" => Err(v2_unsupported(by)),
         other => Err(format!("unknown edge selector: {other}")),
     }
 }
@@ -541,8 +543,23 @@ fn resolve_faces(part: &Shape, sel: &serde_json::Value) -> Result<Vec<Face>, Str
                 .map(|f| vec![f])
                 .ok_or_else(|| "no faces to select from".to_string())
         }
+        // v2 discriminating selectors — only the Python sidecar resolves these.
+        "match" => Err(v2_unsupported(by)),
         other => Err(format!("unknown face selector: {other}")),
     }
+}
+
+/// The v2 discriminating selectors (`match` / `tangentChain` / `ofFace`) re-find
+/// ONE entity by a scored geometric fingerprint, which lives only in the Python
+/// sidecar's resolver (`geom_select.py`). The Rust spike kernel hasn't ported it,
+/// so refuse with a clear, actionable message instead of the generic
+/// "unknown selector" error — which would otherwise read as a malformed document
+/// rather than a known backend gap. Mirrors the import/interference guards in
+/// `tauriClient.ts`.
+fn v2_unsupported(by: &str) -> String {
+    format!(
+        "selector by:'{by}' (v2 fingerprint match) isn't supported by the Rust backend yet — run without VITE_GEOM=rust"
+    )
 }
 
 /// Read a `[x, y, z]` point/direction array from a selector field.

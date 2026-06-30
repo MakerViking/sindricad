@@ -72,7 +72,8 @@ def _rebuild_job(document, tolerance):
     from builder import rebuild
     from tessellate import tessellate_bodies, edge_polylines_by_body, bbox
 
-    part, errors, bodies = rebuild(document)
+    diag = []
+    part, errors, bodies = rebuild(document, diagnostics=diag)
     if errors:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
@@ -81,12 +82,15 @@ def _rebuild_job(document, tolerance):
         # still renders sketch overlays.
         return {"mesh": {"positions": [], "indices": [], "faceIds": []}, "edges": [], "bbox": None, "bodies": []}
     pos, idx, fids, meta = tessellate_bodies(bodies, tolerance)
-    return {
+    result = {
         "mesh": {"positions": pos, "indices": idx, "faceIds": fids},
         "edges": edge_polylines_by_body(bodies),
         "bbox": bbox(part),
         "bodies": meta,
     }
+    if diag:  # only attach when a selector resolved with low confidence
+        result["diagnostics"] = diag
+    return result
 
 
 def _export_job(document, fmt, path, body=None, separate=False):
