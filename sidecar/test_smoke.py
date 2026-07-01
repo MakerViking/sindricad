@@ -5,6 +5,7 @@ Run:  uv run python test_smoke.py
 """
 
 import os
+import math
 import tempfile
 
 from builder import rebuild, import_geometry
@@ -164,6 +165,27 @@ def test_combine():
           f"intersect {results['intersect']:.0f}")
 
 
+def test_combine_dangling_ref():
+    """A combine whose tool/target was already consumed by an earlier combine is a
+    NON-FATAL no-op recorded in diagnostics (not a build-halting error) — so a
+    stale duplicate (positional-id drift) can't nuke the whole downstream timeline."""
+    _s1, a = _box(1, 20, 20, 20)
+    _s2, b = _box(2, 10, 10, 20)
+    cb1 = {"id": "cb1", "type": "combine", "operation": "join", "target": "body1", "tools": ["body2"]}
+    cb2 = {"id": "cb2", "type": "combine", "operation": "join", "target": "body1", "tools": ["body2"]}  # body2 already gone
+    diag = []
+    part, err, bodies = rebuild({"parameters": {}, "features": a + b + [cb1, cb2]}, diagnostics=diag)
+    assert not err, f"dangling combine should not error, got {err}"
+    assert len(bodies) == 1, f"expected 1 body after join, got {len(bodies)}"
+    skips = [d for d in diag if d.get("kind") == "combine" and d.get("feature_id") == "cb2"]
+    assert skips and skips[0]["lossy"], f"cb2 should be recorded as a skipped combine, got {diag}"
+    # a dangling target is handled too (target consumed → no-op, no error)
+    cb3 = {"id": "cb3", "type": "combine", "operation": "join", "target": "body2", "tools": ["body1"]}
+    part2, err2, _ = rebuild({"parameters": {}, "features": a + b + [cb1, cb3]}, diagnostics=None)
+    assert not err2, f"dangling-target combine should not error, got {err2}"
+    print(f"  combine dangling-ref OK: cb2 skipped via diagnostics, no build halt")
+
+
 def test_datum_and_bodies_tessellation():
     """A datum plane is referenceable by a sketch; tessellate_bodies tags faces."""
     doc = {"parameters": {}, "features": [
@@ -253,6 +275,72 @@ def test_presspull_targets_owning_body():
     assert bb1["max"][2] > 14, f"body1 should grow to z~15, got {bb1['max'][2]}"
     assert bb2["max"][2] < 11, f"body2 (active) must stay z~10, got {bb2['max'][2]}"
     print(f"  press-pull targets owning body OK: body1 z_max {bb1['max'][2]:.0f}, body2 {bb2['max'][2]:.0f}")
+
+
+def test_presspull_multiface():
+    """press-pull with a LIST of face selectors pushes each face by the same
+    distance along its own normal, in one feature (re-resolving per face)."""
+    _s, a = _box(1, 20, 20, 10)  # z=0..10
+    doc = {"parameters": {}, "features": a + [
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 5,
+         "face": [
+             {"kind": "face", "by": "normal", "dir": [0, 0, 1]},   # top  +5
+             {"kind": "face", "by": "normal", "dir": [0, 0, -1]},  # bottom +5
+         ]},
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    bb = bbox(part)
+    assert bb["min"][2] < -4 and bb["max"][2] > 14, f"both faces should grow z to -5..15, got {bb['min'][2]:.1f}..{bb['max'][2]:.1f}"
+    assert abs(part.volume - 8000) < 1, f"expected 20*20*20=8000, got {part.volume:.0f}"
+    print(f"  press-pull multi-face OK: z {bb['min'][2]:.0f}..{bb['max'][2]:.0f}, vol {part.volume:.0f}")
+
+
+def test_sketch_patterns():
+    """A sketch pattern definition expands to derived entities at build time: a
+    bolt-circle of 6 holes cut through a disk, and a 3x2 rect pattern of a circle."""
+    disk = {"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY", "entities": [{"id": "e0", "type": "circle", "radius": 30, "x": 0, "y": 0}]},
+        {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5, "operation": "new"},
+        {"id": "s2", "type": "sketch", "plane": "XY", "entities": [],
+         "patterns": [{"id": "p1", "type": "boltCircle", "cx": 0, "cy": 0, "bcd": 40, "count": 6, "diameter": 6}]},
+        {"id": "cut", "type": "extrude", "sketch": "s2", "distance": 5, "operation": "cut"},
+    ]}
+    part, err, bodies = rebuild(disk)
+    assert not err, err
+    # disk pi*30^2*5=14137 minus 6 holes r3: 6*pi*9*5=848 -> ~13289
+    assert abs(part.volume - 13289) < 30, f"bolt-circle holes wrong, vol {part.volume:.0f}"
+    assert len(part.faces()) == 9, f"expected top+bottom+outer+6 holes = 9 faces, got {len(part.faces())}"
+
+    grid = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY", "entities": [{"id": "c0", "type": "circle", "radius": 2, "x": 0, "y": 0}],
+         "patterns": [{"id": "pr", "type": "patternRect", "sources": ["c0"], "countX": 3, "countY": 2, "spacingX": 10, "spacingY": 10}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 3, "operation": "new"},
+    ]}
+    p2, e2, b2 = rebuild(grid)
+    assert not e2, e2
+    assert len(p2.solids()) == 6, f"3x2 rect pattern should give 6 disks, got {len(p2.solids())}"
+    print(f"  sketch patterns OK: bolt-circle {len(part.faces())} faces, rect pattern {len(p2.solids())} solids")
+
+
+def test_presspull_upto():
+    """press-pull `upTo` extrudes a face up to a target surface — the sidecar derives
+    the per-face distance from the target plane (here a low step face → a higher one)."""
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 20, "width": 20, "height": 10},  # body1 z-5..5
+        {"id": "b2", "type": "box", "length": 8, "width": 8, "height": 10},    # body2 z-5..5
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 10, "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]},
+        {"id": "cb", "type": "combine", "operation": "join", "target": "body1", "tools": ["body2"]},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": {"kind": "face", "by": "nearest", "point": [-8, -8, 5]},   # the low top step
+         "upTo": {"kind": "face", "by": "nearest", "point": [0, 0, 15]}},   # extrude up to the high top
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    bb = bbox(part)
+    assert abs(bb["max"][2] - 15) < 0.5, f"low face should rise to z=15, got {bb['max'][2]}"
+    assert abs(part.volume - 8000) < 5, f"expected a full 20x20x20=8000, got {part.volume:.0f}"
+    print(f"  press-pull up-to OK: z_max {bb['max'][2]:.0f}, vol {part.volume:.0f}")
 
 
 def test_extrude_operation_multibody():
@@ -432,6 +520,104 @@ def test_remove_body():
     print(f"  remove-body OK: 2 bodies → removeBody body2 → 1 body")
 
 
+def test_sketch_crossing_split():
+    """Sketch profiles split at CROSSINGS and vertex-touches via the planar
+    arrangement (builder._subdivide_faces / src/sketch/region.ts), so a line
+    crossing a profile carves separately-extrudable sub-areas (Fusion parity), and
+    a honeycomb hexagon whose corner sits on a boundary rectangle extrudes as its
+    true CLIPPED region — not the whole hexagon."""
+    sq = [(0, 0, 10, 0), (10, 0, 10, 10), (10, 10, 0, 10), (0, 10, 0, 0)]
+
+    def _lines(segs):
+        return [{"id": f"l{i}", "type": "line", "x1": a, "y1": b, "x2": c, "y2": d}
+                for i, (a, b, c, d) in enumerate(segs)]
+
+    # X in a square -> 4 triangles; extrude one quadrant = 25 * 5 = 125
+    xsq = {"id": "s1", "type": "sketch", "plane": "XY",
+           "entities": _lines(sq + [(0, 0, 10, 10), (0, 10, 10, 0)])}
+    part, err, _ = rebuild({"parameters": {}, "features": [xsq,
+        {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5, "operation": "new",
+         "regions": [[6.67, 3.33, 0]]}]})
+    assert not err, err
+    assert abs(part.volume - 125) < 1, f"one quadrant of an X-square = 125, got {part.volume:.1f}"
+
+    # a line crossing the square splits it; extrude the top half = 50 * 4 = 200
+    cl = {"id": "s1", "type": "sketch", "plane": "XY", "entities": _lines(sq + [(-3, 5, 13, 5)])}
+    part, err, _ = rebuild({"parameters": {}, "features": [cl,
+        {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 4, "operation": "new",
+         "regions": [[5, 7.5, 0]]}]})
+    assert not err, err
+    assert abs(part.volume - 200) < 1, f"top half of a split square = 200, got {part.volume:.1f}"
+
+    # honeycomb panel: a rectangle with hexagons. The hexagon centered at (15, 8.66)
+    # sits ON the right rect edge (a vertex-on-edge T-junction) — it must extrude as
+    # a HALF hexagon (32.48 * 2 = 64.95), NOT the full hexagon (would be ~130).
+    def _hexlines(cx, cy, R):
+        v = [(cx + R * math.cos(math.pi / 6 + k * math.pi / 3),
+              cy + R * math.sin(math.pi / 6 + k * math.pi / 3)) for k in range(6)]
+        return [(v[k][0], v[k][1], v[(k + 1) % 6][0], v[(k + 1) % 6][1]) for k in range(6)]
+    segs = []
+    for q in range(-2, 3):
+        for r in range(max(-2, -q - 2), min(2, -q + 2) + 1):
+            segs += _hexlines(10 * (q + r / 2), 10 * math.sqrt(3) / 2 * r, 5)
+    ents = [{"id": "R", "type": "rectangle", "x": 0, "y": 0, "width": 30, "height": 30}]
+    ents += [{"id": f"h{i}", "type": "line", "x1": a, "y1": b, "x2": c, "y2": d}
+             for i, (a, b, c, d) in enumerate(segs)]
+    panel = {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents}
+    part, err, _ = rebuild({"parameters": {}, "features": [panel,
+        {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 2, "operation": "new",
+         "regions": [[13.5, 8.66, 0]]}]})
+    assert not err, err
+    assert abs(part.volume - 64.95) < 1, \
+        f"boundary hexagon should extrude clipped (~65), got {part.volume:.1f}"
+    print(f"  sketch crossing-split OK: X-quadrant 125, split-half 200, clipped boundary hex {part.volume:.1f}")
+
+
+def test_extrude_cut_disjoint():
+    """A CUT extrude of several DISJOINT regions (e.g. honeycomb cells) removes
+    material from EVERY body in its path. The disjoint extrude is a build123d
+    ShapeList — regression for "'ShapeList' object has no attribute 'bounding_box'"
+    which silently aborted the cut (the real DDR honeycomb-panel bug)."""
+    b1 = {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 10}  # z -5..5
+    b2 = {"id": "b2", "type": "box", "length": 40, "width": 40, "height": 10}
+    mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 20,
+          "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]}  # body2 → z 15..25
+    sk = {"id": "s1", "type": "sketch", "plane": "XY",
+          "entities": [{"id": "c1", "type": "circle", "x": -10, "y": 0, "radius": 3},
+                       {"id": "c2", "type": "circle", "x": 10, "y": 0, "radius": 3}]}
+    cut = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 30,
+           "operation": "cut", "regions": [[-10, 0, 0], [10, 0, 0]]}
+    part, err, bodies = rebuild({"parameters": {}, "features": [b1, b2, mv, sk, cut]})
+    assert not err, err
+    vols = {b["id"]: b["shape"].volume for b in bodies if b.get("shape")}
+    # both boxes (16000 each) lose 2 cylinders where the cut passes through them
+    assert vols["body1"] < 16000 - 100, f"body1 not cut: {vols['body1']:.0f}"
+    assert vols["body2"] < 16000 - 100, f"body2 not cut: {vols['body2']:.0f}"
+    print(f"  extrude cut disjoint OK: both bodies cut (body1 {vols['body1']:.0f}, body2 {vols['body2']:.0f})")
+
+
+def test_cut_skips_hidden_body():
+    """A cut extrude never edits a HIDDEN body: bodyVisibility travels with the
+    rebuild and hidden bodies are excluded from the extrude boolean (a hidden body
+    is intentionally protected from edits)."""
+    b1 = {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 10}  # z -5..5
+    b2 = {"id": "b2", "type": "box", "length": 40, "width": 40, "height": 10}
+    mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 20,
+          "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]}  # body2 → z 15..25
+    sk = {"id": "s1", "type": "sketch", "plane": "XY",
+          "entities": [{"id": "c", "type": "circle", "x": 0, "y": 0, "radius": 5}]}
+    cut = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 30,
+           "operation": "cut", "regions": [[0, 0, 0]]}
+    feats = [b1, b2, mv, sk, cut]
+    _, err, bodies = rebuild({"parameters": {}, "features": feats,
+                              "bodyVisibility": {"body2": False}})
+    assert not err, err
+    v = {b["id"]: b["shape"].volume for b in bodies if b.get("shape")}
+    assert v["body1"] < 16000 - 100, f"visible body1 should be cut: {v['body1']:.0f}"
+    assert abs(v["body2"] - 16000) < 1, f"hidden body2 must be UNTOUCHED: {v['body2']:.0f}"
+    print(f"  cut skips hidden OK: body1 {v['body1']:.0f} cut, hidden body2 {v['body2']:.0f} intact")
+
+
 if __name__ == "__main__":
     print("SindriCAD sidecar smoke test")
     test_rebuild()
@@ -440,10 +626,17 @@ if __name__ == "__main__":
     test_import_roundtrip()
     test_split()
     test_combine()
+    test_combine_dangling_ref()
     test_datum_and_bodies_tessellation()
     test_datum_offset_and_split_by_id()
     test_split_all_and_move_bodies()
     test_presspull_targets_owning_body()
+    test_presspull_multiface()
+    test_presspull_upto()
+    test_sketch_patterns()
+    test_sketch_crossing_split()
+    test_extrude_cut_disjoint()
+    test_cut_skips_hidden_body()
     test_extrude_operation_multibody()
     test_primitives()
     test_modify_tools()

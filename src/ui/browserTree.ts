@@ -21,6 +21,9 @@ export class BrowserTree {
   isSketchVisible: ((id: string) => boolean) | null = null;
   onToggleBody: ((id: string) => void) | null = null;
   isBodyVisible: ((id: string) => boolean) | null = null;
+  // per-construction-plane show/hide (eye toggle), mirroring bodies.
+  onTogglePlane: ((id: string) => void) | null = null;
+  isPlaneVisible: ((id: string) => boolean) | null = null;
   // body multi-selection (for Move): click selects, Ctrl/Cmd-click adds.
   onSelectBody: ((id: string, additive: boolean) => void) | null = null;
   isBodySelected: ((id: string) => boolean) | null = null;
@@ -81,7 +84,7 @@ export class BrowserTree {
     // the tree only depends on these — onDocChange + onBuild both fire per edit,
     // so bail when nothing visible changed instead of rebuilding the DOM twice.
     const sLabels = sketches.map((f, i) => `${f.id}=${sketchLabel(f, i)}:${(this.isSketchVisible?.(f.id) ?? true) ? "1" : "0"}`).join(",");
-    const pLabels = datums.map((f, i) => `${f.id}=${planeLabel(f, i)}`).join(",");
+    const pLabels = datums.map((f, i) => `${f.id}=${planeLabel(f, i)}${(this.isPlaneVisible?.(f.id) ?? true) ? "" : ":h"}`).join(",");
     const bLabels = bodies
       .map((b) => `${b.id}=${bodyLabel(b)}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}${this.isBodySelected?.(b.id) ? ":s" : ""}#${this.store.bodyColorSlot(b.id) ?? ""}`)
       .join(",");
@@ -113,11 +116,13 @@ export class BrowserTree {
           icon: "▱",
           selected: this.selectedId === f.id,
           error: errId === f.id,
+          visible: this.isPlaneVisible?.(f.id) ?? true,
           onClick: () => this.onSelect?.(f.id),
+          onToggleVis: this.onTogglePlane ? () => this.onTogglePlane!(f.id) : undefined,
           extraMenu: [{ label: "Cut all bodies", onClick: () => this.onCutPlane?.(f.id) }],
           rename: this.onRenamePlane ? (name: string) => this.onRenamePlane!(f.id, name) : undefined,
           onDelete: this.onDeletePlane ? () => this.onDeletePlane!(f.id) : undefined,
-          title: "Construction plane — select then Split Body cuts by it · right-click for Cut / Rename / Delete",
+          title: "Construction plane — select then Split Body cuts by it · right-click for Cut / Rename / Delete · eye to show/hide",
         })),
       );
     }

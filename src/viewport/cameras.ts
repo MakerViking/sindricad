@@ -8,6 +8,10 @@ import CameraControls from "camera-controls";
 CameraControls.install({ THREE });
 
 const FOV = 45;
+// Closest the perspective camera may sit to its pivot (mm). Kept comfortably above
+// the camera's near plane (0.1) so an extreme zoom-in can't push the surface behind
+// near — which used to clip the whole model away, leaving just the grid.
+const MIN_PERSP_DIST = 0.5;
 
 export interface CameraRig {
   controls: CameraControls;
@@ -18,8 +22,10 @@ export interface CameraRig {
   update(dt: number): boolean;
   /** Zoom by a multiplicative factor (>1 = zoom out, <1 = zoom in). Works in BOTH
    *  projections via absolute dolly/zoom, so it's immune to the wheel-action
-   *  ambiguity that left perspective unable to zoom in WebKitGTK. */
-  zoomBy(factor: number): void;
+   *  ambiguity that left perspective unable to zoom in WebKitGTK. When `pivot`
+   *  (a world point, usually under the cursor) is given, zooms TOWARD it
+   *  (Fusion-style dolly-to-cursor) instead of toward the orbit target. */
+  zoomBy(factor: number, pivot?: THREE.Vector3): void;
   fit(box: THREE.Box3, enableTransition?: boolean): void;
   setStandardView(view: StandardView): void;
   /** orient to an arbitrary view direction (eye = target + dir·d), with a chosen
@@ -152,14 +158,42 @@ export function createCameraRig(
       }
       return moved || rollAngle !== 0;
     },
-    zoomBy(factor: number) {
+    zoomBy(factor: number, pivot?: THREE.Vector3) {
       const f = Math.max(0.1, Math.min(10, factor));
       if (usingOrtho) {
-        // ortho: scale the zoom property (zoom in => larger zoom)
-        controls.zoomTo(Math.max(1e-4, ortho.zoom / f), false);
+        const newZoom = Math.max(1e-4, ortho.zoom / f);
+        if (pivot) {
+          // keep the cursor point fixed on screen: slide the target toward it as the
+          // frustum shrinks/grows (k = 1 − oldZoom/newZoom).
+          const target = controls.getTarget(new THREE.Vector3());
+          const k = 1 - ortho.zoom / newZoom;
+          controls.setTarget(
+            target.x + (pivot.x - target.x) * k,
+            target.y + (pivot.y - target.y) * k,
+            target.z + (pivot.z - target.z) * k,
+            false,
+          );
+        }
+        controls.zoomTo(newZoom, false);
+      } else if (pivot) {
+        // Dolly TOWARD THE CURSOR (Fusion-style): scale the camera AND target about
+        // the cursor point by f. What's under the cursor stays put, and the camera
+        // never flies through the near wall toward the model centre. Clamp the final
+        // distance to MIN_PERSP_DIST so it can't cross the near plane.
+        const cam = controls.getPosition(new THREE.Vector3());
+        const target = controls.getTarget(new THREE.Vector3());
+        const dist = cam.distanceTo(target);
+        let ff = f;
+        if (dist * ff < MIN_PERSP_DIST) {
+          if (dist <= MIN_PERSP_DIST) return; // already as close as we allow
+          ff = MIN_PERSP_DIST / dist; // land exactly at the limit this step
+        }
+        const nc = pivot.clone().add(cam.sub(pivot).multiplyScalar(ff));
+        const nt = pivot.clone().add(target.sub(pivot).multiplyScalar(ff));
+        controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
       } else {
-        // perspective: change the absolute distance to the target (dolly)
-        controls.dollyTo(Math.max(0.01, controls.distance * f), false);
+        // no pivot (programmatic): plain dolly toward the orbit target
+        controls.dollyTo(Math.max(MIN_PERSP_DIST, controls.distance * f), false);
       }
     },
     fit(box: THREE.Box3, enableTransition = true) {

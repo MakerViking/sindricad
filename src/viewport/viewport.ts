@@ -43,6 +43,11 @@ export class Viewport {
   onHit: ((hit: Hit | null, shiftKey: boolean) => void) | null = null;
   onSelectionChange: (() => void) | null = null; // fired when edge/face selection changes
   onPickDatum: ((id: string) => void) | null = null; // fired when a datum plane quad is clicked
+  // SOLID-mode selection of a visible sketch's profile areas (set by the app).
+  // regionPickAt: click-select the region under the cursor (true if one was hit,
+  // so face/body picking is skipped). regionHoverAt: hover-highlight it.
+  regionPickAt: ((clientX: number, clientY: number, additive: boolean) => boolean) | null = null;
+  regionHoverAt: ((clientX: number, clientY: number) => boolean) | null = null;
   onBodySelectionChange: (() => void) | null = null; // fired when the body selection changes
   // "faces" = pick faces/edges (default); "bodies" = pick whole bodies (to move).
   private selectionMode: "faces" | "bodies" = "faces";
@@ -137,10 +142,26 @@ export class Viewport {
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1; // lines/pages -> px
         const dy = Math.max(-240, Math.min(240, e.deltaY * unit));
         this.userMovedCamera = true;
-        this.rig.zoomBy(Math.pow(1.0016, dy)); // >1 (scroll down) zooms out
+        // zoom toward what's under the cursor (Fusion-style), not the orbit centre
+        this.rig.zoomBy(Math.pow(1.0016, dy), this.cursorWorldPoint(e.clientX, e.clientY));
       },
       { passive: false },
     );
+  }
+
+  /** World point under the cursor for zoom-to-cursor: the model surface hit if the
+   *  cursor is over it, else a point on the cursor ray at the current orbit-target
+   *  distance (so zooming over empty space still tracks the cursor direction). */
+  private cursorWorldPoint(clientX: number, clientY: number): THREE.Vector3 {
+    const rc = this.rayFrom(clientX, clientY);
+    if (this.model) {
+      const hit = rc.intersectObject(this.model.mesh, false)[0];
+      if (hit) return hit.point.clone();
+    }
+    const cam = this.rig.controls.getPosition(new THREE.Vector3());
+    const target = this.rig.controls.getTarget(new THREE.Vector3());
+    const dist = cam.distanceTo(target);
+    return rc.ray.origin.clone().add(rc.ray.direction.clone().multiplyScalar(dist));
   }
 
   private handleHover(e: PointerEvent) {
@@ -152,6 +173,11 @@ export class Viewport {
     }
     if (this.suspendPicking) return;
     if (this.selectionMode === "bodies") return; // no face hover while picking bodies
+    // a visible sketch's region under the cursor highlights (and wins over face hover)
+    if (this.regionHoverAt?.(e.clientX, e.clientY)) {
+      this.highlighter?.clearHover();
+      return;
+    }
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
     const hit = this.picker.pick(
@@ -189,6 +215,9 @@ export class Viewport {
     const hit = this.model
       ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model, this.resolution)
       : null;
+    // a click on a visible sketch's profile area selects that area (for Extrude),
+    // taking priority over the body behind it — inert unless a sketch is shown.
+    if (this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)) return;
     // a click on a construction plane (where it doesn't overlap the body) selects it
     if (!hit && this.datumQuads.length) {
       const dh = this.rayFrom(e.clientX, e.clientY).intersectObjects(this.datumQuads, false)[0];
@@ -469,20 +498,24 @@ export class Viewport {
     });
   }
 
-  /** Pre-selection for Press/Pull: if exactly one face is selected, return its
-   *  selector + surface normal + centroid anchor (else null). */
-  selectedFaceForPressPull(): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
+  /** Pre-selection for Press/Pull: return a selector for EACH selected face (one
+   *  by:"nearest" per face so refs survive renumbering), plus the normal/centroid
+   *  of the first face to anchor the drag arrow. Null if nothing is selected. */
+  selectedFacesForPressPull(): { selectors: Selector[]; faceIds: number[]; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.highlighter || !this.model) return null;
     const faces = this.highlighter.getSelectedFaces();
-    if (faces.length !== 1) return null;
-    const faceId = faces[0];
-    const anchor = this.faceCentroidWorld(faceId);
-    const normal = this.faceNormalWorld(faceId);
+    if (faces.length === 0) return null;
+    const selectors: Selector[] = faces.map((fid) => {
+      const c = this.faceCentroidWorld(fid);
+      return { kind: "face", by: "nearest", point: [c.x, c.y, c.z] };
+    });
+    const first = faces[0];
     return {
-      selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
-      normal,
-      anchor,
-      bodyId: this.faceIdToBodyId(faceId),
+      selectors,
+      faceIds: [...faces],
+      normal: this.faceNormalWorld(first),
+      anchor: this.faceCentroidWorld(first),
+      bodyId: this.faceIdToBodyId(first),
     };
   }
 
@@ -733,7 +766,7 @@ export class Viewport {
   pickFaceForPressPull(
     clientX: number,
     clientY: number,
-  ): { selector: Selector; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
+  ): { selector: Selector; faceId: number; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.model) return null;
     const ray = this.rayFrom(clientX, clientY);
     const hit = ray.intersectObject(this.model.mesh, false)[0];
@@ -748,6 +781,7 @@ export class Viewport {
     const faceId = this.model.faceIds[hit.faceIndex ?? 0] ?? 0;
     return {
       selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
+      faceId,
       normal,
       anchor,
       bodyId: this.faceIdToBodyId(faceId),
@@ -941,6 +975,133 @@ export class Viewport {
     this.scene.scene.remove(obj);
   }
 
+  // --- Press/Pull ghost: an instant frontend-only preview of the extrude so the
+  // drag feels immediate (the real OCCT result needs a full rebuild and only lands
+  // on commit). For each selected face we offset its triangles by distance·normal
+  // (the cap) and raise walls from the face's boundary edges → a translucent prism.
+  private ppGhost: THREE.Mesh | null = null;
+  setPressPullGhost(faceIds: number[], distance: number) {
+    this.clearPressPullGhost();
+    if (!this.model || faceIds.length === 0 || Math.abs(distance) < 1e-4) return;
+    const mesh = this.model.mesh;
+    const pos = mesh.geometry.getAttribute("position");
+    const index = mesh.geometry.getIndex()!;
+    const ids = this.model.faceIds;
+    const mw = mesh.matrixWorld;
+    const wv = (vi: number) => new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mw);
+    const out: number[] = [];
+    const push = (v: THREE.Vector3) => out.push(v.x, v.y, v.z);
+    for (const faceId of faceIds) {
+      const off = this.faceNormalWorld(faceId).multiplyScalar(distance);
+      const tris: [number, number, number][] = [];
+      for (let t = 0; t < ids.length; t++) {
+        if (ids[t] === faceId) tris.push([index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2)]);
+      }
+      if (!tris.length) continue;
+      // cap (the face moved by `off`)
+      for (const [i0, i1, i2] of tris) {
+        push(wv(i0).add(off)); push(wv(i1).add(off)); push(wv(i2).add(off));
+      }
+      // boundary walls: an edge interior to the face appears in two triangles
+      // (toggled out); a boundary edge appears once (kept).
+      const edges = new Map<string, [number, number]>();
+      const bump = (a: number, b: number) => {
+        const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+        if (edges.has(key)) edges.delete(key);
+        else edges.set(key, [a, b]);
+      };
+      for (const [i0, i1, i2] of tris) { bump(i0, i1); bump(i1, i2); bump(i2, i0); }
+      for (const [a, b] of edges.values()) {
+        const A = wv(a), B = wv(b);
+        const Ao = A.clone().add(off), Bo = B.clone().add(off);
+        push(A); push(B); push(Bo);
+        push(A); push(Bo); push(Ao);
+      }
+    }
+    if (!out.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(out, 3));
+    const mat = new THREE.MeshBasicMaterial({
+      color: distance >= 0 ? 0xffc83d : 0xff6b5c, // amber = add, red = cut
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.ppGhost = new THREE.Mesh(geo, mat);
+    this.ppGhost.renderOrder = 998;
+    this.addToScene(this.ppGhost);
+  }
+  clearPressPullGhost() {
+    if (!this.ppGhost) return;
+    this.removeFromScene(this.ppGhost);
+    this.ppGhost.geometry.dispose();
+    (this.ppGhost.material as THREE.Material).dispose();
+    this.ppGhost = null;
+  }
+
+  // --- Move ghost: translate the selected bodies' mesh + edges live during a drag,
+  // with NO sidecar rebuild (a rigid move needs no geometry recompute) — so dragging
+  // is snappy. The real `move` feature is committed on release. We move the moved
+  // bodies' vertices in place and offset their edge-line objects; cancel restores.
+  private moveGhost: { verts: number[]; orig: Float32Array; edges: import("three/examples/jsm/lines/Line2.js").Line2[] } | null = null;
+  beginBodyMoveGhost(bodyIds: string[]) {
+    this.endBodyMoveGhost(true);
+    if (!this.model) return;
+    const sel = new Set(bodyIds);
+    const ranges = this.model.bodies
+      .filter((b) => sel.has(b.id))
+      .map((b) => [b.faceStart, b.faceStart + b.faceCount] as [number, number]);
+    if (!ranges.length) return;
+    const inSel = (fid: number) => ranges.some(([s, e]) => fid >= s && fid < e);
+    const geo = this.model.mesh.geometry;
+    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    const index = geo.getIndex()!;
+    const ids = this.model.faceIds;
+    const vset = new Set<number>();
+    for (let t = 0; t < ids.length; t++) {
+      if (!inSel(ids[t])) continue;
+      vset.add(index.getX(t * 3));
+      vset.add(index.getX(t * 3 + 1));
+      vset.add(index.getX(t * 3 + 2));
+    }
+    const verts = [...vset];
+    const orig = new Float32Array(verts.length * 3);
+    for (let i = 0; i < verts.length; i++) {
+      orig[i * 3] = pos.getX(verts[i]);
+      orig[i * 3 + 1] = pos.getY(verts[i]);
+      orig[i * 3 + 2] = pos.getZ(verts[i]);
+    }
+    const edges = this.model.edges.filter((e) => sel.has(e.userData.body as string));
+    this.moveGhost = { verts, orig, edges };
+  }
+  setBodyMoveOffset(offset: THREE.Vector3) {
+    if (!this.moveGhost || !this.model) return;
+    const pos = this.model.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const { verts, orig, edges } = this.moveGhost;
+    for (let i = 0; i < verts.length; i++) {
+      pos.setXYZ(verts[i], orig[i * 3] + offset.x, orig[i * 3 + 1] + offset.y, orig[i * 3 + 2] + offset.z);
+    }
+    pos.needsUpdate = true;
+    for (const e of edges) e.position.copy(offset);
+  }
+  endBodyMoveGhost(restore: boolean) {
+    if (!this.moveGhost || !this.model) {
+      this.moveGhost = null;
+      return;
+    }
+    if (restore) {
+      const pos = this.model.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const { verts, orig, edges } = this.moveGhost;
+      for (let i = 0; i < verts.length; i++) {
+        pos.setXYZ(verts[i], orig[i * 3], orig[i * 3 + 1], orig[i * 3 + 2]);
+      }
+      pos.needsUpdate = true;
+      for (const e of edges) e.position.set(0, 0, 0);
+    }
+    this.moveGhost = null;
+  }
+
   private projScratch = new THREE.Vector3();
   /** project a world point to screen pixels (client coords) */
   projectToScreen(world: THREE.Vector3): { x: number; y: number } {
@@ -965,12 +1126,27 @@ export class Viewport {
 
   enterSketchView(origin: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3) {
     this.rig.lookAtPlane(origin, normal, up);
+    // Flat, orthographic view for 2D precision (no perspective convergence). Capture
+    // the prior projection ONCE so re-orienting (Look At) mid-sketch doesn't lose it.
+    if (!this.sketchOrtho) {
+      this.sketchPrevOrtho = this.rig.isOrtho();
+      if (!this.rig.isOrtho()) this.rig.toggleProjection();
+      this.sketchOrtho = true;
+    }
+    this.scene.grid.group.visible = false; // hide the world ground grid; only the sketch grid shows
     this.setModelDimmed(true);
   }
   exitSketchView() {
+    if (this.sketchOrtho) {
+      if (this.rig.isOrtho() !== this.sketchPrevOrtho) this.rig.toggleProjection(); // restore projection
+      this.sketchOrtho = false;
+    }
+    this.scene.grid.group.visible = true;
     this.rig.restoreUp();
     this.setModelDimmed(false);
   }
+  private sketchPrevOrtho = false;
+  private sketchOrtho = false; // currently in the sketch's forced flat (ortho) view
 
   setModelDimmed(on: boolean) {
     if (!this.model) return;

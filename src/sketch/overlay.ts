@@ -227,6 +227,25 @@ export class SketchOverlay {
     }
     return null;
   }
+  /** Front-most COMMITTED region whose material the cursor ray hits — lets a visible
+   *  sketch's profile areas be selected directly in the model view (not just inside
+   *  the extrude tool). Only visible sketches contribute regions (see update()), so
+   *  this is inert when every sketch is hidden/consumed. */
+  committedRegionAtRay(ray: THREE.Ray): WorldRegion | null {
+    const hit = new THREE.Vector3();
+    let best: WorldRegion | null = null;
+    let bestDist = Infinity;
+    for (const wr of this.regions) {
+      if (!ray.intersectPlane(wr.plane.plane, hit)) continue;
+      if (!pointInRegion(wr.plane.to2D(hit), wr.region)) continue;
+      const d = ray.origin.distanceToSquared(hit);
+      if (d < bestDist) {
+        bestDist = d;
+        best = wr;
+      }
+    }
+    return best;
+  }
   private recolorFills() {
     for (const wr of [...this.regions, ...this.activeRegions]) {
       if (wr.fill) wr.fill.material = this.fillMaterial(wr);

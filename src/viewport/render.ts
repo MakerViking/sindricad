@@ -114,6 +114,7 @@ export function buildModel(
     line.name = "edge";
     line.userData.edgeId = e.id;
     line.userData.points = e.points;
+    line.userData.body = e.body;
     edges.push(line);
   }
 

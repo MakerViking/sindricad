@@ -1506,6 +1506,62 @@ button.finish:hover {
   color: var(--text-mute, #6b7280);
   font-size: 10px;
 }
+.choice-btn.choice-primary {
+  background: var(--accent, #ff7a3c);
+  border-color: var(--accent, #ff7a3c);
+  color: #fff;
+}
+.choice-btn.choice-primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* checkbox list (chooseMulti) + read-only file list (listModal) */
+.choice-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow: auto;
+  margin-bottom: var(--s-4, 12px);
+}
+.choice-check {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3, 8px);
+  padding: 7px 8px;
+  border-radius: var(--r-md, 8px);
+  color: var(--text, #e6e8ec);
+  font-size: 12px;
+  cursor: pointer;
+}
+.choice-check:hover {
+  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
+}
+.choice-check small {
+  color: var(--text-mute, #6b7280);
+  font-size: 10px;
+  margin-left: auto;
+}
+.choice-list {
+  list-style: none;
+  margin: 0 0 var(--s-4, 12px);
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+  font-size: 12px;
+  color: var(--text, #e6e8ec);
+}
+.choice-list li {
+  padding: 5px 8px;
+  border-radius: var(--r-sm, 6px);
+  font-family: var(--mono, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.choice-list li:nth-child(odd) {
+  background: var(--raised, #22262e);
+}
 
 /* --- Cmd-K command palette --- */
 .cmdk-backdrop {

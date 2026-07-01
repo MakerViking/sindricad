@@ -90,7 +90,7 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
     } else if (scope === "one") {
       const picked = await choose<string>(
         "Which body to export?",
-        bodies.map((b) => ({ value: b.id, label: b.name })),
+        bodies.map((b) => ({ value: b.id, label: store.bodyName(b.id) ?? b.name })),
       );
       if (!picked) return;
       opts.body = picked;
@@ -112,8 +112,13 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
   const res = await geometry.export(store.document, fmt, path, opts);
   if (!res.ok) {
     await reportError(`Export failed: ${res.message ?? "unknown error"}`);
-  } else if (res.paths && res.paths.length) {
-    await reportError(`Exported ${res.paths.length} bodies as separate files (…-<body>${path.slice(path.lastIndexOf("."))}).`);
+    return;
+  }
+  // Confirm what was written — list every file for "separate", the single path otherwise.
+  const written = res.paths?.length ? res.paths : res.path ? [res.path] : [];
+  if (written.length) {
+    const { listModal } = await import("../ui/choice");
+    await listModal(`Exported ${written.length} file${written.length > 1 ? "s" : ""}`, written);
   }
 }
 

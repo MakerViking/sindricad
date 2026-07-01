@@ -68,6 +68,7 @@ export class MoveTool {
     this.lastAxis = -1;
     this.previewId = this.store.nextId();
     this.anchor.copy(this.viewport.bodiesCentroid(bodies));
+    this.viewport.beginBodyMoveGhost(bodies); // live mesh translate during drag (no rebuild)
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
@@ -173,12 +174,10 @@ export class MoveTool {
     this.raf = requestAnimationFrame(this.boundTick);
   }
 
+  /** Instant ghost: translate the moved bodies' mesh + edges in place (no sidecar
+   *  round-trip, so the drag is snappy). The real `move` is committed on release. */
   private refreshPreview() {
-    if (this.t.lengthSq() < 1e-9) {
-      this.store.setPreview(null);
-      return;
-    }
-    this.store.setPreview(this.buildFeature());
+    this.viewport.setBodyMoveOffset(this.t);
   }
 
   private buildFeature(): Feature {
@@ -239,7 +238,7 @@ export class MoveTool {
     }
     if (this.t.lengthSq() < 1e-9) return this.cancel(); // nothing moved
     const feature = this.buildFeature();
-    this.store.setPreview(null);
+    this.viewport.endBodyMoveGhost(false); // keep the ghost position; the rebuild replaces it
     this.store.addFeature(feature);
     const done = this.onDone;
     this.cleanup();
@@ -247,7 +246,7 @@ export class MoveTool {
   }
 
   cancel() {
-    this.store.setPreview(null);
+    this.viewport.endBodyMoveGhost(true); // restore the mesh to its un-moved position
     const done = this.onDone;
     this.cleanup();
     done?.(null);
@@ -255,6 +254,7 @@ export class MoveTool {
 
   private cleanup() {
     const el = this.viewport.domElement;
+    this.viewport.endBodyMoveGhost(false); // no-op if commit/cancel already ended it
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerdown", this.boundDown, true);
     el.removeEventListener("pointerup", this.boundUp);

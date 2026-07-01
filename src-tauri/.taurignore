@@ -1,0 +1,13 @@
+# Files the running app writes at runtime that must NOT trigger a `tauri dev`
+# restart. `tauri dev` watches the whole src-tauri/ directory, and the dev binary's
+# working directory IS src-tauri/ — so saving a document or exporting a mesh into
+# the default (relative) path lands here. Without these ignores, that write makes
+# the dev watcher kill + relaunch the app mid-session, closing the window and
+# wiping the in-memory document (looks like a "crash on save", loses unsaved work).
+*.sindri
+*.stl
+*.step
+*.stp
+*.3mf
+*.obj
+*.brep

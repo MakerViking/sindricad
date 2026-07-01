@@ -105,17 +105,68 @@ def edge_polylines(shape, n=24):
     return out
 
 
-def edge_polylines_by_body(bodies, n=24):
-    """Like edge_polylines, but samples each body's edges and tags every polyline
-    with its body id — so the frontend can hide a hidden body's WIREFRAME too, not
-    just its faces. Ids stay globally unique via a running counter."""
+def _planar_face_normals(sh):
+    """Map face-index -> analytic plane normal (cheap, exact) for PLANAR faces; None
+    for curved faces. Plus the edge->faces ancestor map, so a single pass over edges
+    can both seam-test and sample them. Returns (face_index_map, normals, edge_map)."""
+    from OCP.TopExp import TopExp
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopTools import (
+        TopTools_IndexedDataMapOfShapeListOfShape,
+        TopTools_IndexedMapOfShape,
+    )
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane
+    from OCP.TopoDS import TopoDS
+
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(sh.wrapped, TopAbs_FACE, fmap)
+    fnorm = {}
+    for i in range(1, fmap.Extent() + 1):
+        try:
+            surf = BRepAdaptor_Surface(TopoDS.Face_s(fmap.FindKey(i)))
+            if surf.GetType() == GeomAbs_Plane:
+                d = surf.Plane().Axis().Direction()
+                fnorm[i] = (d.X(), d.Y(), d.Z())
+        except Exception:
+            pass
+    em = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(sh.wrapped, TopAbs_EDGE, TopAbs_FACE, em)
+    return fmap, fnorm, em
+
+
+def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
+    """Sample each body's edges as polylines tagged with the body id (so the frontend
+    can hide a hidden body's WIREFRAME). Edges between two COPLANAR planar faces are a
+    boolean's leftover seam — not a real edge — so they're dropped (Fusion-style),
+    making a merged part read as one continuous face. One pass over the edge->face map:
+    seam-test and sample together. Display-only; touches no geometry (can't hang)."""
+    import math
+
+    cos_tol = math.cos(math.radians(1.0))
     out = []
     k = 0
     for b in bodies:
         sh = b.get("shape")
         if sh is None:
             continue
-        for e in sh.edges():
+        if not (hide_coplanar_seams and getattr(sh, "wrapped", None) is not None):
+            for e in sh.edges():
+                pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
+                out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
+                k += 1
+            continue
+        from build123d import Edge
+
+        fmap, fnorm, em = _planar_face_normals(sh)
+        for i in range(1, em.Extent() + 1):
+            faces = em.FindFromIndex(i)
+            if faces.Extent() == 2:
+                fl = list(faces)
+                n0, n1 = fnorm.get(fmap.FindIndex(fl[0])), fnorm.get(fmap.FindIndex(fl[1]))
+                if n0 and n1 and abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) > cos_tol:
+                    continue  # coplanar seam — don't draw it
+            e = Edge(em.FindKey(i))
             pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
             out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
             k += 1

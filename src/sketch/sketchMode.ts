@@ -5,21 +5,23 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { Feature, PlaneSpec, SketchConstraint } from "../types";
+import type { Feature, PlaneSpec, SketchConstraint, SketchPattern } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
 import { SketchDimensions } from "./sketchDimensions";
 import { entityDims, type DimField } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
-import { newEntityId } from "./id";
+import { newEntityId, newPatternId, notePatternId } from "./id";
 import { circumcenter } from "./arc";
 import { compileAndSolve } from "./sketchSolve";
 import { resolveEntities, toSketchEntity } from "./resolve";
+import { expandPattern } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { detectRegions } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
+import { setPrompt } from "../ui/prompt";
 
 export type SketchTool =
   | "select"
@@ -50,7 +52,20 @@ export type SketchTool =
   | "coincident"
   | "concentric"
   | "symmetric"
-  | "midpoint";
+  | "midpoint"
+  | "patternRect"
+  | "patternCircular"
+  | "hexHoles"
+  | "honeycomb"
+  | "boltCircle"
+  | "gridHoles";
+
+// preset hole patterns: self-contained (click a center, no source selection)
+const PRESET_PATTERNS = new Set<SketchTool>(["hexHoles", "honeycomb", "boltCircle", "gridHoles"]);
+// patterns that replicate the current selection (Fusion-style)
+const ENTITY_PATTERNS = new Set<SketchTool>(["patternRect", "patternCircular"]);
+// every pattern tool (presets + entity patterns)
+const PATTERN_TOOLS = new Set<SketchTool>([...PRESET_PATTERNS, ...ENTITY_PATTERNS]);
 
 const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "horizontal",
@@ -96,8 +111,13 @@ export class SketchMode {
   private selected = new Set<string>(); // selected entity ids (select tool)
   private ctxMenu: HTMLDivElement | null = null; // right-click delete menu
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
+  private patterns: SketchPattern[] = []; // associative pattern definitions
+  private pendingPattern: SketchPattern | null = null; // one being placed (live)
+  private patternCenter: THREE.Vector2 | null = null; // its center (first click)
+  private editOriginal: SketchPattern | null = null; // when editing, the pre-edit copy (Esc restores)
   private lastDof = -1;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
+  private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
   private solveBusy = false; // a solve is in flight (drag or constraint)
   private solveDirty = false; // a constraint/dimension solve is pending
@@ -146,6 +166,9 @@ export class SketchMode {
     // load existing entities if editing
     this.entities = [];
     this.constraints = [];
+    this.patterns = [];
+    this.pendingPattern = null;
+    this.patternCenter = null;
     this.selected.clear();
     this.overlay.clearRegionSelection(); // fresh session: drop any stale area selection
     this.lastDof = -1;
@@ -155,6 +178,8 @@ export class SketchMode {
       if (f && f.type === "sketch") {
         this.entities = resolveEntities(f, store.document.parameters);
         this.constraints = f.constraints ? f.constraints.map((c) => ({ ...c })) : [];
+        this.patterns = f.patterns ? f.patterns.map((p) => ({ ...p })) : [];
+        for (const p of this.patterns) notePatternId(p.id); // reserve ids so new ones don't collide
       }
     }
 
@@ -180,13 +205,15 @@ export class SketchMode {
   finish(commit = true) {
     if (!this.active) return;
     const store = this.store!;
-    if (commit && this.entities.length > 0) {
+    if (this.pendingPattern) { this.patterns.push(this.pendingPattern); this.pendingPattern = null; }
+    if (commit && (this.entities.length > 0 || this.patterns.length > 0)) {
       const sketch: Feature = {
         id: this.editingId ?? store.nextId(),
         type: "sketch",
         plane: this.plane.serialize(),
         entities: this.entities.map(toSketchEntity),
         ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
+        ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
       };
       if (this.editingId) {
         store.replaceFeature(this.editingId, sketch);
@@ -211,6 +238,7 @@ export class SketchMode {
     this.closeCtxMenu();
     this.selected.clear();
     this.dragFrom = null;
+    this.dragSnapshot = null;
     this.pendingDrag = null;
     this.dim.hide();
     this.dims.hide();
@@ -231,6 +259,7 @@ export class SketchMode {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
     this.tool = "select";
+    this.overlay.setActiveSketch([]); // clear in-progress curves (else they orphan on screen)
     this.overlay.setActiveRegions([], this.plane); // drop active-sketch fills (committed ones re-render)
     if (this.store) this.overlay.update(this.store.document);
     this.onState?.();
@@ -257,6 +286,10 @@ export class SketchMode {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
+    if (this.pendingPattern) this.patterns.push(this.pendingPattern); // don't lose an in-progress pattern
+    this.pendingPattern = null;
+    this.editOriginal = null;
+    this.patternCenter = null;
     this.onState?.();
   }
 
@@ -268,7 +301,7 @@ export class SketchMode {
     // profile-area fills for the active sketch (hidden from overlay.update),
     // so areas are visible + selectable while drawing
     this.overlay.setActiveRegions(
-      detectRegions(this.editingId ?? "__active__", this.entities),
+      detectRegions(this.editingId ?? "__active__", [...this.entities, ...this.derivedEntities()]),
       this.plane,
     );
     this.candidates = candidatesFromEntities(this.entities);
@@ -343,7 +376,7 @@ export class SketchMode {
 
   private onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return; // left only; middle/right still navigate
-    const hit = this.snapAt(e.clientX, e.clientY);
+    const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     e.preventDefault();
     const p = hit.p;
@@ -353,11 +386,23 @@ export class SketchMode {
       const gp = this.pickPoint(p);
       if (gp) {
         this.dragFrom = gp.clone();
+        this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
       }
-      // no draggable vertex under the cursor → (de)select the entity body
+      // no draggable vertex under the cursor → (de)select the entity body / area
       const raw = this.planePoint(e) ?? p;
+      // DOUBLE-click a pattern's derived copy → edit the owning pattern (associative).
+      // A SINGLE click must NOT edit — it selects the cell's profile area for extrude
+      // (the whole point of a patterned hole/cell, esp. a thin sub-area carved by a
+      // crossing curve, which is always within pick-tolerance of an outline edge).
+      const derived = this.derivedEntities();
+      const di = pickEntity(derived, raw, this.pickTol());
+      if (di >= 0 && e.detail >= 2) {
+        this.editPattern(derived[di].id.split("#")[0]);
+        return;
+      }
+      // a real (hand-drawn) entity's body under the cursor → (de)select it
       const idx = pickEntity(this.entities, raw, this.pickTol());
       if (idx >= 0) {
         const id = this.entities[idx].id;
@@ -369,7 +414,8 @@ export class SketchMode {
         this.refreshActive();
         return;
       }
-      // no entity under the cursor → try selecting a profile AREA to extrude
+      // otherwise select a profile AREA to extrude — includes patterned cells and
+      // sub-areas carved by a crossing curve
       const wr = this.overlay.activeRegionAt(raw);
       if (wr) {
         this.overlay.toggleRegionSelection(wr, e.shiftKey || e.ctrlKey || e.metaKey);
@@ -383,6 +429,7 @@ export class SketchMode {
       this.refreshActive();
       return;
     }
+    if (PATTERN_TOOLS.has(this.tool)) return this.patternClick(p);
     if (this.tool === "arc") return this.arcClick(p);
     if (this.tool === "spline") return this.splineClick(p);
     if (this.tool === "point") return this.pointClick(p);
@@ -518,7 +565,114 @@ export class SketchMode {
     this.onState?.();
   }
 
-  // --- polygon: click center, then a vertex point → inscribed n-gon ------
+  // --- patterns: click to place, drag to size, type counts, click to commit. Each
+  // persists as an editable (associative) definition. Entity patterns (rect/circular)
+  // replicate the current selection; presets emit holes. -------------------------
+  private patternClick(p: THREE.Vector2) {
+    if (!this.patternCenter) {
+      if (ENTITY_PATTERNS.has(this.tool) && this.selected.size === 0) {
+        setPrompt("Select entities first, then choose a pattern tool");
+        return;
+      }
+      this.patternCenter = p.clone();
+      this.pendingPattern = this.defaultPattern(this.tool, p);
+      this.dim.show(this.patternDimDefs(this.pendingPattern.type), () => this.commitPattern());
+      this.refreshActive();
+      return;
+    }
+    this.commitPattern(); // second click commits
+  }
+
+  private defaultPattern(tool: SketchTool, c: THREE.Vector2): SketchPattern {
+    const id = newPatternId();
+    const sources = [...this.selected];
+    if (tool === "boltCircle") return { id, type: "boltCircle", cx: c.x, cy: c.y, bcd: 40, count: 6, diameter: 6 };
+    if (tool === "gridHoles") return { id, type: "gridHoles", cx: c.x, cy: c.y, diameter: 6, countX: 3, countY: 3, spacingX: 12, spacingY: 12 };
+    if (tool === "hexHoles") return { id, type: "hexHoles", cx: c.x, cy: c.y, diameter: 6, spacing: 12, rings: 2 };
+    if (tool === "honeycomb") return { id, type: "honeycomb", cx: c.x, cy: c.y, diameter: 12, spacing: 13, rings: 2 };
+    if (tool === "patternCircular") return { id, type: "patternCircular", sources, cx: c.x, cy: c.y, count: 6, angle: 360 };
+    return { id, type: "patternRect", sources, countX: 3, countY: 1, spacingX: 15, spacingY: 15 }; // patternRect
+  }
+
+  private patternDimDefs(type: SketchPattern["type"]) {
+    if (type === "boltCircle") return [{ name: "count", label: "N" }, { name: "diameter", label: "⌀" }];
+    if (type === "gridHoles") return [{ name: "countX", label: "Nx" }, { name: "countY", label: "Ny" }, { name: "diameter", label: "⌀" }];
+    if (type === "hexHoles" || type === "honeycomb") return [{ name: "rings", label: "Rings" }, { name: "diameter", label: "⌀" }];
+    if (type === "patternCircular") return [{ name: "count", label: "N" }, { name: "angle", label: "∠", kind: "angle" as const }];
+    return [{ name: "countX", label: "Nx" }, { name: "countY", label: "Ny" }]; // patternRect
+  }
+
+  /** Live sizing: cursor offset/distance from the start point drives the spatial
+   *  param (bolt dia / spacing / grid-step); typed fields drive counts/angle. */
+  private patternMove(p: THREE.Vector2, e: PointerEvent) {
+    if (!this.patternCenter || !this.pendingPattern) return;
+    const pat = this.pendingPattern;
+    const dx = p.x - this.patternCenter.x, dy = p.y - this.patternCenter.y;
+    const r = Math.hypot(dx, dy);
+    const dimN = (name: string, fallback: number) => Math.round(this.dim.getValue(name) ?? fallback);
+    if (pat.type === "boltCircle") {
+      if (r > 1) pat.bcd = Math.round(2 * r * 10) / 10;
+      pat.count = Math.max(1, dimN("count", pat.count as number));
+      pat.diameter = this.dim.getValue("diameter") ?? (pat.diameter as number);
+    } else if (pat.type === "gridHoles") {
+      if (r > 1) pat.spacingX = pat.spacingY = Math.round((r / 1.5) * 10) / 10;
+      pat.countX = Math.max(1, dimN("countX", pat.countX as number));
+      pat.countY = Math.max(1, dimN("countY", pat.countY as number));
+      pat.diameter = this.dim.getValue("diameter") ?? (pat.diameter as number);
+    } else if (pat.type === "hexHoles" || pat.type === "honeycomb") {
+      if (r > 1) pat.spacing = Math.round((r / 2) * 10) / 10;
+      pat.rings = Math.max(0, dimN("rings", pat.rings as number));
+      pat.diameter = this.dim.getValue("diameter") ?? (pat.diameter as number);
+    } else if (pat.type === "patternRect") {
+      // cursor offset from the start point = the spacing vector (the second instance)
+      if (Math.abs(dx) > 1) pat.spacingX = Math.round(dx * 10) / 10;
+      if (Math.abs(dy) > 1) pat.spacingY = Math.round(dy * 10) / 10;
+      pat.countX = Math.max(1, dimN("countX", pat.countX as number));
+      pat.countY = Math.max(1, dimN("countY", pat.countY as number));
+    } else if (pat.type === "patternCircular") {
+      pat.count = Math.max(1, dimN("count", pat.count as number));
+      pat.angle = this.dim.getValue("angle") ?? (pat.angle as number);
+    }
+    this.dim.position(e.clientX, e.clientY);
+    this.refreshActive();
+  }
+
+  private commitPattern() {
+    if (!this.pendingPattern) return;
+    this.patterns.push(this.pendingPattern);
+    this.pendingPattern = null;
+    this.editOriginal = null;
+    this.patternCenter = null;
+    this.dim.hide();
+    setPrompt(null);
+    if (this.selected.size) this.selected.clear(); // the pattern now owns the copies
+    this.setTool("select"); // finish: one pattern per invocation (refreshes + notifies)
+  }
+
+  /** Associative editing: re-open an existing pattern's placement flow with its
+   *  current values, so dragging/typing re-derives it live. Esc restores it. */
+  private editPattern(patId: string) {
+    const i = this.patterns.findIndex((p) => p.id === patId);
+    if (i < 0) return;
+    const pat = this.patterns[i];
+    this.patterns.splice(i, 1); // pull it out; commit/cancel puts it back
+    this.editOriginal = { ...pat };
+    this.pendingPattern = pat;
+    this.patternCenter = new THREE.Vector2(
+      "cx" in pat ? (pat.cx as number) : 0,
+      "cy" in pat ? (pat.cy as number) : 0,
+    );
+    this.tool = pat.type;
+    const cur: Record<string, number> = {};
+    for (const d of this.patternDimDefs(pat.type)) cur[d.name] = (pat as unknown as Record<string, number>)[d.name];
+    this.dim.show(this.patternDimDefs(pat.type), () => this.commitPattern());
+    this.dim.updateFromCursor(cur);
+    setPrompt("Edit the pattern — drag/type to change · click to commit · Delete to remove · Esc to keep");
+    this.refreshActive();
+    this.onState?.();
+  }
+
+
   private polygonClick(p: THREE.Vector2) {
     if (!this.clickPts.length) {
       this.clickPts = [p.clone()];
@@ -764,7 +918,7 @@ export class SketchMode {
       }
       return;
     }
-    const hit = this.snapAt(e.clientX, e.clientY);
+    const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     this.lastCursor.copy(hit.p);
     this.showSnap(hit);
@@ -782,6 +936,10 @@ export class SketchMode {
       this.multiClickPreview(hit.p);
       return;
     }
+    if (PATTERN_TOOLS.has(this.tool)) {
+      this.patternMove(hit.p, e);
+      return;
+    }
 
     if (this.base) {
       const geom = this.computeGeometry(this.base, hit.p);
@@ -795,6 +953,23 @@ export class SketchMode {
 
   private onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return; // typing in a dim field
+    // a pattern being placed/edited: Delete removes it, Esc keeps it as-is
+    if (this.pendingPattern) {
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        this.pendingPattern = null; this.editOriginal = null; this.patternCenter = null;
+        this.dim.hide(); setPrompt(null); this.refreshActive(); this.onState?.();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (this.editOriginal) this.patterns.push(this.editOriginal); // restore the pre-edit pattern
+        else this.patterns.push(this.pendingPattern); // a fresh placement: keep it at its current values
+        this.pendingPattern = null; this.editOriginal = null; this.patternCenter = null;
+        this.dim.hide(); setPrompt(null); this.refreshActive(); this.onState?.();
+        return;
+      }
+    }
     if (e.key === "Delete" || e.key === "Backspace") {
       if (this.tool === "select" && this.selected.size) {
         e.preventDefault();
@@ -804,6 +979,17 @@ export class SketchMode {
     }
     if (e.key === "Escape") {
       e.preventDefault();
+      if (this.dragFrom) {
+        // cancel an in-progress drag: revert geometry to its pre-drag positions
+        if (this.dragSnapshot) this.entities = this.dragSnapshot;
+        this.dragSnapshot = null;
+        this.dragFrom = null;
+        this.pendingDrag = null;
+        this.conflict = false;
+        this.refreshActive();
+        this.onState?.();
+        return;
+      }
       if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length ||
           this.clickPts.length || this.pendingEndpoint || this.pendingEndpoint2) {
         this.base = null;
@@ -826,6 +1012,11 @@ export class SketchMode {
       return;
     }
     if (e.key === "Enter") {
+      if (this.pendingPattern) {
+        e.preventDefault();
+        this.commitPattern();
+        return;
+      }
       if (this.tool === "spline" && this.splinePts.length) {
         e.preventDefault();
         this.finishSpline();
@@ -839,6 +1030,10 @@ export class SketchMode {
     }
     // tool shortcuts inside the sketch
     const k = e.key.toLowerCase();
+    // Q/E roll the sketch view ±15° about its normal. Stop the event so the global
+    // keymap (q=Press/Pull, e=Extrude) doesn't also fire and kick us out of the sketch.
+    if (k === "q") { e.preventDefault(); e.stopImmediatePropagation(); this.viewport.rig.roll(-Math.PI / 12); return; }
+    if (k === "e") { e.preventDefault(); e.stopImmediatePropagation(); this.viewport.rig.roll(Math.PI / 12); return; }
     if (k === "l") this.setTool("line");
     else if (k === "r") this.setTool("rectangle");
     else if (k === "c") this.setTool("circle");
@@ -941,10 +1136,12 @@ export class SketchMode {
   }
 
   // --- snapping + rendering ---------------------------------------------
-  private snapAt(clientX: number, clientY: number) {
+  private snapAt(clientX: number, clientY: number, noSnap = false) {
     const world = this.viewport.screenToPlane(clientX, clientY, this.plane.plane);
     if (!world) return null;
     const p2d = this.plane.to2D(world);
+    // Hold Ctrl to suppress snapping for fine placement (raw cursor position).
+    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world };
     const res = snap(
       p2d,
       this.candidates, // cached; rebuilt only when entities change
@@ -970,6 +1167,23 @@ export class SketchMode {
     return this.conflict ? 0xff4444 : this.lastDof === 0 ? 0xffffff : CURVE_COLOR;
   }
 
+  /** All pattern definitions including the one being placed (for live preview). */
+  private allPatterns(): SketchPattern[] {
+    return this.pendingPattern ? [...this.patterns, this.pendingPattern] : this.patterns;
+  }
+
+  /** Derived (copy) entities from every pattern — render/region only, never edited
+   *  or snapped individually. Mirrors the build/persist expansion. */
+  private derivedEntities(): ResolvedEntity[] {
+    const pats = this.allPatterns();
+    if (!pats.length) return [];
+    const params = this.store?.document.parameters ?? {};
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    const out: ResolvedEntity[] = [];
+    for (const pat of pats) out.push(...expandPattern(pat, byId, params));
+    return out;
+  }
+
   private activeCurves(): THREE.Object3D[] {
     const objs: THREE.Object3D[] = [];
     if (this.selected.size) {
@@ -981,6 +1195,8 @@ export class SketchMode {
       objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
     }
     if (this.dimsVisible) objs.push(...dimensionLineObjects(this.entities, this.plane));
+    const derived = this.derivedEntities();
+    if (derived.length) objs.push(...curveObjects(derived, this.plane, this.activeColor()));
     return objs;
   }
 
@@ -1307,7 +1523,7 @@ export class SketchMode {
           const d = this.pendingDrag;
           this.pendingDrag = null;
           const r = await compileAndSolve(this.entities, this.constraints, d);
-          if (!this.active) break;
+          if (!this.active || !this.dragFrom) break; // drag ended/cancelled mid-solve
           this.conflict = r.conflicts.length > 0;
           if (!this.conflict) this.entities = r.entities;
           this.lastDof = r.dof;
@@ -1370,6 +1586,7 @@ export class SketchMode {
   private endDrag(pointerId?: number) {
     if (!this.dragFrom) return;
     this.dragFrom = null;
+    this.dragSnapshot = null; // committed — drop the revert buffer
     this.pendingDrag = null;
     if (pointerId != null) {
       try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }

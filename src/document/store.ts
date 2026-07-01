@@ -47,6 +47,7 @@ export class DocumentStore {
   private suppressed = new Set<string>(); // feature ids skipped on rebuild (suppress)
   private sketchVis = new Map<string, boolean>(); // explicit per-sketch show/hide overrides
   private bodyVis = new Map<string, boolean>(); // explicit per-body show/hide overrides (id → visible)
+  private planeVis = new Map<string, boolean>(); // explicit per-construction-plane show/hide overrides
   private bodyNames = new Map<string, string>(); // explicit per-body display-name overrides (id → name)
   private palette: { name: string; color: string }[] = DEFAULT_PALETTE.map((s) => ({ ...s }));
   private bodyColors = new Map<string, number>(); // per-body palette-slot assignment (id → slot index)
@@ -120,6 +121,7 @@ export class DocumentStore {
     this.suppressed.clear();
     this.sketchVis.clear();
     this.bodyVis.clear();
+    this.planeVis.clear();
     this.bodyNames.clear();
     this.palette = DEFAULT_PALETTE.map((s) => ({ ...s }));
     this.bodyColors.clear();
@@ -319,6 +321,19 @@ export class DocumentStore {
     this.emitBuild();
   }
 
+  // --- construction-plane visibility overrides (display-only; datum planes are
+  // synced to the viewport client-side, so a toggle just re-syncs the quads — no
+  // rebuild and no emitBuild, the caller re-syncs the planes + refreshes the tree) ---
+  /** true unless the user has hidden this construction plane (planes default to visible). */
+  isPlaneVisible(id: string): boolean {
+    return this.planeVis.get(id) ?? true;
+  }
+  /** show/hide a construction plane (persisted with the document). */
+  setPlaneVisibility(id: string, visible: boolean) {
+    this.planeVis.set(id, visible);
+    this.markDirty();
+  }
+
   // --- body name overrides (display-only; no geometry effect) -----------------
   /** display-name override for a body, or undefined (→ use the rebuilt name). */
   bodyName(id: string): string | undefined {
@@ -374,6 +389,7 @@ export class DocumentStore {
     if (this.rollback !== null) out.rollback = this.rollback;
     if (this.sketchVis.size) out.sketchVisibility = Object.fromEntries(this.sketchVis);
     if (this.bodyVis.size) out.bodyVisibility = Object.fromEntries(this.bodyVis);
+    if (this.planeVis.size) out.planeVisibility = Object.fromEntries(this.planeVis);
     if (this.bodyNames.size) out.bodyNames = Object.fromEntries(this.bodyNames);
     if (this.bodyColors.size) {
       out.bodyColors = Object.fromEntries(this.bodyColors);
@@ -391,6 +407,7 @@ export class DocumentStore {
     this.rollback = parsed.rollback ?? null;
     this.sketchVis = new Map(Object.entries(parsed.sketchVisibility ?? {}));
     this.bodyVis = new Map(Object.entries(parsed.bodyVisibility ?? {}));
+    this.planeVis = new Map(Object.entries(parsed.planeVisibility ?? {}));
     this.bodyNames = new Map(Object.entries(parsed.bodyNames ?? {}));
     this.bodyColors = new Map(Object.entries(parsed.bodyColors ?? {}).map(([k, v]) => [k, Number(v)]));
     this.palette = parsed.palette?.length ? parsed.palette.map((s) => ({ ...s })) : DEFAULT_PALETTE.map((s) => ({ ...s }));
@@ -428,7 +445,10 @@ export class DocumentStore {
       .slice(0, this.rollbackIndex)
       .filter((f) => !this.suppressed.has(f.id));
     if (this.preview) features.push(this.preview);
-    return { parameters: this.doc.parameters, features };
+    // Body visibility travels with the rebuild so the sidecar can keep hidden
+    // bodies out of extrude booleans (a hidden body is protected from edits).
+    const bodyVisibility = this.bodyVis.size ? Object.fromEntries(this.bodyVis) : undefined;
+    return { parameters: this.doc.parameters, features, bodyVisibility };
   }
 
   async rebuildNow() {

@@ -28,7 +28,10 @@ const HANDLE_CUT = 0xff6b5c; // red when pushing in (cut)
 export class PressPullTool {
   active = false;
   private phase: Phase = "pick";
-  private face: Selector = { kind: "face", by: "nearest", point: [0, 0, 0] };
+  private faces: Selector[] = []; // one or more faces pushed together by `value`
+  private faceIds: number[] = []; // their mesh faceIds (for the instant ghost preview)
+  private upTo: Selector | null = null; // "extrude up to this surface" target (else by distance)
+  private pickingTarget = false; // waiting for the user to click the up-to target surface
   private bodyId: string | null = null; // the body that owns the picked face
   private anchor = new THREE.Vector3(); // gizmo origin = the clicked point on the face
   private axis = new THREE.Vector3(0, 0, 1); // drag axis (unit) = face outward normal
@@ -78,12 +81,12 @@ export class PressPullTool {
     el.addEventListener("pointerup", this.boundUp);
     window.addEventListener("keydown", this.boundKey, true);
 
-    // pre-selection: one face already selected → skip straight to the drag
-    const pre = this.viewport.selectedFaceForPressPull();
+    // pre-selection: faces already selected → skip straight to the drag
+    const pre = this.viewport.selectedFacesForPressPull();
     if (pre) {
-      this.beginDrag(pre.selector, pre.anchor, pre.normal, pre.bodyId);
+      this.beginDrag(pre.selectors, pre.faceIds, pre.anchor, pre.normal, pre.bodyId);
     } else {
-      setPrompt("Select a face to Press/Pull");
+      setPrompt("Select a face to Press/Pull (Ctrl+click adds more)");
     }
   }
 
@@ -117,10 +120,35 @@ export class PressPullTool {
       if (!hit) return; // missed the body — let the click orbit
       e.preventDefault();
       e.stopImmediatePropagation();
-      this.beginDrag(hit.selector, hit.anchor, hit.normal, hit.bodyId);
+      this.beginDrag([hit.selector], [hit.faceId], hit.anchor, hit.normal, hit.bodyId);
       return;
     }
-    // drag phase: grabbing the handle scrubs; a clean click elsewhere commits
+    // drag phase: clicking the "up to" target surface (after pressing T)
+    if (this.pickingTarget) {
+      const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
+      if (hit && hit.bodyId === this.bodyId) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.upTo = hit.selector;
+        this.commitUpTo();
+      }
+      return;
+    }
+    // drag phase: Ctrl/Cmd-click another face on the SAME body adds it to the
+    // operation (all faces share the one distance). Do this before the grab check.
+    if (e.ctrlKey || e.metaKey) {
+      const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
+      if (hit && hit.bodyId === this.bodyId) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        this.faces.push(hit.selector);
+        this.faceIds.push(hit.faceId);
+        this.refreshPreview();
+        setPrompt(`${this.faces.length} faces — drag or type a distance · click to commit · Esc to cancel`);
+      }
+      return;
+    }
+    // grabbing the handle scrubs; a clean click elsewhere commits
     this.downPos = { x: e.clientX, y: e.clientY };
     this.downOnGizmo = this.hitGizmo(e.clientX, e.clientY);
     if (this.downOnGizmo) {
@@ -147,11 +175,27 @@ export class PressPullTool {
   }
 
   private onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") this.cancel();
+    if (e.key === "Escape") {
+      if (this.pickingTarget) {
+        this.pickingTarget = false;
+        setPrompt("Drag the arrow · type a value · T = extrude up to a surface · click to commit · Esc to cancel");
+        return;
+      }
+      this.cancel();
+      return;
+    }
+    if ((e.key === "t" || e.key === "T") && this.phase === "drag" && !this.pickingTarget) {
+      this.pickingTarget = true;
+      this.viewport.clearPressPullGhost();
+      setPrompt("Click the surface to extrude UP TO (on the same body) · Esc to go back");
+    }
   }
 
-  private beginDrag(face: Selector, anchor: THREE.Vector3, normal: THREE.Vector3, bodyId: string | null = null) {
-    this.face = face;
+  private beginDrag(faces: Selector[], faceIds: number[], anchor: THREE.Vector3, normal: THREE.Vector3, bodyId: string | null = null) {
+    this.faces = faces;
+    this.faceIds = faceIds;
+    this.upTo = null;
+    this.pickingTarget = false;
     this.bodyId = bodyId;
     this.anchor.copy(anchor);
     this.axis.copy(normal).normalize();
@@ -165,7 +209,7 @@ export class PressPullTool {
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ distance: 0 });
     setPrompt(
-      "Drag the arrow to set distance · type a value + Enter · negative = cut/inward · click to commit · Esc to cancel",
+      "Drag the arrow · type a value + Enter · T = extrude up to a surface · negative = cut · click to commit · Esc to cancel",
     );
     this.raf = requestAnimationFrame(this.boundTick);
   }
@@ -199,14 +243,11 @@ export class PressPullTool {
     }
   }
 
-  /** Push the current value to the sidecar as a live preview (or clear it for a
-   *  near-zero distance, where the feature would be degenerate). */
+  /** Instant ghost preview during the drag — a frontend-only translucent prism, no
+   *  kernel round-trip (that's why dragging feels immediate). The real OCCT geometry
+   *  is computed once on commit. Near-zero distance clears the ghost. */
   private refreshPreview() {
-    if (Math.abs(this.value) < 1e-3) {
-      this.store.setPreview(null);
-      return;
-    }
-    this.store.setPreview(this.buildFeature());
+    this.viewport.setPressPullGhost(this.faceIds, this.value);
   }
 
   /** A small arrow built in pixel units; tick() scales it to constant screen size.
@@ -238,10 +279,11 @@ export class PressPullTool {
     return {
       id: this.previewId,
       type: "press-pull",
-      face: this.face,
+      face: this.faces.length === 1 ? this.faces[0] : this.faces,
       distance: v,
       operation: v >= 0 ? "join" : "cut",
       body: this.bodyId ?? undefined,
+      ...(this.upTo ? { upTo: this.upTo } : {}),
     };
   }
 
@@ -251,14 +293,21 @@ export class PressPullTool {
     if (v != null) this.value = Math.sign(this.value || 1) * Math.abs(v);
     if (Math.abs(this.value) < 1e-3) return this.cancel(); // nothing set yet
     const feature = this.buildFeature();
-    this.store.setPreview(null);
+    this.store.addFeature(feature);
+    this.cleanup();
+    this.onDone?.(feature.id);
+  }
+
+  /** Commit an "extrude up to a surface" — the sidecar derives each face's distance
+   *  from the target, so we skip the near-zero-distance guard `commit()` applies. */
+  private commitUpTo() {
+    const feature = this.buildFeature();
     this.store.addFeature(feature);
     this.cleanup();
     this.onDone?.(feature.id);
   }
 
   cancel() {
-    this.store.setPreview(null);
     this.cleanup();
     this.onDone?.(null);
   }
@@ -270,6 +319,7 @@ export class PressPullTool {
     el.removeEventListener("pointerup", this.boundUp);
     window.removeEventListener("keydown", this.boundKey, true);
     el.style.cursor = "default";
+    this.viewport.clearPressPullGhost();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.dim.hide();

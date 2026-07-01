@@ -79,6 +79,23 @@ export type SketchConstraint =
   // symmetric: two endpoints mirror across a line (the symmetry axis)
   | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string };
 
+// A parametric pattern inside a sketch. Stored as a DEFINITION (sources + params)
+// and expanded to derived entities at build/render time, so it stays editable
+// (associative — change the count/spacing later). `sources` references entity ids.
+// Derived entities get ids "<pattern.id>#<n>": render/build-only, so constraints
+// and dimensions never target them (you dimension the source, like Fusion).
+export type SketchPattern =
+  // replicate the `sources` entities on a grid (skips the original instance)
+  | { id: string; type: "patternRect"; sources: string[]; countX: Num; countY: Num; spacingX: Num; spacingY: Num }
+  // replicate the `sources` entities around a center (cx,cy) over `angle` degrees
+  | { id: string; type: "patternCircular"; sources: string[]; cx: Num; cy: Num; count: Num; angle: Num }
+  // prebuilt hole generators — self-contained, emit circles at computed positions
+  | { id: string; type: "hexHoles"; cx: Num; cy: Num; diameter: Num; spacing: Num; rings: Num }
+  // honeycomb: hexagon OUTLINES tiled in a hex grid (each cell is a 6-line hexagon)
+  | { id: string; type: "honeycomb"; cx: Num; cy: Num; diameter: Num; spacing: Num; rings: Num }
+  | { id: string; type: "boltCircle"; cx: Num; cy: Num; bcd: Num; count: Num; diameter: Num }
+  | { id: string; type: "gridHoles"; cx: Num; cy: Num; diameter: Num; countX: Num; countY: Num; spacingX: Num; spacingY: Num };
+
 export type Plane3 = "XY" | "XZ" | "YZ";
 export type Axis3 = "X" | "Y" | "Z";
 
@@ -92,7 +109,7 @@ export type PlaneDef = {
 export type PlaneSpec = Plane3 | PlaneDef;
 
 export type Feature =
-  | { id: string; type: "sketch"; plane: PlaneSpec; entities: SketchEntity[]; constraints?: SketchConstraint[]; name?: string }
+  | { id: string; type: "sketch"; plane: PlaneSpec; entities: SketchEntity[]; constraints?: SketchConstraint[]; patterns?: SketchPattern[]; name?: string }
   | {
       id: string;
       type: "extrude";
@@ -106,11 +123,13 @@ export type Feature =
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }
   | { id: string; type: "chamfer"; edges: Selector | Selector[]; distance: Num }
-  // Press/Pull a single solid face. `distance` is signed (the tool sets the sign
-  // from the drag direction); `operation` is derived from the sign for the
+  // Press/Pull one or more solid faces. `distance` is signed (the tool sets the
+  // sign from the drag direction); `operation` is derived from the sign for the
   // timeline label. Planar faces extrude+boolean (boss/pocket); curved faces
-  // offset the surface (e.g. resize a hole).
-  | { id: string; type: "press-pull"; face: Selector; distance: Num; operation: "join" | "cut"; body?: string }
+  // offset the surface (e.g. resize a hole). With several faces, each is pushed by
+  // the same `distance` along its own normal. `upTo` (a target face selector), when
+  // set, extrudes each face up to that surface instead of by `distance`.
+  | { id: string; type: "press-pull"; face: Selector | Selector[]; distance: Num; operation: "join" | "cut"; body?: string; upTo?: Selector }
   | { id: string; type: "mirror"; plane: Plane3 }
   | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num }
   | { id: string; type: "loft"; sketches: string[] }
@@ -199,6 +218,8 @@ export interface CadDocument {
   sketchVisibility?: Record<string, boolean>;
   /** explicit per-body show/hide overrides (body id → visible). */
   bodyVisibility?: Record<string, boolean>;
+  /** explicit per-construction-plane show/hide overrides (datum feature id → visible). */
+  planeVisibility?: Record<string, boolean>;
   /** explicit per-body display-name overrides (body id → name). Body ids are
    *  positional, so a rename re-attaches if an upstream feature is reordered. */
   bodyNames?: Record<string, string>;
@@ -214,10 +235,10 @@ export interface CadDocument {
 // `diagnostics` behaves exactly as before.
 export interface ResolveDiag {
   feature_id?: string;
-  kind: "edge" | "face";
-  resolved: number; // how many entities the selector matched
+  kind: "edge" | "face" | "combine"; // "combine" = a dangling-reference combine skipped (no-op)
+  resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
-  lossy: boolean; // a marginal / drift-path match was taken
+  lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
   reason?: string;
 }
 

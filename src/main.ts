@@ -103,13 +103,19 @@ async function newDocument() {
   if (sketch.active) sketch.cancel();
   store.newDocument();
 }
+// Open must exit an active sketch first — else the in-progress sketch's curves
+// orphan on screen (loading the new doc doesn't touch the active-sketch overlay).
+async function openDoc() {
+  if (sketch.active) sketch.cancel();
+  await openDocument(store, geometry);
+}
 const spaceMouseSettings = new SpaceMouseSettings();
 new Menubar(document.getElementById("menubar")!, [
   {
     label: "File",
     items: [
       { label: "New", shortcut: "Ctrl+N", onClick: () => void newDocument() },
-      { label: "Open…", shortcut: "Ctrl+O", onClick: () => void openDocument(store, geometry) },
+      { label: "Open…", shortcut: "Ctrl+O", onClick: () => void openDoc() },
       { separator: true, label: "" },
       { label: "Import Mesh…", onClick: () => void importModel(store, geometry) },
       { separator: true, label: "" },
@@ -211,10 +217,45 @@ tree.onToggleSketch = (id) => {
   tree.refresh();
 };
 
+// SOLID-mode direct selection of a visible sketch's profile AREAS (Fusion-style):
+// click a shown sketch's cell to (pre)select it, then Extrude (E) uses it. Only
+// fires when a sketch is visible (overlay.regions is empty otherwise), so normal
+// face/body picking is untouched the rest of the time.
+viewport.regionHoverAt = (x, y) => {
+  if (sketch.active || toolBusy()) { overlay.setHoverRegion(null); return false; }
+  const wr = overlay.committedRegionAtRay(viewport.rayFrom(x, y).ray);
+  overlay.setHoverRegion(wr);
+  return !!wr;
+};
+viewport.regionPickAt = (x, y, additive) => {
+  if (sketch.active || toolBusy()) return false;
+  const wr = overlay.committedRegionAtRay(viewport.rayFrom(x, y).ray);
+  if (!wr) return false;
+  overlay.toggleRegionSelection(wr, additive);
+  const n = overlay.selectedRegions().length;
+  setPrompt(n ? `${n} profile area${n > 1 ? "s" : ""} selected — Extrude (E) · Ctrl-click adds · Esc clears` : null);
+  return true;
+};
+// Esc clears a pre-selected profile-area selection (when not in a tool/sketch)
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !toolBusy() && !sketch.active && overlay.selectedRegions().length) {
+    overlay.clearRegionSelection();
+    setPrompt(null);
+  }
+});
+
 // per-body show/hide (Fusion-style eye toggle); re-renders without a sidecar rebuild
 tree.isBodyVisible = (id) => store.isBodyVisible(id);
 tree.onToggleBody = (id) => {
   store.setBodyVisibility(id, !store.isBodyVisible(id));
+  tree.refresh();
+};
+
+// per-construction-plane show/hide (eye toggle); re-syncs the datum quads, no rebuild
+tree.isPlaneVisible = (id) => store.isPlaneVisible(id);
+tree.onTogglePlane = (id) => {
+  store.setPlaneVisibility(id, !store.isPlaneVisible(id));
+  syncDatumPlanes();
   tree.refresh();
 };
 
@@ -276,7 +317,11 @@ function computeBodyPaint(): Record<string, string> {
 }
 
 store.onBuild((s) => {
-  if (s.result) {
+  // Only render COMPLETED builds. A `building` tick carries the previous result
+  // (the new geometry isn't ready yet); re-rendering it would momentarily revert an
+  // in-progress ghost (a committed Move/Press-Pull) to the old placement until the
+  // real rebuild lands. Skipping it keeps the ghost on screen seamlessly.
+  if (s.result && !s.building) {
     if (s.result.mesh.positions.length > 0) {
       // hide the faces AND wireframe of any body the user toggled off (filtered
       // in the render, no sidecar rebuild — setBodyVisibility re-emits the build).
@@ -304,6 +349,7 @@ store.onBuild((s) => {
 function syncDatumPlanes() {
   const planes = store.document.features
     .filter((f): f is Extract<Feature, { type: "datumPlane" }> => f.type === "datumPlane")
+    .filter((f) => store.isPlaneVisible(f.id)) // hidden planes: not drawn, not pickable
     .map((f) => {
       const sp = new SketchPlane(f.plane);
       const off = f.offset ?? 0;
@@ -593,25 +639,47 @@ async function startCombine() {
     { value: "intersect", label: "Intersect", hint: "overlap" },
   ]);
   if (!op) return;
-  let target = bodies[0].id;
-  if (bodies.length > 2) {
-    const t = await chooseBody("Target body (kept)", bodies);
-    if (!t) return;
-    target = t;
+
+  // If the user already multi-selected bodies (Ctrl+click in the tree/viewport),
+  // combine those directly: the first is the kept target, the rest are tools —
+  // no dialogs. Otherwise fall back to picking a target (when ambiguous) and a
+  // multi-select checklist of tool bodies.
+  const pre = viewport.getSelectedBodies().filter((id) => bodies.some((b) => b.id === id));
+  let target: string;
+  let tools: string[];
+  if (pre.length >= 2) {
+    target = pre[0];
+    tools = pre.slice(1);
+  } else {
+    target = bodies[0].id;
+    if (bodies.length > 2) {
+      const t = await chooseBody("Target body (kept)", bodies);
+      if (!t) return;
+      target = t;
+    }
+    const candidates = bodies.filter((b) => b.id !== target);
+    if (candidates.length > 1) {
+      const { chooseMulti } = await import("./ui/choice");
+      const picked = await chooseMulti<string>(
+        "Tool bodies (combined into the target)",
+        candidates.map((b) => ({ value: b.id, label: store.bodyName(b.id) ?? b.name })),
+        { min: 1, confirmLabel: "Combine" },
+      );
+      if (!picked) return;
+      tools = picked;
+    } else {
+      tools = candidates.map((b) => b.id);
+    }
   }
-  const candidates = bodies.filter((b) => b.id !== target);
-  let tools = candidates.map((b) => b.id);
-  if (candidates.length > 1) {
-    const tool = await chooseBody("Tool body (combined into the target)", candidates);
-    if (!tool) return;
-    tools = [tool];
-  }
+  viewport.setSelectedBodies([]); // consumed tools would dangle; clear the selection
   store.addFeature({ id: store.nextId(), type: "combine", operation: op, target, tools } as Feature);
 }
 
-/** Pick one body by name from the rebuild's body list (returns its id). */
+/** Pick one body by name from the rebuild's body list (returns its id). Labels use
+ *  the sidebar rename override (store.bodyName) so the picker matches the browser
+ *  tree — otherwise a renamed "Bracket" shows as the default "Body1" here. */
 function chooseBody(title: string, bodies: { id: string; name: string }[]): Promise<string | null> {
-  return choose<string>(title, bodies.map((b) => ({ value: b.id, label: b.name })));
+  return choose<string>(title, bodies.map((b) => ({ value: b.id, label: store.bodyName(b.id) ?? b.name })));
 }
 
 // Simplify Mesh: merge near-coplanar facets of the active (imported) body into
@@ -995,7 +1063,7 @@ function startExtrude() {
     // Fusion parity: Extrude on a selected planar face extrudes that face — the
     // same offset-a-face operation as Press/Pull — so route it there instead of
     // demanding a sketch. Only fall back to the hint if nothing usable is picked.
-    if (viewport.selectedFaceForPressPull()) {
+    if (viewport.selectedFacesForPressPull()) {
       pressPull.start((id) => id && selectFeature(id));
       return;
     }
@@ -1015,6 +1083,7 @@ function editFeature(id: string) {
 const SKETCH_TOOLS = new Set([
   "line", "rectangle", "centerRectangle", "circle", "circle2", "circle3",
   "arc", "polygon", "slot", "spline", "point",
+  "boltCircle", "hexHoles", "gridHoles", "patternRect", "patternCircular", "honeycomb",
 ]);
 // sketch MODIFY tools (ribbon action -> sketch tool name)
 const SKETCH_MODIFY: Record<string, SketchTool> = {
@@ -1092,7 +1161,7 @@ function handleAction(action: string) {
       void saveDocument(store);
       break;
     case "open":
-      void openDocument(store, geometry);
+      void openDoc();
       break;
     case "export":
       void exportModel(store, geometry);
@@ -1285,7 +1354,7 @@ window.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
   if (k === "n") { e.preventDefault(); void newDocument(); }
-  else if (k === "o") { e.preventDefault(); void openDocument(store, geometry); }
+  else if (k === "o") { e.preventDefault(); void openDoc(); }
   else if (k === "s" && e.shiftKey) { e.preventDefault(); void saveDocumentAs(store); }
   else if (k === "s") { e.preventDefault(); void saveDocument(store); }
   else if (k === "e") { e.preventDefault(); void exportModel(store, geometry); }

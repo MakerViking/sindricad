@@ -111,10 +111,15 @@ def _export_job(document, fmt, path, body=None, separate=False):
     if separate:
         if not live:
             return {"error": {"message": "nothing to export — no bodies"}}
+        # Prefer the user's sidebar rename (display-only override carried on the
+        # document) over the positional default ("Body1"), so exported part files
+        # are named the way the user named the bodies.
+        names = document.get("bodyNames") or {}
         base, ext = os.path.splitext(path)
         written, used = [], set()
         for b in live:
-            name = re.sub(r"[^\w.-]+", "_", str(b["name"])).strip("_") or b["id"]
+            label = names.get(b["id"]) or b["name"]
+            name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_") or b["id"]
             cand, i = name, 2
             while cand in used:  # keep filenames unique if two bodies share a name
                 cand, i = f"{name}_{i}", i + 1

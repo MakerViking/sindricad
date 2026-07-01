@@ -94,34 +94,50 @@ export function detectRegions(
   // construction geometry is reference-only — it never forms a profile
   const entities = allEntities.filter((e) => !e.construction);
 
-  // 1. collect every closed loop: rectangles + circles are their own loops;
-  //    line/arc/spline geometry is chained into closed loops by shared endpoints.
-  const loops: THREE.Vector2[][] = [];
-  for (const e of entities) {
-    if (e.type === "rectangle") {
-      loops.push(rectCorners(e.x, e.y, e.width, e.height));
-    } else if (e.type === "circle") {
-      loops.push(circleLoop(e.x, e.y, e.radius));
+  // Per-entity polyline segments + bbox, for cheap crossing detection and tracing.
+  const perEntity = entities.map((e) => {
+    const segs = entitySegments(e).map(
+      ([a, b]) => ({ x1: a.x, y1: a.y, x2: b.x, y2: b.y }) as Seg,
+    );
+    return { e, segs, box: segsBBox(segs) };
+  });
+
+  // 1. collect every closed loop. Do any two entities' curves actually CROSS at
+  //    an interior point (not merely meet at shared endpoints)? A crossing means
+  //    simple whole-shape / shared-vertex detection would miss a sub-region — or
+  //    emit a self-touching phantom (an "X" in a square) — so we planarize.
+  let loops: THREE.Vector2[][];
+  if (anyCrossing(perEntity)) {
+    // Split every segment at all pairwise interior intersections, then extract the
+    // planar arrangement's minimal faces. This is what lets a line crossing a
+    // profile carve it into separately-selectable sub-areas (Fusion parity); it
+    // mirrors the sidecar's OCCT arrangement (builder.py _subdivide_faces).
+    loops = traceLoops(planarize(perEntity));
+  } else {
+    // Fast path (unchanged for non-crossing sketches): rectangles + circles are
+    // their own loops; free line/arc/spline geometry is chained into closed loops
+    // by shared endpoints.
+    loops = [];
+    for (const { e } of perEntity) {
+      if (e.type === "rectangle") loops.push(rectCorners(e.x, e.y, e.width, e.height));
+      else if (e.type === "circle") loops.push(circleLoop(e.x, e.y, e.radius));
     }
+    const free: Seg[] = [];
+    for (const { e, segs } of perEntity)
+      if (e.type === "line" || e.type === "arc" || e.type === "spline") free.push(...segs);
+    loops.push(...traceLoops(free));
   }
-  const segs: Seg[] = [];
-  for (const e of entities) {
-    if (e.type === "line" || e.type === "arc" || e.type === "spline") {
-      for (const [a, b] of entitySegments(e)) {
-        segs.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-      }
-    }
-  }
-  loops.push(...traceLoops(segs));
 
   // 2. each loop becomes a region; its DIRECTLY-nested loops become holes — so
   //    two concentric circles yield a ring (outer, hole=inner) AND a disk (inner).
-  //    parent(i) = the smallest-area loop that contains loop i.
+  //    parent(i) = the smallest-area loop that contains loop i. Uses a guaranteed-
+  //    interior point (not the centroid) so non-convex arrangement cells nest right.
   const areas = loops.map(loopAbsArea);
-  const parent = loops.map((loopI, i) => {
+  const reps = loops.map(loopInteriorPoint);
+  const parent = loops.map((_loopI, i) => {
     let best = -1;
     let bestArea = Infinity;
-    const p = representativePoint(loopI);
+    const p = reps[i];
     for (let j = 0; j < loops.length; j++) {
       if (j === i || areas[j] <= areas[i]) continue;
       if (pointInLoop(p, loops[j]) && areas[j] < bestArea) {
@@ -186,9 +202,20 @@ function loopAbsArea(loop: THREE.Vector2[]): number {
   return Math.abs(a) / 2;
 }
 
-/** a point reliably inside a (convex-ish) loop, for the containment/nesting test */
-function representativePoint(loop: THREE.Vector2[]): THREE.Vector2 {
-  return centroidOf(loop); // circle/rectangle/most traced loops contain their centroid
+/** A point guaranteed inside a loop (ignoring holes), for the containment/nesting
+ *  test. The centroid works for convex loops (circle/rectangle/triangle); for a
+ *  non-convex arrangement cell it can fall outside, so fall back to sampling from
+ *  the centroid toward each vertex until a point lands inside. */
+function loopInteriorPoint(loop: THREE.Vector2[]): THREE.Vector2 {
+  const c = centroidOf(loop);
+  if (pointInLoop(c, loop)) return c;
+  for (const t of [0.5, 0.6, 0.75, 0.9]) {
+    for (const vtx of loop) {
+      const p = new THREE.Vector2(c.x + (vtx.x - c.x) * t, c.y + (vtx.y - c.y) * t);
+      if (pointInLoop(p, loop)) return p;
+    }
+  }
+  return c; // best effort
 }
 
 /** A point inside the region's material (outside all holes), used as the parametric
@@ -216,71 +243,185 @@ function interiorPoint(
 
 // --- line-chain loop tracing ---
 type Seg = { x1: number; y1: number; x2: number; y2: number };
+type Box = { minx: number; miny: number; maxx: number; maxy: number };
+
+function segsBBox(segs: Seg[]): Box {
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  for (const s of segs) {
+    minx = Math.min(minx, s.x1, s.x2);
+    miny = Math.min(miny, s.y1, s.y2);
+    maxx = Math.max(maxx, s.x1, s.x2);
+    maxy = Math.max(maxy, s.y1, s.y2);
+  }
+  return { minx, miny, maxx, maxy };
+}
+
+function boxesOverlap(a: Box, b: Box): boolean {
+  return (
+    a.minx <= b.maxx + EPS && b.minx <= a.maxx + EPS &&
+    a.miny <= b.maxy + EPS && b.miny <= a.maxy + EPS
+  );
+}
+
+/** Interior crossing point of two segments — where both segments cross strictly
+ *  inside their spans (not merely touching at a shared endpoint, and not parallel/
+ *  collinear). Returns null otherwise. This is the geometry the vertex-only tracer
+ *  can't see. */
+function segCross(a: Seg, b: Seg): THREE.Vector2 | null {
+  const rx = a.x2 - a.x1, ry = a.y2 - a.y1;
+  const sx = b.x2 - b.x1, sy = b.y2 - b.y1;
+  const denom = rx * sy - ry * sx;
+  if (Math.abs(denom) < 1e-12) return null; // parallel / collinear
+  const qpx = b.x1 - a.x1, qpy = b.y1 - a.y1;
+  const t = (qpx * sy - qpy * sx) / denom;
+  const u = (qpx * ry - qpy * rx) / denom;
+  const E = 1e-6;
+  if (t <= E || t >= 1 - E || u <= E || u >= 1 - E) return null; // interior of BOTH only
+  return v(a.x1 + t * rx, a.y1 + t * ry);
+}
+
+/** Param t ∈ (E, 1-E) if point (px,py) lies on segment s strictly between its
+ *  endpoints (within EPS), else null. Detects T-junctions: one entity's VERTEX
+ *  touching another's edge interior — e.g. a hexagon whose corner sits on a
+ *  boundary rectangle's edge. OCCT splits there, so we must too, or the frontend
+ *  region and the sidecar cell disagree. */
+function pointOnSegInterior(px: number, py: number, s: Seg): number | null {
+  const rx = s.x2 - s.x1, ry = s.y2 - s.y1;
+  const len2 = rx * rx + ry * ry;
+  if (len2 < 1e-18) return null;
+  const t = ((px - s.x1) * rx + (py - s.y1) * ry) / len2;
+  const E = 1e-6;
+  if (t <= E || t >= 1 - E) return null;
+  const dx = px - (s.x1 + t * rx), dy = py - (s.y1 + t * ry); // offset from the line
+  return dx * dx + dy * dy > EPS * EPS ? null : t;
+}
+
+type EntSegs = { segs: Seg[]; box: Box };
+
+/** Do any two entities' curves meet at a point that isn't a shared endpoint —
+ *  an interior crossing (X) or a vertex-on-edge touch (T)? Entity-bbox broad-phase
+ *  keeps this cheap: separated entities (a grid of holes) never reach the O(segs²)
+ *  inner test, so the common non-crossing sketch pays almost nothing. */
+function anyCrossing(per: EntSegs[]): boolean {
+  for (let i = 0; i < per.length; i++) {
+    for (let j = i + 1; j < per.length; j++) {
+      if (!boxesOverlap(per[i].box, per[j].box)) continue;
+      for (const a of per[i].segs)
+        for (const b of per[j].segs) {
+          if (segCross(a, b)) return true;
+          if (pointOnSegInterior(b.x1, b.y1, a) !== null) return true;
+          if (pointOnSegInterior(b.x2, b.y2, a) !== null) return true;
+          if (pointOnSegInterior(a.x1, a.y1, b) !== null) return true;
+          if (pointOnSegInterior(a.x2, a.y2, b) !== null) return true;
+        }
+    }
+  }
+  return false;
+}
+
+/** Split every segment at its interior intersections AND at any other entity's
+ *  vertex that lands on its interior, so each crossing/touch becomes a shared
+ *  vertex the half-edge tracer can split at. Same entity-bbox broad-phase as
+ *  anyCrossing. */
+function planarize(per: EntSegs[]): Seg[] {
+  const out: Seg[] = [];
+  for (let i = 0; i < per.length; i++) {
+    for (const a of per[i].segs) {
+      const rx = a.x2 - a.x1, ry = a.y2 - a.y1;
+      const len2 = rx * rx + ry * ry;
+      const cuts: { x: number; y: number; t: number }[] = [];
+      const addCut = (x: number, y: number) =>
+        cuts.push({ x, y, t: ((x - a.x1) * rx + (y - a.y1) * ry) / len2 });
+      for (let j = 0; j < per.length; j++) {
+        if (j === i || !boxesOverlap(per[i].box, per[j].box)) continue;
+        for (const b of per[j].segs) {
+          const p = segCross(a, b);
+          if (p) addCut(p.x, p.y);
+          if (pointOnSegInterior(b.x1, b.y1, a) !== null) addCut(b.x1, b.y1);
+          if (pointOnSegInterior(b.x2, b.y2, a) !== null) addCut(b.x2, b.y2);
+        }
+      }
+      if (!cuts.length) { out.push(a); continue; }
+      cuts.sort((p, q) => p.t - q.t);
+      let px = a.x1, py = a.y1;
+      for (const c of cuts) {
+        if (Math.abs(c.x - px) > EPS || Math.abs(c.y - py) > EPS)
+          out.push({ x1: px, y1: py, x2: c.x, y2: c.y });
+        px = c.x; py = c.y;
+      }
+      if (Math.abs(a.x2 - px) > EPS || Math.abs(a.y2 - py) > EPS)
+        out.push({ x1: px, y1: py, x2: a.x2, y2: a.y2 });
+    }
+  }
+  return out;
+}
+
 
 function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   if (segs.length < 3) return [];
   const key = (x: number, y: number) =>
     `${Math.round(x / EPS)},${Math.round(y / EPS)}`;
 
-  // adjacency: node key -> list of neighbor keys (multiset; parallel edges kept)
+  // Build a planar graph and extract its MINIMAL FACES via half-edge traversal. Unlike
+  // simple cycle-tracing this handles JUNCTIONS (degree > 2) — shared hexagon vertices,
+  // touching profiles, T-joins — splitting them into the right areas instead of voiding
+  // the whole component. This is Fusion-style profile detection.
   const nodes = new Map<string, THREE.Vector2>();
-  const adj = new Map<string, string[]>();
-  const link = (ax: number, ay: number, bx: number, by: number) => {
-    const ka = key(ax, ay);
-    const kb = key(bx, by);
-    if (ka === kb) return; // drop zero-length segments (would self-loop a node)
-    if (!nodes.has(ka)) nodes.set(ka, new THREE.Vector2(ax, ay));
-    if (!nodes.has(kb)) nodes.set(kb, new THREE.Vector2(bx, by));
-    (adj.get(ka) ?? adj.set(ka, []).get(ka)!).push(kb);
-    (adj.get(kb) ?? adj.set(kb, []).get(kb)!).push(ka);
+  const nodeKey = (x: number, y: number) => {
+    const k = key(x, y);
+    if (!nodes.has(k)) nodes.set(k, new THREE.Vector2(x, y));
+    return k;
   };
-  for (const s of segs) link(s.x1, s.y1, s.x2, s.y2);
-
-  // 1. prune dangling chains: iteratively drop degree-1 nodes and their single
-  //    incident edge until none remain. This removes overshoots / stray open
-  //    segments so they no longer void the whole profile.
-  const removeEdge = (a: string, b: string) => {
-    const la = adj.get(a);
-    if (la) { const i = la.indexOf(b); if (i >= 0) la.splice(i, 1); }
-    const lb = adj.get(b);
-    if (lb) { const i = lb.indexOf(a); if (i >= 0) lb.splice(i, 1); }
-  };
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [n, neigh] of adj) {
-      if (neigh.length === 1) {
-        removeEdge(n, neigh[0]);
-        changed = true;
-      }
-    }
+  // one undirected edge per coincident segment (dedupe shared edges), as 2 half-edges
+  // pushed as adjacent pairs (2k = a→b, 2k+1 = b→a) so the twin is just `i ^ 1`.
+  const he: { from: string; to: string; angle: number }[] = [];
+  const seen = new Set<string>();
+  for (const s of segs) {
+    const a = nodeKey(s.x1, s.y1), b = nodeKey(s.x2, s.y2);
+    if (a === b) continue;
+    const ek = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seen.has(ek)) continue;
+    seen.add(ek);
+    const pa = nodes.get(a)!, pb = nodes.get(b)!;
+    he.push({ from: a, to: b, angle: Math.atan2(pb.y - pa.y, pb.x - pa.x) });
+    he.push({ from: b, to: a, angle: Math.atan2(pa.y - pb.y, pa.x - pb.x) });
   }
+  if (he.length < 6) return [];
 
-  // 2. trace each remaining connected component as a simple cycle. Only the
-  //    clean case (every surviving node has degree 2) yields a loop — this
-  //    supports multiple disjoint profiles in one sketch. Junctions (degree > 2,
-  //    e.g. self-intersections) are left for future planar-face work rather than
-  //    voiding everything.
-  const visited = new Set<string>();
+  // outgoing half-edge indices per node, sorted CCW by angle
+  const out = new Map<string, number[]>();
+  he.forEach((h, i) => (out.get(h.from) ?? out.set(h.from, []).get(h.from)!).push(i));
+  for (const idxs of out.values()) idxs.sort((i, j) => he[i].angle - he[j].angle);
+  // next half-edge in the same minimal face = the edge just clockwise of this edge's twin
+  const next = (i: number) => {
+    const idxs = out.get(he[i].to)!;
+    const pos = idxs.indexOf(i ^ 1); // twin
+    return idxs[(pos - 1 + idxs.length) % idxs.length];
+  };
+
+  const visited = new Set<number>();
   const loops: THREE.Vector2[][] = [];
-  const guard = adj.size + 2;
-  for (const [startKey, startNeigh] of adj) {
-    if (startNeigh.length === 0 || visited.has(startKey)) continue;
-    const loop: THREE.Vector2[] = [];
-    let prev: string | null = null;
-    let cur: string | null = startKey;
-    let ok = true;
-    for (let i = 0; i < guard && cur; i++) {
-      const neigh: string[] = adj.get(cur)!;
-      if (neigh.length !== 2) { ok = false; break; } // junction → skip component
+  for (let s = 0; s < he.length; s++) {
+    if (visited.has(s)) continue;
+    const faceHE: number[] = [];
+    let cur = s, guard = 0;
+    while (!visited.has(cur) && guard++ < he.length + 2) {
       visited.add(cur);
-      loop.push(nodes.get(cur)!);
-      const next: string = neigh[0] === prev ? neigh[1] : neigh[0];
-      prev = cur;
-      cur = next;
-      if (cur === startKey) break;
+      faceHE.push(cur);
+      cur = next(cur);
     }
-    if (ok && loop.length >= 3) loops.push(loop);
+    if (cur !== s || faceHE.length < 3) continue;
+    const pts = faceHE.map((i) => nodes.get(he[i].from)!);
+    // keep CCW (interior) faces; the outer/unbounded face is CW (negative area)
+    if (signedLoopArea(pts) > EPS) loops.push(pts);
   }
   return loops;
+}
+
+function signedLoopArea(loop: THREE.Vector2[]): number {
+  let a = 0;
+  for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+    a += loop[j].x * loop[i].y - loop[i].x * loop[j].y;
+  }
+  return a / 2;
 }

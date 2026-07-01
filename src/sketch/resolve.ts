@@ -4,6 +4,7 @@
 import type { Feature, Num, Params, SketchEntity } from "../types";
 import type { ResolvedEntity } from "./snap";
 import { newEntityId, noteEntityId } from "./id";
+import { expandPattern } from "./pattern";
 
 export function resolveNum(x: Num, params: Params): number {
   if (typeof x === "number") return x;
@@ -76,6 +77,14 @@ export function resolveEntities(
         ...c,
       });
     }
+  }
+
+  // Associative patterns: expand each definition into its derived copies so
+  // rendering, region detection and snapping all see them (the definitions persist;
+  // the copies are derived here, never stored as real entities).
+  if (sketch.patterns?.length) {
+    const byId = new Map(out.map((e) => [e.id, e]));
+    for (const pat of sketch.patterns) out.push(...expandPattern(pat, byId, params));
   }
   return out;
 }

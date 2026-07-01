@@ -18,3 +18,14 @@ export function noteEntityId(id: string | undefined): void {
   const m = /^e(\d+)$/.exec(id);
   if (m) counter = Math.max(counter, Number(m[1]) + 1);
 }
+
+/** Pattern ids share the same monotonic counter but a `p` prefix, so a pattern id
+ *  and its derived entities ("p3#0") never collide with entity ids ("e3"). */
+export function newPatternId(): string {
+  return `p${counter++}`;
+}
+export function notePatternId(id: string | undefined): void {
+  if (!id) return;
+  const m = /^p(\d+)$/.exec(id);
+  if (m) counter = Math.max(counter, Number(m[1]) + 1);
+}
