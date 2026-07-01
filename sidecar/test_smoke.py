@@ -618,6 +618,117 @@ def test_cut_skips_hidden_body():
     print(f"  cut skips hidden OK: body1 {v['body1']:.0f} cut, hidden body2 {v['body2']:.0f} intact")
 
 
+def test_incremental_cache():
+    """rebuild_cached (incremental, worker-local snapshot cache) is geometrically
+    IDENTICAL to a full rebuild across an edit sequence: cold cache, no-op re-emit,
+    editing the last / a middle feature, appending, deleting, and param/visibility
+    changes (which force a full rebuild). Guards against a stale-prefix resume."""
+    import copy
+    import builder
+
+    def full(doc):
+        _, err, bodies = builder.rebuild(doc)  # ground truth (never touches the cache)
+        assert not err, err
+        return {b["id"]: round(b["shape"].volume, 3) for b in bodies if b.get("shape")}
+
+    def cached(doc):
+        _, err, bodies = builder.rebuild_cached(doc)
+        assert not err, err
+        return {b["id"]: round(b["shape"].volume, 3) for b in bodies if b.get("shape")}
+
+    base = {"parameters": {"h": 10}, "features": [
+        {"id": "b1", "type": "box", "length": 40, "width": 40, "height": "h"},
+        {"id": "b2", "type": "box", "length": 10, "width": 10, "height": 30},
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": -10,
+         "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]},
+        {"id": "sk", "type": "sketch", "plane": "XY",
+         "entities": [{"id": "c", "type": "circle", "x": 0, "y": 0, "radius": 5}]},
+        {"id": "ex", "type": "extrude", "sketch": "sk", "distance": 30,
+         "operation": "cut", "regions": [[0, 0, 0]]},
+    ]}
+    builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}  # cold
+
+    steps = []
+    steps.append(("cold", base))
+    steps.append(("no-op re-emit", copy.deepcopy(base)))
+    d = copy.deepcopy(base); d["features"][-1]["distance"] = 40
+    steps.append(("edit last feature", d))
+    d = copy.deepcopy(d); d["features"][2]["dz"] = -5
+    steps.append(("edit middle feature", d))
+    d = copy.deepcopy(d); d["features"].append({"id": "b3", "type": "box", "length": 5, "width": 5, "height": 5})
+    steps.append(("append feature", d))
+    d = copy.deepcopy(d); d["parameters"]["h"] = 20
+    steps.append(("param change (full)", d))
+    d = copy.deepcopy(d); d["bodyVisibility"] = {"body2": False}
+    steps.append(("visibility change (full)", d))
+    d = copy.deepcopy(d); d["features"].pop()
+    steps.append(("delete last feature", d))
+
+    for label, doc in steps:
+        assert cached(doc) == full(doc), f"incremental != full at: {label}"
+    print(f"  incremental cache OK: {len(steps)} edit steps all match full rebuild")
+
+
+def test_split_groups_disconnected():
+    """Split with groupSides gives one body per physically-SEPARATE piece: a
+    connected body → 2 (one per side, each side's many solids kept as one), while
+    genuinely disconnected lumps each become their own body. Side-split first (halves
+    touch at the cut), then group vertex-connected solids within a side."""
+    # (a) a connected plate → exactly 2 bodies (one per side), NOT one-per-solid
+    sk = {"id": "s", "type": "sketch", "plane": "XY",
+          "entities": [{"id": "r", "type": "rectangle", "x": 0, "y": 0, "width": 40, "height": 40}]}
+    ex = {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"}
+    sp = {"id": "sp", "type": "split", "plane": "XZ", "keep": "both", "body": "body1", "groupSides": True}
+    _, err, bodies = rebuild({"parameters": {}, "features": [sk, ex, sp]})
+    assert not err, err
+    assert len(bodies) == 2, f"connected plate split should give 2 bodies, got {len(bodies)}"
+
+    # (b) one body of two DISJOINT disks, cut through both → 4 separate pieces
+    sk2 = {"id": "s", "type": "sketch", "plane": "XY", "entities": [
+        {"id": "c1", "type": "circle", "x": -20, "y": 0, "radius": 5},
+        {"id": "c2", "type": "circle", "x": 20, "y": 0, "radius": 5}]}
+    ex2 = {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"}
+    sp2 = {"id": "sp", "type": "split", "plane": "XZ", "keep": "both", "body": "body1", "groupSides": True}
+    _, err2, bodies2 = rebuild({"parameters": {}, "features": [sk2, ex2, sp2]})
+    assert not err2, err2
+    assert len(bodies2) == 4, f"two disjoint disks cut through both should give 4 pieces, got {len(bodies2)}"
+    print(f"  split groups disconnected OK: connected plate→2 bodies, 2 disjoint disks cut→4 bodies")
+
+
+def test_face_provenance():
+    """Each face carries the feature that created/last-shaped it (for click-a-face →
+    delete-that-feature). The chamfer face maps to the chamfer; untouched faces keep
+    the base feature; provenance survives a move (owner keys follow the transform)."""
+    bx = {"id": "bx", "type": "box", "length": 20, "width": 20, "height": 10}
+    ch = {"id": "ch", "type": "chamfer",
+          "edges": {"kind": "edge", "by": "nearest", "point": [0, 10, 5]}, "distance": 3}
+    mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 50,
+          "rx": 0, "ry": 0, "rz": 0}
+    _, err, bodies = rebuild({"parameters": {}, "features": [bx, ch, mv]})
+    assert not err, err
+    owners = set(bodies[0]["owners"].values())
+    assert "ch" in owners, f"chamfer face not attributed to the chamfer: {owners}"
+    assert "bx" in owners, f"untouched faces should stay 'bx' through the move: {owners}"
+    print(f"  face provenance OK: face owners = {sorted(owners)}")
+
+
+def test_delete_face():
+    """deleteFace (OCCT defeaturing) removes a face and heals the solid — deleting a
+    chamfer/fillet on geometry that has no feature to edit (e.g. imported parts)."""
+    doc = {"parameters": {}, "features": [
+        {"id": "bx", "type": "box", "length": 20, "width": 20, "height": 10},
+        {"id": "ch", "type": "chamfer",
+         "edges": {"kind": "edge", "by": "nearest", "point": [0, 10, 5]}, "distance": 3},
+        {"id": "df", "type": "deleteFace",
+         "face": {"kind": "face", "by": "nearest", "point": [0, 8.5, 3.5]}},
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    assert abs(part.volume - 4000) < 1, f"deleteFace should heal to 4000, got {part.volume:.1f}"
+    assert len(part.faces()) == 6, f"healed box should have 6 faces, got {len(part.faces())}"
+    print(f"  delete-face OK: chamfer removed + healed → vol {part.volume:.0f}, {len(part.faces())} faces")
+
+
 if __name__ == "__main__":
     print("SindriCAD sidecar smoke test")
     test_rebuild()
@@ -625,6 +736,7 @@ if __name__ == "__main__":
     test_exports()
     test_import_roundtrip()
     test_split()
+    test_split_groups_disconnected()
     test_combine()
     test_combine_dangling_ref()
     test_datum_and_bodies_tessellation()
@@ -637,6 +749,9 @@ if __name__ == "__main__":
     test_sketch_crossing_split()
     test_extrude_cut_disjoint()
     test_cut_skips_hidden_body()
+    test_incremental_cache()
+    test_face_provenance()
+    test_delete_face()
     test_extrude_operation_multibody()
     test_primitives()
     test_modify_tools()

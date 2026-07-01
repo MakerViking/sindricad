@@ -68,12 +68,16 @@ def _warmup():
 
 def _rebuild_job(document, tolerance):
     """Worker: rebuild the document and tessellate. Returns a result dict, or
-    {"error": {...}} on a feature failure. Args/return must stay picklable."""
-    from builder import rebuild
+    {"error": {...}} on a feature failure. Args/return must stay picklable.
+
+    Uses rebuild_cached: this worker is long-lived (max_workers=1), so an in-process
+    per-feature snapshot cache lets an edit re-run only from the first changed feature
+    instead of the whole history. A worker respawn (timeout/crash) clears the cache."""
+    from builder import rebuild_cached
     from tessellate import tessellate_bodies, edge_polylines_by_body, bbox
 
     diag = []
-    part, errors, bodies = rebuild(document, diagnostics=diag)
+    part, errors, bodies = rebuild_cached(document, diagnostics=diag)
     if errors:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}

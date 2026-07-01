@@ -28,6 +28,7 @@ API notes (verified against build123d 0.10.x):
 
 import base64
 import io
+import json
 import math
 import os
 import tempfile
@@ -276,7 +277,7 @@ def import_geometry(path, fmt):
 # --- rebuild -----------------------------------------------------------------
 
 
-def rebuild(document, diagnostics=None):
+def rebuild(document, diagnostics=None, resume=None, snapshots_out=None):
     """Return (part, errors, bodies).
 
     part    : the merged build123d solid/compound of all bodies, or None.
@@ -289,6 +290,16 @@ def rebuild(document, diagnostics=None):
               resolutions append a ResolveDiag dict to it. Resolution is best-effort
               and never fails the build on a shaky match, so callers that don't pass a
               list are completely unaffected.
+
+    Incremental-rebuild hooks (both default off → identical to a plain full rebuild):
+      resume        : (start_index, snapshot) — restore the build state captured
+                      after feature[start_index-1] and run only features[start_index:].
+      snapshots_out : if a list is given, append (feature_index, snapshot) after each
+                      successfully-built feature, so a caller can cache per-feature
+                      state and resume from the longest unchanged prefix next time.
+    A snapshot copies the body dicts (sharing OCCT shape refs — no geometry copy) plus
+    the sketches/datums/id-counter, and is restored by mutating those containers IN
+    PLACE so the new_body/active/find_body closures stay bound to them.
     """
     params = document.get("parameters", {})
     # Bodies the user has hidden — excluded from extrude booleans (never edit a
@@ -333,7 +344,41 @@ def rebuild(document, diagnostics=None):
                 return b
         return None
 
-    for f in document.get("features", []):
+    def _snapshot():
+        """Capture the build state after a feature. Body dicts are copied (so later
+        in-place mutation `b["shape"]=…` can't corrupt the snapshot) but SHARE the
+        OCCT shape refs — no geometry is copied. sketches/datums entries are set once
+        and never mutated, so a shallow copy is safe."""
+        return {
+            "bodies": [dict(b) for b in bodies],
+            "sketches": dict(sketches),
+            "datums": {k: dict(v) for k, v in datums.items()},
+            "n": counter["n"],
+        }
+
+    def _restore(snap):
+        """Restore a snapshot by mutating the state containers IN PLACE (never
+        rebinding) so the closures above keep working."""
+        bodies[:] = [dict(b) for b in snap["bodies"]]
+        sketches.clear(); sketches.update(snap["sketches"])
+        datums.clear(); datums.update({k: dict(v) for k, v in snap["datums"].items()})
+        counter["n"] = snap["n"]
+
+    features = document.get("features", [])
+    start = 0
+    if resume is not None:
+        start, snap = resume
+        _restore(snap)
+
+    for i in range(start, len(features)):
+        f = features[i]
+        # provenance: capture each body's shape identity + owner map before the
+        # feature, so afterwards we can attribute newly-created faces to it.
+        pre_shape = {id(b): b.get("shape") for b in bodies}
+        pre_owners_by_id = {id(b): (b.get("_owners") or {}) for b in bodies}
+        pre_owners_all = {}
+        for b in bodies:
+            pre_owners_all.update(b.get("_owners") or {})
         try:
             t = f["type"]
 
@@ -422,6 +467,21 @@ def rebuild(document, diagnostics=None):
                     src = found[0]
                     d = _distance_to_target(src, tgt_pt, tgt_n) if up else dist
                     act["shape"] = _press_pull(act["shape"], src, d)
+
+            elif t == "deleteFace":
+                # Remove the picked face(s) and heal the solid (defeaturing) — deletes
+                # an imported chamfer/fillet or a protrusion, where there's no feature
+                # to remove. Parametric: the face selector re-resolves each rebuild.
+                act = find_body(f["body"]) if f.get("body") else require_active("Delete Face")
+                if act is None:
+                    raise ValueError("Delete Face: the target body no longer exists")
+                sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
+                faces = []
+                for sel in sels:
+                    faces.extend(resolve_faces(act["shape"], sel, diag=diagnostics, feature_id=f.get("id")))
+                if not faces:
+                    raise ValueError("no face found to delete")
+                act["shape"] = _defeature(act["shape"], faces)
 
             elif t == "mirror":
                 act = require_active("Mirror")
@@ -554,6 +614,10 @@ def rebuild(document, diagnostics=None):
             errors.append({"feature_id": f.get("id"), "message": str(ex)})
             break
 
+        _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all)
+        if snapshots_out is not None:  # cache point: state after this built feature
+            snapshots_out.append((i, _snapshot()))
+
     # A disjoint join (e.g. two bodies that don't touch) yields a ShapeList, which
     # has no single `.wrapped` TopoDS shape. Normalize each body to one Compound so
     # every consumer (tessellate/bbox/edges/export) gets a uniform Shape.
@@ -562,7 +626,8 @@ def rebuild(document, diagnostics=None):
         sh = b["shape"]
         if sh is not None and getattr(sh, "wrapped", None) is None:
             sh = Compound(list(sh))
-        out_bodies.append({"id": b["id"], "name": b["name"], "shape": sh})
+        out_bodies.append({"id": b["id"], "name": b["name"], "shape": sh,
+                           "owners": b.get("_owners") or {}})
 
     shapes = [b["shape"] for b in out_bodies if b["shape"] is not None]
     if not shapes:
@@ -575,11 +640,166 @@ def rebuild(document, diagnostics=None):
     return part, errors, out_bodies
 
 
+# --- incremental rebuild cache (persistent-worker-local) --------------------
+# The sidecar runs one long-lived worker process, so a per-feature snapshot cache
+# lives in its module memory and survives between rebuilds. On a worker respawn
+# (25 s timeout / kernel crash → the pool recreates the worker) this module reloads
+# and the cache is empty, so recovery is a clean full rebuild. Only rebuild_cached()
+# touches it; plain rebuild() (used by export/interference) is unaffected.
+_CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+
+
+def _feature_sig(f):
+    return json.dumps(f, sort_keys=True, separators=(",", ":"))
+
+
+def _global_sig(document):
+    # params + body visibility affect features globally (visibility gates extrude
+    # booleans), so any change to them forces a full rebuild in v1 — conservative but
+    # never stale. (A later refinement can invalidate only from the first boolean.)
+    return json.dumps(
+        {"p": document.get("parameters", {}), "v": document.get("bodyVisibility", {})},
+        sort_keys=True, separators=(",", ":"),
+    )
+
+
+def rebuild_cached(document, diagnostics=None):
+    """Incremental rebuild: reuse cached per-feature state for the unchanged document
+    PREFIX and re-run only from the first changed feature. Falls back to a full
+    rebuild when params/visibility change or the cache is cold. Same return as
+    rebuild(); geometrically identical to a full rebuild (verified by the
+    incremental-vs-full smoke test)."""
+    global _CACHE
+    features = document.get("features", [])
+    new_sigs = [_feature_sig(f) for f in features]
+    gsig = _global_sig(document)
+
+    resume = None
+    if _CACHE["global_sig"] == gsig and _CACHE["snaps"]:
+        old_sigs = _CACHE["feature_sigs"]
+        k = 0
+        while k < len(new_sigs) and k < len(old_sigs) and new_sigs[k] == old_sigs[k]:
+            k += 1
+        if k > 0 and k - 1 < len(_CACHE["snaps"]):
+            resume = (k, _CACHE["snaps"][k - 1])  # restore state after feature k-1
+
+    snaps_out = []
+    part, errors, bodies = rebuild(
+        document, diagnostics=diagnostics, resume=resume, snapshots_out=snaps_out
+    )
+
+    if errors:
+        _CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}  # don't cache a broken build
+    else:
+        start = resume[0] if resume else 0
+        merged = list(_CACHE["snaps"][:start])  # reused prefix
+        merged.extend(snap for (_i, snap) in snaps_out)  # freshly built tail
+        _CACHE = {"feature_sigs": new_sigs, "snaps": merged, "global_sig": gsig}
+    return part, errors, bodies
+
+
 def _as_compound(s):
     """Normalize a possibly-disjoint shape (a build123d ShapeList, e.g. a body split
     into pieces, or an extrude of several disjoint region faces) to a single
     Compound so .bounding_box() and boolean ops work. Single shapes pass through."""
     return s if getattr(s, "wrapped", None) is not None else Compound(list(s))
+
+
+# --- face provenance: which feature created/last-modified each face --------
+# Lets the UI map a picked face back to its feature (click a chamfer face → select
+# the chamfer). Each body carries `_owners`: {face-fingerprint → feature id}. After
+# every feature we re-fingerprint the CHANGED bodies; a face whose fingerprint is new
+# (not carried over from before) is attributed to the current feature, while
+# unchanged faces keep their owner. A move transforms the fingerprint keys so
+# provenance survives it. Fingerprint = (area, centre) quantized.
+
+def _face_fp(face):
+    try:
+        c = face.center()
+        return (round(face.area, 2), round(c.X, 1), round(c.Y, 1), round(c.Z, 1))
+    except Exception:
+        return None
+
+
+def _shape_face_fps(shape):
+    try:
+        faces = shape.faces()
+    except Exception:
+        return []
+    return [fp for fp in (_face_fp(f) for f in faces) if fp is not None]
+
+
+def _move_fp(fp, trsf):
+    from OCP.gp import gp_Pnt
+    area, cx, cy, cz = fp
+    p = gp_Pnt(cx, cy, cz)
+    p.Transform(trsf)
+    return (area, round(p.X(), 1), round(p.Y(), 1), round(p.Z(), 1))
+
+
+def _defeature(shape, faces):
+    """Remove one or more faces from a solid and heal the gap (OCCT defeaturing) — e.g.
+    delete an (imported) chamfer/fillet or a small protrusion. Works even when the
+    geometry has no feature history to edit."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Defeaturing
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    d = BRepAlgoAPI_Defeaturing()
+    d.SetShape(_as_compound(shape).wrapped)
+    for fc in faces:
+        d.AddFaceToRemove(fc.wrapped)
+    d.Build()
+    if not d.IsDone():
+        raise ValueError("couldn't delete this face — try an explicit cut instead")
+    exp = TopExp_Explorer(d.Shape(), TopAbs_SOLID)
+    solids = []
+    while exp.More():
+        solids.append(Solid(TopoDS.Solid_s(exp.Current())))
+        exp.Next()
+    if not solids:
+        raise ValueError("deleting the face left no solid")
+    # OCCT defeaturing reports success even when it can't heal the gap and silently
+    # returns the shape UNCHANGED (common for a chamfer whose neighbours can't be
+    # extended to meet). Detect that and fail loudly rather than a false "done".
+    before = len(_as_compound(shape).faces())
+    after = sum(len(s.faces()) for s in solids)
+    if after >= before:
+        raise ValueError(
+            "can't heal after removing that face — select the whole feature (Ctrl-click "
+            "its faces) or use Press/Pull to cut it"
+        )
+    return solids[0] if len(solids) == 1 else Compound(solids)
+
+
+def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
+    """Attribute each face of every CHANGED body to a feature. Unchanged bodies (same
+    shape object) keep their owners untouched — bounding the cost to what moved."""
+    fid = f.get("id")
+    is_move = f.get("type") == "move"
+    move_ids, trsf = None, None
+    if is_move and bodies:
+        ids = f.get("bodies")
+        move_ids = set(ids) if ids else {bodies[-1]["id"]}
+        rx, ry, rz = val(f.get("rx", 0)), val(f.get("ry", 0)), val(f.get("rz", 0))
+        dx, dy, dz = val(f.get("dx", 0)), val(f.get("dy", 0)), val(f.get("dz", 0))
+        trsf = (Pos(dx, dy, dz) * Rot(rx, ry, rz)).wrapped.Transformation()
+    for b in bodies:
+        sh = b.get("shape")
+        if sh is None:
+            b["_owners"] = {}
+            continue
+        bid = id(b)
+        if bid in pre_shape and sh is pre_shape[bid]:
+            continue  # unchanged this feature — keep prior owners
+        prior = pre_owners_by_id.get(bid, {})
+        if trsf is not None and b.get("id") in move_ids and prior:
+            prior = {_move_fp(k, trsf): v for k, v in prior.items()}  # follow the move
+        owners = {}
+        for fp in _shape_face_fps(sh):
+            owners[fp] = prior.get(fp) or pre_owners_all.get(fp) or fid
+        b["_owners"] = owners
 
 
 def _bbox_overlap(a, b, tol=1e-6):
@@ -632,6 +852,35 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
         raise ValueError(f"unknown extrude operation: {op}")
 
 
+def _vertex_components(solids):
+    """Group solids into physically-connected pieces (union-find over solids that
+    share a vertex). A connected lump — even one OCCT reports as many sub-solids
+    (a honeycomb half is dozens) — collapses to one group; genuinely separate lumps
+    stay apart. Returns a list of solid-lists."""
+    n = len(solids)
+    if n <= 1:
+        return [list(solids)] if solids else []
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    vmap = {}
+    for i, s in enumerate(solids):
+        for v in s.vertices():
+            vmap.setdefault((round(v.X, 3), round(v.Y, 3), round(v.Z, 3)), []).append(i)
+    for idxs in vmap.values():
+        for j in idxs[1:]:
+            parent[find(idxs[0])] = find(j)
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(solids[i])
+    return list(groups.values())
+
+
 def _do_split(f, bodies, find_body, active, new_body, datums):
     """Cut a body by a plane. keep=top/bottom keeps one side (replaces the body);
     keep=both splits it into separate bodies. `bodies` cuts every listed body
@@ -653,9 +902,34 @@ def _do_split(f, bodies, find_body, active, new_body, datums):
         res = split(target["shape"], bisect_by=plane, keep=KEEP[keep])
         pieces = res.solids()
         if keep == "both" and len(pieces) > 1:
-            target["shape"] = pieces[0]
-            for p in pieces[1:]:
-                new_body(p, "Split")
+            if f.get("groupSides"):
+                # One body per physically-SEPARATE piece. First split the solids by
+                # SIDE of the plane (the two halves touch along the cut, so pure
+                # connectivity would falsely merge them), then within each side group
+                # solids that are actually connected. So a connected half stays ONE
+                # body (a honeycomb half is dozens of solids → one piece), while
+                # genuinely disconnected lumps (separate tabs) each get their own.
+                # OPT-IN (new splits only) — body ids are positional, so changing the
+                # count would renumber downstream bodies and break older files.
+                n, o = plane.z_dir, plane.origin
+                top = [p for p in pieces if (p.center() - o).dot(n) >= 0]
+                bottom = [p for p in pieces if (p.center() - o).dot(n) < 0]
+                groups = _vertex_components(top) + _vertex_components(bottom)
+                if groups:
+                    def _one(g):
+                        return g[0] if len(g) == 1 else Compound(g)
+                    target["shape"] = _one(groups[0])
+                    for g in groups[1:]:
+                        new_body(_one(g), "Split")
+                else:
+                    target["shape"] = res
+            else:
+                # legacy: one body per disconnected solid. Kept as the default so files
+                # saved before `groupSides` keep their exact positional body ids (any
+                # change to the body count cascades into every downstream body ref).
+                target["shape"] = pieces[0]
+                for p in pieces[1:]:
+                    new_body(p, "Split")
         elif not pieces:
             # a plane that misses one of several bodies shouldn't fail the whole
             # cut — only error when the sole target wasn't intersected.

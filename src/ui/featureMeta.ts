@@ -8,6 +8,7 @@ export const FEATURE_META: Record<FeatureType, { glyph: string; label: string }>
   fillet: { glyph: "◜", label: "Fillet" },
   chamfer: { glyph: "◣", label: "Chamfer" },
   "press-pull": { glyph: "⤒", label: "Press/Pull" },
+  deleteFace: { glyph: "⌫", label: "Delete Face" },
   mirror: { glyph: "⇋", label: "Mirror" },
   revolve: { glyph: "↻", label: "Revolve" },
   loft: { glyph: "≋", label: "Loft" },

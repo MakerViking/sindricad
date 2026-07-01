@@ -74,6 +74,7 @@ def tessellate_bodies(bodies, tolerance=0.1):
     face_ids = []
     meta = []
     face_base = 0
+    from builder import _face_fp  # same fingerprint the provenance owner-map uses
     for b in bodies:
         sh = b.get("shape")
         if sh is None:
@@ -84,8 +85,13 @@ def tessellate_bodies(bodies, tolerance=0.1):
         indices.extend(i + vbase for i in idx)
         n_faces = (max(fids) + 1) if fids else 0
         face_ids.extend(fid + face_base for fid in fids)
+        # per-face owning feature id (indexed by local face id) so a picked face maps
+        # back to the feature that created it — for click-a-face-then-delete.
+        owners_map = b.get("owners") or {}
+        face_owners = [owners_map.get(_face_fp(face)) for face in sh.faces()]
         meta.append(
-            {"id": b["id"], "name": b["name"], "faceStart": face_base, "faceCount": n_faces}
+            {"id": b["id"], "name": b["name"], "faceStart": face_base,
+             "faceCount": n_faces, "faceOwners": face_owners}
         )
         face_base += n_faces
     return positions, indices, face_ids, meta

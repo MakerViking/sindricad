@@ -156,6 +156,43 @@ tree.onSelect = selectFeature;
 // clicking a construction plane in the viewport selects it (so it can be cut by)
 viewport.onPickDatum = (id) => selectFeature(id);
 
+// Click a model FACE → select the feature that created it, so Del deletes that
+// feature (and the timeline/params show which one owns the face). Provenance is the
+// per-face `faceOwners` the sidecar attaches to each body in the build result.
+function featureForFace(faceId: number): string | null {
+  for (const b of store.buildState.result?.bodies ?? []) {
+    if (faceId >= b.faceStart && faceId < b.faceStart + b.faceCount) {
+      return b.faceOwners?.[faceId - b.faceStart] ?? null;
+    }
+  }
+  return null;
+}
+viewport.onHit = (hit) => {
+  if (toolBusy()) return;
+  if (hit?.kind === "face") {
+    const owner = featureForFace(hit.faceId);
+    if (owner) selectFeature(owner); // show which feature this face came from
+    setPrompt("Del to delete this face (removes it + heals) · Extrude to push/cut it");
+  }
+};
+
+// Remove the currently-selected face(s) and heal the solid (defeature). Returns
+// false when no face is selected (so the caller can fall back to feature-delete).
+function deleteSelectedFace(): boolean {
+  const fsel = viewport.selectedFacesForPressPull();
+  if (!fsel) return false;
+  store.addFeature({
+    id: store.nextId(),
+    type: "deleteFace",
+    face: fsel.selectors.length === 1 ? fsel.selectors[0] : fsel.selectors,
+    ...(fsel.bodyId ? { body: fsel.bodyId } : {}),
+  } as Feature);
+  viewport.clearSelection();
+  setStatus("Deleting face…", ""); // real outcome (healed, or an error) comes from the rebuild
+  setPrompt(null);
+  return true;
+}
+
 // right-click a model face → context menu. Uses face raycasting (not the
 // edge-priority picker), so it reliably targets thin faces like an inner ledge.
 canvas.addEventListener("contextmenu", (e) => {
@@ -179,13 +216,19 @@ canvas.addEventListener("contextmenu", (e) => {
     { label: "Offset plane from face", onClick: () => offsetPlaneFromFace(face) },
     { label: "Sketch on this face", onClick: () => { if (!toolBusy()) sketch.enter(face, store); } },
     ...(faceId != null
-      ? [{
-          label: "Select coplanar faces",
-          onClick: () => {
-            const n = viewport.selectCoplanarFaces(faceId);
-            setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
+      ? [
+          {
+            label: "Delete face (heal)",
+            onClick: () => { viewport.selectOnlyFace(faceId); deleteSelectedFace(); },
           },
-        }]
+          {
+            label: "Select coplanar faces",
+            onClick: () => {
+              const n = viewport.selectCoplanarFaces(faceId);
+              setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
+            },
+          },
+        ]
       : []),
   ]);
 });
@@ -597,7 +640,7 @@ async function startSplit() {
   }
   pickPlaneInteractive("Select a plane or face to cut by", (spec) => {
     planeOffset.start(new SketchPlane(spec), (def) => {
-      if (def) store.addFeature({ id: store.nextId(), type: "split", plane: def, keep, body } as Feature);
+      if (def) store.addFeature({ id: store.nextId(), type: "split", plane: def, keep, body, groupSides: true } as Feature);
     });
   });
 }
@@ -620,7 +663,7 @@ async function startCutByPlane(planeId: string) {
   const ids = (store.buildState.result?.bodies ?? [])
     .filter((b) => store.isBodyVisible(b.id))
     .map((b) => b.id);
-  store.addFeature({ id: store.nextId(), type: "split", planeId, keep, bodies: ids } as Feature);
+  store.addFeature({ id: store.nextId(), type: "split", planeId, keep, bodies: ids, groupSides: true } as Feature);
 }
 
 // Combine: boolean-join/cut/intersect bodies. With exactly two bodies the first
@@ -1059,14 +1102,15 @@ async function startPattern() {
 
 function startExtrude() {
   if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active) return;
+  // A SELECTED FACE wins: extrude-a-face = Press/Pull it (drag out to join, in to
+  // cut). This takes priority over region extrude so a visible sketch never hijacks
+  // "extrude this face" (was: a shown sketch forced region-extrude, so face cut did
+  // nothing).
+  if (viewport.selectedFacesForPressPull()) {
+    pressPull.start((id) => id && selectFeature(id));
+    return;
+  }
   if (overlay.regions.length === 0) {
-    // Fusion parity: Extrude on a selected planar face extrudes that face — the
-    // same offset-a-face operation as Press/Pull — so route it there instead of
-    // demanding a sketch. Only fall back to the hint if nothing usable is picked.
-    if (viewport.selectedFacesForPressPull()) {
-      pressPull.start((id) => id && selectFeature(id));
-      return;
-    }
     setStatus("Extrude: select a face, or create a sketch with a closed profile first", "");
     return;
   }
@@ -1339,11 +1383,15 @@ installKeymap((a) => {
   }
 });
 
-// delete selected feature
+// delete: a selected FACE → remove it and heal the solid (defeature — works on
+// imported geometry, where there's no feature to delete); otherwise delete the
+// selected timeline feature.
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement) return;
   if (toolBusy()) return;
-  if ((e.key === "Delete" || e.key === "Backspace") && selectedFeature) {
+  if (e.key !== "Delete" && e.key !== "Backspace") return;
+  if (deleteSelectedFace()) return;
+  if (selectedFeature) {
     store.removeFeature(selectedFeature);
     selectFeature(null);
   }

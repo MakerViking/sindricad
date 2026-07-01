@@ -130,6 +130,7 @@ export type Feature =
   // the same `distance` along its own normal. `upTo` (a target face selector), when
   // set, extrudes each face up to that surface instead of by `distance`.
   | { id: string; type: "press-pull"; face: Selector | Selector[]; distance: Num; operation: "join" | "cut"; body?: string; upTo?: Selector }
+  | { id: string; type: "deleteFace"; face: Selector | Selector[]; body?: string }
   | { id: string; type: "mirror"; plane: Plane3 }
   | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num }
   | { id: string; type: "loft"; sketches: string[] }
@@ -157,7 +158,7 @@ export type Feature =
   // into separate bodies. `body` targets a specific body (default: the active one);
   // `bodies` cuts every listed body (used for "cut all visible bodies"). The
   // cutting plane is either an inline `plane` or `planeId` (a datum plane by id).
-  | { id: string; type: "split"; plane?: PlaneSpec; planeId?: string; keep: "top" | "bottom" | "both"; body?: string; bodies?: string[] }
+  | { id: string; type: "split"; plane?: PlaneSpec; planeId?: string; keep: "top" | "bottom" | "both"; body?: string; bodies?: string[]; groupSides?: boolean }
   // Boolean-combine bodies. The target is modified in place; tool bodies are
   // consumed unless keepTools. Omitted target/tools default to "all bodies".
   | { id: string; type: "combine"; operation: "join" | "cut" | "intersect"; target?: string; tools?: string[]; keepTools?: boolean }
@@ -248,7 +249,7 @@ export interface RebuildResult {
   bbox: { min: number[]; max: number[] };
   // per-body metadata: which faceId range each body occupies in the merged mesh
   // (lets the browser tree list bodies and picking map a face back to its body).
-  bodies?: { id: string; name: string; faceStart: number; faceCount: number }[];
+  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[] }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
 }

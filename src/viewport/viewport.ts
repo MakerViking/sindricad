@@ -173,11 +173,6 @@ export class Viewport {
     }
     if (this.suspendPicking) return;
     if (this.selectionMode === "bodies") return; // no face hover while picking bodies
-    // a visible sketch's region under the cursor highlights (and wins over face hover)
-    if (this.regionHoverAt?.(e.clientX, e.clientY)) {
-      this.highlighter?.clearHover();
-      return;
-    }
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
     const hit = this.picker.pick(
@@ -189,8 +184,11 @@ export class Viewport {
       this.resolution,
     );
     this.highlighter.clearHover();
-    if (hit?.kind === "edge") this.highlighter.hoverEdge(hit.line);
-    else if (hit?.kind === "face") this.highlighter.hoverFace(hit.faceId);
+    if (hit?.kind === "edge") { this.highlighter.hoverEdge(hit.line); this.regionHoverAt?.(-1, -1); return; }
+    if (hit?.kind === "face") { this.highlighter.hoverFace(hit.faceId); this.regionHoverAt?.(-1, -1); return; }
+    // no solid edge/face under the cursor → a visible sketch's region may be (clicking
+    // through a hole, or with the body hidden). The face ALWAYS wins when present.
+    this.regionHoverAt?.(e.clientX, e.clientY);
   }
 
   private handleClick(e: PointerEvent) {
@@ -215,9 +213,11 @@ export class Viewport {
     const hit = this.model
       ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model, this.resolution)
       : null;
-    // a click on a visible sketch's profile area selects that area (for Extrude),
-    // taking priority over the body behind it — inert unless a sketch is shown.
-    if (this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    // A solid FACE always wins. Only when nothing solid is under the cursor (clicking
+    // through a honeycomb hole, or with the body hidden) does a click select a visible
+    // sketch's profile area — so face selection (delete/press-pull) keeps working with
+    // a sketch shown.
+    if (!hit && this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)) return;
     // a click on a construction plane (where it doesn't overlap the body) selects it
     if (!hit && this.datumQuads.length) {
       const dh = this.rayFrom(e.clientX, e.clientY).intersectObjects(this.datumQuads, false)[0];
@@ -958,6 +958,14 @@ export class Viewport {
 
   clearSelection() {
     this.highlighter?.clearSelection();
+    this.onSelectionChange?.();
+  }
+
+  /** Select exactly the given B-rep face (clears any prior selection). Used by the
+   *  right-click "Delete Face" menu so the face-delete path has a definite target. */
+  selectOnlyFace(faceId: number) {
+    this.highlighter?.clearSelection();
+    this.highlighter?.toggleSelectFace(faceId);
     this.onSelectionChange?.();
   }
 
