@@ -10,6 +10,15 @@ mod spacemouse;
 use sidecar::Sidecar;
 use tauri::{Manager, RunEvent};
 
+/// Hand the per-launch sidecar WebSocket auth token to the webview so the
+/// frontend can append it to its `ws://…?token=` URL. Only the privileged
+/// webview can call this (Tauri IPC), which is what keeps the token out of
+/// reach of other local processes and web pages.
+#[tauri::command]
+fn sidecar_token(state: tauri::State<'_, Sidecar>) -> String {
+    state.token.clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -17,7 +26,9 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         // Rust geometry spike: callable as invoke("geom_rebuild") when the
         // frontend runs with VITE_GEOM=rust (else it uses the Python sidecar).
-        .invoke_handler(tauri::generate_handler![geom::geom_rebuild, geom::geom_export])
+        // `sidecar_token` hands the per-launch WebSocket auth token to the
+        // frontend so it can dial the sidecar.
+        .invoke_handler(tauri::generate_handler![geom::geom_rebuild, geom::geom_export, sidecar_token])
         .setup(|app| {
             match Sidecar::spawn() {
                 Ok(s) => {

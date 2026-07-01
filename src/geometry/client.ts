@@ -33,6 +33,10 @@ export interface GeometryBackend {
   importGeometry(path: string, format: ImportFormat): Promise<ImportReply>;
   // Pairwise interference (clash) check among the document's bodies.
   interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }>;
+  // Fetch the per-launch sidecar auth token from the Rust shell (Tauri) and
+  // open the socket. Must be called once before any backend op; the store
+  // queues into the outbox until the socket opens, so ordering is non-critical.
+  init(): Promise<void>;
   onStatus(fn: StatusListener): () => void;
   readonly connected: boolean;
 }
@@ -40,6 +44,7 @@ export interface GeometryBackend {
 export class Geometry implements GeometryBackend {
   private ws: WebSocket | null = null;
   private readonly url: string;
+  private token = ""; // per-launch shared secret fetched from the Rust shell
   private pending = new Map<string, Pending>();
   private outbox: string[] = [];
   private statusListeners = new Set<StatusListener>();
@@ -47,7 +52,22 @@ export class Geometry implements GeometryBackend {
 
   constructor(url = "ws://127.0.0.1:8765") {
     this.url = url;
+    // Does NOT connect — call init() once so the per-launch auth token is
+    // fetched from the Rust shell before the first socket open.
+  }
+
+  async init(): Promise<void> {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      this.token = await invoke<string>("sidecar_token");
+    } catch {
+      this.token = ""; // plain browser dev (no Tauri) — no sidecar anyway
+    }
     this.connect();
+  }
+
+  private wsUrl(): string {
+    return `${this.url}/?token=${encodeURIComponent(this.token)}`;
   }
 
   onStatus(fn: StatusListener): () => void {
@@ -65,7 +85,7 @@ export class Geometry implements GeometryBackend {
   }
 
   private connect() {
-    const ws = new WebSocket(this.url);
+    const ws = new WebSocket(this.wsUrl());
     this.ws = ws;
 
     ws.onopen = () => {

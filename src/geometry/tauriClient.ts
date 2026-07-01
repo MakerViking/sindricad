@@ -13,6 +13,10 @@ type StatusListener = (connected: boolean) => void;
 export class TauriGeometry implements GeometryBackend {
   private statusListeners = new Set<StatusListener>();
 
+  // No socket to authenticate — in-process Rust invoke. Satisfies the
+  // GeometryBackend contract alongside the websocket client.
+  async init(): Promise<void> {}
+
   onStatus(fn: StatusListener): () => void {
     this.statusListeners.add(fn);
     fn(this.connected); // in-process: always connected

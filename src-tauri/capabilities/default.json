@@ -11,7 +11,14 @@
     "fs:allow-write-text-file",
     {
       "identifier": "fs:scope",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "$HOME/Documents/**" },
+        { "path": "$HOME/Downloads/**" },
+        { "path": "$HOME/Desktop/**" }
+      ]
     }
   ]
 }

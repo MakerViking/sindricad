@@ -18,6 +18,7 @@ import { saveDocument, saveDocumentAs, openDocument, exportModel, importModel } 
 import { Menubar } from "./ui/menu";
 import { contextMenu } from "./ui/menu";
 import { choose } from "./ui/choice";
+import { esc } from "./ui/escape";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
 import { SketchPlane } from "./sketch/plane";
@@ -41,6 +42,7 @@ const contextTab = document.getElementById("context-tab")!;
 const viewport = new Viewport(canvas);
 
 const geometry = import.meta.env.VITE_GEOM === "rust" ? new TauriGeometry() : new Geometry();
+void geometry.init(); // fetch the per-launch sidecar auth token + open the socket
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
 
 const overlay = new SketchOverlay();
@@ -803,9 +805,9 @@ function showProperties() {
   const el = document.createElement("div");
   el.className = "measure-panel";
   el.innerHTML =
-    `<div class="measure-title">Properties — ${title}</div>` +
+    `<div class="measure-title">Properties — ${esc(title)}</div>` +
     rows
-      .map(([k, v]) => `<div class="measure-row"><span class="measure-k">${k}</span><span class="measure-v">${v}</span></div>`)
+      .map(([k, v]) => `<div class="measure-row"><span class="measure-k">${esc(k)}</span><span class="measure-v">${esc(v)}</span></div>`)
       .join("") +
     `<div class="measure-hint">Select a body for its own properties · Esc to close</div>`;
   document.body.appendChild(el);
@@ -862,7 +864,7 @@ async function showInterference() {
       pairs
         .map(
           (p, i) =>
-            `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${p.aName} ∩ ${p.bName}</span><span class="measure-v">${round(p.volume * f * f * f)} ${unit}³</span></div>`,
+            `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${esc(p.aName)} ∩ ${esc(p.bName)}</span><span class="measure-v">${round(p.volume * f * f * f)} ${unit}³</span></div>`,
         )
         .join("") +
       `<div class="measure-hint">Click a clash to highlight the bodies · Esc to close</div>`;

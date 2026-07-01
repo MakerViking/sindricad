@@ -6,7 +6,7 @@
 //! the two, the sidecar never orphans. (Prod will switch to a bundled
 //! externalBin sidecar — deferred.)
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -14,11 +14,34 @@ use std::sync::Mutex;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-/// Handle to the running sidecar, stored in Tauri managed state.
-pub struct Sidecar(pub Mutex<Option<Child>>);
+/// Handle to the running sidecar, stored in Tauri managed state. Carries the
+/// per-launch WebSocket auth token so the frontend can fetch it via the
+/// `sidecar_token` command and dial the sidecar with `?token=…`.
+pub struct Sidecar {
+    pub child: Mutex<Option<Child>>,
+    pub token: String,
+}
+
+/// 256-bit shared secret for the sidecar WebSocket, read from the kernel CSPRNG.
+/// Linux-focused app, so /dev/urandom is always present. The fallback only
+/// exists so a dev box without /dev/urandom still builds — never rely on it.
+fn random_token() -> String {
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let mut buf = [0u8; 32];
+        if f.read_exact(&mut buf).is_ok() {
+            return buf.iter().map(|b| format!("{:02x}", b)).collect();
+        }
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("weak-{}-{}", std::process::id(), nanos)
+}
 
 impl Sidecar {
     pub fn spawn() -> std::io::Result<Self> {
+        let token = random_token();
         // project root = parent of this crate's manifest dir (dev layout)
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -34,6 +57,7 @@ impl Sidecar {
 
         let mut cmd = Command::new(&python);
         cmd.arg("server.py")
+            .env("SINDRI_SIDECAR_TOKEN", &token) // hand the secret to the sidecar
             .current_dir(&sidecar_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -61,12 +85,12 @@ impl Sidecar {
         }
 
         println!("[sidecar] spawned pid {}", child.id());
-        Ok(Sidecar(Mutex::new(Some(child))))
+        Ok(Sidecar { child: Mutex::new(Some(child)), token })
     }
 
     /// Kill the sidecar and its whole process group.
     pub fn kill(&self) {
-        if let Ok(mut guard) = self.0.lock() {
+        if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
                 let pid = child.id();
                 #[cfg(unix)]

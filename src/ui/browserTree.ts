@@ -7,6 +7,7 @@
 import type { DocumentStore } from "../document/store";
 import type { Plane3 } from "../types";
 import { contextMenu } from "./menu";
+import { esc } from "./escape";
 
 export class BrowserTree {
   private el: HTMLElement;
@@ -191,8 +192,8 @@ export class BrowserTree {
       row.className = "feature-row tree-child";
       row.title = `Filament slot ${i + 1} → toolhead ${i + 1}`;
       row.innerHTML =
-        `<input type="color" value="${slot.color}" class="pal-swatch" style="width:18px;height:18px;border:none;background:none;padding:0;cursor:pointer;vertical-align:middle">` +
-        `<span class="tree-label" style="margin-left:7px">${slot.name}</span>`;
+        `<input type="color" value="${esc(slot.color)}" class="pal-swatch" style="width:18px;height:18px;border:none;background:none;padding:0;cursor:pointer;vertical-align:middle">` +
+        `<span class="tree-label" style="margin-left:7px">${esc(slot.name)}</span>`;
       const input = row.querySelector(".pal-swatch") as HTMLInputElement;
       input.addEventListener("change", () => this.store.setPaletteSlot(i, { color: input.value }));
       const label = row.querySelector(".tree-label") as HTMLElement;
@@ -247,12 +248,12 @@ export class BrowserTree {
       if (it.title) row.title = it.title;
       const hidden = it.onToggleVis && it.visible === false;
       const swatch = it.swatch
-        ? `<span class="tree-swatch" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${it.swatch};border:1px solid #0007;margin-right:5px;vertical-align:middle"></span>`
+        ? `<span class="tree-swatch" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${esc(it.swatch)};border:1px solid #0007;margin-right:5px;vertical-align:middle"></span>`
         : "";
       row.innerHTML =
-        `<span class="feature-icon">${it.icon}</span>` +
+        `<span class="feature-icon">${esc(it.icon)}</span>` +
         swatch +
-        `<span class="tree-label"${hidden ? ' style="opacity:.45"' : ""}>${it.label}</span>` +
+        `<span class="tree-label"${hidden ? ' style="opacity:.45"' : ""}>${esc(it.label)}</span>` +
         `<span style="flex:1"></span>` +
         (it.onToggleVis ? `<span class="tree-eye" title="Show/hide">${it.visible === false ? "○" : "◉"}</span>` : "");
 

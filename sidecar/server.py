@@ -22,10 +22,14 @@ on stdout once bound, which the Rust shell waits for before opening the webview.
 
 import asyncio
 import ctypes
+import hmac
 import json
 import multiprocessing as mp
+import os
+import secrets
 import signal
 import sys
+import urllib.parse
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
@@ -35,6 +39,26 @@ import occt_smp
 
 HOST = "127.0.0.1"
 PORT = 8765
+
+# WebSocket auth: every connection must carry the per-launch shared secret.
+# Rust sets SINDRI_SIDECAR_TOKEN when it spawns us; a manual `python server.py`
+# (no env) mints one and prints `TOKEN <t>` on stdout so a prober can read it
+# and append ?token=. There is NO open mode — the token is always required,
+# which is what keeps a foreign local process or a DNS-rebinding web page from
+# driving export / import / rebuild against us.
+_TOKEN: str | None = None
+
+# Origins the Tauri webview legitimately connects from (prod custom-protocol
+# origin on Linux/Windows + the vite devUrl). A browser-originated WS always
+# sends Origin; a foreign origin is rejected even with a valid token. An absent
+# Origin (a non-browser client like a Python prober) is allowed — the token
+# alone gates it.
+ALLOWED_ORIGINS = {
+    "tauri://localhost",
+    "https://tauri.localhost",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+}
 
 # A single geometry op (rebuild/tessellate/export) must finish within this many
 # seconds. OCCT can spin forever or segfault on degenerate input (e.g. a face
@@ -266,7 +290,35 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
         return {"error": {"message": "the geometry kernel crashed on this operation"}}
 
 
+def _authorized(request) -> bool:
+    """True iff the request carries the per-launch shared secret (and, when a
+    browser supplies an Origin, a Tauri one). The token stops local processes
+    and DNS-rebinding pages; the origin check stops a page that somehow learned
+    the token."""
+    if not _TOKEN:
+        return False
+    q = urllib.parse.urlparse(request.path).query
+    tok = urllib.parse.parse_qs(q).get("token", [""])[0]
+    if not hmac.compare_digest(tok, _TOKEN):  # constant-time compare
+        return False
+    origin = request.headers.get("Origin", "")
+    if origin and origin not in ALLOWED_ORIGINS:
+        return False
+    return True
+
+
+def _mint_token() -> str:
+    """Manual `python server.py` (no SINDRI_SIDECAR_TOKEN env): mint one and
+    print it on stdout so a prober can read it and append ?token=… to its URL."""
+    t = secrets.token_urlsafe(32)
+    print(f"TOKEN {t}", flush=True)
+    return t
+
+
 async def handle(ws):
+    if not _authorized(ws.request):
+        await ws.close(code=1008, reason="unauthorized")
+        return
     loop = asyncio.get_running_loop()
     async for raw in ws:
         try:
@@ -308,8 +360,9 @@ async def handle(ws):
 
 
 async def main():
-    global _pool, _mp_ctx
+    global _pool, _mp_ctx, _TOKEN
     _die_with_parent()
+    _TOKEN = os.environ.get("SINDRI_SIDECAR_TOKEN") or _mint_token()
     _mp_ctx = mp.get_context("spawn")
     _pool = _new_pool()
     try:
