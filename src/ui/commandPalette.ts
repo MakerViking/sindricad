@@ -4,6 +4,7 @@
 // only commands become findable by name.
 
 import { allCommands, type Command } from "./commands";
+import { esc } from "./escape";
 
 export class CommandPalette {
   private backdrop: HTMLDivElement | null = null;
@@ -75,9 +76,9 @@ export class CommandPalette {
       const el = document.createElement("div");
       el.className = "cmdk-item" + (i === 0 ? " active" : "");
       el.innerHTML =
-        `<span class="cmdk-label">${c.label}</span>` +
-        `<span class="cmdk-group">${c.group}</span>` +
-        (c.key ? `<span class="cmdk-key">${c.key}</span>` : "");
+        `<span class="cmdk-label">${esc(c.label)}</span>` +
+        `<span class="cmdk-group">${esc(c.group)}</span>` +
+        (c.key ? `<span class="cmdk-key">${esc(c.key)}</span>` : "");
       el.addEventListener("pointermove", () => this.setActive(i));
       el.addEventListener("click", () => this.runIndex(i));
       this.list.appendChild(el);

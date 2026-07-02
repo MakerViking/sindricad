@@ -10,6 +10,7 @@ import type { Viewport } from "../viewport/viewport";
 import type { Hit } from "../viewport/picking";
 import { setPrompt } from "../ui/prompt";
 import { getUnit, toDisplay, round } from "../ui/units";
+import { esc } from "../ui/escape";
 
 type Probe =
   | { kind: "face"; faceId: number; point: THREE.Vector3; dir: THREE.Vector3; area: number }
@@ -119,7 +120,7 @@ export class MeasureTool {
       rows
         .map(
           ([k, v]) =>
-            `<div class="measure-row"><span class="measure-k">${k}</span><span class="measure-v">${v}</span></div>`,
+            `<div class="measure-row"><span class="measure-k">${esc(k)}</span><span class="measure-v">${esc(v)}</span></div>`,
         )
         .join("") +
       `<div class="measure-hint">Esc to exit</div>`;

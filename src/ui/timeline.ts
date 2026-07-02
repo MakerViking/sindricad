@@ -6,6 +6,7 @@
 
 import type { DocumentStore } from "../document/store";
 import { FEATURE_META } from "./featureMeta";
+import { esc } from "./escape";
 
 export class Timeline {
   private el: HTMLElement;
@@ -79,8 +80,8 @@ export class Timeline {
         : `${meta.label} — double-click to edit, right-click for more`;
     node.innerHTML =
       `<span class="t-num">${i + 1}</span>` +
-      `<span class="glyph">${meta.glyph}</span>` +
-      `<span class="t-label">${meta.label}</span>`;
+      `<span class="glyph">${esc(meta.glyph)}</span>` +
+      `<span class="t-label">${esc(meta.label)}</span>`;
 
     node.addEventListener("click", () => this.onSelect?.(f.id));
     node.addEventListener("dblclick", () => this.onEdit?.(f.id));

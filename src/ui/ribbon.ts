@@ -3,6 +3,7 @@
 // The sketch context ends with the green Finish Sketch + a Sketch Palette toggle.
 
 import { icon } from "./icons";
+import { esc } from "./escape";
 
 export type RibbonContext = "model" | "sketch";
 
@@ -234,7 +235,7 @@ export class Ribbon {
       if (it.soon) btn.classList.add("soon");
       btn.dataset.action = it.action;
       btn.title = it.key ? `${it.label} (${it.key})` : it.label + (it.soon ? " — coming soon" : "");
-      btn.innerHTML = `${icon(it.iconName)}<span>${it.label}</span>`;
+      btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
       btn.addEventListener("click", () => this.onAction?.(it.action));
       tools.appendChild(btn);
     }
@@ -302,7 +303,7 @@ export class Ribbon {
       for (const it of g.items) {
         const b = document.createElement("button");
         b.className = "ribbon-overflow-item";
-        b.innerHTML = `${icon(it.iconName)}<span>${it.label}</span>`;
+        b.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
         b.addEventListener("click", () => {
           this.closeOverflow();
           this.onAction?.(it.action);

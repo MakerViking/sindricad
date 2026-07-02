@@ -112,9 +112,17 @@ def _shape_to_brep_b64(shape):
 
 
 def _brep_b64_to_shape(b64):
-    """Inverse of _shape_to_brep_b64. import_brep needs a real path, so we round
-    the bytes through a temp file."""
+    """Inverse of _shape_to_brep_b64. Validates the decoded blob looks like a real
+    OCCT BREP (magic header + sane size) BEFORE handing it to the parser, so a
+    crafted .sindri can't aim a parser fuzz at OCCT in the worker. import_brep
+    needs a real path, so we round the bytes through a temp file."""
     data = base64.b64decode(b64)
+    if len(data) > MAX_BREP_BYTES:
+        raise ValueError("embedded BREP payload too large to import")
+    # OCCT's BRepTools::Write emits a leading newline then "CASCADE Topology V<n>".
+    # Strip the expected newline and require the signature right after it.
+    if not data[: len(_BREP_MAGIC) + 2].lstrip(b"\n\r ").startswith(_BREP_MAGIC):
+        raise ValueError("embedded payload is not a valid BREP (bad header)")
     fd, path = tempfile.mkstemp(suffix=".brep")
     os.close(fd)
     try:
@@ -177,29 +185,76 @@ MAX_IMPORT_TRIANGLES = 150_000  # reject before the slow read (avoids the timeou
 MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/curved,
                                 # not a clean editable model (a prismatic CAD part —
                                 # even with fillets — merges to far fewer faces).
+# Untrusted-input guards (an import path or embedded BREP comes from a .sindri doc
+# the user opened, which may be hostile). Caps bound the worst case BEFORE a heavy
+# read/parse, so a crafted file can't OOM the worker or aim a parser fuzz at OCCT.
+MAX_IMPORT_FILE_BYTES = 256 * 1024 * 1024   # reject any import file above this outright
+MAX_IMPORT_SCAN_BYTES = 64 * 1024 * 1024    # decompressed ASCII-STL / 3MF scan window
+MAX_BREP_BYTES = 64 * 1024 * 1024           # decoded embedded-BREP body cap
+_BREP_MAGIC = b"CASCADE Topology V"         # OCCT ASCII BREP header signature
+
+
+def _count_stream(fh, needle, limit, max_bytes=None):
+    """Count `needle` occurrences in a binary stream WITHOUT loading it whole.
+    Reads 1 MiB chunks; keeps a len(needle)-1 byte carry between chunks so a match
+    straddling a chunk boundary counts exactly once (the carry is shorter than the
+    needle, so it can't itself hold a match — no double counting). Stops as soon as
+    the count exceeds `limit` (already over the import cap) or `max_bytes` are read,
+    so an oversized ASCII STL / 3MF model can't be slurped into memory."""
+    nlen = len(needle)
+    count = 0
+    total = 0
+    carry = b""
+    while True:
+        chunk = fh.read(1 << 20)
+        if not chunk:
+            break
+        total += len(chunk)
+        buf = carry + chunk
+        count += buf.count(needle)
+        carry = buf[-(nlen - 1):] if nlen > 1 else b""
+        if count > limit or (max_bytes is not None and total >= max_bytes):
+            return count
+    return count
 
 
 def _peek_triangle_count(path, fmt):
     """Best-effort triangle count straight from the file, WITHOUT building a B-rep,
-    so a too-dense import fails fast. Returns None when it can't tell."""
+    so a too-dense import fails fast. Streams large files in chunks (stops past the
+    cap) so a multi-GB ASCII STL or a lying-header 3MF can't be slurped into memory.
+    Returns None when it can't tell."""
+    cap = MAX_IMPORT_TRIANGLES
     try:
         if fmt == "stl":
             with open(path, "rb") as fh:
                 head = fh.read(84)
             if head[:5].lower() == b"solid":
-                blob = open(path, "rb").read()
-                if b"facet normal" in blob:  # genuine ASCII STL
-                    return blob.count(b"facet normal")
+                with open(path, "rb") as fh:
+                    return _count_stream(fh, b"facet normal", cap, MAX_IMPORT_SCAN_BYTES)
             import struct  # binary STL: uint32 triangle count at byte 80
             return struct.unpack("<I", head[80:84])[0]
         if fmt == "3mf":
             import zipfile
             with zipfile.ZipFile(path) as z:
                 model = next((n for n in z.namelist() if n.lower().endswith(".model")), None)
-                return z.read(model).count(b"<triangle") if model else None
+                if not model:
+                    return None
+                # zip-bomb guard: the declared UNCOMPRESSED model size is in the
+                # central directory (no decompress). If it's past the scan window,
+                # return a sentinel above the cap so the caller rejects it.
+                if z.getinfo(model).file_size > MAX_IMPORT_SCAN_BYTES:
+                    return cap + 1
+                with z.open(model) as fh:  # stream-decompress, bounded by max_bytes
+                    return _count_stream(fh, b"<triangle", cap, MAX_IMPORT_SCAN_BYTES)
         if fmt == "obj":
+            n = 0
             with open(path, "rb") as fh:
-                return sum(1 for ln in fh if ln.startswith(b"f "))
+                for ln in fh:  # lazy line iteration, early-break past the cap
+                    if ln.startswith(b"f "):
+                        n += 1
+                        if n > cap:
+                            return n
+            return n
     except Exception:
         return None
     return None
@@ -237,6 +292,15 @@ def import_geometry(path, fmt):
     `import` feature: {brep, solid, faces, name}. STL/3MF/OBJ are read as a
     (watertight) mesh solid; STEP/BREP come in as native B-rep."""
     fmt = (fmt or "").lower()
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
+    if size > MAX_IMPORT_FILE_BYTES:
+        raise ValueError(
+            f"file is {size / (1024 * 1024):.0f} MiB — too large to import "
+            f"(limit {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB)."
+        )
     if fmt in ("step", "stp"):
         shape = import_step(path)
     elif fmt == "brep":

@@ -3,6 +3,8 @@
 // Split keep-mode or the Combine boolean operation, where a full dialog/tool
 // would be overkill. Resolves once; cleans up its own DOM + listeners.
 
+import { esc } from "./escape";
+
 export interface ChoiceOption<T extends string> {
   value: T;
   label: string;
@@ -29,7 +31,7 @@ export function choose<T extends string>(
     for (const opt of options) {
       const b = document.createElement("button");
       b.className = "choice-btn";
-      b.innerHTML = `<span>${opt.label}</span>${opt.hint ? `<small>${opt.hint}</small>` : ""}`;
+      b.innerHTML = `<span>${esc(opt.label)}</span>${opt.hint ? `<small>${esc(opt.hint)}</small>` : ""}`;
       b.addEventListener("click", () => done(opt.value));
       row.appendChild(b);
     }
@@ -67,7 +69,7 @@ export function chooseMulti<T extends string>(
     backdrop.className = "choice-backdrop";
     const card = document.createElement("div");
     card.className = "choice-card";
-    card.innerHTML = `<div class="choice-title">${title}</div>`;
+    card.innerHTML = `<div class="choice-title">${esc(title)}</div>`;
 
     const list = document.createElement("div");
     list.className = "choice-checklist";
@@ -80,7 +82,7 @@ export function chooseMulti<T extends string>(
       cb.value = opt.value;
       checks.push(cb);
       label.appendChild(cb);
-      label.insertAdjacentHTML("beforeend", `<span>${opt.label}</span>${opt.hint ? `<small>${opt.hint}</small>` : ""}`);
+          label.insertAdjacentHTML("beforeend", `<span>${esc(opt.label)}</span>${opt.hint ? `<small>${esc(opt.hint)}</small>` : ""}`);
       list.appendChild(label);
     }
     card.appendChild(list);
@@ -92,7 +94,7 @@ export function chooseMulti<T extends string>(
     cancel.innerHTML = "<span>Cancel</span>";
     const ok = document.createElement("button");
     ok.className = "choice-btn choice-primary";
-    ok.innerHTML = `<span>${opts.confirmLabel ?? "OK"}</span>`;
+    ok.innerHTML = `<span>${esc(opts.confirmLabel ?? "OK")}</span>`;
     row.append(cancel, ok);
     card.appendChild(row);
     backdrop.appendChild(card);
@@ -129,9 +131,9 @@ export function listModal(title: string, items: string[]): Promise<void> {
     backdrop.className = "choice-backdrop";
     const card = document.createElement("div");
     card.className = "choice-card";
-    const rows = items.map((it) => `<li title="${it}">${it}</li>`).join("");
+    const rows = items.map((it) => `<li title="${esc(it)}">${esc(it)}</li>`).join("");
     card.innerHTML =
-      `<div class="choice-title">${title}</div>` +
+      `<div class="choice-title">${esc(title)}</div>` +
       `<ul class="choice-list">${rows}</ul>` +
       `<div class="choice-row"><button class="choice-btn choice-primary"><span>Done</span></button></div>`;
     backdrop.appendChild(card);

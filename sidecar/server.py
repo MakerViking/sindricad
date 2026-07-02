@@ -60,6 +60,13 @@ ALLOWED_ORIGINS = {
     "http://127.0.0.1:5173",
 }
 
+# Per-peer-IP concurrent-connection cap. The sidecar is bound to 127.0.0.1, so
+# every connection shares that address and this is effectively a global cap on
+# open sockets — it stops a runaway/leaky client (or a token holder stuck in a
+# reconnect loop) from exhausting file descriptors. The legit webview holds 1–2.
+MAX_CONNS_PER_IP = 8
+_ip_conns: dict[str, int] = {}
+
 # A single geometry op (rebuild/tessellate/export) must finish within this many
 # seconds. OCCT can spin forever or segfault on degenerate input (e.g. a face
 # offset that collapses a hole); the timeout + worker recycling turns that into a
@@ -316,47 +323,59 @@ def _mint_token() -> str:
 
 
 async def handle(ws):
-    if not _authorized(ws.request):
-        await ws.close(code=1008, reason="unauthorized")
-        return
-    loop = asyncio.get_running_loop()
-    async for raw in ws:
-        try:
-            req = json.loads(raw)
-        except Exception as ex:
-            await ws.send(_err(None, f"bad JSON: {ex}"))
-            continue
+    peer = ws.remote_address[0] if ws.remote_address else None
+    if peer is not None:
+        if _ip_conns.get(peer, 0) >= MAX_CONNS_PER_IP:
+            await ws.close(code=1008, reason="too many connections")
+            return
+        _ip_conns[peer] = _ip_conns.get(peer, 0) + 1
+    try:
+        if not _authorized(ws.request):
+            await ws.close(code=1008, reason="unauthorized")
+            return
+        loop = asyncio.get_running_loop()
+        async for raw in ws:
+            try:
+                req = json.loads(raw)
+            except Exception as ex:
+                await ws.send(_err(None, f"bad JSON: {ex}"))
+                continue
 
-        req_id = req.get("id")
-        op = req.get("op")
-        try:
-            if op == "rebuild":
-                tol = req.get("tolerance", 0.1)
-                res = await _run(loop, _rebuild_job, req["document"], tol)
-                await ws.send(_reply_for(req_id, res))
+            req_id = req.get("id")
+            op = req.get("op")
+            try:
+                if op == "rebuild":
+                    tol = req.get("tolerance", 0.1)
+                    res = await _run(loop, _rebuild_job, req["document"], tol)
+                    await ws.send(_reply_for(req_id, res))
 
-            elif op == "export":
-                res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False))
-                await ws.send(_reply_for(req_id, res))
+                elif op == "export":
+                    res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False))
+                    await ws.send(_reply_for(req_id, res))
 
-            elif op == "interference":
-                res = await _run(loop, _interference_job, req["document"])
-                await ws.send(_reply_for(req_id, res))
+                elif op == "interference":
+                    res = await _run(loop, _interference_job, req["document"])
+                    await ws.send(_reply_for(req_id, res))
 
-            elif op == "import":
-                # a one-time import (mesh read + B-rep build) can run longer than a
-                # rebuild; give it a roomier budget than JOB_TIMEOUT.
-                res = await _run(loop, _import_job, req["path"], req["format"], timeout=90.0)
-                await ws.send(_reply_for(req_id, res))
+                elif op == "import":
+                    # a one-time import (mesh read + B-rep build) can run longer than a
+                    # rebuild; give it a roomier budget than JOB_TIMEOUT.
+                    res = await _run(loop, _import_job, req["path"], req["format"], timeout=90.0)
+                    await ws.send(_reply_for(req_id, res))
 
-            elif op == "ping":
-                await ws.send(_ok(req_id, {"pong": True}))
+                elif op == "ping":
+                    await ws.send(_ok(req_id, {"pong": True}))
 
-            else:
-                await ws.send(_err(req_id, f"unknown op: {op}"))
+                else:
+                    await ws.send(_err(req_id, f"unknown op: {op}"))
 
-        except Exception as ex:
-            await ws.send(_err(req_id, str(ex)))
+            except Exception as ex:
+                await ws.send(_err(req_id, str(ex)))
+    finally:
+        if peer is not None:
+            _ip_conns[peer] = _ip_conns.get(peer, 0) - 1
+            if _ip_conns[peer] <= 0:
+                _ip_conns.pop(peer, None)
 
 
 async def main():
@@ -370,8 +389,10 @@ async def main():
         # the WHOLE document, and a document with an imported mesh embeds that
         # body as a (potentially multi-MB) BREP string — at the default limit the
         # server would slam the connection shut on the first real import, which
-        # the frontend sees as a permanent "connecting to sidecar".
-        async with websockets.serve(handle, HOST, PORT, max_size=512 * 1024 * 1024):
+        # the frontend sees as a permanent "connecting to sidecar". 128 MiB is
+        # plenty for a multi-body doc of imported meshes (each capped at 64 MiB
+        # decoded by builder.py) while bounding a single message's memory cost.
+        async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024):
             # readiness signal the Rust shell waits for before connecting
             print(f"LISTENING {PORT}", flush=True)
             await asyncio.Future()  # run forever
