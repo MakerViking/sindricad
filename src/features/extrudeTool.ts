@@ -14,7 +14,7 @@ import type { Feature } from "../types";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
-import { distanceAlongAxis } from "./manipulator";
+import { axisDragDistance } from "./manipulator";
 import { choose } from "../ui/choice";
 
 type Phase = "pick" | "drag";
@@ -77,13 +77,12 @@ export class ExtrudeTool {
     const plane = this.selected[0].plane;
     const anchor = this.anchor();
     if (!this.dim.isUserDriven("distance")) {
-      const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const d = distanceAlongAxis(ray, anchor, plane.n);
+      const d = axisDragDistance(this.viewport, e.clientX, e.clientY, anchor, plane.n);
       this.distance = d;
       this.dim.updateFromCursor({ distance: Math.abs(d) });
     } else {
       const v = this.dim.getValue("distance");
-      if (v != null) this.distance = Math.sign(this.distance || 1) * v;
+      if (v != null) this.distance = v; // the field is the truth: typed sign wins
     }
     this.dim.position(e.clientX, e.clientY);
     this.updatePreview();
@@ -120,7 +119,7 @@ export class ExtrudeTool {
     this.phase = "drag";
     this.distance = 10;
     this.overlay.setHoverRegion(null);
-    this.dim.show([{ name: "distance", label: "D" }], () => void this.commit());
+    this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
     setPrompt(
       "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
     );
@@ -215,7 +214,7 @@ export class ExtrudeTool {
     if (this.committing) return;
     if (!this.selected.length) return this.cancel();
     const v = this.dim.getValue("distance");
-    if (v != null) this.distance = Math.sign(this.distance || 1) * v;
+    if (v != null) this.distance = v; // the field is the truth: typed sign wins
     if (Math.abs(this.distance) < 1e-3) return; // ignore zero
     let op = this.currentOperation();
     // when a body already exists, let the user state the operation (Fusion-style):
@@ -233,7 +232,12 @@ export class ExtrudeTool {
       opts.sort((a, b) => (a.value === guess ? -1 : b.value === guess ? 1 : 0)); // default first
       const chosen = await choose<Op>("Extrude — operation", opts);
       this.committing = false;
-      if (!chosen) return; // modal cancelled — keep the tool active
+      if (!chosen) {
+        // modal dismissed — the tool is STILL ALIVE; say so instead of leaving
+        // the user staring at an unchanged screen ("nothing happened")
+        setPrompt("Extrude not committed — Enter/✓ to choose an operation · Esc to cancel");
+        return;
+      }
       op = chosen;
     }
     const feature: Feature = {
@@ -243,6 +247,9 @@ export class ExtrudeTool {
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
       regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
+      // capture the participants NOW: bodies hidden at creation stay excluded
+      // from this boolean forever; later eye toggles are pure display
+      hiddenBodies: this.store.hiddenBodyIds(),
     };
     const id = feature.id;
     this.store.addFeature(feature);

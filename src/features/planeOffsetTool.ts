@@ -12,7 +12,7 @@ import type { SketchPlane } from "../sketch/plane";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
-import { distanceAlongAxis } from "./manipulator";
+import { axisDragDistance } from "./manipulator";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const HANDLE_IDLE = 0xffc83d; // amber
@@ -72,7 +72,7 @@ export class PlaneOffsetTool {
 
     this.buildGizmo();
     this.buildGhost();
-    this.dim.show([{ name: "offset", label: "Offset", kind: "length" }], () => this.commit());
+    this.dim.show([{ name: "offset", label: "Offset", kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ offset: 0 });
@@ -85,8 +85,7 @@ export class PlaneOffsetTool {
 
   private onMove(e: PointerEvent) {
     if (this.grabbing) {
-      const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const proj = distanceAlongAxis(ray, this.anchor, this.axis);
+      const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       const raw = this.grabValue + (proj - this.grabProj);
       const stepped = snap(raw, this.viewport.snapStep(this.anchor));
       if (stepped === this.value) return;
@@ -108,7 +107,7 @@ export class PlaneOffsetTool {
       e.stopImmediatePropagation();
       this.grabbing = true;
       this.grabValue = this.value;
-      this.grabProj = distanceAlongAxis(this.viewport.rayFrom(e.clientX, e.clientY).ray, this.anchor, this.axis);
+      this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       this.viewport.domElement.style.cursor = "grabbing";
     }
   }
@@ -144,9 +143,10 @@ export class PlaneOffsetTool {
     if (!this.grabbing && this.dim.isUserDriven("offset")) {
       const v = this.dim.getValue("offset");
       if (v != null) {
-        const signed = Math.sign(this.value || 1) * Math.abs(v);
-        if (Math.abs(signed - this.value) > 1e-6) {
-          this.value = signed;
+        // the field is the truth: typed sign wins (the old code re-applied the
+        // drag's sign onto |v|, so a typed negative offset went positive)
+        if (Math.abs(v - this.value) > 1e-6) {
+          this.value = v;
           this.updateGhost();
         }
       }
@@ -201,7 +201,7 @@ export class PlaneOffsetTool {
   private commit() {
     if (!this.active) return;
     const v = this.dim.getValue("offset");
-    if (v != null) this.value = Math.sign(this.value || 1) * Math.abs(v);
+    if (v != null) this.value = v; // typed sign wins
     const o = this.anchor.clone().addScaledVector(this.axis, this.value);
     const def: PlaneDef = {
       origin: [o.x, o.y, o.z],

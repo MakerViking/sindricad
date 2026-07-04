@@ -12,7 +12,7 @@ import type { Feature } from "../types";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
-import { distanceAlongAxis } from "./manipulator";
+import { axisDragDistance } from "./manipulator";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const HOT = 0xffe9a8; // hovered / grabbed arrow
@@ -77,7 +77,7 @@ export class MoveTool {
     window.addEventListener("keydown", this.boundKey, true);
 
     this.buildGizmo();
-    this.dim.show([{ name: "move", label: "Move", kind: "length" }], () => this.commit());
+    this.dim.show([{ name: "move", label: "Move", kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ move: 0 });
@@ -97,8 +97,7 @@ export class MoveTool {
   private onMove(e: PointerEvent) {
     if (this.grabAxis >= 0) {
       const axis = AXES[this.grabAxis].dir;
-      const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const proj = distanceAlongAxis(ray, this.anchor, axis);
+      const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, axis);
       const raw = this.grabVal + (proj - this.grabProj);
       const stepped = snap(raw, this.viewport.snapStep(this.anchor));
       if (stepped === this.comp(this.grabAxis)) return;
@@ -121,8 +120,10 @@ export class MoveTool {
       this.grabAxis = axis;
       this.lastAxis = axis;
       this.grabVal = this.comp(axis);
-      this.grabProj = distanceAlongAxis(
-        this.viewport.rayFrom(e.clientX, e.clientY).ray,
+      this.grabProj = axisDragDistance(
+        this.viewport,
+        e.clientX,
+        e.clientY,
         this.anchor,
         AXES[axis].dir,
       );
@@ -163,10 +164,12 @@ export class MoveTool {
     if (this.grabAxis < 0 && this.lastAxis >= 0 && this.dim.isUserDriven("move")) {
       const v = this.dim.getValue("move");
       if (v != null) {
-        const cur = this.comp(this.lastAxis);
-        const signed = Math.sign(cur || 1) * Math.abs(v);
-        if (Math.abs(signed - cur) > 1e-6) {
-          this.setComp(this.lastAxis, signed);
+        // the field is the truth: apply the typed value SIGN INCLUDED (the old
+        // code re-applied the drag's sign onto |v|, so a typed "-0.3" after a
+        // positive move went +0.3 — "the wrong way" — and a typed value could
+        // never cross zero)
+        if (Math.abs(v - this.comp(this.lastAxis)) > 1e-6) {
+          this.setComp(this.lastAxis, v);
           this.refreshPreview();
         }
       }
@@ -234,7 +237,7 @@ export class MoveTool {
     if (!this.active) return;
     if (this.grabAxis < 0 && this.lastAxis >= 0 && this.dim.isUserDriven("move")) {
       const v = this.dim.getValue("move");
-      if (v != null) this.setComp(this.lastAxis, Math.sign(this.comp(this.lastAxis) || 1) * Math.abs(v));
+      if (v != null) this.setComp(this.lastAxis, v); // typed sign wins
     }
     if (this.t.lengthSq() < 1e-9) return this.cancel(); // nothing moved
     const feature = this.buildFeature();

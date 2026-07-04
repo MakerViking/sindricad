@@ -39,8 +39,35 @@ export function choose<T extends string>(
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
 
+    // Keyboard-first: the FIRST option is the caller's default (callers pre-sort
+    // it there), so focus it — Enter then commits the default without a mouse.
+    // This modal used to be click-only with a silently-cancelling backdrop; a
+    // user pressing Enter (dead) and then clicking (backdrop = cancel) got
+    // "nothing happened" with no feedback.
+    const buttons = [...row.querySelectorAll<HTMLButtonElement>("button")];
+    buttons[0]?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") done(null);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        done(null);
+        return;
+      }
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const n = buttons.length;
+        const j = i < 0 ? 0 : (i + (e.key === "ArrowRight" ? 1 : n - 1)) % n;
+        buttons[j]?.focus();
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        const el = document.activeElement as HTMLButtonElement | null;
+        (el && buttons.includes(el) ? el : buttons[0])?.click();
+      }
     };
     backdrop.addEventListener("pointerdown", (e) => {
       if (e.target === backdrop) done(null);

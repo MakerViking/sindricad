@@ -120,6 +120,13 @@ export type Feature =
       // face, with holes, and unions them). `region` is the legacy single-area form.
       regions?: [number, number, number][];
       region?: [number, number, number];
+      // Boolean participants are decided at CREATION, Fusion-style: the bodies
+      // hidden when the user made this extrude are stored here and excluded
+      // from its join/cut forever after — later eye toggles are pure display
+      // and can never rewrite geometry history. Absent = legacy feature: the
+      // builder falls back to the document's LIVE visibility map (old files
+      // keep their exact behavior until re-saved through load-stamping).
+      hiddenBodies?: string[];
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }
   | { id: string; type: "chamfer"; edges: Selector | Selector[]; distance: Num }
@@ -183,6 +190,12 @@ export type Feature =
   // Move the active body — or the bodies listed in `bodies` (multi-select) —:
   // translate (dx,dy,dz mm) + rotate (rx,ry,rz degrees, about origin).
   | { id: string; type: "move"; dx: Num; dy: Num; dz: Num; rx: Num; ry: Num; rz: Num; bodies?: string[] }
+  // Repair boolean rot on a body — or all bodies when `body` is omitted: unify
+  // glued/overlapping solids left by joins of ragged imports, then collapse
+  // facet debris (slivers, near-coplanar staircases). Parametric because
+  // downstream booleans re-manufacture debris; best-effort in the sidecar (a
+  // body it can't confidently clean passes through unchanged).
+  | { id: string; type: "cleanUp"; body?: string; tolerance?: Num }
   // Remove bodies by id (Fusion "Remove"). Runs at its point in the timeline and
   // drops the listed bodies from the model — the way to delete a body from the
   // browser. Body ids are positional, so this is appended at the end.
@@ -252,6 +265,13 @@ export interface RebuildResult {
   bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[] }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
+  // set when features failed but the rest of the timeline still built — the
+  // mesh above is everything EXCEPT the failed features' effects. featureError
+  // is the LAST (most downstream) failure — the one closest to the user's
+  // latest action; featureErrors lists them all, timeline order. The reply is
+  // still ok:true so the model renders alongside the error banner.
+  featureError?: { feature_id?: string; message: string };
+  featureErrors?: { feature_id?: string; message: string }[];
 }
 
 export type RebuildReply =

@@ -126,8 +126,8 @@ export class SpaceMouseSettings {
     right.appendChild(modeRow);
 
     right.appendChild(text("div", "Sensitivity", "sm-section"));
-    right.appendChild(this.slider("Pan", cfg.panSens, 0, 0.0003, (v) => setSpaceMouseConfig({ panSens: v })));
-    right.appendChild(this.slider("Zoom", cfg.zoomSens, 0, 0.0005, (v) => setSpaceMouseConfig({ zoomSens: v })));
+    right.appendChild(this.slider("Pan", cfg.panSens, 0, 0.000003, (v) => setSpaceMouseConfig({ panSens: v })));
+    right.appendChild(this.slider("Zoom", cfg.zoomSens, 0, 0.0000035, (v) => setSpaceMouseConfig({ zoomSens: v })));
     right.appendChild(this.slider("Rotate", cfg.orbitSens, 0, 0.00001, (v) => setSpaceMouseConfig({ orbitSens: v })));
     right.appendChild(this.slider("Deadzone", cfg.deadzone, 0, 200, (v) => setSpaceMouseConfig({ deadzone: v }), 1));
 
@@ -305,7 +305,7 @@ export class SpaceMouseSettings {
     // Pan — nudge in the screen plane, then spring back. Gentle gain + a hard
     // clamp so the cube can never leave the little preview (this is a feel test,
     // not a 1:1 move).
-    const kp = cfg.panSens * dt * 0.3;
+    const kp = cfg.panSens * dt * 30; // v2 sens are ~100× smaller (view-proportional)
     t.cube.position
       .addScaledVector(right, ms * val("panX") * kp)
       // vertical pan is inverted vs the model's truck convention (Pan ←→ isn't)
@@ -314,7 +314,7 @@ export class SpaceMouseSettings {
     if (t.cube.position.length() > PAN_LIMIT) t.cube.position.setLength(PAN_LIMIT);
     // Zoom — scale gently; bound the per-frame step so a hard push can't invert
     // the cube (negative scale).
-    const zd = THREE.MathUtils.clamp(val("zoom") * cfg.zoomSens * dt * 3, -0.08, 0.08);
+    const zd = THREE.MathUtils.clamp(val("zoom") * cfg.zoomSens * dt * 430, -0.08, 0.08);
     if (zd) t.cube.scale.multiplyScalar(1 + zd); // +zoom dollies in on the model → cube grows
 
     // Spring pan + zoom back toward home so they read as "live while held".

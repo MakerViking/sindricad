@@ -40,22 +40,34 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5):
             continue  # degenerate face with no triangulation — skip it
         trsf = loc.Transformation()  # face-local -> world placement
         base = len(positions) // 3
-        for i in range(1, tri.NbNodes() + 1):  # OCCT arrays are 1-based
-            p = tri.Node(i).Transformed(trsf)
-            positions.append(p.X())
-            positions.append(p.Y())
-            positions.append(p.Z())
+        # batched readback: bind lookups once and extend in one call per face —
+        # the per-triangle Python cost was ~60 µs/tri, dominated by attribute
+        # dispatch, and this loop runs for every freshly (re)built body
+        node = tri.Node
+        ident = loc.IsIdentity()  # skip the per-node Transformed() when unplaced
+        if ident:
+            pts = [node(i) for i in range(1, tri.NbNodes() + 1)]
+        else:
+            pts = [node(i).Transformed(trsf) for i in range(1, tri.NbNodes() + 1)]
+        flat = []
+        for p in pts:
+            flat.append(p.X()); flat.append(p.Y()); flat.append(p.Z())
+        positions.extend(flat)
         # A face flagged REVERSED has its triangles wound the opposite way; flip the
         # winding so client-side computeVertexNormals() yields outward normals.
         flip = face.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED
-        for i in range(1, tri.NbTriangles() + 1):
-            a, b, c = tri.Triangle(i).Get()
+        get_tri = tri.Triangle
+        ntri = tri.NbTriangles()
+        tri_flat = []
+        for i in range(1, ntri + 1):
+            a, b, c = get_tri(i).Get()
             if flip:
                 b, c = c, b
-            indices.append(base + a - 1)
-            indices.append(base + b - 1)
-            indices.append(base + c - 1)
-            face_ids.append(fid)
+            tri_flat.append(base + a - 1)
+            tri_flat.append(base + b - 1)
+            tri_flat.append(base + c - 1)
+        indices.extend(tri_flat)
+        face_ids.extend([fid] * ntri)
 
     return positions, indices, face_ids
 
@@ -141,6 +153,33 @@ def _planar_face_normals(sh):
     return fmap, fnorm, em
 
 
+# Edge-polyline memo keyed by edge TShape (identity-location only — an
+# identity-located TShape fully determines the world-space curve). Booleans
+# preserve the TShapes of untouched edges, so even the CHANGED body's polyline
+# pass is mostly cache hits; only genuinely new edges get sampled.
+_EDGE_MEMO = {}
+
+
+def _edge_points(e, n):
+    w = getattr(e, "wrapped", None)
+    key = None
+    if w is not None:
+        try:
+            if w.Location().IsIdentity():
+                key = w.TShape()
+                hit = _EDGE_MEMO.get(key)
+                if hit is not None:
+                    return hit
+        except Exception:
+            key = None
+    pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
+    if key is not None:
+        if len(_EDGE_MEMO) > 200_000:
+            _EDGE_MEMO.clear()
+        _EDGE_MEMO[key] = pts
+    return pts
+
+
 def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
     """Sample each body's edges as polylines tagged with the body id (so the frontend
     can hide a hidden body's WIREFRAME). Edges between two COPLANAR planar faces are a
@@ -158,8 +197,7 @@ def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
             continue
         if not (hide_coplanar_seams and getattr(sh, "wrapped", None) is not None):
             for e in sh.edges():
-                pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
-                out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
+                out.append({"id": f"e{k}", "points": _edge_points(e, n), "body": b["id"]})
                 k += 1
             continue
         from build123d import Edge
@@ -173,8 +211,7 @@ def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
                 if n0 and n1 and abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) > cos_tol:
                     continue  # coplanar seam — don't draw it
             e = Edge(em.FindKey(i))
-            pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
-            out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
+            out.append({"id": f"e{k}", "points": _edge_points(e, n), "body": b["id"]})
             k += 1
     return out
 

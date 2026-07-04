@@ -25,6 +25,7 @@ export const FEATURE_META: Record<FeatureType, { glyph: string; label: string }>
   patternRect: { glyph: "⁙", label: "Rect Pattern" },
   patternCircular: { glyph: "❋", label: "Circular Pattern" },
   simplifyMesh: { glyph: "⬡", label: "Simplify Mesh" },
+  cleanUp: { glyph: "🧹", label: "Clean Up" },
   scale: { glyph: "⤢", label: "Scale" },
   move: { glyph: "✥", label: "Move" },
   removeBody: { glyph: "🗑", label: "Remove Body" },

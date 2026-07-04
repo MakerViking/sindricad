@@ -72,23 +72,49 @@ _ip_conns: dict[str, int] = {}
 # offset that collapses a hole); the timeout + worker recycling turns that into a
 # clean, recoverable error instead of a frozen app.
 JOB_TIMEOUT = 25.0
+# Document-scaled ops (rebuild / export / interference re-run the whole feature
+# history) get a roomier budget: a long document's COLD rebuild legitimately
+# exceeds JOB_TIMEOUT (measured 26s at 125 features on the DDR model), and a
+# timeout there is self-perpetuating — it recycles the worker, which clears the
+# incremental cache, so every retry is cold again. 120s still catches runaways.
+DOC_TIMEOUT = 120.0
+# Rebuilds are supervised by PROGRESS, not wall clock: the worker bumps a shared
+# heartbeat once per feature (and per tessellated body), and the supervisor kills
+# only when no progress is made for STALL_TIMEOUT — a legitimately long resumed
+# build is never executed for merely being long, while one wedged OCCT call still
+# gets reaped. Disk checkpoints make the kill a ratchet, not a restart.
+STALL_TIMEOUT = 60.0
 
 # the worker-process pool; set in main(). Heavy ops are dispatched here.
 _pool: ProcessPoolExecutor | None = None
 _mp_ctx = None  # the 'spawn' context, kept so we can rebuild the pool after a crash
+_HB = None  # shared heartbeat counter (multiprocessing.Value), set in main()
+_HB_IDX = None  # feature index the worker last started (Value 'q'; -1 = meshing/none)
 
 
 # --- worker process (separate interpreter) ---------------------------------
 
 
-def _worker_init():
+def _worker_init(hb=None, hb_idx=None):
     """Runs once when a worker process starts: die with the server (anti-orphan),
     pin OCCT to all cores, and warm the heavy imports so the first real rebuild
-    isn't paying build123d's import cost."""
+    isn't paying build123d's import cost. `hb` is the shared heartbeat counter;
+    the rebuild loop bumps it per feature so the supervisor can distinguish a
+    long build (fine) from a wedged one (reap). `hb_idx` carries WHICH feature
+    is being built (-1 = tessellation), so the supervisor can stream progress
+    frames to the frontend during a long build."""
     _die_with_parent()  # SIGTERM the worker if the server process dies
     occt_smp.configure()
     import builder  # noqa: F401  (warm the import)
     import tessellate  # noqa: F401
+
+    if hb is not None:
+        def _tick(i):
+            hb.value += 1  # single writer (this worker); no lock needed
+            if hb_idx is not None:
+                hb_idx.value = i
+
+        builder.on_feature_tick = _tick
 
 
 def _warmup():
@@ -97,35 +123,206 @@ def _warmup():
     return True
 
 
-def _rebuild_job(document, tolerance):
-    """Worker: rebuild the document and tessellate. Returns a result dict, or
-    {"error": {...}} on a feature failure. Args/return must stay picklable.
+# Worker-global per-body mesh cache, validated by SHAPE OBJECT IDENTITY: the
+# cached entry holds a reference to the exact shape object it was computed from
+# (which also keeps id() stable), so `entry["shape"] is body["shape"]` is a sound
+# "nothing changed" test — snapshots share shape refs and every mutating feature
+# rebinds the body's shape to a new object. A hit skips BRepMesh readback, edge
+# polylines, AND faceOwners fingerprinting for that body (the fixed ~1.4 s/edit).
+_MESH_CACHE = {}
 
-    Uses rebuild_cached: this worker is long-lived (max_workers=1), so an in-process
-    per-feature snapshot cache lets an edit re-run only from the first changed feature
-    instead of the whole history. A worker respawn (timeout/crash) clears the cache."""
+
+def _body_payload(b, tolerance):
+    """Compute (or fetch) the full render payload for one body: positions/indices/
+    faceIds (LOCAL ids, offset client-side), faceOwners, per-body edges. Three
+    tiers: identity-cached in RAM -> disk mesh artifact (load path: never pays the
+    Python readback loop) -> compute + persist."""
+    import pickle
+    import uuid as _uuid
+
+    from tessellate import tessellate, edge_polylines_by_body
+    from builder import _face_fp, on_feature_tick
+
+    bid, sh = b["id"], b.get("shape")
+    ent = _MESH_CACHE.get(bid)
+    if ent is not None and ent["shape"] is sh:
+        return ent
+
+    mesh_key = None
+    mk = b.get("meshKey")
+    if mk:
+        mesh_key = "%s-t%s" % (mk, tolerance)
+    payload = None
+    if mesh_key:
+        try:
+            import geomstore
+            rawp = geomstore.default_store().get_mesh(mesh_key)
+            if rawp is not None:
+                payload = pickle.loads(rawp)  # trusted local cache, worker-only
+        except Exception:
+            payload = None
+    if payload is None:
+        pos, idx, fids = tessellate(sh, tolerance)
+        owners_map = b.get("owners") or {}
+        face_owners = [owners_map.get(_face_fp(face)) for face in sh.faces()]
+        edges = edge_polylines_by_body([b])
+        for e in edges:
+            e.pop("id", None)  # ids are assigned client-side after assembly
+        payload = {
+            "positions": pos, "indices": idx, "faceIds": fids,
+            "faceOwners": face_owners, "edges": edges,
+            "faceCount": (max(fids) + 1) if fids else 0,
+        }
+        if mesh_key:
+            try:
+                import geomstore
+                geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
+            except Exception:
+                pass
+    ent = {"shape": sh, "etag": _uuid.uuid4().hex, "payload": payload}
+    _MESH_CACHE[bid] = ent
+    if on_feature_tick is not None:
+        try:
+            on_feature_tick(-1)  # tessellation progress counts as progress
+        except Exception:
+            pass
+    return ent
+
+
+# Worker-held document for the O(changed) wire protocol (design §5 Phase 4):
+# the client sends {baseRevision, revision, ops} instead of the whole document;
+# we apply ops to this held copy. Any mismatch (worker respawn, missed message)
+# returns {"resync": true} and the client falls back to one full send. Holding
+# the doc worker-side ALSO makes the per-edit pickle across the pool boundary
+# O(changed) — at 10k features the full-doc stringify/parse/pickle tax is
+# ~1 s/edit on the webview main thread AND the event loop.
+_DOC_STATE = {"rev": None, "doc": None}
+
+
+def _apply_doc_ops(payload):
+    """Apply a client delta to the held document, or adopt a full document.
+    Returns the effective document, or None when a resync is needed."""
+    if "document" in payload:
+        _DOC_STATE["doc"] = payload["document"]
+        _DOC_STATE["rev"] = payload.get("revision")
+        return _DOC_STATE["doc"]
+    if _DOC_STATE["doc"] is None or _DOC_STATE["rev"] != payload.get("baseRevision"):
+        return None
+    doc = _DOC_STATE["doc"]
+    ops = payload.get("ops") or {}
+    if "parameters" in ops:
+        doc["parameters"] = ops["parameters"]
+    if "bodyVisibility" in ops:
+        doc["bodyVisibility"] = ops["bodyVisibility"]
+    if "length" in ops:
+        feats = doc.get("features", [])
+        del feats[ops["length"]:]
+        while len(feats) < ops["length"]:
+            feats.append(None)  # placeholder — must be covered by "set" below
+        doc["features"] = feats
+    for i, f in ops.get("set", []):
+        doc["features"][i] = f
+    if any(f is None for f in doc.get("features", [])):
+        _DOC_STATE["doc"] = None  # hole the ops didn't fill — force resync
+        return None
+    _DOC_STATE["rev"] = payload.get("revision")
+    return doc
+
+
+def _rebuild_job(document, tolerance, known=None):
+    """Worker: rebuild the document and tessellate. Returns a result dict; a
+    feature failure comes back INSIDE the result as "featureError" (with the
+    surviving geometry), or as {"error": {...}} only when nothing built at all.
+    Args/return must stay picklable.
+
+    Uses rebuild_cached (RAM prefix + durable disk checkpoints). The reply is
+    protocol v2: PER-BODY payloads with etags. `known` maps body id -> etag the
+    client already holds; a body whose payload is identity-cached under the same
+    etag is answered with a stub ("unchanged") instead of its mesh — the client
+    reassembles locally. Worker respawn empties the RAM caches, which simply
+    downgrades every body to a full payload once."""
     from builder import rebuild_cached
-    from tessellate import tessellate_bodies, edge_polylines_by_body, bbox
 
     diag = []
+    known = known or {}
     part, errors, bodies = rebuild_cached(document, diagnostics=diag)
-    if errors:
+    if errors and part is None and not bodies:
+        # nothing built at all — the document is unusable, surface as fatal
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
     if part is None:
         # no solid yet (e.g. only sketches exist) — not an error; the frontend
         # still renders sketch overlays.
-        return {"mesh": {"positions": [], "indices": [], "faceIds": []}, "edges": [], "bbox": None, "bodies": []}
-    pos, idx, fids, meta = tessellate_bodies(bodies, tolerance)
-    result = {
-        "mesh": {"positions": pos, "indices": idx, "faceIds": fids},
-        "edges": edge_polylines_by_body(bodies),
-        "bbox": bbox(part),
-        "bodies": meta,
-    }
+        return {"protocol": 2, "bodies": [], "bbox": None}
+    from tessellate import bbox
+
+    live_ids = set()
+    out = []
+    for b in bodies:
+        if b.get("shape") is None:
+            continue
+        live_ids.add(b["id"])
+        ent = _body_payload(b, tolerance)
+        if known.get(b["id"]) == ent["etag"]:
+            out.append({"id": b["id"], "name": b["name"], "etag": ent["etag"],
+                        "unchanged": True})
+        else:
+            item = {"id": b["id"], "name": b["name"], "etag": ent["etag"]}
+            item.update(ent["payload"])
+            out.append(item)
+    for bid in list(_MESH_CACHE):
+        if bid not in live_ids:
+            del _MESH_CACHE[bid]  # body deleted/consumed — drop its cache
+    result = {"protocol": 2, "bodies": out, "bbox": bbox(part)}
     if diag:  # only attach when a selector resolved with low confidence
         result["diagnostics"] = diag
+    if errors:
+        # Failing features must NOT blank the whole document: rebuild() records
+        # them as no-ops and continues, so return the geometry that DID build
+        # with the errors attached — the frontend shows the banner AND the model.
+        # The banner gets the LAST (most downstream) error: with a permanently-
+        # failing feature upstream, the user's newest action is what they need
+        # to see, not the same old error masking it. All errors ride along in
+        # "featureErrors" for richer UI later.
+        result["featureError"] = {
+            "message": errors[-1]["message"],
+            "feature_id": errors[-1].get("feature_id"),
+        }
+        result["featureErrors"] = [
+            {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
+        ]
     return result
+
+
+def _rebuild_delta_job(payload, tolerance, known=None):
+    """Rebuild entry point for the delta wire protocol: adopt/patch the held
+    document, or ask for a resync when we can't."""
+    doc = _apply_doc_ops(payload)
+    if doc is None:
+        return {"resync": True}
+    return _rebuild_job(doc, tolerance, known)
+
+
+def _compute_all_job(payload, tolerance):
+    """Fusion's 'Compute All' escape hatch: bypass and REBUILD every cache layer —
+    RAM prefix snapshots, mesh cache, and this document's disk checkpoints and
+    blobs (purged so a hypothetically poisoned blob can't survive put_blob's
+    key-dedup skip). One full cold rebuild follows; all caches repopulate."""
+    import builder
+
+    document = _apply_doc_ops(payload)
+    if document is None:
+        return {"resync": True}
+    builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+    _MESH_CACHE.clear()
+    try:
+        import geomstore
+        sigs = [builder._feature_sig(f) for f in document.get("features", [])]
+        keys = builder._chain_keys_scoped(document, sigs)
+        geomstore.default_store().purge(keys)
+    except Exception:
+        pass
+    return _rebuild_job(document, tolerance)
 
 
 def _export_job(document, fmt, path, body=None, separate=False):
@@ -134,14 +331,30 @@ def _export_job(document, fmt, path, body=None, separate=False):
     '<base>-<name>.<ext>'. Returns {"path"} (+ {"paths"} for separate) or {"error"}."""
     import os
     import re
-    from builder import rebuild
+    from builder import rebuild_cached
     from exporters import export
 
-    part, errors, bodies = rebuild(document)
-    if errors:
+    # rebuild_cached, not rebuild: export runs in the SAME long-lived worker as
+    # edits, so a warm cache makes this ~0 s instead of a gratuitous full rebuild
+    part, errors, bodies = rebuild_cached(document)
+    live = [b for b in bodies if b.get("shape") is not None]
+    # Export what BUILT, and warn about what didn't — never silently. Refusing
+    # to export ANYTHING because one feature errored blocked the whole
+    # import-repair→print loop (one stubborn face held nine good bodies
+    # hostage). Only a document where nothing built at all is a hard error.
+    if errors and part is None and not live:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
-    live = [b for b in bodies if b.get("shape") is not None]
+    if part is None and not live:
+        return {"error": {"message": "nothing to export — no bodies built yet"}}
+    warnings = [
+        {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
+    ]
+
+    def _done(res):
+        if warnings:
+            res["warnings"] = warnings
+        return res
 
     if separate:
         if not live:
@@ -154,7 +367,9 @@ def _export_job(document, fmt, path, body=None, separate=False):
         written, used = [], set()
         for b in live:
             label = names.get(b["id"]) or b["name"]
-            name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_") or b["id"]
+            name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_")
+            if not name or set(name) <= {"."}:  # empty or dot-only → no dotfiles
+                name = b["id"]
             cand, i = name, 2
             while cand in used:  # keep filenames unique if two bodies share a name
                 cand, i = f"{name}_{i}", i + 1
@@ -162,15 +377,15 @@ def _export_job(document, fmt, path, body=None, separate=False):
             p = f"{base}-{cand}{ext}"
             export(b["shape"], fmt, p)
             written.append(p)
-        return {"path": path, "paths": written}
+        return _done({"path": path, "paths": written})
 
     if body:
         tgt = next((b for b in live if b["id"] == body), None)
         if tgt is None:
             return {"error": {"message": f"body '{body}' not found to export"}}
-        return {"path": export(tgt["shape"], fmt, path)}
+        return _done({"path": export(tgt["shape"], fmt, path)})
 
-    return {"path": export(part, fmt, path)}
+    return _done({"path": export(part, fmt, path)})
 
 
 def _interference_job(document):
@@ -178,13 +393,16 @@ def _interference_job(document):
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
     intersection volume above a tiny epsilon), with the overlap volume + bbox so the
     frontend can report and zoom to each clash."""
-    from builder import rebuild, _bbox_overlap
+    from builder import rebuild_cached, _bbox_overlap
 
-    part, errors, bodies = rebuild(document)
-    if errors:
+    # rebuild_cached for the same reason as _export_job: same worker, warm cache
+    part, errors, bodies = rebuild_cached(document)
+    live = [b for b in bodies if b.get("shape") is not None]
+    # like export: check the bodies that BUILT, warn about what didn't — one red
+    # feature must not block clash-checking an otherwise-valid assembly
+    if errors and not live:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
-    live = [b for b in bodies if b.get("shape") is not None]
     pairs = []
     for i in range(len(live)):
         for j in range(i + 1, len(live)):
@@ -256,7 +474,9 @@ def _reply_for(req_id, res):
 
 def _new_pool():
     """Create a fresh single-worker pool and kick off its warm-up."""
-    pool = ProcessPoolExecutor(max_workers=1, mp_context=_mp_ctx, initializer=_worker_init)
+    pool = ProcessPoolExecutor(
+        max_workers=1, mp_context=_mp_ctx, initializer=_worker_init, initargs=(_HB, _HB_IDX)
+    )
     try:
         pool.submit(_warmup)  # spawn + warm the worker now
     except Exception:
@@ -295,6 +515,47 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
     except BrokenProcessPool:
         _pool = _new_pool()
         return {"error": {"message": "the geometry kernel crashed on this operation"}}
+
+
+async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
+    """Run a rebuild-class job supervised by PROGRESS instead of wall clock: kill
+    the worker only when the shared heartbeat hasn't moved for `stall` seconds.
+    A 10k-feature cold build can legitimately run for minutes and is never
+    reaped while it makes progress; a single wedged OCCT call stops ticking and
+    gets reaped, and the disk checkpoints turn that into a ratchet (the retry
+    resumes from the last checkpoint, so it converges to a reported error on
+    the one bad feature instead of a death spiral). `on_progress` (async, takes
+    the current feature index) is fired roughly once a second while the job
+    runs — the rebuild path streams it to the frontend as building frames."""
+    global _pool
+    fut = loop.run_in_executor(_pool, fn, *args)
+    last = _HB.value if _HB is not None else 0
+    last_t = loop.time()
+    while True:
+        try:
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=1.0)
+        except asyncio.TimeoutError:
+            if on_progress is not None:
+                try:
+                    await on_progress(int(_HB_IDX.value) if _HB_IDX is not None else -1)
+                except Exception:
+                    pass  # a dropped progress frame must never kill the build
+            if _HB is not None:
+                cur = _HB.value
+                if cur != last:
+                    last, last_t = cur, loop.time()
+                    continue
+            if loop.time() - last_t > stall:
+                _kill_pool(_pool)
+                _pool = _new_pool()
+                fut.cancel()
+                return {"error": {"message": (
+                    "one operation stalled for over %d s — the geometry kernel was "
+                    "restarted; progress up to the last checkpoint is kept"
+                ) % int(stall)}}
+        except BrokenProcessPool:
+            _pool = _new_pool()
+            return {"error": {"message": "the geometry kernel crashed on this operation"}}
 
 
 def _authorized(request) -> bool:
@@ -346,15 +607,45 @@ async def handle(ws):
             try:
                 if op == "rebuild":
                     tol = req.get("tolerance", 0.1)
-                    res = await _run(loop, _rebuild_job, req["document"], tol)
+                    payload = {
+                        k: req[k]
+                        for k in ("document", "baseRevision", "revision", "ops")
+                        if k in req
+                    }
+
+                    async def _building(idx, _rid=req_id):
+                        # interim progress frame — the client routes status
+                        # frames to its progress listeners and never resolves
+                        # the pending call with one
+                        await ws.send(json.dumps(
+                            {"id": _rid, "status": "building", "feature": idx}
+                        ))
+
+                    res = await _run_stall(
+                        loop, _rebuild_delta_job, payload, tol, req.get("known"),
+                        on_progress=_building,
+                    )
+                    await ws.send(_reply_for(req_id, res))
+
+                elif op == "computeAll":
+                    tol = req.get("tolerance", 0.1)
+                    payload = {"document": req["document"], "revision": req.get("revision")}
+
+                    async def _building2(idx, _rid=req_id):
+                        await ws.send(json.dumps(
+                            {"id": _rid, "status": "building", "feature": idx}
+                        ))
+
+                    res = await _run_stall(loop, _compute_all_job, payload, tol,
+                                           on_progress=_building2)
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "export":
-                    res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False))
+                    res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), timeout=DOC_TIMEOUT)
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "interference":
-                    res = await _run(loop, _interference_job, req["document"])
+                    res = await _run(loop, _interference_job, req["document"], timeout=DOC_TIMEOUT)
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "import":
@@ -379,10 +670,12 @@ async def handle(ws):
 
 
 async def main():
-    global _pool, _mp_ctx, _TOKEN
+    global _pool, _mp_ctx, _TOKEN, _HB, _HB_IDX
     _die_with_parent()
     _TOKEN = os.environ.get("SINDRI_SIDECAR_TOKEN") or _mint_token()
     _mp_ctx = mp.get_context("spawn")
+    _HB = _mp_ctx.Value("Q", 0)  # heartbeat: bumped by the worker per feature
+    _HB_IDX = _mp_ctx.Value("q", -1)  # which feature is building (-1 = meshing)
     _pool = _new_pool()
     try:
         # Raise the per-message cap well above the 1 MiB default: a rebuild ships

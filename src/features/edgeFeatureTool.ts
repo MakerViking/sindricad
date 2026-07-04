@@ -13,7 +13,7 @@ import type { Feature, Selector } from "../types";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
-import { distanceAlongAxis } from "./manipulator";
+import { axisDragDistance } from "./manipulator";
 
 type Phase = "pick" | "drag";
 type Kind = "fillet" | "chamfer";
@@ -102,8 +102,7 @@ export class EdgeFeatureTool {
       return;
     }
     if (this.grabbing) {
-      const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const proj = distanceAlongAxis(ray, this.anchor, this.axis);
+      const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       // snap to a clean step that scales with zoom (5/1/0.5/0.1mm), so the
       // radius/distance reads as a round number rather than 0.3425.
       const raw = this.grabValue + (proj - this.grabProj);
@@ -140,7 +139,7 @@ export class EdgeFeatureTool {
       e.stopImmediatePropagation(); // don't let the camera orbit while dragging the handle
       this.grabbing = true;
       this.grabValue = this.value;
-      this.grabProj = distanceAlongAxis(this.viewport.rayFrom(e.clientX, e.clientY).ray, this.anchor, this.axis);
+      this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       this.viewport.domElement.style.cursor = "grabbing";
     }
     // empty-space press: leave it to camera-controls; commit decided on pointerup
@@ -179,7 +178,7 @@ export class EdgeFeatureTool {
     this.viewport.emphasizeEdges(false);
     this.viewport.clearHover();
     this.buildGizmo();
-    this.dim.show([{ ...this.field, kind: "length" }], () => this.commit());
+    this.dim.show([{ ...this.field, kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });

@@ -7,6 +7,7 @@
 import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { ExportFormat, ImportFormat } from "../types";
+import { clearRecovery } from "./recovery";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -16,6 +17,7 @@ export async function saveDocument(store: DocumentStore) {
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(store.filePath, store.toJSON());
     store.markSaved(store.filePath);
+    void clearRecovery(store.filePath); // the on-disk file is now the truth
   } else {
     await saveDocumentAs(store);
   }
@@ -34,6 +36,7 @@ export async function saveDocumentAs(store: DocumentStore) {
     if (path) {
       await writeTextFile(path, json);
       store.markSaved(path);
+      void clearRecovery(path);
     }
   } else {
     downloadText(`${store.fileName}.sindri`, json);
@@ -114,11 +117,20 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
     await reportError(`Export failed: ${res.message ?? "unknown error"}`);
     return;
   }
-  // Confirm what was written — list every file for "separate", the single path otherwise.
+  // Confirm what was written — list every file for "separate", the single path
+  // otherwise — and NAME any features whose geometry is missing from the export
+  // (export-what-built: one red feature no longer blocks the whole print loop).
   const written = res.paths?.length ? res.paths : res.path ? [res.path] : [];
-  if (written.length) {
+  const lines = [...written];
+  for (const w of res.warnings ?? []) {
+    lines.push(`⚠ ${w.feature_id ?? "feature"} failed — its result is NOT in the export: ${w.message}`);
+  }
+  if (lines.length) {
     const { listModal } = await import("../ui/choice");
-    await listModal(`Exported ${written.length} file${written.length > 1 ? "s" : ""}`, written);
+    const title = res.warnings?.length
+      ? `Exported ${written.length} file${written.length === 1 ? "" : "s"} — with warnings`
+      : `Exported ${written.length} file${written.length === 1 ? "" : "s"}`;
+    await listModal(title, lines);
   }
 }
 

@@ -36,10 +36,15 @@ export interface SpaceMouseConfig {
   // = puck flies the camera (inverse of object on pan + orbit).
   mode: "object" | "camera";
   deadzone: number; // ignore |axis| below this (jitter)
-  panSens: number; // world units per axis-unit per ms
-  zoomSens: number;
+  // pan/zoom are ZOOM-PROPORTIONAL (scaled by rig.viewScale() — the visible
+  // view height): a puck deflection moves the view by the same FRACTION of
+  // what's on screen at any zoom. Fixed world-unit steps made the puck feel
+  // ~100× too fast when zoomed into mm-scale detail ("sensitivity went crazy").
+  panSens: number; // fraction-of-view per axis-unit per ms
+  zoomSens: number; // ln(zoom-factor) per axis-unit per ms
   orbitSens: number; // radians per axis-unit per ms
   staleMs: number; // no event for this long ⇒ motion treated as zero
+  sensVersion?: number; // bump when sens semantics change (see loadConfig)
   // each camera action ← one raw axis (+ invert). All six axes map by default:
   // 3 translations (pan X/Y, zoom) + 3 rotations (yaw, pitch, roll). Ry — the
   // sideways tilt that used to be ignored — drives roll (its 3Dconnexion-
@@ -50,10 +55,11 @@ export interface SpaceMouseConfig {
 const DEFAULTS: SpaceMouseConfig = {
   mode: "object",
   deadzone: 24,
-  panSens: 0.00006,
-  zoomSens: 0.0001,
+  panSens: 0.0000006,
+  zoomSens: 0.0000007,
   orbitSens: 0.0000022,
   staleMs: 120,
+  sensVersion: 2,
   bind: {
     panX: { src: "tx", invert: false },
     panY: { src: "tz", invert: false },
@@ -63,6 +69,11 @@ const DEFAULTS: SpaceMouseConfig = {
     roll: { src: "ry", invert: false },
   },
 };
+
+// v1 (absolute world-units) defaults, used to migrate persisted configs while
+// preserving the user's tuning RATIO relative to the old defaults
+const V1_PAN_DEFAULT = 0.00006;
+const V1_ZOOM_DEFAULT = 0.0001;
 
 const KEY = "sindricad.spacemouse.config";
 const LEGACY_MODE_KEY = "sindricad.spacemouse.mode";
@@ -75,6 +86,17 @@ function loadConfig(): SpaceMouseConfig {
       const saved = JSON.parse(raw) as Partial<SpaceMouseConfig>;
       const savedBind = saved.bind;
       Object.assign(cfg, saved);
+      // migrate v1 (absolute world-unit) pan/zoom sens to the v2 proportional
+      // semantics, keeping the user's multiplier relative to the old defaults
+      if ((saved.sensVersion ?? 1) < 2) {
+        if (typeof saved.panSens === "number") {
+          cfg.panSens = (saved.panSens / V1_PAN_DEFAULT) * DEFAULTS.panSens;
+        }
+        if (typeof saved.zoomSens === "number") {
+          cfg.zoomSens = (saved.zoomSens / V1_ZOOM_DEFAULT) * DEFAULTS.zoomSens;
+        }
+        cfg.sensVersion = 2;
+      }
       // Rebuild bind from defaults and merge per-action with validation, so a
       // partial or stale-shaped persisted bind (older dev builds used different
       // action keys) can never leave an action unbound — which would crash the
@@ -196,15 +218,28 @@ export async function initSpaceMouse(
     const b = CONFIG.bind;
 
     const px = val(b.panX, m), py = val(b.panY, m);
+    // zoom-proportional: scale pan by the visible view height and zoom
+    // multiplicatively (via the same rig.zoomBy the wheel uses), so the puck
+    // moves the view by the same FRACTION of the screen at any zoom level
+    const scale = viewport.rig.viewScale();
     if (px || py) {
-      controls.truck(modeSign * px * CONFIG.panSens * dt, modeSign * py * CONFIG.panSens * dt, false);
+      controls.truck(
+        modeSign * px * CONFIG.panSens * dt * scale,
+        modeSign * py * CONFIG.panSens * dt * scale,
+        false,
+      );
     }
     const z = val(b.zoom, m); // direction is its own preference, not mode-dependent
-    if (z) controls.dolly(z * CONFIG.zoomSens * dt, false);
+    // exp(-z): positive axis kept as zoom-IN (old dolly(+z)); zoomBy(>1) = out
+    if (z) viewport.rig.zoomBy(Math.exp(-z * CONFIG.zoomSens * dt));
 
     const az = val(b.orbitAz, m), pol = val(b.orbitPolar, m);
     if (!orbitLocked && (az || pol)) {
-      controls.rotate(modeSign * az * CONFIG.orbitSens * dt, modeSign * pol * CONFIG.orbitSens * dt, false);
+      // rig.tumble, NOT controls.rotate: camera-controls clamps vertical orbit
+      // just short of the poles every frame, so rotate() hard-stops at the top.
+      // tumble() rotates the orbit up-vector along with the camera — free
+      // rotation over the poles, matching the 3Dconnexion driver feel.
+      viewport.rig.tumble(modeSign * az * CONFIG.orbitSens * dt, modeSign * pol * CONFIG.orbitSens * dt);
     }
 
     const roll = val(b.roll, m);

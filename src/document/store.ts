@@ -11,6 +11,9 @@ export interface RebuildState {
   result: RebuildResult | null;
   errorFeatureId: string | null;
   errorMessage: string | null;
+  // while building: the feature index the sidecar is currently executing
+  // (-1 = tessellating), streamed ~1/s during long rebuilds; null otherwise
+  progress: number | null;
 }
 
 type DocListener = (doc: CadDocument) => void;
@@ -60,6 +63,7 @@ export class DocumentStore {
     result: null,
     errorFeatureId: null,
     errorMessage: null,
+    progress: null,
   };
 
   constructor(
@@ -67,6 +71,12 @@ export class DocumentStore {
     initial: CadDocument,
   ) {
     this.doc = clone(initial);
+    // long-rebuild progress frames -> live "building 57/103" in the timeline
+    geometry.onProgress?.((feature) => {
+      if (!this.build.building) return;
+      this.build = { ...this.build, progress: feature };
+      this.emitBuild();
+    });
   }
 
   // --- access ---
@@ -148,8 +158,17 @@ export class DocumentStore {
   }
 
   // --- mutation (records undo, triggers rebuild) ---
-  mutate(fn: (doc: CadDocument) => void, immediate = false) {
+  // Undo entries are FULL document clones (imports embed multi-MB BREPs), so an
+  // uncapped stack grows without bound over a long session — cap it.
+  private static readonly UNDO_CAP = 50;
+
+  private pushUndo() {
     this.undoStack.push(clone(this.doc));
+    if (this.undoStack.length > DocumentStore.UNDO_CAP) this.undoStack.shift();
+  }
+
+  mutate(fn: (doc: CadDocument) => void, immediate = false) {
+    this.pushUndo();
     this.redoStack = [];
     fn(this.doc);
     this.markDirty();
@@ -236,6 +255,11 @@ export class DocumentStore {
     this.preview = feature;
     this.scheduleRebuild(true);
   }
+  /** true while an un-committed live-preview feature is appended to rebuilds
+   *  (its transient failures must not toast). */
+  get hasPreview(): boolean {
+    return this.preview !== null;
+  }
   /** reorder: move feature `id` to position `toIndex` in the timeline. */
   moveFeature(id: string, toIndex: number) {
     this.mutate((d) => {
@@ -259,7 +283,7 @@ export class DocumentStore {
   redo() {
     const next = this.redoStack.pop();
     if (!next) return;
-    this.undoStack.push(clone(this.doc));
+    this.pushUndo();
     this.doc = next;
     this.markDirty();
     this.emitDoc();
@@ -281,7 +305,7 @@ export class DocumentStore {
    *  dirty + emits doc-change so the titlebar and listeners update. No rebuild:
    *  overrides don't affect geometry (effectiveDoc ignores them). */
   setViewOverride(side: ViewCubeSide, override: ViewOverride | null) {
-    this.undoStack.push(clone(this.doc));
+    this.pushUndo();
     this.redoStack = [];
     if (override) {
       (this.doc.viewOverrides ??= {})[side] = override;
@@ -319,6 +343,20 @@ export class DocumentStore {
     this.bodyVis.set(id, visible);
     this.markDirty();
     this.emitBuild();
+    // With captured-visibility semantics (every extrude carries hiddenBodies),
+    // an eye toggle is PURE DISPLAY — no rebuild. Only a legacy feature still
+    // gated by the live map (loaded before stamping existed, in-memory) makes
+    // visibility a geometry input worth a rebuild.
+    const legacy = this.doc.features.some(
+      (f) => f.type === "extrude" && !("hiddenBodies" in f),
+    );
+    if (legacy) this.scheduleRebuild(true);
+  }
+
+  /** Body ids currently hidden by the user — captured into new boolean
+   *  features so later eye toggles can't rewrite what a cut touched. */
+  hiddenBodyIds(): string[] {
+    return [...this.bodyVis.entries()].filter(([, v]) => v === false).map(([k]) => k);
   }
 
   // --- construction-plane visibility overrides (display-only; datum planes are
@@ -399,7 +437,7 @@ export class DocumentStore {
   }
   load(json: string) {
     const parsed = JSON.parse(json) as CadDocument;
-    this.undoStack.push(clone(this.doc));
+    this.pushUndo();
     this.redoStack = [];
     // split persisted project state back out of the document; keep `this.doc`
     // pure geometry (+ viewOverrides) so undo/rebuild stay unaffected by it.
@@ -416,6 +454,16 @@ export class DocumentStore {
       features: parsed.features ?? [],
       ...(parsed.viewOverrides ? { viewOverrides: parsed.viewOverrides } : {}),
     };
+    // Migrate boolean features to captured-visibility semantics: an extrude
+    // without `hiddenBodies` is gated by the LIVE eye states on every rebuild
+    // (display retroactively rewriting geometry — the recurring red-features
+    // trap). Stamping "nothing hidden" locks in the all-visible behavior every
+    // saved document was verified against, and makes the file eye-proof.
+    for (const f of this.doc.features) {
+      if (f.type === "extrude" && !("hiddenBodies" in f)) {
+        (f as { hiddenBodies?: string[] }).hiddenBodies = [];
+      }
+    }
     this.markDirty(); // openDocument clears this via markSaved() once the path is known
     this.emitDoc();
     this.scheduleRebuild(true);
@@ -464,15 +512,19 @@ export class DocumentStore {
     try {
       do {
         this.rebuildQueued = false;
-        this.build = { ...this.build, building: true };
+        this.build = { ...this.build, building: true, progress: null };
         this.emitBuild();
         const reply = await this.geometry.rebuild(this.effectiveDoc());
         if (reply.ok) {
+          // a partial build carries the failing feature inside the result —
+          // render the surviving geometry AND surface the error
+          const fe = reply.result.featureError;
           this.build = {
             building: false,
             result: reply.result,
-            errorFeatureId: null,
-            errorMessage: null,
+            errorFeatureId: fe?.feature_id ?? null,
+            errorMessage: fe?.message ?? null,
+            progress: null,
           };
         } else {
           this.build = {
@@ -480,10 +532,51 @@ export class DocumentStore {
             result: this.build.result, // keep last good mesh on screen
             errorFeatureId: reply.error.feature_id ?? null,
             errorMessage: reply.error.message,
+            progress: null,
           };
         }
         this.emitBuild();
       } while (this.rebuildQueued);
+    } finally {
+      this.rebuilding = false;
+    }
+  }
+
+  /** Fusion-style "Compute All": bypass and rebuild EVERY cache layer (worker
+   *  RAM prefix, mesh cache, this document's disk checkpoints) — the escape
+   *  hatch when a cached result is suspected stale. Falls back to a plain
+   *  immediate rebuild on backends without the op. */
+  async computeAllNow() {
+    const ca = this.geometry.computeAll?.bind(this.geometry);
+    if (!ca) return this.scheduleRebuild(true);
+    if (this.rebuilding) {
+      this.rebuildQueued = true;
+      return;
+    }
+    this.rebuilding = true;
+    try {
+      this.build = { ...this.build, building: true, progress: null };
+      this.emitBuild();
+      const reply = await ca(this.effectiveDoc());
+      if (reply.ok) {
+        const fe = reply.result.featureError;
+        this.build = {
+          building: false,
+          result: reply.result,
+          errorFeatureId: fe?.feature_id ?? null,
+          errorMessage: fe?.message ?? null,
+          progress: null,
+        };
+      } else {
+        this.build = {
+          building: false,
+          result: this.build.result, // keep last good mesh on screen
+          errorFeatureId: reply.error.feature_id ?? null,
+          errorMessage: reply.error.message,
+          progress: null,
+        };
+      }
+      this.emitBuild();
     } finally {
       this.rebuilding = false;
     }

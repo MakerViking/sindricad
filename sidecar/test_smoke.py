@@ -596,6 +596,58 @@ def test_extrude_cut_disjoint():
     print(f"  extrude cut disjoint OK: both bodies cut (body1 {vols['body1']:.0f}, body2 {vols['body2']:.0f})")
 
 
+def test_visibility_captured():
+    """Captured-visibility semantics: an extrude carrying `hiddenBodies` uses
+    THAT set (participants decided at creation, Fusion-style) and ignores the
+    document's live eye states — so toggling visibility later can never rewrite
+    what a cut touched. Legacy features (no field) keep the live-map behavior
+    (test_cut_skips_hidden_body)."""
+    b1 = {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 10}
+    b2 = {"id": "b2", "type": "box", "length": 40, "width": 40, "height": 10}
+    mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 20,
+          "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]}
+    sk = {"id": "s1", "type": "sketch", "plane": "XY",
+          "entities": [{"id": "c", "type": "circle", "x": 0, "y": 0, "radius": 5}]}
+
+    # captured "body1 was hidden at creation": body1 stays intact even though
+    # the live map says everything is visible
+    cut = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 30,
+           "operation": "cut", "regions": [[0, 0, 0]], "hiddenBodies": ["body1"]}
+    _, err, bodies = rebuild({"parameters": {}, "features": [b1, b2, mv, sk, cut]})
+    assert not err, err
+    v = {b["id"]: b["shape"].volume for b in bodies if b.get("shape")}
+    assert abs(v["body1"] - 16000) < 1, f"captured-hidden body1 must be intact: {v['body1']:.0f}"
+    assert v["body2"] < 16000 - 100, f"body2 should be cut: {v['body2']:.0f}"
+
+    # captured "nothing hidden": cuts EVERYTHING it crosses even though the
+    # live map hides body2 — eye toggles are pure display for stamped features
+    cut2 = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 30,
+            "operation": "cut", "regions": [[0, 0, 0]], "hiddenBodies": []}
+    _, err, bodies = rebuild({"parameters": {}, "features": [b1, b2, mv, sk, cut2],
+                              "bodyVisibility": {"body2": False}})
+    assert not err, err
+    v = {b["id"]: b["shape"].volume for b in bodies if b.get("shape")}
+    assert v["body1"] < 16000 - 100 and v["body2"] < 16000 - 100, (
+        f"captured-empty set must cut both regardless of live eyes: {v}"
+    )
+
+    # cache signature: visibility must be IGNORED when every extrude carries
+    # hiddenBodies, and honored when a legacy extrude exists
+    import builder
+    stamped = {"parameters": {}, "features": [b1, b2, mv, sk, cut2]}
+    legacy = {"parameters": {}, "features": [b1, b2, mv, sk,
+              {k: val for k, val in cut2.items() if k != "hiddenBodies"}]}
+    sig = builder._global_sig
+    assert sig(stamped) == sig({**stamped, "bodyVisibility": {"body1": False}}), (
+        "eye toggles must not invalidate the cache for stamped documents"
+    )
+    assert sig(legacy) != sig({**legacy, "bodyVisibility": {"body1": False}}), (
+        "legacy documents must keep visibility in the cache signature"
+    )
+    print("  visibility-captured OK: creation set wins over live eyes both ways; "
+          "cache sig ignores eyes for stamped docs")
+
+
 def test_cut_skips_hidden_body():
     """A cut extrude never edits a HIDDEN body: bodyVisibility travels with the
     rebuild and hidden bodies are excluded from the extrude boolean (a hidden body
@@ -729,6 +781,365 @@ def test_delete_face():
     print(f"  delete-face OK: chamfer removed + healed → vol {part.volume:.0f}, {len(part.faces())} faces")
 
 
+def test_defeature_chain():
+    """The chamfer-chain recognizer: picking ONE face of a corner-chamfer chain
+    expands to the whole chain (3 strips + corner patch, never the base faces) and
+    defeaturing the chain restores the pristine box. This is the Phase-1 rescue for
+    faces where single-face defeaturing no-ops."""
+    from build123d import Box, Vector, chamfer
+
+    from builder import _defeature, _expand_blend_chain, _face_width
+
+    b = Box(20, 20, 20)
+    corner = Vector(10, 10, 10)
+    edges = [
+        e for e in b.edges()
+        if any((Vector(v.X, v.Y, v.Z) - corner).length < 1e-6 for v in e.vertices())
+    ]
+    part = chamfer(edges, 2)  # 3 strips + 1 corner patch = 10 faces
+    faces = sorted(part.faces(), key=lambda f: f.area)
+    patch, strip = faces[0], faces[1]
+
+    for seed, label in ((strip, "strip"), (patch, "patch")):
+        chain = _expand_blend_chain(part, [seed])
+        widths = sorted(_face_width(f) for f in chain)
+        assert len(chain) == 4, f"chain from {label}: expected 4 faces, got {len(chain)}"
+        assert widths[-1] < 3, f"chain from {label} absorbed a base face (widths {widths})"
+
+    healed = _defeature(part, [_expand_blend_chain(part, [patch])[0]])
+    assert len(healed.faces()) < len(part.faces())
+    full = _defeature(part, _expand_blend_chain(part, [patch]))
+    assert len(full.faces()) == 6 and abs(full.volume - 8000) < 1, (
+        f"full-chain defeature should restore the box, got {len(full.faces())} faces "
+        f"vol {full.volume:.1f}"
+    )
+
+    # an unhealable delete must raise with the OCCT alert surfaced, not no-op
+    b2 = Box(10, 10, 10)
+    try:
+        _defeature(b2, [b2.faces()[0]])
+        raise AssertionError("deleting a bare box face should raise")
+    except ValueError as ex:
+        assert "BOPAlgo_Alert" in str(ex), f"OCCT alert missing from error: {ex}"
+    print("  defeature-chain OK: 4-face chain recognized from strip AND patch, "
+          "full chain heals to pristine box, unhealable raises with OCCT alert")
+
+
+def test_canonicalize_import():
+    """Canonical-recognition pre-pass: near-analytic B-spline faces snap to true
+    planes on import, so defeaturing can extend them exactly. All-analytic shapes
+    pass through untouched (same object)."""
+    from build123d import Box, Cylinder
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.ShapeCustom import ShapeCustom
+
+    from builder import _canonicalize, _wrap_topods
+
+    part = Box(20, 20, 10) - Cylinder(4, 10)
+    assert _canonicalize(part) is part, "all-analytic shape must pass through untouched"
+
+    bs = _wrap_topods(ShapeCustom.ConvertToBSpline_s(part.wrapped, True, True, True, True))
+    n_spline = sum(
+        1 for f in bs.faces()
+        if BRepAdaptor_Surface(f.wrapped).GetType()
+        == GeomAbs_SurfaceType.GeomAbs_BSplineSurface
+    )
+    assert n_spline == 6, f"expected 6 spline faces in the test input, got {n_spline}"
+    canon = _canonicalize(bs)
+    kinds = [BRepAdaptor_Surface(f.wrapped).GetType() for f in canon.faces()]
+    n_planes = sum(1 for k in kinds if k == GeomAbs_SurfaceType.GeomAbs_Plane)
+    assert n_planes == 6, f"expected 6 snapped planes, got {n_planes}"
+    assert abs(canon.volume - bs.volume) < 1e-6 * bs.volume + 1e-9
+    assert len(canon.faces()) == len(bs.faces())
+    print(f"  canonicalize OK: 6 spline faces → 6 planes, volume preserved "
+          f"({canon.volume:.2f})")
+
+
+def test_tool_fill():
+    """P2 tool-solid fill: erase a chamfer by fusing the wedge built from its
+    supports' half-spaces (works where extension-healing gives up), with the
+    guards that keep it safe — an unbounded wound (deleting a box's whole top
+    face) is refused instead of extruding the part, and an unrelated hole inside
+    the wedge region is never plugged."""
+    from build123d import Box, Cylinder, Pos, Vector, chamfer
+
+    from builder import _expand_blend_chain, _tool_fill_all
+
+    b = Box(20, 20, 20)
+    corner = Vector(10, 10, 10)
+    edges = [
+        e for e in b.edges()
+        if any((Vector(v.X, v.Y, v.Z) - corner).length < 1e-6 for v in e.vertices())
+    ]
+    part = chamfer(edges, 2)
+    chain = _expand_blend_chain(part, [min(part.faces(), key=lambda f: f.area)])
+
+    # sequential per-pocket fills restore the pristine box exactly
+    r = _tool_fill_all(part, chain)
+    assert r is not None and abs(r.volume - 8000) < 0.01, (
+        f"corner-chain fill should restore vol 8000, got {r and r.volume}"
+    )
+
+    # deleting a box's whole top face has an unbounded wound — must refuse
+    top = max(b.faces(), key=lambda f: f.center().Z)
+    assert _tool_fill_all(b, [top]) is None, "unbounded fill must be refused"
+
+    # a hole inside the wedge region must survive the fill
+    holed = part - Pos(5, 5, 9) * Cylinder(1.5, 2)
+    hole_void = part.volume - holed.volume
+    c3 = _expand_blend_chain(holed, [min(holed.faces(), key=lambda f: f.area)])
+    r3 = _tool_fill_all(holed, c3)
+    assert r3 is not None and abs(r3.volume - (8000 - hole_void)) < 0.05, (
+        f"hole must not be plugged: got {r3 and r3.volume}, want {8000 - hole_void:.2f}"
+    )
+    print("  tool-fill OK: corner chain -> pristine box; unbounded refused; "
+          "hole preserved")
+
+
+def test_refacet_clean():
+    """Facet-import cleanup: near-coplanar staircase walls (STL heritage, or two
+    fused bodies 0.05mm out of line) collapse into single crisp planes; clean
+    geometry passes through untouched."""
+    from build123d import Box, Pos
+
+    from builder import _refacet_clean
+
+    b = Box(20, 20, 10)
+    assert _refacet_clean(b) is b, "clean box must pass through untouched"
+
+    # two fused boxes, misaligned 0.05 mm in X — every side wall becomes a
+    # 2-plane staircase the exact-coplanar unify can't merge
+    part = b + Pos(0.05, 0, 9.95) * Box(20, 20, 10)
+    before = len(part.faces())
+    cleaned = _refacet_clean(part)
+    assert cleaned is not part, "staircase body should be cleaned"
+    after = len(cleaned.faces())
+    assert after <= 6 and after < before, (
+        f"expected the staircase to collapse to a box (≤6 faces), got {after} (was {before})"
+    )
+    assert abs(cleaned.volume - part.volume) <= 0.01 * part.volume
+    print(f"  refacet-clean OK: fused staircase {before} -> {after} faces, "
+          f"volume preserved ({cleaned.volume:.1f})")
+
+
+def test_unify_body():
+    """cleanUp's inter-solid unify: a body whose boolean joins left glued,
+    interpenetrating solids plus an inside-out duplicate fuses into ONE clean
+    solid at the true union volume; clean bodies and zero-measure (edge)
+    contact groups pass through with material and piece-count intact."""
+    from build123d import Box, Compound, Pos
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    from builder import _unify_body, _wrap_topods, rebuild
+
+    # clean single solid: identity fast-path
+    b = Box(10, 10, 10)
+    assert _unify_body(b) is b, "clean box must pass through untouched"
+
+    # the rot combines bake into ragged bodies: two interpenetrating boxes
+    # (union 1500, naive sum 2000) + an inside-out duplicate inside the first
+    a = Box(10, 10, 10)
+    c = Pos(5, 0, 0) * Box(10, 10, 10)
+    inv = _wrap_topods((Pos(-2, 0, 0) * Box(2, 2, 2)).wrapped.Reversed())
+    assert inv.volume < 0, "reversed box should report negative volume"
+    sick = Compound([a, c, inv])
+    u = _unify_body(sick)
+    assert u is not sick, "rotten compound should be repaired"
+    assert len(u.solids()) == 1, f"expected 1 unified solid, got {len(u.solids())}"
+    assert abs(u.volume - 1500) < 1.0, f"true union volume 1500, got {u.volume:.2f}"
+    assert BRepCheck_Analyzer(u.wrapped).IsValid()
+    assert _unify_body(u) is u, "already-unified body must pass through untouched"
+
+    # two solids touching only along an edge (a grouped split body, e.g. a
+    # honeycomb half): both pieces must survive with volume intact
+    pair = Compound([Box(1, 1, 1), Pos(1, 1, 0) * Box(1, 1, 1)])
+    up = _unify_body(pair)
+    assert len(up.solids()) == 2, "edge-contact pieces must stay two solids"
+    assert abs(up.volume - 2.0) < 1e-6
+
+    # feature plumbing: a cleanUp feature runs through rebuild without error
+    doc = {
+        "features": [
+            {"id": "f1", "type": "box", "length": 10, "width": 10, "height": 10},
+            {"id": "f2", "type": "cleanUp"},
+        ],
+        "parameters": {},
+    }
+    part, errors, bodies = rebuild(doc)
+    assert not errors, f"cleanUp on a clean body must not error: {errors}"
+    assert len(bodies) == 1 and abs(bodies[0]["shape"].volume - 1000) < 1e-6
+    print("  unify-body OK: rot -> 1 solid @ true union volume; clean/edge-"
+          "contact untouched; cleanUp feature green")
+
+
+def test_error_continues():
+    """A failing feature is a recorded no-op, not a timeline killer: features
+    AFTER it still execute (Fusion-style), and the incremental cache both keeps
+    working and keeps re-reporting the error on resumed builds."""
+    import builder
+    from builder import rebuild, rebuild_cached
+
+    doc = {"parameters": {}, "features": [
+        {"id": "bx", "type": "box", "length": 10, "width": 10, "height": 10},
+        # an over-large fillet radius: deterministic OCCT failure mid-timeline
+        {"id": "bad", "type": "fillet",
+         "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "radius": 100},
+        {"id": "cy", "type": "cylinder", "radius": 5, "height": 30},
+    ]}
+    part, errors, bodies = rebuild(doc)
+    assert [e["feature_id"] for e in errors] == ["bad"], f"expected bad split flagged: {errors}"
+    assert len(bodies) == 2, (
+        f"the cylinder AFTER the failed split must still build: {len(bodies)} bodies"
+    )
+
+    # incremental: cold build, then a no-op resume — the error must re-report
+    # from the cached snapshot, not vanish
+    builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+    _, err1, bod1 = rebuild_cached(doc)
+    _, err2, bod2 = rebuild_cached(doc)  # 100% cache hit
+    assert [e["feature_id"] for e in err1] == ["bad"]
+    assert [e["feature_id"] for e in err2] == ["bad"], (
+        "resumed build must still report the cached error"
+    )
+    assert len(bod2) == 2
+
+    # edit downstream of the failed feature: applies incrementally AND matches
+    # a fresh full rebuild
+    doc["features"].append({"id": "bx2", "type": "box", "length": 5, "width": 5, "height": 5})
+    _, err3, bod3 = rebuild_cached(doc)
+    builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+    _, err4, bod4 = rebuild(doc)
+    assert [e["feature_id"] for e in err3] == ["bad"]
+    assert len(bod3) == 3 and len(bod4) == 3
+    assert all(
+        abs(a["shape"].volume - b["shape"].volume) < 1e-9
+        for a, b in zip(bod3, bod4)
+    ), "incremental-past-error must equal a full rebuild"
+    print("  error-continues OK: failed split no-ops, downstream builds, "
+          "cache resumes + re-reports the error")
+
+
+def test_delete_face_retarget():
+    """deleteFace body refs are positional and go stale when upstream edits
+    renumber bodies — the pick must re-anchor GEOMETRICALLY: the face nearest
+    the recorded point wins across all bodies, with a lossy diagnostic when
+    that's a different body than the named one."""
+    from builder import rebuild
+
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 20, "width": 20, "height": 20},
+        {"id": "b2", "type": "box", "length": 10, "width": 10, "height": 10},
+        {"id": "mv", "type": "move", "dx": 50, "dy": 0, "dz": 0,
+         "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]},
+        {"id": "ch", "type": "chamfer",
+         "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "distance": 2},
+        # names body1, but the pick point sits on body2's chamfer face — the
+        # exact shape of a saved delete whose body id was renumbered upstream
+        {"id": "del", "type": "deleteFace", "body": "body1",
+         "face": {"kind": "face", "by": "nearest", "point": [54, 4, 0]}},
+    ]}
+    diag = []
+    part, errors, bodies = rebuild(doc, diagnostics=diag)
+    assert not errors, f"re-targeted delete must heal: {errors}"
+    rt = [d for d in diag if d.get("kind") == "deleteFace" and d.get("lossy")]
+    assert rt, "expected a lossy re-target diagnostic"
+    b2 = next(b for b in bodies if b["id"] == "body2")
+    assert len(b2["shape"].faces()) == 9, (
+        f"one of four chamfer faces healed away: {len(b2['shape'].faces())} faces"
+    )
+    b1 = next(b for b in bodies if b["id"] == "body1")
+    assert len(b1["shape"].faces()) == 6, "the named-but-wrong body must be untouched"
+    print("  delete-retarget OK: stale body ref re-anchored to the picked face, "
+          "healed, flagged lossy")
+
+
+def test_presspull_upto_exact():
+    """Up-to-surface distances are EXACT: (a) an inward up-to deeper than the
+    90% thickness clamp lands ON the target, not short of it (audit bug #1);
+    (b) the target face may live on ANOTHER body — 'extrude until it meets
+    that part' — resolved globally from the pick point."""
+    from builder import rebuild
+
+    # (a) L-shape: base slab + a boss on top. Press the boss top DOWN up-to the
+    # base bottom: the prism must cut clean through BOTH blocks (depth 20 —
+    # way past any single-face thickness clamp).
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 20, "width": 20, "height": 10},  # z -5..5
+        {"id": "b2", "type": "box", "length": 10, "width": 20, "height": 10},
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 10,
+         "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]},  # boss z 5..15
+        {"id": "cb", "type": "combine", "operation": "join", "target": "body1", "tools": ["body2"]},
+        {"id": "pp", "type": "press-pull",
+         "face": {"kind": "face", "by": "nearest", "point": [0, 0, 15]},  # boss top
+         "distance": -1, "operation": "cut", "body": "body1",
+         "upTo": {"kind": "face", "by": "nearest", "point": [8, 8, -5]}},  # base BOTTOM
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    # base 4000 + boss 2000 = 6000; cutting the 10x20 column down to z=-5
+    # removes the boss (2000) AND the base under it (2000) → exactly 2000
+    v = bodies[0]["shape"].volume
+    assert abs(v - 2000) < 1, f"up-to must land exactly on the target: {v:.1f} (clamped would be >2000)"
+
+    # (b) cross-body target: grow a short box UP TO a taller neighbor's top plane
+    doc2 = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 10, "width": 10, "height": 10},   # z -5..5
+        {"id": "b2", "type": "box", "length": 10, "width": 10, "height": 30},
+        {"id": "mv", "type": "move", "dx": 40, "dy": 0, "dz": 5,
+         "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]},  # neighbor z -10..20
+        {"id": "pp", "type": "press-pull",
+         "face": {"kind": "face", "by": "nearest", "point": [0, 0, 5]},  # body1 top
+         "distance": 1, "operation": "join", "body": "body1",
+         "upTo": {"kind": "face", "by": "nearest", "point": [40, 0, 20]}},  # body2 TOP
+    ]}
+    part, err, bodies = rebuild(doc2)
+    assert not err, err
+    b1 = next(b for b in bodies if b["id"] == "body1")
+    bb = b1["shape"].bounding_box()
+    assert abs(bb.max.Z - 20) < 1e-6, f"body1 must grow exactly to the neighbor's top: z={bb.max.Z}"
+    assert abs(b1["shape"].volume - 10 * 10 * 25) < 1, b1["shape"].volume
+    print("  press-pull up-to exact OK: through-clamp cut lands on target; "
+          "cross-body target plane honored")
+
+
+def test_export_despite_errors():
+    """Export writes what BUILT and warns about what didn't — one red feature
+    must not hold every valid body hostage (it used to refuse entirely, which
+    blocked the import-repair → print loop)."""
+    import os
+    import tempfile
+
+    import server
+
+    doc = {"parameters": {}, "features": [
+        {"id": "bx", "type": "box", "length": 10, "width": 10, "height": 10},
+        {"id": "bad", "type": "fillet",
+         "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "radius": 100},
+        {"id": "cy", "type": "cylinder", "radius": 5, "height": 30},
+    ]}
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "out.stl")
+        res = server._export_job(doc, "stl", p)
+        assert "error" not in res, f"must export the surviving bodies: {res}"
+        assert os.path.exists(res["path"]) and os.path.getsize(res["path"]) > 0
+        warns = res.get("warnings") or []
+        assert any(w.get("feature_id") == "bad" for w in warns), (
+            f"the failed fillet must be named in warnings: {warns}"
+        )
+        # a document where NOTHING builds is still a hard error
+        res2 = server._export_job(
+            {"parameters": {}, "features": [
+                {"id": "s", "type": "sketch", "plane": "XY",
+                 "entities": [{"type": "rectangle", "width": 5, "height": 5}]},
+            ]},
+            "stl", os.path.join(td, "none.stl"),
+        )
+        assert "error" in res2, "nothing-built must still refuse"
+    print("  export-despite-errors OK: surviving bodies written + failed "
+          "feature named; nothing-built still refuses")
+
+
 if __name__ == "__main__":
     print("SindriCAD sidecar smoke test")
     test_rebuild()
@@ -745,13 +1156,23 @@ if __name__ == "__main__":
     test_presspull_targets_owning_body()
     test_presspull_multiface()
     test_presspull_upto()
+    test_presspull_upto_exact()
+    test_export_despite_errors()
     test_sketch_patterns()
     test_sketch_crossing_split()
     test_extrude_cut_disjoint()
     test_cut_skips_hidden_body()
+    test_visibility_captured()
     test_incremental_cache()
     test_face_provenance()
     test_delete_face()
+    test_defeature_chain()
+    test_canonicalize_import()
+    test_tool_fill()
+    test_refacet_clean()
+    test_unify_body()
+    test_error_continues()
+    test_delete_face_retarget()
     test_extrude_operation_multibody()
     test_primitives()
     test_modify_tools()

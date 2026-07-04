@@ -12,12 +12,16 @@ import { Ribbon } from "./ui/ribbon";
 import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
+import { toggleShortcutHUD } from "./input/shortcuts";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { saveDocument, saveDocumentAs, openDocument, exportModel, importModel } from "./io/files";
+import { installAutosave, checkRecovery } from "./io/recovery";
 import { Menubar } from "./ui/menu";
 import { contextMenu } from "./ui/menu";
 import { choose } from "./ui/choice";
+import { toast } from "./ui/toast";
+import { FEATURE_META } from "./ui/featureMeta";
 import { esc } from "./ui/escape";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
@@ -44,6 +48,9 @@ const viewport = new Viewport(canvas);
 const geometry = import.meta.env.VITE_GEOM === "rust" ? new TauriGeometry() : new Geometry();
 void geometry.init(); // fetch the per-launch sidecar auth token + open the socket
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
+// crash-safety: periodic recovery snapshots + restore-on-launch prompt
+installAutosave(store);
+void checkRecovery(store);
 
 const overlay = new SketchOverlay();
 viewport.addToScene(overlay.group);
@@ -56,15 +63,21 @@ const measure = new MeasureTool(viewport);
 const section = new SectionTool(viewport);
 const planeOffset = new PlaneOffsetTool(viewport);
 
-(window as any).viewport = viewport;
-(window as any).store = store;
-(window as any).geometry = geometry;
-(window as any).sketch = sketch;
-(window as any).overlay = overlay;
-(window as any).extrude = extrude;
-(window as any).edgeFeature = edgeFeature;
-(window as any).pressPull = pressPull;
-(window as any).solveSketch = solveSketch;
+// Debug handles for console + headless frontend-logic tests. Gated to DEV so
+// they're absent from production bundles — a post-XSS attacker shouldn't be
+// handed the live store/geometry API for free (the vite dev server is DEV, so
+// the localhost:5173 test workflow keeps them).
+if (import.meta.env.DEV) {
+  (window as any).viewport = viewport;
+  (window as any).store = store;
+  (window as any).geometry = geometry;
+  (window as any).sketch = sketch;
+  (window as any).overlay = overlay;
+  (window as any).extrude = extrude;
+  (window as any).edgeFeature = edgeFeature;
+  (window as any).pressPull = pressPull;
+  (window as any).solveSketch = solveSketch;
+}
 void initSolver(); // warm up the constraint solver WASM
 
 // --- 3D mouse (SpaceMouse): navigate the camera + map buttons (desktop app) ---
@@ -90,6 +103,24 @@ const palette = new SketchPalette(document.getElementById("palette")!);
 const timeline = new Timeline(document.getElementById("timeline")!, store);
 const tree = new BrowserTree(document.getElementById("browser")!, store);
 const inspector = new Inspector(document.getElementById("inspector")!, store);
+
+// WebKitGTK quirk: wheel events over overflow panels don't reliably reach the
+// native scroller (GTK kinetic scrolling eats them — measured fine in Chromium,
+// dead in the webview), so drive the panel scroll explicitly. deltaMode-
+// normalized like the viewport's zoom wheel.
+for (const id of ["browser", "inspector"]) {
+  const el = document.getElementById(id)!;
+  el.addEventListener(
+    "wheel",
+    (e) => {
+      if (el.scrollHeight <= el.clientHeight) return;
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
+      el.scrollTop += e.deltaY * unit;
+      e.preventDefault();
+    },
+    { passive: false },
+  );
+}
 
 // --- File menu + document-name titlebar ---
 async function newDocument() {
@@ -128,6 +159,31 @@ new Menubar(document.getElementById("menubar")!, [
     ],
   },
   {
+    label: "Edit",
+    items: [
+      { label: "Undo", shortcut: "Ctrl+Z", disabled: () => !store.canUndo, onClick: () => store.undo() },
+      { label: "Redo", shortcut: "Ctrl+Y", disabled: () => !store.canRedo, onClick: () => store.redo() },
+      { separator: true, label: "" },
+      {
+        label: "Delete",
+        shortcut: "Del",
+        disabled: () => !selectedFeature,
+        onClick: () => {
+          if (deleteSelectedFace()) return;
+          if (selectedFeature) {
+            store.removeFeature(selectedFeature);
+            selectFeature(null);
+          }
+        },
+      },
+      {
+        label: "Suppress / Unsuppress",
+        disabled: () => !selectedFeature,
+        onClick: () => selectedFeature && store.toggleSuppress(selectedFeature),
+      },
+    ],
+  },
+  {
     label: "View",
     items: [
       { label: "SpaceMouse: Move Object", checked: () => getSpaceMouseMode() === "object", onClick: () => setSpaceMouseMode("object") },
@@ -139,6 +195,15 @@ new Menubar(document.getElementById("menubar")!, [
 ]);
 
 const docnameEl = document.getElementById("docname")!;
+// mouse-visible undo/redo (Ctrl+Z was the ONLY way before — invisible affordance)
+const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
+const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement;
+undoBtn.addEventListener("click", () => store.undo());
+redoBtn.addEventListener("click", () => store.redo());
+store.onDocChange(() => {
+  undoBtn.disabled = !store.canUndo;
+  redoBtn.disabled = !store.canRedo;
+});
 store.onMeta(() => {
   docnameEl.textContent = (store.dirty ? "● " : "") + store.fileName;
   docnameEl.classList.toggle("dirty", store.dirty);
@@ -361,6 +426,18 @@ function computeBodyPaint(): Record<string, string> {
   return out;
 }
 
+// Failed-commit visibility: a feature that errors in the rebuild leaves the
+// model looking UNCHANGED (its body keeps the old mesh), so without an active
+// notification the only signal is the small status line — "nothing happened".
+// Diff each completed build's failing-feature set against the previous one and
+// toast every NEW failure; if it's the feature the user JUST committed from an
+// interactive tool, select it immediately (red chip scrolls into view).
+let prevErrorIds = new Set<string>();
+let lastCommittedId: string | null = null;
+export function noteCommitted(id: string | null) {
+  if (id) lastCommittedId = id;
+}
+
 store.onBuild((s) => {
   // Only render COMPLETED builds. A `building` tick carries the previous result
   // (the new geometry isn't ready yet); re-rendering it would momentarily revert an
@@ -378,6 +455,25 @@ store.onBuild((s) => {
       viewport.setBodyPaint(computeBodyPaint()); // apply assigned per-body colors
     } else {
       viewport.clearModel();
+    }
+    // toast NEW feature errors (skip preview builds — they carry a transient
+    // un-committed feature whose failures resolve on commit/cancel)
+    if (!store.hasPreview) {
+      const errs = s.result.featureErrors ?? [];
+      const ids = new Set(errs.map((e) => e.feature_id).filter(Boolean) as string[]);
+      for (const e of errs) {
+        if (!e.feature_id || prevErrorIds.has(e.feature_id)) continue;
+        const f = store.document.features.find((x) => x.id === e.feature_id);
+        const label = f ? (FEATURE_META[f.type as keyof typeof FEATURE_META]?.label ?? f.type) : e.feature_id;
+        const id = e.feature_id;
+        toast(`⚠ ${label} failed: ${e.message}`, {
+          kind: "error",
+          action: { label: "Show", onClick: () => selectFeature(id) },
+        });
+        if (id === lastCommittedId) selectFeature(id);
+      }
+      prevErrorIds = ids;
+      lastCommittedId = null;
     }
   }
   syncDatumPlanes();
@@ -502,13 +598,13 @@ let planePick = false;
 
 // Interactive Fillet / Chamfer: pick an edge (or use a Ctrl-click pre-selection),
 // then drag an arrow to scrub the radius/distance with a live sidecar preview.
-const startFillet = () => edgeFeature.start("fillet", (id) => id && selectFeature(id));
-const startChamfer = () => edgeFeature.start("chamfer", (id) => id && selectFeature(id));
+const startFillet = () => edgeFeature.start("fillet", (id) => { noteCommitted(id); if (id) selectFeature(id); });
+const startChamfer = () => edgeFeature.start("chamfer", (id) => { noteCommitted(id); if (id) selectFeature(id); });
 // Interactive Press/Pull: pick a solid face, then drag an arrow along its normal
 // to add/cut material (planar) or offset a curved face — with a live preview.
 const startPressPull = () => {
   if (sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active) return;
-  pressPull.start((id) => id && selectFeature(id));
+  pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
 };
 function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
   if (toolBusy()) return;
@@ -739,6 +835,22 @@ function startSimplifyMesh() {
   store.addFeature({ id: store.nextId(), type: "simplifyMesh", tolerance: 1 } as Feature);
 }
 
+// Clean Up: repair boolean rot on all bodies at this point in the timeline —
+// unify glued/overlapping solids, then collapse facet debris (slivers +
+// near-coplanar staircases). Booleans on ragged imports re-manufacture debris,
+// so run it again after a heavy Press/Pull / Combine session to keep Delete
+// Face and downstream booleans reliable. Best-effort in the sidecar: a body it
+// can't confidently clean passes through unchanged.
+function startCleanUp() {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Clean Up: import or create a body first", "");
+    return;
+  }
+  store.addFeature({ id: store.nextId(), type: "cleanUp" } as Feature);
+  setStatus("Clean Up added — bodies unified + debris collapsed from here on", "");
+}
+
 // Scale: resize the active body about the origin (handy for fixing the units of
 // an import). Default factor 1 — set it in the inspector.
 function startScale() {
@@ -765,7 +877,7 @@ function startMove() {
     setStatus("Move: select a body first (Select: Bodies)", "");
     return;
   }
-  moveTool.start(ids, (id) => id && selectFeature(id));
+  moveTool.start(ids, (id) => { noteCommitted(id); if (id) selectFeature(id); });
 }
 
 // --- Inspect: Properties readout (volume / area / mass / center / bbox) ---
@@ -1109,14 +1221,14 @@ function startExtrude() {
   // "extrude this face" (was: a shown sketch forced region-extrude, so face cut did
   // nothing).
   if (viewport.selectedFacesForPressPull()) {
-    pressPull.start((id) => id && selectFeature(id));
+    pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
     return;
   }
   if (overlay.regions.length === 0) {
     setStatus("Extrude: select a face, or create a sketch with a closed profile first", "");
     return;
   }
-  extrude.start((id) => id && selectFeature(id));
+  extrude.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
 }
 
 function editFeature(id: string) {
@@ -1236,6 +1348,9 @@ function handleAction(action: string) {
     case "simplify-mesh":
       startSimplifyMesh();
       break;
+    case "clean-up":
+      startCleanUp();
+      break;
     case "scale":
       startScale();
       break;
@@ -1340,29 +1455,27 @@ function handleAction(action: string) {
       selBtn.classList.toggle("active", next === "bodies");
       break;
     }
-  }
-}
-
-// --- keymap (Fusion defaults) ---
-installKeymap((a) => {
-  // while sketching, the sketch tool owns its tool keys + Esc/Enter
-  if (sketch.active && SKETCH_TOOLS.has(a)) return;
-  switch (a) {
-    case "sketch":
-    case "line":
-    case "rectangle":
-    case "circle":
-    case "arc":
-    case "extrude":
-    case "fillet":
-    case "chamfer":
-      handleAction(a);
+    case "selmode-faces":
+    case "selmode-bodies": {
+      const mode = action === "selmode-bodies" ? "bodies" : "faces";
+      viewport.setSelectionMode(mode);
+      selBtn.textContent = mode === "bodies" ? "Bodies" : "Faces";
+      selBtn.classList.toggle("active", mode === "bodies");
       break;
-    case "presspull":
-      handleAction(a);
+    }
+    case "hide-selected": {
+      const ids = viewport.getSelectedBodies();
+      if (!ids.length) {
+        setStatus("Hide: select bodies first (press 2 for body select)", "");
+        break;
+      }
+      for (const id of ids) store.setBodyVisibility(id, false);
       break;
-    case "dimension":
-      if (sketch.active) handleAction("dimension");
+    }
+    case "show-all-bodies":
+      for (const b of store.buildState.result?.bodies ?? []) {
+        if (!store.isBodyVisible(b.id)) store.setBodyVisibility(b.id, true);
+      }
       break;
     case "undo":
       store.undo();
@@ -1370,20 +1483,34 @@ installKeymap((a) => {
     case "redo":
       store.redo();
       break;
-    case "save":
-      void saveDocument(store);
+    case "shortcut-help":
+      toggleShortcutHUD();
       break;
-    case "escape":
+    case "compute-all":
+      setStatus("Compute All — rebuilding everything from scratch…", "");
+      void store.computeAllNow();
+      break;
+  }
+}
+
+// --- keymap (Fusion defaults) ---
+installKeymap(
+  (a) => {
+    // while sketching, the sketch tool owns its tool keys + Esc/Enter
+    if (sketch.active && SKETCH_TOOLS.has(a)) return;
+    if (a === "escape") {
       if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) {
         viewport.clearSelection();
         selectFeature(null);
       }
-      break;
-    case "fit":
-      viewport.fitView();
-      break;
-  }
-});
+      return;
+    }
+    // everything else — including the once-dead M/Move and T/Trim keys — routes
+    // through the same dispatcher the ribbon and command palette use
+    handleAction(a);
+  },
+  () => (sketch.active ? "sketch" : "model"),
+);
 
 // delete: a selected FACE → remove it and heal the solid (defeature — works on
 // imported geometry, where there's no feature to delete); otherwise delete the

@@ -529,12 +529,145 @@ export class Viewport {
     this.model = buildModel(result, this.resolution, hiddenBodies);
     this.scene.modelGroup.add(this.model.mesh);
     for (const e of this.model.edges) this.scene.modelGroup.add(e);
+    this.hideFlushSeams();
     this.highlighter = new Highlighter(this.model);
     this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
     this.applyAnalysis(); // paints the analysis overlay, or assigned body colors when "none"
     if (this.zebra) this.applyZebra();
     if (this.combs) this.applyCombs();
     if (fit) this.rig.fit(this.model.box, true);
+  }
+
+  /** Flush-seam hiding (display-only). A contact line between ALIGNED pieces —
+   *  two mating bodies, or glued solids inside one body — reads as a scar
+   *  across a continuous surface. Hide an edge when two DISTINCT coplanar,
+   *  same-orientation planar faces sit on OPPOSITE SIDES of it (the surface
+   *  provably continues across, checked against the actual triangles — so a
+   *  hole rim, whose far side is empty space, can never be swallowed). A real
+   *  step keeps its line: a visible seam now MEANS misalignment. */
+  private hideFlushSeams() {
+    const model = this.model;
+    if (!model || !model.edges.length) return;
+    const pos = model.mesh.geometry.getAttribute("position");
+    const index = model.mesh.geometry.getIndex()!;
+    const ids = model.faceIds;
+    const mw = model.mesh.matrixWorld;
+
+    // one pass over the index buffer: per-face normal / plane point / bbox /
+    // planarity / triangle list (curved faces never hide a seam)
+    interface FInfo {
+      planar: boolean;
+      n: THREE.Vector3; p: THREE.Vector3;
+      min: THREE.Vector3; max: THREE.Vector3;
+      tris: number[]; // triangle indices, for the side-sample containment test
+    }
+    const faces = new Map<number, FInfo>();
+    const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+    const ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
+    for (let t = 0; t < ids.length; t++) {
+      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
+      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
+      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
+      n.copy(ab.copy(b).sub(a)).cross(ac.copy(c).sub(a));
+      const len = n.length();
+      let f = faces.get(ids[t]);
+      if (!f) {
+        f = {
+          planar: true,
+          n: len > 1e-9 ? n.clone().divideScalar(len) : new THREE.Vector3(),
+          p: a.clone(), min: a.clone(), max: a.clone(), tris: [],
+        };
+        faces.set(ids[t], f);
+      } else if (len > 1e-9 && f.n.lengthSq() > 0.5 && n.clone().divideScalar(len).dot(f.n) < 0.9998) {
+        f.planar = false;
+      } else if (len > 1e-9 && f.n.lengthSq() < 0.5) {
+        f.n.copy(n).divideScalar(len);
+      }
+      f.tris.push(t);
+      for (const v of [a, b, c]) { f.min.min(v); f.max.max(v); }
+    }
+
+    const TOL = 0.02;  // on-plane tolerance (mm) — flush contacts are exact
+    const INFL = 0.5;  // bbox slack for candidate gathering
+    const EPS = 0.3;   // side-sample offset from the edge (mm)
+    const planar = [...faces.values()].filter((f) => f.planar && f.n.lengthSq() > 0.5);
+
+    const tri = new THREE.Triangle();
+    const closest = new THREE.Vector3();
+    const contains = (f: FInfo, q: THREE.Vector3) => {
+      if (
+        q.x < f.min.x - EPS || q.x > f.max.x + EPS ||
+        q.y < f.min.y - EPS || q.y > f.max.y + EPS ||
+        q.z < f.min.z - EPS || q.z > f.max.z + EPS
+      ) return false;
+      for (const t of f.tris) {
+        tri.a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
+        tri.b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
+        tri.c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
+        tri.closestPointToPoint(q, closest);
+        if (closest.distanceTo(q) < 0.05) return true;
+      }
+      return false;
+    };
+
+    const lo = new THREE.Vector3(), hi = new THREE.Vector3();
+    const m = new THREE.Vector3(), d = new THREE.Vector3(), s = new THREE.Vector3();
+    const qPlus = new THREE.Vector3(), qMinus = new THREE.Vector3();
+    for (const line of model.edges) {
+      const pts = line.userData.points as [number, number, number][];
+      if (!pts || pts.length < 2) continue;
+      lo.set(Infinity, Infinity, Infinity);
+      hi.set(-Infinity, -Infinity, -Infinity);
+      for (const q of pts) {
+        lo.x = Math.min(lo.x, q[0]); lo.y = Math.min(lo.y, q[1]); lo.z = Math.min(lo.z, q[2]);
+        hi.x = Math.max(hi.x, q[0]); hi.y = Math.max(hi.y, q[1]); hi.z = Math.max(hi.z, q[2]);
+      }
+      // candidate faces: planar, edge lies in their plane, bbox borders the edge
+      const cands: FInfo[] = [];
+      for (const f of planar) {
+        if (
+          f.min.x - INFL > lo.x || f.max.x + INFL < hi.x ||
+          f.min.y - INFL > lo.y || f.max.y + INFL < hi.y ||
+          f.min.z - INFL > lo.z || f.max.z + INFL < hi.z
+        ) continue;
+        let on = true;
+        for (const q of pts) {
+          const dd =
+            (q[0] - f.p.x) * f.n.x + (q[1] - f.p.y) * f.n.y + (q[2] - f.p.z) * f.n.z;
+          if (Math.abs(dd) > TOL) { on = false; break; }
+        }
+        if (on) cands.push(f);
+      }
+      if (cands.length < 2) continue;
+
+      // side samples at the edge midpoint, perpendicular to the edge IN the plane
+      const k = Math.floor((pts.length - 1) / 2);
+      m.set(
+        (pts[k][0] + pts[k + 1][0]) / 2,
+        (pts[k][1] + pts[k + 1][1]) / 2,
+        (pts[k][2] + pts[k + 1][2]) / 2,
+      );
+      d.set(
+        pts[k + 1][0] - pts[k][0],
+        pts[k + 1][1] - pts[k][1],
+        pts[k + 1][2] - pts[k][2],
+      );
+      if (d.lengthSq() < 1e-12) continue;
+      d.normalize();
+      s.crossVectors(d, cands[0].n).normalize();
+      qPlus.copy(m).addScaledVector(s, EPS);
+      qMinus.copy(m).addScaledVector(s, -EPS);
+
+      // the surface continues across iff DISTINCT same-orientation faces own
+      // the two sides (one face owning both = the edge wraps a slot/hole rim)
+      let gPlus: FInfo | null = null;
+      let gMinus: FInfo | null = null;
+      for (const f of cands) if (contains(f, qPlus)) { gPlus = f; break; }
+      for (const f of cands) if (contains(f, qMinus)) { gMinus = f; break; }
+      if (gPlus && gMinus && gPlus !== gMinus && gPlus.n.dot(gMinus.n) > 0.999) {
+        line.visible = false;
+      }
+    }
   }
 
   clearModel() {
@@ -661,6 +794,58 @@ export class Viewport {
       normal: this.faceNormalWorld(faceId),
     };
   }
+
+  /** All world-space triangles of a B-rep face — the Measure tool's raw
+   *  material for true shortest-distance computation. */
+  faceTriangles(faceId: number): THREE.Triangle[] {
+    const out: THREE.Triangle[] = [];
+    if (!this.model) return out;
+    const mesh = this.model.mesh;
+    const pos = mesh.geometry.getAttribute("position");
+    const index = mesh.geometry.getIndex()!;
+    const ids = this.model.faceIds;
+    for (let t = 0; t < ids.length; t++) {
+      if (ids[t] !== faceId) continue;
+      const tri = new THREE.Triangle(
+        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mesh.matrixWorld),
+        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mesh.matrixWorld),
+        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mesh.matrixWorld),
+      );
+      out.push(tri);
+    }
+    return out;
+  }
+
+  /** Hover-highlight whatever a pick returned (Measure aiming feedback). */
+  hoverEntity(hit: import("./picking").Hit | null) {
+    this.highlighter?.clearHover();
+    if (!hit) return;
+    if (hit.kind === "edge") this.highlighter?.hoverEdge(hit.line);
+    else this.highlighter?.hoverFace(hit.faceId);
+  }
+
+  /** Transient marker line between the two closest points of a measure pair
+   *  (pass null to clear). Drawn on top so it reads through the model. */
+  setMeasureMarker(a: THREE.Vector3 | null, b?: THREE.Vector3) {
+    if (this.measureLine) {
+      this.scene.scene.remove(this.measureLine);
+      this.measureLine.geometry.dispose();
+      (this.measureLine.material as THREE.Material).dispose();
+      this.measureLine = null;
+    }
+    if (!a || !b) return;
+    const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xffc24a,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.95,
+    });
+    this.measureLine = new THREE.Line(geo, mat);
+    this.measureLine.renderOrder = 999;
+    this.scene.scene.add(this.measureLine);
+  }
+  private measureLine: THREE.Line | null = null;
 
   /** Highlight exactly these faces + edges (used by the Measure tool). */
   measureHighlight(

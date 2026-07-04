@@ -26,6 +26,10 @@ export interface CameraRig {
    *  (a world point, usually under the cursor) is given, zooms TOWARD it
    *  (Fusion-style dolly-to-cursor) instead of toward the orbit target. */
   zoomBy(factor: number, pivot?: THREE.Vector3): void;
+  /** Half the visible view height at the orbit target, in world units — the
+   *  natural scale for making input steps (SpaceMouse pan) zoom-proportional
+   *  in BOTH projections, like wheel zoom already is. */
+  viewScale(): number;
   fit(box: THREE.Box3, enableTransition?: boolean): void;
   setStandardView(view: StandardView): void;
   /** orient to an arbitrary view direction (eye = target + dir·d), with a chosen
@@ -35,6 +39,12 @@ export interface CameraRig {
    *  `angle` radians. camera-controls has no native roll, so we rotate the
    *  camera up-vector about the view direction and re-apply it. */
   roll(angle: number): void;
+  /** Free-orbit by az/pol radians about the SCREEN axes (SpaceMouse tumble).
+   *  Unlike controls.rotate(), which camera-controls clamps just short of the
+   *  poles every frame (Spherical.makeSafe), this rotates the orbit up-vector
+   *  along with the camera, so vertical orbit passes straight over the top —
+   *  3Dconnexion-style free rotation, upside down included. */
+  tumble(az: number, pol: number): void;
   /** Lock out mouse orbit (sketch "lock to plane"); middle-drag pans instead. */
   setOrbitLocked(locked: boolean): void;
   lookAtPlane(
@@ -158,6 +168,12 @@ export function createCameraRig(
       }
       return moved || rollAngle !== 0;
     },
+    viewScale() {
+      if (usingOrtho) {
+        return (ortho.top - ortho.bottom) / 2 / ortho.zoom;
+      }
+      return controls.distance * Math.tan((FOV * Math.PI) / 360);
+    },
     zoomBy(factor: number, pivot?: THREE.Vector3) {
       const f = Math.max(0.1, Math.min(10, factor));
       if (usingOrtho) {
@@ -232,6 +248,11 @@ export function createCameraRig(
     },
     setStandardView(view: StandardView) {
       rollAngle = 0;
+      // a free tumble may have left the orbit up-vector anywhere; a standard
+      // view means "square me to the world" — restore Z-up first
+      persp.up.set(0, 0, 1);
+      ortho.up.set(0, 0, 1);
+      controls.updateCameraUp();
       const d = Math.max(controls.distance, 50);
       const dirs: Record<StandardView, [number, number, number]> = {
         front: [0, -1, 0],
@@ -273,6 +294,10 @@ export function createCameraRig(
     lookAtPlane(origin, normal, up) {
       rollAngle = 0;
       // Square the camera to a sketch plane: up = sketch +Y, look down -normal.
+      // INSTANT (no transition): camera-controls aborts animated transitions on
+      // any user input — a SpaceMouse twitch or an eager first click used to
+      // strand the sketch view mid-flight at an oblique angle, which silently
+      // ruined "draw exactly on the plane" precision. A snap is deterministic.
       persp.up.copy(up);
       ortho.up.copy(up);
       controls.updateCameraUp();
@@ -285,7 +310,7 @@ export function createCameraRig(
         origin.x,
         origin.y,
         origin.z,
-        true,
+        false,
       );
     },
     restoreUp() {
@@ -298,6 +323,39 @@ export function createCameraRig(
       // accumulate; the bank is re-applied every frame in update(). Cheap and
       // safe — no camera-controls state is touched here.
       rollAngle += angle;
+    },
+    tumble(az, pol) {
+      // Rotate the camera OFFSET and the orbit UP-VECTOR together about the
+      // screen axes (yaw about visual up, pitch about visual right), then
+      // re-seat camera-controls in the rotated up-space. Because offset and up
+      // rotate by the same quaternion, the polar angle camera-controls sees
+      // NEVER changes — the pole travels with the camera, so its per-frame
+      // (0, π) clamp (Spherical.makeSafe) has nothing to bite. Axis signs
+      // match controls.rotate(): +az orbits CCW seen from above, +pol tips
+      // the camera downward.
+      const target = controls.getTarget(new THREE.Vector3());
+      const offset = controls.getPosition(new THREE.Vector3()).sub(target);
+      active.updateMatrixWorld();
+      // visual axes from the rendered orientation (roll bank included)
+      const right = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 0);
+      const vup = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 1);
+      const q = new THREE.Quaternion()
+        .setFromAxisAngle(vup.normalize(), az)
+        .multiply(new THREE.Quaternion().setFromAxisAngle(right.normalize(), pol));
+      offset.applyQuaternion(q);
+      const u = persp.up.clone().applyQuaternion(q).normalize();
+      persp.up.copy(u);
+      ortho.up.copy(u);
+      controls.updateCameraUp();
+      controls.setLookAt(
+        target.x + offset.x,
+        target.y + offset.y,
+        target.z + offset.z,
+        target.x,
+        target.y,
+        target.z,
+        false,
+      );
     },
     setOrbitLocked(locked) {
       orbitLocked = locked;

@@ -8,7 +8,7 @@ import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
-import { distanceAlongAxis } from "./manipulator";
+import { axisDragDistance } from "./manipulator";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const AXES: Record<string, THREE.Vector3> = {
@@ -82,8 +82,7 @@ export class SectionTool {
 
   private onMove(e: PointerEvent) {
     if (this.grabbing) {
-      const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const proj = distanceAlongAxis(ray, this.anchor, this.axis);
+      const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       const raw = this.grabOffset + (proj - this.grabProj);
       const stepped = snap(raw, this.viewport.snapStep(this.center()));
       if (stepped === this.offset) return;
@@ -102,7 +101,7 @@ export class SectionTool {
       e.stopImmediatePropagation();
       this.grabbing = true;
       this.grabOffset = this.offset;
-      this.grabProj = distanceAlongAxis(this.viewport.rayFrom(e.clientX, e.clientY).ray, this.anchor, this.axis);
+      this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
     }
   }
 

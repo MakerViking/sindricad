@@ -83,7 +83,9 @@ export class Picker {
     this.raycaster.params.Line2 = { threshold: EDGE_PICK_THRESHOLD };
     (this.raycaster as any).camera = camera;
     for (const e of view.edges) (e.material as any).resolution?.copy(resolution);
-    const eHits = this.raycaster.intersectObjects(view.edges, false);
+    // skip hidden lines (flush-seam-hidden contact rims, hidden bodies) — the
+    // raycaster tests invisible objects too, which would give ghost edge picks
+    const eHits = this.raycaster.intersectObjects(view.edges.filter((e) => e.visible), false);
     if (!eHits.length) return null;
 
     let best = eHits[0];
@@ -114,9 +116,12 @@ export class Picker {
 // distance (see pickEdge), so a wide value stays precise.
 const EDGE_PICK_THRESHOLD = 26;
 // In general selection, only treat a click as an edge when the cursor is within
-// this many screen px of the edge line; otherwise a face under the cursor wins
-// (keeps thin faces selectable). Fillet/Chamfer (pickEdgeAt) ignore this.
-const EDGE_NEAR_PX = 7;
+// this many screen px of the edge line; otherwise a face under the cursor wins.
+// Kept TIGHT: on an edge-dense model (faceted imports) a generous radius put
+// most of every face inside some edge's halo, so faces only highlighted in
+// "sweet spots" between edges. 3 px = you're visibly ON the line. Fillet/
+// Chamfer (pickEdgeAt) ignore this and keep the wide grab radius.
+const EDGE_NEAR_PX = 3;
 
 function faceSelector(normal: THREE.Vector3, hit: THREE.Vector3): Selector {
   const n = normal.clone().normalize();

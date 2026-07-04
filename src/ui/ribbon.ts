@@ -13,7 +13,6 @@ interface Item {
   iconName: string;
   key?: string;
   kind?: "finish" | "toggle";
-  soon?: boolean; // shown but not yet wired (roadmap visibility)
 }
 interface Group {
   label: string;
@@ -38,28 +37,28 @@ export const MODEL: Group[] = [
     items: [
       { action: "presspull", label: "Press/Pull", iconName: "presspull", key: "Q" },
       { action: "fillet", label: "Fillet", iconName: "fillet", key: "F" },
-      { action: "chamfer", label: "Chamfer", iconName: "chamfer" },
+      { action: "chamfer", label: "Chamfer", iconName: "chamfer", key: "B" },
       { action: "shell", label: "Shell", iconName: "shell" },
       { action: "draft", label: "Draft", iconName: "draft" },
       { action: "scale", label: "Scale", iconName: "scale" },
-      { action: "move", label: "Move", iconName: "move" },
+      { action: "move", label: "Move", iconName: "move", key: "M" },
       { action: "mirror", label: "Mirror", iconName: "mirror" },
       { action: "pattern", label: "Pattern", iconName: "pattern" },
-      { action: "split", label: "Split Body", iconName: "split" },
-      { action: "combine", label: "Combine", iconName: "combine" },
+      { action: "split", label: "Split Body", iconName: "split", key: "K" },
+      { action: "combine", label: "Combine", iconName: "combine", key: "J" },
     ],
   },
   {
     label: "CONSTRUCT",
     items: [
-      { action: "offset-plane", label: "Offset Plane", iconName: "offsetPlane" },
+      { action: "offset-plane", label: "Offset Plane", iconName: "offsetPlane", key: "O" },
       { action: "datum-plane", label: "Datum Plane", iconName: "datumPlane" },
     ],
   },
   {
     label: "INSPECT",
     items: [
-      { action: "measure", label: "Measure", iconName: "measure" },
+      { action: "measure", label: "Measure", iconName: "measure", key: "I" },
       { action: "properties", label: "Properties", iconName: "properties" },
       { action: "section", label: "Section", iconName: "section" },
       { action: "interference", label: "Interference", iconName: "interference" },
@@ -74,6 +73,8 @@ export const MODEL: Group[] = [
     items: [
       { action: "import", label: "Import Mesh", iconName: "import" },
       { action: "simplify-mesh", label: "Simplify Mesh", iconName: "simplifyMesh" },
+      { action: "clean-up", label: "Clean Up", iconName: "cleanUp", key: "U" },
+      { action: "compute-all", label: "Compute All", iconName: "computeAll" },
     ],
   },
 ];
@@ -232,9 +233,8 @@ export class Ribbon {
       const btn = document.createElement("button");
       btn.className = "ribbon-btn";
       if (it.kind === "finish") btn.classList.add("finish");
-      if (it.soon) btn.classList.add("soon");
       btn.dataset.action = it.action;
-      btn.title = it.key ? `${it.label} (${it.key})` : it.label + (it.soon ? " — coming soon" : "");
+      btn.title = it.key ? `${it.label} (${it.key})` : it.label;
       btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
       btn.addEventListener("click", () => this.onAction?.(it.action));
       tools.appendChild(btn);

@@ -1,42 +1,14 @@
-// Fusion-style keymap. Maps single keys to named actions; the app decides what
-// each does. Ignores keystrokes while typing in inputs. Ctrl/Cmd combos handle
-// undo/redo/save.
+// Fusion-style keymap, driven by the single shortcut table in shortcuts.ts —
+// the app decides what each action does (main.ts dispatch). Ignores keystrokes
+// while typing in inputs. Ctrl/Cmd combos handle undo/redo (file shortcuts are
+// handled centrally in main.ts).
 
-export type KeyAction =
-  | "extrude"
-  | "line"
-  | "circle"
-  | "rectangle"
-  | "arc"
-  | "fillet"
-  | "chamfer"
-  | "dimension"
-  | "move"
-  | "presspull"
-  | "trim"
-  | "palette"
-  | "sketch"
-  | "fit"
-  | "escape"
-  | "undo"
-  | "redo"
-  | "save";
+import { resolveShortcut } from "./shortcuts";
 
-const KEYS: Record<string, KeyAction> = {
-  e: "extrude",
-  l: "line",
-  c: "circle",
-  r: "rectangle",
-  a: "arc",
-  f: "fillet",
-  d: "dimension",
-  m: "move",
-  q: "presspull",
-  t: "trim",
-  s: "sketch",
-};
-
-export function installKeymap(onAction: (a: KeyAction) => void) {
+export function installKeymap(
+  onAction: (a: string) => void,
+  context: () => "model" | "sketch",
+) {
   window.addEventListener("keydown", (e) => {
     if (
       e.target instanceof HTMLInputElement ||
@@ -56,13 +28,11 @@ export function installKeymap(onAction: (a: KeyAction) => void) {
     }
 
     if (e.key === "Escape") return onAction("escape");
-    if (k === "f" && e.shiftKey) return; // reserve
-    if (k === "f") {
-      // F is Fillet in Fusion; we also expose Fit on the dedicated button.
-      e.preventDefault();
-      return onAction("fillet");
-    }
-    const action = KEYS[k];
+
+    // "?" arrives as key "?" with shift held — resolve it without the shift flag
+    const key = e.key === "?" ? "?" : k;
+    const shift = e.key === "?" ? false : e.shiftKey;
+    const action = resolveShortcut(key, shift, context());
     if (action) {
       // Stop the keystroke from also landing in any input a tool focuses in
       // response (e.g. Press/Pull's dimension box) — otherwise "q" types into it.

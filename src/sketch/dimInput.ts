@@ -25,6 +25,7 @@ export class DimInput {
   private root: HTMLDivElement;
   private fields: Field[] = [];
   private onCommit: ((values: Record<string, number>) => void) | null = null;
+  private onCancel: (() => void) | null = null;
   private active = false;
 
   constructor() {
@@ -41,9 +42,11 @@ export class DimInput {
   show(
     defs: DimFieldDef[],
     onCommit: (values: Record<string, number>) => void,
+    onCancel?: () => void,
   ) {
     this.hide();
     this.onCommit = onCommit;
+    this.onCancel = onCancel ?? null;
     this.active = true;
     this.root.style.display = "flex";
     this.fields = defs.map((def) => {
@@ -65,6 +68,31 @@ export class DimInput {
       });
       return field;
     });
+    // Visible confirm/cancel — Enter/Esc equivalents for mouse-first work (the
+    // Enter-only flow read as "no way to confirm"). pointerdown+preventDefault
+    // so pressing them never blurs the input first.
+    const ok = document.createElement("button");
+    ok.className = "dim-btn dim-ok";
+    ok.title = "Confirm (Enter)";
+    ok.textContent = "✓";
+    ok.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.commit();
+    });
+    this.root.appendChild(ok);
+    if (this.onCancel) {
+      const no = document.createElement("button");
+      no.className = "dim-btn dim-no";
+      no.title = "Cancel (Esc)";
+      no.textContent = "✕";
+      no.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onCancel?.();
+      });
+      this.root.appendChild(no);
+    }
     // focus first field so typing goes straight to it
     this.fields[0]?.input.focus();
   }
@@ -126,5 +154,6 @@ export class DimInput {
     this.root.innerHTML = "";
     this.fields = [];
     this.onCommit = null;
+    this.onCancel = null;
   }
 }

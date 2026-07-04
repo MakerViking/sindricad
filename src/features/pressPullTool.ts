@@ -16,7 +16,7 @@ import type { Feature, Selector } from "../types";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
-import { distanceAlongAxis } from "./manipulator";
+import { axisDragDistance } from "./manipulator";
 
 type Phase = "pick" | "drag";
 
@@ -97,8 +97,7 @@ export class PressPullTool {
       return;
     }
     if (this.grabbing) {
-      const ray = this.viewport.rayFrom(e.clientX, e.clientY).ray;
-      const proj = distanceAlongAxis(ray, this.anchor, this.axis);
+      const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       // snap the drag to 0.1mm steps (Fusion-style); type a value for finer control
       const raw = this.grabValue + (proj - this.grabProj);
       const stepped = snap(raw, this.viewport.snapStep(this.anchor));
@@ -123,14 +122,18 @@ export class PressPullTool {
       this.beginDrag([hit.selector], [hit.faceId], hit.anchor, hit.normal, hit.bodyId);
       return;
     }
-    // drag phase: clicking the "up to" target surface (after pressing T)
+    // drag phase: clicking the "up to" target surface (after pressing T).
+    // Consume EVERY click in this mode — a miss must never fall through to the
+    // clean-click-commits path and fire a stray plain commit (audit bug #3).
     if (this.pickingTarget) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
       const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
-      if (hit && hit.bodyId === this.bodyId) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
+      if (hit && !this.faceIds.includes(hit.faceId)) {
         this.upTo = hit.selector;
         this.commitUpTo();
+      } else {
+        setPrompt("Pick the face to extrude UP TO (any face, any body) · Esc to go back");
       }
       return;
     }
@@ -156,29 +159,43 @@ export class PressPullTool {
       e.stopImmediatePropagation(); // don't let the camera orbit while dragging the handle
       this.grabbing = true;
       this.grabValue = this.value;
-      this.grabProj = distanceAlongAxis(this.viewport.rayFrom(e.clientX, e.clientY).ray, this.anchor, this.axis);
+      this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       this.viewport.domElement.style.cursor = "grabbing";
     }
   }
 
   private onUp(e: PointerEvent) {
     if (e.button !== 0 || this.phase !== "drag") return;
+    if (this.pickingTarget) return; // T-mode clicks are fully handled in onDown
     if (this.grabbing) {
       this.grabbing = false;
       this.viewport.domElement.style.cursor = this.hovering ? "grab" : "default";
       return;
     }
-    // a clean click on empty space (no orbit drag) commits
     const moved =
       Math.abs(e.clientX - this.downPos.x) > 3 || Math.abs(e.clientY - this.downPos.y) > 3;
-    if (!this.downOnGizmo && !moved) this.commit();
+    if (this.downOnGizmo || moved) return;
+    // Clean click on ANOTHER face = extrude UP TO it (Fusion "to object" —
+    // no T needed: pick a face, then click the face to meet). Empty space or
+    // one of the operation's own faces = commit as before.
+    const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
+    if (hit && !this.faceIds.includes(hit.faceId)) {
+      this.upTo = hit.selector;
+      this.commitUpTo();
+      return;
+    }
+    this.commit();
   }
 
   private onKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
       if (this.pickingTarget) {
         this.pickingTarget = false;
-        setPrompt("Drag the arrow · type a value · T = extrude up to a surface · click to commit · Esc to cancel");
+        // restore the distance field T-mode hid (audit bug #2: leaving it
+        // active let Enter commit a plain distance mid-target-pick)
+        this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
+        this.dim.updateFromCursor({ distance: Math.abs(this.value) });
+        setPrompt("Drag the arrow · type a value · click another face = extrude up to it · click empty space to commit · Esc to cancel");
         return;
       }
       this.cancel();
@@ -186,8 +203,9 @@ export class PressPullTool {
     }
     if ((e.key === "t" || e.key === "T") && this.phase === "drag" && !this.pickingTarget) {
       this.pickingTarget = true;
+      this.dim.hide(); // Enter must not commit a plain distance while picking
       this.viewport.clearPressPullGhost();
-      setPrompt("Click the surface to extrude UP TO (on the same body) · Esc to go back");
+      setPrompt("Click the face to extrude UP TO (any face, any body) · Esc to go back");
     }
   }
 
@@ -204,12 +222,12 @@ export class PressPullTool {
     this.previewId = this.store.nextId();
     this.viewport.clearHover();
     this.buildGizmo();
-    this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit());
+    this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ distance: 0 });
     setPrompt(
-      "Drag the arrow · type a value + Enter · T = extrude up to a surface · negative = cut · click to commit · Esc to cancel",
+      "Drag the arrow · type a value (negative = cut) · click ANOTHER face = extrude up to it · click empty space to commit · Esc to cancel",
     );
     this.raf = requestAnimationFrame(this.boundTick);
   }
@@ -232,9 +250,11 @@ export class PressPullTool {
       if (!this.grabbing && this.dim.isUserDriven("distance")) {
         const v = this.dim.getValue("distance");
         if (v != null) {
-          const signed = Math.sign(this.value || 1) * Math.abs(v);
-          if (Math.abs(signed - this.value) > 1e-6) {
-            this.value = signed;
+          // the field is the truth: typed sign wins (out = +, cut = −). The old
+          // code re-applied the drag's sign onto |v|, so a typed "-2" after an
+          // outward drag silently JOINED 2 instead of cutting.
+          if (Math.abs(v - this.value) > 1e-6) {
+            this.value = v;
             this.refreshPreview();
           }
         }
@@ -290,8 +310,18 @@ export class PressPullTool {
   private commit() {
     if (this.phase !== "drag") return this.cancel();
     const v = this.dim.getValue("distance");
-    if (v != null) this.value = Math.sign(this.value || 1) * Math.abs(v);
-    if (Math.abs(this.value) < 1e-3) return this.cancel(); // nothing set yet
+    if (v == null && this.dim.isUserDriven("distance")) {
+      // the field holds unparseable text — committing the stale drag value
+      // instead would be a silent wrong-number surprise
+      setPrompt("Can't read that number — fix the value, or Esc to cancel");
+      return;
+    }
+    if (v != null) this.value = v; // typed sign wins (out = +, cut = −)
+    if (Math.abs(this.value) < 1e-3) {
+      // keep the tool alive: silently cancelling here read as "nothing happened"
+      setPrompt("Nothing to commit — drag the arrow or type a distance first");
+      return;
+    }
     const feature = this.buildFeature();
     this.store.addFeature(feature);
     this.cleanup();

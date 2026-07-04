@@ -29,6 +29,7 @@ const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>
   patternRect: [["countX", "Count X", "count"], ["countY", "Count Y", "count"], ["spacingX", "Spacing X", "length"], ["spacingY", "Spacing Y", "length"]],
   patternCircular: [["count", "Count", "count"], ["angle", "Angle", "angle"]],
   simplifyMesh: [["tolerance", "Angle tol", "angle"]],
+  cleanUp: [["tolerance", "Tolerance", "length"]],
   scale: [["factor", "Factor", "count"]],
   move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
 };
