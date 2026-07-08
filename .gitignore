@@ -22,3 +22,26 @@ green-select.png
 
 # os
 .DS_Store
+
+# scratch CAD artifacts: dev test parts, not shipped
+src-tauri/*.sindri
+src-tauri/*.step
+src-tauri/*.stl
+src-tauri/*.3mf
+
+# research / experiment shelf: kept out of the repo
+proving-ground/
+
+# secrets / local env: never commit
+.env
+.env.*
+*.key
+*.pem
+*.p12
+secrets.*
+credentials.*
+
+# editor / IDE
+.vscode/
+.idea/
+*.swp

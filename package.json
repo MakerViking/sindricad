@@ -1,7 +1,8 @@
 {
   "name": "sindricad",
   "version": "0.1.0",
-  "description": "SindriCAD — a Fusion-style parametric CAD app driving build123d",
+  "description": "SindriCAD — a parametric CAD app driving build123d",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "vite",

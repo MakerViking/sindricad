@@ -1,10 +1,11 @@
 [package]
 name = "sindricad"
 version = "0.1.0"
-description = "SindriCAD — a Fusion-style parametric CAD app driving build123d"
-authors = ["you"]
+description = "SindriCAD — a parametric CAD app driving build123d"
+authors = ["MakerViking"]
 edition = "2021"
 rust-version = "1.77"
+license = "AGPL-3.0-only"
 
 [lib]
 name = "sindricad_lib"
@@ -21,6 +22,11 @@ libc = "0.2"
 hidapi = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Printer device layer (printer.rs): LAN Moonraker HTTP client. No TLS features —
+# printers are plain-HTTP on the local network; keeps the dep light.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart"] }
+# explicit for the status-monitor task's sleep; tauri already runs the tokio rt.
+tokio = { version = "1", features = ["time"] }
 # Geometry-in-Rust spike: link the SYSTEM OCCT (default-features=false disables the
 # from-source `builtin` build). Requires OCCT >= 7.8 installed (Arch: `opencascade`).
 # Published 0.2.0 (2023) can't system-link cleanly & its vendored OCCT 7.8 won't

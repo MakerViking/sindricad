@@ -28,7 +28,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Parametric CAD",
-    "longDescription": "SindriCAD — a Fusion-style parametric CAD app.",
+    "longDescription": "SindriCAD — a parametric CAD app for 3D printing.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
