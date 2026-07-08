@@ -1350,7 +1350,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                     # A disjoint body is a build123d ShapeList (no single `.wrapped`);
                     # Rot/Pos (Location.__mul__) only accept ONE Shape, so normalize to
                     # a Compound first — else "other must be a list of Locations".
-                    if sh is not None and getattr(sh, "wrapped", None) is None:
+                    if sh is not None and _wrapped_or_none(sh) is None:
                         sh = Compound(list(sh))
                     if rx or ry or rz:
                         sh = Rot(rx, ry, rz) * sh
@@ -1402,7 +1402,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     out_bodies = []
     for b in bodies:
         sh = b["shape"]
-        if sh is not None and getattr(sh, "wrapped", None) is None:
+        if sh is not None and _wrapped_or_none(sh) is None:
             sh = Compound(list(sh))
         if sh is not None:
             # final pass only — mid-timeline drops would shift downstream
@@ -1708,7 +1708,7 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n):
         manifest, fps, owners = [], [], {}
         for b in bodies:
             sh = b.get("shape")
-            if sh is None or getattr(sh, "wrapped", None) is None:
+            if sh is None or _wrapped_or_none(sh) is None:
                 manifest.append({"body_id": b["id"], "name": b["name"], "blob_key": None})
                 fps.append(None)
                 continue
@@ -1880,8 +1880,16 @@ def rebuild_cached(document, diagnostics=None):
 def _as_compound(s):
     """Normalize a possibly-disjoint shape (a build123d ShapeList, e.g. a body split
     into pieces, or an extrude of several disjoint region faces) to a single
-    Compound so .bounding_box() and boolean ops work. Single shapes pass through."""
-    return s if getattr(s, "wrapped", None) is not None else Compound(list(s))
+    Compound so .bounding_box() and boolean ops work. Single shapes pass through.
+
+    A ShapeList is a `list` subclass, so we wrap by TYPE rather than by probing
+    `.wrapped`: build123d >=0.11 asserts on `.wrapped` for an EMPTY single shape (an
+    empty boolean result), which must pass through untouched, not be re-wrapped."""
+    if _wrapped_or_none(s) is not None:
+        return s  # a real, non-empty single shape
+    if isinstance(s, (list, tuple)):
+        return Compound(list(s))  # a ShapeList of disjoint shapes
+    return s  # an empty single shape (0.11 asserts on .wrapped) — pass through
 
 
 # --- face provenance: which feature created/last-modified each face --------
@@ -1899,7 +1907,7 @@ def _face_fp(face):
     stably at ~0.3 µs, while the GProp area/centre evaluation behind .area and
     .center() was 23% of a cold rebuild (70k calls). Non-identity locations are
     computed uncached — correctness over coverage."""
-    w = getattr(face, "wrapped", None)
+    w = _wrapped_or_none(face)
     key = None
     if w is not None:
         try:
@@ -1995,7 +2003,7 @@ def _face_width(f):
     small for a corner patch, large for a real base face). Same TShape memo as
     _face_fp (width is location-invariant, so identity-location gating isn't even
     needed — but reuse the same safe pattern)."""
-    w = getattr(f, "wrapped", None)
+    w = _wrapped_or_none(f)
     key = None
     if w is not None:
         try:
@@ -2682,12 +2690,30 @@ def _bbox_overlap(a, b, tol=1e-6):
     )
 
 
-def _try_vol(shape):
-    """Best-effort |volume| of a shape; None when OCCT can't measure it (a
-    degenerate/empty result). Used to detect no-op booleans without ever failing
-    the build on a shape we simply can't measure."""
+def _wrapped_or_none(sh):
+    """`sh.wrapped` (the single TopoDS shape) or None, tolerating two cases: a
+    ShapeList has no single wrapped shape, and build123d >=0.11 makes `.wrapped` a
+    property that ASSERTS on an empty shape (`_wrapped is None`) where 0.10 left the
+    attribute simply absent. Both mean 'no usable solid here'."""
     try:
-        return abs(_as_compound(shape).volume)
+        return sh.wrapped
+    except (AttributeError, AssertionError):
+        return None
+
+
+def _try_vol(shape):
+    """Best-effort |volume| of a shape. Returns 0.0 for a genuinely EMPTY shape (so
+    the no-op boolean guards fire on it), and None only when OCCT truly can't measure
+    a non-empty shape. build123d >=0.11 asserts on empty shapes instead of reporting
+    zero, so we detect emptiness via `_wrapped_or_none` first."""
+    try:
+        s = _as_compound(shape)
+    except Exception:
+        return None
+    if _wrapped_or_none(s) is None:
+        return 0.0  # empty shape -> zero volume
+    try:
+        return abs(s.volume)
     except Exception:
         return None
 
@@ -3450,7 +3476,7 @@ def _build_sketch(f, val, datums=None):
             sk = sk + fc
         # Disjoint loops (e.g. a honeycomb of many hexagons) make `sk` a ShapeList,
         # which `plane * sk` rejects — normalize to one Compound first.
-        if getattr(sk, "wrapped", None) is None:
+        if _wrapped_or_none(sk) is None:
             sk = Compound(list(sk))
         sk = plane * sk  # locate the 2D sketch onto its plane
         if not located_faces:  # fall back to per-loop faces (degenerate arrangement)
@@ -3465,7 +3491,7 @@ def _build_sketch(f, val, datums=None):
         sk = located_faces[0]
         for fc in located_faces[1:]:
             sk = sk + fc
-        if getattr(sk, "wrapped", None) is None:
+        if _wrapped_or_none(sk) is None:
             sk = Compound(list(sk))
     else:
         return {"sketch": None, "faces": [], "wire": path_wire}
