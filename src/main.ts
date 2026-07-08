@@ -6,19 +6,21 @@ import { TauriGeometry } from "./geometry/tauriClient";
 import { DocumentStore } from "./document/store";
 import { EXAMPLE_BRACKET } from "./document/example";
 import { Timeline } from "./ui/timeline";
-import { BrowserTree } from "./ui/browserTree";
-import { Inspector } from "./ui/inspector";
+import { BrowserTree, bodyColorMenuItems } from "./ui/browserTree";
+import { Inspector, isInspectorEditable } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
 import { CommandPalette } from "./ui/commandPalette";
+import { allCommands } from "./ui/commands";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
-import { toggleShortcutHUD } from "./input/shortcuts";
+import { toggleShortcutHUD, keyHint } from "./input/shortcuts";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
-import { saveDocument, saveDocumentAs, openDocument, exportModel, importModel } from "./io/files";
+import { saveDocument, saveDocumentAs, openDocument, exportModel, exportPrintProject, importModel } from "./io/files";
+import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { installAutosave, checkRecovery } from "./io/recovery";
 import { Menubar } from "./ui/menu";
-import { contextMenu } from "./ui/menu";
+import { contextMenu, dismissContextMenu, type CtxItem } from "./ui/menu";
 import { choose } from "./ui/choice";
 import { toast } from "./ui/toast";
 import { FEATURE_META } from "./ui/featureMeta";
@@ -37,6 +39,7 @@ import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, toDisplay, round, type Unit } from "./ui/units";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "./types";
+import type { EdgeHit, FaceHit } from "./viewport/picking";
 
 // --- core singletons ---
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -156,6 +159,10 @@ new Menubar(document.getElementById("menubar")!, [
       { label: "Save As…", shortcut: "Ctrl+Shift+S", onClick: () => void saveDocumentAs(store) },
       { separator: true, label: "" },
       { label: "Export…", shortcut: "Ctrl+E", onClick: () => void exportModel(store, geometry) },
+      { label: "Export for Print (3MF)…", onClick: () => void exportPrintProject(store, geometry) },
+      { separator: true, label: "" },
+      { label: "Open in OrcaSlicer…", onClick: () => void openInOrca(store, geometry) },
+      { label: "Send to Printer…", onClick: () => void sendToPrinter(store, geometry) },
     ],
   },
   {
@@ -260,51 +267,207 @@ function deleteSelectedFace(): boolean {
   return true;
 }
 
-// right-click a model face → context menu. Uses face raycasting (not the
-// edge-priority picker), so it reliably targets thin faces like an inner ledge.
-canvas.addEventListener("contextmenu", (e) => {
+// ---------------------------------------------------------------------------
+// Viewport right-click: context-aware menus — one provider per target (datum
+// plane / edge / face / whole body / empty space), all on the shared engine in
+// ui/menu.ts. The viewport owns the click-vs-pan gesture (right button is
+// camera pan) and fires onContextClick only for a genuine click; toolBusy
+// gates it — an active tool (or sketch mode, which has its own canvas menu)
+// owns the gesture.
+// ---------------------------------------------------------------------------
+viewport.shouldOpenContextMenu = () => !toolBusy();
+viewport.onContextClick = (x, y) => openCanvasMenu(x, y);
+
+function openCanvasMenu(x: number, y: number) {
   if (toolBusy()) return;
-  if (viewport.cubeHitsRegion(e.clientX, e.clientY)) return; // ViewCube owns its corner
-  // right-click a construction plane → cut all visible bodies by it
-  const datumId = viewport.pickDatumAt(e.clientX, e.clientY);
-  if (datumId) {
-    e.preventDefault();
-    contextMenu(e.clientX, e.clientY, [
-      { label: "Cut all bodies", onClick: () => void startCutByPlane(datumId) },
-    ]);
-    return;
+  // a construction plane wins where its quad is exposed (same order as click-select)
+  const datumId = viewport.pickDatumAt(x, y);
+  if (datumId) return openDatumMenu(x, y, datumId);
+  if (viewport.selecting === "bodies") {
+    // plain mesh raycast (no edge priority) — must agree with left-click select,
+    // else right-clicking on/near any edge of a body misses the body menu
+    const bodyId = viewport.bodyIdAt(x, y);
+    return bodyId ? openBodyMenu(x, y, bodyId) : openEmptyMenu(x, y);
   }
-  const face = viewport.pickFacePlane(e.clientX, e.clientY);
-  if (!face) return; // not over a face — leave the browser default
-  e.preventDefault();
-  const hit = viewport.pickEntity(e.clientX, e.clientY);
-  const faceId = hit?.kind === "face" ? hit.faceId : null;
-  contextMenu(e.clientX, e.clientY, [
-    { label: "Offset plane from face", onClick: () => offsetPlaneFromFace(face) },
-    { label: "Sketch on this face", onClick: () => { if (!toolBusy()) sketch.enter(face, store); } },
-    ...(faceId != null
+  const hit = viewport.pickEntity(x, y);
+  if (hit?.kind === "edge") return openEdgeMenu(x, y, hit);
+  if (hit?.kind === "face") return openFaceMenu(x, y, hit);
+  openEmptyMenu(x, y);
+}
+
+/** Wrap a menu item that starts a tool or mutates the DOCUMENT: the click runs
+ *  when the item is chosen, not when the menu opened, and a keyboard shortcut
+ *  may have started a tool in between. Refusals are reported, never silent.
+ *  Display-only items (hide/isolate/color/rename) stay unwrapped on purpose —
+ *  the browser tree's eye toggles are likewise always available, even mid-tool. */
+function unlessBusy(fn: () => void): () => void {
+  return () => {
+    if (toolBusy()) {
+      setStatus("Finish the active tool first (Esc cancels it)", "");
+      return;
+    }
+    fn();
+  };
+}
+
+// A context menu holds targets captured at open time (faceId, edge line, body
+// id) — a completed rebuild renumbers topology and replaces the mesh, and any
+// document change can invalidate the owning feature. Dismiss rather than let a
+// click act on stale targets ("Delete face" healing the WRONG face).
+store.onDocChange(() => dismissContextMenu());
+store.onBuild((s) => {
+  if (s.result && !s.building) dismissContextMenu();
+});
+
+/** A datum plane's world placement (source spec + offset along its normal) as a
+ *  PlaneDef — lets "Sketch on plane" / "Offset plane" work straight off the quad. */
+function datumPlaneDef(f: Extract<Feature, { type: "datumPlane" }>): PlaneDef {
+  const sp = new SketchPlane(f.plane);
+  const off = f.offset ?? 0;
+  return {
+    origin: [sp.origin.x + sp.n.x * off, sp.origin.y + sp.n.y * off, sp.origin.z + sp.n.z * off],
+    normal: [sp.n.x, sp.n.y, sp.n.z],
+    xdir: [sp.u.x, sp.u.y, sp.u.z],
+  };
+}
+
+function openDatumMenu(x: number, y: number, datumId: string) {
+  const f = store.document.features.find(
+    (ft): ft is Extract<Feature, { type: "datumPlane" }> => ft.id === datumId && ft.type === "datumPlane",
+  );
+  selectFeature(datumId); // same as clicking it — the menu acts on a visible selection
+  contextMenu(x, y, [
+    { label: "Cut all bodies", onClick: unlessBusy(() => void startCutByPlane(datumId)) },
+    { label: "Sketch on plane", disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store); }) },
+    { label: "Offset plane", disabled: !f, onClick: unlessBusy(() => { if (f) offsetPlaneFromFace(datumPlaneDef(f)); }) },
+    { separator: true, label: "" },
+    { label: "Hide plane", onClick: () => { store.setPlaneVisibility(datumId, false); syncDatumPlanes(); tree.refresh(); } },
+    { label: "Delete plane", danger: true, onClick: unlessBusy(() => { store.removeFeature(datumId); selectFeature(null); }) },
+  ]);
+}
+
+function openEdgeMenu(x: number, y: number, hit: EdgeHit) {
+  contextMenu(x, y, [
+    // routed through handleAction so "Repeat <command>" records them
+    { label: "Fillet", shortcut: keyHint("fillet"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.line); handleAction("fillet"); }) },
+    { label: "Chamfer", shortcut: keyHint("chamfer"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.line); handleAction("chamfer"); }) },
+    { separator: true, label: "" },
+    { label: "Measure from here", shortcut: keyHint("measure"), onClick: unlessBusy(() => { lastAction = "measure"; measure.startWith(hit); }) },
+  ]);
+}
+
+function openFaceMenu(x: number, y: number, hit: FaceHit) {
+  const plane = viewport.pickFacePlane(x, y); // null on curved faces
+  const bodyId = viewport.faceIdToBodyId(hit.faceId);
+  const ownerId = featureForFace(hit.faceId);
+  const owner = ownerId ? store.document.features.find((f) => f.id === ownerId) : undefined;
+  const ownerLabel = owner ? (FEATURE_META[owner.type as keyof typeof FEATURE_META]?.label ?? owner.type) : "";
+  const items: CtxItem[] = [
+    { label: "Press/Pull face", shortcut: keyHint("presspull"), onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); handleAction("presspull"); }) },
+    { label: "Sketch on this face", shortcut: keyHint("sketch"), disabled: !plane, onClick: unlessBusy(() => { if (plane) sketch.enter(plane, store); }) },
+    { label: "Measure from here", shortcut: keyHint("measure"), onClick: unlessBusy(() => { lastAction = "measure"; measure.startWith(hit); }) },
+    { separator: true, label: "" },
+    {
+      label: "Select coplanar faces",
+      onClick: unlessBusy(() => {
+        const n = viewport.selectCoplanarFaces(hit.faceId);
+        setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
+      }),
+    },
+    { label: "Offset plane from face", shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) offsetPlaneFromFace(plane); }) },
+    { separator: true, label: "" },
+    ...(owner
+      ? [{ label: `${isInspectorEditable(owner.type) ? "Edit" : "Select"} ${ownerLabel}`, onClick: unlessBusy(() => editFeature(owner.id)) }]
+      : []),
+    ...(bodyId
       ? [
-          {
-            label: "Delete face (heal)",
-            onClick: () => { viewport.selectOnlyFace(faceId); deleteSelectedFace(); },
-          },
-          {
-            label: "Select coplanar faces",
-            onClick: () => {
-              const n = viewport.selectCoplanarFaces(faceId);
-              setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
-            },
-          },
+          { label: "Hide body", onClick: () => hideBody(bodyId) },
+          { label: "Isolate body", onClick: () => isolateBody(bodyId) },
         ]
       : []),
+    { separator: true, label: "" },
+    { label: "Delete face (heal)", danger: true, onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); deleteSelectedFace(); }) },
+  ];
+  contextMenu(x, y, items);
+}
+
+function openBodyMenu(x: number, y: number, bodyId: string) {
+  if (!viewport.getSelectedBodies().includes(bodyId)) viewport.setSelectedBodies([bodyId]);
+  contextMenu(x, y, [
+    // routed through handleAction so "Repeat <command>" records them
+    { label: "Move", shortcut: keyHint("move"), onClick: unlessBusy(() => handleAction("move")) },
+    { label: "Combine with…", shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
+    { label: "Properties", onClick: unlessBusy(() => handleAction("properties")) },
+    { separator: true, label: "" },
+    { label: "Hide body", onClick: () => hideBody(bodyId) },
+    { label: "Isolate body", onClick: () => isolateBody(bodyId) },
+    { label: "Show all bodies", shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
+    { separator: true, label: "" },
+    { label: "Rename…", onClick: () => tree.beginRename(bodyId) },
+    { label: "Color", children: bodyColorMenuItems(store, bodyId) },
+    { separator: true, label: "" },
+    { label: "Remove body", danger: true, onClick: unlessBusy(() => store.removeBody(bodyId)) },
   ]);
-});
+}
+
+// "Repeat <last command>" (Onshape-style): the empty-space menu re-runs the last
+// real command. Navigation / view / file actions aren't commands you repeat, so
+// they don't overwrite it.
+const NON_REPEATABLE = new Set([
+  "new", "open", "save", "saveas", "export", "import",
+  "print-export", "print-orca", "print-send",
+  "undo", "redo", "compute-all", "shortcut-help", "finish", "palette",
+  "fit", "iso", "top", "front", "right", "persp",
+  "selmode", "selmode-faces", "selmode-bodies",
+  "hide-selected", "show-all-bodies",
+]);
+let lastAction: string | null = null;
+function actionLabel(id: string): string {
+  return allCommands().find((c) => c.id === id)?.label ?? id;
+}
+
+function openEmptyMenu(x: number, y: number) {
+  contextMenu(x, y, [
+    {
+      label: lastAction ? `Repeat ${actionLabel(lastAction)}` : "Repeat last command",
+      disabled: !lastAction,
+      onClick: () => { if (lastAction) handleAction(lastAction); },
+    },
+    { separator: true, label: "" },
+    { label: "Fit view", shortcut: keyHint("fit"), onClick: () => handleAction("fit") },
+    {
+      label: "Look",
+      children: [
+        { label: "Isometric", onClick: () => handleAction("iso") },
+        { label: "Top", onClick: () => handleAction("top") },
+        { label: "Front", onClick: () => handleAction("front") },
+        { label: "Right", onClick: () => handleAction("right") },
+      ],
+    },
+    { label: "Show all bodies", shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
+    { separator: true, label: "" },
+    { label: "Undo", shortcut: "Ctrl+Z", disabled: !store.canUndo, onClick: () => store.undo() },
+    { label: "Redo", shortcut: "Ctrl+Y", disabled: !store.canRedo, onClick: () => store.redo() },
+  ]);
+}
+
+function hideBody(id: string) {
+  store.setBodyVisibility(id, false);
+  tree.refresh();
+}
+
+/** Show only this body (Onshape "Isolate"): hide every other body — one batched
+ *  store update, ONE re-render. Undo is "Show all bodies" (Shift+H / the menus). */
+function isolateBody(id: string) {
+  store.setBodiesVisibility(new Map((store.buildState.result?.bodies ?? []).map((b) => [b.id, b.id === id])));
+  tree.refresh();
+}
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
   if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) sketch.enter(plane, store);
 };
 
-// --- sketch visibility (Fusion-style: a sketch consumed by a feature hides by
+// --- sketch visibility (MCAD-style: a sketch consumed by a feature hides by
 // default so the solid's edges stay clear; toggle from the browser tree). The
 // explicit overrides live in the store so they persist with the .sindri file. ---
 function isSketchConsumed(id: string): boolean {
@@ -327,7 +490,7 @@ tree.onToggleSketch = (id) => {
   tree.refresh();
 };
 
-// SOLID-mode direct selection of a visible sketch's profile AREAS (Fusion-style):
+// SOLID-mode direct selection of a visible sketch's profile AREAS (MCAD-style):
 // click a shown sketch's cell to (pre)select it, then Extrude (E) uses it. Only
 // fires when a sketch is visible (overlay.regions is empty otherwise), so normal
 // face/body picking is untouched the rest of the time.
@@ -354,7 +517,7 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// per-body show/hide (Fusion-style eye toggle); re-renders without a sidecar rebuild
+// per-body show/hide (MCAD-style eye toggle); re-renders without a sidecar rebuild
 tree.isBodyVisible = (id) => store.isBodyVisible(id);
 tree.onToggleBody = (id) => {
   store.setBodyVisibility(id, !store.isBodyVisible(id));
@@ -492,17 +655,8 @@ function syncDatumPlanes() {
     .filter((f): f is Extract<Feature, { type: "datumPlane" }> => f.type === "datumPlane")
     .filter((f) => store.isPlaneVisible(f.id)) // hidden planes: not drawn, not pickable
     .map((f) => {
-      const sp = new SketchPlane(f.plane);
-      const off = f.offset ?? 0;
-      return {
-        id: f.id,
-        origin: [
-          sp.origin.x + sp.n.x * off,
-          sp.origin.y + sp.n.y * off,
-          sp.origin.z + sp.n.z * off,
-        ] as [number, number, number],
-        normal: [sp.n.x, sp.n.y, sp.n.z] as [number, number, number],
-      };
+      const def = datumPlaneDef(f); // one formula for quad, sketch and offset targets
+      return { id: f.id, origin: def.origin, normal: def.normal };
     });
   viewport.setDatumPlanes(planes);
   viewport.highlightDatum(selectedFeature);
@@ -792,8 +946,10 @@ async function startCombine() {
     target = pre[0];
     tools = pre.slice(1);
   } else {
-    target = bodies[0].id;
-    if (bodies.length > 2) {
+    // ONE selected body (e.g. right-click → "Combine with…") is the kept target;
+    // with none, pick a target when ambiguous. Tools come from the checklist.
+    target = pre[0] ?? bodies[0].id;
+    if (!pre.length && bodies.length > 2) {
       const t = await chooseBody("Target body (kept)", bodies);
       if (!t) return;
       target = t;
@@ -1264,6 +1420,7 @@ const SKETCH_MODIFY: Record<string, SketchTool> = {
   symmetric: "symmetric",
 };
 function handleAction(action: string) {
+  if (!NON_REPEATABLE.has(action)) lastAction = action; // for "Repeat <command>"
   // sketch CREATE tools: switch tool while sketching, else start a sketch with it
   if (SKETCH_TOOLS.has(action)) {
     if (sketch.active) sketch.setTool(action as SketchTool);
@@ -1278,7 +1435,7 @@ function handleAction(action: string) {
   }
   if (action === "finish") return void sketch.finish(true);
   if (action === "palette") return void palette.setVisible(true);
-  // a 3D modeling command finishes the active sketch first (Fusion behavior)
+  // a 3D modeling command finishes the active sketch first (mainstream MCAD behavior)
   if (sketch.active) sketch.finish(true);
 
   switch (action) {
@@ -1323,6 +1480,15 @@ function handleAction(action: string) {
       break;
     case "export":
       void exportModel(store, geometry);
+      break;
+    case "print-export":
+      void exportPrintProject(store, geometry);
+      break;
+    case "print-orca":
+      void openInOrca(store, geometry);
+      break;
+    case "print-send":
+      void sendToPrinter(store, geometry);
       break;
     case "revolve":
       void startRevolve();
@@ -1469,13 +1635,13 @@ function handleAction(action: string) {
         setStatus("Hide: select bodies first (press 2 for body select)", "");
         break;
       }
-      for (const id of ids) store.setBodyVisibility(id, false);
+      store.setBodiesVisibility(new Map(ids.map((id) => [id, false])));
       break;
     }
     case "show-all-bodies":
-      for (const b of store.buildState.result?.bodies ?? []) {
-        if (!store.isBodyVisible(b.id)) store.setBodyVisibility(b.id, true);
-      }
+      store.setBodiesVisibility(
+        new Map((store.buildState.result?.bodies ?? []).map((b) => [b.id, true])),
+      );
       break;
     case "undo":
       store.undo();
@@ -1493,7 +1659,7 @@ function handleAction(action: string) {
   }
 }
 
-// --- keymap (Fusion defaults) ---
+// --- keymap (MCAD defaults) ---
 installKeymap(
   (a) => {
     // while sketching, the sketch tool owns its tool keys + Esc/Enter

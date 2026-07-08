@@ -1,5 +1,5 @@
 // Scene setup: renderer, lights, Z-up grid + axes, sketch planes.
-// CAD convention is Z-up (matches build123d/Fusion), so the ground grid lies
+// CAD convention is Z-up (matches build123d), so the ground grid lies
 // in the XY plane and cameras use up = +Z.
 
 import * as THREE from "three";

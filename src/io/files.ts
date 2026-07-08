@@ -48,7 +48,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
     const { open } = await import("@tauri-apps/plugin-dialog");
     const path = await open({
       multiple: false,
-      // Fusion-style: Open takes our document AND mesh/CAD files (imported as a
+      // MCAD-style: Open takes our document AND mesh/CAD files (imported as a
       // body), routed by extension below — so users can just "open" an STL.
       filters: [
         { name: "All supported", extensions: ["sindri", "json", "stl", "3mf", "step", "stp", "obj"] },
@@ -140,6 +140,75 @@ function extToFormat(path: string): ExportFormat {
   if (ext === "3mf") return "3mf";
   return "step";
 }
+
+// The slicer preset the exported project should land on — minimal keys Orca needs
+// to select the user's Snapmaker U1 machine on "open as project". Stage D.v2 (CLI)
+// overrides these with a fully-flattened config via `opts.settings`.
+const U1_PROJECT_SETTINGS: Record<string, unknown> = {
+  printer_model: "Snapmaker U1",
+  printer_variant: "0.4",
+  version: "2.4.0.0",
+};
+
+/** Export a colored multi-material 3MF PROJECT (Orca format): one object per body,
+ *  palette slot → toolhead, so the multi-color palette actually prints. With
+ *  `opts.path` it writes there silently (Stage D staging → open in Orca); without,
+ *  it prompts with a save dialog. Returns the written path, or null (cancelled /
+ *  error). Palette/bodyColors/bodyNames are threaded explicitly — they live in
+ *  store side-maps, never inside `document`. */
+export async function exportPrintProject(
+  store: DocumentStore,
+  geometry: GeometryBackend,
+  opts: { path?: string; settings?: Record<string, unknown> } = {},
+): Promise<string | null> {
+  if (!isTauri()) {
+    console.warn("print export needs the native app (a real filesystem path)");
+    return null;
+  }
+  if (!geometry.exportProject) {
+    await reportError("Colored 3MF export needs the Python sidecar backend (run without VITE_GEOM=rust).");
+    return null;
+  }
+  const bodies = store.buildState.result?.bodies ?? [];
+  if (!bodies.length) {
+    await reportError("Nothing to export yet — build a body first.");
+    return null;
+  }
+
+  let path = opts.path;
+  if (!path) {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const base = store.fileName.replace(/\.sindri$/i, "") || "part";
+    const picked = await save({
+      filters: [{ name: "3MF project", extensions: ["3mf"] }],
+      defaultPath: `${base}.3mf`,
+    });
+    if (!picked) return null;
+    path = picked;
+  }
+
+  const res = await geometry.exportProject(store.document, path, {
+    palette: store.colorPalette,
+    bodyColors: store.bodyColorsMap(),
+    bodyNames: store.bodyNamesMap(),
+    settings: { ...U1_PROJECT_SETTINGS, ...(opts.settings ?? {}) },
+  });
+  if (!res.ok) {
+    await reportError(`Print export failed: ${res.message ?? "unknown error"}`);
+    return null;
+  }
+  // Only surface a modal when there are warnings (features that didn't build) —
+  // the silent-staging path (Stage D) shouldn't pop a dialog on the happy path.
+  if (res.warnings?.length) {
+    const lines = res.warnings.map(
+      (w) => `⚠ ${w.feature_id ?? "feature"} failed — its result is NOT in the export: ${w.message}`,
+    );
+    const { listModal } = await import("../ui/choice");
+    await listModal("Exported project — with warnings", [res.path ?? path, ...lines]);
+  }
+  return res.path ?? path;
+}
+
 
 /** Import an external mesh / B-rep file (STL / 3MF / STEP / OBJ) as a new body.
  *  The sidecar reads the file by path and returns an embeddable BREP payload, so

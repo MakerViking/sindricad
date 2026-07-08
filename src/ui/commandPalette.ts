@@ -1,5 +1,5 @@
 // Cmd/Ctrl-K command palette: fuzzy-search every command and run it. The
-// discoverability safety net (Fusion's "S" key equivalent) — so nothing is lost
+// discoverability safety net (mainstream MCAD's "S" key equivalent) — so nothing is lost
 // when the ribbon collapses tools into overflow, and shortcut-less / right-click-
 // only commands become findable by name.
 

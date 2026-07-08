@@ -1,4 +1,4 @@
-// Interactive Fillet / Chamfer (Fusion-style): pick a solid edge, then grab a
+// Interactive Fillet / Chamfer (MCAD-style): pick a solid edge, then grab a
 // small arrow handle on that edge and drag it to set the radius (fillet) or
 // setback (chamfer) — with a LIVE preview. Unlike Extrude, a fillet/chamfer
 // can't be faked client-side (a real rounded/beveled edge needs build123d/OCCT),

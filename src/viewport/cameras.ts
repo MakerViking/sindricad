@@ -1,5 +1,5 @@
 // Cameras + navigation. Perspective and Orthographic kept in parallel; toggle
-// preserves apparent zoom. camera-controls (yomotsu) with a Fusion-style mouse
+// preserves apparent zoom. camera-controls (yomotsu) with a MCAD-style mouse
 // map: middle = orbit, right = pan, wheel = zoom; Shift+middle = pan.
 
 import * as THREE from "three";
@@ -24,7 +24,7 @@ export interface CameraRig {
    *  projections via absolute dolly/zoom, so it's immune to the wheel-action
    *  ambiguity that left perspective unable to zoom in WebKitGTK. When `pivot`
    *  (a world point, usually under the cursor) is given, zooms TOWARD it
-   *  (Fusion-style dolly-to-cursor) instead of toward the orbit target. */
+   *  (MCAD-style dolly-to-cursor) instead of toward the orbit target. */
   zoomBy(factor: number, pivot?: THREE.Vector3): void;
   /** Half the visible view height at the orbit target, in world units — the
    *  natural scale for making input steps (SpaceMouse pan) zoom-proportional
@@ -94,7 +94,7 @@ export function createCameraRig(
   // ViewCube, standard views, and orbit all behave in CAD (Z-up) space.
   controls.updateCameraUp();
 
-  // Fusion mouse map. Wheel is handled explicitly by the viewport (rig.zoomBy)
+  // mainstream MCAD mouse map. Wheel is handled explicitly by the viewport (rig.zoomBy)
   // rather than camera-controls' built-in action: its perspective DOLLY wheel was
   // unreliable in the WebKitGTK webview, and an absolute dolly/zoom is robust.
   const A = CameraControls.ACTION;
@@ -192,7 +192,7 @@ export function createCameraRig(
         }
         controls.zoomTo(newZoom, false);
       } else if (pivot) {
-        // Dolly TOWARD THE CURSOR (Fusion-style): scale the camera AND target about
+        // Dolly TOWARD THE CURSOR (MCAD-style): scale the camera AND target about
         // the cursor point by f. What's under the cursor stays put, and the camera
         // never flies through the near wall toward the model centre. Clamp the final
         // distance to MIN_PERSP_DIST so it can't cross the near plane.

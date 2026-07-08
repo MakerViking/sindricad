@@ -83,7 +83,7 @@ export type SketchConstraint =
 // and expanded to derived entities at build/render time, so it stays editable
 // (associative — change the count/spacing later). `sources` references entity ids.
 // Derived entities get ids "<pattern.id>#<n>": render/build-only, so constraints
-// and dimensions never target them (you dimension the source, like Fusion).
+// and dimensions never target them (you dimension the source, like mainstream MCAD).
 export type SketchPattern =
   // replicate the `sources` entities on a grid (skips the original instance)
   | { id: string; type: "patternRect"; sources: string[]; countX: Num; countY: Num; spacingX: Num; spacingY: Num }
@@ -120,7 +120,7 @@ export type Feature =
       // face, with holes, and unions them). `region` is the legacy single-area form.
       regions?: [number, number, number][];
       region?: [number, number, number];
-      // Boolean participants are decided at CREATION, Fusion-style: the bodies
+      // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display
       // and can never rewrite geometry history. Absent = legacy feature: the
@@ -196,7 +196,7 @@ export type Feature =
   // downstream booleans re-manufacture debris; best-effort in the sidecar (a
   // body it can't confidently clean passes through unchanged).
   | { id: string; type: "cleanUp"; body?: string; tolerance?: Num }
-  // Remove bodies by id (Fusion "Remove"). Runs at its point in the timeline and
+  // Remove bodies by id (mainstream MCAD "Remove"). Runs at its point in the timeline and
   // drops the listed bodies from the model — the way to delete a body from the
   // browser. Body ids are positional, so this is appended at the end.
   | { id: string; type: "removeBody"; bodies: string[] };
@@ -237,8 +237,9 @@ export interface CadDocument {
   /** explicit per-body display-name overrides (body id → name). Body ids are
    *  positional, so a rename re-attaches if an upstream feature is reordered. */
   bodyNames?: Record<string, string>;
-  /** filament palette (≤4 slots for the U1 toolchanger); slot index → name+hex. */
-  palette?: { name: string; color: string }[];
+  /** filament palette (≤4 slots for the U1 toolchanger); slot index → name+hex,
+   *  plus an optional material type (e.g. "PLA") when synced from the printer. */
+  palette?: { name: string; color: string; material?: string }[];
   /** per-body palette-slot assignment (body id → slot index into `palette`). */
   bodyColors?: Record<string, number>;
 }

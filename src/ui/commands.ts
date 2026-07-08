@@ -5,7 +5,7 @@
 // can never advertise a key the keymap doesn't actually bind (it used to claim
 // Fit was on "F" while F ran Fillet).
 
-import { MODEL, SKETCH, type Group } from "./ribbon";
+import { MODEL, SKETCH, leavesOf, type Group } from "./ribbon";
 import { keyHint } from "../input/shortcuts";
 
 export interface Command {
@@ -45,14 +45,18 @@ function fromGroups(groups: Group[], context: "model" | "sketch"): Command[] {
   const out: Command[] = [];
   for (const g of groups) {
     for (const it of g.items) {
-      if (it.action === "palette" || it.kind === "toggle") continue; // not palette commands
-      out.push({
-        id: it.action,
-        label: it.label,
-        group: g.label,
-        context,
-        key: keyHint(it.action) ?? it.key,
-      });
+      // a split button's tools live in `children` — flatten via leavesOf or
+      // the palette loses every tool folded into a dropdown
+      for (const leaf of leavesOf(it)) {
+        if (leaf.action === "palette" || leaf.kind === "toggle") continue; // not palette commands
+        out.push({
+          id: leaf.action,
+          label: leaf.label,
+          group: g.label,
+          context,
+          key: keyHint(leaf.action) ?? leaf.key,
+        });
+      }
     }
   }
   return out;

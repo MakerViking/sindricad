@@ -1,19 +1,39 @@
-// Left browser, Fusion-style: object-oriented, collapsible folders rather than
+// Left browser, MCAD-style: object-oriented, collapsible folders rather than
 // a flat feature list. Origin (the three base planes — click to start a sketch
 // on one), Sketches (all sketch features grouped together), and Bodies (shown
 // when the document produces a solid). The chronological operations
-// (extrude/fillet/...) live in the bottom Timeline, as in Fusion.
+// (extrude/fillet/...) live in the bottom Timeline, as in mainstream MCAD.
 
 import type { DocumentStore } from "../document/store";
 import type { Plane3 } from "../types";
-import { contextMenu } from "./menu";
+import { contextMenu, type CtxItem } from "./menu";
 import { esc } from "./escape";
+
+/** Palette → menu items for assigning a body's color slot. Shared by the
+ *  browser-tree row menu and the viewport's right-click body menu so the two
+ *  surfaces can't drift (swatch chips, current slot disabled). */
+export function bodyColorMenuItems(store: DocumentStore, bodyId: string): CtxItem[] {
+  const slot = store.bodyColorSlot(bodyId);
+  return [
+    ...store.colorPalette.map((s, i) => ({
+      label: s.name,
+      swatch: s.color,
+      disabled: slot === i,
+      onClick: () => store.setBodyColorSlot(bodyId, i),
+    })),
+    { label: "None", disabled: slot == null, onClick: () => store.setBodyColorSlot(bodyId, null) },
+  ];
+}
 
 export class BrowserTree {
   private el: HTMLElement;
   private selectedId: string | null = null;
   private collapsed = new Set<string>(); // folder names that are collapsed
+  private printerOnline: boolean | null = null; // last printer-sync outcome (null = unknown → grey dot)
   private lastSig = ""; // skip redundant rebuilds (doc + build both fire)
+  // per-render map of row id → start-inline-rename, for programmatic rename
+  // (right-click a body in the viewport → Rename…). Rebuilt on every real render.
+  private renameHooks = new Map<string, () => void>();
 
   onSelect: ((id: string) => void) | null = null;
   onEditSketch: ((id: string) => void) | null = null;
@@ -55,6 +75,16 @@ export class BrowserTree {
     this.render();
   }
 
+  /** Begin the inline rename of a row by id (right-click a body → Rename…).
+   *  Expands the Bodies folder first so the row exists on screen. */
+  beginRename(id: string) {
+    if (this.collapsed.has("Bodies")) {
+      this.collapsed.delete("Bodies");
+      this.render();
+    }
+    this.renameHooks.get(id)?.();
+  }
+
   private toggle(folder: string) {
     if (this.collapsed.has(folder)) this.collapsed.delete(folder);
     else this.collapsed.add(folder);
@@ -89,10 +119,11 @@ export class BrowserTree {
     const bLabels = bodies
       .map((b) => `${b.id}=${bodyLabel(b)}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}${this.isBodySelected?.(b.id) ? ":s" : ""}#${this.store.bodyColorSlot(b.id) ?? ""}`)
       .join(",");
-    const palSig = this.store.colorPalette.map((s) => `${s.name}:${s.color}`).join(",");
-    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}`;
+    const palSig = this.store.colorPalette.map((s) => `${s.name}:${s.color}:${s.material ?? ""}`).join(",");
+    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}|${this.printerOnline}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
+    this.renameHooks.clear(); // rebuilt below with the fresh rows
 
     this.el.innerHTML = `<div class="panel-title">Browser</div>`;
 
@@ -137,6 +168,7 @@ export class BrowserTree {
         const slot = this.store.bodyColorSlot(b.id);
         const pal = this.store.colorPalette;
         return {
+          id: b.id,
           label: bodyLabel(b),
           icon: "◆",
           swatch: slot != null && pal[slot] ? pal[slot].color : undefined,
@@ -144,10 +176,7 @@ export class BrowserTree {
           visible: this.isBodyVisible?.(b.id) ?? true,
           onClick: (e: MouseEvent) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
           onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
-          extraMenu: [
-            ...pal.map((s, i) => ({ label: `Color: ${s.name}`, onClick: () => this.store.setBodyColorSlot(b.id, i) })),
-            { label: "Color: none", onClick: () => this.store.setBodyColorSlot(b.id, null) },
-          ],
+          extraMenu: [{ label: "Color", children: bodyColorMenuItems(this.store, b.id) }],
           rename: this.onRenameBody ? (name: string) => this.onRenameBody!(b.id, name) : undefined,
           onDelete: this.onDeleteBody ? () => this.onDeleteBody!(b.id) : undefined,
           title: "Click to select (Ctrl+click adds) · double-click to rename · right-click for Color / Rename / Delete · eye to show/hide",
@@ -177,23 +206,39 @@ export class BrowserTree {
 
   /** The filament palette: editable color slots (≤4 → the U1's toolheads). Click a
    *  swatch to recolor a slot; double-click its name to rename. Bodies are assigned
-   *  to a slot, so editing one recolors everything using it. */
+   *  to a slot, so editing one recolors everything using it. The header carries a
+   *  connection dot + "sync from printer" button (Stage C). */
   private renderPalette() {
     const pal = this.store.colorPalette;
     const collapsed = this.collapsed.has("Palette");
     const head = document.createElement("div");
     head.className = "tree-folder";
-    head.innerHTML = `<span class="tree-caret">${collapsed ? "▸" : "▾"}</span><span class="feature-icon">◳</span><span>Palette</span><span style="flex:1"></span><span class="tree-count">${pal.length}</span>`;
-    head.addEventListener("click", () => this.toggle("Palette"));
+    const dotColor = this.printerOnline == null ? "#888" : this.printerOnline ? "#3ba55d" : "#d23b30";
+    head.innerHTML =
+      `<span class="tree-caret">${collapsed ? "▸" : "▾"}</span><span class="feature-icon">◳</span><span>Palette</span>` +
+      `<span style="flex:1"></span>` +
+      `<span class="pal-dot" title="Printer connection" style="width:8px;height:8px;border-radius:50%;background:${dotColor};display:inline-block;margin-right:6px"></span>` +
+      `<button class="pal-sync" title="Sync filaments from printer" style="background:none;border:none;color:inherit;cursor:pointer;font-size:13px;padding:0 4px;margin-right:6px">⇅</button>` +
+      `<span class="tree-count">${pal.length}</span>`;
+    head.addEventListener("click", (e) => {
+      // the sync button lives in the header but must not also toggle the folder
+      if ((e.target as HTMLElement).closest(".pal-sync")) return;
+      this.toggle("Palette");
+    });
+    head.querySelector(".pal-sync")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void this.syncFilamentsFromPrinter();
+    });
     this.el.appendChild(head);
     if (collapsed) return;
     pal.forEach((slot, i) => {
       const row = document.createElement("div");
       row.className = "feature-row tree-child";
-      row.title = `Filament slot ${i + 1} → toolhead ${i + 1}`;
+      row.title = `Filament slot ${i + 1} → toolhead ${i + 1}${slot.material ? ` (${slot.material})` : ""}`;
       row.innerHTML =
         `<input type="color" value="${esc(slot.color)}" class="pal-swatch" style="width:18px;height:18px;border:none;background:none;padding:0;cursor:pointer;vertical-align:middle">` +
-        `<span class="tree-label" style="margin-left:7px">${esc(slot.name)}</span>`;
+        `<span class="tree-label" style="margin-left:7px">${esc(slot.name)}</span>` +
+        (slot.material ? `<span class="pal-material" style="margin-left:6px;opacity:0.55;font-size:11px">${esc(slot.material)}</span>` : "");
       const input = row.querySelector(".pal-swatch") as HTMLInputElement;
       input.addEventListener("change", () => this.store.setPaletteSlot(i, { color: input.value }));
       const label = row.querySelector(".tree-label") as HTMLElement;
@@ -204,10 +249,66 @@ export class BrowserTree {
     });
   }
 
+  /** Pull the printer's loaded filaments into the palette, 1:1 by toolhead index.
+   *  Read-only sync (printer → palette); the printer is the source of truth for
+   *  what's physically loaded. Confirms before overwriting a customized palette. */
+  private async syncFilamentsFromPrinter() {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    const { activePrinterId, printerFilaments, asPrinterError } = await import("../print/printerClient");
+    const { toast } = await import("./toast");
+    let filaments;
+    try {
+      filaments = await printerFilaments(activePrinterId());
+    } catch (e) {
+      this.printerOnline = false;
+      this.render();
+      const pe = asPrinterError(e);
+      toast(pe ? `Can't reach the printer: ${pe.message}` : `Printer error: ${String(e)}`, { kind: "error" });
+      return;
+    }
+    this.printerOnline = true;
+
+    // one proposed slot per loaded toolhead; empty toolheads leave the slot alone.
+    const proposed = filaments.map((f) =>
+      f.present
+        ? { name: `${f.vendor} ${f.material}`.trim() || `Toolhead ${f.index + 1}`, color: f.color, material: f.material }
+        : undefined,
+    );
+    if (!proposed.some(Boolean)) {
+      this.render();
+      toast("No filament loaded on the printer.", { kind: "info" });
+      return;
+    }
+
+    if (!this.store.paletteIsDefault()) {
+      const { choose } = await import("./choice");
+      const cur = this.store.colorPalette;
+      const diff = proposed
+        .map((p, i) => (p && (cur[i]?.name !== p.name || cur[i]?.color !== p.color) ? `Slot ${i + 1}: ${cur[i]?.name ?? "—"} → ${p.name}` : null))
+        .filter(Boolean) as string[];
+      const go = await choose<"apply" | "cancel">(
+        diff.length ? `Overwrite palette from printer?\n${diff.join("\n")}` : "Sync palette from printer?",
+        [
+          { value: "apply", label: "Overwrite", hint: `${diff.length} slot${diff.length === 1 ? "" : "s"}` },
+          { value: "cancel", label: "Cancel" },
+        ],
+      );
+      if (go !== "apply") {
+        this.render();
+        return;
+      }
+    }
+
+    this.store.applyFilamentSync(proposed);
+    this.render();
+    toast("Palette synced from printer.", { kind: "info" });
+  }
+
   private folder(
     name: string,
     icon: string,
     items: {
+      id?: string; // stable id — registers a programmatic-rename hook (beginRename)
       label: string;
       icon: string;
       swatch?: string; // a small colored chip before the label (assigned body color)
@@ -221,7 +322,7 @@ export class BrowserTree {
       onEdit?: () => void; // "Edit" action (sketches) — also double-click
       rename?: (name: string) => void; // "Rename" — also double-click when there's no onEdit
       onDelete?: () => void; // "Delete" action
-      extraMenu?: { label: string; onClick: () => void }[]; // prepended menu items (e.g. Cut all bodies)
+      extraMenu?: CtxItem[]; // prepended menu items (e.g. Cut all bodies, Color ▸)
     }[],
   ) {
     const collapsed = this.collapsed.has(name);
@@ -262,9 +363,10 @@ export class BrowserTree {
       const startRename = it.rename
         ? () => this.startInlineRename(labelEl, it.label, it.rename!)
         : null;
+      if (it.id && startRename) this.renameHooks.set(it.id, startRename);
 
       // structured right-click menu: [extra…] · Edit · Rename · Delete
-      const menu: { label: string; onClick: () => void }[] = [];
+      const menu: CtxItem[] = [];
       if (it.extraMenu) menu.push(...it.extraMenu);
       if (it.onEdit) menu.push({ label: "Edit", onClick: it.onEdit });
       if (startRename) menu.push({ label: "Rename", onClick: startRename });

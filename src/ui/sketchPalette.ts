@@ -1,4 +1,4 @@
-// The Sketch Palette (Fusion's right-docked panel shown while sketching).
+// The Sketch Palette (mainstream MCAD's right-docked panel shown while sketching).
 // Toggles control drawing/display options; "Look At" re-squares the camera.
 
 export type PaletteToggle = "lockView" | "construction" | "grid" | "snap" | "profile" | "dimensions";

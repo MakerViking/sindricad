@@ -1,4 +1,4 @@
-// Fusion-style keymap, driven by the single shortcut table in shortcuts.ts —
+// MCAD-style keymap, driven by the single shortcut table in shortcuts.ts —
 // the app decides what each action does (main.ts dispatch). Ignores keystrokes
 // while typing in inputs. Ctrl/Cmd combos handle undo/redo (file shortcuts are
 // handled centrally in main.ts).

@@ -56,6 +56,19 @@ export class MeasureTool {
     setPrompt("Measure: click a face or edge · click a second to measure between them · Esc to exit");
   }
 
+  /** Start measuring with the first probe already picked (right-click →
+   *  "Measure from here"): same as start() + one click on `hit`. */
+  startWith(hit: Hit, onDone?: () => void) {
+    if (this.active) return;
+    this.start(onDone);
+    const probe = this.toProbe(hit);
+    if (!probe) return;
+    this.probes.push(probe);
+    this.highlight();
+    this.update();
+    setPrompt("Measure: click a second face or edge for the distance · Esc to exit");
+  }
+
   private onMove(e: PointerEvent) {
     // live aiming feedback: light up exactly what a click would pick
     this.viewport.hoverEntity(this.viewport.pickEntity(e.clientX, e.clientY));

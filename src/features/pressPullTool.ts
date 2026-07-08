@@ -1,4 +1,4 @@
-// Interactive Press/Pull (Fusion-style): pick a solid face, then grab a small
+// Interactive Press/Pull (MCAD-style): pick a solid face, then grab a small
 // arrow handle on it and drag along the face normal to add material (boss / pull
 // out), cut material (pocket / push in), or resize a cylindrical face (hole/boss)
 // — with a LIVE preview. Same interaction as Fillet/Chamfer (EdgeFeatureTool): an
@@ -98,7 +98,7 @@ export class PressPullTool {
     }
     if (this.grabbing) {
       const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
-      // snap the drag to 0.1mm steps (Fusion-style); type a value for finer control
+      // snap the drag to 0.1mm steps (MCAD-style); type a value for finer control
       const raw = this.grabValue + (proj - this.grabProj);
       const stepped = snap(raw, this.viewport.snapStep(this.anchor));
       if (stepped === this.value) return; // same step — don't re-trigger an OCCT rebuild
@@ -175,7 +175,7 @@ export class PressPullTool {
     const moved =
       Math.abs(e.clientX - this.downPos.x) > 3 || Math.abs(e.clientY - this.downPos.y) > 3;
     if (this.downOnGizmo || moved) return;
-    // Clean click on ANOTHER face = extrude UP TO it (Fusion "to object" —
+    // Clean click on ANOTHER face = extrude UP TO it (mainstream MCAD "to object" —
     // no T needed: pick a face, then click the face to meet). Empty space or
     // one of the operation's own faces = commit as before.
     const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
@@ -316,7 +316,11 @@ export class PressPullTool {
       setPrompt("Can't read that number — fix the value, or Esc to cancel");
       return;
     }
-    if (v != null) this.value = v; // typed sign wins (out = +, cut = −)
+    // Typed sign wins (out = +, cut = −) — but ONLY when the user actually
+    // typed. While dragging, the field displays |value| (line ~106), so reading
+    // it back unguarded strips a dragged cut's sign and commits a JOIN — the
+    // mirror image of the typed-"-2"-after-outward-drag bug this line fixed.
+    if (v != null && this.dim.isUserDriven("distance")) this.value = v;
     if (Math.abs(this.value) < 1e-3) {
       // keep the tool alive: silently cancelling here read as "nothing happened"
       setPrompt("Nothing to commit — drag the arrow or type a distance first");

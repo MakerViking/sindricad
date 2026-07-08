@@ -1092,7 +1092,7 @@ fn clone_shape(shape: &Shape) -> Shape {
 /// derived PlaneDef planes ({origin, normal, xdir}). Primitives (rectangle,
 /// circle) plus free-form curves (line, arc, spline) are supported: free-form
 /// edges are assembled into closed wires -> faces, so an interactively-drawn
-/// polyline / arc / spline profile extrudes like in Fusion. Construction geometry
+/// polyline / arc / spline profile extrudes like in mainstream MCAD. Construction geometry
 /// is skipped. Returns the unioned profile face (whole-sketch extrude) plus each
 /// closed loop located onto the plane (region selection).
 fn build_sketch(f: &serde_json::Value, params: &std::collections::HashMap<String, f64>) -> BuiltSketch {

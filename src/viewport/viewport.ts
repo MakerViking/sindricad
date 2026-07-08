@@ -43,6 +43,12 @@ export class Viewport {
   onHit: ((hit: Hit | null, shiftKey: boolean) => void) | null = null;
   onSelectionChange: (() => void) | null = null; // fired when edge/face selection changes
   onPickDatum: ((id: string) => void) | null = null; // fired when a datum plane quad is clicked
+  // Right-click context menu: fires only on a genuine right-CLICK (press +
+  // release without movement — right-drag is camera pan). `shouldOpenContextMenu`
+  // is the app-level gate: when it returns false (a tool or sketch owns the
+  // gesture) the event is left completely alone, no preventDefault.
+  onContextClick: ((x: number, y: number) => void) | null = null;
+  shouldOpenContextMenu: (() => boolean) | null = null;
   // SOLID-mode selection of a visible sketch's profile areas (set by the app).
   // regionPickAt: click-select the region under the cursor (true if one was hit,
   // so face/body picking is skipped). regionHoverAt: hover-highlight it.
@@ -132,6 +138,50 @@ export class Viewport {
       }
       this.handleClick(e);
     });
+    // Right-click → onContextClick, but ONLY on a click (press + release
+    // without movement) — right-DRAG is camera pan (mouseButtons.right =
+    // TRUCK). WebKit fires `contextmenu` while the button is still down: the
+    // click then waits for the release; a platform that fires it after the
+    // release delivers immediately. Same shape as the left-click guard above.
+    let rightDown: { x: number; y: number } | null = null;
+    let rightDrag = false; // did this right-press move far enough to be a pan?
+    let menuPending = false; // contextmenu seen mid-press → deliver on release
+    c.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (e.button !== 2) return;
+        rightDown = { x: e.clientX, y: e.clientY };
+        rightDrag = false;
+        menuPending = false;
+      },
+      true,
+    );
+    c.addEventListener(
+      "pointermove",
+      (e) => {
+        if (rightDown && !rightDrag && Math.hypot(e.clientX - rightDown.x, e.clientY - rightDown.y) > 5) rightDrag = true;
+      },
+      true,
+    );
+    c.addEventListener(
+      "pointerup",
+      (e) => {
+        if (e.button !== 2 || !rightDown) return;
+        const at = rightDown;
+        rightDown = null;
+        if (menuPending && !rightDrag) this.onContextClick?.(at.x, at.y);
+        menuPending = false;
+      },
+      true,
+    );
+    c.addEventListener("contextmenu", (e) => {
+      if (!this.onContextClick) return;
+      if (!(this.shouldOpenContextMenu?.() ?? true)) return; // a tool/sketch owns the gesture
+      if (this.cubeHitsRegion(e.clientX, e.clientY)) return; // ViewCube owns its corner
+      e.preventDefault();
+      if (e.buttons & 2) menuPending = true; // fired on press → wait for the release
+      else if (!rightDrag) this.onContextClick(e.clientX, e.clientY); // fired on release
+    });
     // Explicit wheel zoom for BOTH projections (camera-controls' built-in wheel
     // DOLLY didn't zoom in perspective under WebKitGTK). deltaMode-normalized so
     // line/page-mode wheels (some webviews) still produce a sensible step.
@@ -142,7 +192,7 @@ export class Viewport {
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1; // lines/pages -> px
         const dy = Math.max(-240, Math.min(240, e.deltaY * unit));
         this.userMovedCamera = true;
-        // zoom toward what's under the cursor (Fusion-style), not the orbit centre
+        // zoom toward what's under the cursor (MCAD-style), not the orbit centre
         this.rig.zoomBy(Math.pow(1.0016, dy), this.cursorWorldPoint(e.clientX, e.clientY));
       },
       { passive: false },
@@ -197,8 +247,7 @@ export class Viewport {
 
     // --- Bodies mode: a click selects the WHOLE body under the cursor ---
     if (this.selectionMode === "bodies" && this.model && this.highlighter) {
-      const fh = this.rayFrom(e.clientX, e.clientY).intersectObject(this.model.mesh, false)[0];
-      const bodyId = fh ? this.faceIdToBodyId(this.model.faceIds[fh.faceIndex ?? 0] ?? 0) : null;
+      const bodyId = this.bodyIdAt(e.clientX, e.clientY);
       const add = e.ctrlKey || e.metaKey;
       if (bodyId) {
         if (add) this.highlighter.toggleSelectBody(bodyId);
@@ -227,7 +276,7 @@ export class Viewport {
       }
     }
     if (!this.model) return;
-    // Ctrl/Cmd-click adds to the selection; a plain click replaces it (Fusion).
+    // Ctrl/Cmd-click adds to the selection; a plain click replaces it (mainstream MCAD).
     const add = e.ctrlKey || e.metaKey;
     if (this.highlighter) {
       if (!add) this.highlighter.clearSelection();
@@ -260,6 +309,32 @@ export class Viewport {
       if (faceId >= b.faceStart && faceId < b.faceStart + b.faceCount) return b.id;
     }
     return null;
+  }
+
+  /** The body under the cursor via a plain mesh raycast (no edge priority) —
+   *  exactly how bodies-mode click-select resolves, so the right-click body
+   *  menu agrees with a left-click at the same pixel. */
+  bodyIdAt(clientX: number, clientY: number): string | null {
+    if (!this.model) return null;
+    const fh = this.rayFrom(clientX, clientY).intersectObject(this.model.mesh, false)[0];
+    return fh ? this.faceIdToBodyId(this.model.faceIds[fh.faceIndex ?? 0] ?? 0) : null;
+  }
+
+  private psRay = new THREE.Raycaster();
+  // a diagonal probe direction: never coplanar with the model's axis-aligned
+  // faces, so the parity count can't graze along a face and miscount.
+  private psDir = new THREE.Vector3(0.5773, 0.5772, 0.5774).normalize();
+  /** True when world point `p` is INSIDE a solid body — an even/odd parity ray
+   *  cast against the merged (closed, manifold) body mesh: an odd number of
+   *  crossings means the point is enclosed. False when there's no model. Used by
+   *  Extrude to tell whether pushing along a direction enters material (→ Cut) or
+   *  leaves it (→ Join). A heuristic: the sidecar boolean guard is the authority. */
+  pointInSolid(p: THREE.Vector3): boolean {
+    if (!this.model) return false;
+    this.psRay.set(p, this.psDir);
+    this.psRay.near = 0;
+    this.psRay.far = Infinity;
+    return this.psRay.intersectObject(this.model.mesh, false).length % 2 === 1;
   }
 
   // --- face-color analysis overlays (Inspect) ---------------------------------
@@ -980,7 +1055,7 @@ export class Viewport {
   }
 
   /** Light up ALL model edges as "selectable" while the fillet/chamfer edge
-   *  tool is active, so they're easy to see and target (Fusion-style): bright
+   *  tool is active, so they're easy to see and target (MCAD-style): bright
    *  color + thicker lines. */
   emphasizeEdges(on: boolean) {
     this.highlighter?.setEdgeBase(on ? EDGE_PICKABLE : EDGE_IDLE);
@@ -1151,6 +1226,14 @@ export class Viewport {
   selectOnlyFace(faceId: number) {
     this.highlighter?.clearSelection();
     this.highlighter?.toggleSelectFace(faceId);
+    this.onSelectionChange?.();
+  }
+
+  /** Select exactly the given edge line (clears any prior selection). Used by the
+   *  right-click Fillet/Chamfer menu — the edge tools consume the pre-selection. */
+  selectOnlyEdge(line: import("three/examples/jsm/lines/Line2.js").Line2) {
+    this.highlighter?.clearSelection();
+    this.highlighter?.toggleSelectEdge(line);
     this.onSelectionChange?.();
   }
 

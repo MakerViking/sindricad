@@ -1,5 +1,5 @@
 // Persistent, editable dimension annotations shown on committed sketch geometry
-// while in the sketch environment (Fusion-style). Each label is a DOM element
+// while in the sketch environment (MCAD-style). Each label is a DOM element
 // projected onto the geometry; click it to type a new value (in the current
 // display unit) and the entity updates. This is the "edit the length later"
 // half of the workflow — the live W/H boxes handle it during creation.

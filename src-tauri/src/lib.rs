@@ -4,7 +4,9 @@
 //! dialogs, and the sidecar lifecycle.
 
 mod geom;
+mod printer;
 mod sidecar;
+mod slicer;
 mod spacemouse;
 
 use sidecar::Sidecar;
@@ -121,8 +123,24 @@ pub fn run() {
             recovery_write,
             recovery_read,
             recovery_list,
-            recovery_clear
+            recovery_clear,
+            printer::printers_list,
+            printer::printers_upsert,
+            printer::printers_remove,
+            printer::printer_probe,
+            printer::printer_filaments,
+            printer::printer_status,
+            printer::printer_upload_and_print,
+            printer::printer_set_filament,
+            printer::printer_monitor_start,
+            printer::printer_monitor_stop,
+            slicer::settings_get,
+            slicer::settings_set,
+            slicer::print_staging_path,
+            slicer::slicer_open,
+            slicer::slicer_project_settings
         ])
+        .manage(printer::Monitors::default())
         .setup(|app| {
             match Sidecar::spawn() {
                 Ok(s) => {

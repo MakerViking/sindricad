@@ -1,4 +1,4 @@
-// On-canvas heads-up dimension input — the signature Fusion interaction.
+// On-canvas heads-up dimension input — the signature mainstream MCAD interaction.
 // A small floating cluster of <input>s positioned near the cursor. Fields that
 // are "tracking" update live from the cursor; typing makes a field hold your
 // value; Tab locks the field and moves to the next; Enter commits everything.

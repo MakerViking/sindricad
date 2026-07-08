@@ -127,10 +127,42 @@ def variant_colorgroup():
     _write_3mf(f"{OUT}/C_colorgroup.3mf", xml)
 
 
+# --- Variant D: Orca PROJECT format (per-object extruder assignments) ----------
+# Calls the PRODUCTION writer (project3mf.py) so the manual Orca check validates
+# real exporter output. Pass = Orca 2.4.0-alpha opens it AS A PROJECT (not plain
+# geometry), selects the Snapmaker U1 printer preset, and shows RedCube on
+# extruder 1 / BlueCube on extruder 2 with the palette colors as filaments.
+def variant_project():
+    from project3mf import sanitize_inputs, write_project_3mf
+
+    def flat(v, t):
+        return [c for p in v for c in p], [i for tri in t for i in tri]
+
+    pa, ia = flat(*_box(0, 0, 0))
+    pb, ib = flat(*_box(25, 0, 0))
+    bodies = [
+        {"id": "b1", "name": "RedCube", "positions": pa, "indices": ia},
+        {"id": "b2", "name": "BlueCube", "positions": pb, "indices": ib},
+    ]
+    palette, colors, names = sanitize_inputs(
+        [{"name": "Red", "color": "#E03030"}, {"name": "Blue", "color": "#3050E0"}],
+        {"b2": 1},
+        {},
+    )
+    settings = {"printer_model": "Snapmaker U1", "printer_variant": "0.4",
+                "version": "2.4.0.0"}
+    os.makedirs(OUT, exist_ok=True)
+    path = write_project_3mf(bodies, f"{OUT}/D_orca_project.3mf",
+                             palette, colors, names, settings)
+    print(f"  wrote {path}")
+
+
 if __name__ == "__main__":
     print("colored-3MF spike → " + OUT)
     variant_objects()
     variant_mmuseg()
     variant_colorgroup()
-    print("Open all three in Snapmaker Orca; report which show Red+Blue mapped to "
-          "separate toolheads/filaments.")
+    variant_project()
+    print("Open all four in OrcaSlicer; report which show Red+Blue mapped to "
+          "separate toolheads/filaments. D must open AS A PROJECT with the "
+          "Snapmaker U1 preset selected.")

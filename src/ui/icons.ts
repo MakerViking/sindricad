@@ -1,4 +1,4 @@
-// Minimal stroke icons (24×24, currentColor) for the Fusion-style ribbon.
+// Minimal stroke icons (24×24, currentColor) for the MCAD-style ribbon.
 // Each entry is the inner SVG markup; icon() wraps it.
 
 const PATHS: Record<string, string> = {
@@ -73,6 +73,11 @@ const PATHS: Record<string, string> = {
   check: `<path d="M4 12l5 5L20 6"/>`,
   palette: `<rect x="4" y="4" width="16" height="16" rx="2"/><line x1="4" y1="9" x2="20" y2="9"/>`,
   offsetPlane: `<path d="M3 8l8-4 10 4-8 4z"/><path d="M3 15l8-4 10 4-8 4z" stroke-dasharray="2 2"/>`,
+
+  // print pipeline
+  print: `<path d="M6 9V3h12v6"/><rect x="4" y="9" width="16" height="8" rx="1"/><rect x="7" y="14" width="10" height="6"/><circle cx="17" cy="12" r="0.9" fill="currentColor"/>`,
+  slicer: `<rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><path d="M11 14h5m0 0l-2-2m2 2l-2 2"/>`,
+  printerSend: `<path d="M6 8V3h9l3 3v2"/><rect x="4" y="8" width="16" height="7" rx="1"/><path d="M8 15h5v6H8z"/><path d="M15 19h6m0 0l-2-2m2 2l-2 2"/>`,
 
   // sketch constraints
   horizontal: `<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="9" x2="3" y2="15"/><line x1="21" y1="9" x2="21" y2="15"/>`,

@@ -22,6 +22,7 @@ import type { ResolvedEntity } from "./snap";
 import { detectRegions } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
+import { contextMenu, dismissContextMenu } from "../ui/menu";
 
 export type SketchTool =
   | "select"
@@ -62,7 +63,7 @@ export type SketchTool =
 
 // preset hole patterns: self-contained (click a center, no source selection)
 const PRESET_PATTERNS = new Set<SketchTool>(["hexHoles", "honeycomb", "boltCircle", "gridHoles"]);
-// patterns that replicate the current selection (Fusion-style)
+// patterns that replicate the current selection (MCAD-style)
 const ENTITY_PATTERNS = new Set<SketchTool>(["patternRect", "patternCircular"]);
 // every pattern tool (presets + entity patterns)
 const PATTERN_TOOLS = new Set<SketchTool>([...PRESET_PATTERNS, ...ENTITY_PATTERNS]);
@@ -109,7 +110,6 @@ export class SketchMode {
   private polygonSides = 6; // n for the polygon tool
   private filletFirst: number | null = null; // first line picked for a sketch fillet
   private selected = new Set<string>(); // selected entity ids (select tool)
-  private ctxMenu: HTMLDivElement | null = null; // right-click delete menu
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
   private pendingPattern: SketchPattern | null = null; // one being placed (live)
@@ -235,7 +235,7 @@ export class SketchMode {
     el.removeEventListener("pointerup", this.boundUp);
     el.removeEventListener("contextmenu", this.boundContext);
     window.removeEventListener("keydown", this.boundKey, true);
-    this.closeCtxMenu();
+    dismissContextMenu();
     this.selected.clear();
     this.dragFrom = null;
     this.dragSnapshot = null;
@@ -281,7 +281,7 @@ export class SketchMode {
     this.pendingDrag = null;
     this.dim.hide();
     this.overlay.setPreview([]);
-    this.closeCtxMenu();
+    dismissContextMenu();
     this.clickPts = [];
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
@@ -487,7 +487,7 @@ export class SketchMode {
     }
   }
 
-  // Fusion-style fit-point spline: click to drop points; click the last point
+  // MCAD-style fit-point spline: click to drop points; click the last point
   // again (or press Enter) to finish, Escape to cancel.
   private splineClick(p: THREE.Vector2) {
     const last = this.splinePts[this.splinePts.length - 1];
@@ -1107,7 +1107,7 @@ export class SketchMode {
   }
 
   /** If a freshly drawn line sits within a few degrees of horizontal/vertical,
-   *  snap it exactly and record the constraint (Fusion's auto-constrain). */
+   *  snap it exactly and record the constraint (mainstream MCAD's auto-constrain). */
   private inferLineConstraint(e: ResolvedEntity) {
     if (e.type !== "line") return;
     const ang = (Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180) / Math.PI;
@@ -1160,7 +1160,7 @@ export class SketchMode {
     this.overlay.setSnapScale(this.viewport.pixelWorldSize(hit.world) * 6);
   }
 
-  /** Fusion-style state color: over-constrained/conflict = red, fully
+  /** MCAD-style state color: over-constrained/conflict = red, fully
    * constrained (dof 0) = white ("fully defined"), under-constrained = blue.
    * dof < 0 means no solve has run yet (treat as under-constrained). */
   private activeColor(): number {
@@ -1232,7 +1232,7 @@ export class SketchMode {
     if (!this.selected.size) return;
     this.entities = this.entities.filter((en) => !this.selected.has(en.id));
     this.selected.clear();
-    this.closeCtxMenu();
+    dismissContextMenu(); // the Delete key can fire while the right-click menu is open
     this.afterModify();
   }
 
@@ -1248,39 +1248,10 @@ export class SketchMode {
     }
     if (!this.selected.size) return; // nothing to act on → let nav handle it
     e.preventDefault();
-    this.showCtxMenu(e.clientX, e.clientY);
-  }
-
-  private showCtxMenu(x: number, y: number) {
-    this.closeCtxMenu();
-    const menu = document.createElement("div");
-    menu.className = "context-menu";
-    menu.style.left = `${x}px`;
-    menu.style.top = `${y}px`;
     const n = this.selected.size;
-    const item = document.createElement("div");
-    item.className = "ctx-item";
-    item.textContent = n > 1 ? `Delete ${n} entities` : "Delete";
-    item.addEventListener("click", () => this.deleteSelected());
-    menu.appendChild(item);
-    document.body.appendChild(menu);
-    const r = menu.getBoundingClientRect();
-    if (r.bottom > innerHeight) menu.style.top = `${y - r.height}px`;
-    if (r.right > innerWidth) menu.style.left = `${x - r.width}px`;
-    this.ctxMenu = menu;
-    const dismiss = (ev: PointerEvent) => {
-      if (this.ctxMenu && !this.ctxMenu.contains(ev.target as Node)) this.closeCtxMenu();
-    };
-    (menu as unknown as { _dismiss: (ev: PointerEvent) => void })._dismiss = dismiss;
-    window.addEventListener("pointerdown", dismiss, true);
-  }
-
-  private closeCtxMenu() {
-    if (!this.ctxMenu) return;
-    const dismiss = (this.ctxMenu as unknown as { _dismiss?: (ev: PointerEvent) => void })._dismiss;
-    if (dismiss) window.removeEventListener("pointerdown", dismiss, true);
-    this.ctxMenu.remove();
-    this.ctxMenu = null;
+    contextMenu(e.clientX, e.clientY, [
+      { label: n > 1 ? `Delete ${n} entities` : "Delete", danger: true, onClick: () => this.deleteSelected() },
+    ]);
   }
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());

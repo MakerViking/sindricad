@@ -1,6 +1,6 @@
 // Snapping in 2D sketch space. Candidates (endpoints/midpoints/centers from
 // existing geometry) are compared to the cursor in SCREEN PIXELS so the snap
-// radius is zoom-independent, like Fusion. Grid snapping is the low-priority
+// radius is zoom-independent, like mainstream MCAD. Grid snapping is the low-priority
 // fallback.
 
 import * as THREE from "three";

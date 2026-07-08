@@ -304,7 +304,7 @@ def _rebuild_delta_job(payload, tolerance, known=None):
 
 
 def _compute_all_job(payload, tolerance):
-    """Fusion's 'Compute All' escape hatch: bypass and REBUILD every cache layer —
+    """mainstream MCAD's 'Compute All' escape hatch: bypass and REBUILD every cache layer —
     RAM prefix snapshots, mesh cache, and this document's disk checkpoints and
     blobs (purged so a hypothetically poisoned blob can't survive put_blob's
     key-dedup skip). One full cold rebuild follows; all caches repopulate."""
@@ -386,6 +386,46 @@ def _export_job(document, fmt, path, body=None, separate=False):
         return _done({"path": export(tgt["shape"], fmt, path)})
 
     return _done({"path": export(part, fmt, path)})
+
+
+def _export_project_job(document, path, palette, body_colors, body_names, settings):
+    """Worker: rebuild + write an Orca-project 3MF (one object per body, palette
+    slot → extruder). Same export-what-built semantics as _export_job: failed
+    features become warnings; only zero live bodies is a hard error."""
+    from builder import rebuild_cached
+    from project3mf import sanitize_inputs, write_project_3mf
+    from tessellate import tessellate
+
+    part, errors, bodies = rebuild_cached(document)
+    live = [b for b in bodies if b.get("shape") is not None]
+    if not live:
+        if errors:
+            e = errors[0]
+            return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+        return {"error": {"message": "nothing to export — no bodies built yet"}}
+
+    palette, body_colors, body_names = sanitize_inputs(palette, body_colors, body_names)
+    meshed = []
+    for b in live:
+        # Export-grade tolerance — the viewport default (0.1) is visibly faceted
+        # on a printed part.
+        positions, indices, _face_ids = tessellate(
+            b["shape"], tolerance=0.02, angular_tolerance=0.3
+        )
+        if not indices:
+            continue  # degenerate body with no triangulation — skip, like exports do
+        meshed.append(
+            {"id": b["id"], "name": b["name"], "positions": positions, "indices": indices}
+        )
+    if not meshed:
+        return {"error": {"message": "nothing to export — no meshable bodies"}}
+
+    res = {"path": write_project_3mf(meshed, path, palette, body_colors, body_names, settings)}
+    if errors:
+        res["warnings"] = [
+            {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
+        ]
+    return res
 
 
 def _interference_job(document):
@@ -642,6 +682,20 @@ async def handle(ws):
 
                 elif op == "export":
                     res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), timeout=DOC_TIMEOUT)
+                    await ws.send(_reply_for(req_id, res))
+
+                elif op == "exportProject":
+                    # settings is written into the 3MF verbatim (project config for
+                    # the slicer); cap its size like any untrusted request field.
+                    settings = req.get("settings") or {}
+                    if not isinstance(settings, dict) or len(json.dumps(settings)) > 262144:
+                        await ws.send(_err(req_id, "exportProject: bad settings"))
+                        continue
+                    res = await _run(
+                        loop, _export_project_job, req["document"], req["path"],
+                        req.get("palette") or [], req.get("bodyColors") or {},
+                        req.get("bodyNames") or {}, settings, timeout=DOC_TIMEOUT,
+                    )
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "interference":

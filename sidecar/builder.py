@@ -943,7 +943,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
 
     part    : the merged build123d solid/compound of all bodies, or None.
     errors  : list of {feature_id, message}; a failing feature is recorded as a
-              NO-OP and the build CONTINUES (Fusion-style — the timeline flags
+              NO-OP and the build CONTINUES (MCAD-style — the timeline flags
               the feature red but everything after it still runs; one
               permanently-failing feature must not kill the rest of the
               document).
@@ -1127,7 +1127,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                 solid = extrude(target, amount=val(f["distance"]))
                 # Captured-visibility semantics: an extrude that carries
                 # `hiddenBodies` uses THAT set (participants decided at feature
-                # creation, Fusion-style — later eye toggles are pure display).
+                # creation, MCAD-style — later eye toggles are pure display).
                 # A legacy feature without the field keeps the old behavior:
                 # gated by the document's live visibility map.
                 hid = (
@@ -1365,7 +1365,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                 _do_combine(f, bodies, find_body, diag=diagnostics)
 
             elif t == "removeBody":
-                # delete bodies by id (Fusion "Remove"); drop them from the list so
+                # delete bodies by id (mainstream MCAD "Remove"); drop them from the list so
                 # they're not tessellated/exported. Unknown ids are silently ignored.
                 ids = set(f.get("bodies") or [])
                 bodies[:] = [b for b in bodies if b["id"] not in ids]
@@ -1374,7 +1374,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                 raise ValueError(f"unknown feature type: {t}")
 
         except Exception as ex:  # name the feature so the timeline can flag it red
-            # Fusion-style: a failed feature is a recorded NO-OP and the build
+            # MCAD-style: a failed feature is a recorded NO-OP and the build
             # CONTINUES — the body state stays as it was and every feature after
             # it still runs. (It used to `break` here: one permanently-failing
             # feature — e.g. a deleteFace OCCT can't heal — silently killed the
@@ -2682,12 +2682,30 @@ def _bbox_overlap(a, b, tol=1e-6):
     )
 
 
+def _try_vol(shape):
+    """Best-effort |volume| of a shape; None when OCCT can't measure it (a
+    degenerate/empty result). Used to detect no-op booleans without ever failing
+    the build on a shape we simply can't measure."""
+    try:
+        return abs(_as_compound(shape).volume)
+    except Exception:
+        return None
+
+
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
-    """Fusion-style extrude operation: New Body adds a separate body; Join / Cut /
+    """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
     adds a new body. HIDDEN bodies are never touched (a hidden body is intentionally
-    protected from edits), so they're excluded from the overlap set."""
+    protected from edits), so they're excluded from the overlap set.
+
+    Guards no-op / destructive booleans: a Join whose prism is already inside the
+    body, or a Cut/Intersect that meets no material, used to return the model
+    UNCHANGED with no error ("I extruded and nothing happened"). Each op is now
+    measured by volume and, when it changed nothing (or Intersect would empty a
+    body), raises ValueError — the rebuild loop records it as a feature error and
+    flags the feature red, instead of silently doing nothing. Volume-read failures
+    fall through to the old behavior (never raise a misleading no-op error)."""
     # Extruding several DISJOINT region faces (e.g. 38 selected honeycomb cells)
     # yields a build123d ShapeList, which has no .bounding_box()/boolean ops —
     # normalize to one Compound so overlap-testing and cut/join/intersect work.
@@ -2701,13 +2719,29 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
         and b.get("id") not in hidden
         and _bbox_overlap(b["shape"], solid)
     ]
+    # a change smaller than this (per op's reference volume) counts as "nothing
+    # happened" — an absolute floor plus a relative slice, mirroring the
+    # tolerances used by _unify_body / cleanup elsewhere in this file.
+    def eps(ref):
+        return max(1e-6, 1e-4 * (ref or 0.0))
+
+    prism_vol = _try_vol(solid)
     if op == "join":
         if not hits:
             new_body(solid)
             return
         merged = solid
         for b in hits:
-            merged = merged + _as_compound(b["shape"])
+            merged = merged + _as_compound(b["shape"])  # `+` fuses solids
+        # No-op guard: the fused volume should exceed what was already there. If it
+        # doesn't, the prism sat entirely inside the body and added no material.
+        merged_vol, hit_vol = _try_vol(merged), _sum_hit_vol(hits)
+        if merged_vol is not None and hit_vol is not None \
+                and merged_vol <= hit_vol + eps(prism_vol):
+            raise ValueError(
+                "Join added no material — the profile is already inside the body. "
+                "Did you mean Cut?"
+            )
         name = hits[0]["name"]
         for b in hits:
             bodies.remove(b)
@@ -2717,13 +2751,55 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
         # (single right-side-out solid), hard-gated otherwise.
         new_body(_unify_body(merged), name)
     elif op == "cut":
+        # compute every cut first, measure how much came off, and only commit when
+        # the extrude actually removed material from some body.
+        results, removed, measured = [], 0.0, False
         for b in hits:
-            b["shape"] = _as_compound(b["shape"]) - solid
+            before = _try_vol(b["shape"])
+            newshape = _as_compound(b["shape"]) - solid
+            after = _try_vol(newshape)
+            results.append((b, newshape))
+            if before is not None and after is not None:
+                measured = True
+                removed += max(0.0, before - after)
+        if not hits or (measured and removed < eps(prism_vol)):
+            raise ValueError(
+                "Cut removed nothing — the extrude doesn't reach any body. "
+                "Drag the other way, or use Join."
+            )
+        for b, newshape in results:
+            b["shape"] = newshape
     elif op == "intersect":
+        if not hits:
+            raise ValueError(
+                "Intersect left nothing — the profile doesn't overlap any body."
+            )
+        results = []
         for b in hits:
-            b["shape"] = _as_compound(b["shape"]) & solid
+            newshape = _as_compound(b["shape"]) & solid
+            v = _try_vol(newshape)
+            if v is not None and v < eps(_try_vol(b["shape"])):
+                raise ValueError(
+                    "Intersect would leave the body empty — the profile doesn't "
+                    "overlap it."
+                )
+            results.append((b, newshape))
+        for b, newshape in results:  # commit only after all hits pass the guard
+            b["shape"] = newshape
     else:
         raise ValueError(f"unknown extrude operation: {op}")
+
+
+def _sum_hit_vol(hits):
+    """Total |volume| of the hit bodies, or None if any can't be measured (so the
+    join no-op guard stays conservative rather than firing on a bad read)."""
+    total = 0.0
+    for b in hits:
+        v = _try_vol(b["shape"])
+        if v is None:
+            return None
+        total += v
+    return total
 
 
 def _vertex_components(solids):
@@ -3300,7 +3376,7 @@ def _build_sketch(f, val, datums=None):
 
     Primitives (rectangle/circle) become faces directly. Free-form `line`
     segments are assembled into closed wires and turned into faces, so an
-    interactively-drawn polyline profile can be extruded like in Fusion.
+    interactively-drawn polyline profile can be extruded like in mainstream MCAD.
     """
     plane = _plane_of(f["plane"], datums)
     faces = []
@@ -3363,7 +3439,7 @@ def _build_sketch(f, val, datums=None):
     path_wire = _path_wire(edges, plane)
 
     # Region-pick faces = the planar ARRANGEMENT of every sketch edge: a line
-    # crossing a profile carves it into separately-selectable sub-areas (Fusion
+    # crossing a profile carves it into separately-selectable sub-areas (mainstream MCAD
     # parity), and touching/overlapping loops split at the shared boundaries. This
     # mirrors the frontend arrangement (src/sketch/region.ts).
     located_faces = _subdivide_faces(all_edges, plane)
@@ -3451,7 +3527,7 @@ def _face_contains(face, p):
 def _subdivide_faces(edges, plane):
     """Planar arrangement of all sketch edges into minimal faces, located onto the
     sketch plane. This is what lets a curve CROSSING a profile carve it into
-    separately-selectable sub-areas (Fusion parity), and touching/overlapping loops
+    separately-selectable sub-areas (MCAD parity), and touching/overlapping loops
     split at their shared boundaries.
 
     Uses OCCT's 2D face splitter: split a padded cover face by every sketch edge,

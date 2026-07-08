@@ -110,7 +110,7 @@ export function detectRegions(
   if (anyCrossing(perEntity)) {
     // Split every segment at all pairwise interior intersections, then extract the
     // planar arrangement's minimal faces. This is what lets a line crossing a
-    // profile carve it into separately-selectable sub-areas (Fusion parity); it
+    // profile carve it into separately-selectable sub-areas (MCAD parity); it
     // mirrors the sidecar's OCCT arrangement (builder.py _subdivide_faces).
     loops = traceLoops(planarize(perEntity));
   } else {
@@ -365,7 +365,7 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   // Build a planar graph and extract its MINIMAL FACES via half-edge traversal. Unlike
   // simple cycle-tracing this handles JUNCTIONS (degree > 2) — shared hexagon vertices,
   // touching profiles, T-joins — splitting them into the right areas instead of voiding
-  // the whole component. This is Fusion-style profile detection.
+  // the whole component. This is MCAD-style profile detection.
   const nodes = new Map<string, THREE.Vector2>();
   const nodeKey = (x: number, y: number) => {
     const k = key(x, y);

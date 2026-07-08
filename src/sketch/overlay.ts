@@ -1,4 +1,4 @@
-// Renders sketches in 3D: committed sketch curves (always visible, like Fusion),
+// Renders sketches in 3D: committed sketch curves (always visible, like mainstream MCAD),
 // translucent profile region fills, the active sketch being drawn, the
 // in-progress preview entity, and the snap glyph. Region metadata is exposed so
 // the extrude tool can hit-test and preview.
@@ -123,7 +123,7 @@ export class SketchOverlay {
   }
 
   /** Decides which committed sketches are shown on the model. Set by the app so
-   *  sketches consumed by a feature hide by default (Fusion-style), keeping the
+   *  sketches consumed by a feature hide by default (MCAD-style), keeping the
    *  solid's own edges visible/selectable. */
   sketchVisible: (id: string) => boolean = () => true;
 
@@ -329,7 +329,7 @@ export function polyline(points: THREE.Vector3[], color: number): THREE.Line {
   return line;
 }
 
-/** Fusion-style dimension annotations (extension lines + dim line + arrowheads)
+/** MCAD-style dimension annotations (extension lines + dim line + arrowheads)
  *  for a set of entities, batched into one LineSegments object. */
 export function dimensionLineObjects(
   ents: ReturnType<typeof resolveEntities>,

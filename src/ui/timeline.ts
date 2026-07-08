@@ -1,4 +1,4 @@
-// Bottom timeline (Fusion-style): a compact strip of icon chips in build order,
+// Bottom timeline (MCAD-style): a compact strip of icon chips in build order,
 // plus a draggable rollback marker, transport buttons (roll to start / step /
 // roll to end) and an error badge that jumps to failing features. Number, name
 // and error text live in the tooltip — chips stay ~28px so a 100+-feature
@@ -8,6 +8,7 @@
 
 import type { DocumentStore } from "../document/store";
 import { FEATURE_META } from "./featureMeta";
+import { contextMenu } from "./menu";
 import { esc } from "./escape";
 
 export class Timeline {
@@ -20,7 +21,6 @@ export class Timeline {
   onEdit: ((id: string) => void) | null = null;
   private selectedId: string | null = null;
   private dragId: string | null = null; // node being reordered
-  private menu: HTMLElement | null = null;
   private lastCount = -1; // feature count at last render (append → follow)
   private errCycle = 0; // which error the badge jumps to next
 
@@ -65,9 +65,6 @@ export class Timeline {
 
     store.onDocChange(() => this.render());
     store.onBuild(() => this.render());
-    document.addEventListener("pointerdown", (e) => {
-      if (this.menu && !this.menu.contains(e.target as Node)) this.closeMenu();
-    });
   }
 
   select(id: string | null) {
@@ -263,37 +260,15 @@ export class Timeline {
     return nodes.length;
   }
 
-  // --- right-click context menu ---
+  // --- right-click context menu (shared engine in ui/menu.ts) ---
   private openMenu(e: MouseEvent, id: string, i: number, suppressed: boolean) {
-    this.closeMenu();
-    const menu = document.createElement("div");
-    menu.className = "context-menu";
-    menu.style.left = `${e.clientX}px`;
-    menu.style.top = `${e.clientY}px`;
-    const item = (label: string, fn: () => void) => {
-      const it = document.createElement("div");
-      it.className = "ctx-item";
-      it.textContent = label;
-      it.addEventListener("click", () => { this.closeMenu(); fn(); });
-      menu.appendChild(it);
-    };
-    const sep = () => menu.appendChild(Object.assign(document.createElement("div"), { className: "ctx-sep" }));
-    item("Edit", () => this.onEdit?.(id));
-    item(suppressed ? "Unsuppress" : "Suppress", () => this.store.toggleSuppress(id));
-    item("Roll to here", () => this.store.setRollback(i));
-    item("Roll past here", () => this.store.setRollback(i + 1));
-    sep();
-    item("Delete", () => this.store.removeFeature(id));
-    document.body.appendChild(menu);
-    // keep it on-screen
-    const r = menu.getBoundingClientRect();
-    if (r.bottom > innerHeight) menu.style.top = `${e.clientY - r.height}px`;
-    if (r.right > innerWidth) menu.style.left = `${e.clientX - r.width}px`;
-    this.menu = menu;
-  }
-
-  private closeMenu() {
-    this.menu?.remove();
-    this.menu = null;
+    contextMenu(e.clientX, e.clientY, [
+      { label: "Edit", onClick: () => this.onEdit?.(id) },
+      { label: suppressed ? "Unsuppress" : "Suppress", onClick: () => this.store.toggleSuppress(id) },
+      { label: "Roll to here", onClick: () => this.store.setRollback(i) },
+      { label: "Roll past here", onClick: () => this.store.setRollback(i + 1) },
+      { separator: true, label: "" },
+      { label: "Delete", danger: true, onClick: () => this.store.removeFeature(id) },
+    ]);
   }
 }

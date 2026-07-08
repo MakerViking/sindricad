@@ -183,7 +183,7 @@ def _edge_points(e, n):
 def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
     """Sample each body's edges as polylines tagged with the body id (so the frontend
     can hide a hidden body's WIREFRAME). Edges between two COPLANAR planar faces are a
-    boolean's leftover seam — not a real edge — so they're dropped (Fusion-style),
+    boolean's leftover seam — not a real edge — so they're dropped (MCAD-style),
     making a merged part read as one continuous face. One pass over the edge->face map:
     seam-test and sample together. Display-only; touches no geometry (can't hang)."""
     import math

@@ -1,6 +1,6 @@
 // Single source of truth for "what dimensions does a sketch entity have, where
 // is each one's label/value, how do you read & write it, and how is it drawn as
-// a Fusion-style dimension (extension lines + dimension line + arrowheads)."
+// a MCAD-style dimension (extension lines + dimension line + arrowheads)."
 // Drives the in-canvas dimension labels (SketchDimensions), the inspector, and
 // SketchMode.editDimension — one place for all per-entity dimension knowledge.
 

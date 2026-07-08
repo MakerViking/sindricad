@@ -32,7 +32,7 @@ export const ACTION_LABELS: Record<ActionName, string> = {
 export interface AxisBinding { src: AxisName; invert: boolean }
 
 export interface SpaceMouseConfig {
-  // "object" = puck manipulates the model (3Dconnexion/Fusion default); "camera"
+  // "object" = puck manipulates the model (3Dconnexion default); "camera"
   // = puck flies the camera (inverse of object on pan + orbit).
   mode: "object" | "camera";
   deadzone: number; // ignore |axis| below this (jitter)

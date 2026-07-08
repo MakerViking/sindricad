@@ -344,12 +344,15 @@ def test_presspull_upto():
 
 
 def test_extrude_operation_multibody():
-    """extrude `join` booleans against EVERY body it overlaps (Fusion-style) so a
+    """extrude `join` booleans against EVERY body it overlaps (MCAD-style) so a
     bridging extrude merges them; `new` keeps the extrude as a separate body."""
     _s1, a = _box(1, 20, 20, 10)  # body1: x=-10..10, z=0..10
     s2 = {"id": "s2", "type": "sketch", "plane": "XY",
           "entities": [{"type": "rectangle", "width": 10, "height": 10, "x": 5}]}  # overlaps body1
-    join = {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 10, "operation": "join"}
+    # distance 20 protrudes above body1's z=10 top, so the join both ADDS material
+    # and merges the overlap into one body (a distance-10 prism would sit entirely
+    # inside body1 — a legitimate no-op now flagged by the boolean guard).
+    join = {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 20, "operation": "join"}
     part, err, bodies = rebuild({"parameters": {}, "features": a + [s2, join]})
     assert not err, err
     assert len(bodies) == 1, f"join should merge overlapping bodies → 1, got {len(bodies)}"
@@ -359,6 +362,49 @@ def test_extrude_operation_multibody():
     assert not err, err
     assert len(bodies) == 2, f"new body should stay separate → 2, got {len(bodies)}"
     print("  extrude operation OK: join→1 merged body, new→2 separate bodies")
+
+
+def test_extrude_noop_guards():
+    """A boolean that changes nothing is flagged, not silently swallowed: a Join
+    whose prism is already inside the body, a Cut/Intersect that meets no material,
+    and an Intersect that would EMPTY a body all record a feature error (so the
+    timeline flags it red) and leave the body intact — while the interacting
+    directions still succeed. Regression for 'I extruded a face and nothing
+    happened, with no error'."""
+    _s, base = _box(1, 40, 40, 20)  # body1: z=0..20, vol 32000
+    # a 10×10 profile sketched ON the top face (z=20), normal +Z (outward)
+    top = {"id": "s2", "type": "sketch",
+           "plane": {"origin": [0, 0, 20], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+           "entities": [{"id": "r", "type": "rectangle", "width": 10, "height": 10, "x": 0, "y": 0}]}
+    reg = [[0, 0, 20]]  # region point on the top face
+
+    def run(op, dist):
+        ex = {"id": "x", "type": "extrude", "sketch": "s2", "distance": dist,
+              "operation": op, "regions": reg}
+        _p, err, bodies = rebuild({"parameters": {}, "features": base + [top, ex]})
+        vol = bodies[0]["shape"].volume if bodies and bodies[0].get("shape") else None
+        return err, vol
+
+    # interacting directions still work, no error
+    err, vol = run("join", +5)
+    assert not err and abs(vol - 32500) < 1, f"join out should add a boss: {err}, {vol}"
+    err, vol = run("cut", -5)
+    assert not err and abs(vol - 31500) < 1, f"cut into body should pocket: {err}, {vol}"
+    err, vol = run("intersect", -5)
+    assert not err and abs(vol - 500) < 1, f"intersect into body keeps overlap: {err}, {vol}"
+
+    # no-op / destructive directions: flagged AND body left intact
+    for op, dist, needle in (
+        ("join", -5, "already inside"),
+        ("cut", +5, "removed nothing"),
+        ("intersect", +5, "leave the body empty"),
+    ):
+        err, vol = run(op, dist)
+        assert err and err[0]["feature_id"] == "x", f"{op} {dist:+d} should flag a feature error, got {err}"
+        assert needle in err[0]["message"], f"{op} {dist:+d} message: {err[0]['message']}"
+        assert abs(vol - 32000) < 1, f"{op} {dist:+d} must leave the body intact (32000), got {vol}"
+    print("  extrude no-op guards OK: join-inside / cut-nothing / intersect-empty "
+          "flagged + body intact; interacting dirs still build")
 
 
 def test_primitives():
@@ -523,7 +569,7 @@ def test_remove_body():
 def test_sketch_crossing_split():
     """Sketch profiles split at CROSSINGS and vertex-touches via the planar
     arrangement (builder._subdivide_faces / src/sketch/region.ts), so a line
-    crossing a profile carves separately-extrudable sub-areas (Fusion parity), and
+    crossing a profile carves separately-extrudable sub-areas (MCAD parity), and
     a honeycomb hexagon whose corner sits on a boundary rectangle extrudes as its
     true CLIPPED region — not the whole hexagon."""
     sq = [(0, 0, 10, 0), (10, 0, 10, 10), (10, 10, 0, 10), (0, 10, 0, 0)]
@@ -598,7 +644,7 @@ def test_extrude_cut_disjoint():
 
 def test_visibility_captured():
     """Captured-visibility semantics: an extrude carrying `hiddenBodies` uses
-    THAT set (participants decided at creation, Fusion-style) and ignores the
+    THAT set (participants decided at creation, MCAD-style) and ignores the
     document's live eye states — so toggling visibility later can never rewrite
     what a cut touched. Legacy features (no field) keep the live-map behavior
     (test_cut_skips_hidden_body)."""
@@ -975,7 +1021,7 @@ def test_unify_body():
 
 def test_error_continues():
     """A failing feature is a recorded no-op, not a timeline killer: features
-    AFTER it still execute (Fusion-style), and the incremental cache both keeps
+    AFTER it still execute (MCAD-style), and the incremental cache both keeps
     working and keeps re-reporting the error on resumed builds."""
     import builder
     from builder import rebuild, rebuild_cached
@@ -1140,6 +1186,79 @@ def test_export_despite_errors():
           "feature named; nothing-built still refuses")
 
 
+def test_export_project_3mf():
+    """Orca-project 3MF export job: zip layout, per-object extruder metadata
+    (1-based = slot+1, unassigned → 1), palette → filament_colour, shared
+    bed-centering transform, and input sanitizing (bad colors / bad slots)."""
+    import json
+    import zipfile
+    import xml.etree.ElementTree as ET
+    import server
+    from project3mf import sanitize_inputs
+
+    palette, colors0, _ = sanitize_inputs(
+        [{"name": "Red", "color": "#e03030"}, {"name": "Blue", "color": "3050E0FF"}],
+        {"x": 99}, {},
+    )
+    assert palette[1]["color"] == "#3050E0", "RRGGBBAA should normalize to #RRGGBB"
+    assert not colors0, "out-of-range slot must be dropped"
+
+    doc = {"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 20, "height": 20, "x": 0, "y": 0}]},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 5, "operation": "new"},
+        {"id": "s2", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 20, "height": 20, "x": 40, "y": 0}]},
+        {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 5, "operation": "new"},
+    ]}
+    _, _, bodies = rebuild(doc)
+    assert len(bodies) == 2
+    b0, b1 = bodies[0]["id"], bodies[1]["id"]
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "proj.3mf")
+        res = server._export_project_job(
+            doc, path,
+            [{"name": "Red", "color": "#E03030"}, {"name": "Blue", "color": "#3050E0"}],
+            {b1: 1},                # b0 unassigned → extruder 1
+            {b0: "Left"},
+            {"printer_model": "Snapmaker U1"},
+        )
+        assert "error" not in res, f"exportProject failed: {res}"
+
+        with zipfile.ZipFile(res["path"]) as z:
+            entries = set(z.namelist())
+            for want in ("[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model",
+                         "Metadata/model_settings.config",
+                         "Metadata/project_settings.config"):
+                assert want in entries, f"missing zip entry {want}"
+            model = ET.fromstring(z.read("3D/3dmodel.model"))
+            cfg = ET.fromstring(z.read("Metadata/model_settings.config"))
+            proj = json.loads(z.read("Metadata/project_settings.config"))
+
+    core = "{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}"
+    objs = model.findall(f".//{core}object")
+    assert len(objs) == 2
+    assert objs[0].get("name") == "Left", "bodyNames rename must win"
+    items = model.findall(f".//{core}item")
+    assert len(items) == 2 and items[0].get("transform") == items[1].get("transform"), \
+        "assembly must share ONE transform"
+
+    # the shared transform lands the combined bbox center at bed center (135,135)
+    # and drops z-min to 0: doc spans x∈[-10,50] y∈[-10,10] z∈[0,5] → tx=115 ty=135
+    tx, ty, tz = (float(v) for v in items[0].get("transform").split()[9:])
+    assert abs(tx - 115) < 0.1 and abs(ty - 135) < 0.1 and abs(tz) < 0.1, (tx, ty, tz)
+
+    ext = {o.get("id"): o.find("./metadata[@key='extruder']").get("value")
+           for o in cfg.findall("./object")}
+    assert ext["2"] == "1", "unassigned body → extruder 1"
+    assert ext["3"] == "2", "slot 1 → extruder 2 (1-based)"
+    assert proj["filament_colour"] == ["#E03030", "#3050E0"]
+    assert proj["printer_model"] == "Snapmaker U1", "caller settings must survive"
+    print("  project-3MF OK: zip layout, extruder metadata, filament_colour, "
+          "shared centering transform, sanitize")
+
+
 if __name__ == "__main__":
     print("SindriCAD sidecar smoke test")
     test_rebuild()
@@ -1158,6 +1277,7 @@ if __name__ == "__main__":
     test_presspull_upto()
     test_presspull_upto_exact()
     test_export_despite_errors()
+    test_export_project_3mf()
     test_sketch_patterns()
     test_sketch_crossing_split()
     test_extrude_cut_disjoint()
@@ -1174,6 +1294,7 @@ if __name__ == "__main__":
     test_error_continues()
     test_delete_face_retarget()
     test_extrude_operation_multibody()
+    test_extrude_noop_guards()
     test_primitives()
     test_modify_tools()
     test_simplify_mesh()

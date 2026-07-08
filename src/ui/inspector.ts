@@ -34,6 +34,13 @@ const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>
   move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
 };
 
+/** Whether selecting this feature type actually opens an editor (numeric fields
+ *  here, or the sketch editor). The context menu labels "Edit" honestly — a
+ *  type without an editor gets "Select" instead. */
+export function isInspectorEditable(type: Feature["type"]): boolean {
+  return type === "sketch" || type in NUM_FIELDS;
+}
+
 export class Inspector {
   private el: HTMLElement;
   private selectedId: string | null = null;

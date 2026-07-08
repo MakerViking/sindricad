@@ -1,4 +1,4 @@
-// Fusion-style icon ribbon. Two contexts — modeling and sketch — each a row of
+// MCAD-style icon ribbon. Two contexts — modeling and sketch — each a row of
 // grouped icon buttons (CREATE / MODIFY / …) with the group name underneath.
 // The sketch context ends with the green Finish Sketch + a Sketch Palette toggle.
 
@@ -7,18 +7,33 @@ import { esc } from "./escape";
 
 export type RibbonContext = "model" | "sketch";
 
-interface Item {
+interface ToolItem {
   action: string;
   label: string;
   iconName: string;
   key?: string;
   kind?: "finish" | "toggle";
 }
+// Split button: the FULL dropdown list lives in `children` (children[0] is the
+// initial one-click primary; `label` names the family for the arrow tooltip).
+// Picking a child runs it and makes it the primary — last-used-wins, mainstream MCAD
+// convention. Each tool is defined exactly once, in `children`.
+interface SplitItem {
+  label: string;
+  children: ToolItem[];
+}
+type Item = ToolItem | SplitItem;
 interface Group {
   label: string;
   items: Item[];
 }
-export type { Item, Group };
+export type { Item, ToolItem, Group };
+
+/** a split button's tools, or the item itself — every consumer that needs the
+ *  flat tool list (palette, overflow popup) goes through this. */
+export function leavesOf(it: Item): ToolItem[] {
+  return "children" in it ? it.children : [it];
+}
 
 export const MODEL: Group[] = [
   {
@@ -26,10 +41,15 @@ export const MODEL: Group[] = [
     items: [
       { action: "sketch", label: "Sketch", iconName: "sketch", key: "S" },
       { action: "extrude", label: "Extrude", iconName: "extrude", key: "E" },
-      { action: "revolve", label: "Revolve", iconName: "revolve" },
-      { action: "loft", label: "Loft", iconName: "loft" },
-      { action: "sweep", label: "Sweep", iconName: "sweep" },
       { action: "primitive", label: "Primitive", iconName: "primitive" },
+      {
+        label: "Revolve",
+        children: [
+          { action: "revolve", label: "Revolve", iconName: "revolve" },
+          { action: "loft", label: "Loft", iconName: "loft" },
+          { action: "sweep", label: "Sweep", iconName: "sweep" },
+        ],
+      },
     ],
   },
   {
@@ -38,14 +58,29 @@ export const MODEL: Group[] = [
       { action: "presspull", label: "Press/Pull", iconName: "presspull", key: "Q" },
       { action: "fillet", label: "Fillet", iconName: "fillet", key: "F" },
       { action: "chamfer", label: "Chamfer", iconName: "chamfer", key: "B" },
-      { action: "shell", label: "Shell", iconName: "shell" },
-      { action: "draft", label: "Draft", iconName: "draft" },
-      { action: "scale", label: "Scale", iconName: "scale" },
-      { action: "move", label: "Move", iconName: "move", key: "M" },
-      { action: "mirror", label: "Mirror", iconName: "mirror" },
-      { action: "pattern", label: "Pattern", iconName: "pattern" },
-      { action: "split", label: "Split Body", iconName: "split", key: "K" },
-      { action: "combine", label: "Combine", iconName: "combine", key: "J" },
+      {
+        label: "Move",
+        children: [
+          { action: "move", label: "Move", iconName: "move", key: "M" },
+          { action: "scale", label: "Scale", iconName: "scale" },
+          { action: "mirror", label: "Mirror", iconName: "mirror" },
+          { action: "pattern", label: "Pattern", iconName: "pattern" },
+        ],
+      },
+      {
+        label: "Combine",
+        children: [
+          { action: "combine", label: "Combine", iconName: "combine", key: "J" },
+          { action: "split", label: "Split Body", iconName: "split", key: "K" },
+        ],
+      },
+      {
+        label: "Shell",
+        children: [
+          { action: "shell", label: "Shell", iconName: "shell" },
+          { action: "draft", label: "Draft", iconName: "draft" },
+        ],
+      },
     ],
   },
   {
@@ -59,13 +94,18 @@ export const MODEL: Group[] = [
     label: "INSPECT",
     items: [
       { action: "measure", label: "Measure", iconName: "measure", key: "I" },
-      { action: "properties", label: "Properties", iconName: "properties" },
       { action: "section", label: "Section", iconName: "section" },
-      { action: "interference", label: "Interference", iconName: "interference" },
-      { action: "component-colors", label: "Body Colors", iconName: "componentColors" },
-      { action: "draft-analysis", label: "Draft Analysis", iconName: "draftAnalysis" },
-      { action: "zebra", label: "Zebra", iconName: "zebra" },
-      { action: "curvature", label: "Curvature", iconName: "curvature" },
+      {
+        label: "Analyze",
+        children: [
+          { action: "properties", label: "Properties", iconName: "properties" },
+          { action: "interference", label: "Interference", iconName: "interference" },
+          { action: "draft-analysis", label: "Overhang", iconName: "draftAnalysis" },
+          { action: "zebra", label: "Zebra", iconName: "zebra" },
+          { action: "curvature", label: "Curvature", iconName: "curvature" },
+          { action: "component-colors", label: "Body Colors", iconName: "componentColors" },
+        ],
+      },
     ],
   },
   {
@@ -75,6 +115,14 @@ export const MODEL: Group[] = [
       { action: "simplify-mesh", label: "Simplify Mesh", iconName: "simplifyMesh" },
       { action: "clean-up", label: "Clean Up", iconName: "cleanUp", key: "U" },
       { action: "compute-all", label: "Compute All", iconName: "computeAll" },
+    ],
+  },
+  {
+    label: "PRINT",
+    items: [
+      { action: "print-export", label: "Print Project", iconName: "print" },
+      { action: "print-orca", label: "Open in OrcaSlicer", iconName: "slicer" },
+      { action: "print-send", label: "Send to Printer", iconName: "printerSend" },
     ],
   },
 ];
@@ -122,16 +170,21 @@ export const SKETCH: Group[] = [
   {
     label: "CONSTRAINTS",
     items: [
-      { action: "horizontal", label: "Horizontal", iconName: "horizontal" },
-      { action: "vertical", label: "Vertical", iconName: "vertical" },
-      { action: "parallel", label: "Parallel", iconName: "parallel" },
-      { action: "perpendicular", label: "Perpendic.", iconName: "perpendicular" },
-      { action: "equal", label: "Equal", iconName: "equal" },
-      { action: "tangent", label: "Tangent", iconName: "tangent" },
-      { action: "coincident", label: "Coincident", iconName: "coincident" },
-      { action: "concentric", label: "Concentric", iconName: "concentric" },
-      { action: "midpoint", label: "Midpoint", iconName: "midpoint" },
-      { action: "symmetric", label: "Symmetric", iconName: "symmetric" },
+      {
+        label: "Constrain",
+        children: [
+          { action: "horizontal", label: "Horizontal", iconName: "horizontal" },
+          { action: "vertical", label: "Vertical", iconName: "vertical" },
+          { action: "parallel", label: "Parallel", iconName: "parallel" },
+          { action: "perpendicular", label: "Perpendic.", iconName: "perpendicular" },
+          { action: "equal", label: "Equal", iconName: "equal" },
+          { action: "tangent", label: "Tangent", iconName: "tangent" },
+          { action: "coincident", label: "Coincident", iconName: "coincident" },
+          { action: "concentric", label: "Concentric", iconName: "concentric" },
+          { action: "midpoint", label: "Midpoint", iconName: "midpoint" },
+          { action: "symmetric", label: "Symmetric", iconName: "symmetric" },
+        ],
+      },
     ],
   },
 ];
@@ -141,6 +194,7 @@ export const SKETCH: Group[] = [
 const PRIORITY: Record<string, number> = {
   CREATE: 100,
   MODIFY: 90,
+  PRINT: 50,
   INSPECT: 45,
   CONSTRUCT: 40,
   INSERT: 30,
@@ -154,6 +208,9 @@ interface GroupMeta {
   items: Item[];
   priority: number;
   pinned: boolean;
+  // per split-button: swap the primary when the given action is one of its
+  // children (keeps the active sketch constraint visible on the button face)
+  splitSync: ((action: string) => void)[];
 }
 interface Ctx {
   el: HTMLElement;
@@ -167,7 +224,8 @@ export class Ribbon {
   private sketch: Ctx;
   private current: Ctx;
   private collapsed: GroupMeta[] = [];
-  private overflowPopup: HTMLDivElement | null = null;
+  private overflowPopup: HTMLDivElement | null = null; // the ONE open popup (overflow or split ▾)
+  private popupAnchor: HTMLElement | null = null; // which button owns it (for toggle)
 
   constructor(container: HTMLElement) {
     this.model = this.buildContext(MODEL, false);
@@ -183,11 +241,14 @@ export class Ribbon {
     this.model.el.classList.toggle("hidden", ctx !== "model");
     this.sketch.el.classList.toggle("hidden", ctx !== "sketch");
     this.current = ctx === "model" ? this.model : this.sketch;
-    this.closeOverflow();
+    this.closePopup();
     this.reflow();
   }
 
   setActiveSketchTool(tool: string) {
+    // a constraint/tool living inside a split button becomes its primary first,
+    // so the .active highlight below has a button face to land on
+    for (const g of this.sketch.groups) for (const sync of g.splitSync) sync(tool);
     this.sketch.el.querySelectorAll<HTMLElement>("[data-action]").forEach((b) => {
       b.classList.toggle("active", b.dataset.action === tool);
     });
@@ -229,15 +290,9 @@ export class Ribbon {
     group.className = "ribbon-group";
     const tools = document.createElement("div");
     tools.className = "ribbon-tools";
+    const splitSync: ((action: string) => void)[] = [];
     for (const it of g.items) {
-      const btn = document.createElement("button");
-      btn.className = "ribbon-btn";
-      if (it.kind === "finish") btn.classList.add("finish");
-      btn.dataset.action = it.action;
-      btn.title = it.key ? `${it.label} (${it.key})` : it.label;
-      btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
-      btn.addEventListener("click", () => this.onAction?.(it.action));
-      tools.appendChild(btn);
+      tools.appendChild("children" in it ? this.buildSplit(it, splitSync) : this.buildBtn(it));
     }
     const label = document.createElement("div");
     label.className = "ribbon-group-label";
@@ -249,7 +304,63 @@ export class Ribbon {
       items: g.items,
       priority: PINNED.has(g.label) ? Infinity : (PRIORITY[g.label] ?? 50),
       pinned: PINNED.has(g.label),
+      splitSync,
     };
+  }
+
+  private buildBtn(it: ToolItem): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.className = "ribbon-btn";
+    if (it.kind === "finish") btn.classList.add("finish");
+    btn.dataset.action = it.action;
+    btn.title = it.key ? `${it.label} (${it.key})` : it.label;
+    btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
+    btn.addEventListener("click", () => this.onAction?.(it.action));
+    return btn;
+  }
+
+  /** Split button: a one-click primary tool + a ▾ dropdown of its siblings.
+   *  Picking a sibling runs it AND makes it the primary (last-used-wins). */
+  private buildSplit(it: SplitItem, splitSync: ((action: string) => void)[]): HTMLElement {
+    const children = it.children;
+    const wrap = document.createElement("div");
+    wrap.className = "ribbon-split";
+    let primary = children[0];
+    const btn = document.createElement("button");
+    btn.className = "ribbon-btn";
+    const apply = () => {
+      btn.dataset.action = primary.action;
+      btn.title = primary.key ? `${primary.label} (${primary.key})` : primary.label;
+      btn.innerHTML = `${icon(primary.iconName)}<span>${esc(primary.label)}</span>`;
+    };
+    apply();
+    btn.addEventListener("click", () => this.onAction?.(primary.action));
+
+    const arrow = document.createElement("button");
+    arrow.className = "ribbon-split-arrow";
+    arrow.title = `More ${it.label} tools`;
+    arrow.textContent = "▾";
+    arrow.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const wasMine = this.popupAnchor === arrow;
+      this.closePopup();
+      if (wasMine) return; // second click on the same arrow just closes
+      this.openDropdown(arrow, children, (picked) => {
+        primary = picked;
+        apply();
+        this.onAction?.(picked.action);
+      });
+    });
+
+    splitSync.push((action) => {
+      const child = children.find((c) => c.action === action);
+      if (child && child !== primary) {
+        primary = child;
+        apply();
+      }
+    });
+    wrap.append(btn, arrow);
+    return wrap;
   }
 
   /** priority+ pack: collapse lowest-priority panels into the overflow dropdown
@@ -265,7 +376,7 @@ export class Ribbon {
     let total = widths.reduce((a, b) => a + b, 0);
     if (total <= available) {
       this.collapsed = [];
-      this.closeOverflow();
+      this.closePopup();
       return;
     }
     total += 40; // reserve the overflow button
@@ -282,16 +393,32 @@ export class Ribbon {
     }
     this.collapsed = collapsed;
     ctx.overflowBtn.classList.toggle("hidden", collapsed.length === 0);
-    if (this.overflowPopup) this.buildOverflowPopup(); // keep an open popup in sync
+    // a reflow moves or hides split-arrow anchors — close a stale split
+    // dropdown; the overflow popup is instead rebuilt in place below
+    if (this.overflowPopup && this.popupAnchor !== ctx.overflowBtn) this.closePopup();
+    if (this.overflowPopup && this.popupAnchor === ctx.overflowBtn) this.buildOverflowPopup(); // keep an open popup in sync
   }
 
   private toggleOverflow() {
-    if (this.overflowPopup) this.closeOverflow();
-    else this.buildOverflowPopup();
+    const wasOpen = this.popupAnchor === this.current.overflowBtn;
+    this.closePopup();
+    if (!wasOpen) this.buildOverflowPopup();
+  }
+
+  /** one icon+label button for a popup list (overflow and split ▾ share the look) */
+  private popupItem(it: ToolItem, onPick: () => void): HTMLButtonElement {
+    const b = document.createElement("button");
+    b.className = "ribbon-overflow-item";
+    b.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
+    b.addEventListener("click", () => {
+      this.closePopup();
+      onPick();
+    });
+    return b;
   }
 
   private buildOverflowPopup() {
-    this.closeOverflow();
+    this.closePopup();
     if (!this.collapsed.length) return;
     const pop = document.createElement("div");
     pop.className = "ribbon-overflow-popup";
@@ -300,15 +427,11 @@ export class Ribbon {
       lab.className = "ribbon-overflow-label";
       lab.textContent = g.label;
       pop.appendChild(lab);
+      // split buttons flatten: every child tool stays reachable from the overflow
       for (const it of g.items) {
-        const b = document.createElement("button");
-        b.className = "ribbon-overflow-item";
-        b.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
-        b.addEventListener("click", () => {
-          this.closeOverflow();
-          this.onAction?.(it.action);
-        });
-        pop.appendChild(b);
+        for (const leaf of leavesOf(it)) {
+          pop.appendChild(this.popupItem(leaf, () => this.onAction?.(leaf.action)));
+        }
       }
     }
     const r = this.current.overflowBtn.getBoundingClientRect();
@@ -317,10 +440,36 @@ export class Ribbon {
     pop.style.right = `${Math.max(4, window.innerWidth - r.right)}px`;
     document.body.appendChild(pop);
     this.overflowPopup = pop;
+    this.popupAnchor = this.current.overflowBtn;
+    this.installDismiss(pop, this.current.overflowBtn);
+  }
+
+  /** A split button's ▾ dropdown — the overflow popup's look and dismissal,
+   *  anchored under the arrow. */
+  private openDropdown(anchor: HTMLElement, items: ToolItem[], onPick: (it: ToolItem) => void) {
+    this.closePopup();
+    const pop = document.createElement("div");
+    pop.className = "ribbon-overflow-popup";
+    for (const it of items) pop.appendChild(this.popupItem(it, () => onPick(it)));
+    const r = anchor.getBoundingClientRect();
+    pop.style.position = "fixed";
+    pop.style.top = `${r.bottom + 2}px`;
+    pop.style.left = `${Math.max(4, Math.min(r.left - 40, window.innerWidth - 190))}px`;
+    document.body.appendChild(pop);
+    this.overflowPopup = pop;
+    this.popupAnchor = anchor;
+    this.installDismiss(pop, anchor);
+  }
+
+  /** dismiss-on-outside-pointerdown, shared by the overflow + split dropdowns.
+   *  Deferred so the opening click doesn't immediately close the popup. */
+  private installDismiss(pop: HTMLDivElement, anchor: HTMLElement) {
     setTimeout(() => {
+      if (this.overflowPopup !== pop) return; // already replaced/closed
       const onDown = (e: PointerEvent) => {
-        if (this.overflowPopup && !this.overflowPopup.contains(e.target as Node) && e.target !== this.current.overflowBtn) {
-          this.closeOverflow();
+        const t = e.target as Node;
+        if (this.overflowPopup === pop && !pop.contains(t) && t !== anchor && !anchor.contains(t)) {
+          this.closePopup();
         }
       };
       document.addEventListener("pointerdown", onDown, true);
@@ -329,10 +478,11 @@ export class Ribbon {
     }, 0);
   }
 
-  private closeOverflow() {
+  private closePopup() {
     if (!this.overflowPopup) return;
     (this.overflowPopup as unknown as { _cleanup?: () => void })._cleanup?.();
     this.overflowPopup.remove();
     this.overflowPopup = null;
+    this.popupAnchor = null;
   }
 }

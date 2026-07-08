@@ -52,7 +52,7 @@ export class DocumentStore {
   private bodyVis = new Map<string, boolean>(); // explicit per-body show/hide overrides (id → visible)
   private planeVis = new Map<string, boolean>(); // explicit per-construction-plane show/hide overrides
   private bodyNames = new Map<string, string>(); // explicit per-body display-name overrides (id → name)
-  private palette: { name: string; color: string }[] = DEFAULT_PALETTE.map((s) => ({ ...s }));
+  private palette: { name: string; color: string; material?: string }[] = DEFAULT_PALETTE.map((s) => ({ ...s }));
   private bodyColors = new Map<string, number>(); // per-body palette-slot assignment (id → slot index)
   private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
@@ -183,7 +183,7 @@ export class DocumentStore {
   }
 
   addFeature(feature: Feature, atIndex?: number) {
-    // new features land at the rollback marker (Fusion), which then advances past it
+    // new features land at the rollback marker (mainstream MCAD), which then advances past it
     const at = atIndex ?? this.rollbackIndex;
     if (this.rollback !== null && at <= this.rollback) this.rollback += 1;
     this.mutate((d) => {
@@ -329,7 +329,7 @@ export class DocumentStore {
   }
 
   // --- body visibility overrides (explicit show/hide; no geometry effect — just a
-  // re-render that filters the hidden body's faces out of the mesh, Fusion-style) ---
+  // re-render that filters the hidden body's faces out of the mesh, MCAD-style) ---
   /** explicit show/hide override for a body, or undefined if unset. */
   bodyVisibilityOverride(id: string): boolean | undefined {
     return this.bodyVis.get(id);
@@ -340,7 +340,21 @@ export class DocumentStore {
   }
   /** show/hide a body; re-emits the build so the viewport re-renders (no rebuild). */
   setBodyVisibility(id: string, visible: boolean) {
-    this.bodyVis.set(id, visible);
+    this.setBodiesVisibility(new Map([[id, visible]]));
+  }
+
+  /** Show/hide several bodies in one step (Isolate / Show all): apply every
+   *  change, then re-emit ONCE — per-body emits would re-render the whole model
+   *  N times (each emit runs setModel + the flush-seam pass). No-op entries are
+   *  skipped; a call that changes nothing doesn't emit or dirty the document. */
+  setBodiesVisibility(vis: Map<string, boolean>) {
+    let changed = false;
+    for (const [id, visible] of vis) {
+      if ((this.bodyVis.get(id) ?? true) === visible) continue;
+      this.bodyVis.set(id, visible);
+      changed = true;
+    }
+    if (!changed) return;
     this.markDirty();
     this.emitBuild();
     // With captured-visibility semantics (every extrude carries hiddenBodies),
@@ -395,13 +409,37 @@ export class DocumentStore {
 
   // --- color palette + per-body color (multi-color; display + export metadata) -
   /** the project's filament palette (≤4 slots map to U1 toolheads). */
-  get colorPalette(): { name: string; color: string }[] {
+  get colorPalette(): { name: string; color: string; material?: string }[] {
     return this.palette;
   }
+  /** true when the palette is still the untouched default — lets the printer-sync
+   *  UI skip its "overwrite?" confirmation when there's nothing to lose. */
+  paletteIsDefault(): boolean {
+    return (
+      this.palette.length === DEFAULT_PALETTE.length &&
+      this.palette.every(
+        (s, i) => s.name === DEFAULT_PALETTE[i].name && s.color === DEFAULT_PALETTE[i].color && !s.material,
+      )
+    );
+  }
   /** edit a palette slot's name and/or hex color; re-emits for a live repaint. */
-  setPaletteSlot(i: number, patch: { name?: string; color?: string }) {
+  setPaletteSlot(i: number, patch: { name?: string; color?: string; material?: string }) {
     if (i < 0 || i >= this.palette.length) return;
     this.palette[i] = { ...this.palette[i], ...patch };
+    this.markDirty();
+    this.emitBuild();
+  }
+  /** Replace slots from the printer's loaded filaments (name/color/material),
+   *  by index, in ONE emit. Empty entries (undefined) leave that slot untouched
+   *  — an unloaded toolhead shouldn't blank a slot. */
+  applyFilamentSync(slots: ({ name: string; color: string; material?: string } | undefined)[]) {
+    let changed = false;
+    slots.forEach((s, i) => {
+      if (!s || i >= this.palette.length) return;
+      this.palette[i] = { ...this.palette[i], ...s };
+      changed = true;
+    });
+    if (!changed) return;
     this.markDirty();
     this.emitBuild();
   }
@@ -415,6 +453,17 @@ export class DocumentStore {
     else this.bodyColors.set(id, slot);
     this.markDirty();
     this.emitBuild();
+  }
+  /** body id → palette-slot index, as a plain object. For the colored-3MF export
+   *  call, which must thread these side-maps explicitly (they never travel inside
+   *  `document`). */
+  bodyColorsMap(): Record<string, number> {
+    return Object.fromEntries(this.bodyColors);
+  }
+  /** body id → display-name override, as a plain object. Threaded through the
+   *  export call so exported objects carry the sidebar names. */
+  bodyNamesMap(): Record<string, string> {
+    return Object.fromEntries(this.bodyNames);
   }
 
   // --- serialization ---
@@ -542,7 +591,7 @@ export class DocumentStore {
     }
   }
 
-  /** Fusion-style "Compute All": bypass and rebuild EVERY cache layer (worker
+  /** MCAD-style "Compute All": bypass and rebuild EVERY cache layer (worker
    *  RAM prefix, mesh cache, this document's disk checkpoints) — the escape
    *  hatch when a cached result is suspected stale. Falls back to a plain
    *  immediate rebuild on backends without the op. */

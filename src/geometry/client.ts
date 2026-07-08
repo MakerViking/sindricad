@@ -41,6 +41,25 @@ export interface GeometryBackend {
   importGeometry(path: string, format: ImportFormat): Promise<ImportReply>;
   // Pairwise interference (clash) check among the document's bodies.
   interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }>;
+  /** Colored multi-material 3MF PROJECT export (Orca format: one object per body,
+   *  palette slot → extruder). Optional — only the Python sidecar authors it; the
+   *  Rust spike backend omits it. Palette/bodyColors/bodyNames live in store
+   *  side-maps, NOT in `document`, so they're passed explicitly here. */
+  exportProject?(
+    doc: CadDocument,
+    path: string,
+    opts: {
+      palette: { name: string; color: string; material?: string }[];
+      bodyColors: Record<string, number>;
+      bodyNames: Record<string, string>;
+      settings?: Record<string, unknown>;
+    },
+  ): Promise<{
+    ok: boolean;
+    path?: string;
+    message?: string;
+    warnings?: { message: string; feature_id?: string }[];
+  }>;
   // Fetch the per-launch sidecar auth token from the Rust shell (Tauri) and
   // open the socket. Must be called once before any backend op; the store
   // queues into the outbox until the socket opens, so ordering is non-critical.
@@ -50,7 +69,7 @@ export interface GeometryBackend {
    *  currently building (-1 = tessellating) roughly once a second during a
    *  long rebuild. Optional — the in-process backend doesn't stream. */
   onProgress?(fn: (feature: number) => void): () => void;
-  /** Fusion-style "Compute All": rebuild bypassing every cache layer. Optional. */
+  /** MCAD-style "Compute All": rebuild bypassing every cache layer. Optional. */
   computeAll?(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
   readonly connected: boolean;
 }
@@ -228,7 +247,7 @@ export class Geometry implements GeometryBackend {
     return { ok: false, error: msg.error };
   }
 
-  /** Fusion-style "Compute All": bypass and rebuild every cache layer (RAM,
+  /** MCAD-style "Compute All": bypass and rebuild every cache layer (RAM,
    *  mesh, disk checkpoints) server-side, and drop our own mesh cache. */
   async computeAll(doc: CadDocument, tolerance = 0.1): Promise<RebuildReply> {
     this.bodyMesh.clear();
@@ -298,6 +317,28 @@ export class Geometry implements GeometryBackend {
   ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
     const msg = await this.call("export", { document: doc, format, path, body: opts.body, separate: opts.separate });
     if (msg.ok) return { ok: true, path: msg.result.path, paths: msg.result.paths, warnings: msg.result.warnings };
+    return { ok: false, message: msg.error?.message };
+  }
+
+  async exportProject(
+    doc: CadDocument,
+    path: string,
+    opts: {
+      palette: { name: string; color: string; material?: string }[];
+      bodyColors: Record<string, number>;
+      bodyNames: Record<string, string>;
+      settings?: Record<string, unknown>;
+    },
+  ): Promise<{ ok: boolean; path?: string; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
+    const msg = await this.call("exportProject", {
+      document: doc,
+      path,
+      palette: opts.palette,
+      bodyColors: opts.bodyColors,
+      bodyNames: opts.bodyNames,
+      settings: opts.settings ?? {},
+    });
+    if (msg.ok) return { ok: true, path: msg.result.path, warnings: msg.result.warnings };
     return { ok: false, message: msg.error?.message };
   }
 

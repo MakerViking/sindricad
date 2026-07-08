@@ -1,10 +1,11 @@
-// Interactive Extrude (Fusion-style): select one or more profile AREAS, then set
+// Interactive Extrude (MCAD-style): select one or more profile AREAS, then set
 // the distance by moving the cursor along the profile normal (live solid preview +
 // arrow manipulator + numeric box). Areas can be pre-selected in the sketch or
 // picked here: plain click picks one and starts the depth drag, Ctrl-click adds
 // more (Enter to confirm the set). A ring (annulus) area previews/extrudes as a
 // tube; selecting several areas unions them. Operation auto-selects: New Body when
-// nothing exists, Join when adding (positive), Cut when removing (negative → red).
+// nothing exists, otherwise Cut when the profile pushes into an existing body and
+// Join when it pulls away (both overridable in the commit dialog).
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
@@ -201,12 +202,27 @@ export class ExtrudeTool {
     }
   }
 
-  // Default operation: New Body when the doc has no solid yet, else Join/Cut by
-  // drag sign. When a solid exists the user confirms/overrides via a modal.
+  // Default operation: New Body when the doc has no solid yet, else Cut/Join by
+  // whether the extrude direction pushes INTO existing material or away from it
+  // (a face pushed inward reads as Cut, pulled outward as Join — MCAD parity).
+  // This replaced a pure drag-SIGN guess, which defaulted "push a face through the
+  // model" to Join and silently no-op'd (the union was already inside the body).
+  private entersSolid(): boolean {
+    if (!this.selected.length) return false;
+    const sign = this.distance >= 0 ? 1 : -1;
+    let inside = 0;
+    for (const wr of this.selected) {
+      // step the area's interior a hair along the extrude direction, off its face
+      const p = wr.interior3D.clone().addScaledVector(wr.plane.n, sign * 0.05);
+      if (this.viewport.pointInSolid(p)) inside++;
+    }
+    return inside * 2 > this.selected.length; // majority of selected areas
+  }
+
   private currentOperation(): Op {
     const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
     if (!hasSolid) return "new";
-    return this.distance >= 0 ? "join" : "cut";
+    return this.entersSolid() ? "cut" : "join";
   }
 
   private committing = false;
@@ -217,15 +233,18 @@ export class ExtrudeTool {
     if (v != null) this.distance = v; // the field is the truth: typed sign wins
     if (Math.abs(this.distance) < 1e-3) return; // ignore zero
     let op = this.currentOperation();
-    // when a body already exists, let the user state the operation (Fusion-style):
+    // when a body already exists, let the user state the operation (MCAD-style):
     // New Body avoids any boolean (and the kernel crash on hard geometry).
     const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
     if (hasSolid) {
       this.committing = true;
       const guess = op;
+      // guess === "cut" ⇔ the extrude direction enters solid (currentOperation).
+      // Flag whichever op would then do nothing, so the choice is informed.
+      const into = guess === "cut";
       const opts: { value: Op; label: string; hint: string }[] = [
-        { value: "join", label: "Join", hint: "merge" },
-        { value: "cut", label: "Cut", hint: "remove" },
+        { value: "join", label: "Join", hint: into ? "⚠ likely no effect (profile is inside)" : "merge" },
+        { value: "cut", label: "Cut", hint: into ? "remove" : "⚠ nothing to cut here" },
         { value: "new", label: "New Body", hint: "separate" },
         { value: "intersect", label: "Intersect", hint: "keep overlap" },
       ];

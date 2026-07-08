@@ -118,47 +118,147 @@ function sep(): HTMLElement {
 
 export interface CtxItem {
   label: string;
-  onClick: () => void;
+  onClick?: () => void; // omit for separators / pure submenu parents
   disabled?: boolean;
+  separator?: boolean; // renders a divider; other fields ignored
+  shortcut?: string; // right-aligned key hint, e.g. "Q"
+  danger?: boolean; // destructive action (red)
+  swatch?: string; // small color chip before the label (palette flyouts)
+  children?: CtxItem[]; // one-level flyout submenu, opens on hover
+}
+
+// the currently-open context menu's close(), so tools can dismiss it on exit
+let activeClose: (() => void) | null = null;
+
+/** Close the open context menu (if any). For tool/mode exits — normal dismissal
+ *  (outside pointerdown, Escape, item click) is handled by the menu itself. */
+export function dismissContextMenu(): void {
+  activeClose?.();
 }
 
 /** Pop a right-click context menu at (x,y) with the given items. Closes on an
- *  outside pointerdown or Escape. Reuses the `.context-menu`/`.ctx-item` styling
- *  shared with the timeline's feature menu. */
+ *  outside pointerdown or Escape. One shared engine for every right-click
+ *  surface (viewport, timeline, browser tree, sketch mode). */
 export function contextMenu(x: number, y: number, items: CtxItem[]): void {
-  document.querySelectorAll(".context-menu.dynamic").forEach((m) => m.remove());
+  activeClose?.(); // close a previous menu properly (element + listeners)
   const menu = document.createElement("div");
   menu.className = "context-menu dynamic";
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
+  let submenu: HTMLDivElement | null = null;
+  let subAnchor: HTMLElement | null = null;
+  let subCloseTimer: number | undefined;
+  const cancelSubClose = () => {
+    clearTimeout(subCloseTimer);
+    subCloseTimer = undefined;
+  };
+  const closeSub = () => {
+    cancelSubClose();
+    submenu?.remove();
+    submenu = null;
+    subAnchor = null;
+  };
+  // Hover-intent: moving diagonally from the parent item toward a lower flyout
+  // entry crosses sibling rows — an instant close would retract the flyout mid-
+  // travel, so sibling hover only *schedules* the close and entering the flyout
+  // cancels it.
+  const scheduleSubClose = () => {
+    cancelSubClose();
+    subCloseTimer = window.setTimeout(closeSub, 300);
+  };
+  let closed = false;
   const close = () => {
+    closed = true;
+    closeSub();
     menu.remove();
     document.removeEventListener("pointerdown", onDown, true);
     window.removeEventListener("keydown", onKey, true);
+    if (activeClose === close) activeClose = null;
   };
   const onDown = (e: PointerEvent) => {
-    if (!menu.contains(e.target as Node)) close();
+    const t = e.target as Node;
+    if (!menu.contains(t) && !submenu?.contains(t)) close();
   };
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") close();
+    if (e.key === "Escape") {
+      e.stopPropagation(); // Escape only closes the menu — not the app's selection
+      close();
+    }
   };
 
-  for (const it of items) {
+  const buildItem = (it: CtxItem, depth: number): HTMLElement => {
+    if (it.separator) {
+      return Object.assign(document.createElement("div"), { className: "ctx-sep" });
+    }
     const el = document.createElement("div");
     el.className = "ctx-item";
-    el.textContent = it.label;
-    if (it.disabled) {
-      el.style.opacity = "0.45";
-      el.style.pointerEvents = "none";
+    if (it.danger) el.classList.add("danger");
+    if (it.disabled) el.classList.add("disabled");
+    if (it.swatch) {
+      const chip = document.createElement("span");
+      chip.className = "ctx-swatch";
+      chip.style.background = it.swatch;
+      el.appendChild(chip);
+    }
+    const label = document.createElement("span");
+    label.className = "ctx-label";
+    label.textContent = it.label;
+    el.appendChild(label);
+    if (it.shortcut) {
+      const key = document.createElement("span");
+      key.className = "ctx-key";
+      key.textContent = it.shortcut;
+      el.appendChild(key);
+    }
+    if (it.children) {
+      const caret = document.createElement("span");
+      caret.className = "ctx-caret";
+      caret.textContent = "▸";
+      el.appendChild(caret);
+    }
+    if (it.disabled) return el;
+
+    if (it.children && depth === 0) {
+      const open = () => openSub(el, it.children!);
+      el.addEventListener("pointerenter", open);
+      el.addEventListener("click", open);
     } else {
+      // hovering a plain top-level item retracts an open flyout (hover-intent delayed)
+      if (depth === 0) el.addEventListener("pointerenter", scheduleSubClose);
       el.addEventListener("click", () => {
         close();
-        it.onClick();
+        it.onClick?.();
       });
     }
-    menu.appendChild(el);
-  }
+    return el;
+  };
+
+  const openSub = (anchor: HTMLElement, children: CtxItem[]) => {
+    if (submenu && subAnchor === anchor) {
+      cancelSubClose(); // re-hovering the parent keeps its open flyout
+      return;
+    }
+    closeSub();
+    const sub = document.createElement("div");
+    sub.className = "context-menu dynamic submenu";
+    for (const c of children) sub.appendChild(buildItem(c, 1));
+    sub.addEventListener("pointerenter", cancelSubClose);
+    document.body.appendChild(sub);
+    // to the right of the parent item; flip left / shift up when it would overflow
+    const a = anchor.getBoundingClientRect();
+    const r = sub.getBoundingClientRect();
+    let sx = a.right + 2;
+    if (sx + r.width > window.innerWidth) sx = Math.max(4, a.left - r.width - 2);
+    let sy = a.top - 5;
+    if (sy + r.height > window.innerHeight) sy = Math.max(4, window.innerHeight - r.height - 4);
+    sub.style.left = `${sx}px`;
+    sub.style.top = `${sy}px`;
+    submenu = sub;
+    subAnchor = anchor;
+  };
+
+  for (const it of items) menu.appendChild(buildItem(it, 0));
   document.body.appendChild(menu);
 
   // nudge back on-screen if it would overflow
@@ -166,8 +266,11 @@ export function contextMenu(x: number, y: number, items: CtxItem[]): void {
   if (r.bottom > window.innerHeight) menu.style.top = `${Math.max(4, y - r.height)}px`;
   if (r.right > window.innerWidth) menu.style.left = `${Math.max(4, x - r.width)}px`;
 
-  // defer listener install so the opening right-click doesn't immediately close it
+  activeClose = close;
+  // defer listener install so the opening right-click doesn't immediately close
+  // it (skip if something dismissed the menu before the deferral ran)
   setTimeout(() => {
+    if (closed) return;
     document.addEventListener("pointerdown", onDown, true);
     window.addEventListener("keydown", onKey, true);
   }, 0);
