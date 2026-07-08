@@ -1,16 +1,28 @@
 # Packaging SindriCAD
 
+> **UPDATED (2026-07): no system OpenCASCADE is needed to build or ship.** The
+> Rust/OCCT path is now behind the off-by-default `rust-geom` Cargo feature, so the
+> default build links no OCCT and needs no cmake. Geometry ships in the **Python
+> sidecar**, bundled as a relocatable runtime built by
+> [`scripts/build-sidecar-runtime.sh`](../scripts/build-sidecar-runtime.sh) (`.ps1` on
+> Windows) from `cadquery-ocp-novtk` wheels, which carry their own OCCT. `tauri build
+> --config src-tauri/tauri.bundle.conf.json` ships it as a resource. CI:
+> [`.github/workflows/build.yml`](../.github/workflows/build.yml) (ubuntu / macos-14
+> arm64 / windows; Apple Silicon only).
+>
+> **The OCCT sections below are LEGACY** — they apply only to building the optional
+> `rust-geom` spike (`cargo build --features rust-geom`), not to shipping.
+
 SindriCAD is a [Tauri 2](https://v2.tauri.app) desktop app:
 
 - **Frontend** — TypeScript + Vite, built with `npm run build` (Node 22) into `dist/`.
-- **Backend** — Rust (`src-tauri/`), which links the **system OpenCASCADE (OCCT)**
-  through a vendored `opencascade-rs` fork (`third_party/opencascade-rs`).
+- **Backend** — Rust (`src-tauri/`); the default build has no OCCT dependency (the
+  `opencascade-rs` fork is compiled only under `--features rust-geom`).
 - **Geometry sidecar** — a Python ([build123d](https://build123d.readthedocs.io))
-  process spawned at startup in the default mode. See
-  ["The Python sidecar problem"](#the-python-sidecar-problem) — this is the main
-  blocker to a real distributable today.
+  process. In dev the Rust shell spawns the uv `.venv`; in a bundle it spawns the
+  relocatable `sidecar-runtime/` resource.
 
-CI scaffold: [`.github/workflows/build.yml`](../.github/workflows/build.yml).
+CI: [`.github/workflows/build.yml`](../.github/workflows/build.yml).
 
 ---
 

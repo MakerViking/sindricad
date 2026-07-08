@@ -1,31 +1,16 @@
-# Cross-platform build for SindriCAD (Tauri 2 + Rust + system OCCT).
+# Cross-platform build + bundle for SindriCAD (Tauri 2 + bundled Python sidecar).
 #
-# STATUS / HONESTY NOTE
-# ---------------------
-# This workflow is a SCAFFOLD. Only the Linux leg mirrors a build that has been
-# run and verified locally on Arch (system OCCT 7.9.3). The macOS and Windows
-# legs are written from documentation + research and have NOT been executed.
-# Treat them as a starting point, not a green pipeline. See docs/PACKAGING.md
-# ("UNTESTED / RISKS") for the full list of unknowns.
+# No system OpenCASCADE anywhere: the Rust/OCCT path is behind the off-by-default
+# `rust-geom` feature (see src-tauri/Cargo.toml), and the shipping geometry runs in the
+# Python sidecar, whose cadquery-ocp-novtk wheels bundle their own OCCT. So this
+# workflow has NO "build OCCT from source / brew / vcpkg" steps (they were removed when
+# Move 1 gated OCCT out).
 #
-# THE CENTRAL CONSTRAINT: OCCT VERSION
-# ------------------------------------
-# The vendored opencascade-rs fork (third_party/opencascade-rs) links the SYSTEM
-# OpenCASCADE. Its build script (crates/opencascade-sys/build.rs) enforces
-# major == 7 && minor >= 8, and its C++ bridge sources are patched for the 7.9.x
-# API. So in practice we need OCCT 7.9.x on every runner:
+# Per OS it: builds a relocatable Python "sidecar-runtime" (uv + python-build-standalone
+# installed from sidecar/uv.lock), then runs `tauri build` with the bundle-only config
+# that ships that runtime as a resource, and uploads the installers.
 #
-#   * Linux  : Ubuntu apt ships OCCT 7.6 (Noble/24.04) -> FAILS the version gate
-#              AND predates the 7.9 API the bridge expects. We therefore BUILD
-#              OCCT 7.9.3 FROM SOURCE here. (apt is intentionally NOT used.)
-#   * macOS  : Homebrew `opencascade` is 7.9.3 -> exact match. Cleanest leg.
-#   * Windows: vcpkg `opencascade` is 7.9.0 -> passes the gate; 7.9.0 vs 7.9.3
-#              is a patch-level diff so the API should match, but UNVERIFIED,
-#              and MSVC + OCCT + the cxx bridge is the biggest unknown overall.
-#
-# DEP_OCCT_ROOT points cmake's find_package(OpenCASCADE) at the install prefix.
-# CMAKE_POLICY_VERSION_MINIMUM=3.5 is needed because OCCT's CMake config and the
-# fork's helper CMakeLists declare an old minimum that CMake 4 rejects otherwise.
+# Scope: x86_64 Linux, Apple Silicon macOS, x86_64 Windows. (No Intel-mac / linux-arm64.)
 
 name: build
 
@@ -35,149 +20,37 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Pin the OCCT version in one place so the from-source (Linux) and the package
-# managers (brew/vcpkg) stay aligned with the fork's 7.9 binding.
-env:
-  OCCT_VERSION: "7.9.3"
-
 jobs:
   build:
     permissions:
-      contents: write # tauri-action can create a draft release to attach artifacts
+      contents: write # tauri-action may attach artifacts to a draft release
     strategy:
-      fail-fast: false # one OS failing should not hide the status of the others
+      fail-fast: false # one OS failing must not hide the others' status
       matrix:
         include:
-          # Build on ubuntu-22.04 (not -latest/24.04): it provides webkit2gtk-4.1
-          # AND a lower glibc, so the produced AppImage/.deb runs on more systems.
+          # ubuntu-22.04: webkit2gtk-4.1 + a lower glibc, so the AppImage/.deb runs
+          # on more systems than a -24.04 build would.
           - platform: ubuntu-22.04
-          - platform: macos-latest # arm64 runner; produces an arm64 .app/.dmg
+          - platform: macos-14 # Apple Silicon (arm64) runner
           - platform: windows-latest
-
     runs-on: ${{ matrix.platform }}
 
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v4
-        with:
-          # The fork under third_party/ contains an OCCT/ submodule used only for
-          # the `builtin` (from-source) feature, which we DO NOT enable. Recursive
-          # checkout is harmless and avoids surprises if that ever changes.
-          submodules: recursive
+      - uses: actions/checkout@v4
+        # third_party/opencascade-rs is vendored in-repo (no submodules), and the
+        # default build never compiles it, so a plain checkout is enough.
 
-      # ----------------------------------------------------------------------
-      # Linux system deps: Tauri webkit2gtk stack + tools to build OCCT.
-      # ----------------------------------------------------------------------
-      - name: Install Linux system dependencies
+      - name: Install Linux system dependencies (Tauri webkit stack; NO OCCT/cmake)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libssl-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libfuse2 \
-            cmake \
-            ninja-build \
-            tcl-dev tk-dev \
-            libfreetype-dev \
-            libgl1-mesa-dev libglu1-mesa-dev \
-            libx11-dev libxext-dev libxmu-dev libxi-dev
+            build-essential curl wget file \
+            libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            patchelf libfuse2
 
-      # ----------------------------------------------------------------------
-      # OCCT 7.9.3 from source on Linux. Ubuntu's apt OCCT (7.6) is too old for
-      # the fork, so we compile and install to /opt/occt and export it via
-      # DEP_OCCT_ROOT. Cached because this is the slow step (~10-20 min cold).
-      # NOTE: UNVERIFIED in CI. The exact -D flags below are a reasonable minimal
-      # set (modeling kernel only, no Draw/test harness, no docs/samples); they
-      # may need tuning if a required toolkit ends up disabled.
-      # ----------------------------------------------------------------------
-      - name: Cache OCCT (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
-        id: occt-cache
-        uses: actions/cache@v4
-        with:
-          path: /opt/occt
-          key: occt-${{ env.OCCT_VERSION }}-${{ matrix.platform }}-v1
-
-      - name: Build OCCT from source (Linux)
-        if: matrix.platform == 'ubuntu-22.04' && steps.occt-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          # OCCT release tags use underscores, e.g. V7_9_3.
-          TAG="V${OCCT_VERSION//./_}"
-          git clone --depth 1 --branch "$TAG" \
-            https://github.com/Open-Cascade-SAS/OCCT.git occt-src
-          cmake -S occt-src -B occt-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/opt/occt \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-            -DBUILD_LIBRARY_TYPE=Shared \
-            -DBUILD_MODULE_Draw=OFF \
-            -DBUILD_MODULE_Visualization=ON \
-            -DBUILD_MODULE_ApplicationFramework=ON \
-            -DBUILD_MODULE_DataExchange=ON \
-            -DBUILD_DOC_Overview=OFF \
-            -DUSE_TK=OFF
-          cmake --build occt-build --parallel
-          sudo cmake --install occt-build
-
-      - name: Export DEP_OCCT_ROOT (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: echo "DEP_OCCT_ROOT=/opt/occt" >> "$GITHUB_ENV"
-
-      # ----------------------------------------------------------------------
-      # OCCT on macOS via Homebrew. The `opencascade` formula is 7.9.3 (exact
-      # match for the binding). Homebrew's prefix differs by arch:
-      #   * Apple Silicon (macos-latest): /opt/homebrew
-      #   * Intel:                        /usr/local
-      # `brew --prefix opencascade` gives the keg path directly.
-      # ----------------------------------------------------------------------
-      - name: Install OCCT (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: |
-          set -euxo pipefail
-          brew update
-          brew install opencascade
-          OCCT_PREFIX="$(brew --prefix opencascade)"
-          echo "DEP_OCCT_ROOT=${OCCT_PREFIX}" >> "$GITHUB_ENV"
-          echo "Installed OCCT at ${OCCT_PREFIX}"
-          brew list --versions opencascade || true
-
-      # ----------------------------------------------------------------------
-      # OCCT on Windows via vcpkg. THIS IS THE LEAST-CERTAIN LEG.
-      # vcpkg ships opencascade 7.9.0 (passes the >=7.8 gate). We install with
-      # the x64-windows (dynamic) triplet and point DEP_OCCT_ROOT at the
-      # installed tree so find_package(OpenCASCADE) can locate OpenCASCADEConfig.
-      # vcpkg is preinstalled on GitHub windows-latest at $VCPKG_INSTALLATION_ROOT.
-      # UNKNOWNS: (1) does the fork's cxx bridge compile under MSVC against 7.9.0;
-      # (2) will OpenCASCADE's CMake config be found at <root>/installed/<triplet>;
-      # (3) DLL placement so the bundled app can find OCCT at runtime. See docs.
-      # ----------------------------------------------------------------------
-      - name: Install OCCT (Windows, vcpkg)
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $triplet = "x64-windows"
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install "opencascade:$triplet"
-          $occtRoot = "$env:VCPKG_INSTALLATION_ROOT\installed\$triplet"
-          # find_package looks under <root> for share/opencascade/*Config.cmake.
-          "DEP_OCCT_ROOT=$occtRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          # Make OCCT DLLs discoverable for any test/run step and for bundling.
-          "$occtRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          Write-Host "OCCT (vcpkg) installed at $occtRoot"
-
-      # ----------------------------------------------------------------------
-      # Toolchains.
-      # ----------------------------------------------------------------------
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -192,31 +65,50 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Install frontend dependencies
         run: npm ci
 
-      # ----------------------------------------------------------------------
-      # Build the Tauri app. tauri-action runs `beforeBuildCommand`
-      # (npm run build) and then `tauri build`, and uploads the bundles.
-      # CMAKE_POLICY_VERSION_MINIMUM=3.5 is set process-wide so OCCT's exported
-      # CMake config and the fork's helper CMakeLists configure under CMake 4.
-      # DEP_OCCT_ROOT was exported per-OS above.
-      # ----------------------------------------------------------------------
-      - name: Build Tauri app
+      # --- the bundled Python geometry runtime (relocatable, novtk, from the lock) ---
+      - name: Build sidecar runtime (Linux/macOS)
+        if: matrix.platform != 'windows-latest'
+        run: bash scripts/build-sidecar-runtime.sh
+
+      - name: Build sidecar runtime (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/build-sidecar-runtime.ps1
+
+      # --- build + bundle. The bundle-only config ships sidecar-runtime/ as a resource
+      #     and (on macOS) turns on hardened runtime + entitlements. ---
+      - name: Build + bundle Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
-          # DEP_OCCT_ROOT comes from $GITHUB_ENV (set per-OS above).
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization. When these secrets are UNSET the mac leg
+          # produces an UNSIGNED bundle (Gatekeeper-blocked on other machines); set
+          # them (Developer ID Application cert + notarization creds) to ship cleanly.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          # No tagName/releaseId -> tauri-action just builds (no release publish).
-          # Bundle targets come from src-tauri/tauri.conf.json ("targets": "all").
-          args: ""
+          # merge the bundle-only config (adds the sidecar-runtime resource + macOS
+          # hardened-runtime/entitlements) on top of tauri.conf.json.
+          args: --config src-tauri/tauri.bundle.conf.json
 
-      # ----------------------------------------------------------------------
-      # Upload whatever bundles were produced. Paths cover the per-OS layouts
-      # Tauri writes under src-tauri/target/release/bundle/.
-      # ----------------------------------------------------------------------
+      # KNOWN FOLLOW-UP (macOS notarization): notarization is NOT recursive, so every
+      # embedded Mach-O under sidecar-runtime (libpython + the cadquery-ocp .dylibs)
+      # must be signed with the hardened runtime. If notarization fails on the first
+      # signed mac run, add a recursive `codesign --force --options runtime --sign
+      # "$APPLE_SIGNING_IDENTITY"` pass over src-tauri/sidecar-runtime BEFORE this step.
+      # Windows Authenticode: set bundle.windows.signCommand in the bundle config +
+      # a signing secret to clear SmartScreen (optional; unsigned still runs).
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()
