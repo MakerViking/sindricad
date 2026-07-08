@@ -32,6 +32,9 @@ src-tauri/*.3mf
 # research / experiment shelf: kept out of the repo
 proving-ground/
 
+# bundled Python sidecar runtime (built by scripts/build-sidecar-runtime.sh, ~800MB)
+src-tauri/sidecar-runtime/
+
 # secrets / local env: never commit
 .env
 .env.*

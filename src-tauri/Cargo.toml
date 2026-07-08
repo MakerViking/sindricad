@@ -20,6 +20,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 libc = "0.2"
 hidapi = "2"
+# portable CSPRNG for the sidecar WebSocket token (replaces a /dev/urandom read that
+# fell back to a weak token on Windows).
+getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Printer device layer (printer.rs): LAN Moonraker HTTP client. No TLS features —
@@ -27,18 +30,34 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart"] }
 # explicit for the status-monitor task's sleep; tauri already runs the tokio rt.
 tokio = { version = "1", features = ["time"] }
-# Geometry-in-Rust spike: link the SYSTEM OCCT (default-features=false disables the
-# from-source `builtin` build). Requires OCCT >= 7.8 installed (Arch: `opencascade`).
-# Published 0.2.0 (2023) can't system-link cleanly & its vendored OCCT 7.8 won't
-# configure under cmake 4. Upstream `main` targets OCCT 7.8 and does not compile
-# against system OCCT 7.9.3 (TopoDS class→namespace etc.), so we vendor a local
-# fork under third_party/ patched for 7.9.
-opencascade = { path = "../third_party/opencascade-rs/crates/opencascade", default-features = false }
-opencascade-sys = { path = "../third_party/opencascade-rs/crates/opencascade-sys", default-features = false }
+# --- Rust/OCCT geometry spike (opt-in only) ---------------------------------
+# These four crates are used ONLY by src-tauri/src/geom.rs (the experimental
+# in-Rust OCCT geometry path, VITE_GEOM=rust). They are `optional` and behind the
+# `rust-geom` feature (below) so the DEFAULT build links no system OpenCASCADE and
+# needs no cmake — that is what makes the shell build cleanly on Windows/macOS/Linux.
+# The shipping geometry runs in the Python sidecar. Enable the spike with
+# `cargo build --features rust-geom` (needs OCCT >= 7.9 installed; Arch: `opencascade`).
+opencascade = { path = "../third_party/opencascade-rs/crates/opencascade", default-features = false, optional = true }
+opencascade-sys = { path = "../third_party/opencascade-rs/crates/opencascade-sys", default-features = false, optional = true }
 # glam re-exported by opencascade for DVec3 used in the document->geometry mapping.
 # MUST match the fork's glam (0.24) so DVec3 unifies across the crate boundary.
-glam = "0.24"
-# 3MF export: OCCT has no 3MF writer (only STEP/STL/IGES via the fork). build123d
-# uses its Mesher for 3MF; we instead tessellate the solid and write the mesh as a
-# 3MF (zip of 3D model XML) via this crate. Mirrors sidecar/exporters.py's 3mf path.
-threemf = "0.8"
+glam = { version = "0.24", optional = true }
+# 3MF export for the Rust path: OCCT has no 3MF writer, so geom.rs tessellates the
+# solid and writes the mesh as a 3MF via this crate. The SHIPPING colored-3MF export
+# is done by the Python sidecar, so this is opt-in with the rest of the spike.
+threemf = { version = "0.8", optional = true }
+
+[features]
+# Off by default: the default build has zero OCCT/cmake dependency. Turn on to
+# compile the in-Rust OCCT geometry path (src/geom.rs) for VITE_GEOM=rust.
+rust-geom = ["dep:opencascade", "dep:opencascade-sys", "dep:glam", "dep:threemf"]
+
+# Windows-only: a Job Object with KILL_ON_JOB_CLOSE reaps the sidecar (and its
+# ProcessPoolExecutor workers) when the app exits or crashes. Unix uses a process
+# group + PR_SET_PDEATHSIG instead (no extra dep).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }

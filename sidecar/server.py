@@ -29,6 +29,8 @@ import os
 import secrets
 import signal
 import sys
+import threading
+import time
 import urllib.parse
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -483,15 +485,34 @@ def _import_job(path, fmt):
 
 
 def _die_with_parent():
-    """Linux: receive SIGTERM when the parent process dies (anti-orphan)."""
-    if sys.platform != "linux":
+    """Exit when the parent (the Rust shell, or the server for a worker) dies, so we
+    never orphan. Linux delivers SIGTERM via PR_SET_PDEATHSIG. macOS has no such
+    mechanism, so a daemon thread polls getppid() and exits on reparenting (the parent
+    dying makes our ppid change / become 1). Windows is covered by the Rust-side Job
+    Object (KILL_ON_JOB_CLOSE), so no watchdog is needed there."""
+    if sys.platform == "linux":
+        try:
+            PR_SET_PDEATHSIG = 1
+            libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+        except Exception:
+            pass  # best-effort; the Rust side also kills us on exit
         return
-    try:
-        PR_SET_PDEATHSIG = 1
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-    except Exception:
-        pass  # best-effort; the Rust side also kills us on exit
+
+    if sys.platform == "darwin":
+        orig_ppid = os.getppid()
+
+        def _watch():
+            while True:
+                time.sleep(1.0)
+                try:
+                    ppid = os.getppid()
+                except Exception:
+                    os._exit(0)
+                if ppid != orig_ppid or ppid <= 1:
+                    os._exit(0)  # parent gone (reparented to launchd) -> don't orphan
+
+        threading.Thread(target=_watch, daemon=True).start()
 
 
 def _ok(req_id, result):

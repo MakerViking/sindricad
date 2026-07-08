@@ -3,6 +3,7 @@
 //! WebSocket directly (not Tauri IPC); Rust only owns the window, native
 //! dialogs, and the sidecar lifecycle.
 
+#[cfg(feature = "rust-geom")]
 mod geom;
 mod printer;
 mod sidecar;
@@ -109,40 +110,69 @@ fn recovery_clear(app: tauri::AppHandle, slot: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        // Rust geometry spike: callable as invoke("geom_rebuild") when the
-        // frontend runs with VITE_GEOM=rust (else it uses the Python sidecar).
-        // `sidecar_token` hands the per-launch WebSocket auth token to the
-        // frontend so it can dial the sidecar.
-        .invoke_handler(tauri::generate_handler![
-            geom::geom_rebuild,
-            geom::geom_export,
-            sidecar_token,
-            recovery_write,
-            recovery_read,
-            recovery_list,
-            recovery_clear,
-            printer::printers_list,
-            printer::printers_upsert,
-            printer::printers_remove,
-            printer::printer_probe,
-            printer::printer_filaments,
-            printer::printer_status,
-            printer::printer_upload_and_print,
-            printer::printer_set_filament,
-            printer::printer_monitor_start,
-            printer::printer_monitor_stop,
-            slicer::settings_get,
-            slicer::settings_set,
-            slicer::print_staging_path,
-            slicer::slicer_open,
-            slicer::slicer_project_settings
-        ])
+        .plugin(tauri_plugin_fs::init());
+
+    // The Rust/OCCT geometry commands (`geom_rebuild`/`geom_export`) only exist when
+    // the `rust-geom` feature is on (VITE_GEOM=rust). generate_handler! won't accept
+    // #[cfg] on individual entries, so we register the command set in two whole-list
+    // arms: with the geom pair when the feature is on, without it (the shipping
+    // Python-sidecar build) when it's off. `sidecar_token` hands the per-launch
+    // WebSocket auth token to the frontend so it can dial the sidecar.
+    #[cfg(feature = "rust-geom")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        geom::geom_rebuild,
+        geom::geom_export,
+        sidecar_token,
+        recovery_write,
+        recovery_read,
+        recovery_list,
+        recovery_clear,
+        printer::printers_list,
+        printer::printers_upsert,
+        printer::printers_remove,
+        printer::printer_probe,
+        printer::printer_filaments,
+        printer::printer_status,
+        printer::printer_upload_and_print,
+        printer::printer_set_filament,
+        printer::printer_monitor_start,
+        printer::printer_monitor_stop,
+        slicer::settings_get,
+        slicer::settings_set,
+        slicer::print_staging_path,
+        slicer::slicer_open,
+        slicer::slicer_project_settings
+    ]);
+    #[cfg(not(feature = "rust-geom"))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        sidecar_token,
+        recovery_write,
+        recovery_read,
+        recovery_list,
+        recovery_clear,
+        printer::printers_list,
+        printer::printers_upsert,
+        printer::printers_remove,
+        printer::printer_probe,
+        printer::printer_filaments,
+        printer::printer_status,
+        printer::printer_upload_and_print,
+        printer::printer_set_filament,
+        printer::printer_monitor_start,
+        printer::printer_monitor_stop,
+        slicer::settings_get,
+        slicer::settings_set,
+        slicer::print_staging_path,
+        slicer::slicer_open,
+        slicer::slicer_project_settings
+    ]);
+
+    let app = builder
         .manage(printer::Monitors::default())
         .setup(|app| {
-            match Sidecar::spawn() {
+            match Sidecar::spawn(app.handle()) {
                 Ok(s) => {
                     app.manage(s);
                 }
