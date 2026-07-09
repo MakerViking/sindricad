@@ -58,6 +58,7 @@ rust-geom = ["dep:opencascade", "dep:opencascade-sys", "dep:glam", "dep:threemf"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }

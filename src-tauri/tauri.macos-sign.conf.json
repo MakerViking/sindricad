@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "//": "macOS signing config. Merge ONLY when a Developer ID cert is available (Apple Developer Program, $99/yr) — deferred for now, so default builds are UNSIGNED. When you have the cert: add the APPLE_* GitHub secrets AND append this to the build args, e.g. `tauri build --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.macos-sign.conf.json`. hardenedRuntime + these entitlements let the bundled Python dlopen its OCCT dylibs under notarization.",
+  "bundle": {
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist",
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

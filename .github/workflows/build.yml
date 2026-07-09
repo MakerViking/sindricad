@@ -49,6 +49,7 @@ jobs:
             build-essential curl wget file \
             libssl-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev \
+            libudev-dev \
             patchelf libfuse2
 
       - name: Install Rust
@@ -87,18 +88,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization. When these secrets are UNSET the mac leg
-          # produces an UNSIGNED bundle (Gatekeeper-blocked on other machines); set
-          # them (Developer ID Application cert + notarization creds) to ship cleanly.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # UNSIGNED builds for now (Apple Developer Program deferred — no budget).
+          # macOS ships unsigned (open via right-click -> Open); Windows unsigned runs
+          # with a SmartScreen warning. To SIGN later: add the APPLE_* / Windows
+          # signing secrets back here AND append the signing config, i.e.
+          #   args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.macos-sign.conf.json
         with:
-          # merge the bundle-only config (adds the sidecar-runtime resource + macOS
-          # hardened-runtime/entitlements) on top of tauri.conf.json.
+          # bundle-only config ships sidecar-runtime/ as a resource. (No macOS signing
+          # block here, so tauri produces an unsigned .app without attempting codesign.)
           args: --config src-tauri/tauri.bundle.conf.json
 
       # KNOWN FOLLOW-UP (macOS notarization): notarization is NOT recursive, so every

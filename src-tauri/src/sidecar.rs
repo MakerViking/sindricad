@@ -220,7 +220,7 @@ fn assign_kill_job(child: &Child) -> Option<windows::Win32::Foundation::HANDLE> 
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     unsafe {
-        let job = CreateJobObjectW(None, None).ok()?;
+        let job = CreateJobObjectW(None, windows::core::PCWSTR::null()).ok()?;
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         SetInformationJobObject(
