@@ -197,11 +197,17 @@ def _body_payload(b, tolerance):
     from builder import _face_fp, on_feature_tick
 
     bid, sh = b["id"], b.get("shape")
+    requested = tolerance
+    ent = _MESH_CACHE.get(bid)
+    # RAM hit BEFORE the bbox: _effective_tolerance is a pure function of
+    # (shape, requested), so identical shape identity + identical request imply
+    # an identical effective tolerance — an unchanged body (the common case
+    # during an interactive drag of some OTHER body) skips the OCCT bbox walk
+    # entirely instead of paying it on every tick.
+    if ent is not None and ent["shape"] is sh and ent["requested"] == requested:
+        return ent
     if sh is not None:
         tolerance = _effective_tolerance(sh, tolerance)
-    ent = _MESH_CACHE.get(bid)
-    if ent is not None and ent["shape"] is sh and ent["tolerance"] == tolerance:
-        return ent
 
     mesh_key = None
     mk = b.get("meshKey")
@@ -236,7 +242,8 @@ def _body_payload(b, tolerance):
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
             except Exception:
                 pass
-    ent = {"shape": sh, "tolerance": tolerance, "etag": _uuid.uuid4().hex, "payload": payload}
+    ent = {"shape": sh, "requested": requested, "tolerance": tolerance,
+           "etag": _uuid.uuid4().hex, "payload": payload}
     _MESH_CACHE[bid] = ent
     if on_feature_tick is not None:
         try:

@@ -2829,6 +2829,16 @@ def _try_vol(shape):
         return None
 
 
+def _noop_eps(ref):
+    """Volume change smaller than this (per the op's reference volume) counts as
+    "the boolean did nothing": an absolute floor plus a 0.01% relative slice,
+    mirroring the tolerances used by _unify_body / cleanup elsewhere in this
+    file. The ONE definition every boolean no-op guard shares
+    (_boolean_into_bodies for extrude/revolve/loft/sweep, _do_combine for
+    Combine) — tune it here, never inline a copy."""
+    return max(1e-6, 1e-4 * (ref or 0.0))
+
+
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
@@ -2856,11 +2866,10 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
         and b.get("id") not in hidden
         and _bbox_overlap(b["shape"], solid)
     ]
-    # a change smaller than this (per op's reference volume) counts as "nothing
-    # happened" — an absolute floor plus a relative slice, mirroring the
-    # tolerances used by _unify_body / cleanup elsewhere in this file.
-    def eps(ref):
-        return max(1e-6, 1e-4 * (ref or 0.0))
+    # a change smaller than this counts as "nothing happened" — shared by every
+    # boolean guard site (here and _do_combine) so the tolerance convention
+    # can't drift between features.
+    eps = _noop_eps
 
     prism_vol = _try_vol(solid)
     if op == "join":
@@ -3123,12 +3132,12 @@ def _do_combine(f, bodies, find_body, diag=None):
         raise ValueError(f"unknown combine operation: {op}")
     target = find_body(f["target"]) if f.get("target") else (bodies[0] if bodies else None)
     if target is None:
-        _skip_combine(diag, f, "target body already consumed or missing")
+        _skip_feature(diag, f, "combine", "target body already consumed or missing")
         return
     tool_ids = f.get("tools") or [b["id"] for b in bodies if b["id"] != target["id"]]
     tools = [t for t in (find_body(tid) for tid in tool_ids) if t is not None and t["id"] != target["id"]]
     if not tools:
-        _skip_combine(diag, f, "tool bodies already consumed or missing")
+        _skip_feature(diag, f, "combine", "tool bodies already consumed or missing")
         return
 
     shape = target["shape"]
@@ -3150,7 +3159,7 @@ def _do_combine(f, bodies, find_body, diag=None):
     # Volume-read failures skip the guard (never raise a misleading no-op error).
     after_vol = _try_vol(shape)
     if before_vol is not None and after_vol is not None:
-        guard_eps = max(1e-6, 1e-4 * before_vol)
+        guard_eps = _noop_eps(before_vol)
         if op == "cut" and after_vol >= before_vol - guard_eps:
             raise ValueError(
                 "Combine (Cut) removed nothing — no tool body overlaps the target."
@@ -3172,13 +3181,6 @@ def _do_combine(f, bodies, find_body, diag=None):
     if not f.get("keepTools"):
         consumed = {t["id"] for t in tools}
         bodies[:] = [b for b in bodies if b["id"] not in consumed]
-
-
-def _skip_combine(diag, f, reason):
-    """Record a non-fatal dangling-reference combine skip in the diagnostics
-    channel (same shape as geom_select's selector diagnostics). No `diag` list =
-    nothing recorded, and the combine is simply skipped."""
-    _skip_feature(diag, f, "combine", reason)
 
 
 def _skip_feature(diag, f, kind, reason):
