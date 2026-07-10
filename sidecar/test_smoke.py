@@ -593,6 +593,38 @@ def test_revolve_loft_operation():
           f"frustum vol {bodies[1]['shape'].volume:.0f}")
 
 
+def test_fillet_failure_diagnostics():
+    """When a fillet/chamfer fails, the per-edge probe names the offending
+    edges' midpoints in an `edgeOpFailed` diagnostic (so the UI can paint
+    exactly those edges red) while the feature itself errors as before. A
+    successful fillet emits no such diagnostic."""
+    _s, base = _box(1, 20, 20, 2)  # thin plate: corners +-10, z=0..2
+    # a top edge (y=+10, z=2, along X): its midpoint is (0, 10, 2)
+    fil = {"id": "fl", "type": "fillet", "radius": 5,  # 5mm into a 2mm wall -> impossible
+           "edges": {"kind": "edge", "by": "nearest", "point": [0, 10, 2]}}
+    diag = []
+    _p, err, bodies = rebuild({"parameters": {}, "features": base + [fil]}, diagnostics=diag)
+    assert err and err[0]["feature_id"] == "fl", f"oversized fillet should error, got {err}"
+    entries = [d for d in diag if d.get("kind") == "edgeOpFailed"]
+    assert len(entries) == 1, f"expected one edgeOpFailed diagnostic, got {diag}"
+    ent = entries[0]
+    assert ent["feature_id"] == "fl" and ent["reason"] in ("per-edge", "combination"), ent
+    assert ent["failed"] and len(ent["failed"][0]["mid"]) == 3, ent
+    mx, my, mz = ent["failed"][0]["mid"]
+    assert abs(mx) < 0.1 and abs(my - 10) < 0.1 and abs(mz - 2) < 0.1, \
+        f"failed-edge midpoint should be the top edge (0,10,2), got {ent['failed'][0]['mid']}"
+    assert bodies and abs(bodies[0]["shape"].volume - 800) < 1, "plate must survive intact (20*20*2)"
+
+    # happy path: a sane radius emits NO edgeOpFailed diagnostic
+    diag2 = []
+    fil_ok = dict(fil, radius=0.5)
+    _p, err, _b = rebuild({"parameters": {}, "features": base + [fil_ok]}, diagnostics=diag2)
+    assert not err, f"0.5mm fillet on a 2mm plate should build: {err}"
+    assert not [d for d in diag2 if d.get("kind") == "edgeOpFailed"], diag2
+    print("  fillet failure diagnostics OK: edgeOpFailed names the top edge (0,10,2); "
+          "happy path emits none")
+
+
 def test_boolean_guards_combine_sweep():
     """The extrude no-op guards also cover the OTHER boolean sites: a Combine Cut
     whose tools don't touch the target, and a Combine Intersect that would empty
@@ -1452,6 +1484,7 @@ if __name__ == "__main__":
     test_sweep()
     test_revolve_loft_operation()
     test_boolean_guards_combine_sweep()
+    test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()
     test_interference()

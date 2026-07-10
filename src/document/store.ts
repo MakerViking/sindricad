@@ -305,7 +305,33 @@ export class DocumentStore {
   /** true while an un-committed live-preview feature is appended to rebuilds
    *  (its transient failures must not toast). */
   get hasPreview(): boolean {
-    return this.preview !== null;
+    return this.preview !== null || this.editPreview !== null;
+  }
+
+  // --- roll-to-position edit preview (re-opening a committed feature) ---
+  /** While editing feature `id`, rebuilds see the timeline truncated to just
+   *  BEFORE that feature plus the live edited version — the committed mesh has
+   *  already consumed e.g. a fillet's member edges, so only the rolled-back
+   *  model exposes them for highlighting/toggling. Later features are
+   *  temporarily hidden for the duration of the edit (the tool's prompt says
+   *  so). Never recorded in undo; commit goes through replaceFeature. */
+  private editPreview: { id: string; feature: Feature | null } | null = null;
+  beginEditPreview(id: string) {
+    this.editPreview = { id, feature: null };
+    this.scheduleRebuild(true);
+  }
+  setEditPreview(feature: Feature | null) {
+    if (!this.editPreview) return;
+    this.editPreview = { id: this.editPreview.id, feature };
+    this.scheduleRebuild(true);
+  }
+  endEditPreview(rebuild = true) {
+    if (!this.editPreview) return;
+    this.editPreview = null;
+    if (rebuild) this.scheduleRebuild(true);
+  }
+  get editPreviewId(): string | null {
+    return this.editPreview?.id ?? null;
   }
   /** reorder: move feature `id` to position `toIndex` in the timeline. */
   moveFeature(id: string, toIndex: number) {
@@ -580,9 +606,16 @@ export class DocumentStore {
   /** the document actually sent to build: features up to the rollback marker,
    *  minus suppressed ones. The full document is what we save/serialize. */
   private effectiveDoc(): CadDocument {
-    const features = this.doc.features
+    let features = this.doc.features
       .slice(0, this.rollbackIndex)
       .filter((f) => !this.suppressed.has(f.id));
+    if (this.editPreview) {
+      // roll to the edited feature's position (never past the rollback marker),
+      // then append the live edited version if the tool has produced one.
+      const idx = features.findIndex((f) => f.id === this.editPreview!.id);
+      if (idx >= 0) features = features.slice(0, idx);
+      if (this.editPreview.feature) features.push(this.editPreview.feature);
+    }
     if (this.preview) features.push(this.preview);
     // Body visibility travels with the rebuild so the sidecar can keep hidden
     // bodies out of extrude booleans (a hidden body is protected from edits).

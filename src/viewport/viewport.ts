@@ -31,6 +31,8 @@ import type { ViewCubeSide } from "../types";
 const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
 const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
 import { Highlighter } from "./highlight";
+import type { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { nearestEdgeByMid, midMatchTol } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
 
@@ -621,6 +623,39 @@ export class Viewport {
       const mid = pts[Math.floor(pts.length / 2)];
       return { kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] };
     });
+  }
+
+  /** Find the rendered edge whose polyline midpoint is nearest `mid` (world
+   *  units, model-scaled tolerance) — the rebuild-stable way to re-locate an
+   *  edge a saved selector or a sidecar diagnostic refers to. */
+  edgeLineByMid(mid: [number, number, number]): Line2 | null {
+    if (!this.model) return null;
+    const edges = this.model.edges.map((e) => ({ points: e.userData.points as [number, number, number][] }));
+    const i = nearestEdgeByMid(edges, mid, midMatchTol(this.model.box.getSize(this.projScratch).length()));
+    return i == null ? null : this.model.edges[i];
+  }
+
+  /** Paint these edges as selected (used to pre-highlight a feature's saved
+   *  member edges when re-opening it for editing). */
+  selectEdgeLines(lines: Line2[]) {
+    if (!this.highlighter) return;
+    const already = new Set(this.highlighter.getSelectedEdges());
+    for (const l of lines) if (!already.has(l)) this.highlighter.toggleSelectEdge(l);
+    this.requestRender();
+  }
+
+  /** Paint the edges nearest these midpoints red (fillet/chamfer failures).
+   *  Replaces the previous error set; pass [] to clear. Re-apply after each
+   *  rebuild (setModel rebuilds the highlighter, wiping paint by design). */
+  setErrorEdgeMids(mids: [number, number, number][]) {
+    if (!this.highlighter) return;
+    const lines: Line2[] = [];
+    for (const mid of mids) {
+      const l = this.edgeLineByMid(mid);
+      if (l) lines.push(l);
+    }
+    this.highlighter.setErrorEdges(lines);
+    this.requestRender();
   }
 
   /** Pre-selection for Press/Pull: return a selector for EACH selected face (one

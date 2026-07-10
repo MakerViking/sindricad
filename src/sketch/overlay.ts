@@ -214,6 +214,14 @@ export class SketchOverlay {
     this.selectedRegionPoints = [];
     this.recolorFills();
   }
+  /** Replace the selection with regions containing these world points (the
+   *  persisted shape an extrude feature stores) — used when re-opening an
+   *  extrude for editing. Points whose region no longer exists simply match
+   *  nothing (the containment rule drops them silently). */
+  selectRegionsByPoints(points: [number, number, number][]) {
+    this.selectedRegionPoints = points.map((p) => [p[0], p[1], p[2]]);
+    this.recolorFills();
+  }
   /** Hover-highlight one region's fill (or clear with null). */
   setHoverRegion(wr: WorldRegion | null) {
     if (this.hovered === wr) return;

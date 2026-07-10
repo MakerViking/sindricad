@@ -34,6 +34,14 @@ export class ExtrudeTool {
   private hitScratch = new THREE.Vector3();
   private onDone: ((id: string | null) => void) | null = null;
 
+  // --- edit mode (re-opening a committed extrude) ---
+  private editId: string | null = null; // committed feature id being edited
+  private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
+  private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
+  /** while editing, this sketch is forced visible so its regions exist
+   *  (consumed sketches hide by default) — main.ts's isSketchVisible honors it. */
+  forcedSketchId: string | null = null;
+
   private boundMove: (e: PointerEvent) => void;
   private boundDown: (e: PointerEvent) => void;
   private boundKey: (e: KeyboardEvent) => void;
@@ -65,6 +73,53 @@ export class ExtrudeTool {
     } else {
       setPrompt("Select a profile to extrude · Ctrl-click adds areas · Enter to confirm");
     }
+  }
+
+  /** Re-open a committed extrude for editing: the model rolls back to just
+   *  before it, its sketch is forced visible, the saved profile areas are
+   *  pre-selected, and the saved distance seeds (and locks) the input — retype
+   *  or Ctrl-click areas, then commit to REPLACE the feature in place (same id,
+   *  one undo step). Returns false when the distance is a parameter expression
+   *  (the inspector's job). */
+  startEdit(featureId: string, onDone: (id: string | null) => void): boolean {
+    if (this.active) return false;
+    const f = this.store.document.features.find((x) => x.id === featureId);
+    if (!f || f.type !== "extrude") return false;
+    if (typeof f.distance !== "number") return false; // parameter expression — inspector's job
+
+    this.active = true;
+    this.phase = "pick";
+    this.onDone = onDone;
+    this.editId = featureId;
+    this.editOp = f.operation;
+    this.editHiddenBodies = f.hiddenBodies;
+    this.distance = f.distance;
+    this.forcedSketchId = f.sketch;
+
+    this.viewport.suspendPicking = true;
+    const el = this.viewport.domElement;
+    el.addEventListener("pointermove", this.boundMove);
+    el.addEventListener("pointerdown", this.boundDown);
+    window.addEventListener("keydown", this.boundKey, true);
+
+    // roll the model back so the pre-extrude state is what previews/op-guesses
+    // see (exactly what the tool saw at creation), then rebuild the overlay so
+    // the now-forced-visible sketch contributes regions to select from.
+    this.store.beginEditPreview(featureId);
+    this.overlay.update(this.store.document);
+    const saved: [number, number, number][] = (
+      f.regions ?? (f.region ? [f.region] : [])
+    ) as [number, number, number][];
+    this.overlay.selectRegionsByPoints(saved);
+    this.selected = this.overlay.selectedRegions();
+    if (this.selected.length) {
+      this.beginDrag();
+    } else {
+      setPrompt(
+        "Editing extrude: its areas were not found (sketch changed?) — select a profile · Esc to cancel",
+      );
+    }
+    return true;
   }
 
   private onMove(e: PointerEvent) {
@@ -118,12 +173,25 @@ export class ExtrudeTool {
 
   private beginDrag() {
     this.phase = "drag";
-    this.distance = 10;
     this.overlay.setHoverRegion(null);
     this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
-    setPrompt(
-      "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
-    );
+    if (this.editId) {
+      // seed the SIGNED saved distance and lock the field (userDriven): extrude's
+      // onMove free-tracks the cursor and would clobber the seed on the first
+      // move otherwise. Cursor-scrub is deliberately off in edit mode — retype
+      // or commit. (Seeding the abs value would silently drop a cut's sign the
+      // moment getValue is read back — the DimInput abs-display trap.)
+      this.dim.seed("distance", this.distance);
+      setPrompt(
+        "Editing extrude: Ctrl-click areas to add/remove · type a value + Enter · " +
+          "click to commit · Esc to cancel (later features are hidden while editing)",
+      );
+    } else {
+      this.distance = 10;
+      setPrompt(
+        "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
+      );
+    }
     this.updatePreview();
   }
 
@@ -238,10 +306,12 @@ export class ExtrudeTool {
     const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
     if (hasSolid) {
       this.committing = true;
-      const guess = op;
-      // guess === "cut" ⇔ the extrude direction enters solid (currentOperation).
+      // in edit mode the SAVED operation is the presumptive choice; otherwise
+      // the direction-derived guess is.
+      const guess = this.editId ? (this.editOp ?? op) : op;
+      // op === "cut" ⇔ the extrude direction enters solid (currentOperation).
       // Flag whichever op would then do nothing, so the choice is informed.
-      const into = guess === "cut";
+      const into = op === "cut";
       const opts: { value: Op; label: string; hint: string }[] = [
         { value: "join", label: "Join", hint: into ? "⚠ likely no effect (profile is inside)" : "merge" },
         { value: "cut", label: "Cut", hint: into ? "remove" : "⚠ nothing to cut here" },
@@ -258,26 +328,41 @@ export class ExtrudeTool {
         return;
       }
       op = chosen;
+    } else if (this.editId && this.editOp) {
+      // rolled-back model has no solid (this WAS the first solid) — keep the
+      // saved operation rather than silently rewriting it to "new".
+      op = this.editOp;
     }
     const feature: Feature = {
-      id: this.store.nextId(),
+      id: this.editId ?? this.store.nextId(),
       type: "extrude",
       sketch: this.selected[0].sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
       regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
       // capture the participants NOW: bodies hidden at creation stay excluded
-      // from this boolean forever; later eye toggles are pure display
-      hiddenBodies: this.store.hiddenBodyIds(),
+      // from this boolean forever; later eye toggles are pure display. When
+      // EDITING, the ORIGINAL capture is kept — re-capturing here would let
+      // display toggles rewrite committed boolean history.
+      hiddenBodies: this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds(),
     };
     const id = feature.id;
-    this.store.addFeature(feature);
+    if (this.editId) {
+      this.store.endEditPreview(false); // replaceFeature triggers the rebuild
+      this.store.replaceFeature(this.editId, feature);
+    } else {
+      this.store.addFeature(feature);
+    }
     this.overlay.clearRegionSelection();
     this.cleanup();
     this.onDone?.(id);
   }
 
   cancel() {
+    if (this.editId) {
+      this.store.endEditPreview();
+      this.overlay.clearRegionSelection();
+    }
     this.cleanup();
     this.onDone?.(null);
   }
@@ -302,6 +387,13 @@ export class ExtrudeTool {
     this.viewport.suspendPicking = false;
     this.active = false;
     this.selected = [];
+    if (this.editId !== null || this.forcedSketchId !== null) {
+      this.editId = null;
+      this.editOp = null;
+      this.editHiddenBodies = undefined;
+      this.forcedSketchId = null;
+      this.overlay.update(this.store.document); // re-hide the consumed sketch
+    }
     setPrompt(null);
   }
 

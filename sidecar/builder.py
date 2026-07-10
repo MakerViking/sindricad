@@ -1030,12 +1030,50 @@ def _handle_extrude(f, ctx):
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid)
 
 
+def _report_edge_failures(f, ctx, edges, try_one):
+    """Failure-path-only probe for fillet/chamfer: which of `edges` fail the op
+    INDIVIDUALLY? Appends an `edgeOpFailed` diagnostic naming the offenders'
+    midpoints — or ALL members when every edge passes alone (the combination
+    itself is the failure) — so the frontend can paint exactly those edges red.
+    Bounded (skipped past 32 edges) and only ever paid AFTER the combined op
+    already raised; the happy path stays a single OCCT build."""
+    if ctx.diagnostics is None or len(edges) > 32:
+        return
+    failed = []
+    for e in edges:
+        try:
+            try_one(e)
+        except Exception:
+            failed.append(e)
+    probed = failed or edges
+    from geom_select import _edge_mid
+
+    def mid3(e):
+        p = _edge_mid(e)
+        return [round(float(p.X), 3), round(float(p.Y), 3), round(float(p.Z), 3)]
+
+    ctx.diagnostics.append({
+        "feature_id": f.get("id"),
+        "kind": "edgeOpFailed",
+        "resolved": len(edges),
+        "confidence": 0.0,
+        "lossy": True,
+        "reason": "per-edge" if failed else "combination",
+        "failed": [{"mid": mid3(e)} for e in probed],
+    })
+
+
 def _handle_fillet(f, ctx):
     act = ctx.require_active("Fillet")
     edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
     if not edges:
         raise ValueError("no edge found to fillet")
-    act["shape"] = fillet(edges, radius=ctx.val(f["radius"]))
+    r = ctx.val(f["radius"])
+    try:
+        act["shape"] = fillet(edges, radius=r)
+    except Exception:
+        _report_edge_failures(f, ctx, edges, lambda e: fillet([e], radius=r))
+        raise
 
 
 def _handle_chamfer(f, ctx):
@@ -1043,7 +1081,12 @@ def _handle_chamfer(f, ctx):
     edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
     if not edges:
         raise ValueError("no edge found to chamfer")
-    act["shape"] = chamfer(edges, length=ctx.val(f["distance"]))
+    d = ctx.val(f["distance"])
+    try:
+        act["shape"] = chamfer(edges, length=d)
+    except Exception:
+        _report_edge_failures(f, ctx, edges, lambda e: chamfer([e], length=d))
+        raise
 
 
 def _handle_press_pull(f, ctx):

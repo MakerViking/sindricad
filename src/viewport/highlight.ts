@@ -12,6 +12,10 @@ const HOVER = new THREE.Color(0xffd089); // pale hot amber (under cursor)
 // molten amber for SELECTED (the Forge accent) — distinct from the paler hover
 // and the muted-ember "pickable" emphasis; reads as forged/locked-in.
 const SELECT = new THREE.Color(0xff7a3c);
+// ERROR: the edge a fillet/chamfer failed on. Highest paint precedence — hover
+// and select must never overwrite it, or the "which edge is the problem" signal
+// disappears the moment the user mouses over it.
+const ERROR = new THREE.Color(0xe23b3b);
 
 export class Highlighter {
   private hoveredEdge: Line2 | null = null;
@@ -19,6 +23,7 @@ export class Highlighter {
   private selectedEdges = new Set<Line2>();
   private selectedFaces = new Set<number>();
   private selectedBodies = new Set<string>();
+  private errorEdges = new Set<Line2>();
   // idle (un-hovered, un-selected) edge color. Raised to a visible "selectable"
   // tint while the fillet/chamfer edge tool is active so you can SEE every edge.
   private edgeBase = EDGE_BASE.clone();
@@ -29,18 +34,38 @@ export class Highlighter {
   setEdgeBase(color: THREE.Color) {
     this.edgeBase.copy(color);
     for (const e of this.view.edges) {
-      if (e === this.hoveredEdge || this.selectedEdges.has(e)) continue;
+      if (e === this.hoveredEdge || this.selectedEdges.has(e) || this.errorEdges.has(e)) continue;
       (e.material as LineMaterial).color.copy(this.edgeBase);
     }
   }
 
+  /** Paint these edges as ERRORS (red), replacing any previous error set.
+   *  Precedence: error > select > hover — the error tint survives hover and
+   *  selection toggles until the set is replaced (each rebuild re-derives it
+   *  from the latest diagnostics, so it clears naturally when fixed). */
+  setErrorEdges(lines: Line2[]) {
+    const next = new Set(lines);
+    for (const e of this.errorEdges) {
+      if (next.has(e)) continue;
+      // no longer failing — restore whatever tier it belongs to now
+      const c = this.selectedEdges.has(e) ? SELECT : e === this.hoveredEdge ? HOVER : this.edgeBase;
+      (e.material as LineMaterial).color.copy(c);
+    }
+    this.errorEdges = next;
+    for (const e of this.errorEdges) (e.material as LineMaterial).color.copy(ERROR);
+  }
+
   hoverEdge(line: Line2 | null) {
     if (this.hoveredEdge === line) return;
-    if (this.hoveredEdge && !this.selectedEdges.has(this.hoveredEdge)) {
+    if (
+      this.hoveredEdge &&
+      !this.selectedEdges.has(this.hoveredEdge) &&
+      !this.errorEdges.has(this.hoveredEdge)
+    ) {
       (this.hoveredEdge.material as LineMaterial).color.copy(this.edgeBase);
     }
     this.hoveredEdge = line;
-    if (line && !this.selectedEdges.has(line)) {
+    if (line && !this.selectedEdges.has(line) && !this.errorEdges.has(line)) {
       (line.material as LineMaterial).color.copy(HOVER);
     }
   }
@@ -62,12 +87,14 @@ export class Highlighter {
   }
 
   toggleSelectEdge(line: Line2) {
+    // membership always updates; the visible tint only changes when the edge
+    // isn't in the error set (error paint has top precedence).
     if (this.selectedEdges.has(line)) {
       this.selectedEdges.delete(line);
-      (line.material as LineMaterial).color.copy(this.edgeBase);
+      if (!this.errorEdges.has(line)) (line.material as LineMaterial).color.copy(this.edgeBase);
     } else {
       this.selectedEdges.add(line);
-      (line.material as LineMaterial).color.copy(SELECT);
+      if (!this.errorEdges.has(line)) (line.material as LineMaterial).color.copy(SELECT);
     }
   }
 
@@ -92,8 +119,9 @@ export class Highlighter {
   }
 
   clearSelection() {
-    for (const e of this.selectedEdges)
-      (e.material as LineMaterial).color.copy(this.edgeBase);
+    for (const e of this.selectedEdges) {
+      if (!this.errorEdges.has(e)) (e.material as LineMaterial).color.copy(this.edgeBase);
+    }
     for (const f of this.selectedFaces) this.restoreFace(f);
     this.selectedEdges.clear();
     this.selectedFaces.clear();

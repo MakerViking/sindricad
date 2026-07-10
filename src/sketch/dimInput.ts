@@ -122,6 +122,16 @@ export class DimInput {
     }
   }
 
+  /** Pre-fill a field AND lock it (userDriven) so cursor tracking can't clobber
+   *  the value — used when re-opening a feature for editing, where the saved
+   *  value must hold until the user deliberately retypes or drags a handle. */
+  seed(name: string, value: number) {
+    const f = this.fields.find((x) => x.def.name === name);
+    if (!f) return;
+    f.input.value = String(displayValue(value, f.def.kind));
+    f.userDriven = true;
+  }
+
   isUserDriven(name: string): boolean {
     const f = this.fields.find((x) => x.def.name === name);
     return !!f && f.userDriven;

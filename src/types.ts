@@ -255,11 +255,16 @@ export interface CadDocument {
 // `diagnostics` behaves exactly as before.
 export interface ResolveDiag {
   feature_id?: string;
-  kind: "edge" | "face" | "combine"; // "combine" = a dangling-reference combine skipped (no-op)
+  // "combine" = a dangling-reference combine skipped (no-op);
+  // "edgeOpFailed" = a fillet/chamfer failed and `failed` names the edges the
+  // sidecar's per-edge probe blamed (or ALL members when only the combination
+  // fails), so the UI can paint exactly those edges red.
+  kind: "edge" | "face" | "combine" | "edgeOpFailed";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
   reason?: string;
+  failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
 }
 
 export interface RebuildResult {

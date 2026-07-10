@@ -406,6 +406,7 @@ function isSketchConsumed(id: string): boolean {
   );
 }
 function isSketchVisible(id: string): boolean {
+  if (extrude.forcedSketchId === id) return true; // being edited — regions must exist
   return store.sketchVisibilityOverride(id) ?? !isSketchConsumed(id);
 }
 overlay.sketchVisible = isSketchVisible;
@@ -522,6 +523,9 @@ function computeBodyPaint(): Record<string, string> {
 // toast every NEW failure; if it's the feature the user JUST committed from an
 // interactive tool, select it immediately (red chip scrolls into view).
 let prevErrorIds = new Set<string>();
+// Failed fillet/chamfer edges (midpoints per feature id) — survives sidecar
+// cache-hit rebuilds that re-emit the error without its diagnostics.
+const failedEdgeMids = new Map<string, [number, number, number][]>();
 let lastCommittedId: string | null = null;
 function noteCommitted(id: string | null) {
   if (id) lastCommittedId = id;
@@ -544,6 +548,27 @@ store.onBuild((s) => {
       viewport.setBodyPaint(computeBodyPaint()); // apply assigned per-body colors
     } else {
       viewport.clearModel();
+    }
+    // Failed-edge red paint (fillet/chamfer edgeOpFailed diagnostics). Runs for
+    // BOTH committed and preview builds (a just-toggled bad edge should turn
+    // red live), unlike the toast gate below. The sidecar's prefix cache
+    // re-emits errors but NOT diagnostics on cache-hit resumes, so failed mids
+    // are cached per feature here and dropped only when the feature's error
+    // clears from featureErrors (content-keyed caching guarantees the cached
+    // mids stay valid exactly as long as the failing feature is unchanged).
+    {
+      const errIds = new Set(
+        (s.result.featureErrors ?? []).map((e) => e.feature_id).filter(Boolean) as string[],
+      );
+      for (const d of s.result.diagnostics ?? []) {
+        if (d.kind === "edgeOpFailed" && d.feature_id && d.failed?.length) {
+          failedEdgeMids.set(d.feature_id, d.failed.map((e) => e.mid));
+        }
+      }
+      for (const id of [...failedEdgeMids.keys()]) {
+        if (!errIds.has(id)) failedEdgeMids.delete(id);
+      }
+      viewport.setErrorEdgeMids([...failedEdgeMids.values()].flat());
     }
     // toast NEW feature errors (skip preview builds — they carry a transient
     // un-committed feature whose failures resolve on commit/cancel)
@@ -677,8 +702,38 @@ const panels = createPanels({ store, viewport, geometry, hasBody, setStatus, sel
 
 function editFeature(id: string) {
   selectFeature(id);
+  if (toolBusy()) return; // never open a second interactive tool on top of one
   const f = store.document.features.find((x) => x.id === id);
-  if (f?.type === "sketch") sketch.enter(f.plane, store, id);
+  if (!f) return;
+  if (store.isSuppressed(id)) {
+    setStatus("Unsuppress the feature to edit it", "");
+    return;
+  }
+  const idx = store.document.features.findIndex((x) => x.id === id);
+  if (idx >= store.rollbackIndex) {
+    setStatus("Roll the timeline forward to edit this feature", "");
+    return;
+  }
+  const done = (cid: string | null) => {
+    noteCommitted(cid);
+    if (cid) selectFeature(cid);
+  };
+  switch (f.type) {
+    case "sketch":
+      sketch.enter(f.plane, store, id);
+      break;
+    case "fillet":
+    case "chamfer":
+      // false = not tool-editable (parameter value / structural selectors) —
+      // the inspector is already focused via selectFeature above.
+      if (!edgeFeature.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      break;
+    case "extrude":
+      if (!extrude.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      break;
+    default:
+      break; // inspector focus (selectFeature above) is the edit surface for the rest
+  }
 }
 
 // --- ribbon / keymap actions ---
