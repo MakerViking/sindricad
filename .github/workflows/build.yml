@@ -31,16 +31,8 @@ jobs:
 
       # Same system deps as the build job's Linux leg: `cargo test --lib` links the
       # tauri crate, which needs the webkit2gtk stack + libudev (Rust device APIs).
-      - name: Install Linux system dependencies (Tauri webkit stack; NO OCCT/cmake)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential curl wget file \
-            libssl-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev \
-            libudev-dev \
-            patchelf libfuse2
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/linux-deps
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -105,17 +97,9 @@ jobs:
         # third_party/opencascade-rs is vendored in-repo (no submodules), and the
         # default build never compiles it, so a plain checkout is enough.
 
-      - name: Install Linux system dependencies (Tauri webkit stack; NO OCCT/cmake)
+      - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential curl wget file \
-            libssl-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev \
-            libudev-dev \
-            patchelf libfuse2
+        uses: ./.github/actions/linux-deps
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -205,16 +189,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Linux system dependencies (webkit stack; no OCCT — see comment above)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential curl wget file \
-            libssl-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev \
-            libudev-dev \
-            patchelf libfuse2
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/linux-deps
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

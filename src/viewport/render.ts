@@ -122,16 +122,19 @@ export function buildBodyMesh(
   const { faceStart, faceCount } = meta;
   const faceEnd = faceStart + faceCount;
 
-  const remap = new Map<number, number>(); // global vertex index -> local (dense)
+  // global vertex index -> local (dense); a flat typed array beats a Map here —
+  // this runs per changed body on every live-preview drag tick, and Map<number,
+  // number> pays hashing/boxing on 3 lookups per triangle.
+  const remap = new Int32Array(positions.length / 3).fill(-1);
   const localPositions: number[] = [];
   const localIndices: number[] = [];
   const localFaceIds: number[] = [];
   const local = (gi: number): number => {
-    let li = remap.get(gi);
-    if (li === undefined) {
+    let li = remap[gi];
+    if (li === -1) {
       li = localPositions.length / 3;
       localPositions.push(positions[gi * 3], positions[gi * 3 + 1], positions[gi * 3 + 2]);
-      remap.set(gi, li);
+      remap[gi] = li;
     }
     return li;
   };

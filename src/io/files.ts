@@ -10,6 +10,7 @@ import type { ExportFormat, ImportFormat } from "../types";
 import { clearRecovery } from "./recovery";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Save: write to the current path if known, else behave like Save As. */
 export async function saveDocument(store: DocumentStore) {
@@ -18,7 +19,7 @@ export async function saveDocument(store: DocumentStore) {
     try {
       await writeTextFile(store.filePath, store.toJSON());
     } catch (e) {
-      await reportError(`Couldn't save ${store.filePath}: ${e instanceof Error ? e.message : String(e)}`);
+      await reportError(`Couldn't save ${store.filePath}: ${errMsg(e)}`);
       return;
     }
     store.markSaved(store.filePath);
@@ -42,7 +43,7 @@ export async function saveDocumentAs(store: DocumentStore) {
       try {
         await writeTextFile(path, json);
       } catch (e) {
-        await reportError(`Couldn't save ${path}: ${e instanceof Error ? e.message : String(e)}`);
+        await reportError(`Couldn't save ${path}: ${errMsg(e)}`);
         return;
       }
       store.markSaved(path);
@@ -73,7 +74,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
       try {
         store.load(await readTextFile(path));
       } catch (e) {
-        await reportError(`Couldn't open ${path.split(/[\\/]/).pop()}: ${e instanceof Error ? e.message : String(e)}`);
+        await reportError(`Couldn't open ${path.split(/[\\/]/).pop()}: ${errMsg(e)}`);
         return;
       }
       store.markSaved(path); // freshly opened == clean, with a known path
@@ -86,7 +87,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
       try {
         store.load(text);
       } catch (e) {
-        await reportError(`Couldn't open document: ${e instanceof Error ? e.message : String(e)}`);
+        await reportError(`Couldn't open document: ${errMsg(e)}`);
       }
     }
   }
