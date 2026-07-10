@@ -139,8 +139,13 @@ export type Feature =
   | { id: string; type: "press-pull"; face: Selector | Selector[]; distance: Num; operation: "join" | "cut"; body?: string; upTo?: Selector }
   | { id: string; type: "deleteFace"; face: Selector | Selector[]; body?: string }
   | { id: string; type: "mirror"; plane: Plane3 }
-  | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num }
-  | { id: string; type: "loft"; sketches: string[] }
+  // `operation` is threaded through the same New/Join/Cut/Intersect boolean as
+  // extrude (`_boolean_into_bodies`); absent = legacy feature, defaults to "new"
+  // in the builder (old behavior was a silent overwrite of the active body's
+  // shape — this is the data-loss bug the field fixes, so old docs now get a
+  // separate body instead, not a resurrected overwrite).
+  | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num; operation?: "new" | "join" | "cut" | "intersect" }
+  | { id: string; type: "loft"; sketches: string[]; operation?: "new" | "join" | "cut" | "intersect" }
   // Sweep a closed profile sketch along an open path sketch (a line/arc/spline).
   | { id: string; type: "sweep"; profile: string; path: string; operation: "new" | "join" | "cut" }
   // A persistent construction/datum plane in the timeline. Carries no geometry;
@@ -263,7 +268,10 @@ export interface RebuildResult {
   bbox: { min: number[]; max: number[] };
   // per-body metadata: which faceId range each body occupies in the merged mesh
   // (lets the browser tree list bodies and picking map a face back to its body).
-  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[] }[];
+  // `etag` (when the backend supplies one) is a content fingerprint the render
+  // layer diffs to decide whether a body needs rebuilding at all — absent means
+  // "always rebuild" (e.g. the in-process Rust backend, which has no etag cache).
+  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; etag?: string }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
   // set when features failed but the rest of the timeline still built — the

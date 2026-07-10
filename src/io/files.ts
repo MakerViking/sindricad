@@ -15,7 +15,12 @@ const isTauri = () => "__TAURI_INTERNALS__" in window;
 export async function saveDocument(store: DocumentStore) {
   if (isTauri() && store.filePath) {
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    await writeTextFile(store.filePath, store.toJSON());
+    try {
+      await writeTextFile(store.filePath, store.toJSON());
+    } catch (e) {
+      await reportError(`Couldn't save ${store.filePath}: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     store.markSaved(store.filePath);
     void clearRecovery(store.filePath); // the on-disk file is now the truth
   } else {
@@ -34,7 +39,12 @@ export async function saveDocumentAs(store: DocumentStore) {
       defaultPath: store.filePath ?? `${store.fileName}.sindri`,
     });
     if (path) {
-      await writeTextFile(path, json);
+      try {
+        await writeTextFile(path, json);
+      } catch (e) {
+        await reportError(`Couldn't save ${path}: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
       store.markSaved(path);
       void clearRecovery(path);
     }
@@ -60,14 +70,25 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
     const ext = path.split(".").pop()?.toLowerCase();
     if (ext === "sindri" || ext === "json") {
       const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      store.load(await readTextFile(path));
+      try {
+        store.load(await readTextFile(path));
+      } catch (e) {
+        await reportError(`Couldn't open ${path.split(/[\\/]/).pop()}: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
       store.markSaved(path); // freshly opened == clean, with a known path
     } else {
       await importPath(store, geometry, path); // a mesh / CAD file → import as a body
     }
   } else {
     const text = await uploadText();
-    if (text) store.load(text);
+    if (text) {
+      try {
+        store.load(text);
+      } catch (e) {
+        await reportError(`Couldn't open document: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
   }
 }
 

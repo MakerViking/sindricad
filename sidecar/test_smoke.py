@@ -323,6 +323,53 @@ def test_sketch_patterns():
     print(f"  sketch patterns OK: bolt-circle {len(part.faces())} faces, rect pattern {len(p2.solids())} solids")
 
 
+def test_sketch_spline_extrude():
+    """A sketch profile whose closed loop includes a free-form `spline` entity
+    (not just line/arc) extrudes like any other polyline profile. The spline's
+    points are collinear here, so `Edge.make_spline` degenerates to an exact
+    straight edge and the enclosed area stays an exact 10x6 rectangle — this
+    checks the "spline" entity dispatch/combining, not curve fitting."""
+    ents = [
+        {"id": "l0", "type": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0},
+        {"id": "l1", "type": "line", "x1": 10, "y1": 0, "x2": 10, "y2": 6},
+        {"id": "l2", "type": "line", "x1": 10, "y1": 6, "x2": 0, "y2": 6},
+        {"id": "sp", "type": "spline", "points": [
+            {"x": 0, "y": 6}, {"x": 0, "y": 3}, {"x": 0, "y": 0}]},
+    ]
+    doc = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY", "entities": ents},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 5, "operation": "new"},
+    ]}
+    part, err, _ = rebuild(doc)
+    assert not err, err
+    assert abs(part.volume - 300) < 1, f"10x6x5 rect closed by a spline side = 300, got {part.volume:.1f}"
+    print(f"  sketch spline extrude OK: vol {part.volume:.0f}")
+
+
+def test_sketch_pattern_with_spline():
+    """A sketch pattern's source entities can include a spline: `_translate_entity`
+    / `_rotate_entity` must carry spline points through pattern expansion just
+    like line/circle/arc, so a patterned spline-sided profile tiles correctly."""
+    ents = [
+        {"id": "l0", "type": "line", "x1": 0, "y1": 0, "x2": 4, "y2": 0},
+        {"id": "l1", "type": "line", "x1": 4, "y1": 0, "x2": 4, "y2": 4},
+        {"id": "l2", "type": "line", "x1": 4, "y1": 4, "x2": 0, "y2": 4},
+        {"id": "sp", "type": "spline", "points": [
+            {"x": 0, "y": 4}, {"x": 0, "y": 2}, {"x": 0, "y": 0}]},
+    ]
+    doc = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY", "entities": ents,
+         "patterns": [{"id": "pr", "type": "patternRect", "sources": [e["id"] for e in ents],
+                       "countX": 2, "countY": 2, "spacingX": 10, "spacingY": 10}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 3, "operation": "new"},
+    ]}
+    part, err, _ = rebuild(doc)
+    assert not err, err
+    assert len(part.solids()) == 4, f"2x2 rect pattern of a spline-sided square should give 4 solids, got {len(part.solids())}"
+    assert abs(part.volume - 192) < 1, f"4 unit squares of 4x4x3 = 192, got {part.volume:.1f}"
+    print(f"  sketch pattern+spline OK: {len(part.solids())} solids, vol {part.volume:.0f}")
+
+
 def test_presspull_upto():
     """press-pull `upTo` extrudes a face up to a target surface — the sidecar derives
     the per-face distance from the target plane (here a low step face → a higher one)."""
@@ -492,6 +539,108 @@ def test_sweep():
     assert not err, err
     assert len(bodies) == 1 and part.volume > 100, f"swept pipe should have volume, got {part.volume:.0f}"
     print(f"  sweep OK: arc pipe vol {part.volume:.0f}, {len(part.faces())} faces")
+
+
+def test_revolve_loft_operation():
+    """Revolve/Loft used to always do `act["shape"] = solid` onto the active body
+    when one existed -- silently DISCARDING it, no boolean, no warning. They now
+    thread `operation` through the same `_boolean_into_bodies` extrude uses.
+    Absent `operation` still defaults to "new", so an old document that relied on
+    the silent overwrite now gets a separate body instead -- a deliberate behavior
+    change that closes the data-loss bug (the old overwrite is the bug)."""
+    _s, base = _box(1, 30, 30, 10)  # body1: x/y=-15..15, z=0..10, vol 9000
+
+    # Ring profile on the XZ plane (u=X, v=Z): a 10x10 square offset to x=5..15,
+    # revolved 360 deg around Z makes a tube (outer r=15, inner r=5, z=-5..5) that
+    # overlaps the base body's footprint and pokes out below its z=0 floor.
+    ring = {"id": "rs", "type": "sketch", "plane": "XZ",
+            "entities": [{"type": "rectangle", "width": 10, "height": 10, "x": 10}]}
+
+    # (a) operation absent -> defaults to "new": a separate body, base untouched.
+    rev_new = {"id": "rv", "type": "revolve", "sketch": "rs", "axis": "Z", "angle": 360}
+    _p, err, bodies = rebuild({"parameters": {}, "features": base + [ring, rev_new]})
+    assert not err, err
+    assert len(bodies) == 2, f"revolve with no operation should add a body, got {len(bodies)}"
+    assert abs(bodies[0]["shape"].volume - 9000) < 1, \
+        f"base body must be untouched, got {bodies[0]['shape'].volume:.0f}"
+
+    # (b) operation "join" onto the overlapping base body -> ONE merged body,
+    # heavier than the base alone (material actually added, not discarded).
+    rev_join = {"id": "rv", "type": "revolve", "sketch": "rs", "axis": "Z", "angle": 360, "operation": "join"}
+    _p, err, bodies = rebuild({"parameters": {}, "features": base + [ring, rev_join]})
+    assert not err, err
+    assert len(bodies) == 1, f"join onto an overlapping body should merge -> 1, got {len(bodies)}"
+    assert bodies[0]["shape"].volume > 9000 + 1, \
+        f"join should add material over the base's 9000, got {bodies[0]['shape'].volume:.0f}"
+    print(f"  revolve operation OK: no-op-field -> 2 bodies base untouched; "
+          f"join -> 1 body vol {bodies[0]['shape'].volume:.0f} > 9000")
+
+    # (c) loft equivalent of (a): a frustum profile (10x10 base, 5x5 top @ z=10),
+    # operation absent -> a separate body, base untouched.
+    lb = {"id": "lb", "type": "sketch", "plane": "XY",
+          "entities": [{"type": "rectangle", "width": 10, "height": 10}]}
+    lt = {"id": "lt", "type": "sketch",
+          "plane": {"origin": [0, 0, 10], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+          "entities": [{"type": "rectangle", "width": 5, "height": 5}]}
+    loft_new = {"id": "lf", "type": "loft", "sketches": ["lb", "lt"]}
+    _p, err, bodies = rebuild({"parameters": {}, "features": base + [lb, lt, loft_new]})
+    assert not err, err
+    assert len(bodies) == 2, f"loft with no operation should add a body, got {len(bodies)}"
+    assert abs(bodies[0]["shape"].volume - 9000) < 1, \
+        f"base body must be untouched, got {bodies[0]['shape'].volume:.0f}"
+    assert bodies[1]["shape"].volume > 0, "the lofted frustum should have volume"
+    print(f"  loft operation OK: no-op-field -> 2 bodies base untouched, "
+          f"frustum vol {bodies[1]['shape'].volume:.0f}")
+
+
+def test_boolean_guards_combine_sweep():
+    """The extrude no-op guards also cover the OTHER boolean sites: a Combine Cut
+    whose tools don't touch the target, and a Combine Intersect that would empty
+    it, raise instead of silently consuming the tools; Sweep now routes through
+    _boolean_into_bodies, so a sweep Cut that reaches no body is flagged too.
+    Join with an embedded tool stays legal (it visibly absorbs the tool body --
+    see test_combine), and a sweep Join with nothing to hit still makes a new
+    body."""
+    _s1, a = _box(1, 20, 20, 20)          # body1 at origin, vol 8000
+    _s2, b = _box(2, 10, 10, 10, x=100)   # body2 far away, vol 1000
+
+    for op, needle in (("cut", "removed nothing"),
+                       ("intersect", "leave the target empty")):
+        doc = {"parameters": {}, "features": a + b + [
+            {"id": "cb", "type": "combine", "operation": op,
+             "target": "body1", "tools": ["body2"]}]}
+        _p, err, bodies = rebuild(doc)
+        assert err and err[0]["feature_id"] == "cb", \
+            f"combine {op} disjoint should flag a feature error, got {err}"
+        assert needle in err[0]["message"], err[0]["message"]
+        assert len(bodies) == 2, \
+            f"failed combine {op} must consume nothing, got {len(bodies)} bodies"
+        vols = sorted(round(x["shape"].volume) for x in bodies)
+        assert vols == [1000, 8000], vols
+
+    # sweep: same pipe fixture as test_sweep, but with a body it can't reach
+    pipe = [
+        {"id": "prof", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "circle", "radius": 2}]},
+        {"id": "path", "type": "sketch", "plane": "XZ", "entities": [
+            {"type": "arc", "x1": 0, "y1": 0, "mx": 5, "my": 12, "x2": 18, "y2": 18}]},
+    ]
+    _s3, faraway = _box(3, 10, 10, 10, x=100)
+    doc = {"parameters": {}, "features": faraway + pipe + [
+        {"id": "sw", "type": "sweep", "profile": "prof", "path": "path", "operation": "cut"}]}
+    _p, err, bodies = rebuild(doc)
+    assert err and err[0]["feature_id"] == "sw" and "removed nothing" in err[0]["message"], \
+        f"sweep cut reaching nothing should flag, got {err}"
+    assert len(bodies) == 1 and abs(bodies[0]["shape"].volume - 1000) < 1, \
+        "failed sweep cut must leave the body intact"
+
+    doc = {"parameters": {}, "features": faraway + pipe + [
+        {"id": "sw", "type": "sweep", "profile": "prof", "path": "path", "operation": "join"}]}
+    _p, err, bodies = rebuild(doc)
+    assert not err, f"sweep join with nothing to hit should fall back to a new body: {err}"
+    assert len(bodies) == 2, f"expected the pipe as a second body, got {len(bodies)}"
+    print("  boolean guards OK: combine cut/intersect disjoint flagged (tools kept); "
+          "sweep cut-nothing flagged, join falls back to new body")
 
 
 def test_scale_and_move():
@@ -1279,6 +1428,8 @@ if __name__ == "__main__":
     test_export_despite_errors()
     test_export_project_3mf()
     test_sketch_patterns()
+    test_sketch_spline_extrude()
+    test_sketch_pattern_with_spline()
     test_sketch_crossing_split()
     test_extrude_cut_disjoint()
     test_cut_skips_hidden_body()
@@ -1299,6 +1450,8 @@ if __name__ == "__main__":
     test_modify_tools()
     test_simplify_mesh()
     test_sweep()
+    test_revolve_loft_operation()
+    test_boolean_guards_combine_sweep()
     test_scale_and_move()
     test_multibody_import_and_guards()
     test_interference()

@@ -6,6 +6,7 @@ import * as THREE from "three";
 import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import type { Selector } from "../types";
 import type { ModelView } from "./render";
+import { faceIdOfHit, visibleBodyMeshes } from "./render";
 
 export interface EdgeHit {
   kind: "edge";
@@ -28,6 +29,17 @@ export class Picker {
   // screen-space distance (px) of the best edge hit from the last pickEdge() —
   // lets pick() prefer a face over an edge unless the cursor is on the edge line.
   private edgeScreenDist = Infinity;
+  // visible-edges filter, cached per ModelView so a pointermove doesn't re-scan
+  // every edge each time — invalidated by identity when a new model comes in.
+  // (Edge visibility is only ever toggled once, by hideFlushSeams() right after
+  // a model is built, so caching by view reference is safe.)
+  private visibleEdgesCache: { view: ModelView; edges: Line2[] } | null = null;
+  private visibleEdges(view: ModelView): Line2[] {
+    if (this.visibleEdgesCache?.view !== view) {
+      this.visibleEdgesCache = { view, edges: view.edges.filter((e) => e.visible) };
+    }
+    return this.visibleEdgesCache.edges;
+  }
 
   /** General selection: a face wins over an edge unless the cursor is right on
    *  the edge line (within EDGE_NEAR_PX). The dedicated edge tools call
@@ -38,19 +50,20 @@ export class Picker {
     rect: DOMRect,
     camera: THREE.Camera,
     view: ModelView,
-    resolution: THREE.Vector2,
   ): Hit | null {
-    const edge = this.pickEdge(clientX, clientY, rect, camera, view, resolution);
+    const edge = this.pickEdge(clientX, clientY, rect, camera, view);
 
     this.raycaster.setFromCamera(this.ndc, camera); // ndc set by pickEdge
-    const fHits = this.raycaster.intersectObject(view.mesh, false);
+    // one Mesh per visible body now (not caching this list like visibleEdges —
+    // body counts are small, unlike edge counts, so a per-move filter is cheap).
+    const fHits = this.raycaster.intersectObjects(visibleBodyMeshes(view), false);
     let face: FaceHit | null = null;
     if (fHits.length) {
       const hit = fHits[0];
-      const faceId = view.faceIds[hit.faceIndex ?? 0] ?? 0;
+      const faceId = faceIdOfHit(hit);
       const point = hit.point.clone();
       const normal =
-        hit.normal?.clone().transformDirection(view.mesh.matrixWorld) ??
+        hit.normal?.clone().transformDirection(hit.object.matrixWorld) ??
         new THREE.Vector3(0, 0, 1);
       face = { kind: "face", faceId, selector: faceSelector(normal, point) };
     }
@@ -69,7 +82,6 @@ export class Picker {
     rect: DOMRect,
     camera: THREE.Camera,
     view: ModelView,
-    resolution: THREE.Vector2,
   ): EdgeHit | null {
     this.ndc.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -82,10 +94,12 @@ export class Picker {
     // otherwise grab a front edge that's visually farther from the cursor.
     this.raycaster.params.Line2 = { threshold: EDGE_PICK_THRESHOLD };
     (this.raycaster as any).camera = camera;
-    for (const e of view.edges) (e.material as any).resolution?.copy(resolution);
+    // NOTE: each LineMaterial's .resolution is kept in sync by
+    // setEdgeResolution() on resize, and set at creation time in buildBodyMesh()
+    // (render.ts) — no per-move sync needed here.
     // skip hidden lines (flush-seam-hidden contact rims, hidden bodies) — the
     // raycaster tests invisible objects too, which would give ghost edge picks
-    const eHits = this.raycaster.intersectObjects(view.edges.filter((e) => e.visible), false);
+    const eHits = this.raycaster.intersectObjects(this.visibleEdges(view), false);
     if (!eHits.length) return null;
 
     let best = eHits[0];

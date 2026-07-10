@@ -21,7 +21,72 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Gates the build matrix: sidecar tests, Rust unit tests, and the (new) vitest
+  # frontend tests all run BEFORE any installer is built. Runs once on Linux only —
+  # the build matrix below still builds/bundles on all three platforms regardless.
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same system deps as the build job's Linux leg: `cargo test --lib` links the
+      # tauri crate, which needs the webkit2gtk stack + libudev (Rust device APIs).
+      - name: Install Linux system dependencies (Tauri webkit stack; NO OCCT/cmake)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libudev-dev \
+            patchelf libfuse2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend unit tests (vitest)
+        run: npx vitest run
+
+      - name: Install Python 3.12 + sync sidecar deps (locked)
+        run: |
+          uv python install 3.12
+          cd sidecar && uv sync
+
+      # The sidecar test files are `__main__` scripts, NOT pytest-discoverable
+      # (`pytest sidecar/` silently collects 0 tests — see docs/IMPROVEMENT-AUDIT.md
+      # §5.1) — so run each directly with the synced venv's interpreter.
+      - name: Sidecar tests (direct __main__ invocation, not pytest)
+        working-directory: sidecar
+        run: |
+          uv run python test_smoke.py
+          uv run python test_geomstore.py
+          uv run python test_selector_v2.py
+          uv run python test_ws.py
+
+      - name: Rust unit tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
   build:
+    needs: test
     permissions:
       contents: write # tauri-action may attach artifacts to a draft release
     strategy:
@@ -120,3 +185,45 @@ jobs:
             src-tauri/target/release/bundle/**/*.app
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
+
+  # docs/IMPROVEMENT-AUDIT.md §5.4: the opt-in `rust-geom` feature (src-tauri/src/geom.rs,
+  # 2320 lines / 67 unwrap-or-expect calls) is never compiled by the `build` job above
+  # (default build is OCCT-free by design — see the Cargo.toml comment on the feature),
+  # so it can silently bit-rot. This job is a manual, non-gating bit-rot check: it does
+  # NOT run on push/PR and nothing `needs:` it.
+  #
+  # ubuntu-22.04's package repos top out around OCCT 7.6, but opencascade-sys (the
+  # vendored third_party/opencascade-rs fork) requires OCCT >= 7.9, which isn't
+  # available as a hosted-runner apt package — so this step is EXPECTED TO FAIL on
+  # today's runners until either a newer runner image ships OCCT >= 7.9, or a step is
+  # added here to build OCCT >= 7.9 from source (slow; deliberately not done today).
+  # Trigger to revisit: when a runner image with OCCT 7.9 exists, or when rust-geom
+  # gets promoted off the experimental-spike path.
+  rust-geom-check:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies (webkit stack; no OCCT — see comment above)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libssl-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libudev-dev \
+            patchelf libfuse2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: cargo check --features rust-geom (expected to fail without OCCT >= 7.9)
+        working-directory: src-tauri
+        run: cargo check --features rust-geom

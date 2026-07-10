@@ -14,7 +14,11 @@ export function resolveNum(x: Num, params: Params): number {
   return Number.isNaN(n) ? 0 : n;
 }
 
-export function resolveEntities(
+/** Resolve ONLY the sketch's real (persisted) entities — no pattern expansion.
+ *  Use this wherever the result feeds back into edits/persistence (e.g. the
+ *  sketch-editor session); see resolveEntities for the render/detect variant
+ *  that also includes derived pattern copies. */
+export function resolveRealEntities(
   sketch: Extract<Feature, { type: "sketch" }>,
   params: Params,
 ): ResolvedEntity[] {
@@ -78,10 +82,21 @@ export function resolveEntities(
       });
     }
   }
+  return out;
+}
 
-  // Associative patterns: expand each definition into its derived copies so
-  // rendering, region detection and snapping all see them (the definitions persist;
-  // the copies are derived here, never stored as real entities).
+/** Resolve a sketch's real entities AND every pattern's derived copies, in one
+ *  flat array — for callers that only render/inspect (never persist) the
+ *  result: committed-sketch overlay rendering, region detection for those
+ *  sketches, and the inspector's per-entity dimension list. The copies are
+ *  derived here, never stored as real entities — do NOT feed this back into
+ *  `sketch.entities` (see resolveRealEntities for the editable, persist-safe
+ *  subset; that's what the sketch-editor session uses). */
+export function resolveEntities(
+  sketch: Extract<Feature, { type: "sketch" }>,
+  params: Params,
+): ResolvedEntity[] {
+  const out = resolveRealEntities(sketch, params);
   if (sketch.patterns?.length) {
     const byId = new Map(out.map((e) => [e.id, e]));
     for (const pat of sketch.patterns) out.push(...expandPattern(pat, byId, params));

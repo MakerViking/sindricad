@@ -5,7 +5,22 @@
 import * as THREE from "three";
 import { createScene, type SceneBundle } from "./scene";
 import { createCameraRig, type CameraRig, type StandardView } from "./cameras";
-import { buildModel, disposeModel, setEdgeResolution, BASE_COLOR, type ModelView } from "./render";
+import {
+  buildBodyMesh,
+  buildEdgeLines,
+  bodyOfFace,
+  disposeBody,
+  disposeModel,
+  faceIdOfHit,
+  groupEdgesByBody,
+  resetBodyAppearance,
+  setEdgeResolution,
+  visibleBodyMeshes,
+  BASE_COLOR,
+  type BodyMesh,
+  type ModelView,
+} from "./render";
+import { disposeObject } from "./dispose";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
@@ -63,6 +78,13 @@ export class Viewport {
   // (common under remote desktops / fractional scaling), which would otherwise
   // leave the model rendered off-centre and un-aimable.
   private userMovedCamera = false;
+  // Render-on-demand: the loop only draws when something is actually dirty —
+  // the camera moved (rig.update's own return), a mutation flagged us via
+  // requestRender(), or we're still in the few-frame "linger" window after one
+  // (covers effects that settle a frame late, e.g. a texture upload). Starts
+  // dirty so the very first frame after construction paints.
+  private needsRender = true;
+  private lingerFrames = 3;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.scene = createScene(canvas);
@@ -72,12 +94,13 @@ export class Viewport {
 
     this.cube = new ViewCube(canvas, this.scene.renderer, {
       applySide: (side) => this.applyCubeSide(side),
-      applyDir: (dir, up) => this.rig.setViewDir(dir, up),
+      applyDir: (dir, up) => { this.rig.setViewDir(dir, up); this.requestRender(); },
       getOverrides: () => this.store?.viewOverrides ?? {},
       beginSetOverride: (side) => this.beginSetOverride(side),
       resetOverride: (side) => {
         this.store?.setViewOverride(side, null);
         this.cube.refreshOverrideMarks();
+        this.requestRender();
       },
     });
 
@@ -91,9 +114,20 @@ export class Viewport {
     // once the user drives the camera (orbit/pan/zoom), stop auto-framing.
     this.rig.controls.addEventListener("controlstart", () => {
       this.userMovedCamera = true;
+      this.requestRender();
     });
     this.installPointer();
     this.loop();
+  }
+
+  /** Mark the next few frames dirty so the render loop actually draws them.
+   *  Call this from any method that changes what's on screen but doesn't move
+   *  the camera (rig.update()'s own "moved" return already covers camera
+   *  motion/inertia/transitions). The 3-frame linger absorbs effects that
+   *  settle a frame late (e.g. a texture/geometry upload finishing async). */
+  requestRender() {
+    this.needsRender = true;
+    this.lingerFrames = 3;
   }
 
   // The document store is wired lazily (the Viewport is constructed before the
@@ -124,6 +158,12 @@ export class Viewport {
       ) {
         this.dragMoved = true;
       }
+      // Unconditional (not just when handleHover's own hover-paint fires below):
+      // the ViewCube (not one of our owned files) also hover-highlights off this
+      // same canvas's pointermove, with no callback into the Viewport — so a cube
+      // hover-in/out needs a render even when handleHover early-returns (no
+      // model, suspended picking, bodies-selection mode, etc).
+      this.requestRender();
       this.handleHover(e);
     });
     c.addEventListener("pointerup", (e) => {
@@ -194,6 +234,7 @@ export class Viewport {
         this.userMovedCamera = true;
         // zoom toward what's under the cursor (MCAD-style), not the orbit centre
         this.rig.zoomBy(Math.pow(1.0016, dy), this.cursorWorldPoint(e.clientX, e.clientY));
+        this.requestRender();
       },
       { passive: false },
     );
@@ -205,7 +246,7 @@ export class Viewport {
   private cursorWorldPoint(clientX: number, clientY: number): THREE.Vector3 {
     const rc = this.rayFrom(clientX, clientY);
     if (this.model) {
-      const hit = rc.intersectObject(this.model.mesh, false)[0];
+      const hit = rc.intersectObjects(visibleBodyMeshes(this.model), false)[0];
       if (hit) return hit.point.clone();
     }
     const cam = this.rig.controls.getPosition(new THREE.Vector3());
@@ -231,9 +272,9 @@ export class Viewport {
       rect,
       this.rig.active,
       this.model,
-      this.resolution,
     );
     this.highlighter.clearHover();
+    this.requestRender();
     if (hit?.kind === "edge") { this.highlighter.hoverEdge(hit.line); this.regionHoverAt?.(-1, -1); return; }
     if (hit?.kind === "face") { this.highlighter.hoverFace(hit.faceId); this.regionHoverAt?.(-1, -1); return; }
     // no solid edge/face under the cursor → a visible sketch's region may be (clicking
@@ -256,11 +297,12 @@ export class Viewport {
         this.highlighter.clearBodySelection();
       }
       this.onBodySelectionChange?.();
+      this.requestRender();
       return;
     }
 
     const hit = this.model
-      ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model, this.resolution)
+      ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model)
       : null;
     // A solid FACE always wins. Only when nothing solid is under the cursor (clicking
     // through a honeycomb hole, or with the body hidden) does a click select a visible
@@ -282,6 +324,7 @@ export class Viewport {
       if (!add) this.highlighter.clearSelection();
       if (hit?.kind === "edge") this.highlighter.toggleSelectEdge(hit.line);
       else if (hit?.kind === "face") this.highlighter.toggleSelectFace(hit.faceId);
+      this.requestRender();
     }
     this.onHit?.(hit, e.shiftKey);
     this.onSelectionChange?.();
@@ -298,6 +341,7 @@ export class Viewport {
       this.highlighter?.clearBodySelection();
       this.onBodySelectionChange?.();
     }
+    this.requestRender();
   }
   get selecting(): "faces" | "bodies" {
     return this.selectionMode;
@@ -305,10 +349,8 @@ export class Viewport {
 
   /** which body owns a triangle's B-rep faceId (null if none). */
   faceIdToBodyId(faceId: number): string | null {
-    for (const b of this.model?.bodies ?? []) {
-      if (faceId >= b.faceStart && faceId < b.faceStart + b.faceCount) return b.id;
-    }
-    return null;
+    if (!this.model) return null;
+    return bodyOfFace(this.model, faceId)?.id ?? null;
   }
 
   /** The body under the cursor via a plain mesh raycast (no edge priority) —
@@ -316,8 +358,8 @@ export class Viewport {
    *  menu agrees with a left-click at the same pixel. */
   bodyIdAt(clientX: number, clientY: number): string | null {
     if (!this.model) return null;
-    const fh = this.rayFrom(clientX, clientY).intersectObject(this.model.mesh, false)[0];
-    return fh ? this.faceIdToBodyId(this.model.faceIds[fh.faceIndex ?? 0] ?? 0) : null;
+    const fh = this.rayFrom(clientX, clientY).intersectObjects(visibleBodyMeshes(this.model), false)[0];
+    return fh ? this.faceIdToBodyId(faceIdOfHit(fh)) : null;
   }
 
   private psRay = new THREE.Raycaster();
@@ -334,7 +376,7 @@ export class Viewport {
     this.psRay.set(p, this.psDir);
     this.psRay.near = 0;
     this.psRay.far = Infinity;
-    return this.psRay.intersectObject(this.model.mesh, false).length % 2 === 1;
+    return this.psRay.intersectObjects(visibleBodyMeshes(this.model), false).length % 2 === 1;
   }
 
   // --- face-color analysis overlays (Inspect) ---------------------------------
@@ -353,7 +395,9 @@ export class Viewport {
   // zebra-stripe + curvature-comb overlays (display-only; re-applied on rebuild)
   private zebra = false;
   private zebraMat: THREE.ShaderMaterial | null = null;
-  private savedMat: THREE.Material | THREE.Material[] | null = null;
+  // per-body original material, saved while zebra is on (keyed by body id since
+  // each body now owns its own mesh/material instead of one shared mesh).
+  private savedMats = new Map<string, THREE.Material | THREE.Material[]>();
   private combs = false;
   private combsObj: THREE.LineSegments | null = null;
 
@@ -409,6 +453,7 @@ export class Viewport {
         return hex ? new THREE.Color(hex) : BASE_COLOR;
       });
     }
+    this.requestRender();
   }
 
   /** set the per-body assigned colors (body id → hex) and repaint if no analysis
@@ -432,17 +477,24 @@ export class Viewport {
   }
   private applyZebra() {
     if (!this.model) return;
-    const mesh = this.model.mesh;
     if (this.zebra) {
       if (!this.zebraMat) this.zebraMat = makeZebraMaterial();
-      if (mesh.material !== this.zebraMat) {
-        this.savedMat = mesh.material;
-        mesh.material = this.zebraMat;
+      for (const b of this.model.bodies) {
+        if (b.mesh.material !== this.zebraMat) {
+          this.savedMats.set(b.id, b.mesh.material);
+          b.mesh.material = this.zebraMat;
+        }
       }
-    } else if (this.zebraMat && mesh.material === this.zebraMat) {
-      if (this.savedMat) mesh.material = this.savedMat;
-      this.savedMat = null;
+    } else if (this.zebraMat) {
+      for (const b of this.model.bodies) {
+        if (b.mesh.material === this.zebraMat) {
+          const saved = this.savedMats.get(b.id);
+          if (saved) b.mesh.material = saved;
+        }
+      }
+      this.savedMats.clear();
     }
+    this.requestRender();
   }
 
   /** Curvature-comb overlay along edges (rebuilt from the current model). */
@@ -464,6 +516,7 @@ export class Viewport {
         this.scene.modelGroup.add(seg);
       }
     }
+    this.requestRender();
   }
 
   getSelectedBodies(): string[] {
@@ -476,6 +529,7 @@ export class Viewport {
     this.highlighter.clearBodySelection();
     for (const id of ids) this.highlighter.toggleSelectBody(id);
     this.onBodySelectionChange?.();
+    this.requestRender();
   }
 
   /** right-click hit-test against the construction-plane quads. */
@@ -490,28 +544,23 @@ export class Viewport {
     const out = new THREE.Vector3();
     if (!this.model) return out;
     const set = new Set(ids);
-    const ranges = this.model.bodies.filter((b) => set.has(b.id));
-    if (!ranges.length) return out;
-    const inRange = (fid: number) =>
-      ranges.some((r) => fid >= r.faceStart && fid < r.faceStart + r.faceCount);
-    const pos = this.model.mesh.geometry.getAttribute("position");
-    const index = this.model.mesh.geometry.getIndex()!;
-    const fids = this.model.faceIds;
-    const seen = new Set<number>();
+    const bodies = this.model.bodies.filter((b) => set.has(b.id));
+    if (!bodies.length) return out;
+    // each body's own buffer already holds only its own (deduped) vertices, so
+    // this can walk every vertex directly instead of scanning triangles with a
+    // seen-set — the merged-mesh version needed the seen-set to dedupe a vertex
+    // shared by multiple triangles; a per-body buffer has no such duplicates.
     const tmp = new THREE.Vector3();
     let n = 0;
-    for (let t = 0; t < fids.length; t++) {
-      if (!inRange(fids[t])) continue;
-      for (let k = 0; k < 3; k++) {
-        const v = index.getX(t * 3 + k);
-        if (seen.has(v)) continue;
-        seen.add(v);
-        out.add(tmp.fromBufferAttribute(pos, v));
+    for (const body of bodies) {
+      const pos = body.mesh.geometry.getAttribute("position");
+      for (let v = 0; v < pos.count; v++) {
+        out.add(tmp.fromBufferAttribute(pos, v).applyMatrix4(body.mesh.matrixWorld));
         n++;
       }
     }
     if (n) out.divideScalar(n);
-    return out.applyMatrix4(this.model.mesh.matrixWorld);
+    return out;
   }
 
   /** True if (clientX,clientY) is over the ViewCube corner — so a right-click
@@ -561,6 +610,7 @@ export class Viewport {
       (q.material as THREE.MeshBasicMaterial).opacity =
         q.userData.datumId === id ? 0.32 : 0.12;
     }
+    this.requestRender();
   }
 
   /** Selectors for the currently selected edges (for pre-selected fillet/chamfer). */
@@ -595,15 +645,55 @@ export class Viewport {
   }
 
   setModel(result: RebuildResult, fit = false, hiddenBodies: string[] = []) {
-    // dispose previous model first (full-rebuild memory hygiene)
-    if (this.model) {
-      this.scene.modelGroup.remove(this.model.mesh);
-      for (const e of this.model.edges) this.scene.modelGroup.remove(e);
-      disposeModel(this.model);
+    const hidden = new Set(hiddenBodies);
+    const bodyMeta = result.bodies ?? [];
+    const bodyIds = new Set(bodyMeta.map((b) => b.id));
+    const { byBody, orphans } = groupEdgesByBody(result.edges, bodyIds);
+
+    // bodies from the PREVIOUS model, keyed by id — consumed as we go; whatever
+    // is left at the end no longer exists in this reply and gets disposed.
+    const prevBodies = new Map<string, BodyMesh>(this.model?.bodies.map((b) => [b.id, b]) ?? []);
+    const bodies: BodyMesh[] = [];
+    for (const meta of bodyMeta) {
+      const prev = prevBodies.get(meta.id);
+      prevBodies.delete(meta.id);
+      let body: BodyMesh;
+      if (prev && meta.etag !== undefined && prev.etag === meta.etag) {
+        // unchanged since the last reply — keep its GPU objects untouched, just
+        // reset the transient display state a rebuild used to wipe for free.
+        body = prev;
+        resetBodyAppearance(body);
+      } else {
+        body = buildBodyMesh(result, meta, byBody.get(meta.id) ?? [], this.resolution, meta.etag);
+        if (prev) {
+          this.scene.modelGroup.remove(prev.mesh);
+          for (const e of prev.edges) this.scene.modelGroup.remove(e);
+          disposeBody(prev);
+        }
+        this.scene.modelGroup.add(body.mesh);
+        for (const e of body.edges) this.scene.modelGroup.add(e);
+      }
+      body.mesh.visible = !hidden.has(meta.id);
+      for (const e of body.edges) e.visible = body.mesh.visible;
+      bodies.push(body);
     }
-    this.model = buildModel(result, this.resolution, hiddenBodies);
-    this.scene.modelGroup.add(this.model.mesh);
-    for (const e of this.model.edges) this.scene.modelGroup.add(e);
+    // any body left in prevBodies is gone from this reply — dispose it
+    for (const stale of prevBodies.values()) {
+      this.scene.modelGroup.remove(stale.mesh);
+      for (const e of stale.edges) this.scene.modelGroup.remove(e);
+      disposeBody(stale);
+    }
+
+    // orphan edges (no owning body — see ModelView.orphanEdges) are rebuilt
+    // fresh every call; there's no per-body cache key to reuse them by.
+    if (this.model) for (const e of this.model.orphanEdges) { this.scene.modelGroup.remove(e); disposeObject(e); }
+    const orphanEdges = buildEdgeLines(orphans, this.resolution);
+    for (const e of orphanEdges) this.scene.modelGroup.add(e);
+
+    const box = new THREE.Box3(new THREE.Vector3(...result.bbox.min), new THREE.Vector3(...result.bbox.max));
+    const edges = bodies.flatMap((b) => b.edges).concat(orphanEdges);
+    this.model = { bodies, edges, orphanEdges, box };
+
     this.hideFlushSeams();
     this.highlighter = new Highlighter(this.model);
     this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
@@ -623,43 +713,51 @@ export class Viewport {
   private hideFlushSeams() {
     const model = this.model;
     if (!model || !model.edges.length) return;
-    const pos = model.mesh.geometry.getAttribute("position");
-    const index = model.mesh.geometry.getIndex()!;
-    const ids = model.faceIds;
-    const mw = model.mesh.matrixWorld;
 
-    // one pass over the index buffer: per-face normal / plane point / bbox /
-    // planarity / triangle list (curved faces never hide a seam)
+    // one pass over every body's own (already-isolated) index buffer: per-face
+    // normal / plane point / bbox / planarity / triangle list (curved faces
+    // never hide a seam). faceId is globally unique across bodies (the wire
+    // protocol partitions it per body), so a single Map keyed by faceId still
+    // spans the whole model correctly even though the triangles backing each
+    // entry now live in several different BufferGeometries — this is what lets
+    // a seam between two DIFFERENT mating bodies still hide, not just a seam
+    // within one body's own faces.
     interface FInfo {
       planar: boolean;
       n: THREE.Vector3; p: THREE.Vector3;
       min: THREE.Vector3; max: THREE.Vector3;
-      tris: number[]; // triangle indices, for the side-sample containment test
+      tris: { body: BodyMesh; t: number }[]; // (owning body, LOCAL triangle index)
     }
     const faces = new Map<number, FInfo>();
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
     const ab = new THREE.Vector3(), ac = new THREE.Vector3(), n = new THREE.Vector3();
-    for (let t = 0; t < ids.length; t++) {
-      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
-      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
-      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
-      n.copy(ab.copy(b).sub(a)).cross(ac.copy(c).sub(a));
-      const len = n.length();
-      let f = faces.get(ids[t]);
-      if (!f) {
-        f = {
-          planar: true,
-          n: len > 1e-9 ? n.clone().divideScalar(len) : new THREE.Vector3(),
-          p: a.clone(), min: a.clone(), max: a.clone(), tris: [],
-        };
-        faces.set(ids[t], f);
-      } else if (len > 1e-9 && f.n.lengthSq() > 0.5 && n.clone().divideScalar(len).dot(f.n) < 0.9998) {
-        f.planar = false;
-      } else if (len > 1e-9 && f.n.lengthSq() < 0.5) {
-        f.n.copy(n).divideScalar(len);
+    for (const body of model.bodies) {
+      const pos = body.mesh.geometry.getAttribute("position");
+      const index = body.mesh.geometry.getIndex()!;
+      const ids = body.faceIds;
+      const mw = body.mesh.matrixWorld;
+      for (let t = 0; t < ids.length; t++) {
+        a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
+        b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
+        c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
+        n.copy(ab.copy(b).sub(a)).cross(ac.copy(c).sub(a));
+        const len = n.length();
+        let f = faces.get(ids[t]);
+        if (!f) {
+          f = {
+            planar: true,
+            n: len > 1e-9 ? n.clone().divideScalar(len) : new THREE.Vector3(),
+            p: a.clone(), min: a.clone(), max: a.clone(), tris: [],
+          };
+          faces.set(ids[t], f);
+        } else if (len > 1e-9 && f.n.lengthSq() > 0.5 && n.clone().divideScalar(len).dot(f.n) < 0.9998) {
+          f.planar = false;
+        } else if (len > 1e-9 && f.n.lengthSq() < 0.5) {
+          f.n.copy(n).divideScalar(len);
+        }
+        f.tris.push({ body, t });
+        for (const v of [a, b, c]) { f.min.min(v); f.max.max(v); }
       }
-      f.tris.push(t);
-      for (const v of [a, b, c]) { f.min.min(v); f.max.max(v); }
     }
 
     const TOL = 0.02;  // on-plane tolerance (mm) — flush contacts are exact
@@ -675,7 +773,10 @@ export class Viewport {
         q.y < f.min.y - EPS || q.y > f.max.y + EPS ||
         q.z < f.min.z - EPS || q.z > f.max.z + EPS
       ) return false;
-      for (const t of f.tris) {
+      for (const { body, t } of f.tris) {
+        const pos = body.mesh.geometry.getAttribute("position");
+        const index = body.mesh.geometry.getIndex()!;
+        const mw = body.mesh.matrixWorld;
         tri.a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
         tri.b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
         tri.c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
@@ -747,19 +848,20 @@ export class Viewport {
 
   clearModel() {
     if (!this.model) return;
-    this.scene.modelGroup.remove(this.model.mesh);
+    for (const b of this.model.bodies) this.scene.modelGroup.remove(b.mesh);
     for (const e of this.model.edges) this.scene.modelGroup.remove(e);
     disposeModel(this.model);
     this.model = null;
     this.highlighter = null;
     this.targetGridZ = 0; // no model → grid back on the world XY plane
-    this.savedMat = null; // its material died with the model
+    this.savedMats.clear(); // materials died with the model
     if (this.combsObj) {
       this.scene.modelGroup.remove(this.combsObj);
       this.combsObj.geometry.dispose();
       (this.combsObj.material as THREE.Material).dispose();
       this.combsObj = null;
     }
+    this.requestRender();
   }
 
   fitView() {
@@ -772,6 +874,7 @@ export class Viewport {
       m.visible = on;
       (m.material as THREE.MeshBasicMaterial).opacity = on ? 0.18 : 0.08;
     }
+    this.requestRender();
   }
 
   /** Brighten the plane under the cursor during plane-pick (null = none). */
@@ -781,6 +884,7 @@ export class Viewport {
       if (!m.visible) continue;
       (m.material as THREE.MeshBasicMaterial).opacity = k === kind ? 0.36 : 0.14;
     }
+    this.requestRender();
   }
 
   /**
@@ -804,16 +908,16 @@ export class Viewport {
   pickFacePlane(clientX: number, clientY: number): PlaneDef | null {
     if (!this.model) return null;
     const ray = this.rayFrom(clientX, clientY);
-    const hits = ray.intersectObject(this.model.mesh, false);
+    const hits = ray.intersectObjects(visibleBodyMeshes(this.model), false);
     const hit = hits[0];
     if (!hit || !hit.face) return null;
-    const mesh = this.model.mesh;
+    const mesh = hit.object as THREE.Mesh;
     const pos = mesh.geometry.getAttribute("position");
     const a = new THREE.Vector3().fromBufferAttribute(pos, hit.face.a);
     const b = new THREE.Vector3().fromBufferAttribute(pos, hit.face.b);
     const c = new THREE.Vector3().fromBufferAttribute(pos, hit.face.c);
     const normal = b.sub(a).cross(c.sub(a)).normalize().transformDirection(mesh.matrixWorld).normalize();
-    const faceId = this.model.faceIds[hit.faceIndex ?? 0] ?? 0;
+    const faceId = faceIdOfHit(hit);
     const origin = this.faceCentroidWorld(faceId);
     const ref =
       Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
@@ -829,7 +933,7 @@ export class Viewport {
   pickEdgeAt(clientX: number, clientY: number): EdgeHit | null {
     if (!this.model) return null;
     const rect = this.canvas.getBoundingClientRect();
-    return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model, this.resolution);
+    return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model);
   }
 
   // --- Measure (Inspect): pick a face/edge and read its size ----------------
@@ -838,24 +942,25 @@ export class Viewport {
   pickEntity(clientX: number, clientY: number): Hit | null {
     if (!this.model) return null;
     const rect = this.canvas.getBoundingClientRect();
-    return this.picker.pick(clientX, clientY, rect, this.rig.active, this.model, this.resolution);
+    return this.picker.pick(clientX, clientY, rect, this.rig.active, this.model);
   }
 
   /** World-space area (mm²) of a B-rep face = Σ its triangle areas. */
   faceArea(faceId: number): number {
-    const mesh = this.model!.mesh;
-    const pos = mesh.geometry.getAttribute("position");
-    const index = mesh.geometry.getIndex()!;
-    const ids = this.model!.faceIds;
+    const body = this.model && bodyOfFace(this.model, faceId);
+    const tris = body?.faceTriangles.get(faceId);
+    if (!body || !tris) return 0;
+    const pos = body.mesh.geometry.getAttribute("position");
+    const index = body.mesh.geometry.getIndex()!;
+    const mw = body.mesh.matrixWorld;
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     const c = new THREE.Vector3();
     let area = 0;
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] !== faceId) continue;
-      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mesh.matrixWorld);
-      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mesh.matrixWorld);
-      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mesh.matrixWorld);
+    for (const t of tris) {
+      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
+      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
+      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
       area += b.clone().sub(a).cross(c.clone().sub(a)).length() / 2;
     }
     return area;
@@ -874,17 +979,17 @@ export class Viewport {
    *  material for true shortest-distance computation. */
   faceTriangles(faceId: number): THREE.Triangle[] {
     const out: THREE.Triangle[] = [];
-    if (!this.model) return out;
-    const mesh = this.model.mesh;
-    const pos = mesh.geometry.getAttribute("position");
-    const index = mesh.geometry.getIndex()!;
-    const ids = this.model.faceIds;
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] !== faceId) continue;
+    const body = this.model && bodyOfFace(this.model, faceId);
+    const tris = body?.faceTriangles.get(faceId);
+    if (!body || !tris) return out;
+    const pos = body.mesh.geometry.getAttribute("position");
+    const index = body.mesh.geometry.getIndex()!;
+    const mw = body.mesh.matrixWorld;
+    for (const t of tris) {
       const tri = new THREE.Triangle(
-        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mesh.matrixWorld),
-        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mesh.matrixWorld),
-        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mesh.matrixWorld),
+        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw),
+        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw),
+        new THREE.Vector3().fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw),
       );
       out.push(tri);
     }
@@ -894,9 +999,10 @@ export class Viewport {
   /** Hover-highlight whatever a pick returned (Measure aiming feedback). */
   hoverEntity(hit: import("./picking").Hit | null) {
     this.highlighter?.clearHover();
-    if (!hit) return;
+    if (!hit) { this.requestRender(); return; }
     if (hit.kind === "edge") this.highlighter?.hoverEdge(hit.line);
     else this.highlighter?.hoverFace(hit.faceId);
+    this.requestRender();
   }
 
   /** Transient marker line between the two closest points of a measure pair
@@ -908,7 +1014,7 @@ export class Viewport {
       (this.measureLine.material as THREE.Material).dispose();
       this.measureLine = null;
     }
-    if (!a || !b) return;
+    if (!a || !b) { this.requestRender(); return; }
     const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
     const mat = new THREE.LineBasicMaterial({
       color: 0xffc24a,
@@ -919,6 +1025,7 @@ export class Viewport {
     this.measureLine = new THREE.Line(geo, mat);
     this.measureLine.renderOrder = 999;
     this.scene.scene.add(this.measureLine);
+    this.requestRender();
   }
   private measureLine: THREE.Line | null = null;
 
@@ -930,6 +1037,7 @@ export class Viewport {
     this.highlighter?.clearSelection();
     for (const f of faceIds) this.highlighter?.toggleSelectFace(f);
     for (const l of lines) this.highlighter?.toggleSelectEdge(l);
+    this.requestRender();
   }
 
   /** Smart select (Plasticity-style): select every face coplanar with the given
@@ -945,14 +1053,17 @@ export class Viewport {
     const tol = 1e-3 * diag + 1e-4;
     this.highlighter.clearSelection();
     let count = 0;
-    for (const fid of new Set(this.model.faceIds)) {
-      const n = this.faceNormalWorld(fid);
-      if (n.dot(n0) < 0.999) continue; // parallel + same facing
-      if (Math.abs(n.dot(this.faceCentroidWorld(fid)) - d0) > tol) continue; // same plane
-      this.highlighter.toggleSelectFace(fid);
-      count++;
+    for (const body of this.model.bodies) {
+      for (const fid of body.faceTriangles.keys()) {
+        const n = this.faceNormalWorld(fid);
+        if (n.dot(n0) < 0.999) continue; // parallel + same facing
+        if (Math.abs(n.dot(this.faceCentroidWorld(fid)) - d0) > tol) continue; // same plane
+        this.highlighter.toggleSelectFace(fid);
+        count++;
+      }
     }
     this.onSelectionChange?.();
+    this.requestRender();
     return count;
   }
 
@@ -963,10 +1074,11 @@ export class Viewport {
     this.scene.renderer.localClippingEnabled = !!plane;
     const planes = plane ? [plane] : null;
     if (this.model) {
-      (this.model.mesh.material as THREE.Material).clippingPlanes = planes;
+      for (const b of this.model.bodies) (b.mesh.material as THREE.Material).clippingPlanes = planes;
       for (const e of this.model.edges)
         (e.material as unknown as { clippingPlanes: THREE.Plane[] | null }).clippingPlanes = planes;
     }
+    this.requestRender();
   }
 
   /** The model's world bounding box (for placing the section plane), or null. */
@@ -982,13 +1094,7 @@ export class Viewport {
   ): { volume: number; area: number; com: THREE.Vector3; bbox: THREE.Box3; names: string[] } | null {
     if (!this.model) return null;
     const all = this.model.bodies;
-    const ranges = ids && ids.length ? all.filter((b) => ids.includes(b.id)) : all;
-    const inRange = (fid: number) =>
-      ranges.length === 0 || ranges.some((r) => fid >= r.faceStart && fid < r.faceStart + r.faceCount);
-    const pos = this.model.mesh.geometry.getAttribute("position");
-    const index = this.model.mesh.geometry.getIndex()!;
-    const fids = this.model.faceIds;
-    const mw = this.model.mesh.matrixWorld;
+    const bodies = ids && ids.length ? all.filter((b) => ids.includes(b.id)) : all;
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     const c = new THREE.Vector3();
@@ -996,18 +1102,22 @@ export class Viewport {
     const com = new THREE.Vector3();
     let area = 0;
     let vol = 0;
-    for (let t = 0; t < fids.length; t++) {
-      if (!inRange(fids[t])) continue;
-      a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
-      b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
-      c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
-      bbox.expandByPoint(a);
-      bbox.expandByPoint(b);
-      bbox.expandByPoint(c);
-      area += b.clone().sub(a).cross(c.clone().sub(a)).length() * 0.5;
-      const v = a.dot(b.clone().cross(c)) / 6; // signed tet (origin,a,b,c) volume
-      vol += v;
-      com.addScaledVector(a.clone().add(b).add(c), v / 4); // tet centroid · weight
+    for (const body of bodies) {
+      const pos = body.mesh.geometry.getAttribute("position");
+      const index = body.mesh.geometry.getIndex()!;
+      const mw = body.mesh.matrixWorld;
+      for (let t = 0; t < body.faceIds.length; t++) {
+        a.fromBufferAttribute(pos, index.getX(t * 3)).applyMatrix4(mw);
+        b.fromBufferAttribute(pos, index.getX(t * 3 + 1)).applyMatrix4(mw);
+        c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
+        bbox.expandByPoint(a);
+        bbox.expandByPoint(b);
+        bbox.expandByPoint(c);
+        area += b.clone().sub(a).cross(c.clone().sub(a)).length() * 0.5;
+        const v = a.dot(b.clone().cross(c)) / 6; // signed tet (origin,a,b,c) volume
+        vol += v;
+        com.addScaledVector(a.clone().add(b).add(c), v / 4); // tet centroid · weight
+      }
     }
     if (Math.abs(vol) > 1e-9) com.divideScalar(vol);
     return {
@@ -1015,7 +1125,7 @@ export class Viewport {
       area,
       com,
       bbox,
-      names: (ids && ids.length ? all.filter((x) => ids.includes(x.id)) : all).map((x) => x.name),
+      names: bodies.map((x) => x.name),
     };
   }
 
@@ -1029,16 +1139,16 @@ export class Viewport {
   ): { selector: Selector; faceId: number; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.model) return null;
     const ray = this.rayFrom(clientX, clientY);
-    const hit = ray.intersectObject(this.model.mesh, false)[0];
+    const hit = ray.intersectObjects(visibleBodyMeshes(this.model), false)[0];
     if (!hit || !hit.face) return null;
-    const mesh = this.model.mesh;
+    const mesh = hit.object as THREE.Mesh;
     const pos = mesh.geometry.getAttribute("position");
     const a = new THREE.Vector3().fromBufferAttribute(pos, hit.face.a);
     const b = new THREE.Vector3().fromBufferAttribute(pos, hit.face.b);
     const c = new THREE.Vector3().fromBufferAttribute(pos, hit.face.c);
     const normal = b.sub(a).cross(c.sub(a)).normalize().transformDirection(mesh.matrixWorld).normalize();
     const anchor = hit.point.clone();
-    const faceId = this.model.faceIds[hit.faceIndex ?? 0] ?? 0;
+    const faceId = faceIdOfHit(hit);
     return {
       selector: { kind: "face", by: "nearest", point: [anchor.x, anchor.y, anchor.z] },
       faceId,
@@ -1052,6 +1162,7 @@ export class Viewport {
   hoverEdge(line: import("three/examples/jsm/lines/Line2.js").Line2 | null) {
     this.highlighter?.clearHover();
     if (line) this.highlighter?.hoverEdge(line);
+    this.requestRender();
   }
 
   /** Light up ALL model edges as "selectable" while the fillet/chamfer edge
@@ -1062,17 +1173,19 @@ export class Viewport {
     if (this.model) {
       for (const e of this.model.edges) (e.material as { linewidth: number }).linewidth = on ? 2.8 : 1.6;
     }
+    this.requestRender();
   }
 
   /** Raycast the solid and hover-highlight the face under the cursor; returns
    *  the faceId (for plane/offset face selection feedback). */
   hoverFaceAt(clientX: number, clientY: number): number | null {
     this.highlighter?.clearHover();
+    this.requestRender();
     if (!this.model) return null;
     const ray = this.rayFrom(clientX, clientY);
-    const hit = ray.intersectObject(this.model.mesh, false)[0];
+    const hit = ray.intersectObjects(visibleBodyMeshes(this.model), false)[0];
     if (!hit) return null;
-    const faceId = this.model.faceIds[hit.faceIndex ?? 0] ?? 0;
+    const faceId = faceIdOfHit(hit);
     this.highlighter?.hoverFace(faceId);
     return faceId;
   }
@@ -1080,18 +1193,19 @@ export class Viewport {
   /** Clear any hover highlight (used when leaving an interactive pick mode). */
   clearHover() {
     this.highlighter?.clearHover();
+    this.requestRender();
   }
 
   private faceCentroidWorld(faceId: number): THREE.Vector3 {
-    const mesh = this.model!.mesh;
-    const pos = mesh.geometry.getAttribute("position");
-    const index = mesh.geometry.getIndex()!;
-    const ids = this.model!.faceIds;
     const acc = new THREE.Vector3();
+    const body = this.model && bodyOfFace(this.model, faceId);
+    const tris = body?.faceTriangles.get(faceId);
+    if (!body || !tris) return acc;
+    const pos = body.mesh.geometry.getAttribute("position");
+    const index = body.mesh.geometry.getIndex()!;
     const tmp = new THREE.Vector3();
     const seen = new Set<number>();
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] !== faceId) continue;
+    for (const t of tris) {
       for (let k = 0; k < 3; k++) {
         const vi = index.getX(t * 3 + k);
         if (seen.has(vi)) continue;
@@ -1100,24 +1214,24 @@ export class Viewport {
       }
     }
     if (seen.size) acc.divideScalar(seen.size);
-    return acc.applyMatrix4(mesh.matrixWorld);
+    return acc.applyMatrix4(body.mesh.matrixWorld);
   }
 
   /** Area-weighted average normal of a B-rep face (world space) — averaging its
    *  triangles' normals. For a planar face this is the exact normal; for a curved
    *  face it's a representative outward direction. */
   private faceNormalWorld(faceId: number): THREE.Vector3 {
-    const mesh = this.model!.mesh;
-    const pos = mesh.geometry.getAttribute("position");
-    const index = mesh.geometry.getIndex()!;
-    const ids = this.model!.faceIds;
     const acc = new THREE.Vector3();
+    const body = this.model && bodyOfFace(this.model, faceId);
+    const tris = body?.faceTriangles.get(faceId);
+    if (!body || !tris) { acc.set(0, 0, 1); return acc; }
+    const pos = body.mesh.geometry.getAttribute("position");
+    const index = body.mesh.geometry.getIndex()!;
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
     const c = new THREE.Vector3();
     const n = new THREE.Vector3();
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] !== faceId) continue;
+    for (const t of tris) {
       a.fromBufferAttribute(pos, index.getX(t * 3));
       b.fromBufferAttribute(pos, index.getX(t * 3 + 1));
       c.fromBufferAttribute(pos, index.getX(t * 3 + 2));
@@ -1125,7 +1239,7 @@ export class Viewport {
       acc.add(n);
     }
     if (acc.lengthSq() < 1e-12) acc.set(0, 0, 1);
-    return acc.normalize().transformDirection(mesh.matrixWorld).normalize();
+    return acc.normalize().transformDirection(body.mesh.matrixWorld).normalize();
   }
 
   /** a reusable Raycaster aimed at the given client coords (no allocation) */
@@ -1143,12 +1257,14 @@ export class Viewport {
 
   toggleProjection() {
     this.rig.toggleProjection();
+    this.requestRender();
   }
 
   setStandardView(v: StandardView) {
     // toolbar buttons + SpaceMouse route here; honor a redefined side so "Top"
     // means whatever the user mapped, not the world default.
     const side = v as ViewCubeSide;
+    this.requestRender();
     if (this.applyOverride(side)) return;
     this.rig.setStandardView(v);
   }
@@ -1157,6 +1273,7 @@ export class Viewport {
 
   /** Apply a cube side: a user override if one exists, else the default view. */
   private applyCubeSide(side: ViewCubeSide) {
+    this.requestRender();
     if (this.applyOverride(side)) return;
     this.rig.setStandardView(FACE_VIEWS[side].view);
   }
@@ -1219,6 +1336,7 @@ export class Viewport {
   clearSelection() {
     this.highlighter?.clearSelection();
     this.onSelectionChange?.();
+    this.requestRender();
   }
 
   /** Select exactly the given B-rep face (clears any prior selection). Used by the
@@ -1227,6 +1345,7 @@ export class Viewport {
     this.highlighter?.clearSelection();
     this.highlighter?.toggleSelectFace(faceId);
     this.onSelectionChange?.();
+    this.requestRender();
   }
 
   /** Select exactly the given edge line (clears any prior selection). Used by the
@@ -1235,6 +1354,7 @@ export class Viewport {
     this.highlighter?.clearSelection();
     this.highlighter?.toggleSelectEdge(line);
     this.onSelectionChange?.();
+    this.requestRender();
   }
 
   // --- accessors + helpers for the sketch system ---
@@ -1246,9 +1366,11 @@ export class Viewport {
   }
   addToScene(obj: THREE.Object3D) {
     this.scene.scene.add(obj);
+    this.requestRender();
   }
   removeFromScene(obj: THREE.Object3D) {
     this.scene.scene.remove(obj);
+    this.requestRender();
   }
 
   // --- Press/Pull ghost: an instant frontend-only preview of the extrude so the
@@ -1259,21 +1381,22 @@ export class Viewport {
   setPressPullGhost(faceIds: number[], distance: number) {
     this.clearPressPullGhost();
     if (!this.model || faceIds.length === 0 || Math.abs(distance) < 1e-4) return;
-    const mesh = this.model.mesh;
-    const pos = mesh.geometry.getAttribute("position");
-    const index = mesh.geometry.getIndex()!;
-    const ids = this.model.faceIds;
-    const mw = mesh.matrixWorld;
-    const wv = (vi: number) => new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mw);
     const out: number[] = [];
     const push = (v: THREE.Vector3) => out.push(v.x, v.y, v.z);
     for (const faceId of faceIds) {
+      // per-body model: resolve the face's owning body and read its own buffers
+      // (vertex indices below are body-local, consistent with wv()'s source).
+      const body = bodyOfFace(this.model, faceId);
+      const triIdx = body?.faceTriangles.get(faceId);
+      if (!body || !triIdx || triIdx.length === 0) continue;
+      const pos = body.mesh.geometry.getAttribute("position");
+      const index = body.mesh.geometry.getIndex()!;
+      const mw = body.mesh.matrixWorld;
+      const wv = (vi: number) => new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mw);
       const off = this.faceNormalWorld(faceId).multiplyScalar(distance);
-      const tris: [number, number, number][] = [];
-      for (let t = 0; t < ids.length; t++) {
-        if (ids[t] === faceId) tris.push([index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2)]);
-      }
-      if (!tris.length) continue;
+      const tris: [number, number, number][] = triIdx.map(
+        (t) => [index.getX(t * 3), index.getX(t * 3 + 1), index.getX(t * 3 + 2)] as [number, number, number],
+      );
       // cap (the face moved by `off`)
       for (const [i0, i1, i2] of tris) {
         push(wv(i0).add(off)); push(wv(i1).add(off)); push(wv(i2).add(off));
@@ -1307,6 +1430,7 @@ export class Viewport {
     this.ppGhost = new THREE.Mesh(geo, mat);
     this.ppGhost.renderOrder = 998;
     this.addToScene(this.ppGhost);
+    this.requestRender();
   }
   clearPressPullGhost() {
     if (!this.ppGhost) return;
@@ -1314,52 +1438,39 @@ export class Viewport {
     this.ppGhost.geometry.dispose();
     (this.ppGhost.material as THREE.Material).dispose();
     this.ppGhost = null;
+    this.requestRender();
   }
 
   // --- Move ghost: translate the selected bodies' mesh + edges live during a drag,
   // with NO sidecar rebuild (a rigid move needs no geometry recompute) — so dragging
-  // is snappy. The real `move` feature is committed on release. We move the moved
-  // bodies' vertices in place and offset their edge-line objects; cancel restores.
-  private moveGhost: { verts: number[]; orig: Float32Array; edges: import("three/examples/jsm/lines/Line2.js").Line2[] } | null = null;
+  // is snappy. The real `move` feature is committed on release. With per-body meshes
+  // this is a pure object-transform offset: zero vertex writes, zero GPU uploads.
+  // Raycasts (bodyIdAt, pointInSolid parity) follow matrixWorld, refreshed eagerly
+  // on every offset so picking never lags the visual. On commit (restore=false) the
+  // offset stays until the rebuilt body arrives; the moved body's etag changes, so
+  // setModel replaces its mesh (position 0) — and resetBodyAppearance() clears any
+  // lingering offset on the reuse path as a belt-and-braces guard.
+  private moveGhost: {
+    bodies: BodyMesh[];
+    edges: import("three/examples/jsm/lines/Line2.js").Line2[];
+  } | null = null;
   beginBodyMoveGhost(bodyIds: string[]) {
     this.endBodyMoveGhost(true);
     if (!this.model) return;
     const sel = new Set(bodyIds);
-    const ranges = this.model.bodies
-      .filter((b) => sel.has(b.id))
-      .map((b) => [b.faceStart, b.faceStart + b.faceCount] as [number, number]);
-    if (!ranges.length) return;
-    const inSel = (fid: number) => ranges.some(([s, e]) => fid >= s && fid < e);
-    const geo = this.model.mesh.geometry;
-    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
-    const index = geo.getIndex()!;
-    const ids = this.model.faceIds;
-    const vset = new Set<number>();
-    for (let t = 0; t < ids.length; t++) {
-      if (!inSel(ids[t])) continue;
-      vset.add(index.getX(t * 3));
-      vset.add(index.getX(t * 3 + 1));
-      vset.add(index.getX(t * 3 + 2));
-    }
-    const verts = [...vset];
-    const orig = new Float32Array(verts.length * 3);
-    for (let i = 0; i < verts.length; i++) {
-      orig[i * 3] = pos.getX(verts[i]);
-      orig[i * 3 + 1] = pos.getY(verts[i]);
-      orig[i * 3 + 2] = pos.getZ(verts[i]);
-    }
+    const bodies = this.model.bodies.filter((b) => sel.has(b.id));
+    if (!bodies.length) return;
     const edges = this.model.edges.filter((e) => sel.has(e.userData.body as string));
-    this.moveGhost = { verts, orig, edges };
+    this.moveGhost = { bodies, edges };
   }
   setBodyMoveOffset(offset: THREE.Vector3) {
     if (!this.moveGhost || !this.model) return;
-    const pos = this.model.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
-    const { verts, orig, edges } = this.moveGhost;
-    for (let i = 0; i < verts.length; i++) {
-      pos.setXYZ(verts[i], orig[i * 3] + offset.x, orig[i * 3 + 1] + offset.y, orig[i * 3 + 2] + offset.z);
+    for (const b of this.moveGhost.bodies) {
+      b.mesh.position.copy(offset);
+      b.mesh.updateMatrixWorld();
     }
-    pos.needsUpdate = true;
-    for (const e of edges) e.position.copy(offset);
+    for (const e of this.moveGhost.edges) e.position.copy(offset);
+    this.requestRender();
   }
   endBodyMoveGhost(restore: boolean) {
     if (!this.moveGhost || !this.model) {
@@ -1367,13 +1478,12 @@ export class Viewport {
       return;
     }
     if (restore) {
-      const pos = this.model.mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const { verts, orig, edges } = this.moveGhost;
-      for (let i = 0; i < verts.length; i++) {
-        pos.setXYZ(verts[i], orig[i * 3], orig[i * 3 + 1], orig[i * 3 + 2]);
+      for (const b of this.moveGhost.bodies) {
+        b.mesh.position.set(0, 0, 0);
+        b.mesh.updateMatrixWorld();
       }
-      pos.needsUpdate = true;
-      for (const e of edges) e.position.set(0, 0, 0);
+      for (const e of this.moveGhost.edges) e.position.set(0, 0, 0);
+      this.requestRender();
     }
     this.moveGhost = null;
   }
@@ -1411,6 +1521,7 @@ export class Viewport {
     }
     this.scene.grid.group.visible = false; // hide the world ground grid; only the sketch grid shows
     this.setModelDimmed(true);
+    this.requestRender();
   }
   exitSketchView() {
     if (this.sketchOrtho) {
@@ -1420,20 +1531,24 @@ export class Viewport {
     this.scene.grid.group.visible = true;
     this.rig.restoreUp();
     this.setModelDimmed(false);
+    this.requestRender();
   }
   private sketchPrevOrtho = false;
   private sketchOrtho = false; // currently in the sketch's forced flat (ortho) view
 
   setModelDimmed(on: boolean) {
     if (!this.model) return;
-    const mat = this.model.mesh.material as THREE.MeshStandardMaterial;
-    mat.transparent = on;
-    mat.opacity = on ? 0.25 : 1;
-    mat.depthWrite = !on;
+    for (const b of this.model.bodies) {
+      const mat = b.mesh.material as THREE.MeshStandardMaterial;
+      mat.transparent = on;
+      mat.opacity = on ? 0.25 : 1;
+      mat.depthWrite = !on;
+    }
     for (const e of this.model.edges) {
       (e.material as any).opacity = on ? 0.3 : 1;
       (e.material as any).transparent = true;
     }
+    this.requestRender();
   }
 
   /** world-space size of one screen pixel at a given world point (for glyphs) */
@@ -1474,6 +1589,7 @@ export class Viewport {
     if (this.model && !this.userMovedCamera && w > 10 && h > 10) {
       this.rig.fit(this.model.box, false);
     }
+    this.requestRender();
   }
 
   private scratchTarget = new THREE.Vector3();
@@ -1486,12 +1602,21 @@ export class Viewport {
       void this.store; // lazily wire the store subscription once it exists
       // The ViewCube drives the camera through camera-controls' own animated
       // setLookAt, so we just always advance the controls — no busy/adopt dance.
-      this.rig.update(dt);
-      // keep the ground grid spacing/extent matched to the current zoom + pan
-      const t = this.rig.controls.getTarget(this.scratchTarget);
-      this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t), this.targetGridZ);
-      this.scene.renderer.render(this.scene.scene, this.rig.active);
-      this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
+      // Always run this (needed for damping/transitions to progress); its
+      // return says whether the camera actually moved this frame.
+      const moved = this.rig.update(dt);
+      // Render-on-demand: skip the (relatively expensive) grid rebuild + GPU
+      // draw entirely when nothing changed — camera didn't move, no mutation
+      // flagged requestRender(), and we've drained the post-mutation linger.
+      if (moved || this.needsRender || this.lingerFrames > 0) {
+        // keep the ground grid spacing/extent matched to the current zoom + pan
+        const t = this.rig.controls.getTarget(this.scratchTarget);
+        this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t), this.targetGridZ);
+        this.scene.renderer.render(this.scene.scene, this.rig.active);
+        this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
+        this.needsRender = false;
+        if (this.lingerFrames > 0) this.lingerFrames--;
+      }
     } catch (e) {
       console.error("[viewport] render loop frame error (continuing):", e);
     }

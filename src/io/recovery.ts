@@ -34,6 +34,8 @@ export function installAutosave(store: DocumentStore) {
   let idleTimer: number | null = null;
   let oldestEdit: number | null = null;
   let writing = false;
+  let failCount = 0; // consecutive autosave failures; warn once at 3, reset on success
+  let warned = false;
 
   const write = async () => {
     if (idleTimer != null) window.clearTimeout(idleTimer);
@@ -49,8 +51,18 @@ export function installAutosave(store: DocumentStore) {
         doc: JSON.parse(store.toJSON()),
       };
       await invoke("recovery_write", { slot: slotFor(store.filePath), json: JSON.stringify(env) });
+      failCount = 0;
+      warned = false;
     } catch (e) {
       console.warn("autosave failed:", e);
+      failCount++;
+      if (failCount >= 3 && !warned) {
+        warned = true;
+        toast("Autosave keeps failing — your unsaved work may not be recoverable if the app crashes", {
+          kind: "error",
+          timeout: 8000,
+        });
+      }
     } finally {
       writing = false;
     }

@@ -11,7 +11,7 @@ old single-body code. Import adds a body; Split can produce two; Combine fuses
 bodies together. The merged shape (a Compound of all bodies) is what gets
 tessellated, measured and exported, so every downstream consumer stays uniform.
 
-API notes (verified against build123d 0.10.x):
+API notes (verified against build123d 0.11.1, dual-compatible back to 0.10.x):
   - extrude(sketch, amount=...)            free function, algebra mode
   - fillet(edges, radius=...)              radius kwarg
   - chamfer(edges, length=...)             length kwarg (NOT distance)
@@ -24,6 +24,10 @@ API notes (verified against build123d 0.10.x):
   - export_brep(shape, BytesIO)            serialize a body for embedding
   - a + b / a - b / a & b                  union / cut / intersect (algebra mode)
   - Plane.XY * sketch  /  Pos(x,y,z) * shape   placement via * in algebra mode
+  - 0.11 makes `.wrapped` a property that ASSERTS on an empty shape (0.10 left
+    the attribute simply absent) — never touch `.wrapped` directly on a shape
+    that might be empty; go through `_wrapped_or_none(shape)` instead, which
+    tolerates both AttributeError (0.10) and AssertionError (0.11).
 """
 
 import base64
@@ -32,9 +36,12 @@ import io
 import json
 import math
 import os
+import sys
 import tempfile
 import time
+import traceback
 from collections import ChainMap
+from dataclasses import dataclass
 
 from build123d import (
     Rectangle,
@@ -938,6 +945,380 @@ def import_geometry(path, fmt):
 on_feature_tick = None
 
 
+@dataclass
+class _RebuildCtx:
+    """Bundle of the per-rebuild closures/containers a feature handler needs.
+    Built ONCE per rebuild() call from the exact same locals the old inline
+    if/elif chain closed over (new_body/active/require_active/find_body still
+    close over `bodies` and the id `counter` — bundling them here is just a
+    named handle onto that existing state, not new state)."""
+
+    val: object            # resolve a parameter name to its value (or pass a literal through)
+    datums: dict            # datumPlane feature id -> PlaneSpec
+    sketches: dict          # sketch feature id -> {"sketch":, "faces":, "wire":, ...}
+    bodies: list            # ordered [{id, name, shape}] — mutated in place by handlers
+    diagnostics: object     # optional list; low-confidence selector-v2 resolutions append here
+    hidden_bodies: frozenset  # bodies hidden by the document's LIVE visibility map
+    new_body: object
+    active: object
+    require_active: object
+    find_body: object
+
+
+# --- feature handlers ---------------------------------------------------------
+# One function per feature type, dispatched from the rebuild() loop below. Each
+# handler is the exact body of the old inline if/elif branch (same logic, same
+# comments, same error messages) — the loop still owns the try/except/errors.append
+# and the no-op-continue semantics; handlers just raise like the old branches did.
+
+
+def _handle_sketch(f, ctx):
+    ctx.sketches[f["id"]] = _build_sketch(f, ctx.val, ctx.datums)
+
+
+def _handle_datum_plane(f, ctx):
+    # No geometry — register the (optionally offset) plane so sketches
+    # / splits can reference it by id. Validate it resolves here so a
+    # bad datum flags at its own feature. `offset` shifts the source
+    # plane along its normal; we store the resolved offset plane.
+    base = _plane_of(f["plane"], ctx.datums)
+    off = f.get("offset") or 0
+    origin = base.origin + base.z_dir * off
+    ctx.datums[f["id"]] = {
+        "origin": [origin.X, origin.Y, origin.Z],
+        "xdir": [base.x_dir.X, base.x_dir.Y, base.x_dir.Z],
+        "normal": [base.z_dir.X, base.z_dir.Y, base.z_dir.Z],
+    }
+
+
+def _handle_extrude(f, ctx):
+    entry = ctx.sketches[f["sketch"]]
+    sk = entry["sketch"]
+    if sk is None:
+        raise ValueError("sketch has no closed profile to extrude")
+    # region points (one per selected area) pick + combine specific
+    # profiles; a ring (annulus) keeps its hole, several areas union.
+    pts = f.get("regions")
+    if not pts and f.get("region"):
+        pts = [f["region"]]
+    if pts:
+        # precompute cell bboxes ONCE (region picking is per-point)
+        cells = [(fc, fc.bounding_box()) for fc in entry["faces"]]
+        sel = []
+        for p in pts:
+            rf = _region_face_at(cells, Vector(*p))
+            if rf is not None:
+                sel.append(rf)
+        if not sel:
+            raise ValueError("no profile found under the selected area")
+        target = sel[0]
+        for s in sel[1:]:
+            target = target + s
+    else:
+        target = sk  # whole sketch
+    solid = extrude(target, amount=ctx.val(f["distance"]))
+    # Captured-visibility semantics: an extrude that carries
+    # `hiddenBodies` uses THAT set (participants decided at feature
+    # creation, MCAD-style — later eye toggles are pure display).
+    # A legacy feature without the field keeps the old behavior:
+    # gated by the document's live visibility map.
+    hid = (
+        frozenset(f["hiddenBodies"])
+        if "hiddenBodies" in f
+        else ctx.hidden_bodies
+    )
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid)
+
+
+def _handle_fillet(f, ctx):
+    act = ctx.require_active("Fillet")
+    edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not edges:
+        raise ValueError("no edge found to fillet")
+    act["shape"] = fillet(edges, radius=ctx.val(f["radius"]))
+
+
+def _handle_chamfer(f, ctx):
+    act = ctx.require_active("Chamfer")
+    edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not edges:
+        raise ValueError("no edge found to chamfer")
+    act["shape"] = chamfer(edges, length=ctx.val(f["distance"]))
+
+
+def _handle_press_pull(f, ctx):
+    # target the body that OWNS the picked face (sent by the tool),
+    # not just the active body — so press/pull on a multi-body model
+    # modifies the right body.
+    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Press/Pull")
+    if act is None:
+        raise ValueError("Press/Pull: the target body no longer exists")
+    # one or many faces, each pushed by the same distance along its own
+    # normal. Re-resolve every selector against the EVOLVING shape — each
+    # push renumbers topology, and the selectors are geometric, so this
+    # stays correct (the tool emits one by:"nearest" selector per face).
+    sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
+    # `upTo`: extrude each face UP TO a target surface instead of by a
+    # fixed distance. Capture the target plane once (point + normal) so
+    # every source face extrudes to the same surface.
+    up = f.get("upTo")
+    tgt_pt = tgt_n = None
+    if up:
+        # Point picks resolve GLOBALLY: the target only contributes
+        # a PLANE, so "extrude until it meets that other part" is
+        # legitimate — the user may aim at a face of ANY body.
+        tf = None
+        pt = (
+            up.get("point")
+            if isinstance(up, dict) and up.get("by") == "nearest"
+            else None
+        )
+        if pt is not None:
+            p = Vector(*pt)
+            best = None
+            for b in ctx.bodies:
+                if b.get("shape") is None:
+                    continue
+                for fc in _as_compound(b["shape"]).faces():
+                    dd_ = fc.distance_to(p)
+                    if best is None or dd_ < best[0]:
+                        best = (dd_, fc)
+            if best is not None:
+                tf = [best[1]]
+        if tf is None:
+            tf = resolve_faces(act["shape"], up, diag=ctx.diagnostics, feature_id=f.get("id"))
+        if not tf:
+            raise ValueError("Press/Pull: the 'up to' target surface wasn't found")
+        tgt_pt, tgt_n = tf[0].center(), tf[0].normal_at()
+    dist = ctx.val(f["distance"])
+    for sel in sels:
+        found = resolve_faces(act["shape"], sel, diag=ctx.diagnostics, feature_id=f.get("id"))
+        if not found:
+            raise ValueError("no face found to press/pull")
+        src = found[0]
+        d = _distance_to_target(src, tgt_pt, tgt_n) if up else dist
+        # up-to distances are exact by construction — the inward
+        # clamp would silently stop short of the chosen target
+        act["shape"] = _press_pull(act["shape"], src, d, clamp=(not up))
+
+
+def _handle_delete_face(f, ctx):
+    # Remove the picked face(s) and heal the solid (defeaturing) — deletes
+    # an imported chamfer/fillet or a protrusion, where there's no feature
+    # to remove. Parametric: the face selector re-resolves each rebuild.
+    # Body ids are POSITIONAL — an upstream split/combine renumbers them,
+    # silently re-aiming a saved deleteFace at the wrong piece (its nearest
+    # match is then some distant face; the delete fails or worse). So
+    # nearest-point picks resolve GLOBALLY: the face nearest the recorded
+    # point wins across ALL bodies, and a win on a different body than the
+    # named one re-targets there with a lossy diagnostic.
+    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Delete Face")
+    sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
+    act, faces = _retarget_delete_faces(
+        act, ctx.bodies, sels, ctx.diagnostics, f.get("id")
+    )
+    if act is None:
+        raise ValueError("Delete Face: the target body no longer exists")
+    if not faces:
+        raise ValueError("no face found to delete")
+    act["shape"] = _defeature(act["shape"], faces)
+
+
+def _handle_clean_up(f, ctx):
+    # Repair boolean rot on a body, exposed as a PARAMETRIC feature
+    # because downstream booleans re-manufacture it: first collapse
+    # per-solid facet debris (slivers + near-coplanar staircases,
+    # the same pass that runs at mesh import), then
+    # unify the body's glued/overlapping solids (_unify_body — joins
+    # of ragged bodies GLUE solids together instead of merging
+    # them). Order matters: fusing the raw sliver-ridden solids
+    # collapses to garbage (which the unify gates refuse), while the
+    # refacet-cleaned solids fuse cleanly — measured on the DDR
+    # document. Both best-effort: a body that can't confidently be
+    # cleaned stays unchanged.
+    targets = (
+        [ctx.find_body(f["body"])] if f.get("body") else list(ctx.bodies)
+    )
+    for tb in targets:
+        if tb is not None and tb.get("shape") is not None:
+            tb["shape"] = _unify_body(
+                _refacet_clean(
+                    tb["shape"], tol=ctx.val(f.get("tolerance", 0.12))
+                )
+            )
+        elif f.get("body"):
+            # named body no longer exists (upstream removal/split
+            # renumbered it) — a legitimate no-op, not a hard error
+            _skip_feature(ctx.diagnostics, f, "cleanUp", "target body already consumed or missing")
+
+
+def _handle_mirror(f, ctx):
+    act = ctx.require_active("Mirror")
+    act["shape"] = act["shape"] + mirror(act["shape"], about=_plane_of(f["plane"], ctx.datums))
+
+
+def _handle_revolve(f, ctx):
+    sk = ctx.sketches[f["sketch"]]["sketch"]
+    solid = revolve(
+        sk,
+        axis=AXES[f.get("axis", "Z")],
+        revolution_arc=ctx.val(f.get("angle", 360)),
+    )
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
+
+
+def _handle_loft(f, ctx):
+    solid = loft([ctx.sketches[s]["sketch"] for s in f["sketches"]])
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
+
+
+def _handle_sweep(f, ctx):
+    prof = ctx.sketches[f["profile"]]["sketch"]
+    if prof is None:
+        raise ValueError("sweep profile has no closed section")
+    path = ctx.sketches[f["path"]].get("wire")
+    if path is None:
+        raise ValueError("sweep path sketch has no curve to follow")
+    solid = sweep(sections=prof, path=path)
+    # Same New/Join/Cut boolean path as extrude/revolve/loft: booleans against
+    # every visible overlapping body, with the loud no-op guards. (Sweep used to
+    # inline `act["shape"] + solid` / `- solid` against only the active body —
+    # unguarded, and a Cut with no active body silently created a new body.)
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
+
+
+def _handle_import(f, ctx):
+    base = f.get("name") or "Imported"
+    parts = _explode_solids(_brep_b64_to_shape(f["brep"]))
+    if len(parts) == 1:
+        ctx.new_body(parts[0], base)
+    else:
+        for part_no, p in enumerate(parts, 1):
+            ctx.new_body(p, f"{base} {part_no}")
+
+
+def _handle_box(f, ctx):
+    ctx.new_body(Box(ctx.val(f["length"]), ctx.val(f["width"]), ctx.val(f["height"])), "Box")
+
+
+def _handle_cylinder(f, ctx):
+    ctx.new_body(Cylinder(ctx.val(f["radius"]), ctx.val(f["height"])), "Cylinder")
+
+
+def _handle_sphere(f, ctx):
+    ctx.new_body(Sphere(ctx.val(f["radius"])), "Sphere")
+
+
+def _handle_shell(f, ctx):
+    act = ctx.require_active("Shell")
+    openings = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id")) if f.get("faces") else []
+    act["shape"] = _shell(act["shape"], ctx.val(f["thickness"]), openings)
+
+
+def _handle_draft(f, ctx):
+    act = ctx.require_active("Draft")
+    faces = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not faces:
+        raise ValueError("no face found to draft")
+    act["shape"] = _draft(act["shape"], faces, ctx.val(f["angle"]), f.get("axis", "Z"))
+
+
+def _handle_pattern_rect(f, ctx):
+    act = ctx.require_active("Pattern")
+    act["shape"] = _pattern_rect(
+        act["shape"], ctx.val(f["countX"]), ctx.val(f["countY"]), ctx.val(f["spacingX"]), ctx.val(f["spacingY"])
+    )
+
+
+def _handle_pattern_circular(f, ctx):
+    act = ctx.require_active("Pattern")
+    act["shape"] = _pattern_circular(
+        act["shape"], ctx.val(f["count"]), ctx.val(f.get("angle", 360)), f.get("axis", "Z")
+    )
+
+
+def _handle_simplify_mesh(f, ctx):
+    act = ctx.require_active("Simplify Mesh")
+    act["shape"] = _simplify_mesh(act["shape"], ctx.val(f.get("tolerance", 1)))
+
+
+def _handle_scale(f, ctx):
+    act = ctx.require_active("Scale")
+    act["shape"] = scale(act["shape"], by=ctx.val(f.get("factor", 1)))
+
+
+def _handle_move(f, ctx):
+    rx, ry, rz = ctx.val(f.get("rx", 0)), ctx.val(f.get("ry", 0)), ctx.val(f.get("rz", 0))
+    dx, dy, dz = ctx.val(f.get("dx", 0)), ctx.val(f.get("dy", 0)), ctx.val(f.get("dz", 0))
+    ids = f.get("bodies")
+    targets = [ctx.find_body(b) for b in ids] if ids else [ctx.require_active("Move")]
+    for tgt in targets:
+        if tgt is None:
+            # stale id (upstream body removal/split renumbered it) —
+            # a legitimate no-op, not a hard error
+            _skip_feature(ctx.diagnostics, f, "move", "target body already consumed or missing")
+            continue
+        sh = tgt["shape"]
+        # A disjoint body is a build123d ShapeList (no single `.wrapped`);
+        # Rot/Pos (Location.__mul__) only accept ONE Shape, so normalize to
+        # a Compound first — else "other must be a list of Locations".
+        if sh is not None and _wrapped_or_none(sh) is None:
+            sh = Compound(list(sh))
+        if rx or ry or rz:
+            sh = Rot(rx, ry, rz) * sh
+        if dx or dy or dz:
+            sh = Pos(dx, dy, dz) * sh
+        tgt["shape"] = sh
+
+
+def _handle_split(f, ctx):
+    _do_split(f, ctx.bodies, ctx.find_body, ctx.active, ctx.new_body, ctx.datums)
+
+
+def _handle_combine(f, ctx):
+    _do_combine(f, ctx.bodies, ctx.find_body, diag=ctx.diagnostics)
+
+
+def _handle_remove_body(f, ctx):
+    # delete bodies by id (mainstream MCAD "Remove"); drop them from the list so
+    # they're not tessellated/exported. Unknown ids are silently ignored.
+    ids = set(f.get("bodies") or [])
+    ctx.bodies[:] = [b for b in ctx.bodies if b["id"] not in ids]
+
+
+# type string -> handler. Unknown types are NOT in this dict — the rebuild loop
+# below raises the exact same "unknown feature type" ValueError the old trailing
+# `else` branch did.
+_FEATURE_HANDLERS = {
+    "sketch": _handle_sketch,
+    "datumPlane": _handle_datum_plane,
+    "extrude": _handle_extrude,
+    "fillet": _handle_fillet,
+    "chamfer": _handle_chamfer,
+    "press-pull": _handle_press_pull,
+    "deleteFace": _handle_delete_face,
+    "cleanUp": _handle_clean_up,
+    "mirror": _handle_mirror,
+    "revolve": _handle_revolve,
+    "loft": _handle_loft,
+    "sweep": _handle_sweep,
+    "import": _handle_import,
+    "box": _handle_box,
+    "cylinder": _handle_cylinder,
+    "sphere": _handle_sphere,
+    "shell": _handle_shell,
+    "draft": _handle_draft,
+    "patternRect": _handle_pattern_rect,
+    "patternCircular": _handle_pattern_circular,
+    "simplifyMesh": _handle_simplify_mesh,
+    "scale": _handle_scale,
+    "move": _handle_move,
+    "split": _handle_split,
+    "combine": _handle_combine,
+    "removeBody": _handle_remove_body,
+}
+
+
 def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist=None):
     """Return (part, errors, bodies).
 
@@ -1064,6 +1445,16 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                     except Exception:
                         pass  # its failure is already in the restored errors
 
+    # One context, built once per rebuild, handed to every feature handler below
+    # (see _RebuildCtx) — bundles the exact closures/containers the old inline
+    # if/elif chain closed over.
+    ctx = _RebuildCtx(
+        val=val, datums=datums, sketches=sketches, bodies=bodies,
+        diagnostics=diagnostics, hidden_bodies=hidden_bodies,
+        new_body=new_body, active=active, require_active=require_active,
+        find_body=find_body,
+    )
+
     for i in range(start, len(features)):
         f = features[i]
         t_feat = time.monotonic()
@@ -1081,306 +1472,35 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             pre_owners_all = ChainMap(*reversed(list(pre_owners_by_id.values())))
         try:
             t = f["type"]
-
-            if t == "sketch":
-                sketches[f["id"]] = _build_sketch(f, val, datums)
-
-            elif t == "datumPlane":
-                # No geometry — register the (optionally offset) plane so sketches
-                # / splits can reference it by id. Validate it resolves here so a
-                # bad datum flags at its own feature. `offset` shifts the source
-                # plane along its normal; we store the resolved offset plane.
-                base = _plane_of(f["plane"], datums)
-                off = f.get("offset") or 0
-                origin = base.origin + base.z_dir * off
-                datums[f["id"]] = {
-                    "origin": [origin.X, origin.Y, origin.Z],
-                    "xdir": [base.x_dir.X, base.x_dir.Y, base.x_dir.Z],
-                    "normal": [base.z_dir.X, base.z_dir.Y, base.z_dir.Z],
-                }
-
-            elif t == "extrude":
-                entry = sketches[f["sketch"]]
-                sk = entry["sketch"]
-                if sk is None:
-                    raise ValueError("sketch has no closed profile to extrude")
-                # region points (one per selected area) pick + combine specific
-                # profiles; a ring (annulus) keeps its hole, several areas union.
-                pts = f.get("regions")
-                if not pts and f.get("region"):
-                    pts = [f["region"]]
-                if pts:
-                    # precompute cell bboxes ONCE (region picking is per-point)
-                    cells = [(fc, fc.bounding_box()) for fc in entry["faces"]]
-                    sel = []
-                    for p in pts:
-                        rf = _region_face_at(cells, Vector(*p))
-                        if rf is not None:
-                            sel.append(rf)
-                    if not sel:
-                        raise ValueError("no profile found under the selected area")
-                    target = sel[0]
-                    for s in sel[1:]:
-                        target = target + s
-                else:
-                    target = sk  # whole sketch
-                solid = extrude(target, amount=val(f["distance"]))
-                # Captured-visibility semantics: an extrude that carries
-                # `hiddenBodies` uses THAT set (participants decided at feature
-                # creation, MCAD-style — later eye toggles are pure display).
-                # A legacy feature without the field keeps the old behavior:
-                # gated by the document's live visibility map.
-                hid = (
-                    frozenset(f["hiddenBodies"])
-                    if "hiddenBodies" in f
-                    else hidden_bodies
-                )
-                _boolean_into_bodies(bodies, solid, f.get("operation", "new"), new_body, hid)
-
-            elif t == "fillet":
-                act = require_active("Fillet")
-                edges = resolve_edges(act["shape"], f["edges"], diag=diagnostics, feature_id=f.get("id"))
-                act["shape"] = fillet(edges, radius=val(f["radius"]))
-
-            elif t == "chamfer":
-                act = require_active("Chamfer")
-                edges = resolve_edges(act["shape"], f["edges"], diag=diagnostics, feature_id=f.get("id"))
-                act["shape"] = chamfer(edges, length=val(f["distance"]))
-
-            elif t == "press-pull":
-                # target the body that OWNS the picked face (sent by the tool),
-                # not just the active body — so press/pull on a multi-body model
-                # modifies the right body.
-                act = find_body(f["body"]) if f.get("body") else require_active("Press/Pull")
-                if act is None:
-                    raise ValueError("Press/Pull: the target body no longer exists")
-                # one or many faces, each pushed by the same distance along its own
-                # normal. Re-resolve every selector against the EVOLVING shape — each
-                # push renumbers topology, and the selectors are geometric, so this
-                # stays correct (the tool emits one by:"nearest" selector per face).
-                sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
-                # `upTo`: extrude each face UP TO a target surface instead of by a
-                # fixed distance. Capture the target plane once (point + normal) so
-                # every source face extrudes to the same surface.
-                up = f.get("upTo")
-                tgt_pt = tgt_n = None
-                if up:
-                    # Point picks resolve GLOBALLY: the target only contributes
-                    # a PLANE, so "extrude until it meets that other part" is
-                    # legitimate — the user may aim at a face of ANY body.
-                    tf = None
-                    pt = (
-                        up.get("point")
-                        if isinstance(up, dict) and up.get("by") == "nearest"
-                        else None
-                    )
-                    if pt is not None:
-                        p = Vector(*pt)
-                        best = None
-                        for b in bodies:
-                            if b.get("shape") is None:
-                                continue
-                            for fc in _as_compound(b["shape"]).faces():
-                                dd_ = fc.distance_to(p)
-                                if best is None or dd_ < best[0]:
-                                    best = (dd_, fc)
-                        if best is not None:
-                            tf = [best[1]]
-                    if tf is None:
-                        tf = resolve_faces(act["shape"], up, diag=diagnostics, feature_id=f.get("id"))
-                    if not tf:
-                        raise ValueError("Press/Pull: the 'up to' target surface wasn't found")
-                    tgt_pt, tgt_n = tf[0].center(), tf[0].normal_at()
-                dist = val(f["distance"])
-                for sel in sels:
-                    found = resolve_faces(act["shape"], sel, diag=diagnostics, feature_id=f.get("id"))
-                    if not found:
-                        raise ValueError("no face found to press/pull")
-                    src = found[0]
-                    d = _distance_to_target(src, tgt_pt, tgt_n) if up else dist
-                    # up-to distances are exact by construction — the inward
-                    # clamp would silently stop short of the chosen target
-                    act["shape"] = _press_pull(act["shape"], src, d, clamp=(not up))
-
-            elif t == "deleteFace":
-                # Remove the picked face(s) and heal the solid (defeaturing) — deletes
-                # an imported chamfer/fillet or a protrusion, where there's no feature
-                # to remove. Parametric: the face selector re-resolves each rebuild.
-                # Body ids are POSITIONAL — an upstream split/combine renumbers them,
-                # silently re-aiming a saved deleteFace at the wrong piece (its nearest
-                # match is then some distant face; the delete fails or worse). So
-                # nearest-point picks resolve GLOBALLY: the face nearest the recorded
-                # point wins across ALL bodies, and a win on a different body than the
-                # named one re-targets there with a lossy diagnostic.
-                act = find_body(f["body"]) if f.get("body") else require_active("Delete Face")
-                sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
-                act, faces = _retarget_delete_faces(
-                    act, bodies, sels, diagnostics, f.get("id")
-                )
-                if act is None:
-                    raise ValueError("Delete Face: the target body no longer exists")
-                if not faces:
-                    raise ValueError("no face found to delete")
-                act["shape"] = _defeature(act["shape"], faces)
-
-            elif t == "cleanUp":
-                # Repair boolean rot on a body, exposed as a PARAMETRIC feature
-                # because downstream booleans re-manufacture it: first collapse
-                # per-solid facet debris (slivers + near-coplanar staircases,
-                # _refacet_clean — the same pass that runs at mesh import), then
-                # unify the body's glued/overlapping solids (_unify_body — joins
-                # of ragged bodies GLUE solids together instead of merging
-                # them). Order matters: fusing the raw sliver-ridden solids
-                # collapses to garbage (which the unify gates refuse), while the
-                # refacet-cleaned solids fuse cleanly — measured on the DDR
-                # document. Both best-effort: a body that can't confidently be
-                # cleaned stays unchanged.
-                targets = (
-                    [find_body(f["body"])] if f.get("body") else list(bodies)
-                )
-                for tb in targets:
-                    if tb is not None and tb.get("shape") is not None:
-                        tb["shape"] = _unify_body(
-                            _refacet_clean(
-                                tb["shape"], tol=val(f.get("tolerance", 0.12))
-                            )
-                        )
-
-            elif t == "mirror":
-                act = require_active("Mirror")
-                act["shape"] = act["shape"] + mirror(act["shape"], about=_plane_of(f["plane"], datums))
-
-            elif t == "revolve":
-                sk = sketches[f["sketch"]]["sketch"]
-                solid = revolve(
-                    sk,
-                    axis=AXES[f.get("axis", "Z")],
-                    revolution_arc=val(f.get("angle", 360)),
-                )
-                act = active()
-                if act is None:
-                    new_body(solid)
-                else:
-                    act["shape"] = solid
-
-            elif t == "loft":
-                solid = loft([sketches[s]["sketch"] for s in f["sketches"]])
-                act = active()
-                if act is None:
-                    new_body(solid)
-                else:
-                    act["shape"] = solid
-
-            elif t == "sweep":
-                prof = sketches[f["profile"]]["sketch"]
-                if prof is None:
-                    raise ValueError("sweep profile has no closed section")
-                path = sketches[f["path"]].get("wire")
-                if path is None:
-                    raise ValueError("sweep path sketch has no curve to follow")
-                solid = sweep(sections=prof, path=path)
-                op = f.get("operation", "new")
-                act = active()
-                if act is None or op == "new":
-                    new_body(solid)
-                elif op == "join":
-                    act["shape"] = act["shape"] + solid
-                elif op == "cut":
-                    act["shape"] = act["shape"] - solid
-
-            elif t == "import":
-                base = f.get("name") or "Imported"
-                parts = _explode_solids(_brep_b64_to_shape(f["brep"]))
-                if len(parts) == 1:
-                    new_body(parts[0], base)
-                else:
-                    for part_no, p in enumerate(parts, 1):
-                        new_body(p, f"{base} {part_no}")
-
-            elif t == "box":
-                new_body(Box(val(f["length"]), val(f["width"]), val(f["height"])), "Box")
-
-            elif t == "cylinder":
-                new_body(Cylinder(val(f["radius"]), val(f["height"])), "Cylinder")
-
-            elif t == "sphere":
-                new_body(Sphere(val(f["radius"])), "Sphere")
-
-            elif t == "shell":
-                act = require_active("Shell")
-                openings = resolve_faces(act["shape"], f["faces"], diag=diagnostics, feature_id=f.get("id")) if f.get("faces") else []
-                act["shape"] = _shell(act["shape"], val(f["thickness"]), openings)
-
-            elif t == "draft":
-                act = require_active("Draft")
-                faces = resolve_faces(act["shape"], f["faces"], diag=diagnostics, feature_id=f.get("id"))
-                if not faces:
-                    raise ValueError("no face found to draft")
-                act["shape"] = _draft(act["shape"], faces, val(f["angle"]), f.get("axis", "Z"))
-
-            elif t == "patternRect":
-                act = require_active("Pattern")
-                act["shape"] = _pattern_rect(
-                    act["shape"], val(f["countX"]), val(f["countY"]), val(f["spacingX"]), val(f["spacingY"])
-                )
-
-            elif t == "patternCircular":
-                act = require_active("Pattern")
-                act["shape"] = _pattern_circular(
-                    act["shape"], val(f["count"]), val(f.get("angle", 360)), f.get("axis", "Z")
-                )
-
-            elif t == "simplifyMesh":
-                act = require_active("Simplify Mesh")
-                act["shape"] = _simplify_mesh(act["shape"], val(f.get("tolerance", 1)))
-
-            elif t == "scale":
-                act = require_active("Scale")
-                act["shape"] = scale(act["shape"], by=val(f.get("factor", 1)))
-
-            elif t == "move":
-                rx, ry, rz = val(f.get("rx", 0)), val(f.get("ry", 0)), val(f.get("rz", 0))
-                dx, dy, dz = val(f.get("dx", 0)), val(f.get("dy", 0)), val(f.get("dz", 0))
-                ids = f.get("bodies")
-                targets = [find_body(b) for b in ids] if ids else [require_active("Move")]
-                for tgt in targets:
-                    if tgt is None:
-                        continue
-                    sh = tgt["shape"]
-                    # A disjoint body is a build123d ShapeList (no single `.wrapped`);
-                    # Rot/Pos (Location.__mul__) only accept ONE Shape, so normalize to
-                    # a Compound first — else "other must be a list of Locations".
-                    if sh is not None and _wrapped_or_none(sh) is None:
-                        sh = Compound(list(sh))
-                    if rx or ry or rz:
-                        sh = Rot(rx, ry, rz) * sh
-                    if dx or dy or dz:
-                        sh = Pos(dx, dy, dz) * sh
-                    tgt["shape"] = sh
-
-            elif t == "split":
-                _do_split(f, bodies, find_body, active, new_body, datums)
-
-            elif t == "combine":
-                _do_combine(f, bodies, find_body, diag=diagnostics)
-
-            elif t == "removeBody":
-                # delete bodies by id (mainstream MCAD "Remove"); drop them from the list so
-                # they're not tessellated/exported. Unknown ids are silently ignored.
-                ids = set(f.get("bodies") or [])
-                bodies[:] = [b for b in bodies if b["id"] not in ids]
-
-            else:
+            handler = _FEATURE_HANDLERS.get(t)
+            if handler is None:
                 raise ValueError(f"unknown feature type: {t}")
+            handler(f, ctx)
 
-        except Exception as ex:  # name the feature so the timeline can flag it red
+        except ValueError as ex:  # name the feature so the timeline can flag it red
             # MCAD-style: a failed feature is a recorded NO-OP and the build
             # CONTINUES — the body state stays as it was and every feature after
             # it still runs. (It used to `break` here: one permanently-failing
             # feature — e.g. a deleteFace OCCT can't heal — silently killed the
             # whole downstream timeline, so nothing the user added after it ever
             # executed.) Owner attribution is skipped for the failed feature.
+            # ValueErrors are hand-authored for users ("no edge found to
+            # fillet", …) — surface them verbatim.
             errors.append({"feature_id": f.get("id"), "message": str(ex)})
+        except Exception as ex:
+            # Anything NOT a hand-authored ValueError is an unexpected internal
+            # failure (OCCT crash, KeyError, …) — the raw message is meaningless
+            # to a user, so surface the feature + exception type instead and log
+            # the full traceback to stderr for debugging.
+            label = f.get("name") or f.get("type") or "feature"
+            print(f"feature {f.get('id')} ({label}) failed:", file=sys.stderr)
+            traceback.print_exc()
+            errors.append(
+                {
+                    "feature_id": f.get("id"),
+                    "message": f"{label} failed ({type(ex).__name__})",
+                }
+            )
         else:
             if prov:
                 _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all)
@@ -1513,15 +1633,6 @@ def _env_sig():
                     pass
             _ENV_SIG = h.hexdigest()
     return _ENV_SIG
-
-
-def _chain_keys(feature_sigs, gsig):
-    k = hashlib.blake2b((_env_sig() + gsig).encode(), digest_size=16).hexdigest()
-    keys = []
-    for s in feature_sigs:
-        k = hashlib.blake2b((k + s).encode(), digest_size=16).hexdigest()
-        keys.append(k)
-    return keys
 
 
 # --- P3: scoped invalidation (design §5 Phase 3) ----------------------------
@@ -3021,6 +3132,7 @@ def _do_combine(f, bodies, find_body, diag=None):
         return
 
     shape = target["shape"]
+    before_vol = _try_vol(shape)
     for t in tools:
         if op == "join":
             shape = shape + t["shape"]
@@ -3028,6 +3140,26 @@ def _do_combine(f, bodies, find_body, diag=None):
             shape = shape - t["shape"]
         else:  # intersect
             shape = shape & t["shape"]
+    # No-op / destructive guards, same volume-eps convention as
+    # _boolean_into_bodies. Only the SILENT failure modes raise: a Cut that
+    # removed nothing still consumes the tools (the user loses bodies and gains
+    # nothing), and an Intersect that empties the target destroys it outright.
+    # Join-with-embedded-tool and Intersect-inside-tool are NOT guarded — their
+    # volume is unchanged but they visibly absorb the tool bodies, which is a
+    # legitimate, observable operation (unlike extrude, nothing here is silent).
+    # Volume-read failures skip the guard (never raise a misleading no-op error).
+    after_vol = _try_vol(shape)
+    if before_vol is not None and after_vol is not None:
+        guard_eps = max(1e-6, 1e-4 * before_vol)
+        if op == "cut" and after_vol >= before_vol - guard_eps:
+            raise ValueError(
+                "Combine (Cut) removed nothing — no tool body overlaps the target."
+            )
+        if op == "intersect" and after_vol < guard_eps:
+            raise ValueError(
+                "Combine (Intersect) would leave the target empty — the tools "
+                "don't overlap it."
+            )
     # A join of ragged/facet-heritage bodies GLUES solids instead of merging
     # them: the "combined" body stays a compound of pieces sharing interior
     # walls, with coincident skins and a visible seam at every contact — the
@@ -3046,12 +3178,20 @@ def _skip_combine(diag, f, reason):
     """Record a non-fatal dangling-reference combine skip in the diagnostics
     channel (same shape as geom_select's selector diagnostics). No `diag` list =
     nothing recorded, and the combine is simply skipped."""
+    _skip_feature(diag, f, "combine", reason)
+
+
+def _skip_feature(diag, f, kind, reason):
+    """Record a non-fatal stale-body-reference skip for any feature (same
+    shape as geom_select's selector diagnostics) — so the rebuild result
+    surfaces that the feature did nothing instead of silently dropping it.
+    No `diag` list = nothing recorded, and the feature is simply skipped."""
     if diag is None:
         return
     diag.append(
         {
             "feature_id": f.get("id"),
-            "kind": "combine",
+            "kind": kind,
             "resolved": 0,
             "confidence": 0.0,
             "lossy": True,

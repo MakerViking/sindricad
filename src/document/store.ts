@@ -37,6 +37,44 @@ const DEFAULT_PALETTE: { name: string; color: string }[] = [
 /** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
 const FORMAT_VERSION = 1;
 
+/** A persisted display-only override map (id -> value): sketch/body/plane
+ *  visibility, body names, and body colors all hand-rolled the same shape —
+ *  a private Map plus a toJSON/load round-trip keyed by one CadDocument field.
+ *  This only extracts that storage + serialization boilerplate; each overlay's
+ *  markDirty/emit rules differ (some emit a build, some emit nothing at all —
+ *  see the store methods below), so those setters stay bespoke on top. */
+class Overlay<T> {
+  private map = new Map<string, T>();
+  constructor(private readonly jsonKey: string) {}
+  get(id: string): T | undefined {
+    return this.map.get(id);
+  }
+  set(id: string, value: T) {
+    this.map.set(id, value);
+  }
+  delete(id: string) {
+    this.map.delete(id);
+  }
+  clear() {
+    this.map.clear();
+  }
+  get size(): number {
+    return this.map.size;
+  }
+  entries(): IterableIterator<[string, T]> {
+    return this.map.entries();
+  }
+  /** append this overlay's toJSON branch onto `out`, iff non-empty. */
+  writeJSON(out: Record<string, unknown>) {
+    if (this.map.size) out[this.jsonKey] = Object.fromEntries(this.map);
+  }
+  /** rebuild the map from a parsed document's `[jsonKey]` field. */
+  loadFrom(parsed: Record<string, unknown>, mapValue?: (v: unknown) => T) {
+    const src = (parsed[this.jsonKey] as Record<string, unknown> | undefined) ?? {};
+    this.map = new Map(Object.entries(src).map(([k, v]) => [k, mapValue ? mapValue(v) : (v as T)]));
+  }
+}
+
 export class DocumentStore {
   private doc: CadDocument;
   private undoStack: CadDocument[] = [];
@@ -48,12 +86,21 @@ export class DocumentStore {
   private isDirty = false; // unsaved changes since last save/open/new
   private rollback: number | null = null; // # of active features (null = all); timeline marker
   private suppressed = new Set<string>(); // feature ids skipped on rebuild (suppress)
-  private sketchVis = new Map<string, boolean>(); // explicit per-sketch show/hide overrides
-  private bodyVis = new Map<string, boolean>(); // explicit per-body show/hide overrides (id → visible)
-  private planeVis = new Map<string, boolean>(); // explicit per-construction-plane show/hide overrides
-  private bodyNames = new Map<string, string>(); // explicit per-body display-name overrides (id → name)
+  private sketchVis = new Overlay<boolean>("sketchVisibility"); // explicit per-sketch show/hide overrides
+  private bodyVis = new Overlay<boolean>("bodyVisibility"); // explicit per-body show/hide overrides (id → visible)
+  private planeVis = new Overlay<boolean>("planeVisibility"); // explicit per-construction-plane show/hide overrides
+  private bodyNames = new Overlay<string>("bodyNames"); // explicit per-body display-name overrides (id → name)
   private palette: { name: string; color: string; material?: string }[] = DEFAULT_PALETTE.map((s) => ({ ...s }));
-  private bodyColors = new Map<string, number>(); // per-body palette-slot assignment (id → slot index)
+  private bodyColors = new Overlay<number>("bodyColors"); // per-body palette-slot assignment (id → slot index)
+  // static descriptor list driving toJSON/load below, in the exact on-disk key
+  // order (palette piggybacks on bodyColors' condition, so isn't listed here).
+  private readonly overlays: { overlay: Overlay<any>; mapValue?: (v: unknown) => any }[] = [
+    { overlay: this.sketchVis },
+    { overlay: this.bodyVis },
+    { overlay: this.planeVis },
+    { overlay: this.bodyNames },
+    { overlay: this.bodyColors, mapValue: (v) => Number(v) },
+  ];
   private preview: Feature | null = null; // un-committed feature shown live (fillet/chamfer drag); never recorded in undo
   private rebuildTimer: number | null = null;
   private rebuilding = false; // a rebuild round-trip is in flight
@@ -458,12 +505,12 @@ export class DocumentStore {
    *  call, which must thread these side-maps explicitly (they never travel inside
    *  `document`). */
   bodyColorsMap(): Record<string, number> {
-    return Object.fromEntries(this.bodyColors);
+    return Object.fromEntries(this.bodyColors.entries());
   }
   /** body id → display-name override, as a plain object. Threaded through the
    *  export call so exported objects carry the sidebar names. */
   bodyNamesMap(): Record<string, string> {
-    return Object.fromEntries(this.bodyNames);
+    return Object.fromEntries(this.bodyNames.entries());
   }
 
   // --- serialization ---
@@ -474,29 +521,24 @@ export class DocumentStore {
     const out: CadDocument = { ...this.doc, version: FORMAT_VERSION };
     if (this.suppressed.size) out.suppressed = [...this.suppressed];
     if (this.rollback !== null) out.rollback = this.rollback;
-    if (this.sketchVis.size) out.sketchVisibility = Object.fromEntries(this.sketchVis);
-    if (this.bodyVis.size) out.bodyVisibility = Object.fromEntries(this.bodyVis);
-    if (this.planeVis.size) out.planeVisibility = Object.fromEntries(this.planeVis);
-    if (this.bodyNames.size) out.bodyNames = Object.fromEntries(this.bodyNames);
-    if (this.bodyColors.size) {
-      out.bodyColors = Object.fromEntries(this.bodyColors);
-      out.palette = this.palette; // only meaningful alongside assignments
-    }
+    for (const { overlay } of this.overlays) overlay.writeJSON(out as unknown as Record<string, unknown>);
+    if (this.bodyColors.size) out.palette = this.palette; // only meaningful alongside assignments
     return JSON.stringify(out, null, 2);
   }
   load(json: string) {
-    const parsed = JSON.parse(json) as CadDocument;
+    let parsed: CadDocument;
+    try {
+      parsed = JSON.parse(json) as CadDocument;
+    } catch (e) {
+      throw new Error(`could not read document: ${e instanceof Error ? e.message : String(e)}`);
+    }
     this.pushUndo();
     this.redoStack = [];
     // split persisted project state back out of the document; keep `this.doc`
     // pure geometry (+ viewOverrides) so undo/rebuild stay unaffected by it.
     this.suppressed = new Set(parsed.suppressed ?? []);
     this.rollback = parsed.rollback ?? null;
-    this.sketchVis = new Map(Object.entries(parsed.sketchVisibility ?? {}));
-    this.bodyVis = new Map(Object.entries(parsed.bodyVisibility ?? {}));
-    this.planeVis = new Map(Object.entries(parsed.planeVisibility ?? {}));
-    this.bodyNames = new Map(Object.entries(parsed.bodyNames ?? {}));
-    this.bodyColors = new Map(Object.entries(parsed.bodyColors ?? {}).map(([k, v]) => [k, Number(v)]));
+    for (const { overlay, mapValue } of this.overlays) overlay.loadFrom(parsed as unknown as Record<string, unknown>, mapValue);
     this.palette = parsed.palette?.length ? parsed.palette.map((s) => ({ ...s })) : DEFAULT_PALETTE.map((s) => ({ ...s }));
     this.doc = {
       parameters: parsed.parameters ?? {},
@@ -544,7 +586,7 @@ export class DocumentStore {
     if (this.preview) features.push(this.preview);
     // Body visibility travels with the rebuild so the sidecar can keep hidden
     // bodies out of extrude booleans (a hidden body is protected from edits).
-    const bodyVisibility = this.bodyVis.size ? Object.fromEntries(this.bodyVis) : undefined;
+    const bodyVisibility = this.bodyVis.size ? Object.fromEntries(this.bodyVis.entries()) : undefined;
     return { parameters: this.doc.parameters, features, bodyVisibility };
   }
 

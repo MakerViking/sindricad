@@ -125,20 +125,71 @@ def _warmup():
     return True
 
 
-# Worker-global per-body mesh cache, validated by SHAPE OBJECT IDENTITY: the
-# cached entry holds a reference to the exact shape object it was computed from
-# (which also keeps id() stable), so `entry["shape"] is body["shape"]` is a sound
-# "nothing changed" test — snapshots share shape refs and every mutating feature
-# rebinds the body's shape to a new object. A hit skips BRepMesh readback, edge
-# polylines, AND faceOwners fingerprinting for that body (the fixed ~1.4 s/edit).
+# Worker-global per-body mesh cache, validated by SHAPE OBJECT IDENTITY **and**
+# tolerance: the cached entry holds a reference to the exact shape object it was
+# computed from (which also keeps id() stable), so `entry["shape"] is body["shape"]`
+# is a sound "nothing changed" test — snapshots share shape refs and every mutating
+# feature rebinds the body's shape to a new object. Tolerance must also match: the
+# same shape re-tessellated at a coarser/finer tolerance is a different payload, and
+# shape identity alone would wrongly serve the wrong-resolution mesh. A hit skips
+# BRepMesh readback, edge polylines, AND faceOwners fingerprinting for that body
+# (the fixed ~1.4 s/edit).
 _MESH_CACHE = {}
+
+# Below this, a mesh's tessellate+build cost doesn't recoup a disk write. An
+# interactive param drag re-tessellates every tick with a brand-new content key
+# (guaranteed cache miss on write AND on the next tick's read) — writing every
+# such tick to disk is pure churn for a payload that will almost never be read
+# back. Mirrors the checkpoint-tip debounce in builder.py's rebuild_cached
+# (trivial warm edits don't spam the store; anything that cost real time is
+# worth the write).
+_MESH_PERSIST_MIN_MS = 50.0
+
+# Wire default (also the literal fallback in the "rebuild"/"computeAll" handlers
+# below) — the reference point our size-adaptive scaling is relative to.
+_DEFAULT_TOLERANCE = 0.1
+
+
+def _effective_tolerance(shape, requested):
+    """Scale the requested (interactive-viewport) tolerance to this body's size,
+    so a 500mm frame doesn't pay for a triangle budget tuned for a 5mm part and a
+    5mm part isn't left visibly faceted by a tolerance tuned for the frame.
+
+    effective = clamp(diag / 2500, 0.05, 0.8) * (requested / DEFAULT_TOLERANCE)
+
+    `diag` is the body's bounding-box diagonal (cheap OCCT bbox, no meshing).
+    Dividing by 2500 makes a ~250mm-diagonal part (roughly the part the fixed
+    0.1mm default was tuned for) land back on 0.1mm; the clamp keeps a 10mm
+    bracket from going arbitrarily fine (0.05mm floor) and a multi-metre frame
+    from going arbitrarily coarse (0.8mm ceiling). The `requested / DEFAULT`
+    factor keeps the wire contract intact: a client that asks for a smaller
+    tolerance than the default still gets a proportionally finer mesh for every
+    body, not just a fixed absolute value. Deterministic — pure function of
+    (bbox, requested), so cache keys built from the result stay stable."""
+    from tessellate import bbox
+
+    bb = bbox(shape)
+    dx = bb["max"][0] - bb["min"][0]
+    dy = bb["max"][1] - bb["min"][1]
+    dz = bb["max"][2] - bb["min"][2]
+    diag = (dx * dx + dy * dy + dz * dz) ** 0.5
+    base = min(max(diag / 2500.0, 0.05), 0.8)
+    scale = requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0
+    return base * scale
 
 
 def _body_payload(b, tolerance):
     """Compute (or fetch) the full render payload for one body: positions/indices/
     faceIds (LOCAL ids, offset client-side), faceOwners, per-body edges. Three
     tiers: identity-cached in RAM -> disk mesh artifact (load path: never pays the
-    Python readback loop) -> compute + persist."""
+    Python readback loop) -> compute + persist.
+
+    `tolerance` is the RAW requested (wire) tolerance; it's immediately rescaled
+    to this body's size (see _effective_tolerance) and every cache key below —
+    RAM identity cache AND the disk mesh_key — is keyed on that EFFECTIVE value,
+    never the raw request. Two bodies of different sizes (or one body whose bbox
+    changed) must not share a cache slot keyed by a tolerance neither was actually
+    tessellated at."""
     import pickle
     import uuid as _uuid
 
@@ -146,8 +197,10 @@ def _body_payload(b, tolerance):
     from builder import _face_fp, on_feature_tick
 
     bid, sh = b["id"], b.get("shape")
+    if sh is not None:
+        tolerance = _effective_tolerance(sh, tolerance)
     ent = _MESH_CACHE.get(bid)
-    if ent is not None and ent["shape"] is sh:
+    if ent is not None and ent["shape"] is sh and ent["tolerance"] == tolerance:
         return ent
 
     mesh_key = None
@@ -164,6 +217,7 @@ def _body_payload(b, tolerance):
         except Exception:
             payload = None
     if payload is None:
+        t0 = time.monotonic()
         pos, idx, fids = tessellate(sh, tolerance)
         owners_map = b.get("owners") or {}
         face_owners = [owners_map.get(_face_fp(face)) for face in sh.faces()]
@@ -175,13 +229,14 @@ def _body_payload(b, tolerance):
             "faceOwners": face_owners, "edges": edges,
             "faceCount": (max(fids) + 1) if fids else 0,
         }
-        if mesh_key:
+        build_ms = (time.monotonic() - t0) * 1000.0
+        if mesh_key and build_ms >= _MESH_PERSIST_MIN_MS:
             try:
                 import geomstore
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
             except Exception:
                 pass
-    ent = {"shape": sh, "etag": _uuid.uuid4().hex, "payload": payload}
+    ent = {"shape": sh, "tolerance": tolerance, "etag": _uuid.uuid4().hex, "payload": payload}
     _MESH_CACHE[bid] = ent
     if on_feature_tick is not None:
         try:

@@ -11,13 +11,13 @@
 //! compile-verified on a Windows target / in CI.
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -26,7 +26,7 @@ use std::os::unix::process::CommandExt;
 /// per-launch WebSocket auth token so the frontend can fetch it via the
 /// `sidecar_token` command and dial the sidecar with `?token=…`.
 pub struct Sidecar {
-    pub child: Mutex<Option<Child>>,
+    pub child: Arc<Mutex<Option<Child>>>,
     pub token: String,
     /// Windows Job Object owning the child tree; closing it (kill/Drop) reaps the
     /// sidecar AND its ProcessPoolExecutor workers.
@@ -51,6 +51,7 @@ fn random_token() -> String {
 
 /// Where the interpreter, entry script, working dir, and (bundled only) the
 /// site-packages to put on PYTHONPATH live.
+#[cfg_attr(test, derive(Debug))]
 struct Runtime {
     python: PathBuf,
     script: PathBuf,
@@ -69,11 +70,13 @@ const VENV_PY: &str = "Scripts/python.exe";
 #[cfg(not(windows))]
 const VENV_PY: &str = "bin/python";
 
-/// Prefer the bundled runtime (shipped app); fall back to the dev `.venv`; otherwise
-/// a clear error. The old silent bare-`python`-on-PATH fallback is gone: it produced
-/// broken bundles on clean machines.
-fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
-    if let Ok(res) = app.path().resource_dir() {
+/// Pure fallback chain (bundled resource -> dev venv -> error), taking plain paths
+/// so it's unit-testable without an `AppHandle`. `resource_dir` mirrors
+/// `app.path().resource_dir().ok()`; `manifest_dir` mirrors `CARGO_MANIFEST_DIR`.
+/// The old silent bare-`python`-on-PATH fallback is gone: it produced broken
+/// bundles on clean machines.
+fn pick_runtime(resource_dir: Option<PathBuf>, manifest_dir: &Path) -> std::io::Result<Runtime> {
+    if let Some(res) = resource_dir {
         let base = res.join("sidecar-runtime");
         let python = base.join("python").join(BUNDLED_PY);
         if python.exists() {
@@ -86,7 +89,7 @@ fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
         }
     }
     // dev layout: project root = parent of this crate's manifest dir
-    let sidecar_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let sidecar_dir = manifest_dir
         .parent()
         .map(|p| p.join("sidecar"))
         .unwrap_or_else(|| PathBuf::from("sidecar"));
@@ -103,6 +106,45 @@ fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
         std::io::ErrorKind::NotFound,
         "no Python sidecar runtime found (neither the bundled resource nor a dev .venv)",
     ))
+}
+
+fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
+    let resource_dir = app.path().resource_dir().ok();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    pick_runtime(resource_dir, &manifest_dir)
+}
+
+/// Poll the child every ~2s so a sidecar death is noticed instead of silently
+/// leaving the frontend spinning against a closed socket. `kill()` takes the
+/// `Child` out of the `Mutex` before terminating it, so an empty slot here means
+/// an intentional shutdown (Drop/exit) — not a crash — and the loop just stops.
+/// Auto-respawn is deliberately NOT implemented: the token/CSP contract (a fresh
+/// per-launch `SINDRI_SIDECAR_TOKEN` the frontend must re-fetch and re-dial with)
+/// makes a live respawn non-trivial; revisit once the frontend can rotate tokens
+/// without a full reload.
+fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let died = match child.lock() {
+            Ok(mut guard) => match guard.as_mut() {
+                Some(c) => match c.try_wait() {
+                    Ok(Some(status)) => Some(status),
+                    Ok(None) => None, // still running
+                    Err(e) => {
+                        eprintln!("[sidecar] supervisor: try_wait failed: {e}");
+                        None
+                    }
+                },
+                None => break, // kill() already took it — intentional shutdown
+            },
+            Err(_) => break, // Mutex poisoned; nothing productive left to do
+        };
+        if let Some(status) = died {
+            eprintln!("[sidecar] CRASHED: exited unexpectedly ({status})");
+            let _ = app.emit("sidecar:died", status.code());
+            break;
+        }
+    });
 }
 
 impl Sidecar {
@@ -167,8 +209,10 @@ impl Sidecar {
         }
 
         println!("[sidecar] spawned pid {}", child.id());
+        let child = Arc::new(Mutex::new(Some(child)));
+        spawn_supervisor(app.clone(), child.clone());
         Ok(Sidecar {
-            child: Mutex::new(Some(child)),
+            child,
             token,
             #[cfg(windows)]
             job: Mutex::new(job),
@@ -239,5 +283,77 @@ fn assign_kill_job(child: &Child) -> Option<windows::Win32::Foundation::HANDLE> 
 impl Drop for Sidecar {
     fn drop(&mut self) {
         self.kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fresh, empty scratch dir under the OS temp dir, wiped on both entry and Drop
+    /// so repeated runs (and a prior crashed run) never see stale fixture files.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("sindricad-test-{label}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create tmp fixture dir");
+            TmpDir(dir)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent dir");
+        }
+        std::fs::write(path, b"").expect("write fixture file");
+    }
+
+    #[test]
+    fn pick_runtime_prefers_bundled_resource_when_present() {
+        let tmp = TmpDir::new("bundled");
+        let resource_dir = tmp.0.join("resource");
+        touch(&resource_dir.join("sidecar-runtime").join("python").join(BUNDLED_PY));
+        // manifest_dir is irrelevant once the bundled runtime is found — point it
+        // somewhere that doesn't even exist to prove it's never consulted.
+        let manifest_dir = tmp.0.join("does-not-exist");
+
+        let rt = pick_runtime(Some(resource_dir.clone()), &manifest_dir).expect("bundled runtime resolves");
+        assert_eq!(rt.python, resource_dir.join("sidecar-runtime").join("python").join(BUNDLED_PY));
+        assert_eq!(rt.script, resource_dir.join("sidecar-runtime").join("app").join("server.py"));
+        assert_eq!(rt.cwd, resource_dir.join("sidecar-runtime").join("app"));
+        assert_eq!(rt.pythonpath, Some(resource_dir.join("sidecar-runtime").join("site-packages")));
+    }
+
+    #[test]
+    fn pick_runtime_falls_back_to_dev_venv_when_no_bundle() {
+        let tmp = TmpDir::new("venv");
+        let manifest_dir = tmp.0.join("src-tauri"); // parent (tmp.0) is the "project root"
+        std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+        let sidecar_dir = tmp.0.join("sidecar");
+        touch(&sidecar_dir.join(".venv").join(VENV_PY));
+
+        // No resource dir (dev run) and no bundled runtime under it either.
+        let rt = pick_runtime(None, &manifest_dir).expect("dev venv resolves");
+        assert_eq!(rt.python, sidecar_dir.join(".venv").join(VENV_PY));
+        assert_eq!(rt.script, PathBuf::from("server.py"));
+        assert_eq!(rt.cwd, sidecar_dir);
+        assert_eq!(rt.pythonpath, None);
+    }
+
+    #[test]
+    fn pick_runtime_errors_when_neither_runtime_exists() {
+        let tmp = TmpDir::new("neither");
+        let manifest_dir = tmp.0.join("src-tauri");
+        std::fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+        // deliberately: no sidecar-runtime under any resource dir, no sidecar/.venv
+
+        let err = pick_runtime(None, &manifest_dir).expect_err("neither runtime present");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 }

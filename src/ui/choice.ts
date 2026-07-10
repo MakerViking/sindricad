@@ -11,11 +11,21 @@ export interface ChoiceOption<T extends string> {
   hint?: string;
 }
 
+// Module-level modal-open counter: true for the lifetime of any open choose()/
+// chooseMulti(). main.ts ORs this into toolBusy() so a global shortcut (e.g.
+// "e" -> Extrude) can't fire underneath an awaiting modal (Mirror, Split,
+// Combine, Revolve, Sweep, Primitive, Pattern, Section axis-pick, ...).
+let openModals = 0;
+export function isChoiceOpen(): boolean {
+  return openModals > 0;
+}
+
 export function choose<T extends string>(
   title: string,
   options: ChoiceOption<T>[],
 ): Promise<T | null> {
   return new Promise((resolve) => {
+    openModals++;
     const backdrop = document.createElement("div");
     backdrop.className = "choice-backdrop";
 
@@ -67,7 +77,12 @@ export function choose<T extends string>(
         e.stopImmediatePropagation();
         const el = document.activeElement as HTMLButtonElement | null;
         (el && buttons.includes(el) ? el : buttons[0])?.click();
+        return;
       }
+      // this modal owns the keyboard while open: swallow everything else so a
+      // global shortcut (e.g. "e" -> Extrude) can't fire underneath it.
+      e.preventDefault();
+      e.stopPropagation();
     };
     backdrop.addEventListener("pointerdown", (e) => {
       if (e.target === backdrop) done(null);
@@ -76,6 +91,7 @@ export function choose<T extends string>(
 
     function done(value: T | null) {
       window.removeEventListener("keydown", onKey, true);
+      openModals--;
       backdrop.remove();
       resolve(value);
     }
@@ -92,6 +108,7 @@ export function chooseMulti<T extends string>(
 ): Promise<T[] | null> {
   const min = opts.min ?? 1;
   return new Promise((resolve) => {
+    openModals++;
     const backdrop = document.createElement("div");
     backdrop.className = "choice-backdrop";
     const card = document.createElement("div");
@@ -132,8 +149,27 @@ export function chooseMulti<T extends string>(
     sync();
     for (const c of checks) c.addEventListener("change", sync);
 
+    // Keyboard-first, mirroring choose(): focus the first control so Enter
+    // commits without a mouse (Enter = confirm, same as choose()'s default-click).
+    checks[0]?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") done(null);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        done(null);
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!ok.disabled) ok.click();
+        return;
+      }
+      // this modal owns the keyboard while open: swallow everything else so a
+      // global shortcut (e.g. "e" -> Extrude) can't fire underneath it.
+      e.preventDefault();
+      e.stopPropagation();
     };
     backdrop.addEventListener("pointerdown", (e) => {
       if (e.target === backdrop) done(null);
@@ -144,6 +180,7 @@ export function chooseMulti<T extends string>(
 
     function done(value: T[] | null) {
       window.removeEventListener("keydown", onKey, true);
+      openModals--;
       backdrop.remove();
       resolve(value);
     }

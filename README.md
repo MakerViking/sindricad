@@ -32,6 +32,8 @@ print without leaving the app.
   upstream parameter and a downstream fillet still lands on the right edge.
 - **A print pipeline** for the Snapmaker U1 (see below).
 
+Press `?` in the app for the full keyboard shortcut list.
+
 ## Snapmaker U1 print pipeline
 
 SindriCAD carries print prep for the Snapmaker U1 multi-material printer from model to
@@ -83,6 +85,10 @@ Design decisions worth knowing up front:
 - **Selectors, not indices.** Geometry is referenced by queryable descriptors so
   references survive edits that renumber the underlying topology.
 
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full invariant list and the
+rebuild pipeline, and [docs/PROTOCOL.md](docs/PROTOCOL.md) for the sidecar's wire
+protocol.
+
 ## Document format
 
 A `.sindri` file is JSON: a parameter table and an ordered list of features.
@@ -104,13 +110,16 @@ Any numeric field is either a literal (`5`) or the name of a parameter (`"width"
 ## Build and run
 
 Prerequisites: Node, a Rust toolchain, Python 3.12, [uv](https://docs.astral.sh/uv/),
-and a system OpenCASCADE (OCCT 7.9) with WebKitGTK. See
-[docs/PACKAGING.md](docs/PACKAGING.md) for per-OS package names and known-good versions.
+and WebKitGTK. See [docs/PACKAGING.md](docs/PACKAGING.md) for per-OS package names and
+known-good versions. A system OpenCASCADE install is **not** needed for the default
+build: the geometry sidecar ships its own OCCT inside its Python wheels. OCCT is only
+needed for the opt-in `rust-geom` Cargo feature (see
+[docs/PACKAGING.md](docs/PACKAGING.md)).
 
 ```bash
-# 1. geometry sidecar (Python 3.12 venv via uv; OCP wheels lag newest CPython)
+# 1. geometry sidecar (Python 3.12 via uv, locked versions from uv.lock)
 cd sidecar
-uv venv --python 3.12 && uv pip install build123d websockets
+uv sync
 uv run python test_smoke.py    # backend sanity (rebuild/export/error naming)
 uv run python test_ws.py       # WebSocket transport sanity
 

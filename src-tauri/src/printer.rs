@@ -248,6 +248,9 @@ pub async fn printer_probe(app: AppHandle, id: String) -> PResult<ProbeInfo> {
     let client = http()?;
     let url = format!("{}/server/info", base_url(&cfg));
     let resp = client.get(&url).send().await.map_err(unreachable)?;
+    if !resp.status().is_success() {
+        return Err(PrinterError::new(ErrCode::Protocol, format!("HTTP {}", resp.status())));
+    }
     let body: serde_json::Value = resp.json().await.map_err(|e| PrinterError::new(ErrCode::Protocol, e.to_string()))?;
     let r = body.get("result").cloned().unwrap_or(serde_json::Value::Null);
     Ok(ProbeInfo {
@@ -344,7 +347,9 @@ pub async fn printer_upload_and_print(
 ) -> PResult<()> {
     let cfg = resolve(&app, &id)?;
     let path = validate_gcode_path(&gcode_path)?;
-    let bytes = std::fs::read(&path).map_err(|e| PrinterError::new(ErrCode::Config, e.to_string()))?;
+    let bytes = tokio::fs::read(&path)
+        .await
+        .map_err(|e| PrinterError::new(ErrCode::Config, e.to_string()))?;
     // remote name is a bare filename on the printer's gcodes root.
     let remote: String = remote_name
         .chars()
@@ -503,7 +508,16 @@ pub fn printer_monitor_start(app: AppHandle, id: String) -> PResult<()> {
     let handle = tauri::async_runtime::spawn(async move {
         let client = match http() {
             Ok(c) => c,
-            Err(_) => return,
+            Err(_) => {
+                // never got as far as polling once — still tell the frontend
+                // monitoring for this printer isn't running, and don't leave a
+                // finished handle sitting in the map.
+                let _ = app2.emit("printer:offline", id2.clone());
+                if let Some(m) = app2.try_state::<Monitors>() {
+                    m.0.lock().unwrap().remove(&id2);
+                }
+                return;
+            }
         };
         let mut fails = 0u8;
         loop {

@@ -6,6 +6,7 @@
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
+import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
@@ -34,6 +35,8 @@ export class SectionTool {
   private grabProj = 0;
   private raf = 0;
   private onDone: (() => void) | null = null;
+
+  private dim = new DimInput();
 
   private boundMove: (e: PointerEvent) => void;
   private boundDown: (e: PointerEvent) => void;
@@ -67,8 +70,29 @@ export class SectionTool {
     el.addEventListener("pointerup", this.boundUp);
     window.addEventListener("keydown", this.boundKey, true);
     this.buildGizmo();
-    setPrompt("Section: drag the arrow to move the cut · F flips the kept side · Esc to close");
+    this.dim.show(
+      [{ name: "offset", label: "Offset", kind: "length" }],
+      () => this.applyTypedOffset(),
+      () => this.stop(),
+    );
+    const s = this.viewport.projectToScreen(this.center());
+    this.dim.position(s.x, s.y);
+    this.dim.updateFromCursor({ offset: Math.abs(this.offset) });
+    setPrompt(
+      "Section: drag the arrow to move the cut · type a value + Enter · F flips the kept side · Esc to close",
+    );
     this.raf = requestAnimationFrame(this.boundTick);
+  }
+
+  /** Enter in the field (or the on-screen check button) sets the exact offset.
+   *  The typed value is the truth as-is — no re-applying the drag's sign onto
+   *  |v| (the abs-display trap: a Math.abs()-shown value must never be read
+   *  back as truth except through the field itself). */
+  private applyTypedOffset() {
+    const v = this.dim.getValue("offset");
+    if (v == null) return;
+    this.offset = v;
+    this.updatePlane();
   }
 
   private center(): THREE.Vector3 {
@@ -88,6 +112,7 @@ export class SectionTool {
       if (stepped === this.offset) return;
       this.offset = stepped;
       this.updatePlane();
+      this.dim.updateFromCursor({ offset: Math.abs(this.offset) });
       return;
     }
     this.hovering = this.hitGizmo(e.clientX, e.clientY);
@@ -125,6 +150,16 @@ export class SectionTool {
     this.gizmo.quaternion.setFromUnitVectors(Y_AXIS, this.axis.clone().multiplyScalar(this.side));
     this.gizmo.scale.setScalar(k);
     this.gizmoMat?.color.set(this.hovering || this.grabbing ? HOT : IDLE);
+    const s = this.viewport.projectToScreen(c);
+    this.dim.position(s.x, s.y);
+    if (!this.grabbing && this.dim.isUserDriven("offset")) {
+      const v = this.dim.getValue("offset");
+      // typed sign wins; only read back through isUserDriven (never the |value| shown)
+      if (v != null && Math.abs(v - this.offset) > 1e-6) {
+        this.offset = v;
+        this.updatePlane();
+      }
+    }
     this.raf = requestAnimationFrame(this.boundTick);
   }
 
@@ -159,6 +194,7 @@ export class SectionTool {
     el.style.cursor = "default";
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
+    this.dim.hide();
     this.viewport.setClipPlane(null);
     if (this.gizmo) {
       this.viewport.removeFromScene(this.gizmo);

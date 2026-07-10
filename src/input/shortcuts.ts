@@ -64,7 +64,7 @@ export function resolveShortcut(
   shift: boolean,
   context: "model" | "sketch",
 ): string | null {
-  const k = key.length === 1 ? key.toLowerCase() : key.toLowerCase();
+  const k = key.toLowerCase();
   for (const s of SHORTCUTS) {
     if (s.key !== k || !!s.shift !== shift) continue;
     if (s.context === "global" || s.context === context) return s.action;

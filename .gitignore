@@ -48,3 +48,4 @@ credentials.*
 .vscode/
 .idea/
 *.swp
+.fable/

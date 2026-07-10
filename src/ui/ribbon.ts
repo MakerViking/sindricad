@@ -147,7 +147,7 @@ export const SKETCH: Group[] = [
   {
     label: "MODIFY",
     items: [
-      { action: "fillet-sketch", label: "Fillet", iconName: "fillet" },
+      { action: "fillet-sketch", label: "Fillet", iconName: "fillet", key: "F" },
       { action: "trim", label: "Trim", iconName: "trim", key: "T" },
       { action: "extend", label: "Extend", iconName: "extend" },
       { action: "offset", label: "Offset", iconName: "offset", key: "O" },

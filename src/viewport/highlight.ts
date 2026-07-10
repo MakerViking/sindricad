@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import type { ModelView } from "./render";
+import { bodyOfFace, type ModelView } from "./render";
 
 const EDGE_BASE = new THREE.Color(0x1b1f24);
 const HOVER = new THREE.Color(0xffd089); // pale hot amber (under cursor)
@@ -126,113 +126,122 @@ export class Highlighter {
     this.selectedBodies.clear();
   }
 
-  /** paint every triangle whose faceId falls in the body's range. */
+  /** paint every vertex of the body's own (already-isolated) buffer. A body's
+   *  geometry holds only its own vertices now, so "the whole body" IS the
+   *  whole buffer — no faceId-range scan needed (unlike paintFace below, this
+   *  never needs to scope to a sub-range within a shared buffer). */
   private paintBody(bodyId: string, color: THREE.Color) {
     const body = this.view.bodies.find((b) => b.id === bodyId);
     if (!body) return;
-    const lo = body.faceStart;
-    const hi = body.faceStart + body.faceCount;
-    const geo = this.view.mesh.geometry;
-    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
-    const index = geo.getIndex();
-    if (!colorAttr || !index) return;
-    const ids = this.view.faceIds;
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] < lo || ids[t] >= hi) continue;
-      for (let k = 0; k < 3; k++) {
-        const v = index.getX(t * 3 + k);
-        colorAttr.setXYZ(v, color.r, color.g, color.b);
-      }
-    }
-    colorAttr.needsUpdate = true;
+    const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    if (!colorAttr) return;
+    for (let v = 0; v < colorAttr.count; v++) colorAttr.setXYZ(v, color.r, color.g, color.b);
+    this.uploadRange(colorAttr, [0, colorAttr.count - 1]);
   }
 
   private paintFace(faceId: number, color: THREE.Color) {
-    const geo = this.view.mesh.geometry;
-    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
-    const index = geo.getIndex();
+    const body = bodyOfFace(this.view, faceId);
+    const tris = body?.faceTriangles.get(faceId);
+    if (!body || !tris) return;
+    const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const index = body.mesh.geometry.getIndex();
     if (!colorAttr || !index) return;
-    const ids = this.view.faceIds;
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] !== faceId) continue;
-      for (let k = 0; k < 3; k++) {
-        const v = index.getX(t * 3 + k);
-        colorAttr.setXYZ(v, color.r, color.g, color.b);
-      }
-    }
-    colorAttr.needsUpdate = true;
+    const range = this.forEachVertex(tris, index, (v) => {
+      colorAttr.setXYZ(v, color.r, color.g, color.b);
+    });
+    if (range) this.uploadRange(colorAttr, range);
   }
 
   /** Restore one face's live color to its current base (BASE_COLOR, or the
    *  component/draft analysis color if an analysis is active). */
   private restoreFace(faceId: number) {
-    const geo = this.view.mesh.geometry;
-    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
-    const index = geo.getIndex();
+    const body = bodyOfFace(this.view, faceId);
+    const tris = body?.faceTriangles.get(faceId);
+    if (!body || !tris) return;
+    const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const index = body.mesh.geometry.getIndex();
     if (!colorAttr || !index) return;
-    const ids = this.view.faceIds;
-    const base = this.view.baseColors;
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] !== faceId) continue;
-      for (let k = 0; k < 3; k++) {
-        const v = index.getX(t * 3 + k);
-        colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
-      }
-    }
-    colorAttr.needsUpdate = true;
+    const base = body.baseColors;
+    const range = this.forEachVertex(tris, index, (v) => {
+      colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+    });
+    if (range) this.uploadRange(colorAttr, range);
   }
 
-  /** Restore every face of a body to its base color. */
+  /** Restore every face of a body to its base color (the whole buffer — see
+   *  paintBody's note on why no range scan is needed here). */
   private restoreBody(bodyId: string) {
     const body = this.view.bodies.find((b) => b.id === bodyId);
     if (!body) return;
-    const lo = body.faceStart;
-    const hi = body.faceStart + body.faceCount;
-    const geo = this.view.mesh.geometry;
-    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
-    const index = geo.getIndex();
-    if (!colorAttr || !index) return;
-    const ids = this.view.faceIds;
-    const base = this.view.baseColors;
-    for (let t = 0; t < ids.length; t++) {
-      if (ids[t] < lo || ids[t] >= hi) continue;
+    const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    if (!colorAttr) return;
+    const base = body.baseColors;
+    for (let v = 0; v < colorAttr.count; v++) colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+    this.uploadRange(colorAttr, [0, colorAttr.count - 1]);
+  }
+
+  /** Run `fn` over every vertex of the given triangle indices, returning the
+   *  touched [minVertex, maxVertex] span (or null if `tris` was empty). */
+  private forEachVertex(
+    tris: number[],
+    index: THREE.BufferAttribute | THREE.InterleavedBufferAttribute,
+    fn: (v: number) => void,
+  ): [number, number] | null {
+    let lo = Infinity, hi = -Infinity;
+    for (const t of tris) {
       for (let k = 0; k < 3; k++) {
         const v = index.getX(t * 3 + k);
-        colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+        fn(v);
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
       }
     }
-    colorAttr.needsUpdate = true;
+    return lo <= hi ? [lo, hi] : null;
+  }
+
+  /** Scope the GPU upload of a color-attribute edit to the touched vertex span
+   *  (in vertex indices, inclusive) instead of re-uploading the whole buffer. */
+  private uploadRange(attr: THREE.BufferAttribute, [lo, hi]: [number, number]) {
+    attr.addUpdateRange(lo * 3, (hi - lo + 1) * 3);
+    attr.needsUpdate = true;
   }
 
   /** Set the per-face base color (component / draft analysis) and repaint every
    *  non-selected face to it. Selected faces keep their highlight but their base
    *  updates so they restore correctly on deselect. Pass `() => BASE_COLOR` to
-   *  clear an analysis. Body selections re-apply on top afterward. */
+   *  clear an analysis. Body selections re-apply on top afterward. Loops every
+   *  body's own buffer (faceIds are globally unique, so the same faceId never
+   *  reappears in two bodies — each body only ever repaints its own faces). */
   setBase(colorOf: (faceId: number) => THREE.Color) {
-    const geo = this.view.mesh.geometry;
-    const colorAttr = geo.getAttribute("color") as THREE.BufferAttribute;
-    const index = geo.getIndex();
-    if (!colorAttr || !index) return;
-    const ids = this.view.faceIds;
-    const base = this.view.baseColors;
     const cache = new Map<number, THREE.Color>();
-    for (let t = 0; t < ids.length; t++) {
-      const fid = ids[t];
-      let col = cache.get(fid);
-      if (!col) {
-        col = colorOf(fid);
-        cache.set(fid, col);
+    for (const body of this.view.bodies) {
+      const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+      const index = body.mesh.geometry.getIndex();
+      if (!colorAttr || !index) continue;
+      const ids = body.faceIds;
+      const base = body.baseColors;
+      for (let t = 0; t < ids.length; t++) {
+        const fid = ids[t];
+        let col = cache.get(fid);
+        if (!col) {
+          col = colorOf(fid);
+          cache.set(fid, col);
+        }
+        const selected = this.selectedFaces.has(fid);
+        for (let k = 0; k < 3; k++) {
+          const v = index.getX(t * 3 + k);
+          base[v * 3] = col.r;
+          base[v * 3 + 1] = col.g;
+          base[v * 3 + 2] = col.b;
+          if (!selected) colorAttr.setXYZ(v, col.r, col.g, col.b);
+        }
       }
-      const selected = this.selectedFaces.has(fid);
-      for (let k = 0; k < 3; k++) {
-        const v = index.getX(t * 3 + k);
-        base[v * 3] = col.r;
-        base[v * 3 + 1] = col.g;
-        base[v * 3 + 2] = col.b;
-        if (!selected) colorAttr.setXYZ(v, col.r, col.g, col.b);
-      }
+      // This is a full-buffer rewrite (every face), not a scoped one — clear any
+      // pending partial ranges a prior paintFace/paintBody left queued so the
+      // renderer does a full upload here instead of replaying a stale sub-range.
+      colorAttr.clearUpdateRanges();
+      colorAttr.needsUpdate = true;
     }
-    colorAttr.needsUpdate = true;
     // whole-body selections paint on top of the base — re-apply them
     for (const id of this.selectedBodies) this.paintBody(id, SELECT);
   }

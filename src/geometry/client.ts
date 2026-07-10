@@ -2,9 +2,20 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, ExportFormat, ImportFormat, ImportReply, RebuildReply } from "../types";
+import type { CadDocument, ExportFormat, Feature, ImportFormat, ImportReply, RebuildReply, RebuildResult } from "../types";
 
-type Pending = (msg: any) => void;
+// The sidecar's wire-level reply envelope (see sidecar/server.py's _ok/_err):
+// every call resolves to one of these two shapes; `result`'s type is per-op,
+// supplied as call<T>()'s generic parameter at each call site.
+interface WireError {
+  message: string;
+  feature_id?: string;
+}
+type RawReply<T> =
+  | { id: string; ok: true; result: T }
+  | { id: string; ok: false; error: WireError };
+
+type Pending = (msg: RawReply<unknown>) => void;
 type StatusListener = (connected: boolean) => void;
 
 // One overlapping body pair from an interference check.
@@ -74,6 +85,69 @@ export interface GeometryBackend {
   readonly connected: boolean;
 }
 
+// --- Protocol-v2 wire shapes (see sidecar/server.py's _rebuild_job / _body_payload) ---
+// One body's per-body payload: either the full mesh (positions/indices/faceIds
+// etc.) or an "unchanged" stub referencing an etag the client already caches
+// locally (see assemble() below). `unchanged` is the discriminant.
+interface WireBodyFull {
+  id: string;
+  name: string;
+  etag: string;
+  unchanged?: false;
+  positions: number[];
+  indices: number[];
+  faceIds: number[];
+  faceOwners?: (string | null)[];
+  edges?: { points: [number, number, number][]; body?: string }[];
+  faceCount?: number;
+}
+interface WireBodyStub {
+  id: string;
+  name: string;
+  etag: string;
+  unchanged: true;
+}
+type WireBody = WireBodyFull | WireBodyStub;
+
+// The sidecar's raw rebuild/computeAll result before local reassembly: a
+// resync request, a protocol-v2 per-body result, or (defensively) the legacy
+// single-mesh shape a backend could still return directly. Modeled as one flat
+// shape with everything optional (rather than a discriminated union) so the ad
+// hoc `?.resync` / `?.protocol` checks below type-check without narrowing first.
+interface WireRebuildResult {
+  resync?: true;
+  protocol?: 2;
+  bodies?: WireBody[];
+  bbox?: { min: number[]; max: number[] } | null;
+  diagnostics?: RebuildResult["diagnostics"];
+  featureError?: RebuildResult["featureError"];
+  featureErrors?: RebuildResult["featureErrors"];
+  // legacy direct-mesh shape (only when `protocol` is absent)
+  mesh?: RebuildResult["mesh"];
+  edges?: RebuildResult["edges"];
+}
+
+type RebuildBody = NonNullable<RebuildResult["bodies"]>[number];
+type RebuildEdge = RebuildResult["edges"][number];
+
+// Delta wire protocol's request payload (see rebuild()'s comment below) vs a
+// full-document send.
+interface RebuildDeltaPayload {
+  baseRevision: number;
+  revision: number;
+  ops: {
+    length: number;
+    set: [number, Feature][];
+    parameters?: CadDocument["parameters"];
+    bodyVisibility?: CadDocument["bodyVisibility"];
+  };
+}
+interface RebuildFullPayload {
+  document: CadDocument;
+  revision: number;
+}
+type RebuildPayload = RebuildDeltaPayload | RebuildFullPayload;
+
 export class Geometry implements GeometryBackend {
   private ws: WebSocket | null = null;
   private readonly url: string;
@@ -83,17 +157,18 @@ export class Geometry implements GeometryBackend {
   private statusListeners = new Set<StatusListener>();
   private progressListeners = new Set<(feature: number) => void>();
   private reconnectTimer: number | null = null;
+  private reconnectDelay = 500; // ms; doubles on each failed attempt, capped, reset on open
   // Protocol-v2 per-body mesh cache: the sidecar answers unchanged bodies with
   // an etag stub instead of re-sending their (multi-MB) mesh; we keep the last
   // full payload per body and reassemble the merged RebuildResult locally, so
   // everything downstream (render/picking/store) sees the same shape as before.
-  private bodyMesh = new Map<string, any>();
+  private bodyMesh = new Map<string, WireBodyFull>();
   // Delta wire protocol: the sidecar worker holds the last document; we send
   // {baseRevision, revision, ops} with only the CHANGED features (reference
   // inequality against the last sent feature list — effectiveDoc() reuses
   // feature objects, so an untouched feature is the same object). Any doubt
   // (worker respawn, missed reply, too many changes) falls back to a full send.
-  private lastSent: { features: any[]; parameters: string; bodyVisibility: string } | null = null;
+  private lastSent: { features: Feature[]; parameters: string; bodyVisibility: string } | null = null;
   private revision = 0;
 
   constructor(url = "ws://127.0.0.1:8765") {
@@ -140,6 +215,7 @@ export class Geometry implements GeometryBackend {
     this.ws = ws;
 
     ws.onopen = () => {
+      this.reconnectDelay = 500; // healthy connection — reset backoff
       this.emitStatus();
       for (const raw of this.outbox) ws.send(raw);
       this.outbox = [];
@@ -149,7 +225,8 @@ export class Geometry implements GeometryBackend {
       let msg: any;
       try {
         msg = JSON.parse(e.data);
-      } catch {
+      } catch (err) {
+        console.error("[geometry] bad JSON from sidecar:", err, "payload:", String(e.data).slice(0, 200));
         return;
       }
       if (msg && msg.status === "building") {
@@ -168,6 +245,18 @@ export class Geometry implements GeometryBackend {
 
     ws.onclose = () => {
       this.emitStatus();
+      // Settle every in-flight call with a synthetic error reply shaped like a
+      // real sidecar error, matching the `msg.ok === false` contract every
+      // caller already checks (rebuild/export/etc). Without this, a call made
+      // before the drop just hangs forever — e.g. DocumentStore.rebuildNow()'s
+      // `await this.geometry.rebuild(...)` never returns, so its finally-block
+      // never clears `rebuilding`, so the reconnect-triggered rebuild in
+      // main.ts's onStatus() silently no-ops (rebuildNow sees rebuilding===true
+      // and just sets rebuildQueued, forever).
+      for (const [id, resolve] of this.pending) {
+        resolve({ id, ok: false, error: { message: "geometry engine connection lost" } });
+      }
+      this.pending.clear();
       this.scheduleReconnect();
     };
 
@@ -181,14 +270,19 @@ export class Geometry implements GeometryBackend {
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, 500);
+    }, this.reconnectDelay);
+    // back off for next time; a successful onopen resets this to the floor
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10_000);
   }
 
-  private call(op: string, extra: object): Promise<any> {
+  private call<T>(op: string, extra: object): Promise<RawReply<T>> {
     const id = crypto.randomUUID();
     const raw = JSON.stringify({ id, op, ...extra });
     return new Promise((resolve) => {
-      this.pending.set(id, resolve);
+      // the pending map is heterogeneous across calls with different T, so
+      // storing this call's typed resolver erases to Pending here — the one
+      // type-erasing cast the generic requires.
+      this.pending.set(id, resolve as Pending);
       if (this.connected) {
         this.ws!.send(raw);
       } else {
@@ -203,16 +297,16 @@ export class Geometry implements GeometryBackend {
 
     const pJson = JSON.stringify(doc.parameters ?? null);
     const vJson = JSON.stringify(doc.bodyVisibility ?? null);
-    let payload: any = null;
+    let payload: RebuildPayload | null = null;
     if (this.lastSent) {
-      const set: [number, any][] = [];
+      const set: [number, Feature][] = [];
       for (let i = 0; i < doc.features.length; i++) {
         if (this.lastSent.features[i] !== doc.features[i]) set.push([i, doc.features[i]]);
       }
       // delta only when it's actually small — a reordered/rewritten timeline
       // ships fewer bytes as a full document
       if (set.length <= Math.max(8, doc.features.length / 2)) {
-        const ops: any = { length: doc.features.length, set };
+        const ops: RebuildDeltaPayload["ops"] = { length: doc.features.length, set };
         if (pJson !== this.lastSent.parameters) ops.parameters = doc.parameters;
         if (vJson !== this.lastSent.bodyVisibility) ops.bodyVisibility = doc.bodyVisibility;
         payload = { baseRevision: this.revision, revision: this.revision + 1, ops };
@@ -220,13 +314,13 @@ export class Geometry implements GeometryBackend {
     }
     if (!payload) payload = { document: doc, revision: this.revision + 1 };
 
-    let msg = await this.call("rebuild", { ...payload, tolerance, known });
+    let msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance, known });
     if (msg.ok && msg.result?.resync) {
       // worker respawned or lost sync — one full resend recovers everything
       this.lastSent = null;
       this.bodyMesh.clear();
       payload = { document: doc, revision: this.revision + 1 };
-      msg = await this.call("rebuild", { ...payload, tolerance });
+      msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance });
     }
     if (msg.ok && !msg.result?.resync) {
       this.revision = payload.revision;
@@ -238,12 +332,12 @@ export class Geometry implements GeometryBackend {
         // we claimed an etag the cache no longer backs (e.g. page kept state
         // across a worker respawn race) — resync with a full request
         this.bodyMesh.clear();
-        msg = await this.call("rebuild", { document: doc, revision: ++this.revision, tolerance });
+        msg = await this.call<WireRebuildResult>("rebuild", { document: doc, revision: ++this.revision, tolerance });
         if (msg.ok && msg.result?.protocol === 2) assembled = this.assemble(msg.result);
       }
       if (msg.ok && assembled !== null) return { ok: true, result: assembled };
     }
-    if (msg.ok) return { ok: true, result: msg.result };
+    if (msg.ok) return { ok: true, result: msg.result as RebuildResult };
     return { ok: false, error: msg.error };
   }
 
@@ -252,28 +346,29 @@ export class Geometry implements GeometryBackend {
   async computeAll(doc: CadDocument, tolerance = 0.1): Promise<RebuildReply> {
     this.bodyMesh.clear();
     this.lastSent = null;
-    const msg = await this.call("computeAll", { document: doc, revision: ++this.revision, tolerance });
+    const msg = await this.call<WireRebuildResult>("computeAll", { document: doc, revision: ++this.revision, tolerance });
     if (msg.ok && msg.result?.protocol === 2) {
       const assembled = this.assemble(msg.result);
       if (assembled !== null) return { ok: true, result: assembled };
     }
-    if (msg.ok) return { ok: true, result: msg.result };
+    if (msg.ok) return { ok: true, result: msg.result as RebuildResult };
     return { ok: false, error: msg.error };
   }
 
   /** Merge protocol-v2 per-body payloads into the legacy RebuildResult shape.
    *  Returns null if an "unchanged" stub references a body we don't hold. */
-  private assemble(r: any): any | null {
-    const bodies: any[] = r.bodies ?? [];
+  private assemble(r: WireRebuildResult): RebuildResult | null {
+    const bodies: WireBody[] = r.bodies ?? [];
     const live = new Set<string>();
     // first pass: resolve payloads + prune
-    const payloads: any[] = [];
+    const payloads: WireBodyFull[] = [];
     for (const nb of bodies) {
       live.add(nb.id);
-      let p: any;
+      let p: WireBodyFull;
       if (nb.unchanged) {
-        p = this.bodyMesh.get(nb.id);
-        if (!p || p.etag !== nb.etag) return null; // stub we can't back — resync
+        const cached = this.bodyMesh.get(nb.id);
+        if (!cached || cached.etag !== nb.etag) return null; // stub we can't back — resync
+        p = cached;
       } else {
         p = nb;
         this.bodyMesh.set(nb.id, nb);
@@ -285,8 +380,8 @@ export class Geometry implements GeometryBackend {
     const positions: number[] = [];
     const indices: number[] = [];
     const faceIds: number[] = [];
-    const edges: any[] = [];
-    const meta: any[] = [];
+    const edges: RebuildEdge[] = [];
+    const meta: RebuildBody[] = [];
     let faceBase = 0;
     let ek = 0;
     for (const p of payloads) {
@@ -298,11 +393,18 @@ export class Geometry implements GeometryBackend {
       for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, body: e.body });
       meta.push({
         id: p.id, name: p.name, faceStart: faceBase,
-        faceCount: p.faceCount ?? 0, faceOwners: p.faceOwners,
+        faceCount: p.faceCount ?? 0, faceOwners: p.faceOwners, etag: p.etag,
       });
       faceBase += p.faceCount ?? 0;
     }
-    const out: any = { mesh: { positions, indices, faceIds }, edges, bbox: r.bbox, bodies: meta };
+    const out: RebuildResult = {
+      mesh: { positions, indices, faceIds },
+      edges,
+      // the wire can supply `bbox: null` when nothing has built yet (no
+      // bodies); preserved as-is — RebuildResult models bbox as always-present.
+      bbox: r.bbox as RebuildResult["bbox"],
+      bodies: meta,
+    };
     if (r.diagnostics) out.diagnostics = r.diagnostics;
     if (r.featureError) out.featureError = r.featureError;
     if (r.featureErrors) out.featureErrors = r.featureErrors;
@@ -315,7 +417,10 @@ export class Geometry implements GeometryBackend {
     path: string,
     opts: { body?: string; separate?: boolean } = {},
   ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
-    const msg = await this.call("export", { document: doc, format, path, body: opts.body, separate: opts.separate });
+    const msg = await this.call<{ path?: string; paths?: string[]; warnings?: { message: string; feature_id?: string }[] }>(
+      "export",
+      { document: doc, format, path, body: opts.body, separate: opts.separate },
+    );
     if (msg.ok) return { ok: true, path: msg.result.path, paths: msg.result.paths, warnings: msg.result.warnings };
     return { ok: false, message: msg.error?.message };
   }
@@ -330,7 +435,7 @@ export class Geometry implements GeometryBackend {
       settings?: Record<string, unknown>;
     },
   ): Promise<{ ok: boolean; path?: string; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
-    const msg = await this.call("exportProject", {
+    const msg = await this.call<{ path?: string; warnings?: { message: string; feature_id?: string }[] }>("exportProject", {
       document: doc,
       path,
       palette: opts.palette,
@@ -343,7 +448,7 @@ export class Geometry implements GeometryBackend {
   }
 
   async importGeometry(path: string, format: ImportFormat): Promise<ImportReply> {
-    const msg = await this.call("import", { path, format });
+    const msg = await this.call<{ brep: string; name: string; solid: boolean; faces: number }>("import", { path, format });
     if (msg.ok) {
       const r = msg.result;
       return { ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces };
@@ -352,7 +457,7 @@ export class Geometry implements GeometryBackend {
   }
 
   async interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }> {
-    const msg = await this.call("interference", { document: doc });
+    const msg = await this.call<{ pairs?: ClashPair[] }>("interference", { document: doc });
     if (msg.ok) return { ok: true, pairs: msg.result.pairs };
     return { ok: false, message: msg.error?.message };
   }

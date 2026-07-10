@@ -12,10 +12,10 @@ import { DimInput } from "./dimInput";
 import { SketchDimensions } from "./sketchDimensions";
 import { entityDims, type DimField } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
-import { newEntityId, newPatternId, notePatternId } from "./id";
+import { newEntityId, notePatternId } from "./id";
 import { circumcenter } from "./arc";
 import { compileAndSolve } from "./sketchSolve";
-import { resolveEntities, toSketchEntity } from "./resolve";
+import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { expandPattern } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
@@ -23,6 +23,8 @@ import { detectRegions } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { contextMenu, dismissContextMenu } from "../ui/menu";
+import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
+import { PatternFlow, PATTERN_TOOLS, type PatternHost } from "./patternFlow";
 
 export type SketchTool =
   | "select"
@@ -61,25 +63,8 @@ export type SketchTool =
   | "boltCircle"
   | "gridHoles";
 
-// preset hole patterns: self-contained (click a center, no source selection)
-const PRESET_PATTERNS = new Set<SketchTool>(["hexHoles", "honeycomb", "boltCircle", "gridHoles"]);
-// patterns that replicate the current selection (MCAD-style)
-const ENTITY_PATTERNS = new Set<SketchTool>(["patternRect", "patternCircular"]);
-// every pattern tool (presets + entity patterns)
-const PATTERN_TOOLS = new Set<SketchTool>([...PRESET_PATTERNS, ...ENTITY_PATTERNS]);
-
-const CONSTRAINT_TOOLS = new Set<SketchTool>([
-  "horizontal",
-  "vertical",
-  "parallel",
-  "perpendicular",
-  "equal",
-  "tangent",
-  "coincident",
-  "concentric",
-  "symmetric",
-  "midpoint",
-]);
+// PRESET_PATTERNS/ENTITY_PATTERNS/PATTERN_TOOLS live in patternFlow.ts (imported
+// above); CONSTRAINT_TOOLS lives in constraintTools.ts (also imported above).
 const MODIFY_TOOLS = new Set<SketchTool>([
   "trim",
   "fillet",
@@ -112,9 +97,6 @@ export class SketchMode {
   private selected = new Set<string>(); // selected entity ids (select tool)
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
-  private pendingPattern: SketchPattern | null = null; // one being placed (live)
-  private patternCenter: THREE.Vector2 | null = null; // its center (first click)
-  private editOriginal: SketchPattern | null = null; // when editing, the pre-edit copy (Esc restores)
   private lastDof = -1;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
@@ -140,6 +122,11 @@ export class SketchMode {
   private boundUp: (e: PointerEvent) => void;
   private boundKey: (e: KeyboardEvent) => void;
   private boundContext: (e: MouseEvent) => void;
+  // collaborators: the constraint-tool click flows and the pattern placement/edit
+  // flow, each operating on a live accessor into this SketchMode (see their
+  // Host interfaces) rather than a copy of its state.
+  private constraintTools: ConstraintTools;
+  private patternFlow: PatternFlow;
 
   constructor(
     private viewport: Viewport,
@@ -154,6 +141,27 @@ export class SketchMode {
     this.boundUp = (e) => this.endDrag(e.pointerId);
     this.boundKey = (e) => this.onKey(e);
     this.boundContext = (e) => this.onContextMenu(e);
+    const constraintHost: ConstraintHost = {
+      tool: () => this.tool,
+      entities: () => this.entities,
+      constraints: () => this.constraints,
+      pickTol: () => this.pickTol(),
+      getFilletFirst: () => this.filletFirst,
+      setFilletFirst: (v) => { this.filletFirst = v; },
+      requestSolve: () => this.requestSolve(),
+    };
+    this.constraintTools = new ConstraintTools(constraintHost);
+    const patternHost: PatternHost = {
+      tool: () => this.tool,
+      setActiveTool: (t) => { this.tool = t; },
+      setTool: (t) => this.setTool(t),
+      selected: () => this.selected,
+      patterns: () => this.patterns,
+      dim: () => this.dim,
+      refreshActive: () => this.refreshActive(),
+      onState: () => this.onState?.(),
+    };
+    this.patternFlow = new PatternFlow(patternHost);
   }
 
   // --- lifecycle ---------------------------------------------------------
@@ -167,8 +175,7 @@ export class SketchMode {
     this.entities = [];
     this.constraints = [];
     this.patterns = [];
-    this.pendingPattern = null;
-    this.patternCenter = null;
+    this.patternFlow.resetForEnter();
     this.selected.clear();
     this.overlay.clearRegionSelection(); // fresh session: drop any stale area selection
     this.lastDof = -1;
@@ -176,7 +183,10 @@ export class SketchMode {
     if (editId) {
       const f = store.document.features.find((x) => x.id === editId);
       if (f && f.type === "sketch") {
-        this.entities = resolveEntities(f, store.document.parameters);
+        // real entities only — derived pattern copies are NEVER stored in
+        // this.entities (see derivedEntities()); doing so would persist them
+        // as real geometry on the next finish() and bake in duplicates (§1.2).
+        this.entities = resolveRealEntities(f, store.document.parameters);
         this.constraints = f.constraints ? f.constraints.map((c) => ({ ...c })) : [];
         this.patterns = f.patterns ? f.patterns.map((p) => ({ ...p })) : [];
         for (const p of this.patterns) notePatternId(p.id); // reserve ids so new ones don't collide
@@ -205,7 +215,7 @@ export class SketchMode {
   finish(commit = true) {
     if (!this.active) return;
     const store = this.store!;
-    if (this.pendingPattern) { this.patterns.push(this.pendingPattern); this.pendingPattern = null; }
+    this.patternFlow.flushOnFinish();
     if (commit && (this.entities.length > 0 || this.patterns.length > 0)) {
       const sketch: Feature = {
         id: this.editingId ?? store.nextId(),
@@ -256,8 +266,7 @@ export class SketchMode {
     this.arcEnd = null;
     this.splinePts = [];
     this.clickPts = [];
-    this.pendingEndpoint = null;
-    this.pendingEndpoint2 = null;
+    this.constraintTools.resetPending();
     this.tool = "select";
     this.overlay.setActiveSketch([]); // clear in-progress curves (else they orphan on screen)
     this.overlay.setActiveRegions([], this.plane); // drop active-sketch fills (committed ones re-render)
@@ -283,13 +292,9 @@ export class SketchMode {
     this.overlay.setPreview([]);
     dismissContextMenu();
     this.clickPts = [];
-    this.pendingEndpoint = null;
-    this.pendingEndpoint2 = null;
+    this.constraintTools.resetPending();
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
-    if (this.pendingPattern) this.patterns.push(this.pendingPattern); // don't lose an in-progress pattern
-    this.pendingPattern = null;
-    this.editOriginal = null;
-    this.patternCenter = null;
+    this.patternFlow.flushPending(); // don't lose an in-progress pattern
     this.onState?.();
   }
 
@@ -297,14 +302,15 @@ export class SketchMode {
    * dimension labels. Called when the entity list changes — and on drag end. */
   private refreshActive() {
     this.entityVersion++; // bump guards in-flight constraint solves against staleness
-    this.overlay.setActiveSketch(this.activeCurves());
+    const derived = this.derivedEntities(); // computed once, shared below
+    this.overlay.setActiveSketch(this.activeCurves(derived));
     // profile-area fills for the active sketch (hidden from overlay.update),
     // so areas are visible + selectable while drawing
     this.overlay.setActiveRegions(
-      detectRegions(this.editingId ?? "__active__", [...this.entities, ...this.derivedEntities()]),
+      detectRegions(this.editingId ?? "__active__", [...this.entities, ...derived]),
       this.plane,
     );
-    this.candidates = candidatesFromEntities(this.entities);
+    this.candidates = candidatesFromEntities([...this.entities, ...derived]);
     if (this.dimsVisible) this.dims.show(this.entities, this.plane);
     else this.dims.hide();
   }
@@ -567,109 +573,24 @@ export class SketchMode {
 
   // --- patterns: click to place, drag to size, type counts, click to commit. Each
   // persists as an editable (associative) definition. Entity patterns (rect/circular)
-  // replicate the current selection; presets emit holes. -------------------------
+  // replicate the current selection; presets emit holes. Delegates to PatternFlow
+  // (see patternFlow.ts), which owns the placement/edit state live. -------------
   private patternClick(p: THREE.Vector2) {
-    if (!this.patternCenter) {
-      if (ENTITY_PATTERNS.has(this.tool) && this.selected.size === 0) {
-        setPrompt("Select entities first, then choose a pattern tool");
-        return;
-      }
-      this.patternCenter = p.clone();
-      this.pendingPattern = this.defaultPattern(this.tool, p);
-      this.dim.show(this.patternDimDefs(this.pendingPattern.type), () => this.commitPattern());
-      this.refreshActive();
-      return;
-    }
-    this.commitPattern(); // second click commits
+    this.patternFlow.click(p);
   }
 
-  private defaultPattern(tool: SketchTool, c: THREE.Vector2): SketchPattern {
-    const id = newPatternId();
-    const sources = [...this.selected];
-    if (tool === "boltCircle") return { id, type: "boltCircle", cx: c.x, cy: c.y, bcd: 40, count: 6, diameter: 6 };
-    if (tool === "gridHoles") return { id, type: "gridHoles", cx: c.x, cy: c.y, diameter: 6, countX: 3, countY: 3, spacingX: 12, spacingY: 12 };
-    if (tool === "hexHoles") return { id, type: "hexHoles", cx: c.x, cy: c.y, diameter: 6, spacing: 12, rings: 2 };
-    if (tool === "honeycomb") return { id, type: "honeycomb", cx: c.x, cy: c.y, diameter: 12, spacing: 13, rings: 2 };
-    if (tool === "patternCircular") return { id, type: "patternCircular", sources, cx: c.x, cy: c.y, count: 6, angle: 360 };
-    return { id, type: "patternRect", sources, countX: 3, countY: 1, spacingX: 15, spacingY: 15 }; // patternRect
-  }
-
-  private patternDimDefs(type: SketchPattern["type"]) {
-    if (type === "boltCircle") return [{ name: "count", label: "N" }, { name: "diameter", label: "⌀" }];
-    if (type === "gridHoles") return [{ name: "countX", label: "Nx" }, { name: "countY", label: "Ny" }, { name: "diameter", label: "⌀" }];
-    if (type === "hexHoles" || type === "honeycomb") return [{ name: "rings", label: "Rings" }, { name: "diameter", label: "⌀" }];
-    if (type === "patternCircular") return [{ name: "count", label: "N" }, { name: "angle", label: "∠", kind: "angle" as const }];
-    return [{ name: "countX", label: "Nx" }, { name: "countY", label: "Ny" }]; // patternRect
-  }
-
-  /** Live sizing: cursor offset/distance from the start point drives the spatial
-   *  param (bolt dia / spacing / grid-step); typed fields drive counts/angle. */
   private patternMove(p: THREE.Vector2, e: PointerEvent) {
-    if (!this.patternCenter || !this.pendingPattern) return;
-    const pat = this.pendingPattern;
-    const dx = p.x - this.patternCenter.x, dy = p.y - this.patternCenter.y;
-    const r = Math.hypot(dx, dy);
-    const dimN = (name: string, fallback: number) => Math.round(this.dim.getValue(name) ?? fallback);
-    if (pat.type === "boltCircle") {
-      if (r > 1) pat.bcd = Math.round(2 * r * 10) / 10;
-      pat.count = Math.max(1, dimN("count", pat.count as number));
-      pat.diameter = this.dim.getValue("diameter") ?? (pat.diameter as number);
-    } else if (pat.type === "gridHoles") {
-      if (r > 1) pat.spacingX = pat.spacingY = Math.round((r / 1.5) * 10) / 10;
-      pat.countX = Math.max(1, dimN("countX", pat.countX as number));
-      pat.countY = Math.max(1, dimN("countY", pat.countY as number));
-      pat.diameter = this.dim.getValue("diameter") ?? (pat.diameter as number);
-    } else if (pat.type === "hexHoles" || pat.type === "honeycomb") {
-      if (r > 1) pat.spacing = Math.round((r / 2) * 10) / 10;
-      pat.rings = Math.max(0, dimN("rings", pat.rings as number));
-      pat.diameter = this.dim.getValue("diameter") ?? (pat.diameter as number);
-    } else if (pat.type === "patternRect") {
-      // cursor offset from the start point = the spacing vector (the second instance)
-      if (Math.abs(dx) > 1) pat.spacingX = Math.round(dx * 10) / 10;
-      if (Math.abs(dy) > 1) pat.spacingY = Math.round(dy * 10) / 10;
-      pat.countX = Math.max(1, dimN("countX", pat.countX as number));
-      pat.countY = Math.max(1, dimN("countY", pat.countY as number));
-    } else if (pat.type === "patternCircular") {
-      pat.count = Math.max(1, dimN("count", pat.count as number));
-      pat.angle = this.dim.getValue("angle") ?? (pat.angle as number);
-    }
-    this.dim.position(e.clientX, e.clientY);
-    this.refreshActive();
+    this.patternFlow.move(p, e);
   }
 
   private commitPattern() {
-    if (!this.pendingPattern) return;
-    this.patterns.push(this.pendingPattern);
-    this.pendingPattern = null;
-    this.editOriginal = null;
-    this.patternCenter = null;
-    this.dim.hide();
-    setPrompt(null);
-    if (this.selected.size) this.selected.clear(); // the pattern now owns the copies
-    this.setTool("select"); // finish: one pattern per invocation (refreshes + notifies)
+    this.patternFlow.commit();
   }
 
   /** Associative editing: re-open an existing pattern's placement flow with its
    *  current values, so dragging/typing re-derives it live. Esc restores it. */
   private editPattern(patId: string) {
-    const i = this.patterns.findIndex((p) => p.id === patId);
-    if (i < 0) return;
-    const pat = this.patterns[i];
-    this.patterns.splice(i, 1); // pull it out; commit/cancel puts it back
-    this.editOriginal = { ...pat };
-    this.pendingPattern = pat;
-    this.patternCenter = new THREE.Vector2(
-      "cx" in pat ? (pat.cx as number) : 0,
-      "cy" in pat ? (pat.cy as number) : 0,
-    );
-    this.tool = pat.type;
-    const cur: Record<string, number> = {};
-    for (const d of this.patternDimDefs(pat.type)) cur[d.name] = (pat as unknown as Record<string, number>)[d.name];
-    this.dim.show(this.patternDimDefs(pat.type), () => this.commitPattern());
-    this.dim.updateFromCursor(cur);
-    setPrompt("Edit the pattern — drag/type to change · click to commit · Delete to remove · Esc to keep");
-    this.refreshActive();
-    this.onState?.();
+    this.patternFlow.edit(patId);
   }
 
 
@@ -954,19 +875,15 @@ export class SketchMode {
   private onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return; // typing in a dim field
     // a pattern being placed/edited: Delete removes it, Esc keeps it as-is
-    if (this.pendingPattern) {
+    if (this.patternFlow.hasPending()) {
       if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
-        this.pendingPattern = null; this.editOriginal = null; this.patternCenter = null;
-        this.dim.hide(); setPrompt(null); this.refreshActive(); this.onState?.();
+        this.patternFlow.deletePending();
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (this.editOriginal) this.patterns.push(this.editOriginal); // restore the pre-edit pattern
-        else this.patterns.push(this.pendingPattern); // a fresh placement: keep it at its current values
-        this.pendingPattern = null; this.editOriginal = null; this.patternCenter = null;
-        this.dim.hide(); setPrompt(null); this.refreshActive(); this.onState?.();
+        this.patternFlow.cancelPending();
         return;
       }
     }
@@ -991,7 +908,7 @@ export class SketchMode {
         return;
       }
       if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length ||
-          this.clickPts.length || this.pendingEndpoint || this.pendingEndpoint2) {
+          this.clickPts.length || this.constraintTools.hasPending()) {
         this.base = null;
         this.chainStart = null;
         this.arcStart = null;
@@ -999,8 +916,7 @@ export class SketchMode {
         this.filletFirst = null;
         this.splinePts = [];
         this.clickPts = [];
-        this.pendingEndpoint = null;
-        this.pendingEndpoint2 = null;
+        this.constraintTools.resetPending();
         this.dim.hide();
         this.overlay.setPreview([]);
       } else if (this.selected.size) {
@@ -1012,7 +928,7 @@ export class SketchMode {
       return;
     }
     if (e.key === "Enter") {
-      if (this.pendingPattern) {
+      if (this.patternFlow.hasPending()) {
         e.preventDefault();
         this.commitPattern();
         return;
@@ -1169,7 +1085,8 @@ export class SketchMode {
 
   /** All pattern definitions including the one being placed (for live preview). */
   private allPatterns(): SketchPattern[] {
-    return this.pendingPattern ? [...this.patterns, this.pendingPattern] : this.patterns;
+    const pending = this.patternFlow.pending;
+    return pending ? [...this.patterns, pending] : this.patterns;
   }
 
   /** Derived (copy) entities from every pattern — render/region only, never edited
@@ -1184,7 +1101,7 @@ export class SketchMode {
     return out;
   }
 
-  private activeCurves(): THREE.Object3D[] {
+  private activeCurves(derived: ResolvedEntity[]): THREE.Object3D[] {
     const objs: THREE.Object3D[] = [];
     if (this.selected.size) {
       const normal = this.entities.filter((e) => !this.selected.has(e.id));
@@ -1195,7 +1112,6 @@ export class SketchMode {
       objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
     }
     if (this.dimsVisible) objs.push(...dimensionLineObjects(this.entities, this.plane));
-    const derived = this.derivedEntities();
     if (derived.length) objs.push(...curveObjects(derived, this.plane, this.activeColor()));
     return objs;
   }
@@ -1306,134 +1222,10 @@ export class SketchMode {
     this.afterModify();
   }
   /** add a persistent geometric constraint and re-solve (the solver maintains
-   *  all constraints together, not just the one you applied). */
+   *  all constraints together, not just the one you applied). Delegates to
+   *  ConstraintTools (see constraintTools.ts), which owns the 9 click flows. */
   private constraintClick(p: THREE.Vector2) {
-    const t = this.tool;
-    // point-based constraints pick the nearest endpoint, not an entity body
-    if (t === "coincident" || t === "symmetric" || t === "midpoint") {
-      return this.pointConstraintClick(p);
-    }
-    if (t === "tangent") return this.tangentClick(p);
-    if (t === "concentric") return this.concentricClick(p);
-
-    // line-based constraints (horizontal/vertical/parallel/perpendicular/equal)
-    const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0 || this.entities[idx].type !== "line") return;
-    const id = this.entities[idx].id;
-    if (t === "horizontal") this.addConstraint({ type: "horizontal", line: id });
-    else if (t === "vertical") this.addConstraint({ type: "vertical", line: id });
-    else {
-      // two-line constraints: first click stores, second applies
-      if (this.filletFirst == null) {
-        this.filletFirst = idx;
-        return;
-      }
-      const a = this.entities[this.filletFirst]?.id;
-      this.filletFirst = null;
-      if (!a || a === id) return;
-      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a, l2: id });
-      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a, l2: id });
-      else if (t === "equal") this.addConstraint({ type: "equal", l1: a, l2: id });
-    }
-  }
-
-  /** nearest addressable endpoint (line/arc/spline end, or a point entity) to p */
-  private pickEndpoint(p: THREE.Vector2): { id: string; idx: number } | null {
-    const tol = this.pickTol();
-    let best: { id: string; idx: number } | null = null;
-    let bestD = tol * tol;
-    const consider = (id: string, idx: number, x: number, y: number) => {
-      const dx = x - p.x, dy = y - p.y, d = dx * dx + dy * dy;
-      if (d <= bestD) { bestD = d; best = { id, idx }; }
-    };
-    for (const e of this.entities) {
-      if (e.type === "line") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
-      else if (e.type === "arc") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
-      else if (e.type === "point") consider(e.id, 0, e.x, e.y);
-      else if (e.type === "spline") { consider(e.id, 0, e.points[0].x, e.points[0].y); const l = e.points.length - 1; consider(e.id, 1, e.points[l].x, e.points[l].y); }
-    }
-    return best;
-  }
-
-  // coincident/symmetric/midpoint all start from an endpoint pick. We stash the
-  // first pick (and, for symmetric, the second) on filletFirst-style state.
-  private pendingEndpoint: { id: string; idx: number } | null = null;
-  private pendingEndpoint2: { id: string; idx: number } | null = null;
-  private pointConstraintClick(p: THREE.Vector2) {
-    const t = this.tool;
-    if (t === "midpoint") {
-      // pick a point/endpoint, then a line
-      if (!this.pendingEndpoint) {
-        const ep = this.pickEndpoint(p);
-        if (ep) this.pendingEndpoint = ep;
-        return;
-      }
-      const idx = pickEntity(this.entities, p, this.pickTol());
-      const e = idx >= 0 ? this.entities[idx] : null;
-      const ep = this.pendingEndpoint;
-      this.pendingEndpoint = null;
-      if (e?.type === "line" && e.id !== ep.id) this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: e.id });
-      return;
-    }
-    if (t === "coincident") {
-      const ep = this.pickEndpoint(p);
-      if (!ep) return;
-      if (!this.pendingEndpoint) { this.pendingEndpoint = ep; return; }
-      const a = this.pendingEndpoint;
-      this.pendingEndpoint = null;
-      if (a.id !== ep.id) this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
-      return;
-    }
-    // symmetric: pick endpoint A, endpoint B, then the axis line
-    if (!this.pendingEndpoint) {
-      const ep = this.pickEndpoint(p);
-      if (ep) this.pendingEndpoint = ep;
-      return;
-    }
-    if (!this.pendingEndpoint2) {
-      const ep = this.pickEndpoint(p);
-      if (ep && ep.id !== this.pendingEndpoint.id) this.pendingEndpoint2 = ep;
-      return;
-    }
-    // third click: the symmetry axis line
-    const idx = pickEntity(this.entities, p, this.pickTol());
-    const e = idx >= 0 ? this.entities[idx] : null;
-    const a = this.pendingEndpoint, b = this.pendingEndpoint2;
-    this.pendingEndpoint = null;
-    this.pendingEndpoint2 = null;
-    if (e?.type === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: e.id });
-  }
-
-  private tangentClick(p: THREE.Vector2) {
-    const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0) return;
-    const e = this.entities[idx];
-    if (this.filletFirst == null) {
-      // store first pick if it's a line or a circle
-      if (e.type === "line" || e.type === "circle") this.filletFirst = idx;
-      return;
-    }
-    const first = this.entities[this.filletFirst];
-    this.filletFirst = null;
-    if (!first || first.id === e.id) return;
-    const line = first.type === "line" ? first : e.type === "line" ? e : null;
-    const circle = first.type === "circle" ? first : e.type === "circle" ? e : null;
-    if (line && circle) this.addConstraint({ type: "tangent", line: line.id, circle: circle.id });
-  }
-
-  private concentricClick(p: THREE.Vector2) {
-    const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0 || this.entities[idx].type !== "circle") return;
-    if (this.filletFirst == null) { this.filletFirst = idx; return; }
-    const a = this.entities[this.filletFirst];
-    this.filletFirst = null;
-    const b = this.entities[idx];
-    if (a && a.id !== b.id && a.type === "circle") this.addConstraint({ type: "concentric", c1: a.id, c2: b.id });
-  }
-
-  private addConstraint(c: SketchConstraint) {
-    this.constraints.push(c);
-    this.requestSolve();
+    this.constraintTools.click(p);
   }
 
   /** Drop constraints that reference an entity that no longer exists (or is the
@@ -1465,9 +1257,34 @@ export class SketchMode {
     });
   }
 
-  /** Common tail for modify ops: prune now-dangling constraints, rebuild, re-solve. */
+  /** Drop pattern sources that reference an entity that no longer exists (e.g.
+   *  Delete, or trim/fillet/offset/extend/break replacing an id) — mirrors
+   *  pruneConstraints() so a vanished source can't silently shrink the pattern
+   *  forever. A pattern left with zero surviving sources is dropped entirely. */
+  private prunePatterns() {
+    if (!this.patterns.length) return;
+    const ids = new Set(this.entities.map((e) => e.id));
+    let droppedCount = 0;
+    this.patterns = this.patterns.filter((pat) => {
+      if (!("sources" in pat)) return true; // preset patterns (hex/honeycomb/boltCircle/gridHoles) have no sources
+      const survivors = pat.sources.filter((id) => ids.has(id));
+      if (survivors.length === 0) { droppedCount++; return false; }
+      pat.sources = survivors;
+      return true;
+    });
+    if (droppedCount > 0) {
+      setPrompt(
+        droppedCount === 1
+          ? "A pattern was removed: its source entity no longer exists"
+          : `${droppedCount} patterns were removed: their source entities no longer exist`,
+      );
+    }
+  }
+
+  /** Common tail for modify ops: prune now-dangling constraints + patterns, rebuild, re-solve. */
   private afterModify() {
     this.pruneConstraints();
+    this.prunePatterns();
     this.refreshActive();
     this.overlay.setPreview([]);
     this.requestSolve();
