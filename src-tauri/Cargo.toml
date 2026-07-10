@@ -18,6 +18,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# system-browser opener for TinkerAtlas links (capability-scoped to tinkeratlas.com).
+tauri-plugin-opener = "2"
 libc = "0.2"
 hidapi = "2"
 # portable CSPRNG for the sidecar WebSocket token (replaces a /dev/urandom read that
@@ -25,9 +27,13 @@ hidapi = "2"
 getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Printer device layer (printer.rs): LAN Moonraker HTTP client. No TLS features —
-# printers are plain-HTTP on the local network; keeps the dep light.
-reqwest = { version = "0.12", default-features = false, features = ["json", "multipart"] }
+# Printer device layer (printer.rs): LAN Moonraker HTTP client (plain HTTP).
+# rustls-tls is for the TinkerAtlas layer (tinkeratlas.rs) — pure-Rust TLS with
+# bundled webpki roots, so no system OpenSSL and cross-platform builds stay clean.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# cover screenshots cross Tauri IPC as base64 strings (a JSON Vec<u8> would be
+# pathological at ~1 MB); tinkeratlas.rs decodes/encodes with this.
+base64 = "0.22"
 # explicit for the status-monitor task's sleep; tauri already runs the tokio rt.
 tokio = { version = "1", features = ["time"] }
 # --- Rust/OCCT geometry spike (opt-in only) ---------------------------------

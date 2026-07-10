@@ -16,9 +16,13 @@ import { installKeymap } from "./input/keymap";
 import { toggleShortcutHUD } from "./input/shortcuts";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
-import { saveDocument, saveDocumentAs, openDocument, exportModel, exportPrintProject, importModel } from "./io/files";
+import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { installAutosave, checkRecovery } from "./io/recovery";
+import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
+import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
+import { publishToTinkerAtlas } from "./tinkeratlas/publish";
+import { currentAccount } from "./tinkeratlas/client";
 import { Menubar, dismissContextMenu } from "./ui/menu";
 import { choose, isChoiceOpen } from "./ui/choice";
 import { toast } from "./ui/toast";
@@ -167,6 +171,16 @@ async function openDoc() {
   await openDocument(store, geometry);
 }
 const spaceMouseSettings = new SpaceMouseSettings();
+const welcome = new WelcomeScreen({
+  onNew: () => void newDocument(),
+  onOpen: () => void openDoc(),
+  onOpenPath: async (path) => {
+    if (sketch.active) sketch.cancel(); // same guard as openDoc
+    return openDocumentAtPath(store, path);
+  },
+  onSignIn: () => void openSignInDialog(),
+  onSignOut: () => void signOutFlow(),
+});
 new Menubar(document.getElementById("menubar")!, [
   {
     label: "File",
@@ -220,7 +234,23 @@ new Menubar(document.getElementById("menubar")!, [
       { label: "3D Mouse Settings…", onClick: () => spaceMouseSettings.open() },
     ],
   },
+  {
+    label: "TinkerAtlas",
+    items: [
+      { label: "Welcome Screen", onClick: () => welcome.open() },
+      { separator: true, label: "" },
+      { label: "Publish to TinkerAtlas…", onClick: () => void publishToTinkerAtlas(store, geometry, viewport) },
+      { separator: true, label: "" },
+      { label: "Sign in…", disabled: () => !!currentAccount(), onClick: () => void openSignInDialog() },
+      { label: "Sign out", disabled: () => !currentAccount(), onClick: () => void signOutFlow() },
+    ],
+  },
 ]);
+
+// warm the TinkerAtlas identity cache from disk (offline-safe), then show the
+// welcome screen unless the user turned it off (its footer checkbox).
+void warmAccount();
+if (welcomeOnStartup()) welcome.open();
 
 const docnameEl = document.getElementById("docname")!;
 // mouse-visible undo/redo (Ctrl+Z was the ONLY way before — invisible affordance)
@@ -306,7 +336,7 @@ let planePick = false;
 // they don't overwrite it.
 const NON_REPEATABLE = new Set([
   "new", "open", "save", "saveas", "export", "import",
-  "print-export", "print-orca", "print-send",
+  "print-export", "print-orca", "print-send", "welcome", "ta-publish",
   "undo", "redo", "compute-all", "shortcut-help", "finish", "palette",
   "fit", "iso", "top", "front", "right", "persp",
   "selmode", "selmode-faces", "selmode-bodies",
@@ -832,6 +862,12 @@ function handleAction(action: string) {
       break;
     case "print-send":
       void sendToPrinter(store, geometry);
+      break;
+    case "welcome":
+      welcome.open();
+      break;
+    case "ta-publish":
+      void publishToTinkerAtlas(store, geometry, viewport);
       break;
     case "revolve":
       void starters.startRevolve();

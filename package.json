@@ -16,6 +16,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-fs": "^2.5.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "camera-controls": "^2.10.1",
     "three": "^0.180.0"
   },

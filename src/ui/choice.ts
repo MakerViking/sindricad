@@ -20,6 +20,15 @@ export function isChoiceOpen(): boolean {
   return openModals > 0;
 }
 
+/** For modals built outside this module (welcome screen, sign-in, publish form):
+ *  count them in the same gate so global shortcuts stay blocked underneath. */
+export function pushModal(): void {
+  openModals++;
+}
+export function popModal(): void {
+  openModals = Math.max(0, openModals - 1);
+}
+
 export function choose<T extends string>(
   title: string,
   options: ChoiceOption<T>[],

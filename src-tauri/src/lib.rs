@@ -9,6 +9,7 @@ mod printer;
 mod sidecar;
 mod slicer;
 mod spacemouse;
+mod tinkeratlas;
 
 use sidecar::Sidecar;
 use tauri::{Manager, RunEvent};
@@ -112,7 +113,8 @@ fn recovery_clear(app: tauri::AppHandle, slot: String) -> Result<(), String> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init());
 
     // The Rust/OCCT geometry commands (`geom_rebuild`/`geom_export`) only exist when
     // the `rust-geom` feature is on (VITE_GEOM=rust). generate_handler! won't accept
@@ -143,7 +145,14 @@ pub fn run() {
         slicer::settings_set,
         slicer::print_staging_path,
         slicer::slicer_open,
-        slicer::slicer_project_settings
+        slicer::slicer_project_settings,
+        tinkeratlas::ta_account,
+        tinkeratlas::ta_sign_in,
+        tinkeratlas::ta_sign_out,
+        tinkeratlas::ta_ping,
+        tinkeratlas::ta_staging_path,
+        tinkeratlas::ta_publish,
+        tinkeratlas::ta_avatar
     ]);
     #[cfg(not(feature = "rust-geom"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -166,7 +175,14 @@ pub fn run() {
         slicer::settings_set,
         slicer::print_staging_path,
         slicer::slicer_open,
-        slicer::slicer_project_settings
+        slicer::slicer_project_settings,
+        tinkeratlas::ta_account,
+        tinkeratlas::ta_sign_in,
+        tinkeratlas::ta_sign_out,
+        tinkeratlas::ta_ping,
+        tinkeratlas::ta_staging_path,
+        tinkeratlas::ta_publish,
+        tinkeratlas::ta_avatar
     ]);
 
     let app = builder

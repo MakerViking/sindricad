@@ -1627,6 +1627,18 @@ export class Viewport {
     this.requestRender();
   }
 
+  /** Capture the model view as a PNG data URL (publish cover, etc.). The
+   *  renderer runs without preserveDrawingBuffer (scene.ts), so the buffer is
+   *  only valid in the same task as a render call — render synchronously right
+   *  before reading. Skips the ViewCube overlay for a clean shot; the next
+   *  loop frame repaints it. */
+  screenshotPNG(): string {
+    this.scene.renderer.render(this.scene.scene, this.rig.active);
+    const url = this.canvas.toDataURL("image/png");
+    this.requestRender(); // repaint with the ViewCube overlay
+    return url;
+  }
+
   private scratchTarget = new THREE.Vector3();
   private loop = () => {
     // Never let a single bad frame kill the loop: if any step throws, log and

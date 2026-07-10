@@ -8,6 +8,7 @@ import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { ExportFormat, ImportFormat } from "../types";
 import { clearRecovery } from "./recovery";
+import { noteRecent } from "./recentFiles";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -23,6 +24,7 @@ export async function saveDocument(store: DocumentStore) {
       return;
     }
     store.markSaved(store.filePath);
+    noteRecent(store.filePath);
     void clearRecovery(store.filePath); // the on-disk file is now the truth
   } else {
     await saveDocumentAs(store);
@@ -47,6 +49,7 @@ export async function saveDocumentAs(store: DocumentStore) {
         return;
       }
       store.markSaved(path);
+      noteRecent(path);
       void clearRecovery(path);
     }
   } else {
@@ -70,14 +73,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
     if (typeof path !== "string") return;
     const ext = path.split(".").pop()?.toLowerCase();
     if (ext === "sindri" || ext === "json") {
-      const { readTextFile } = await import("@tauri-apps/plugin-fs");
-      try {
-        store.load(await readTextFile(path));
-      } catch (e) {
-        await reportError(`Couldn't open ${path.split(/[\\/]/).pop()}: ${errMsg(e)}`);
-        return;
-      }
-      store.markSaved(path); // freshly opened == clean, with a known path
+      await openDocumentAtPath(store, path);
     } else {
       await importPath(store, geometry, path); // a mesh / CAD file → import as a body
     }
@@ -91,6 +87,21 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
       }
     }
   }
+}
+
+/** Open a .sindri/.json document at a known path (no dialog) — shared by Open…
+ *  and the welcome screen's recent-files list. Returns false if unreadable. */
+export async function openDocumentAtPath(store: DocumentStore, path: string): Promise<boolean> {
+  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+  try {
+    store.load(await readTextFile(path));
+  } catch (e) {
+    await reportError(`Couldn't open ${path.split(/[\\/]/).pop()}: ${errMsg(e)}`);
+    return false;
+  }
+  store.markSaved(path); // freshly opened == clean, with a known path
+  noteRecent(path);
+  return true;
 }
 
 export async function exportModel(store: DocumentStore, geometry: GeometryBackend) {

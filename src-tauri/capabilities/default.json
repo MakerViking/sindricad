@@ -7,6 +7,10 @@
     "core:default",
     "core:event:default",
     "dialog:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://tinkeratlas.com/*" }, { "url": "http://localhost:3000/*" }]
+    },
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
     {

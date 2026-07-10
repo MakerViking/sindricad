@@ -24,6 +24,8 @@ const GLOBAL: Command[] = [
   { id: "saveas", label: "Save As…", group: "File", context: "global", key: "Ctrl+Shift+S" },
   { id: "export", label: "Export…", group: "File", context: "global", key: "Ctrl+E" },
   { id: "import", label: "Import Mesh…", group: "File", context: "global" },
+  { id: "ta-publish", label: "Publish to TinkerAtlas…", group: "File", context: "global" },
+  { id: "welcome", label: "Welcome Screen", group: "Help", context: "global" },
   { id: "undo", label: "Undo", group: "Edit", context: "global", key: "Ctrl+Z" },
   { id: "redo", label: "Redo", group: "Edit", context: "global", key: "Ctrl+Y" },
   { id: "fit", label: "Fit View", group: "View", context: "global", key: "Home / F6" },
