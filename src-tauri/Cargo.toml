@@ -35,7 +35,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 # pathological at ~1 MB); tinkeratlas.rs decodes/encodes with this.
 base64 = "0.22"
 # explicit for the status-monitor task's sleep; tauri already runs the tokio rt.
-tokio = { version = "1", features = ["time"] }
+# net/io-util: the one-shot loopback listener for browser sign-in (tinkeratlas.rs).
+tokio = { version = "1", features = ["time", "net", "io-util"] }
 # --- Rust/OCCT geometry spike (opt-in only) ---------------------------------
 # These four crates are used ONLY by src-tauri/src/geom.rs (the experimental
 # in-Rust OCCT geometry path, VITE_GEOM=rust). They are `optional` and behind the

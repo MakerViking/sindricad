@@ -2204,3 +2204,38 @@ button.finish:hover {
   margin: 2px 0 6px;
   cursor: pointer;
 }
+
+/* browser sign-in flow additions */
+.ta-signin-alt {
+  background: transparent;
+  border: none;
+  color: var(--text-dim, #9aa3af);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 2px 0 8px;
+}
+.ta-signin-alt:hover {
+  color: var(--text, #e6e8ec);
+}
+.ta-signin-tokenrow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ta-signin-tokenrow .ta-signin-input {
+  flex: 1;
+  margin: 0;
+}
+.ta-signin-tokenrow .choice-btn {
+  width: auto;
+  margin: 0;
+  white-space: nowrap;
+}
+.ta-signin-waiting {
+  padding: 8px 0 4px;
+  font-size: 13px;
+}
+.ta-signin-waiting p {
+  margin: 0 0 8px;
+}

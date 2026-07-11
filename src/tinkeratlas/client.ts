@@ -67,6 +67,15 @@ export async function taSignIn(token: string): Promise<TaUser> {
   return user;
 }
 
+/** Sign in (or register) through the system browser: opens tinkeratlas.com's
+ *  own login/signup, then resolves automatically once the user clicks
+ *  Authorize (loopback callback). Rejects with TaError after ~5 min. */
+export async function taBrowserSignIn(signup: boolean): Promise<TaUser> {
+  const user = await invoke<TaUser>("ta_browser_sign_in", { signup });
+  setAccount(user);
+  return user;
+}
+
 export async function taSignOut(): Promise<void> {
   await invoke("ta_sign_out");
   setAccount(null);
