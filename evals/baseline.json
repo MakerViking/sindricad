@@ -1,0 +1,15 @@
+{
+  "ts-strict": {
+    "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
+    "harness": "evals/harness/ts_strict.sh",
+    "baseline": 396,
+    "ratchet": 396,
+    "goal": 0,
+    "milestone": 100,
+    "base_commit": "4588692",
+    "worktree_branch": "loop/ts-strict",
+    "captured": "2026-07-12",
+    "captured_by": "evaluator agent, cross-checked by driver",
+    "note": "Main tree measured 398 with uncommitted working changes; the loop and its ratchet run against the worktree at the base commit (396)."
+  }
+}
