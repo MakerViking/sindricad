@@ -420,7 +420,8 @@ export class Viewport {
     const map: Record<string, [number, number, number]> = {
       "+X": [1, 0, 0], "-X": [-1, 0, 0], "+Y": [0, 1, 0], "-Y": [0, -1, 0], "+Z": [0, 0, 1], "-Z": [0, 0, -1],
     };
-    this.draftDir.set(...map[dir]);
+    const d = map[dir];
+    if (d) this.draftDir.set(...d);
     this.draftThreshold = Math.max(0, Math.min(90, threshold));
     if (this.analysis === "draft") this.applyAnalysis();
   }
@@ -618,10 +619,11 @@ export class Viewport {
   /** Selectors for the currently selected edges (for pre-selected fillet/chamfer). */
   selectedEdgeSelectors(): Selector[] {
     if (!this.highlighter) return [];
-    return this.highlighter.getSelectedEdges().map((line) => {
+    return this.highlighter.getSelectedEdges().flatMap((line): Selector[] => {
       const pts = line.userData.points as [number, number, number][];
       const mid = pts[Math.floor(pts.length / 2)];
-      return { kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] };
+      if (!mid) return [];
+      return [{ kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] }];
     });
   }
 
@@ -632,7 +634,7 @@ export class Viewport {
     if (!this.model) return null;
     const edges = this.model.edges.map((e) => ({ points: e.userData.points as [number, number, number][] }));
     const i = nearestEdgeByMid(edges, mid, midMatchTol(this.model.box.getSize(this.projScratch).length()));
-    return i == null ? null : this.model.edges[i];
+    return i == null ? null : (this.model.edges[i] ?? null);
   }
 
   /** Paint these edges as selected (used to pre-highlight a feature's saved
@@ -670,6 +672,7 @@ export class Viewport {
       return { kind: "face", by: "nearest", point: [c.x, c.y, c.z] };
     });
     const first = faces[0];
+    if (first === undefined) return null;
     return {
       selectors,
       faceIds: [...faces],
@@ -777,14 +780,16 @@ export class Viewport {
         c.fromBufferAttribute(pos, index.getX(t * 3 + 2)).applyMatrix4(mw);
         n.copy(ab.copy(b).sub(a)).cross(ac.copy(c).sub(a));
         const len = n.length();
-        let f = faces.get(ids[t]);
+        const id = ids[t];
+        if (id === undefined) continue;
+        let f = faces.get(id);
         if (!f) {
           f = {
             planar: true,
             n: len > 1e-9 ? n.clone().divideScalar(len) : new THREE.Vector3(),
             p: a.clone(), min: a.clone(), max: a.clone(), tris: [],
           };
-          faces.set(ids[t], f);
+          faces.set(id, f);
         } else if (len > 1e-9 && f.n.lengthSq() > 0.5 && n.clone().divideScalar(len).dot(f.n) < 0.9998) {
           f.planar = false;
         } else if (len > 1e-9 && f.n.lengthSq() < 0.5) {
@@ -850,22 +855,26 @@ export class Viewport {
         if (on) cands.push(f);
       }
       if (cands.length < 2) continue;
+      const c0 = cands[0];
+      if (!c0) continue;
 
       // side samples at the edge midpoint, perpendicular to the edge IN the plane
       const k = Math.floor((pts.length - 1) / 2);
+      const pk = pts[k], pk1 = pts[k + 1];
+      if (!pk || !pk1) continue;
       m.set(
-        (pts[k][0] + pts[k + 1][0]) / 2,
-        (pts[k][1] + pts[k + 1][1]) / 2,
-        (pts[k][2] + pts[k + 1][2]) / 2,
+        (pk[0] + pk1[0]) / 2,
+        (pk[1] + pk1[1]) / 2,
+        (pk[2] + pk1[2]) / 2,
       );
       d.set(
-        pts[k + 1][0] - pts[k][0],
-        pts[k + 1][1] - pts[k][1],
-        pts[k + 1][2] - pts[k][2],
+        pk1[0] - pk[0],
+        pk1[1] - pk[1],
+        pk1[2] - pk[2],
       );
       if (d.lengthSq() < 1e-12) continue;
       d.normalize();
-      s.crossVectors(d, cands[0].n).normalize();
+      s.crossVectors(d, c0.n).normalize();
       qPlus.copy(m).addScaledVector(s, EPS);
       qMinus.copy(m).addScaledVector(s, -EPS);
 
@@ -931,8 +940,9 @@ export class Viewport {
     this.rayFrom(clientX, clientY);
     const meshes = (["XY", "XZ", "YZ"] as Plane3[]).map((k) => this.scene.planes[k]);
     const hits = this.sharedRaycaster.intersectObjects(meshes, false);
-    if (!hits.length) return null;
-    return (hits[0].object.userData.plane as Plane3) ?? null;
+    const hit = hits[0];
+    if (!hit) return null;
+    return (hit.object.userData.plane as Plane3) ?? null;
   }
 
   /**

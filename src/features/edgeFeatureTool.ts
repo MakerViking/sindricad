@@ -114,7 +114,8 @@ export class EdgeFeatureTool {
     // pre-selection (Ctrl-click): skip the pick phase and go straight to the drag
     const pre = this.viewport.selectedEdgeSelectors();
     if (pre.length) {
-      this.beginDrag(pre.length === 1 ? pre[0] : pre, this.anchorFromSelectors(pre), null);
+      const sel = pre.length === 1 ? pre[0] : pre;
+      if (sel) this.beginDrag(sel, this.anchorFromSelectors(pre), null);
     } else {
       setPrompt(`Select an edge to ${kind} (Ctrl-click first to pre-select several)`);
     }
@@ -191,6 +192,8 @@ export class EdgeFeatureTool {
   }
 
   private addGhost(sel: Selector, points: Vec3[]) {
+    const mid = points[Math.floor(points.length / 2)];
+    if (!mid) return; // an edge always has points; nothing to ghost otherwise
     const geo = new LineGeometry();
     const flat: number[] = [];
     for (const p of points) flat.push(p[0], p[1], p[2]);
@@ -208,7 +211,6 @@ export class EdgeFeatureTool {
     line.computeLineDistances();
     line.renderOrder = 998;
     this.viewport.addToScene(line);
-    const mid = points[Math.floor(points.length / 2)];
     this.ghosts.push({ sel, mid, points, line });
   }
 
@@ -600,6 +602,7 @@ function midAndTangent(pts: [number, number, number][]): {
   const m = pts[Math.floor(pts.length / 2)];
   const a = pts[0];
   const b = pts[pts.length - 1];
+  if (!a || !b || !m) return { mid: new THREE.Vector3(), tan: new THREE.Vector3(1, 0, 0) };
   const tan = new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
   if (tan.lengthSq() < 1e-9) tan.set(1, 0, 0);
   else tan.normalize();
