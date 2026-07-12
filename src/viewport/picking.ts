@@ -34,7 +34,8 @@ export class Picker {
   // (Edge visibility is only ever toggled once, by hideFlushSeams() right after
   // a model is built, so caching by view reference is safe.)
   private visibleEdgesCache: { view: ModelView; edges: Line2[] } | null = null;
-  private visibleEdges(view: ModelView): Line2[] {
+  /** All pickable (visible) edge lines — also used for tangent-chain expansion. */
+  visibleEdges(view: ModelView): Line2[] {
     if (this.visibleEdgesCache?.view !== view) {
       this.visibleEdgesCache = { view, edges: view.edges.filter((e) => e.visible) };
     }

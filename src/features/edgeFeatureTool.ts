@@ -32,13 +32,17 @@ const HANDLE_HOT = 0xffe9a8; // brighter when hovered/grabbed
 const GHOST_SELECT = 0xff7a3c;
 const GHOST_ERROR = 0xe23b3b;
 
-/** One edit-mode member edge: its selector, the sharp-model polyline snapshot
- *  it was matched to (for drawing + screen-space hit tests), and its ghost. */
+/** One member edge: its selector, the sharp-model polyline snapshot it was
+ *  matched to (for drawing + screen-space hit tests), its ghost line, and the
+ *  tangent-chain gesture it arrived with (chain members select/deselect as one
+ *  unit — recorded at add time because the preview may consume the edges,
+ *  making the chain unrecomputable from the displayed model). */
 interface GhostEdge {
   sel: Selector;
   mid: Vec3;
   points: Vec3[];
   line: Line2;
+  chain: number;
 }
 
 export class EdgeFeatureTool {
@@ -193,7 +197,9 @@ export class EdgeFeatureTool {
     }
   }
 
-  private addGhost(sel: Selector, points: Vec3[]) {
+  private chainCounter = 0; // one id per add gesture (chain toggles as a unit)
+
+  private addGhost(sel: Selector, points: Vec3[], chain?: number) {
     const mid = points[Math.floor(points.length / 2)];
     if (!mid) return; // an edge always has points; nothing to ghost otherwise
     const geo = new LineGeometry();
@@ -213,7 +219,7 @@ export class EdgeFeatureTool {
     line.computeLineDistances();
     line.renderOrder = 998;
     this.viewport.addToScene(line);
-    this.ghosts.push({ sel, mid, points, line });
+    this.ghosts.push({ sel, mid, points, line, chain: chain ?? ++this.chainCounter });
   }
 
   private removeGhost(g: GhostEdge) {
@@ -239,6 +245,83 @@ export class EdgeFeatureTool {
       }
     }
     return null;
+  }
+
+  // --- tangent-chain propagation (MCAD "G1 chain") --------------------------
+  // A fillet/chamfer cannot terminate mid-tangency: an edge that blends
+  // smoothly into a neighbour (e.g. a straight rim stretch meeting a rounded
+  // corner arc) drags that neighbour into the operation — OCCT has no way to
+  // end the blend at their joint. So every pick expands across
+  // tangent-continuous connections, and deselection removes the same chain.
+
+  /** All model edges tangent-connected to `start` (including `start`), walked
+   *  breadth-first across shared endpoints whose end-tangents are colinear. */
+  private tangentChain(start: Line2): Line2[] {
+    const all = this.viewport.visibleEdgeLines();
+    const bb = this.store.buildState.result?.bbox;
+    const diag = bb
+      ? Math.hypot(bb.max[0] - bb.min[0], bb.max[1] - bb.min[1], bb.max[2] - bb.min[2])
+      : 100;
+    const joinTol = Math.max(1e-4, 1e-5 * diag); // endpoint coincidence
+    const G1_COS = Math.cos((10 * Math.PI) / 180); // tangents within 10°
+
+    type End = { p: Vec3; t: THREE.Vector3 }; // endpoint + unit tangent there
+    const endsOf = (l: Line2): End[] => {
+      const pts = l.userData.points as Vec3[];
+      const first = pts[0];
+      const second = pts[1];
+      const last = pts[pts.length - 1];
+      const prev = pts[pts.length - 2];
+      if (!first || !second || !last || !prev) return [];
+      const tHead = new THREE.Vector3(
+        second[0] - first[0], second[1] - first[1], second[2] - first[2]).normalize();
+      const tTail = new THREE.Vector3(
+        last[0] - prev[0], last[1] - prev[1], last[2] - prev[2]).normalize();
+      return [{ p: first, t: tHead }, { p: last, t: tTail }];
+    };
+
+    const chain = new Set<Line2>([start]);
+    const queue: Line2[] = [start];
+    while (queue.length) {
+      const cur = queue.pop();
+      if (!cur) break;
+      for (const ce of endsOf(cur)) {
+        for (const cand of all) {
+          if (chain.has(cand)) continue;
+          for (const oe of endsOf(cand)) {
+            const d = Math.hypot(ce.p[0] - oe.p[0], ce.p[1] - oe.p[1], ce.p[2] - oe.p[2]);
+            if (d > joinTol) continue;
+            if (Math.abs(ce.t.dot(oe.t)) < G1_COS) continue;
+            chain.add(cand);
+            queue.push(cand);
+            break;
+          }
+        }
+      }
+    }
+    return [...chain];
+  }
+
+  /** Add an edge AND its tangent chain as ghosts (skipping already-ghosted).
+   *  The whole gesture shares one chain id, so it deselects as one unit. */
+  private addWithChain(line: Line2) {
+    const chainId = ++this.chainCounter;
+    for (const l of this.tangentChain(line)) {
+      const pts = l.userData.points as Vec3[];
+      const mid = pts[Math.floor(pts.length / 2)];
+      if (!mid) continue;
+      if (this.ghosts.some((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 1e-6)) continue;
+      this.addGhost({ kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] }, pts, chainId);
+    }
+  }
+
+  /** Remove a ghost AND everything added in the same gesture (its chain id) —
+   *  recorded at add time, so removal works even after the live preview has
+   *  consumed the chain's edges in the displayed model. */
+  private removeWithChain(g: GhostEdge) {
+    for (const ghost of [...this.ghosts]) {
+      if (ghost.chain === g.chain) this.removeGhost(ghost);
+    }
   }
 
   /** Mount the drag-phase UI (gizmo + value input) anchored to the current
@@ -335,7 +418,7 @@ export class EdgeFeatureTool {
       e.stopImmediatePropagation();
       const pts = hit.line.userData.points as [number, number, number][];
       const { mid, tan } = midAndTangent(pts);
-      this.beginDrag([hit.selector], mid, tan, pts);
+      this.beginDrag([hit.selector], mid, tan, hit.line);
       return;
     }
     // drag phase: grabbing the handle scrubs; a clean click elsewhere commits
@@ -357,7 +440,7 @@ export class EdgeFeatureTool {
     if (g) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      this.removeGhost(g);
+      this.removeWithChain(g);
       this.afterMembershipChange();
       this.downOnGizmo = true;
       return;
@@ -367,7 +450,7 @@ export class EdgeFeatureTool {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.viewport.clearHover();
-      this.addGhost(hit.selector, hit.line.userData.points as Vec3[]);
+      this.addWithChain(hit.line);
       this.afterMembershipChange();
       this.downOnGizmo = true;
       return;
@@ -396,13 +479,21 @@ export class EdgeFeatureTool {
     edges: Selector[],
     anchor: THREE.Vector3,
     tangent: THREE.Vector3 | null,
-    points?: Vec3[],
+    chainSource?: Line2,
   ) {
     // Every member gets a ghost line (visible through the model) and stays
-    // click-toggleable — a direct pick carries its polyline, pre-selected
-    // selectors get matched by midpoint (unmatched ones still commit).
-    if (points && edges.length === 1 && edges[0]) this.addGhost(edges[0], points);
-    else this.seedGhosts(edges);
+    // click-toggleable. A direct pick expands across its tangent chain; a
+    // pre-selection expands each matched member's chain the same way
+    // (unmatched selectors still commit, just without a visual).
+    if (chainSource) {
+      this.addWithChain(chainSource);
+    } else {
+      this.seedGhosts(edges);
+      for (const g of [...this.ghosts]) {
+        const line = this.viewport.edgeLineByMid(g.mid);
+        if (line) this.addWithChain(line);
+      }
+    }
     this.anchor.copy(anchor);
     this.tangent = tangent;
     this.phase = "drag";

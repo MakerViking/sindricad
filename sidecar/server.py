@@ -63,6 +63,9 @@ ALLOWED_ORIGINS = {
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 }
+# Headless/browser e2e harnesses run vite on a side port; let the launcher
+# (which already controls the token) extend the allowlist explicitly.
+ALLOWED_ORIGINS |= {o for o in os.environ.get("SINDRI_EXTRA_ORIGINS", "").split(",") if o}
 
 # Per-peer-IP concurrent-connection cap. The sidecar is bound to 127.0.0.1, so
 # every connection shares that address and this is effectively a global cap on

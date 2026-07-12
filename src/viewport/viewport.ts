@@ -986,6 +986,11 @@ export class Viewport {
     return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model);
   }
 
+  /** All visible edge lines of the current model — for tangent-chain expansion. */
+  visibleEdgeLines(): Line2[] {
+    return this.model ? this.picker.visibleEdges(this.model) : [];
+  }
+
   // --- Measure (Inspect): pick a face/edge and read its size ----------------
 
   /** Pick the face or edge under the cursor (face-vs-edge gated like selection). */
