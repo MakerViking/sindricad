@@ -404,14 +404,16 @@ export class SketchMode {
       // crossing curve, which is always within pick-tolerance of an outline edge).
       const derived = this.derivedEntities();
       const di = pickEntity(derived, raw, this.pickTol());
-      if (di >= 0 && e.detail >= 2) {
-        this.editPattern(derived[di].id.split("#")[0]);
+      const de = di >= 0 ? derived[di] : undefined;
+      if (de && e.detail >= 2) {
+        this.editPattern(de.id.split("#")[0] ?? de.id);
         return;
       }
       // a real (hand-drawn) entity's body under the cursor → (de)select it
       const idx = pickEntity(this.entities, raw, this.pickTol());
-      if (idx >= 0) {
-        const id = this.entities[idx].id;
+      const hit = idx >= 0 ? this.entities[idx] : undefined;
+      if (hit) {
+        const id = hit.id;
         if (e.shiftKey) {
           if (!this.selected.delete(id)) this.selected.add(id);
         } else {
@@ -531,31 +533,37 @@ export class SketchMode {
   private multiClickPreview(cursor: THREE.Vector2) {
     const pv: ResolvedEntity[] = [];
     if (this.tool === "polygon" && this.clickPts.length === 1) {
-      pv.push(...this.polygonLines(this.clickPts[0], cursor).map((e) => ({ ...e, id: "" })));
+      const a = this.clickPts[0];
+      if (a) pv.push(...this.polygonLines(a, cursor).map((e) => ({ ...e, id: "" })));
     } else if (this.tool === "slot") {
       if (this.clickPts.length === 1) {
         const a = this.clickPts[0];
-        pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
+        if (a) pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
       } else if (this.clickPts.length === 2) {
         const [a, b] = this.clickPts;
-        pv.push(...this.slotEntities(a, b, this.slotHalfWidth(a, b, cursor)));
+        if (a && b) pv.push(...this.slotEntities(a, b, this.slotHalfWidth(a, b, cursor)));
       }
     } else if (this.tool === "circle2" && this.clickPts.length === 1) {
       const a = this.clickPts[0];
-      const ctr = a.clone().add(cursor).multiplyScalar(0.5);
-      pv.push({ type: "circle", id: "", radius: a.distanceTo(cursor) / 2, x: ctr.x, y: ctr.y });
+      if (a) {
+        const ctr = a.clone().add(cursor).multiplyScalar(0.5);
+        pv.push({ type: "circle", id: "", radius: a.distanceTo(cursor) / 2, x: ctr.x, y: ctr.y });
+      }
     } else if (this.tool === "circle3") {
       if (this.clickPts.length === 1) {
         const a = this.clickPts[0];
-        pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
+        if (a) pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
       } else if (this.clickPts.length === 2) {
-        const cc = circumcenter(this.clickPts[0], this.clickPts[1], cursor);
+        const [a, b] = this.clickPts;
+        const cc = a && b ? circumcenter(a, b, cursor) : null;
         if (cc) pv.push({ type: "circle", id: "", radius: cc.distanceTo(cursor), x: cc.x, y: cc.y });
       }
     } else if (this.tool === "centerRectangle" && this.clickPts.length === 1) {
       const c = this.clickPts[0];
-      const w = Math.abs(cursor.x - c.x) * 2, h = Math.abs(cursor.y - c.y) * 2;
-      pv.push({ type: "rectangle", id: "", width: w, height: h, x: c.x, y: c.y });
+      if (c) {
+        const w = Math.abs(cursor.x - c.x) * 2, h = Math.abs(cursor.y - c.y) * 2;
+        pv.push({ type: "rectangle", id: "", width: w, height: h, x: c.x, y: c.y });
+      }
     }
     this.overlay.setPreview(pv.map((e) => this.entityCurve(e)));
   }
@@ -600,9 +608,10 @@ export class SketchMode {
       return;
     }
     const center = this.clickPts[0];
-    this.commitPolygon(center, p);
     this.clickPts = [];
     this.overlay.setPreview([]);
+    if (!center) return;
+    this.commitPolygon(center, p);
   }
   /** the n line entities of an inscribed regular polygon (first vertex at `vertex`) */
   private polygonLines(center: THREE.Vector2, vertex: THREE.Vector2): ResolvedEntity[] {
@@ -618,6 +627,7 @@ export class SketchMode {
     const out: ResolvedEntity[] = [];
     for (let i = 0; i < n; i++) {
       const a = pts[i], b = pts[(i + 1) % n];
+      if (!a || !b) continue;
       out.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y });
     }
     return out;
@@ -643,10 +653,11 @@ export class SketchMode {
     }
     // third click sets the half-width (distance from the slot axis)
     const [a, b] = this.clickPts;
-    const w = this.slotHalfWidth(a, b, p);
-    this.commitSlot(a, b, w);
     this.clickPts = [];
     this.overlay.setPreview([]);
+    if (!a || !b) return;
+    const w = this.slotHalfWidth(a, b, p);
+    this.commitSlot(a, b, w);
   }
   private slotHalfWidth(a: THREE.Vector2, b: THREE.Vector2, cursor: THREE.Vector2): number {
     const dir = b.clone().sub(a);
@@ -694,11 +705,12 @@ export class SketchMode {
       return;
     }
     const a = this.clickPts[0];
+    this.clickPts = [];
+    this.overlay.setPreview([]);
+    if (!a) return;
     const center = a.clone().add(p).multiplyScalar(0.5);
     const r = a.distanceTo(p) / 2;
     this.commitCircle(center, r);
-    this.clickPts = [];
-    this.overlay.setPreview([]);
   }
 
   // --- circle through 3 points ------------------------------------------
@@ -706,9 +718,10 @@ export class SketchMode {
     this.clickPts.push(p.clone());
     if (this.clickPts.length < 3) return;
     const [a, b, c] = this.clickPts;
-    const cc = circumcenter(a, b, c);
     this.clickPts = [];
     this.overlay.setPreview([]);
+    if (!a || !b || !c) return;
+    const cc = circumcenter(a, b, c);
     if (!cc) return; // collinear
     this.commitCircle(cc, cc.distanceTo(a));
   }
@@ -730,10 +743,11 @@ export class SketchMode {
       return;
     }
     const center = this.clickPts[0];
-    const w = Math.abs(p.x - center.x) * 2;
-    const h = Math.abs(p.y - center.y) * 2;
     this.clickPts = [];
     this.overlay.setPreview([]);
+    if (!center) return;
+    const w = Math.abs(p.x - center.x) * 2;
+    const h = Math.abs(p.y - center.y) * 2;
     if (w < 1e-4 || h < 1e-4) return;
     const ent: ResolvedEntity = { type: "rectangle", id: newEntityId(), width: w, height: h, x: center.x, y: center.y };
     if (this.constructionMode) ent.construction = true;
@@ -746,8 +760,8 @@ export class SketchMode {
   // --- mirror: click a line; reflect the multi-selection across it -------
   private mirrorClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0 || this.entities[idx].type !== "line") return;
-    const axis = this.entities[idx] as Extract<ResolvedEntity, { type: "line" }>;
+    const axis = idx >= 0 ? this.entities[idx] : undefined;
+    if (!axis || axis.type !== "line") return;
     const chosen = this.entities.filter((e) => this.selected.has(e.id) && e.id !== axis.id);
     if (!chosen.length) return; // nothing selected to mirror
     const a = new THREE.Vector2(axis.x1, axis.y1);
@@ -800,6 +814,7 @@ export class SketchMode {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0) return;
     const e = this.entities[idx];
+    if (!e) return;
     if (e.type === "line") {
       const cur = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
       this.dim.show([{ name: "length", label: "L", kind: "length" }], () => {
@@ -1117,7 +1132,10 @@ export class SketchMode {
   }
 
   private entityCurve(e: ResolvedEntity): THREE.Object3D {
-    return curveObjects([e], this.plane, PREVIEW_COLOR)[0];
+    // curveObjects yields exactly one object per input entity, so [0] is present
+    const obj = curveObjects([e], this.plane, PREVIEW_COLOR)[0];
+    if (!obj) throw new Error("entityCurve: curveObjects returned no object");
+    return obj;
   }
 
   // --- modify tools: trim + fillet -------------------------------------
@@ -1135,9 +1153,10 @@ export class SketchMode {
     if (!p) return;
     const idx = pickEntity(this.entities, p, this.pickTol());
     const preview: THREE.Object3D[] = [];
-    if (this.filletFirst != null)
-      preview.push(...curveObjects([this.entities[this.filletFirst]], this.plane, 0x33aaff));
-    if (idx >= 0) preview.push(...curveObjects([this.entities[idx]], this.plane, 0xff5555));
+    const first = this.filletFirst != null ? this.entities[this.filletFirst] : undefined;
+    if (first) preview.push(...curveObjects([first], this.plane, 0x33aaff));
+    const hit = idx >= 0 ? this.entities[idx] : undefined;
+    if (hit) preview.push(...curveObjects([hit], this.plane, 0xff5555));
     this.overlay.setPreview(preview);
   }
 
@@ -1158,8 +1177,9 @@ export class SketchMode {
     if (!this.active || this.tool !== "select") return;
     const raw = this.planePoint(e);
     const idx = raw ? pickEntity(this.entities, raw, this.pickTol()) : -1;
-    if (idx >= 0) {
-      const id = this.entities[idx].id;
+    const hit = idx >= 0 ? this.entities[idx] : undefined;
+    if (hit) {
+      const id = hit.id;
       if (!this.selected.has(id)) { this.selected = new Set([id]); this.refreshActive(); }
     }
     if (!this.selected.size) return; // nothing to act on → let nav handle it
@@ -1177,7 +1197,7 @@ export class SketchMode {
   }
   private filletClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0 || this.entities[idx].type !== "line") return;
+    if (idx < 0 || this.entities[idx]?.type !== "line") return;
     if (this.filletFirst == null) {
       this.filletFirst = idx;
       return;
