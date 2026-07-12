@@ -95,6 +95,9 @@ export function createCameraRig(
   let mode: ProjectionMode = "auto";
   let rollAngle = 0; // persistent view bank (radians), re-applied each update()
   let orbitLocked = false; // sketch "lock to plane": disable mouse orbit
+  // ortho zoom queued this frame but not yet applied by controls.update() —
+  // lets same-frame wheel bursts chain correctly (see zoomBy).
+  let pendingOrthoZoom: number | null = null;
 
   const controls = new CameraControls(persp, dom);
   // camera-controls assumes Y-up by default; tell it we orbit around +Z so the
@@ -208,6 +211,7 @@ export function createCameraRig(
       ortho.updateProjectionMatrix();
     },
     update(dt: number) {
+      pendingOrthoZoom = null; // camera.zoom is authoritative again after this update
       const moved = controls.update(dt);
       const swapped = applyAutoProjection();
       // Apply the persistent roll AFTER camera-controls positions the camera.
@@ -230,16 +234,32 @@ export function createCameraRig(
     zoomBy(factor: number, pivot?: THREE.Vector3) {
       const f = Math.max(0.1, Math.min(10, factor));
       if (usingOrtho) {
-        const newZoom = Math.max(1e-4, ortho.zoom / f);
+        // ortho.zoom only commits at the next controls.update(); fast wheels
+        // deliver several events per frame, so chain off the PENDING zoom or
+        // each same-frame step recomputes k against a stale value (over-trucks
+        // the cursor tracking and drops all but one step of zoom).
+        const curZoom = pendingOrthoZoom ?? ortho.zoom;
+        const newZoom = Math.max(1e-4, curZoom / f);
+        pendingOrthoZoom = newZoom;
         if (pivot) {
-          // keep the cursor point fixed on screen: slide the target toward it as the
-          // frustum shrinks/grows (k = 1 − oldZoom/newZoom).
+          // keep the cursor point fixed on screen: TRUCK camera and target together
+          // toward it as the frustum shrinks/grows (k = 1 − oldZoom/newZoom).
+          // Moving only the target re-aims the camera at it — a rotation that
+          // progressively tilted the locked sketch view ~3°/click. Translating
+          // both endpoints by the same delta keeps the view direction bit-exact.
           const target = controls.getTarget(new THREE.Vector3());
-          const k = 1 - ortho.zoom / newZoom;
-          controls.setTarget(
-            target.x + (pivot.x - target.x) * k,
-            target.y + (pivot.y - target.y) * k,
-            target.z + (pivot.z - target.z) * k,
+          const pos = controls.getPosition(new THREE.Vector3());
+          const k = 1 - curZoom / newZoom;
+          const dx = (pivot.x - target.x) * k;
+          const dy = (pivot.y - target.y) * k;
+          const dz = (pivot.z - target.z) * k;
+          controls.setLookAt(
+            pos.x + dx,
+            pos.y + dy,
+            pos.z + dz,
+            target.x + dx,
+            target.y + dy,
+            target.z + dz,
             false,
           );
         }
