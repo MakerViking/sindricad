@@ -33,6 +33,20 @@ performed each role.
    baseline → per-iteration table (delta, accepted/reverted, evaluator verdict) → final,
    hash-verification statements, role/agent roster, and what remains.
 
+## Harness construction rules (lessons from adjudications)
+
+- **Every eval invariant must be executed against the corpus's own certified reference
+  solutions at generation time.** A case whose reference fails any eval check must be
+  rejected or the check corrected — never ship a corpus whose admission criteria are weaker
+  than its scoring criteria. (Learned 2026-07-12: the fillet face-count floor rejected the
+  oracle's own references on all 149 tight join_L cases; two audits missed it because the
+  shipped builder errored before any invariant ran.)
+- Implementer claims of harness defects are adjudicated by the AUDITOR reproducing the claim
+  independently (never by trusting implementer code or framing); confirmed defects are fixed
+  by the BUILDER, re-audited, re-pinned, and re-baselined — with proof the fix does not
+  deflate the runway (shipped-code baseline must be unchanged unless the defect itself
+  inflated it).
+
 ## Gaming patterns evaluators must scan diffs for
 
 - `@ts-nocheck` (whole-file suppression — strongest undercount lever), `@ts-ignore`,
