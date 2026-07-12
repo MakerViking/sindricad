@@ -1306,9 +1306,9 @@ export class Viewport {
   }
 
   cycleProjection(): ProjectionMode {
-    const order: ProjectionMode[] = ["persp", "ortho", "auto"];
-    const next =
-      order[(order.indexOf(this.rig.projectionMode()) + 1) % order.length];
+    const mode = this.rig.projectionMode();
+    const next: ProjectionMode =
+      mode === "persp" ? "ortho" : mode === "ortho" ? "auto" : "persp";
     this.rig.setProjectionMode(next);
     this.requestRender();
     return next;
