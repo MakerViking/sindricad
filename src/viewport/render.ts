@@ -22,7 +22,7 @@ export interface BodyMesh {
   name: string;
   faceStart: number;
   faceCount: number;
-  etag?: string;
+  etag?: string | undefined;
   mesh: THREE.Mesh;
   faceIds: number[]; // one B-rep faceId per triangle, index = local faceIndex
   edges: Line2[];
@@ -131,17 +131,22 @@ export function buildBodyMesh(
   const localFaceIds: number[] = [];
   const local = (gi: number): number => {
     let li = remap[gi];
-    if (li === -1) {
-      li = localPositions.length / 3;
-      localPositions.push(positions[gi * 3], positions[gi * 3 + 1], positions[gi * 3 + 2]);
-      remap[gi] = li;
-    }
+    if (li === undefined) li = -1; // gi is always in range; -1 = "not yet assigned"
+    if (li !== -1) return li;
+    const base = gi * 3;
+    const x = positions[base], y = positions[base + 1], z = positions[base + 2];
+    if (x === undefined || y === undefined || z === undefined) return -1; // in range; unreachable
+    li = localPositions.length / 3;
+    localPositions.push(x, y, z);
+    remap[gi] = li;
     return li;
   };
   for (let t = 0; t < faceIds.length; t++) {
     const fid = faceIds[t];
-    if (fid < faceStart || fid >= faceEnd) continue;
-    localIndices.push(local(indices[t * 3]), local(indices[t * 3 + 1]), local(indices[t * 3 + 2]));
+    if (fid === undefined || fid < faceStart || fid >= faceEnd) continue;
+    const i0 = indices[t * 3], i1 = indices[t * 3 + 1], i2 = indices[t * 3 + 2];
+    if (i0 === undefined || i1 === undefined || i2 === undefined) continue;
+    localIndices.push(local(i0), local(i1), local(i2));
     localFaceIds.push(fid);
   }
 
@@ -184,6 +189,7 @@ export function buildBodyMesh(
   const faceTriangles = new Map<number, number[]>();
   for (let t = 0; t < localFaceIds.length; t++) {
     const fid = localFaceIds[t];
+    if (fid === undefined) continue;
     let tris = faceTriangles.get(fid);
     if (!tris) faceTriangles.set(fid, (tris = []));
     tris.push(t);

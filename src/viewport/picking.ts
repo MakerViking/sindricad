@@ -57,13 +57,13 @@ export class Picker {
     // one Mesh per visible body now (not caching this list like visibleEdges —
     // body counts are small, unlike edge counts, so a per-move filter is cheap).
     const fHits = this.raycaster.intersectObjects(visibleBodyMeshes(view), false);
+    const fHit = fHits[0];
     let face: FaceHit | null = null;
-    if (fHits.length) {
-      const hit = fHits[0];
-      const faceId = faceIdOfHit(hit);
-      const point = hit.point.clone();
+    if (fHit) {
+      const faceId = faceIdOfHit(fHit);
+      const point = fHit.point.clone();
       const normal =
-        hit.normal?.clone().transformDirection(hit.object.matrixWorld) ??
+        fHit.normal?.clone().transformDirection(fHit.object.matrixWorld) ??
         new THREE.Vector3(0, 0, 1);
       face = { kind: "face", faceId, selector: faceSelector(normal, point) };
     }
@@ -103,6 +103,7 @@ export class Picker {
     if (!eHits.length) return null;
 
     let best = eHits[0];
+    if (!best) return null;
     let bestD = Infinity;
     for (const h of eHits) {
       const p = (h as any).pointOnLine ?? h.point;
@@ -117,6 +118,7 @@ export class Picker {
     const line = best.object as Line2;
     const pts = line.userData.points as [number, number, number][];
     const mid = pts[Math.floor(pts.length / 2)];
+    if (!mid) return null;
     return {
       kind: "edge",
       line,

@@ -104,9 +104,14 @@ export class MeasureTool {
       (p) => new THREE.Vector3(p[0], p[1], p[2]),
     );
     let length = 0;
-    for (let i = 1; i < pts.length; i++) length += pts[i].distanceTo(pts[i - 1]);
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i], b = pts[i - 1];
+      if (a && b) length += a.distanceTo(b);
+    }
     const mid = pts[Math.floor(pts.length / 2)];
-    const dir = pts[pts.length - 1].clone().sub(pts[0]).normalize();
+    const first = pts[0], last = pts[pts.length - 1];
+    if (!mid || !first || !last) return null;
+    const dir = last.clone().sub(first).normalize();
     return { kind: "edge", line: hit.line, point: mid, dir, length };
   }
 
@@ -125,7 +130,10 @@ export class MeasureTool {
       (q) => new THREE.Vector3(q[0], q[1], q[2]),
     );
     const segs: [THREE.Vector3, THREE.Vector3][] = [];
-    for (let i = 1; i < pts.length; i++) segs.push([pts[i - 1], pts[i]]);
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      if (a && b) segs.push([a, b]);
+    }
     return { tris: [], segs, pts };
   }
 

@@ -196,6 +196,7 @@ export class PatternFlow {
     const i = patterns.findIndex((p) => p.id === patId);
     if (i < 0) return;
     const pat = patterns[i];
+    if (!pat) return;
     patterns.splice(i, 1); // pull it out; commit/cancel puts it back
     this.editOriginal = { ...pat };
     this.pendingPattern = pat;
@@ -205,7 +206,11 @@ export class PatternFlow {
     );
     this.host.setActiveTool(pat.type);
     const cur: Record<string, number> = {};
-    for (const d of this.patternDimDefs(pat.type)) cur[d.name] = (pat as unknown as Record<string, number>)[d.name];
+    const vals = pat as unknown as Record<string, number>;
+    for (const d of this.patternDimDefs(pat.type)) {
+      const v = vals[d.name];
+      if (v !== undefined) cur[d.name] = v;
+    }
     this.host.dim().show(this.patternDimDefs(pat.type), () => this.commit());
     this.host.dim().updateFromCursor(cur);
     setPrompt("Edit the pattern — drag/type to change · click to commit · Delete to remove · Esc to keep");

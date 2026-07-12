@@ -325,7 +325,9 @@ export class Ribbon {
     const children = it.children;
     const wrap = document.createElement("div");
     wrap.className = "ribbon-split";
-    let primary = children[0];
+    const first = children[0];
+    if (!first) return wrap; // a split always has children; nothing to build otherwise
+    let primary = first;
     const btn = document.createElement("button");
     btn.className = "ribbon-btn";
     const apply = () => {
@@ -387,8 +389,10 @@ export class Ribbon {
     const collapsed: GroupMeta[] = [];
     for (const { g, i } of order) {
       if (total <= available) break;
+      const w = widths[i];
+      if (w === undefined) continue;
       g.el.classList.add("collapsed");
-      total -= widths[i];
+      total -= w;
       collapsed.unshift(g);
     }
     this.collapsed = collapsed;

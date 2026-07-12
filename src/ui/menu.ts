@@ -121,7 +121,7 @@ export interface CtxItem {
   onClick?: () => void; // omit for separators / pure submenu parents
   disabled?: boolean;
   separator?: boolean; // renders a divider; other fields ignored
-  shortcut?: string; // right-aligned key hint, e.g. "Q"
+  shortcut?: string | undefined; // right-aligned key hint, e.g. "Q" (undefined = no hint from keyHint)
   danger?: boolean; // destructive action (red)
   swatch?: string; // small color chip before the label (palette flyouts)
   children?: CtxItem[]; // one-level flyout submenu, opens on hover
