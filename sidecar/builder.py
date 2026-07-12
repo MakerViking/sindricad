@@ -80,7 +80,19 @@ from build123d import (
     Mesher,
 )
 
-from geom_select import resolve_edges, resolve_faces
+from geom_select import (
+    resolve_edges,
+    resolve_faces,
+    _edge_mid,
+    _edge_dir,
+    _edge_curve,
+    _edge_radius,
+    _edge_center,
+    _edge_cost,
+    _bbox_diag,
+    POS_DRIFT,
+    REL_DRIFT,
+)
 
 PLANES = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
@@ -1063,6 +1075,115 @@ def _report_edge_failures(f, ctx, edges, try_one):
     })
 
 
+def _edge_identity(e):
+    """A geometric fingerprint of a live edge, stable enough to RE-FIND it on a
+    body whose topology changed underfoot (each fillet/chamfer renumbers and
+    slightly reshapes neighbouring edges). Mirrors the fields `_edge_cost`
+    scores, so the same weighting that resolves user selectors also re-matches
+    an evolving body."""
+    fp = {
+        "mid": list(_edge_mid(e).to_tuple()),
+        "dir": list(_edge_dir(e).to_tuple()),
+    }
+    try:
+        fp["length"] = float(e.length)
+    except Exception:
+        pass
+    cv = _edge_curve(e)
+    if cv:
+        fp["curve"] = cv
+    if cv == "circle":
+        r = _edge_radius(e)
+        if r is not None:
+            fp["radius"] = r
+        c = _edge_center(e)
+        if c is not None:
+            fp["center"] = list(c.to_tuple())
+    return fp
+
+
+def _canonical_blend_key(fp):
+    """Deterministic sort key for the sequential-blend order: the resolved edges'
+    rounded-3dp midpoint (the generator's exact acceptance key), then direction,
+    then length as tiebreakers. Merged-blend volumes are ORDER-DEPENDENT (adjacent
+    fillets that fuse remove slightly different material per order, ~10%+ spread),
+    so a fixed canonical order is what makes a full rebuild reproducible and keeps
+    the removed volume matched to the reference. Midpoints are unique across every
+    corpus edge set; direction/length only ever break a genuine coincident-midpoint
+    tie."""
+    mid = fp["mid"]
+    d = fp.get("dir", (0.0, 0.0, 0.0))
+    ln = fp.get("length", 0.0)
+    return (
+        round(mid[0], 3), round(mid[1], 3), round(mid[2], 3),
+        round(d[0], 3), round(d[1], 3), round(d[2], 3),
+        round(ln, 3),
+    )
+
+
+def _rematch_edge(shape, fp, max_mid_dist, tol_pos):
+    """Find the edge on `shape` that is `fp`'s current incarnation, or None.
+
+    A gate (`max_mid_dist`, scaled to the blend size) rejects everything the
+    edge could NOT have drifted into — so if the edge genuinely vanished we
+    return None and let the caller raise, rather than silently blending the
+    wrong edge. Among the survivors we pick the lowest `_edge_cost`, the exact
+    scorer the selector resolver trusts."""
+    mid = Vector(*fp["mid"])
+    cands = [e for e in shape.edges() if (_edge_mid(e) - mid).length <= max_mid_dist]
+    if not cands:
+        return None
+    return min(cands, key=lambda e: _edge_cost(e, fp, tol_pos))
+
+
+def _sequential_blend(shape, edges, apply_one, blend_size, diag_part):
+    """Fallback for a combined fillet/chamfer that OCCT rejected: apply the
+    blend to ONE edge at a time on the evolving body. Filleting an edge lets
+    the kernel settle that surface before the next, which succeeds on
+    reflex/tight-clearance sets the single combined call cannot solve.
+
+    Edges are applied in a CANONICAL order (rounded-midpoint, see
+    _canonical_blend_key). Because overlapping blends fuse into order-dependent
+    solids, this fixed order is what makes a rebuild deterministic and its
+    removed volume reproducible. Multi-pass to a fixpoint: a straggler that
+    fails early is retried after its neighbours have blended (more material
+    around a reflex edge can make it buildable), with canonical order preserved
+    among the remaining edges each pass. Every remaining edge is re-found by
+    geometric identity each step (topology renumbers under us). Returns
+    (new_shape, unresolved_original_edges); the caller enforces the
+    all-or-nothing product rule.
+
+    `apply_one(shape, edge) -> new_shape` runs the actual kernel op.
+    """
+    # Fingerprint every target up front, on the ORIGINAL body, before anything
+    # moves — then fix the canonical application order once.
+    pending = [(e, _edge_identity(e)) for e in edges]
+    pending.sort(key=lambda t: _canonical_blend_key(t[1]))
+    # Positional gate: an edge shortened by a neighbouring blend shifts its
+    # midpoint by at most ~blend_size; add the resolver's baseline drift budget.
+    base = POS_DRIFT + REL_DRIFT * _bbox_diag(diag_part)
+    max_mid_dist = 1.5 * float(blend_size) + base
+    tol_pos = max(base, float(blend_size))
+
+    current = shape
+    progressed = True
+    while pending and progressed:
+        progressed = False
+        still = []
+        for orig, fp in pending:
+            target = _rematch_edge(current, fp, max_mid_dist, tol_pos)
+            if target is None:
+                still.append((orig, fp))
+                continue
+            try:
+                current = apply_one(current, target)
+                progressed = True
+            except Exception:
+                still.append((orig, fp))
+        pending = still
+    return current, [orig for orig, _ in pending]
+
+
 def _handle_fillet(f, ctx):
     act = ctx.require_active("Fillet")
     edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
@@ -1071,9 +1192,19 @@ def _handle_fillet(f, ctx):
     r = ctx.val(f["radius"])
     try:
         act["shape"] = fillet(edges, radius=r)
-    except Exception:
-        _report_edge_failures(f, ctx, edges, lambda e: fillet([e], radius=r))
-        raise
+        return
+    except Exception as combined_err:
+        # Combined call failed: fall back to per-edge blending on the evolving body.
+        result, unresolved = _sequential_blend(
+            act["shape"], edges, lambda s, e: fillet([e], radius=r), r, act["shape"]
+        )
+        if unresolved:
+            # Hard no-silent-degradation rule: any edge we could not blend means
+            # the feature FAILS — never a partial solid, never a smaller radius.
+            # Paint exactly the offenders red, then re-raise the original error.
+            _report_edge_failures(f, ctx, unresolved, lambda e: fillet([e], radius=r))
+            raise combined_err
+        act["shape"] = result
 
 
 def _handle_chamfer(f, ctx):
@@ -1084,9 +1215,16 @@ def _handle_chamfer(f, ctx):
     d = ctx.val(f["distance"])
     try:
         act["shape"] = chamfer(edges, length=d)
-    except Exception:
-        _report_edge_failures(f, ctx, edges, lambda e: chamfer([e], length=d))
-        raise
+        return
+    except Exception as combined_err:
+        # Combined call failed: fall back to per-edge blending on the evolving body.
+        result, unresolved = _sequential_blend(
+            act["shape"], edges, lambda s, e: chamfer([e], length=d), d, act["shape"]
+        )
+        if unresolved:
+            _report_edge_failures(f, ctx, unresolved, lambda e: chamfer([e], length=d))
+            raise combined_err
+        act["shape"] = result
 
 
 def _handle_press_pull(f, ctx):
