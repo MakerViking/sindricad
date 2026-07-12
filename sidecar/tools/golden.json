@@ -1,0 +1,521 @@
+{
+  "1.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000007
+      ],
+      "min": [
+        -73.5,
+        -6.100000000000006,
+        -25.0
+      ]
+    },
+    "bodies": 2,
+    "doc": "1.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "combine",
+      "datumPlane",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/1.sindri",
+    "volumes": {
+      "body1": 8668.085439046925,
+      "body2": 23604.123557412237
+    }
+  },
+  "2.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000007
+      ],
+      "min": [
+        -73.5,
+        -6.100000000000006,
+        -25.0
+      ]
+    },
+    "bodies": 2,
+    "doc": "2.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "combine",
+      "datumPlane",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/2.sindri",
+    "volumes": {
+      "body1": 8668.085439046925,
+      "body2": 23604.123557412237
+    }
+  },
+  "3.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000007
+      ],
+      "min": [
+        -73.5,
+        -6.100000000000006,
+        -25.0
+      ]
+    },
+    "bodies": 2,
+    "doc": "3.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "combine",
+      "datumPlane",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/3.sindri",
+    "volumes": {
+      "body1": 8031.066909329155,
+      "body2": 22216.91999140799
+    }
+  },
+  "4-clean.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -6.1,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 2,
+    "doc": "4-clean.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/4-clean.sindri",
+    "volumes": {
+      "body1": 8171.834505786387,
+      "body2": 20882.375700239034
+    }
+  },
+  "4.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000007
+      ],
+      "min": [
+        -73.5,
+        -6.100000000000006,
+        -25.0
+      ]
+    },
+    "bodies": 2,
+    "doc": "4.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/4.sindri",
+    "volumes": {
+      "body1": 8031.066909329155,
+      "body2": 22204.884916664014
+    }
+  },
+  "5-clean.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -6.1,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 2,
+    "doc": "5-clean.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-clean.sindri",
+    "volumes": {
+      "body1": 8171.834505786387,
+      "body2": 20755.038053316064
+    }
+  },
+  "5-cleanb.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -6.100000000000001,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 2,
+    "doc": "5-cleanb.sindri",
+    "featureErrors": [
+      {
+        "error_class": "can't heal after removing that face \u2014 wedge-filling didn't apply either \u2014 use Press/Pull to cut it instead (OCCT: BOPAlgo_AlertUnableToRemoveTheFeature)",
+        "feature_id": "f115"
+      }
+    ],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-cleanb.sindri",
+    "volumes": {
+      "body1": 8171.834505786402,
+      "body2": 9514.690379502694
+    }
+  },
+  "5-cleanc.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -7.100000000000001,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 5,
+    "doc": "5-cleanc.sindri",
+    "featureErrors": [
+      {
+        "error_class": "can't heal after removing that face \u2014 wedge-filling didn't apply either \u2014 use Press/Pull to cut it instead (OCCT: BOPAlgo_AlertUnableToRemoveTheFeature)",
+        "feature_id": "f115"
+      }
+    ],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-cleanc.sindri",
+    "volumes": {
+      "body1": 1357.9998214244831,
+      "body2": 60671.438410965005,
+      "body21": 1399.999999999999,
+      "body22": 8.798115265986617,
+      "body23": 5405.036569095947
+    }
+  },
+  "5-cleand.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -7.100000000000001,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 5,
+    "doc": "5-cleand.sindri",
+    "featureErrors": [
+      {
+        "error_class": "can't heal after removing that face \u2014 wedge-filling didn't apply either \u2014 use Press/Pull to cut it instead (OCCT: BOPAlgo_AlertUnableToRemoveTheFeature)",
+        "feature_id": "f115"
+      }
+    ],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-cleand.sindri",
+    "volumes": {
+      "body1": 1357.9998214244831,
+      "body2": 60671.438410965005,
+      "body21": 1399.999999999999,
+      "body22": 8.798115265986617,
+      "body23": 5405.036569095947
+    }
+  },
+  "5-cleane.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -7.100000000000001,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 5,
+    "doc": "5-cleane.sindri",
+    "featureErrors": [
+      {
+        "error_class": "can't heal after removing that face \u2014 wedge-filling didn't apply either \u2014 use Press/Pull to cut it instead (OCCT: BOPAlgo_AlertUnableToRemoveTheFeature)",
+        "feature_id": "f115"
+      },
+      {
+        "error_class": "Press/Pull: the target body no longer exists",
+        "feature_id": "f141"
+      }
+    ],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-cleane.sindri",
+    "volumes": {
+      "body1": 2257.99982142448,
+      "body2": 65436.46556253323,
+      "body21": 1399.999999999999,
+      "body22": 8.798115265986617,
+      "body23": 5405.036569095947
+    }
+  },
+  "5-cleanf.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -7.100000000000001,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 5,
+    "doc": "5-cleanf.sindri",
+    "featureErrors": [
+      {
+        "error_class": "can't heal after removing that face \u2014 wedge-filling didn't apply either \u2014 use Press/Pull to cut it instead (OCCT: BOPAlgo_AlertUnableToRemoveTheFeature)",
+        "feature_id": "f115"
+      },
+      {
+        "error_class": "Press/Pull: the target body no longer exists",
+        "feature_id": "f141"
+      },
+      {
+        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
+        "feature_id": "f162"
+      },
+      {
+        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
+        "feature_id": "f163"
+      },
+      {
+        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
+        "feature_id": "f164"
+      },
+      {
+        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
+        "feature_id": "f165"
+      },
+      {
+        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
+        "feature_id": "f166"
+      },
+      {
+        "error_class": "can't press/pull this region \u2014 it's a single mesh facet, not a clean face (the imported body is faceted, not prismatic)",
+        "feature_id": "f168"
+      },
+      {
+        "error_class": "can't press/pull this region \u2014 it's a single mesh facet, not a clean face (the imported body is faceted, not prismatic)",
+        "feature_id": "f169"
+      },
+      {
+        "error_class": "can't press/pull this region \u2014 it's a single mesh facet, not a clean face (the imported body is faceted, not prismatic)",
+        "feature_id": "f174"
+      }
+    ],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-cleanf.sindri",
+    "volumes": {
+      "body1": 2257.99982142448,
+      "body2": 65299.108404205974,
+      "body21": 1399.999999999999,
+      "body22": 8.798115265986617,
+      "body23": 5405.036569095947
+    }
+  },
+  "5-cleang.sindri": {
+    "bbox": {
+      "max": [
+        73.0,
+        19.0,
+        20.000000000000004
+      ],
+      "min": [
+        -72.5,
+        -7.100000000000001,
+        -24.000000000000004
+      ]
+    },
+    "bodies": 5,
+    "doc": "5-cleang.sindri",
+    "featureErrors": [
+      {
+        "error_class": "can't heal after removing that face \u2014 wedge-filling didn't apply either \u2014 use Press/Pull to cut it instead (OCCT: BOPAlgo_AlertUnableToRemoveTheFeature)",
+        "feature_id": "f115"
+      },
+      {
+        "error_class": "Press/Pull: the target body no longer exists",
+        "feature_id": "f141"
+      }
+    ],
+    "featureTypes": [
+      "cleanUp",
+      "combine",
+      "datumPlane",
+      "deleteFace",
+      "extrude",
+      "import",
+      "move",
+      "press-pull",
+      "sketch",
+      "split"
+    ],
+    "path": "../src-tauri/5-cleang.sindri",
+    "volumes": {
+      "body1": 2257.99982142448,
+      "body2": 65054.97495400068,
+      "body21": 1399.999999999999,
+      "body22": 8.798115265986617,
+      "body23": 5405.036569095947
+    }
+  },
+  "ddr_crash.sindri.sindri": {
+    "bbox": {
+      "max": [
+        71.0,
+        4.25,
+        20.000000000000004
+      ],
+      "min": [
+        -71.0,
+        -4.25,
+        -40.0
+      ]
+    },
+    "bodies": 4,
+    "doc": "ddr_crash.sindri.sindri",
+    "featureErrors": [],
+    "featureTypes": [
+      "datumPlane",
+      "import",
+      "move",
+      "split"
+    ],
+    "path": "../src-tauri/ddr_crash.sindri.sindri",
+    "volumes": {
+      "body1": 8952.76241266393,
+      "body2": 17023.344655125547,
+      "body3": 2207.413860312483,
+      "body4": 2256.932181477392
+    }
+  }
+}
