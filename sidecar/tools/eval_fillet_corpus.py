@@ -138,9 +138,12 @@ def evaluate(cases):
             else:
                 if not _valid_single_solid(part):
                     checks.append("not-single-valid-solid")
-                if len(part.faces()) < c["pre_op_faces"] + c["n_edges"]:
-                    checks.append(
-                        f"facecount({len(part.faces())}<{c['pre_op_faces']}+{c['n_edges']})")
+                # face-count floor: min_faces (a merging edge set fuses blend faces, so
+                # a valid complete solid can dip below pre+n_edges — see the corpus
+                # generator). Falls back to the naive pre+n for corpora without the field.
+                min_faces = c.get("min_faces") or (c["pre_op_faces"] + c["n_edges"])
+                if len(part.faces()) < min_faces:
+                    checks.append(f"facecount({len(part.faces())}<{min_faces})")
                 removed = c["pre_op_volume"] - float(part.volume)
                 exp = c["expected_removed"]
                 ref = exp if exp is not None else c["ref_removed"]

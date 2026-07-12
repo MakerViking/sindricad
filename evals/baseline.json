@@ -136,6 +136,7 @@
       "baseline": "0/60 \u2014 regression FLOOR, must stay 0/60",
       "purpose": "sequential-fallback fix must not regress common all-edges fillet/chamfer; catches partials down to 1 dropped edge via ref-volume",
       "audited": "A3 PIN-OK after ref_removed fix (face-count blind spot closed)"
-    }
+    },
+    "harness_fix": "min_faces floor (adjudicated defect: old pre+n floor rejected valid merged-face solutions on all 149 tight join_L); corpus hash 5bca6509...; shipped baseline unchanged 149/500 (runway proof); canonical edge order REQUIRED of implementations (sorted rounded-3dp midpoint; tiebreaker midpoint->direction->length)"
   }
 }

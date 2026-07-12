@@ -90,6 +90,12 @@ ROUND_DP = 6
 OP_MIN = 0.4
 MAX_ATTEMPTS_PER_CASE = 600
 INF_BAND_RATIO = (3.0, 6.0)  # ratio range used for the [3.0, inf) floor band
+# min_faces sampling: orderings tried (sorted + reversed + N shuffles) to find the
+# minimum-face valid-complete solution for merging edge sets. Local RNG seed, so the
+# main generation stream (and case selection) is unaffected.
+ORDER_SAMPLE_SEED = 12345
+N_ORDER_SHUFFLES = 18
+MERGING_TEMPLATES = frozenset({"join_L"})  # sets whose blend faces can fuse below pre+n
 
 # clearance bands: (label, lo, hi). hi = inf for the regression floor.
 BANDS = [
@@ -164,26 +170,11 @@ def _apply_one(shape, edge, op_kind, size):
 # --- feasibility oracle ------------------------------------------------------
 
 
-def _oracle(preop, edges, op_kind, size):
-    """Return (accepted, applied, ref_removed).
-
-    (a) every edge blends individually on the pre-op body, and
-    (b) a sequential one-edge-at-a-time application (edges re-identified on the
-        evolving body by midpoint + direction + length) covers ALL edges and yields
-        a single closed valid solid removing net material.
-    """
-    # (a) individual feasibility on the pristine pre-op body
-    for e in edges:
-        try:
-            _apply_one(preop, e, op_kind, size)
-        except Exception:
-            return False, 0, None
-
-    # (b) sequential application with geometric re-identification
-    targets = [(_edge_mid(e), _edge_dir(e), float(e.length)) for e in edges]
-    order = sorted(range(len(targets)),
-                   key=lambda i: tuple(round(c, 3) for c in targets[i][0]))
-    tol = 1.5 * size + 0.5
+def _apply_sequence(preop, targets, op_kind, size, order, tol):
+    """Apply the op one edge at a time in `order`, re-identifying each next edge on
+    the evolving body by midpoint + direction + length (prior blends renumber the
+    topology). Returns the fully-applied body, or None if any step fails to match /
+    build or the run does not cover every edge."""
     body = preop
     applied = 0
     for i in order:
@@ -197,19 +188,82 @@ def _oracle(preop, edges, op_kind, size):
             if best is None or cost < best[0]:
                 best = (cost, md, e)
         if best is None or best[1] > tol:
-            return False, applied, None  # target edge no longer present
+            return None  # target edge no longer present
         try:
             body = _apply_one(body, best[2], op_kind, size)
         except Exception:
-            return False, applied, None
+            return None
         applied += 1
+    return body if applied == len(targets) else None
 
-    if applied != len(edges) or not _valid_single_solid(body):
-        return False, applied, None
-    ref_removed = float(preop.volume) - float(body.volume)
+
+def _min_valid_faces(preop, targets, op_kind, size, tol, floor, sample_extra):
+    """Minimum face count of a VALID COMPLETE sequential solution, over a sample of
+    application orderings. For a merging edge set (tight join_L) overlapping blend
+    faces fuse, so a complete valid solid can have FEWER faces than pre + n_edges;
+    different orderings yield distinct valid solids ({14,15,16} faces observed on one
+    case), so we take the minimum as the evaluator's face-count floor — otherwise the
+    floor would reject the corpus's own certified references (and, later, the
+    implementer's equally-valid fallback output). Clamped at `floor` so a non-merging
+    set keeps the naive pre+n floor exactly. Only sampled when merging is possible
+    (sample_extra, or the sorted reference already dips below floor); the shuffle RNG
+    is local so the main generation stream — and thus case selection — is untouched."""
+    base = sorted(range(len(targets)),
+                  key=lambda i: tuple(round(c, 3) for c in targets[i][0]))
+    body0 = _apply_sequence(preop, targets, op_kind, size, base, tol)
+    if body0 is None or not _valid_single_solid(body0):
+        return None, None  # sorted ordering is the acceptance ordering; caller rejects
+    ref_removed = float(preop.volume) - float(body0.volume)
+    f0 = len(body0.faces())
+    min_faces = min(floor, f0)
+    if sample_extra or f0 < floor:
+        orders = [list(reversed(base))]
+        rr = random.Random(ORDER_SAMPLE_SEED)
+        for _ in range(N_ORDER_SHUFFLES):
+            o = base[:]
+            rr.shuffle(o)
+            orders.append(o)
+        for o in orders:
+            b = _apply_sequence(preop, targets, op_kind, size, o, tol)
+            if b is not None and _valid_single_solid(b):
+                fc = len(b.faces())
+                if fc < min_faces:
+                    min_faces = fc
+    return ref_removed, min_faces
+
+
+def _oracle(preop, edges, op_kind, size, sample_extra=False):
+    """Return (accepted, applied, ref_removed, min_faces).
+
+    (a) every edge blends individually on the pre-op body, and
+    (b) the SORTED-ordering sequential application (edges re-identified on the evolving
+        body by midpoint + direction + length) covers ALL edges and yields a single
+        closed valid solid removing net material — this ordering defines acceptance and
+        ref_removed (unchanged from before), and
+    (c) min_faces = the minimum face count of a valid complete solution across a sample
+        of orderings (>= merging cases can fuse blend faces below pre+n_edges).
+    """
+    # (a) individual feasibility on the pristine pre-op body
+    for e in edges:
+        try:
+            _apply_one(preop, e, op_kind, size)
+        except Exception:
+            return False, 0, None, None
+
+    # (b)/(c) sequential application(s)
+    targets = [(_edge_mid(e), _edge_dir(e), float(e.length)) for e in edges]
+    tol = 1.5 * size + 0.5
+    floor = len(preop.faces()) + len(edges)
+    ref_removed, min_faces = _min_valid_faces(
+        preop, targets, op_kind, size, tol, floor, sample_extra
+    )
+    if ref_removed is None:
+        # individual feasibility passed above, so a failure here is a sequential /
+        # combination incompleteness (applied>0 label), not an individual one
+        return False, len(edges), None, None  # sorted ordering did not complete a valid solid
     if ref_removed <= 0:
-        return False, applied, None
-    return True, applied, ref_removed
+        return False, len(edges), None, None
+    return True, len(edges), ref_removed, min_faces
 
 
 # --- case templates ----------------------------------------------------------
@@ -423,7 +477,9 @@ def generate(seed, count):
             stats["rejected_small_op"] += 1
             continue
 
-        accepted, applied, ref_removed = _oracle(active, edges, op_kind, op)
+        accepted, applied, ref_removed, min_faces = _oracle(
+            active, edges, op_kind, op, sample_extra=(tname in MERGING_TEMPLATES)
+        )
         if not accepted:
             if seam:
                 stats["discard_seam"] += 1
@@ -468,6 +524,7 @@ def generate(seed, count):
             "clearance_ratio": actual_ratio,
             "oracle_applied": applied,
             "ref_removed": ref_removed,
+            "min_faces": min_faces,
             "expected_removed": expected,
             "doc": {"parameters": {}, "features": feats + [op_feat]},
         }))
@@ -514,6 +571,12 @@ def main():
           f"no-edges={stats['rejected_no_edges']} small-op={stats['rejected_small_op']} "
           f"band-miss={stats['rejected_band_miss']}")
     print(f"  analytic={out['generation_stats']['analytic_cases']}")
+    below = [(c["pre_op_faces"] + c["n_edges"]) - c["min_faces"]
+             for c in cases if c["min_faces"] is not None
+             and c["min_faces"] < c["pre_op_faces"] + c["n_edges"]]
+    print(f"  min_faces: {len(below)} cases below the naive pre+n floor "
+          f"(by {min(below) if below else 0}..{max(below) if below else 0} faces); "
+          f"{n - len(below)} equal to pre+n")
     for b, _, _ in BANDS:
         print(f"  band {b}: {stats['by_band'][b]}")
 
