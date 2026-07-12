@@ -15,6 +15,11 @@ import {
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
+/** spread that copies a construction flag only when set — avoids emitting an
+ *  explicit `construction: undefined`, which exactOptionalPropertyTypes rejects. */
+const constr = (e: { construction?: boolean }) =>
+  e.construction === undefined ? {} : { construction: e.construction };
+
 /** index of the entity whose curve is nearest p within tol, else -1 */
 export function pickEntity(
   ents: ResolvedEntity[],
@@ -51,6 +56,7 @@ export function trimEntity(
   click: THREE.Vector2,
 ): ResolvedEntity[] {
   const e = ents[index];
+  if (!e) return ents;
   if (e.type !== "line") return ents.filter((_, i) => i !== index);
 
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
@@ -75,14 +81,16 @@ export function trimEntity(
   const tc = Math.max(0, Math.min(1, paramOnSeg(p1, p2, click)));
   let lo = 0, hi = 1;
   for (let i = 0; i < sorted.length - 1; i++) {
-    if (tc >= sorted[i] && tc <= sorted[i + 1]) { lo = sorted[i]; hi = sorted[i + 1]; break; }
+    const a = sorted[i], b = sorted[i + 1];
+    if (a === undefined || b === undefined) continue;
+    if (tc >= a && tc <= b) { lo = a; hi = b; break; }
   }
   const at = (t: number) => v(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t);
   const pieces: ResolvedEntity[] = [];
   const keep = (ta: number, tb: number) => {
     if (tb - ta < 1e-3) return;
     const a = at(ta), b = at(tb);
-    pieces.push({ type: "line", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, construction: e.construction });
+    pieces.push({ type: "line", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) });
   };
   keep(0, lo);
   keep(hi, 1);
@@ -143,6 +151,7 @@ export function offsetEntity(
   dist: number,
 ): ResolvedEntity[] | null {
   const e = ents[index];
+  if (!e) return null;
   let copy: ResolvedEntity | null = null;
   const id = newEntityId();
   if (e.type === "rectangle") {
@@ -167,13 +176,14 @@ export function breakAt(
   click: THREE.Vector2,
 ): ResolvedEntity[] {
   const e = ents[index];
+  if (!e) return ents;
   if (e.type === "line") {
     const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
     let t = paramOnSeg(p1, p2, click);
     t = Math.max(0.02, Math.min(0.98, t));
     const m = v(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t);
-    const a: ResolvedEntity = { type: "line", id: newEntityId(), x1: p1.x, y1: p1.y, x2: m.x, y2: m.y, construction: e.construction };
-    const b: ResolvedEntity = { type: "line", id: newEntityId(), x1: m.x, y1: m.y, x2: p2.x, y2: p2.y, construction: e.construction };
+    const a: ResolvedEntity = { type: "line", id: newEntityId(), x1: p1.x, y1: p1.y, x2: m.x, y2: m.y, ...constr(e) };
+    const b: ResolvedEntity = { type: "line", id: newEntityId(), x1: m.x, y1: m.y, x2: p2.x, y2: p2.y, ...constr(e) };
     return ents.flatMap((o, i) => (i === index ? [a, b] : [o]));
   }
   return ents; // arc/circle break later
@@ -185,20 +195,20 @@ const lineDir = (e: { x1: number; y1: number; x2: number; y2: number }) =>
 
 export function makeHorizontal(ents: ResolvedEntity[], i: number): ResolvedEntity[] {
   const e = ents[i];
-  if (e.type !== "line") return ents;
+  if (!e || e.type !== "line") return ents;
   const y = (e.y1 + e.y2) / 2;
   return ents.map((o, j) => (j === i ? { ...e, y1: y, y2: y } : o));
 }
 export function makeVertical(ents: ResolvedEntity[], i: number): ResolvedEntity[] {
   const e = ents[i];
-  if (e.type !== "line") return ents;
+  if (!e || e.type !== "line") return ents;
   const x = (e.x1 + e.x2) / 2;
   return ents.map((o, j) => (j === i ? { ...e, x1: x, x2: x } : o));
 }
 /** rotate line B about its start to a target direction (keeping its length) */
 function alignLine(ents: ResolvedEntity[], iB: number, dir: THREE.Vector2): ResolvedEntity[] {
   const B = ents[iB];
-  if (B.type !== "line") return ents;
+  if (!B || B.type !== "line") return ents;
   const len = v(B.x2 - B.x1, B.y2 - B.y1).length();
   const old = lineDir(B);
   const sign = dir.dot(old) >= 0 ? 1 : -1; // keep B pointing the same general way
@@ -231,7 +241,7 @@ export function extendLine(
   click: THREE.Vector2,
 ): ResolvedEntity[] | null {
   const e = ents[index];
-  if (e.type !== "line") return null;
+  if (!e || e.type !== "line") return null;
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const extendEnd2 = paramOnSeg(p1, p2, click) >= 0.5; // which end is near the click
   const dir = p2.clone().sub(p1).normalize();
