@@ -3,7 +3,7 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 9,
+    "ratchet": 0,
     "iterations": [
       {
         "n": 1,
@@ -58,6 +58,16 @@
           "22 non-test files (final source sweep)"
         ],
         "verdict": "pending EV1; implementer correctly halted at test files on rules conflict, reverted, escalated"
+      },
+      {
+        "n": "5b/6",
+        "commit": "f3b0e51",
+        "errors": 0,
+        "delta": -9,
+        "files": [
+          "3 test files, type-only"
+        ],
+        "verdict": "ACCEPT (EV1 heightened line-by-line review)"
       }
     ],
     "goal": 0,
@@ -66,7 +76,8 @@
     "worktree_branch": "loop/ts-strict",
     "captured": "2026-07-12",
     "captured_by": "evaluator agent, cross-checked by driver",
-    "note": "Main tree measured 398 with uncommitted working changes; the loop and its ratchet run against the worktree at the base commit (396)."
+    "note": "Main tree measured 398 with uncommitted working changes; the loop and its ratchet run against the worktree at the base commit (396).",
+    "status": "CLOSED AT GOAL \u2014 flags live in root tsconfig on loop/ts-strict (terminal 8b0f85e); see evals/reports/ts-strict-2026-07-12.md"
   },
   "golden-op-coverage": {
     "metrics": {
