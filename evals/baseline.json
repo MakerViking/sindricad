@@ -3,7 +3,7 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 145,
+    "ratchet": 65,
     "iterations": [
       {
         "n": 1,
@@ -38,6 +38,16 @@
           "src/types.ts (1-line public-API type tighten, ruled legitimate by EV1)"
         ],
         "verdict": "ACCEPT (EV1: gates pass, 0 gaming hits, bbox tuple verified true at sidecar source)"
+      },
+      {
+        "n": 4,
+        "commit": "0cfde59",
+        "errors": 65,
+        "delta": -80,
+        "files": [
+          "9 files: contextMenus? (menu.ts), render, client, ribbon, picking, patternFlow, spline, moveTool, measureTool"
+        ],
+        "verdict": "ACCEPT (EV1: gates pass, net-zero casts, WS mesh-less error path = strict improvement over crash)"
       }
     ],
     "goal": 0,
