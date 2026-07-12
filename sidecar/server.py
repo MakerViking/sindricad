@@ -40,7 +40,7 @@ import websockets
 import occt_smp
 
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = int(os.environ.get("SINDRI_SIDECAR_PORT") or 8765)
 
 # WebSocket auth: every connection must carry the per-launch shared secret.
 # Rust sets SINDRI_SIDECAR_TOKEN when it spawns us; a manual `python server.py`
