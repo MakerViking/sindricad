@@ -45,7 +45,6 @@ export class EdgeFeatureTool {
   active = false;
   private kind: Kind = "fillet";
   private phase: Phase = "pick";
-  private edges: Selector | Selector[] = [];
   private anchor = new THREE.Vector3(); // arrow origin = edge midpoint
   private axis = new THREE.Vector3(1, 0, 0); // drag axis (unit), fixed for the drag
   private quat = new THREE.Quaternion(); // Y -> axis, for orienting the handle
@@ -53,10 +52,14 @@ export class EdgeFeatureTool {
   private value = 2; // radius / distance in mm
   private previewId = ""; // id shared by the live preview and the committed feature
 
-  // --- edit mode (re-opening a committed fillet/chamfer) ---
-  private editId: string | null = null; // committed feature id being edited
+  // --- membership (create AND edit): every selected edge is a ghost line —
+  // drawn through the model (depthTest off) so inner/occluded members stay
+  // visible, and click-toggleable in both modes. ---
   private ghosts: GhostEdge[] = []; // membership display + toggle targets
   private unmatchedSels: Selector[] = []; // saved selectors we couldn't visualize (kept for commit)
+
+  // --- edit mode (re-opening a committed fillet/chamfer) ---
+  private editId: string | null = null; // committed feature id being edited
   private awaitingRollback = false; // waiting for the rolled-back model build
   private unsubBuild: (() => void) | null = null;
 
@@ -114,8 +117,7 @@ export class EdgeFeatureTool {
     // pre-selection (Ctrl-click): skip the pick phase and go straight to the drag
     const pre = this.viewport.selectedEdgeSelectors();
     if (pre.length) {
-      const sel = pre.length === 1 ? pre[0] : pre;
-      if (sel) this.beginDrag(sel, this.anchorFromSelectors(pre), null);
+      this.beginDrag(pre, this.anchorFromSelectors(pre), null);
     } else {
       setPrompt(`Select an edge to ${kind} (Ctrl-click first to pre-select several)`);
     }
@@ -313,15 +315,15 @@ export class EdgeFeatureTool {
     }
     // idle: highlight the handle when hovered so it reads as grabbable
     this.hovering = this.hitGizmo(e.clientX, e.clientY);
-    if (this.editId && !this.hovering) {
-      // edit mode: ghosts and bare edges are toggle targets — show it
+    if (!this.hovering) {
+      // ghosts and bare edges are toggle targets in BOTH modes — show it
       const g = this.ghostAt(e.clientX, e.clientY);
       const hit = g ? null : this.viewport.pickEdgeAt(e.clientX, e.clientY);
       this.viewport.hoverEdge(hit?.line ?? null);
       this.viewport.domElement.style.cursor = g || hit ? "pointer" : "default";
       return;
     }
-    this.viewport.domElement.style.cursor = this.hovering ? "grab" : "default";
+    this.viewport.domElement.style.cursor = "grab";
   }
 
   private onDown(e: PointerEvent) {
@@ -333,7 +335,7 @@ export class EdgeFeatureTool {
       e.stopImmediatePropagation();
       const pts = hit.line.userData.points as [number, number, number][];
       const { mid, tan } = midAndTangent(pts);
-      this.beginDrag(hit.selector, mid, tan);
+      this.beginDrag([hit.selector], mid, tan, pts);
       return;
     }
     // drag phase: grabbing the handle scrubs; a clean click elsewhere commits
@@ -348,29 +350,27 @@ export class EdgeFeatureTool {
       this.viewport.domElement.style.cursor = "grabbing";
       return;
     }
-    if (this.editId) {
-      // edit mode: click toggles membership — a ghost hit removes that edge,
-      // a bare-edge hit adds it. Either way this press is a toggle, not the
-      // commit-on-clean-click gesture (downOnGizmo doubles as that latch).
-      const g = this.ghostAt(e.clientX, e.clientY);
-      if (g) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        this.removeGhost(g);
-        this.afterMembershipChange();
-        this.downOnGizmo = true;
-        return;
-      }
-      const hit = this.viewport.pickEdgeAt(e.clientX, e.clientY);
-      if (hit) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        this.viewport.clearHover();
-        this.addGhost(hit.selector, hit.line.userData.points as Vec3[]);
-        this.afterMembershipChange();
-        this.downOnGizmo = true;
-        return;
-      }
+    // click toggles membership in BOTH modes — a ghost hit removes that edge,
+    // a bare-edge hit adds it. Either way this press is a toggle, not the
+    // commit-on-clean-click gesture (downOnGizmo doubles as that latch).
+    const g = this.ghostAt(e.clientX, e.clientY);
+    if (g) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.removeGhost(g);
+      this.afterMembershipChange();
+      this.downOnGizmo = true;
+      return;
+    }
+    const hit = this.viewport.pickEdgeAt(e.clientX, e.clientY);
+    if (hit) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.viewport.clearHover();
+      this.addGhost(hit.selector, hit.line.userData.points as Vec3[]);
+      this.afterMembershipChange();
+      this.downOnGizmo = true;
+      return;
     }
     // empty-space press: leave it to camera-controls; commit decided on pointerup
   }
@@ -393,11 +393,16 @@ export class EdgeFeatureTool {
   }
 
   private beginDrag(
-    edges: Selector | Selector[],
+    edges: Selector[],
     anchor: THREE.Vector3,
     tangent: THREE.Vector3 | null,
+    points?: Vec3[],
   ) {
-    this.edges = edges;
+    // Every member gets a ghost line (visible through the model) and stays
+    // click-toggleable — a direct pick carries its polyline, pre-selected
+    // selectors get matched by midpoint (unmatched ones still commit).
+    if (points && edges.length === 1 && edges[0]) this.addGhost(edges[0], points);
+    else this.seedGhosts(edges);
     this.anchor.copy(anchor);
     this.tangent = tangent;
     this.phase = "drag";
@@ -405,7 +410,7 @@ export class EdgeFeatureTool {
     this.previewId = this.store.nextId();
     this.axis.copy(this.computeAxis());
     this.quat.setFromUnitVectors(Y_AXIS, this.axis);
-    this.viewport.emphasizeEdges(false);
+    // keep edges emphasized: more edges can be clicked into the set mid-drag
     this.viewport.clearHover();
     this.buildGizmo();
     this.dim.show([{ ...this.field, kind: "length" }], () => this.commit(), () => this.cancel());
@@ -413,7 +418,8 @@ export class EdgeFeatureTool {
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
     setPrompt(
-      `Drag the arrow to set ${this.field.name} · type a value + Enter · click to commit · Esc to cancel`,
+      `Drag the arrow to set ${this.field.name} · type a value + Enter · ` +
+        `click edges to add/remove them · click empty space to commit · Esc to cancel`,
     );
     this.pushPreview();
     this.raf = requestAnimationFrame(this.boundTick);
@@ -478,28 +484,31 @@ export class EdgeFeatureTool {
   }
 
   /** Re-anchor the gizmo/input to the new member set and refresh the preview.
-   *  With zero members the preview drops back to the bare rolled-back model
-   *  (a fillet with no edges would just error every rebuild). */
+   *  With zero members the preview drops back to the bare model (a fillet with
+   *  no edges would just error every rebuild). */
   private afterMembershipChange() {
     const sels = this.currentSelectors();
+    const verb = this.editId ? "Editing" : "Creating";
     if (sels.length) {
       this.anchor.copy(this.anchorFromSelectors(sels));
       this.axis.copy(this.computeAxis());
       this.quat.setFromUnitVectors(Y_AXIS, this.axis);
       this.pushPreview();
       setPrompt(
-        `Editing ${this.kind}: ${sels.length} edge${sels.length === 1 ? "" : "s"} · click edges to add/remove · ` +
-          `Enter/click empty space to apply · Esc to cancel`,
+        `${verb} ${this.kind}: ${sels.length} edge${sels.length === 1 ? "" : "s"} · click edges to add/remove · ` +
+          `Enter/click empty space to ${this.editId ? "apply" : "commit"} · Esc to cancel`,
       );
     } else {
-      this.store.setEditPreview(null);
+      if (this.editId) this.store.setEditPreview(null);
+      else this.store.setPreview(null);
       setPrompt(`No edges selected — click an edge to add one · Esc to cancel`);
     }
   }
 
   private buildFeature(): Feature {
     const v = Math.round(this.value * 1000) / 1000;
-    const edges = this.editId ? this.currentSelectors() : this.edges;
+    const sels = this.currentSelectors();
+    const edges = sels.length === 1 && sels[0] ? sels[0] : sels;
     return this.kind === "fillet"
       ? { id: this.previewId, type: "fillet", edges, radius: v }
       : { id: this.previewId, type: "chamfer", edges, distance: v };
@@ -510,7 +519,7 @@ export class EdgeFeatureTool {
     const v = this.dim.getValue(this.field.name);
     if (v != null) this.value = v;
     if (this.value < 1e-3) return this.cancel(); // ignore zero
-    if (this.editId && this.currentSelectors().length === 0) {
+    if (this.currentSelectors().length === 0) {
       setPrompt("No edges selected — click an edge to add one · Esc to cancel");
       return; // deleting is an explicit timeline action, not an implicit empty commit
     }
