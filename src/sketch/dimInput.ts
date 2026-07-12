@@ -103,8 +103,10 @@ export class DimInput {
       field.userDriven = true; // Tab locks the current field
       const i = this.fields.indexOf(field);
       const next = this.fields[(i + 1) % this.fields.length];
-      next.input.focus();
-      next.input.select();
+      if (next) {
+        next.input.focus();
+        next.input.select();
+      }
     } else if (e.key === "Enter") {
       e.preventDefault();
       this.commit();
@@ -116,8 +118,9 @@ export class DimInput {
   /** tool pushes cursor-derived values in MM; only tracking fields accept them */
   updateFromCursor(values: Record<string, number>) {
     for (const f of this.fields) {
-      if (!f.userDriven && values[f.def.name] != null) {
-        f.input.value = String(displayValue(values[f.def.name], f.def.kind));
+      const v = values[f.def.name];
+      if (!f.userDriven && v != null) {
+        f.input.value = String(displayValue(v, f.def.kind));
       }
     }
   }

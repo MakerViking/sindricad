@@ -222,6 +222,7 @@ export class Timeline {
     const ids = [...this.errorMap().keys()];
     if (!ids.length) return;
     const id = ids[this.errCycle % ids.length];
+    if (id === undefined) return;
     this.errCycle++;
     const chip = this.track.querySelector<HTMLElement>(`.timeline-node[data-id="${CSS.escape(id)}"]`);
     chip?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
@@ -254,7 +255,9 @@ export class Timeline {
   private gapIndexAt(clientX: number): number {
     const nodes = [...this.track.querySelectorAll<HTMLElement>(".timeline-node:not(.building)")];
     for (let i = 0; i < nodes.length; i++) {
-      const r = nodes[i].getBoundingClientRect();
+      const n = nodes[i];
+      if (!n) continue;
+      const r = n.getBoundingClientRect();
       if (clientX < r.left + r.width / 2) return i;
     }
     return nodes.length;

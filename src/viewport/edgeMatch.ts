@@ -9,7 +9,7 @@ export type Vec3 = [number, number, number];
 /** The polyline point selectors are built from: the INDEX-middle sample, NOT
  *  the arc-length midpoint — must stay identical to picking.ts's pickEdge
  *  (`pts[floor(len/2)]`) or saved selectors won't re-match their own edge. */
-export function polylineMid(points: Vec3[]): Vec3 {
+export function polylineMid(points: Vec3[]): Vec3 | undefined {
   return points[Math.floor(points.length / 2)];
 }
 
@@ -28,7 +28,11 @@ export function nearestEdgeByMid(
   let best = -1;
   let bestD = tol * tol;
   for (let i = 0; i < edges.length; i++) {
-    const dd = d2(polylineMid(edges[i].points), mid);
+    const e = edges[i];
+    if (!e) continue;
+    const m = polylineMid(e.points);
+    if (!m) continue;
+    const dd = d2(m, mid);
     if (dd < bestD) { bestD = dd; best = i; }
   }
   return best >= 0 ? best : null;

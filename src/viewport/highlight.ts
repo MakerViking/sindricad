@@ -191,7 +191,8 @@ export class Highlighter {
     if (!colorAttr || !index) return;
     const base = body.baseColors;
     const range = this.forEachVertex(tris, index, (v) => {
-      colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+      const r = base[v * 3], g = base[v * 3 + 1], b = base[v * 3 + 2];
+      if (r !== undefined && g !== undefined && b !== undefined) colorAttr.setXYZ(v, r, g, b);
     });
     if (range) this.uploadRange(colorAttr, range);
   }
@@ -204,7 +205,10 @@ export class Highlighter {
     const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     if (!colorAttr) return;
     const base = body.baseColors;
-    for (let v = 0; v < colorAttr.count; v++) colorAttr.setXYZ(v, base[v * 3], base[v * 3 + 1], base[v * 3 + 2]);
+    for (let v = 0; v < colorAttr.count; v++) {
+      const r = base[v * 3], g = base[v * 3 + 1], b = base[v * 3 + 2];
+      if (r !== undefined && g !== undefined && b !== undefined) colorAttr.setXYZ(v, r, g, b);
+    }
     this.uploadRange(colorAttr, [0, colorAttr.count - 1]);
   }
 
@@ -250,6 +254,7 @@ export class Highlighter {
       const base = body.baseColors;
       for (let t = 0; t < ids.length; t++) {
         const fid = ids[t];
+        if (fid === undefined) continue;
         let col = cache.get(fid);
         if (!col) {
           col = colorOf(fid);

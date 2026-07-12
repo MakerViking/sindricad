@@ -299,10 +299,10 @@ export class PressPullTool {
     return {
       id: this.previewId,
       type: "press-pull",
-      face: this.faces.length === 1 ? this.faces[0] : this.faces,
+      face: this.faces.length === 1 ? (this.faces[0] ?? this.faces) : this.faces,
       distance: v,
       operation: v >= 0 ? "join" : "cut",
-      body: this.bodyId ?? undefined,
+      ...(this.bodyId != null ? { body: this.bodyId } : {}),
       ...(this.upTo ? { upTo: this.upTo } : {}),
     };
   }

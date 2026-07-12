@@ -311,17 +311,17 @@ export class BrowserTree {
       id?: string; // stable id — registers a programmatic-rename hook (beginRename)
       label: string;
       icon: string;
-      swatch?: string; // a small colored chip before the label (assigned body color)
+      swatch?: string | undefined; // a small colored chip before the label (assigned body color)
       dim?: boolean;
       selected?: boolean;
       error?: boolean;
       visible?: boolean;
       title?: string;
       onClick?: (e: MouseEvent) => void;
-      onToggleVis?: () => void;
-      onEdit?: () => void; // "Edit" action (sketches) — also double-click
-      rename?: (name: string) => void; // "Rename" — also double-click when there's no onEdit
-      onDelete?: () => void; // "Delete" action
+      onToggleVis?: (() => void) | undefined;
+      onEdit?: (() => void) | undefined; // "Edit" action (sketches) — also double-click
+      rename?: ((name: string) => void) | undefined; // "Rename" — also double-click when there's no onEdit
+      onDelete?: (() => void) | undefined; // "Delete" action
       extraMenu?: CtxItem[]; // prepended menu items (e.g. Cut all bodies, Color ▸)
     }[],
   ) {

@@ -308,8 +308,9 @@ export class ViewCube {
     this.raycaster.setFromCamera(this.ndc, this.camera);
     const meshes = this.parts.map((p) => p.mesh);
     const hits = this.raycaster.intersectObjects(meshes, false);
-    if (!hits.length) return null;
-    const mesh = hits[0].object;
+    const hit = hits[0];
+    if (!hit) return null;
+    const mesh = hit.object;
     return this.parts.find((p) => p.mesh === mesh) ?? null;
   }
 

@@ -47,7 +47,7 @@ export async function openInOrca(store: DocumentStore, geometry: GeometryBackend
   } catch (e) {
     console.warn("slicer_project_settings failed — falling back to minimal settings:", e);
   }
-  const written = await exportPrintProject(store, geometry, { path: stagingPath, settings });
+  const written = await exportPrintProject(store, geometry, { path: stagingPath, ...(settings !== undefined ? { settings } : {}) });
   if (!written) return; // exportPrintProject already surfaced any error
   try {
     await invoke("slicer_open", { path: written });
@@ -70,12 +70,15 @@ function usedSlots(store: DocumentStore): LogicalSlot[] {
   if (!used.size) used.add(0);
   return [...used]
     .sort((a, b) => a - b)
-    .map((i) => ({
-      index: i,
-      name: palette[i]?.name ?? `Filament ${i + 1}`,
-      color: palette[i]?.color ?? "#808080",
-      material: palette[i]?.material,
-    }));
+    .map((i) => {
+      const mat = palette[i]?.material;
+      return {
+        index: i,
+        name: palette[i]?.name ?? `Filament ${i + 1}`,
+        color: palette[i]?.color ?? "#808080",
+        ...(mat !== undefined ? { material: mat } : {}),
+      };
+    });
 }
 
 let statusUnlisten: (() => void) | null = null;

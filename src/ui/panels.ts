@@ -131,6 +131,7 @@ export function createPanels(deps: PanelsDeps) {
       row.style.cursor = "pointer";
       row.addEventListener("click", () => {
         const p = pairs[Number(row.dataset.i)];
+        if (!p) return;
         viewport.setSelectionMode("bodies");
         selBtn.textContent = "Bodies";
         selBtn.classList.add("active");

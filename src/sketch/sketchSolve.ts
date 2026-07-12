@@ -78,7 +78,9 @@ export async function compileAndSolve(
       const corner = rectCorners(e.x, e.y, e.width, e.height); // CCW: bl, br, tr, tl
       const cp = corner.map((p) => getPoint(p.x, p.y, true));
       for (let k = 0; k < 4; k++) {
-        lines.push({ id: `${e.id}~${k}`, p1: cp[k], p2: cp[(k + 1) % 4] });
+        const a = cp[k], b = cp[(k + 1) % 4];
+        if (a === undefined || b === undefined) continue;
+        lines.push({ id: `${e.id}~${k}`, p1: a, p2: b });
       }
       cons.push({ id: `${e.id}~h0`, type: "horizontal", line: `${e.id}~0` }); // bottom
       cons.push({ id: `${e.id}~h2`, type: "horizontal", line: `${e.id}~2` }); // top
@@ -179,7 +181,7 @@ export async function compileAndSolve(
     if (best) dragInput = { point: best.id, x: drag.toX, y: drag.toY };
   }
 
-  const r = await solveSketch({ points, lines, circles, arcs, constraints: cons, drag: dragInput });
+  const r = await solveSketch({ points, lines, circles, arcs, constraints: cons, ...(dragInput ? { drag: dragInput } : {}) });
 
   const out = entities.map((e): ResolvedEntity => {
     if (e.type === "line") {
@@ -221,7 +223,13 @@ export async function compileAndSolve(
     if (e.type === "spline") {
       const ids = splineMap.get(e.id);
       if (!ids) return e;
-      return { ...e, points: ids.map((id, k) => r.points[id] ?? e.points[k]) };
+      // ids is 1:1 with e.points (built via e.points.map above), so iterate the
+      // originals: `orig` is always defined and is the fallback when the solver
+      // didn't return a position for that fit point.
+      return { ...e, points: e.points.map((orig, k) => {
+        const id = ids[k];
+        return (id !== undefined ? r.points[id] : undefined) ?? orig;
+      }) };
     }
     if (e.type === "point") {
       const p = r.points[pointMap.get(e.id)!];
