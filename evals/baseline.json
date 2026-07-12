@@ -3,7 +3,7 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 65,
+    "ratchet": 9,
     "iterations": [
       {
         "n": 1,
@@ -48,6 +48,16 @@
           "9 files: contextMenus? (menu.ts), render, client, ribbon, picking, patternFlow, spline, moveTool, measureTool"
         ],
         "verdict": "ACCEPT (EV1: gates pass, net-zero casts, WS mesh-less error path = strict improvement over crash)"
+      },
+      {
+        "n": 5,
+        "commit": "133a7371",
+        "errors": 9,
+        "delta": -56,
+        "files": [
+          "22 non-test files (final source sweep)"
+        ],
+        "verdict": "pending EV1; implementer correctly halted at test files on rules conflict, reverted, escalated"
       }
     ],
     "goal": 0,
