@@ -1102,6 +1102,25 @@ def _edge_identity(e):
     return fp
 
 
+def _canonical_blend_key(fp):
+    """Deterministic sort key for the sequential-blend order: the resolved edges'
+    rounded-3dp midpoint (the generator's exact acceptance key), then direction,
+    then length as tiebreakers. Merged-blend volumes are ORDER-DEPENDENT (adjacent
+    fillets that fuse remove slightly different material per order, ~10%+ spread),
+    so a fixed canonical order is what makes a full rebuild reproducible and keeps
+    the removed volume matched to the reference. Midpoints are unique across every
+    corpus edge set; direction/length only ever break a genuine coincident-midpoint
+    tie."""
+    mid = fp["mid"]
+    d = fp.get("dir", (0.0, 0.0, 0.0))
+    ln = fp.get("length", 0.0)
+    return (
+        round(mid[0], 3), round(mid[1], 3), round(mid[2], 3),
+        round(d[0], 3), round(d[1], 3), round(d[2], 3),
+        round(ln, 3),
+    )
+
+
 def _rematch_edge(shape, fp, max_mid_dist, tol_pos):
     """Find the edge on `shape` that is `fp`'s current incarnation, or None.
 
@@ -1123,17 +1142,23 @@ def _sequential_blend(shape, edges, apply_one, blend_size, diag_part):
     the kernel settle that surface before the next, which succeeds on
     reflex/tight-clearance sets the single combined call cannot solve.
 
-    Multi-pass to a fixpoint: a straggler that fails early is retried after its
-    neighbours have blended (more material around a reflex edge can make it
-    buildable), and this subsumes any single fixed ordering. Every remaining
-    edge is re-found by geometric identity each step (topology renumbers under
-    us). Returns (new_shape, unresolved_original_edges); the caller enforces the
+    Edges are applied in a CANONICAL order (rounded-midpoint, see
+    _canonical_blend_key). Because overlapping blends fuse into order-dependent
+    solids, this fixed order is what makes a rebuild deterministic and its
+    removed volume reproducible. Multi-pass to a fixpoint: a straggler that
+    fails early is retried after its neighbours have blended (more material
+    around a reflex edge can make it buildable), with canonical order preserved
+    among the remaining edges each pass. Every remaining edge is re-found by
+    geometric identity each step (topology renumbers under us). Returns
+    (new_shape, unresolved_original_edges); the caller enforces the
     all-or-nothing product rule.
 
     `apply_one(shape, edge) -> new_shape` runs the actual kernel op.
     """
-    # Fingerprint every target up front, on the ORIGINAL body, before anything moves.
+    # Fingerprint every target up front, on the ORIGINAL body, before anything
+    # moves — then fix the canonical application order once.
     pending = [(e, _edge_identity(e)) for e in edges]
+    pending.sort(key=lambda t: _canonical_blend_key(t[1]))
     # Positional gate: an edge shortened by a neighbouring blend shifts its
     # midpoint by at most ~blend_size; add the resolver's baseline drift budget.
     base = POS_DRIFT + REL_DRIFT * _bbox_diag(diag_part)
