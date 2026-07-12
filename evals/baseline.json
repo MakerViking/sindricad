@@ -3,7 +3,17 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 396,
+    "ratchet": 258,
+    "iterations": [
+      {
+        "n": 1,
+        "commit": "d85fbb4",
+        "errors": 258,
+        "delta": -138,
+        "files": ["src/sketch/modify.ts", "src/sketch/region.ts"],
+        "verdict": "ACCEPT (evaluator EV1: all gates pass, 0 gaming hits, behavior preserved)"
+      }
+    ],
     "goal": 0,
     "milestone": 100,
     "base_commit": "4588692",
