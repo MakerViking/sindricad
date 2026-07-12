@@ -613,7 +613,7 @@ def _ok(req_id, result):
 
 
 def _err(req_id, message, feature_id=None):
-    error = {"message": message}
+    error = {"message": message or "internal error (no message)"}
     if feature_id is not None:
         error["feature_id"] = feature_id
     return json.dumps({"id": req_id, "ok": False, "error": error})
@@ -829,7 +829,7 @@ async def handle(ws):
                     await ws.send(_err(req_id, f"unknown op: {op}"))
 
             except Exception as ex:
-                await ws.send(_err(req_id, str(ex)))
+                await ws.send(_err(req_id, str(ex) or type(ex).__name__))
     finally:
         if peer is not None:
             _ip_conns[peer] = _ip_conns.get(peer, 0) - 1

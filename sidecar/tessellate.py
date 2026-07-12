@@ -160,6 +160,31 @@ def _planar_face_normals(sh):
 _EDGE_MEMO = {}
 
 
+def _sample_by_param(e, n):
+    """Fallback sampler: walk the edge by its raw CURVE PARAMETER (u0..u1) via the
+    OCCT adaptor, instead of build123d's `e @ t` (which parameterises by ARC LENGTH
+    through GCPnts_AbscissaPoint and raises Standard_ConstructionError on degenerate
+    curves — e.g. a sphere's seam meridian, or a cone/revolve pole edge). Parameter
+    sampling never computes arc length, so it can't hit that failure. Returns None
+    when the edge has no usable 3-D curve (a true point-edge at a pole)."""
+    w = getattr(e, "wrapped", None)
+    if w is None:
+        return None
+    try:
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+        ad = BRepAdaptor_Curve(w)
+        u0, u1 = ad.FirstParameter(), ad.LastParameter()
+        if not (u1 > u0):
+            return None
+        pts = []
+        for j in range(n + 1):
+            p = ad.Value(u0 + (u1 - u0) * (j / n))
+            pts.append([p.X(), p.Y(), p.Z()])
+        return pts
+    except Exception:
+        return None
+
+
 def _edge_points(e, n):
     w = getattr(e, "wrapped", None)
     key = None
@@ -172,7 +197,15 @@ def _edge_points(e, n):
                     return hit
         except Exception:
             key = None
-    pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
+    try:
+        pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
+    except Exception:
+        # arc-length parameterisation failed (degenerate seam/pole edge) — fall
+        # back to raw-parameter sampling so a valid body still renders its
+        # wireframe instead of the whole tessellation reply erroring out.
+        pts = _sample_by_param(e, n)
+        if pts is None:
+            return None
     if key is not None:
         if len(_EDGE_MEMO) > 200_000:
             _EDGE_MEMO.clear()
@@ -197,7 +230,10 @@ def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
             continue
         if not (hide_coplanar_seams and getattr(sh, "wrapped", None) is not None):
             for e in sh.edges():
-                out.append({"id": f"e{k}", "points": _edge_points(e, n), "body": b["id"]})
+                pts = _edge_points(e, n)
+                if pts is None:
+                    continue  # degenerate point-edge (pole) — nothing to draw
+                out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
                 k += 1
             continue
         from build123d import Edge
@@ -211,7 +247,10 @@ def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
                 if n0 and n1 and abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) > cos_tol:
                     continue  # coplanar seam — don't draw it
             e = Edge(em.FindKey(i))
-            out.append({"id": f"e{k}", "points": _edge_points(e, n), "body": b["id"]})
+            pts = _edge_points(e, n)
+            if pts is None:
+                continue  # degenerate point-edge (pole) — nothing to draw
+            out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
             k += 1
     return out
 
