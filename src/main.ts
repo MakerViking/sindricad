@@ -802,7 +802,8 @@ function handleAction(action: string) {
   }
   // sketch MODIFY tools only make sense inside a sketch
   if (action in SKETCH_MODIFY) {
-    if (sketch.active) sketch.setTool(SKETCH_MODIFY[action]);
+    const tool = SKETCH_MODIFY[action];
+    if (sketch.active) { if (tool) sketch.setTool(tool); }
     else setStatus("Enter a sketch to use modify tools", "");
     return;
   }

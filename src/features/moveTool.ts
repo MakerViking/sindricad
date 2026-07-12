@@ -96,7 +96,9 @@ export class MoveTool {
 
   private onMove(e: PointerEvent) {
     if (this.grabAxis >= 0) {
-      const axis = AXES[this.grabAxis].dir;
+      const ax = AXES[this.grabAxis];
+      if (!ax) return;
+      const axis = ax.dir;
       const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, axis);
       const raw = this.grabVal + (proj - this.grabProj);
       const stepped = snap(raw, this.viewport.snapStep(this.anchor));
@@ -115,6 +117,8 @@ export class MoveTool {
     this.downPos = { x: e.clientX, y: e.clientY };
     const axis = this.hitAxis(e.clientX, e.clientY);
     if (axis >= 0) {
+      const ax = AXES[axis];
+      if (!ax) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       this.grabAxis = axis;
@@ -125,7 +129,7 @@ export class MoveTool {
         e.clientX,
         e.clientY,
         this.anchor,
-        AXES[axis].dir,
+        ax.dir,
       );
       this.viewport.domElement.style.cursor = "grabbing";
     }
@@ -156,7 +160,8 @@ export class MoveTool {
     this.gizmo.scale.setScalar(k);
     for (const a of this.arrows) {
       const hot = a.axis === this.grabAxis || (this.grabAxis < 0 && a.axis === this.hoverAxis);
-      a.mat.color.set(hot ? HOT : AXES[a.axis].color);
+      const ax = AXES[a.axis];
+      if (ax) a.mat.color.set(hot ? HOT : ax.color);
     }
     const s = this.viewport.projectToScreen(pos);
     this.dim.position(s.x, s.y);
@@ -194,7 +199,7 @@ export class MoveTool {
       rx: 0,
       ry: 0,
       rz: 0,
-      bodies: this.bodies.length ? this.bodies : undefined,
+      ...(this.bodies.length ? { bodies: this.bodies } : {}),
     };
   }
 
@@ -202,6 +207,7 @@ export class MoveTool {
     const g = new THREE.Group();
     for (let i = 0; i < AXES.length; i++) {
       const a = AXES[i];
+      if (!a) continue;
       const mat = new THREE.MeshBasicMaterial({ color: a.color, depthTest: false, depthWrite: false });
       const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 30, 12), mat);
       shaft.position.y = 17;
@@ -228,7 +234,9 @@ export class MoveTool {
     for (const a of this.arrows) meshes.push(...a.group.children);
     const hits = this.viewport.rayFrom(x, y).intersectObjects(meshes, false);
     if (!hits.length) return -1;
-    let o: THREE.Object3D | null = hits[0].object;
+    const first = hits[0];
+    if (!first) return -1;
+    let o: THREE.Object3D | null = first.object;
     while (o && o.userData.axis === undefined) o = o.parent;
     return o ? (o.userData.axis as number) : -1;
   }

@@ -51,12 +51,13 @@ function fromGroups(groups: Group[], context: "model" | "sketch"): Command[] {
       // the palette loses every tool folded into a dropdown
       for (const leaf of leavesOf(it)) {
         if (leaf.action === "palette" || leaf.kind === "toggle") continue; // not palette commands
+        const key = keyHint(leaf.action) ?? leaf.key;
         out.push({
           id: leaf.action,
           label: leaf.label,
           group: g.label,
           context,
-          key: keyHint(leaf.action) ?? leaf.key,
+          ...(key !== undefined ? { key } : {}),
         });
       }
     }

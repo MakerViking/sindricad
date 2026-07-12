@@ -22,6 +22,12 @@ const ARC_SEGS = 48;
 const SPLINE_SEGS = 16;
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
+/** append the first vertex to close a polygon; an empty input stays empty */
+function closed(pts: THREE.Vector2[]): THREE.Vector2[] {
+  const first = pts[0];
+  return first ? [...pts, first] : pts;
+}
+
 /** The entity's curve as a single polyline, sampled at one consistent fidelity
  *  for ALL consumers (rendering, region tracing, picking, intersection). Closed
  *  primitives (rectangle/circle) include the closing vertex. This is the one
@@ -30,14 +36,10 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
   switch (e.type) {
     case "line":
       return [v(e.x1, e.y1), v(e.x2, e.y2)];
-    case "rectangle": {
-      const c = rectCorners(e.x, e.y, e.width, e.height);
-      return [...c, c[0]];
-    }
-    case "circle": {
-      const c = circleLoop(e.x, e.y, e.radius);
-      return [...c, c[0]];
-    }
+    case "rectangle":
+      return closed(rectCorners(e.x, e.y, e.width, e.height));
+    case "circle":
+      return closed(circleLoop(e.x, e.y, e.radius));
     case "arc":
       return arcPolyline(v(e.x1, e.y1), v(e.x2, e.y2), v(e.mx, e.my), ARC_SEGS);
     case "spline":
@@ -51,7 +53,10 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
 export function entitySegments(e: ResolvedEntity): [THREE.Vector2, THREE.Vector2][] {
   const p = entityPolyline(e);
   const out: [THREE.Vector2, THREE.Vector2][] = [];
-  for (let i = 0; i < p.length - 1; i++) out.push([p[i], p[i + 1]]);
+  for (let i = 0; i < p.length - 1; i++) {
+    const a = p[i], b = p[i + 1];
+    if (a && b) out.push([a, b]);
+  }
   return out;
 }
 
@@ -135,13 +140,18 @@ export function detectRegions(
   const areas = loops.map(loopAbsArea);
   const reps = loops.map(loopInteriorPoint);
   const parent = loops.map((_loopI, i) => {
+    // reps/areas are parallel to loops, so index i is always valid
+    const p = reps[i];
+    const ai = areas[i];
+    if (!p || ai === undefined) return -1;
     let best = -1;
     let bestArea = Infinity;
-    const p = reps[i];
     for (let j = 0; j < loops.length; j++) {
-      if (j === i || areas[j] <= areas[i]) continue;
-      if (pointInLoop(p, loops[j]) && areas[j] < bestArea) {
-        bestArea = areas[j];
+      const aj = areas[j];
+      const lj = loops[j];
+      if (j === i || aj === undefined || lj === undefined || aj <= ai) continue;
+      if (pointInLoop(p, lj) && aj < bestArea) {
+        bestArea = aj;
         best = j;
       }
     }
@@ -150,8 +160,10 @@ export function detectRegions(
 
   const regions: Region[] = [];
   for (let i = 0; i < loops.length; i++) {
+    const loop = loops[i];
+    if (!loop) continue;
     const holes = loops.filter((_, j) => parent[j] === i);
-    regions.push(mkRegion(sketchId, loops[i], holes));
+    regions.push(mkRegion(sketchId, loop, holes));
   }
   return regions;
 }
@@ -177,6 +189,7 @@ export function pointInLoop(p: THREE.Vector2, loop: THREE.Vector2[]): boolean {
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
     const a = loop[i];
     const b = loop[j];
+    if (!a || !b) continue;
     if (
       a.y > p.y !== b.y > p.y &&
       p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x
@@ -197,7 +210,9 @@ export function pointInRegion(p: THREE.Vector2, region: Region): boolean {
 function loopAbsArea(loop: THREE.Vector2[]): number {
   let a = 0;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
-    a += (loop[j].x + loop[i].x) * (loop[j].y - loop[i].y);
+    const pi = loop[i], pj = loop[j];
+    if (!pi || !pj) continue;
+    a += (pj.x + pi.x) * (pj.y - pi.y);
   }
   return Math.abs(a) / 2;
 }
@@ -304,10 +319,13 @@ type EntSegs = { segs: Seg[]; box: Box };
  *  inner test, so the common non-crossing sketch pays almost nothing. */
 function anyCrossing(per: EntSegs[]): boolean {
   for (let i = 0; i < per.length; i++) {
+    const pi = per[i];
+    if (!pi) continue;
     for (let j = i + 1; j < per.length; j++) {
-      if (!boxesOverlap(per[i].box, per[j].box)) continue;
-      for (const a of per[i].segs)
-        for (const b of per[j].segs) {
+      const pj = per[j];
+      if (!pj || !boxesOverlap(pi.box, pj.box)) continue;
+      for (const a of pi.segs)
+        for (const b of pj.segs) {
           if (segCross(a, b)) return true;
           if (pointOnSegInterior(b.x1, b.y1, a) !== null) return true;
           if (pointOnSegInterior(b.x2, b.y2, a) !== null) return true;
@@ -326,15 +344,18 @@ function anyCrossing(per: EntSegs[]): boolean {
 function planarize(per: EntSegs[]): Seg[] {
   const out: Seg[] = [];
   for (let i = 0; i < per.length; i++) {
-    for (const a of per[i].segs) {
+    const pi = per[i];
+    if (!pi) continue;
+    for (const a of pi.segs) {
       const rx = a.x2 - a.x1, ry = a.y2 - a.y1;
       const len2 = rx * rx + ry * ry;
       const cuts: { x: number; y: number; t: number }[] = [];
       const addCut = (x: number, y: number) =>
         cuts.push({ x, y, t: ((x - a.x1) * rx + (y - a.y1) * ry) / len2 });
       for (let j = 0; j < per.length; j++) {
-        if (j === i || !boxesOverlap(per[i].box, per[j].box)) continue;
-        for (const b of per[j].segs) {
+        const pj = per[j];
+        if (j === i || !pj || !boxesOverlap(pi.box, pj.box)) continue;
+        for (const b of pj.segs) {
           const p = segCross(a, b);
           if (p) addCut(p.x, p.y);
           if (pointOnSegInterior(b.x1, b.y1, a) !== null) addCut(b.x1, b.y1);
@@ -391,10 +412,14 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   // outgoing half-edge indices per node, sorted CCW by angle
   const out = new Map<string, number[]>();
   he.forEach((h, i) => (out.get(h.from) ?? out.set(h.from, []).get(h.from)!).push(i));
-  for (const idxs of out.values()) idxs.sort((i, j) => he[i].angle - he[j].angle);
+  for (const idxs of out.values())
+    idxs.sort((i, j) => (he[i]?.angle ?? 0) - (he[j]?.angle ?? 0));
   // next half-edge in the same minimal face = the edge just clockwise of this edge's twin
-  const next = (i: number) => {
-    const idxs = out.get(he[i].to)!;
+  const next = (i: number): number | undefined => {
+    const h = he[i];
+    if (!h) return undefined;
+    const idxs = out.get(h.to);
+    if (!idxs) return undefined;
     const pos = idxs.indexOf(i ^ 1); // twin
     return idxs[(pos - 1 + idxs.length) % idxs.length];
   };
@@ -404,14 +429,19 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   for (let s = 0; s < he.length; s++) {
     if (visited.has(s)) continue;
     const faceHE: number[] = [];
-    let cur = s, guard = 0;
-    while (!visited.has(cur) && guard++ < he.length + 2) {
+    let cur: number | undefined = s;
+    let guard = 0;
+    while (cur !== undefined && !visited.has(cur) && guard++ < he.length + 2) {
       visited.add(cur);
       faceHE.push(cur);
       cur = next(cur);
     }
     if (cur !== s || faceHE.length < 3) continue;
-    const pts = faceHE.map((i) => nodes.get(he[i].from)!);
+    const pts: THREE.Vector2[] = [];
+    for (const hi of faceHE) {
+      const h = he[hi];
+      if (h) pts.push(nodes.get(h.from)!);
+    }
     // keep CCW (interior) faces; the outer/unbounded face is CW (negative area)
     if (signedLoopArea(pts) > EPS) loops.push(pts);
   }
@@ -421,7 +451,9 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
 function signedLoopArea(loop: THREE.Vector2[]): number {
   let a = 0;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
-    a += loop[j].x * loop[i].y - loop[i].x * loop[j].y;
+    const pi = loop[i], pj = loop[j];
+    if (!pi || !pj) continue;
+    a += pj.x * pi.y - pi.x * pj.y;
   }
   return a / 2;
 }

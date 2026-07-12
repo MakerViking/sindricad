@@ -58,7 +58,8 @@ export class SectionTool {
     if (!box) return;
     this.active = true;
     this.onDone = onDone ?? null;
-    this.axis.copy(AXES[axisName]);
+    const ax = AXES[axisName];
+    if (ax) this.axis.copy(ax);
     box.getCenter(this.anchor);
     this.offset = 0;
     this.side = 1;

@@ -130,7 +130,9 @@ export class ExtrudeTool {
       return;
     }
     if (!this.selected.length) return;
-    const plane = this.selected[0].plane;
+    const first = this.selected[0];
+    if (!first) return;
+    const plane = first.plane;
     const anchor = this.anchor();
     if (!this.dim.isUserDriven("distance")) {
       const d = axisDragDistance(this.viewport, e.clientX, e.clientY, anchor, plane.n);
@@ -257,7 +259,9 @@ export class ExtrudeTool {
     this.previewMat?.color.set(cut ? 0xff5c5c : 0x5b9bff);
 
     // arrow manipulator along the (shared) normal, anchored at the selection center
-    const plane = this.selected[0].plane;
+    const first = this.selected[0];
+    if (!first) return;
+    const plane = first.plane;
     const anchor = this.anchor();
     const dir = plane.n.clone().multiplyScalar(sign);
     if (!this.arrow) {
@@ -333,10 +337,13 @@ export class ExtrudeTool {
       // saved operation rather than silently rewriting it to "new".
       op = this.editOp;
     }
+    const first = this.selected[0];
+    if (!first) return;
+    const hiddenBodies = this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds();
     const feature: Feature = {
       id: this.editId ?? this.store.nextId(),
       type: "extrude",
-      sketch: this.selected[0].sketchId,
+      sketch: first.sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
       regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
@@ -344,7 +351,7 @@ export class ExtrudeTool {
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
       // display toggles rewrite committed boolean history.
-      hiddenBodies: this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds(),
+      ...(hiddenBodies !== undefined ? { hiddenBodies } : {}),
     };
     const id = feature.id;
     if (this.editId) {

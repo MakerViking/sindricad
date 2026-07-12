@@ -10,7 +10,8 @@ type P = { x: number; y: number };
 export function splinePolyline(pts: P[], segsPerSpan = 16): THREE.Vector2[] {
   if (pts.length < 2) return pts.map((p) => new THREE.Vector2(p.x, p.y));
   if (pts.length === 2) {
-    return [new THREE.Vector2(pts[0].x, pts[0].y), new THREE.Vector2(pts[1].x, pts[1].y)];
+    const [a, b] = pts;
+    if (a && b) return [new THREE.Vector2(a.x, a.y), new THREE.Vector2(b.x, b.y)];
   }
   const out: THREE.Vector2[] = [];
   const n = pts.length;
@@ -19,12 +20,14 @@ export function splinePolyline(pts: P[], segsPerSpan = 16): THREE.Vector2[] {
     const p1 = pts[i];
     const p2 = pts[i + 1];
     const p3 = pts[Math.min(n - 1, i + 2)];
+    if (!p0 || !p1 || !p2 || !p3) continue;
     for (let s = 0; s < segsPerSpan; s++) {
       const t = s / segsPerSpan;
       out.push(catmull(p0, p1, p2, p3, t));
     }
   }
-  out.push(new THREE.Vector2(pts[n - 1].x, pts[n - 1].y));
+  const last = pts[n - 1];
+  if (last) out.push(new THREE.Vector2(last.x, last.y));
   return out;
 }
 

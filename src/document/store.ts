@@ -339,6 +339,7 @@ export class DocumentStore {
       const from = d.features.findIndex((f) => f.id === id);
       if (from < 0) return;
       const [f] = d.features.splice(from, 1);
+      if (!f) return;
       d.features.splice(Math.max(0, Math.min(d.features.length, toIndex)), 0, f);
     }, true);
   }
@@ -490,15 +491,18 @@ export class DocumentStore {
   paletteIsDefault(): boolean {
     return (
       this.palette.length === DEFAULT_PALETTE.length &&
-      this.palette.every(
-        (s, i) => s.name === DEFAULT_PALETTE[i].name && s.color === DEFAULT_PALETTE[i].color && !s.material,
-      )
+      this.palette.every((s, i) => {
+        const d = DEFAULT_PALETTE[i];
+        return d !== undefined && s.name === d.name && s.color === d.color && !s.material;
+      })
     );
   }
   /** edit a palette slot's name and/or hex color; re-emits for a live repaint. */
   setPaletteSlot(i: number, patch: { name?: string; color?: string; material?: string }) {
     if (i < 0 || i >= this.palette.length) return;
-    this.palette[i] = { ...this.palette[i], ...patch };
+    const cur = this.palette[i];
+    if (!cur) return;
+    this.palette[i] = { ...cur, ...patch };
     this.markDirty();
     this.emitBuild();
   }
@@ -620,7 +624,7 @@ export class DocumentStore {
     // Body visibility travels with the rebuild so the sidecar can keep hidden
     // bodies out of extrude booleans (a hidden body is protected from edits).
     const bodyVisibility = this.bodyVis.size ? Object.fromEntries(this.bodyVis.entries()) : undefined;
-    return { parameters: this.doc.parameters, features, bodyVisibility };
+    return { parameters: this.doc.parameters, features, ...(bodyVisibility ? { bodyVisibility } : {}) };
   }
 
   async rebuildNow() {

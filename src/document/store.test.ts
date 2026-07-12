@@ -41,7 +41,8 @@ describe("edit preview (roll-to-position)", () => {
 
   const lastIds = async () => {
     await vi.runAllTimersAsync(); // drain the scheduled rebuild
-    return rebuilds[rebuilds.length - 1].features.map((f) => f.id);
+    const last = rebuilds[rebuilds.length - 1];
+    return last ? last.features.map((f) => f.id) : [];
   };
 
   it("beginEditPreview rolls to just before the edited feature", async () => {
@@ -57,8 +58,9 @@ describe("edit preview (roll-to-position)", () => {
     store.setEditPreview(live);
     const ids = await lastIds();
     expect(ids).toEqual(["s1", "e1", "f1"]);
-    const sent = rebuilds[rebuilds.length - 1].features.find((f) => f.id === "f1") as { radius?: number };
-    expect(sent.radius).toBe(5); // the LIVE version, not the committed one
+    const last = rebuilds[rebuilds.length - 1];
+    const sent = last?.features.find((f) => f.id === "f1") as { radius?: number } | undefined;
+    expect(sent?.radius).toBe(5); // the LIVE version, not the committed one
   });
 
   it("endEditPreview restores the full committed timeline", async () => {

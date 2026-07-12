@@ -75,8 +75,9 @@ export class ConstraintTools {
     // line-based constraints (horizontal/vertical/parallel/perpendicular/equal)
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, this.host.pickTol());
-    if (idx < 0 || entities[idx].type !== "line") return;
-    const id = entities[idx].id;
+    const ent = idx >= 0 ? entities[idx] : undefined;
+    if (!ent || ent.type !== "line") return;
+    const id = ent.id;
     if (t === "horizontal") this.addConstraint({ type: "horizontal", line: id });
     else if (t === "vertical") this.addConstraint({ type: "vertical", line: id });
     else {
@@ -107,7 +108,11 @@ export class ConstraintTools {
       if (e.type === "line") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
       else if (e.type === "arc") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
       else if (e.type === "point") consider(e.id, 0, e.x, e.y);
-      else if (e.type === "spline") { consider(e.id, 0, e.points[0].x, e.points[0].y); const l = e.points.length - 1; consider(e.id, 1, e.points[l].x, e.points[l].y); }
+      else if (e.type === "spline") {
+        const first = e.points[0], last = e.points[e.points.length - 1];
+        if (first) consider(e.id, 0, first.x, first.y);
+        if (last) consider(e.id, 1, last.x, last.y);
+      }
     }
     return best;
   }
@@ -163,6 +168,7 @@ export class ConstraintTools {
     const idx = pickEntity(entities, p, this.host.pickTol());
     if (idx < 0) return;
     const e = entities[idx];
+    if (!e) return;
     if (this.host.getFilletFirst() == null) {
       // store first pick if it's a line or a circle
       if (e.type === "line" || e.type === "circle") this.host.setFilletFirst(idx);
@@ -179,12 +185,12 @@ export class ConstraintTools {
   private concentricClick(p: THREE.Vector2) {
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, this.host.pickTol());
-    if (idx < 0 || entities[idx].type !== "circle") return;
+    if (idx < 0 || entities[idx]?.type !== "circle") return;
     if (this.host.getFilletFirst() == null) { this.host.setFilletFirst(idx); return; }
     const a = entities[this.host.getFilletFirst()!];
     this.host.setFilletFirst(null);
     const b = entities[idx];
-    if (a && a.id !== b.id && a.type === "circle") this.addConstraint({ type: "concentric", c1: a.id, c2: b.id });
+    if (a && b && a.id !== b.id && a.type === "circle") this.addConstraint({ type: "concentric", c1: a.id, c2: b.id });
   }
 
   private addConstraint(c: SketchConstraint) {

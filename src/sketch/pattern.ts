@@ -59,9 +59,10 @@ function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, id: str
       const hw = e.width / 2, hh = e.height / 2;
       const corners = ([[e.x - hw, e.y - hh], [e.x + hw, e.y - hh], [e.x + hw, e.y + hh], [e.x - hw, e.y + hh]] as [number, number][])
         .map(([x, y]) => R(x, y));
-      return corners.map((c0, i) => {
+      return corners.flatMap((c0, i) => {
         const c1 = corners[(i + 1) % 4];
-        return { type: "line", id: `${id}.${i}`, x1: c0[0], y1: c0[1], x2: c1[0], y2: c1[1], ...c } as ResolvedEntity;
+        if (!c1) return [];
+        return [{ type: "line", id: `${id}.${i}`, x1: c0[0], y1: c0[1], x2: c1[0], y2: c1[1], ...c } as ResolvedEntity];
       });
     }
   }
@@ -133,8 +134,9 @@ function hexagonLines(cx: number, cy: number, R: number, id: string): ResolvedEn
     const a = Math.PI / 6 + (k * Math.PI) / 3; // 30°, 90°, … (pointy-top)
     v.push([cx + R * Math.cos(a), cy + R * Math.sin(a)]);
   }
-  return v.map((p, k) => {
+  return v.flatMap((p, k) => {
     const q = v[(k + 1) % 6];
-    return { type: "line", id: `${id}.${k}`, x1: p[0], y1: p[1], x2: q[0], y2: q[1] } as ResolvedEntity;
+    if (!q) return [];
+    return [{ type: "line", id: `${id}.${k}`, x1: p[0], y1: p[1], x2: q[0], y2: q[1] } as ResolvedEntity];
   });
 }

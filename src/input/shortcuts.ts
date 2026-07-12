@@ -53,7 +53,7 @@ export const SHORTCUTS: Shortcut[] = [
 export function keyHint(action: string): string | undefined {
   const s = SHORTCUTS.find((x) => x.action === action);
   if (!s) return undefined;
-  const k = s.key.length === 1 ? s.key.toUpperCase() : s.key[0].toUpperCase() + s.key.slice(1);
+  const k = s.key.length === 1 ? s.key.toUpperCase() : s.key.charAt(0).toUpperCase() + s.key.slice(1);
   return s.shift ? `Shift+${k}` : k;
 }
 

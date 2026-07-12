@@ -261,12 +261,16 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     let target: string;
     let tools: string[];
     if (pre.length >= 2) {
-      target = pre[0];
+      const first = pre[0];
+      if (first === undefined) return;
+      target = first;
       tools = pre.slice(1);
     } else {
       // ONE selected body (e.g. right-click → "Combine with…") is the kept target;
       // with none, pick a target when ambiguous. Tools come from the checklist.
-      target = pre[0] ?? bodies[0].id;
+      const t0 = pre[0] ?? bodies[0]?.id;
+      if (t0 === undefined) return;
+      target = t0;
       if (!pre.length && bodies.length > 2) {
         const t = await chooseBody("Target body (kept)", bodies);
         if (!t) return;
@@ -346,7 +350,10 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     }
     const bodies = store.buildState.result?.bodies ?? [];
     let ids = viewport.getSelectedBodies();
-    if (!ids.length && bodies.length) ids = [bodies[bodies.length - 1].id]; // none selected → active body
+    if (!ids.length && bodies.length) {
+      const lastBody = bodies[bodies.length - 1];
+      if (lastBody) ids = [lastBody.id]; // none selected → active body
+    }
     if (!ids.length) {
       setStatus("Move: select a body first (Select: Bodies)", "");
       return;
@@ -438,7 +445,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       return;
     }
     const label = (id: string) => `Sketch ${all.findIndex((f) => f.id === id) + 1}`;
-    let pathId = candidates[0].id;
+    const c0 = candidates[0];
+    if (!c0) return;
+    let pathId = c0.id;
     if (candidates.length > 1) {
       const picked = await choose<string>("Pick the path sketch", candidates.map((f) => ({ value: f.id, label: label(f.id) })));
       if (!picked) return;

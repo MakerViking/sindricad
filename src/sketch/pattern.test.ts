@@ -25,7 +25,7 @@ describe("expandPattern / patternRect", () => {
 
   it("positions each instance at i*spacingX, j*spacingY relative to the source", () => {
     const out = expandPattern(pat, byIdMap([src]), params) as Extract<ResolvedEntity, { type: "circle" }>[];
-    const positions = out.map((e) => [e.x, e.y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const positions = out.map((e) => [e.x, e.y] as [number, number]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     expect(positions).toEqual([
       [0, 5], [10, 0], [10, 5], [20, 0], [20, 5],
     ]);

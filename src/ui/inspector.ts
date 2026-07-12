@@ -93,6 +93,7 @@ export class Inspector {
           this.el.appendChild(
             numberRow(`${d.label} ${unit}`, displayValue(d.valueMm), (v) => {
               const copy = resolveEntities(f, doc.parameters)[i];
+              if (!copy) return;
               entityDims(copy).find((x) => x.field === d.field)?.write(fromDisplay(v));
               const entities = f.entities.map((ent, j) => (j === i ? toSketchEntity(copy) : ent));
               this.store.updateFeature(f.id, { entities } as Partial<Feature>);

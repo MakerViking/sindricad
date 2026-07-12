@@ -274,7 +274,7 @@ export interface ResolveDiag {
 export interface RebuildResult {
   mesh: { positions: number[]; indices: number[]; faceIds: number[] };
   edges: { id: string; points: [number, number, number][]; body?: string }[];
-  bbox: { min: number[]; max: number[] };
+  bbox: { min: Vec3; max: Vec3 };
   // per-body metadata: which faceId range each body occupies in the merged mesh
   // (lets the browser tree list bodies and picking map a face back to its body).
   // `etag` (when the backend supplies one) is a content fingerprint the render

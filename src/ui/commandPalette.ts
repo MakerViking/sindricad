@@ -96,7 +96,9 @@ export class CommandPalette {
     if (i < 0 || i >= this.items.length) return;
     this.items[this.active]?.el.classList.remove("active");
     this.active = i;
-    const el = this.items[i].el;
+    const item = this.items[i];
+    if (!item) return;
+    const el = item.el;
     el.classList.add("active");
     el.scrollIntoView({ block: "nearest" });
   }

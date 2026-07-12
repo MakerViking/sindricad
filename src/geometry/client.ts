@@ -301,7 +301,8 @@ export class Geometry implements GeometryBackend {
     if (this.lastSent) {
       const set: [number, Feature][] = [];
       for (let i = 0; i < doc.features.length; i++) {
-        if (this.lastSent.features[i] !== doc.features[i]) set.push([i, doc.features[i]]);
+        const f = doc.features[i];
+        if (f !== undefined && this.lastSent.features[i] !== f) set.push([i, f]);
       }
       // delta only when it's actually small — a reordered/rewritten timeline
       // ships fewer bytes as a full document
@@ -337,7 +338,11 @@ export class Geometry implements GeometryBackend {
       }
       if (msg.ok && assembled !== null) return { ok: true, result: assembled };
     }
-    if (msg.ok) return { ok: true, result: msg.result as RebuildResult };
+    if (msg.ok) {
+      const legacy = this.legacyResult(msg.result);
+      if (legacy) return { ok: true, result: legacy };
+      return { ok: false, error: { message: "geometry engine returned no mesh" } };
+    }
     return { ok: false, error: msg.error };
   }
 
@@ -351,7 +356,11 @@ export class Geometry implements GeometryBackend {
       const assembled = this.assemble(msg.result);
       if (assembled !== null) return { ok: true, result: assembled };
     }
-    if (msg.ok) return { ok: true, result: msg.result as RebuildResult };
+    if (msg.ok) {
+      const legacy = this.legacyResult(msg.result);
+      if (legacy) return { ok: true, result: legacy };
+      return { ok: false, error: { message: "geometry engine returned no mesh" } };
+    }
     return { ok: false, error: msg.error };
   }
 
@@ -386,14 +395,17 @@ export class Geometry implements GeometryBackend {
     let ek = 0;
     for (const p of payloads) {
       const vbase = positions.length / 3;
-      // explicit loops: Array.push(...huge) overflows the stack
-      for (let i = 0; i < p.positions.length; i++) positions.push(p.positions[i]);
-      for (let i = 0; i < p.indices.length; i++) indices.push(p.indices[i] + vbase);
-      for (let i = 0; i < p.faceIds.length; i++) faceIds.push(p.faceIds[i] + faceBase);
-      for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, body: e.body });
+      // explicit loops: Array.push(...huge) overflows the stack. for-of yields the
+      // element as a plain number (index access would be number|undefined here).
+      for (const val of p.positions) positions.push(val);
+      for (const val of p.indices) indices.push(val + vbase);
+      for (const val of p.faceIds) faceIds.push(val + faceBase);
+      for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, ...(e.body !== undefined ? { body: e.body } : {}) });
       meta.push({
         id: p.id, name: p.name, faceStart: faceBase,
-        faceCount: p.faceCount ?? 0, faceOwners: p.faceOwners, etag: p.etag,
+        faceCount: p.faceCount ?? 0,
+        ...(p.faceOwners !== undefined ? { faceOwners: p.faceOwners } : {}),
+        ...(p.etag !== undefined ? { etag: p.etag } : {}),
       });
       faceBase += p.faceCount ?? 0;
     }
@@ -411,6 +423,25 @@ export class Geometry implements GeometryBackend {
     return out;
   }
 
+  /** Build the legacy single-mesh RebuildResult from a protocol-v1 reply (no
+   *  per-body payload — mesh/edges inline). Returns null if the reply carries no
+   *  direct mesh, so the caller can route it to its error path rather than
+   *  fabricating an empty result. */
+  private legacyResult(r: WireRebuildResult): RebuildResult | null {
+    if (!r.mesh || !r.edges) return null;
+    const out: RebuildResult = {
+      mesh: r.mesh,
+      edges: r.edges,
+      // the wire can supply `bbox: null` when nothing has built yet (no bodies);
+      // preserved as-is — RebuildResult models bbox as always-present.
+      bbox: r.bbox as RebuildResult["bbox"],
+    };
+    if (r.diagnostics) out.diagnostics = r.diagnostics;
+    if (r.featureError) out.featureError = r.featureError;
+    if (r.featureErrors) out.featureErrors = r.featureErrors;
+    return out;
+  }
+
   async export(
     doc: CadDocument,
     format: ExportFormat,
@@ -421,7 +452,15 @@ export class Geometry implements GeometryBackend {
       "export",
       { document: doc, format, path, body: opts.body, separate: opts.separate },
     );
-    if (msg.ok) return { ok: true, path: msg.result.path, paths: msg.result.paths, warnings: msg.result.warnings };
+    if (msg.ok) {
+      const r = msg.result;
+      return {
+        ok: true,
+        ...(r.path !== undefined ? { path: r.path } : {}),
+        ...(r.paths !== undefined ? { paths: r.paths } : {}),
+        ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
+      };
+    }
     return { ok: false, message: msg.error?.message };
   }
 
@@ -443,7 +482,14 @@ export class Geometry implements GeometryBackend {
       bodyNames: opts.bodyNames,
       settings: opts.settings ?? {},
     });
-    if (msg.ok) return { ok: true, path: msg.result.path, warnings: msg.result.warnings };
+    if (msg.ok) {
+      const r = msg.result;
+      return {
+        ok: true,
+        ...(r.path !== undefined ? { path: r.path } : {}),
+        ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
+      };
+    }
     return { ok: false, message: msg.error?.message };
   }
 
@@ -458,7 +504,10 @@ export class Geometry implements GeometryBackend {
 
   async interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }> {
     const msg = await this.call<{ pairs?: ClashPair[] }>("interference", { document: doc });
-    if (msg.ok) return { ok: true, pairs: msg.result.pairs };
+    if (msg.ok) {
+      const r = msg.result;
+      return { ok: true, ...(r.pairs !== undefined ? { pairs: r.pairs } : {}) };
+    }
     return { ok: false, message: msg.error?.message };
   }
 }

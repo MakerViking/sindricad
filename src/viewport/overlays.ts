@@ -62,9 +62,11 @@ export function buildCurvatureCombs(view: ModelView, box: THREE.Box3): THREE.Lin
     if (!pts || pts.length < 3) continue;
     const hairs: Hair[] = [];
     for (let i = 1; i < pts.length - 1; i++) {
-      a.set(...pts[i - 1]);
-      b.set(...pts[i]);
-      c.set(...pts[i + 1]);
+      const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+      if (!p0 || !p1 || !p2) continue;
+      a.set(...p0);
+      b.set(...p1);
+      c.set(...p2);
       const la = e1.subVectors(b, a).length();
       const lc = e2.subVectors(c, b).length();
       const lb = a.distanceTo(c);

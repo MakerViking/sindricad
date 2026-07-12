@@ -102,7 +102,9 @@ export async function checkRecovery(store: DocumentStore) {
     const { invoke } = await import("@tauri-apps/api/core");
     const slots = await invoke<[string, number][]>("recovery_list");
     if (!slots.length) return;
-    const [slot, mtime] = slots[0];
+    const first = slots[0];
+    if (!first) return;
+    const [slot, mtime] = first;
     const raw = await invoke<string | null>("recovery_read", { slot });
     if (!raw) return;
     const env = JSON.parse(raw) as Envelope;
