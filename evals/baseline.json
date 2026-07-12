@@ -3,7 +3,7 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 192,
+    "ratchet": 145,
     "iterations": [
       {
         "n": 1,
@@ -26,6 +26,18 @@
           "src/sketch/constraintTools.ts"
         ],
         "verdict": "ACCEPT (EV1: gates pass, 0 gaming hits, 5 substance checks behavior-preserved, 1 unsafe cast removed)"
+      },
+      {
+        "n": 3,
+        "commit": "1793106",
+        "errors": 145,
+        "delta": -47,
+        "files": [
+          "src/viewport/viewport.ts",
+          "src/features/edgeFeatureTool.ts",
+          "src/types.ts (1-line public-API type tighten, ruled legitimate by EV1)"
+        ],
+        "verdict": "ACCEPT (EV1: gates pass, 0 gaming hits, bbox tuple verified true at sidecar source)"
       }
     ],
     "goal": 0,
