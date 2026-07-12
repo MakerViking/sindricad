@@ -40,7 +40,9 @@ import websockets
 import occt_smp
 
 HOST = "127.0.0.1"
-PORT = 8765
+# Env-overridable so a test/benchmark instance can run beside the app's own
+# sidecar without stealing its port.
+PORT = int(os.environ.get("SINDRI_SIDECAR_PORT", "8765"))
 
 # WebSocket auth: every connection must carry the per-launch shared secret.
 # Rust sets SINDRI_SIDECAR_TOKEN when it spawns us; a manual `python server.py`
@@ -309,7 +311,9 @@ def _rebuild_job(document, tolerance, known=None):
 
     diag = []
     known = known or {}
+    t0 = time.monotonic()
     part, errors, bodies = rebuild_cached(document, diagnostics=diag)
+    t_rebuild = time.monotonic() - t0
     if errors and part is None and not bodies:
         # nothing built at all — the document is unusable, surface as fatal
         e = errors[0]
@@ -322,6 +326,7 @@ def _rebuild_job(document, tolerance, known=None):
 
     live_ids = set()
     out = []
+    t0 = time.monotonic()
     for b in bodies:
         if b.get("shape") is None:
             continue
@@ -334,10 +339,33 @@ def _rebuild_job(document, tolerance, known=None):
             item = {"id": b["id"], "name": b["name"], "etag": ent["etag"]}
             item.update(ent["payload"])
             out.append(item)
+    t_payload = time.monotonic() - t0
     for bid in list(_MESH_CACHE):
         if bid not in live_ids:
             del _MESH_CACHE[bid]  # body deleted/consumed — drop its cache
-    result = {"protocol": 2, "bodies": out, "bbox": bbox(part)}
+    # bbox of the merged part walks every solid — on a many-body document this
+    # is its own long phase; tick around it so the stall watchdog sees progress.
+    from builder import on_feature_tick as _tick_fn
+    if _tick_fn is not None:
+        try:
+            _tick_fn(-1)
+        except Exception:
+            pass
+    t0 = time.monotonic()
+    doc_bbox = bbox(part)
+    t_bbox = time.monotonic() - t0
+    if _tick_fn is not None:
+        try:
+            _tick_fn(-1)
+        except Exception:
+            pass
+    # Phase log for scale diagnosis (large assemblies): shows where a slow
+    # build actually spends its time, and correlates with the stall watchdog.
+    print(f"[rebuild] features={len(document.get('features', []))} "
+          f"bodies={len(out)} rebuild={t_rebuild:.1f}s payloads={t_payload:.1f}s "
+          f"bbox={t_bbox:.1f}s",
+          flush=True)
+    result = {"protocol": 2, "bodies": out, "bbox": doc_bbox}
     if diag:  # only attach when a selector resolved with low confidence
         result["diagnostics"] = diag
     if errors:

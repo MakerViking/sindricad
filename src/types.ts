@@ -165,6 +165,10 @@ export type Feature =
       brep: string;
       source?: string;
       solid?: boolean;
+      // explode:false keeps a multi-solid payload as ONE body (large imported
+      // assemblies: divides body count by solids-per-import). Absent/true =
+      // historical one-body-per-solid behavior.
+      explode?: boolean;
     }
   // Cut a body by a plane. keep=top/bottom keeps one side; keep=both splits it
   // into separate bodies. `body` targets a specific body (default: the active one);

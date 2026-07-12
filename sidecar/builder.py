@@ -1232,7 +1232,16 @@ def _handle_sweep(f, ctx):
 
 def _handle_import(f, ctx):
     base = f.get("name") or "Imported"
-    parts = _explode_solids(_brep_b64_to_shape(f["brep"]))
+    shape = _brep_b64_to_shape(f["brep"])
+    # explode:false keeps a multi-solid payload as ONE body. For imported
+    # assemblies with hundreds of import features this divides body count
+    # (browser tree entries, per-body payloads, draw calls) by the average
+    # solids-per-import. Default (absent/true) keeps the historical
+    # one-body-per-solid behavior.
+    if f.get("explode") is False:
+        ctx.new_body(shape, base)
+        return
+    parts = _explode_solids(shape)
     if len(parts) == 1:
         ctx.new_body(parts[0], base)
     else:
@@ -1966,7 +1975,20 @@ def rebuild_cached(document, diagnostics=None):
         if k > 0 and k - 1 < len(_CACHE["snaps"]) and _CACHE["snaps"][k - 1] is not None:
             resume = (k, _CACHE["snaps"][k - 1])  # restore state after feature k-1
     if resume is None and store is not None:
+        # Checkpoint restore unpickles every prefix body from disk — on a large
+        # document this is a long, otherwise-silent phase; tick around it so
+        # the supervisor's stall watchdog never mistakes it for a hang.
+        if on_feature_tick is not None:
+            try:
+                on_feature_tick(-1)
+            except Exception:
+                pass
         hit = _restore_from_disk(store, keys)
+        if on_feature_tick is not None:
+            try:
+                on_feature_tick(-1)
+            except Exception:
+                pass
         if hit is not None:
             start_i, snap, disk_mod = hit
             resume = (start_i, snap)
