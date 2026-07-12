@@ -99,6 +99,12 @@
     "holdout": "evaluator regenerates fresh corpus at unpublished seed each eval; improvement must hold within a few points; seeds 1401/9973/24601 burned",
     "captured": "2026-07-12",
     "captured_by": "builder H3, independently reproduced by auditor A3 at a fresh seed (29.40%)",
-    "ship_gate": "box_all/cyl_all regression stratum (task #9) must exist and pass before loop-produced fillet changes reach users"
+    "ship_gate": "box_all/cyl_all regression stratum (task #9) must exist and pass before loop-produced fillet changes reach users",
+    "regression_stratum": {
+      "corpus": "sidecar/tools/corpus_fillet_regression.json (seed 4242, 60 cases box_all/cyl_all)",
+      "baseline": "0/60 \u2014 regression FLOOR, must stay 0/60",
+      "purpose": "sequential-fallback fix must not regress common all-edges fillet/chamfer; catches partials down to 1 dropped edge via ref-volume",
+      "audited": "A3 PIN-OK after ref_removed fix (face-count blind spot closed)"
+    }
   }
 }
