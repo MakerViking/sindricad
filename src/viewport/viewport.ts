@@ -1570,7 +1570,23 @@ export class Viewport {
   }
 
   enterSketchView(origin: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3) {
-    this.rig.lookAtPlane(origin, normal, up);
+    // Straighten to the NEAREST square orientation: the view is always squared
+    // to the sketch axes, but among the four cardinal in-plane rotations pick
+    // the one closest to the camera's current visual up — entering a sketch
+    // keeps your bearings instead of snapping to the plane's canonical v
+    // (which could be 90°/180° off and forced Q/E view-rolling to fix it).
+    const camUp = new THREE.Vector3().setFromMatrixColumn(
+      this.rig.active.matrixWorld, 1);
+    const n = normal.clone().normalize();
+    const v = up.clone().normalize();
+    const u = new THREE.Vector3().crossVectors(n, v).normalize();
+    let bestUp = v;
+    let bestDot = -Infinity;
+    for (const cand of [v, v.clone().negate(), u, u.clone().negate()]) {
+      const d = cand.dot(camUp);
+      if (d > bestDot) { bestDot = d; bestUp = cand; }
+    }
+    this.rig.lookAtPlane(origin, normal, bestUp);
     // Flat, orthographic view for 2D precision (no perspective convergence). Force
     // 'ortho' MODE (not just a camera swap) so 'auto' can't flip back to perspective
     // on an off-axis sketch plane. Capture the prior mode ONCE so re-orienting

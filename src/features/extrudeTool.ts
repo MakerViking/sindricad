@@ -302,7 +302,11 @@ export class ExtrudeTool {
     if (this.committing) return;
     if (!this.selected.length) return this.cancel();
     const v = this.dim.getValue("distance");
-    if (v != null) this.distance = v; // the field is the truth: typed sign wins
+    // GATE on isUserDriven: while dragging, the field displays |distance| —
+    // reading it back unconditionally strips the drag's sign and sends the
+    // extrude the wrong way ("Cut removed nothing" on cut-toward-body).
+    // Typed values (userDriven) carry their own sign and win.
+    if (v != null && this.dim.isUserDriven("distance")) this.distance = v;
     if (Math.abs(this.distance) < 1e-3) return; // ignore zero
     let op = this.currentOperation();
     // when a body already exists, let the user state the operation (MCAD-style):

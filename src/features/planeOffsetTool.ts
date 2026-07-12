@@ -201,7 +201,9 @@ export class PlaneOffsetTool {
   private commit() {
     if (!this.active) return;
     const v = this.dim.getValue("offset");
-    if (v != null) this.value = v; // typed sign wins
+    // GATE on isUserDriven: while dragging the field displays |value|, so an
+    // unguarded read-back flips a negative offset positive (abs-display trap).
+    if (v != null && this.dim.isUserDriven("offset")) this.value = v;
     const o = this.anchor.clone().addScaledVector(this.axis, this.value);
     const def: PlaneDef = {
       origin: [o.x, o.y, o.z],

@@ -86,10 +86,11 @@ export class SectionTool {
   }
 
   /** Enter in the field (or the on-screen check button) sets the exact offset.
-   *  The typed value is the truth as-is — no re-applying the drag's sign onto
-   *  |v| (the abs-display trap: a Math.abs()-shown value must never be read
-   *  back as truth except through the field itself). */
+   *  GATED on isUserDriven: Enter after a pure drag would read back the
+   *  |value| the display shows and strip a negative offset's sign (the
+   *  abs-display trap). A typed value is the truth as-is, sign included. */
   private applyTypedOffset() {
+    if (!this.dim.isUserDriven("offset")) return; // drag value already applied live
     const v = this.dim.getValue("offset");
     if (v == null) return;
     this.offset = v;

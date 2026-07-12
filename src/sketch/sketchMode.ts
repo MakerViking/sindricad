@@ -961,10 +961,10 @@ export class SketchMode {
     }
     // tool shortcuts inside the sketch
     const k = e.key.toLowerCase();
-    // Q/E roll the sketch view ±15° about its normal. Stop the event so the global
-    // keymap (q=Press/Pull, e=Extrude) doesn't also fire and kick us out of the sketch.
-    if (k === "q") { e.preventDefault(); e.stopImmediatePropagation(); this.viewport.rig.roll(-Math.PI / 12); return; }
-    if (k === "e") { e.preventDefault(); e.stopImmediatePropagation(); this.viewport.rig.roll(Math.PI / 12); return; }
+    // Q/E deliberately NOT handled here: they fall through to the global keymap
+    // (q=Press/Pull, e=Extrude), which finishes the sketch and starts the tool —
+    // the sketch view now opens straightened to the nearest rotation, so the old
+    // Q/E view-roll is no longer needed.
     if (k === "l") this.setTool("line");
     else if (k === "r") this.setTool("rectangle");
     else if (k === "c") this.setTool("circle");

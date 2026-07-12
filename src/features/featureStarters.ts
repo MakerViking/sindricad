@@ -553,9 +553,21 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     // cut). This takes priority over region extrude so a visible sketch never hijacks
     // "extrude this face" (was: a shown sketch forced region-extrude, so face cut did
     // nothing).
-    if (viewport.selectedFacesForPressPull()) {
-      pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
-      return;
+    const sel = viewport.selectedFacesForPressPull();
+    if (sel) {
+      // …EXCEPT when the selected face sits ON or BEHIND a visible sketch's
+      // plane (same-direction normals): faces win general picks, so a click
+      // aimed at a sketch profile lying on that face selects the face instead —
+      // and hijacking to Press/Pull forced users to hide the body to extrude a
+      // sketch. The sketch has priority when it's on or above the face.
+      const underSketch = overlay.regions.some((wr) => {
+        if (wr.plane.n.dot(sel.normal) < 0.99) return false; // same-facing planes only
+        return wr.plane.plane.distanceToPoint(sel.anchor) <= 0.01; // face on/behind the sketch plane
+      });
+      if (!underSketch) {
+        pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+        return;
+      }
     }
     if (overlay.regions.length === 0) {
       setStatus("Extrude: select a face, or create a sketch with a closed profile first", "");
