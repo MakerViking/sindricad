@@ -3,7 +3,7 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 192,
+    "ratchet": 0,
     "iterations": [
       {
         "n": 1,
@@ -26,6 +26,48 @@
           "src/sketch/constraintTools.ts"
         ],
         "verdict": "ACCEPT (EV1: gates pass, 0 gaming hits, 5 substance checks behavior-preserved, 1 unsafe cast removed)"
+      },
+      {
+        "n": 3,
+        "commit": "1793106",
+        "errors": 145,
+        "delta": -47,
+        "files": [
+          "src/viewport/viewport.ts",
+          "src/features/edgeFeatureTool.ts",
+          "src/types.ts (1-line public-API type tighten, ruled legitimate by EV1)"
+        ],
+        "verdict": "ACCEPT (EV1: gates pass, 0 gaming hits, bbox tuple verified true at sidecar source)"
+      },
+      {
+        "n": 4,
+        "commit": "0cfde59",
+        "errors": 65,
+        "delta": -80,
+        "files": [
+          "9 files: contextMenus? (menu.ts), render, client, ribbon, picking, patternFlow, spline, moveTool, measureTool"
+        ],
+        "verdict": "ACCEPT (EV1: gates pass, net-zero casts, WS mesh-less error path = strict improvement over crash)"
+      },
+      {
+        "n": 5,
+        "commit": "133a7371",
+        "errors": 9,
+        "delta": -56,
+        "files": [
+          "22 non-test files (final source sweep)"
+        ],
+        "verdict": "pending EV1; implementer correctly halted at test files on rules conflict, reverted, escalated"
+      },
+      {
+        "n": "5b/6",
+        "commit": "f3b0e51",
+        "errors": 0,
+        "delta": -9,
+        "files": [
+          "3 test files, type-only"
+        ],
+        "verdict": "ACCEPT (EV1 heightened line-by-line review)"
       }
     ],
     "goal": 0,
@@ -34,7 +76,8 @@
     "worktree_branch": "loop/ts-strict",
     "captured": "2026-07-12",
     "captured_by": "evaluator agent, cross-checked by driver",
-    "note": "Main tree measured 398 with uncommitted working changes; the loop and its ratchet run against the worktree at the base commit (396)."
+    "note": "Main tree measured 398 with uncommitted working changes; the loop and its ratchet run against the worktree at the base commit (396).",
+    "status": "CLOSED AT GOAL \u2014 flags live in root tsconfig on loop/ts-strict (terminal 8b0f85e); see evals/reports/ts-strict-2026-07-12.md"
   },
   "golden-op-coverage": {
     "metrics": {
@@ -87,6 +130,13 @@
     "holdout": "evaluator regenerates fresh corpus at unpublished seed each eval; improvement must hold within a few points; seeds 1401/9973/24601 burned",
     "captured": "2026-07-12",
     "captured_by": "builder H3, independently reproduced by auditor A3 at a fresh seed (29.40%)",
-    "ship_gate": "box_all/cyl_all regression stratum (task #9) must exist and pass before loop-produced fillet changes reach users"
+    "ship_gate": "box_all/cyl_all regression stratum (task #9) must exist and pass before loop-produced fillet changes reach users",
+    "regression_stratum": {
+      "corpus": "sidecar/tools/corpus_fillet_regression.json (seed 4242, 60 cases box_all/cyl_all)",
+      "baseline": "0/60 \u2014 regression FLOOR, must stay 0/60",
+      "purpose": "sequential-fallback fix must not regress common all-edges fillet/chamfer; catches partials down to 1 dropped edge via ref-volume",
+      "audited": "A3 PIN-OK after ref_removed fix (face-count blind spot closed)"
+    },
+    "harness_fix": "min_faces floor (adjudicated defect: old pre+n floor rejected valid merged-face solutions on all 149 tight join_L); corpus hash 5bca6509...; shipped baseline unchanged 149/500 (runway proof); canonical edge order REQUIRED of implementations (sorted rounded-3dp midpoint; tiebreaker midpoint->direction->length)"
   }
 }
