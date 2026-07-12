@@ -3,7 +3,7 @@
     "metric": "tsc errors under noUncheckedIndexedAccess + exactOptionalPropertyTypes",
     "harness": "evals/harness/ts_strict.sh",
     "baseline": 396,
-    "ratchet": 258,
+    "ratchet": 192,
     "iterations": [
       {
         "n": 1,
@@ -15,6 +15,17 @@
           "src/sketch/region.ts"
         ],
         "verdict": "ACCEPT (evaluator EV1: all gates pass, 0 gaming hits, behavior preserved)"
+      },
+      {
+        "n": 2,
+        "commit": "2c6bba6",
+        "errors": 192,
+        "delta": -66,
+        "files": [
+          "src/sketch/sketchMode.ts",
+          "src/sketch/constraintTools.ts"
+        ],
+        "verdict": "ACCEPT (EV1: gates pass, 0 gaming hits, 5 substance checks behavior-preserved, 1 unsafe cast removed)"
       }
     ],
     "goal": 0,
