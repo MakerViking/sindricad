@@ -10,7 +10,10 @@
         "commit": "d85fbb4",
         "errors": 258,
         "delta": -138,
-        "files": ["src/sketch/modify.ts", "src/sketch/region.ts"],
+        "files": [
+          "src/sketch/modify.ts",
+          "src/sketch/region.ts"
+        ],
         "verdict": "ACCEPT (evaluator EV1: all gates pass, 0 gaming hits, behavior preserved)"
       }
     ],
@@ -21,5 +24,38 @@
     "captured": "2026-07-12",
     "captured_by": "evaluator agent, cross-checked by driver",
     "note": "Main tree measured 398 with uncommitted working changes; the loop and its ratchet run against the worktree at the base commit (396)."
+  },
+  "golden-op-coverage": {
+    "metrics": {
+      "e2e_covered": {
+        "value": 22,
+        "universe": 28,
+        "ratchet": 22,
+        "goal": 28,
+        "role": "RATCHET (non-inflatable)"
+      },
+      "golden_pass": {
+        "value": 13,
+        "of": 13,
+        "role": "no-regression gate (must equal N)"
+      },
+      "clean_coverage": {
+        "value": 9,
+        "of": 26,
+        "role": "report-only (inflatable, not ratcheted)"
+      }
+    },
+    "harness": "sidecar/tools/golden_corpus.py --check; sidecar/tools/e2e_coverage.py",
+    "uncovered": [
+      "chamfer",
+      "draft",
+      "fillet",
+      "simplifyMesh",
+      "sphere",
+      "sweep"
+    ],
+    "captured": "2026-07-12",
+    "captured_by": "auditor A2 reruns (independent of builder H2)",
+    "note": "sphere uncovered due to real product bug (task #7): tessellate.py seam-face crash"
   }
 }
