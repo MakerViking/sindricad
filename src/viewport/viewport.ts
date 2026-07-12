@@ -4,7 +4,12 @@
 
 import * as THREE from "three";
 import { createScene, type SceneBundle } from "./scene";
-import { createCameraRig, type CameraRig, type StandardView } from "./cameras";
+import {
+  createCameraRig,
+  type CameraRig,
+  type StandardView,
+  type ProjectionMode,
+} from "./cameras";
 import {
   buildBodyMesh,
   buildEdgeLines,
@@ -1290,9 +1295,13 @@ export class Viewport {
     return this.sharedRaycaster;
   }
 
-  toggleProjection() {
-    this.rig.toggleProjection();
+  cycleProjection(): ProjectionMode {
+    const order: ProjectionMode[] = ["persp", "ortho", "auto"];
+    const next =
+      order[(order.indexOf(this.rig.projectionMode()) + 1) % order.length];
+    this.rig.setProjectionMode(next);
     this.requestRender();
+    return next;
   }
 
   setStandardView(v: StandardView) {
@@ -1547,11 +1556,13 @@ export class Viewport {
 
   enterSketchView(origin: THREE.Vector3, normal: THREE.Vector3, up: THREE.Vector3) {
     this.rig.lookAtPlane(origin, normal, up);
-    // Flat, orthographic view for 2D precision (no perspective convergence). Capture
-    // the prior projection ONCE so re-orienting (Look At) mid-sketch doesn't lose it.
+    // Flat, orthographic view for 2D precision (no perspective convergence). Force
+    // 'ortho' MODE (not just a camera swap) so 'auto' can't flip back to perspective
+    // on an off-axis sketch plane. Capture the prior mode ONCE so re-orienting
+    // (Look At) mid-sketch doesn't lose it.
     if (!this.sketchOrtho) {
-      this.sketchPrevOrtho = this.rig.isOrtho();
-      if (!this.rig.isOrtho()) this.rig.toggleProjection();
+      this.sketchPrevMode = this.rig.projectionMode();
+      this.rig.setProjectionMode("ortho");
       this.sketchOrtho = true;
     }
     this.scene.grid.group.visible = false; // hide the world ground grid; only the sketch grid shows
@@ -1560,7 +1571,7 @@ export class Viewport {
   }
   exitSketchView() {
     if (this.sketchOrtho) {
-      if (this.rig.isOrtho() !== this.sketchPrevOrtho) this.rig.toggleProjection(); // restore projection
+      this.rig.setProjectionMode(this.sketchPrevMode); // restore projection mode
       this.sketchOrtho = false;
     }
     this.scene.grid.group.visible = true;
@@ -1568,7 +1579,7 @@ export class Viewport {
     this.setModelDimmed(false);
     this.requestRender();
   }
-  private sketchPrevOrtho = false;
+  private sketchPrevMode: ProjectionMode = "auto";
   private sketchOrtho = false; // currently in the sketch's forced flat (ortho) view
 
   setModelDimmed(on: boolean) {

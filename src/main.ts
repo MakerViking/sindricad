@@ -989,10 +989,12 @@ function handleAction(action: string) {
     case "right":
       viewport.setStandardView(action as StandardView);
       break;
-    case "persp":
-      viewport.toggleProjection();
-      projBtn.textContent = viewport.rig.isOrtho() ? "Ortho" : "Persp";
+    case "persp": {
+      const mode = viewport.cycleProjection();
+      projBtn.textContent =
+        mode === "auto" ? "Auto" : mode === "ortho" ? "Ortho" : "Persp";
       break;
+    }
     case "selmode": {
       const next = viewport.selecting === "faces" ? "bodies" : "faces";
       viewport.setSelectionMode(next);

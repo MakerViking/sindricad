@@ -17,7 +17,11 @@ export interface CameraRig {
   controls: CameraControls;
   get active(): THREE.Camera;
   isOrtho(): boolean;
-  toggleProjection(): void;
+  /** 'auto' = Fusion's "Perspective with Ortho Faces": perspective while orbiting,
+   *  orthographic whenever the view axis is world-axis-aligned — so straight-on
+   *  views are truly flat (no parallax skew between bodies). */
+  projectionMode(): ProjectionMode;
+  setProjectionMode(mode: ProjectionMode): void;
   resize(w: number, h: number): void;
   update(dt: number): boolean;
   /** Zoom by a multiplicative factor (>1 = zoom out, <1 = zoom in). Works in BOTH
@@ -64,6 +68,8 @@ export type StandardView =
   | "bottom"
   | "iso";
 
+export type ProjectionMode = "persp" | "ortho" | "auto";
+
 export function createCameraRig(
   dom: HTMLElement,
   aspect: number,
@@ -86,6 +92,7 @@ export function createCameraRig(
 
   let usingOrtho = false;
   let active: THREE.Camera = persp;
+  let mode: ProjectionMode = "auto";
   let rollAngle = 0; // persistent view bank (radians), re-applied each update()
   let orbitLocked = false; // sketch "lock to plane": disable mouse orbit
 
@@ -114,6 +121,67 @@ export function createCameraRig(
   controls.dollyToCursor = true;
   controls.setTarget(0, 0, 0, false);
 
+  // Swap the active camera between projections, preserving apparent zoom in BOTH
+  // directions. 'auto' mode swaps constantly (every axis-align / orbit-away), so
+  // any scale mismatch would pop visibly: persp→ortho bakes the scale into the
+  // frustum and clears residual ortho zoom; ortho→persp dollies to the distance
+  // that reproduces the ortho apparent height.
+  function swapProjection() {
+    const from = active;
+    const to = usingOrtho ? persp : ortho;
+    const dist = controls.distance;
+    to.position.copy(from.position);
+    to.quaternion.copy(from.quaternion);
+    if (!usingOrtho) {
+      // persp -> ortho: match ortho frustum to the perspective frustum height
+      const h = 2 * Math.tan((FOV * Math.PI) / 180 / 2) * dist;
+      const aspect2 = (persp.aspect as number) || ortho.right / ortho.top || 1;
+      ortho.top = h / 2;
+      ortho.bottom = -h / 2;
+      ortho.left = (-h * aspect2) / 2;
+      ortho.right = (h * aspect2) / 2;
+      ortho.updateProjectionMatrix();
+      usingOrtho = true;
+      active = to;
+      controls.camera = to as THREE.PerspectiveCamera & THREE.OrthographicCamera;
+      controls.updateCameraUp();
+      controls.zoomTo(1, false); // frustum now carries the scale
+    } else {
+      // ortho -> persp: reproduce the ortho apparent height at the target
+      const halfH = (ortho.top - ortho.bottom) / 2 / ortho.zoom;
+      const newDist = Math.max(
+        MIN_PERSP_DIST,
+        halfH / Math.tan((FOV * Math.PI) / 360),
+      );
+      usingOrtho = false;
+      active = to;
+      controls.camera = to as THREE.PerspectiveCamera & THREE.OrthographicCamera;
+      controls.updateCameraUp();
+      controls.dollyTo(newDist, false);
+    }
+  }
+
+  // 'auto' snaps to ortho when the view axis is within this of a world axis.
+  // 0.5°: standard-view transitions converge well inside it, while the smallest
+  // deliberate orbit nudge (~0.4°/px) leaves it after a couple of pixels.
+  const AXIS_SNAP_COS = Math.cos((0.5 * Math.PI) / 180);
+  const tmpTarget = new THREE.Vector3();
+  const tmpPos = new THREE.Vector3();
+  function viewAxisAligned(): boolean {
+    const d = controls.getTarget(tmpTarget).sub(controls.getPosition(tmpPos));
+    const len = d.length();
+    if (len < 1e-9) return false;
+    return Math.max(Math.abs(d.x), Math.abs(d.y), Math.abs(d.z)) / len >= AXIS_SNAP_COS;
+  }
+  /** In 'auto', keep the actual projection in sync with the view axis. Returns
+   *  true when a swap happened (caller should re-render). */
+  function applyAutoProjection(): boolean {
+    if (mode !== "auto") return false;
+    if (viewAxisAligned() === usingOrtho) return false;
+    swapProjection();
+    return true;
+  }
+
   const rig: CameraRig = {
     controls,
     get active() {
@@ -122,29 +190,13 @@ export function createCameraRig(
     isOrtho() {
       return usingOrtho;
     },
-    toggleProjection() {
-      const from = active;
-      const to = usingOrtho ? persp : ortho;
-      // preserve apparent size: match ortho frustum to the perspective frustum
-      // height at the target distance (and vice versa).
-      const dist = controls.distance;
-      if (!usingOrtho) {
-        // persp -> ortho
-        const h = 2 * Math.tan((FOV * Math.PI) / 180 / 2) * dist;
-        const aspect2 =
-          (persp.aspect as number) || ortho.right / ortho.top || 1;
-        ortho.top = h / 2;
-        ortho.bottom = -h / 2;
-        ortho.left = (-h * aspect2) / 2;
-        ortho.right = (h * aspect2) / 2;
-        ortho.updateProjectionMatrix();
-      }
-      to.position.copy(from.position);
-      to.quaternion.copy(from.quaternion);
-      usingOrtho = !usingOrtho;
-      active = to;
-      controls.camera = to as THREE.PerspectiveCamera & THREE.OrthographicCamera;
-      controls.updateCameraUp();
+    projectionMode() {
+      return mode;
+    },
+    setProjectionMode(m: ProjectionMode) {
+      mode = m;
+      const wantOrtho = m === "ortho" || (m === "auto" && viewAxisAligned());
+      if (wantOrtho !== usingOrtho) swapProjection();
     },
     resize(w: number, h: number) {
       const aspect2 = w / h;
@@ -157,6 +209,7 @@ export function createCameraRig(
     },
     update(dt: number) {
       const moved = controls.update(dt);
+      const swapped = applyAutoProjection();
       // Apply the persistent roll AFTER camera-controls positions the camera.
       // update() always rewrites the orientation from its own spherical state,
       // so re-banking every frame is idempotent — no drift, no position change,
@@ -166,7 +219,7 @@ export function createCameraRig(
         active.rotateZ(rollAngle); // camera local +Z is the view axis → banks in place
         active.updateMatrixWorld();
       }
-      return moved || rollAngle !== 0;
+      return moved || swapped || rollAngle !== 0;
     },
     viewScale() {
       if (usingOrtho) {
@@ -192,10 +245,13 @@ export function createCameraRig(
         }
         controls.zoomTo(newZoom, false);
       } else if (pivot) {
-        // Dolly TOWARD THE CURSOR (MCAD-style): scale the camera AND target about
-        // the cursor point by f. What's under the cursor stays put, and the camera
-        // never flies through the near wall toward the model centre. Clamp the final
-        // distance to MIN_PERSP_DIST so it can't cross the near plane.
+        // Dolly at the CURSOR'S DEPTH, but strictly along the view axis. Scaling
+        // about the raw cursor point also slides the camera sideways, and in
+        // perspective any lateral camera move re-angles the model — one wheel click
+        // visibly tilted a straight-on view. Projecting the pivot onto the view
+        // axis keeps the viewing angle exactly fixed while zoom speed still tracks
+        // the surface under the cursor. Clamp the final distance to MIN_PERSP_DIST
+        // so it can't cross the near plane.
         const cam = controls.getPosition(new THREE.Vector3());
         const target = controls.getTarget(new THREE.Vector3());
         const dist = cam.distanceTo(target);
@@ -204,8 +260,15 @@ export function createCameraRig(
           if (dist <= MIN_PERSP_DIST) return; // already as close as we allow
           ff = MIN_PERSP_DIST / dist; // land exactly at the limit this step
         }
-        const nc = pivot.clone().add(cam.sub(pivot).multiplyScalar(ff));
-        const nt = pivot.clone().add(target.sub(pivot).multiplyScalar(ff));
+        const forward = target.clone().sub(cam).normalize();
+        const depth = pivot.clone().sub(cam).dot(forward);
+        // cursor point at/behind the camera (degenerate raycast) → dolly to target
+        const axisPivot =
+          depth > MIN_PERSP_DIST
+            ? cam.clone().add(forward.multiplyScalar(depth))
+            : target.clone();
+        const nc = axisPivot.clone().add(cam.sub(axisPivot).multiplyScalar(ff));
+        const nt = axisPivot.clone().add(target.sub(axisPivot).multiplyScalar(ff));
         controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
       } else {
         // no pivot (programmatic): plain dolly toward the orbit target

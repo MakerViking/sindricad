@@ -33,7 +33,7 @@ const GLOBAL: Command[] = [
   { id: "top", label: "Top View", group: "View", context: "global" },
   { id: "front", label: "Front View", group: "View", context: "global" },
   { id: "right", label: "Right View", group: "View", context: "global" },
-  { id: "persp", label: "Toggle Perspective / Orthographic", group: "View", context: "global" },
+  { id: "persp", label: "Cycle Projection (Persp / Ortho / Auto)", group: "View", context: "global" },
   { id: "selmode", label: "Toggle Faces / Bodies selection", group: "View", context: "global" },
   { id: "show-all-bodies", label: "Show All Bodies", group: "View", context: "global", key: "Shift+H" },
   { id: "shortcut-help", label: "Keyboard Shortcuts…", group: "Help", context: "global", key: "?" },
