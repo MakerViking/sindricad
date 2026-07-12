@@ -68,5 +68,25 @@
     "captured": "2026-07-12",
     "captured_by": "auditor A2 reruns (independent of builder H2)",
     "note": "sphere uncovered due to real product bug (task #7): tessellate.py seam-face crash"
+  },
+  "fillet-chamfer": {
+    "metric": "failed fillet/chamfer features on frozen 500-case stratified corpus (eval_fillet_corpus.py)",
+    "baseline": 149,
+    "of": 500,
+    "rate": "29.80%",
+    "ratchet": 149,
+    "goal": 75,
+    "goal_note": "-50% first; recalibrate after taxonomy pass",
+    "bands": {
+      "1.2-1.5x": "70/125",
+      "1.5-2.0x": "79/125",
+      "2.0-3.0x": "0/125",
+      "3.0x+": "0/125"
+    },
+    "taxonomy": "combination 149, per-edge 0, selector-miss 0",
+    "holdout": "evaluator regenerates fresh corpus at unpublished seed each eval; improvement must hold within a few points; seeds 1401/9973/24601 burned",
+    "captured": "2026-07-12",
+    "captured_by": "builder H3, independently reproduced by auditor A3 at a fresh seed (29.40%)",
+    "ship_gate": "box_all/cyl_all regression stratum (task #9) must exist and pass before loop-produced fillet changes reach users"
   }
 }
