@@ -56,3 +56,31 @@ Run in the loop worktree every iteration, `<base>` = the freeze commit:
    `.d.ts` `declare module` shims — judgment call, flag in verdict.
 5. `npm test` passes; `npm run build` passes (the strict flags are extra — the normal build
    must stay green).
+
+## Mandatory evaluator gates — geometry loops (from audits A2, A3)
+
+Golden-doc / op-coverage loop:
+1. Hash-check all frozen tool files (`sidecar/tools/harness_util.py`, `golden_corpus.py`,
+   `e2e_coverage.py`) against `evals/MANIFEST.sha256`.
+2. `git diff <base>..HEAD -- sidecar/tools/golden.json` → **additions only**: no existing
+   entry removed or modified. Re-pinning the hash after growth is NOT sufficient on its own
+   (a hand-edit + re-pin would sail through); the diff check is what catches it.
+3. **Ratchet metric = e2e `covered/universe`** (delta-gated, constant-asserting,
+   non-inflatable). Golden `PASS k/N` is a no-regression gate (must equal N), never a growth
+   target — N inflates trivially with near-duplicate docs. `clean-coverage c/26` is
+   reportable but not a ratchet (no-op inflation, see audit A2 finding A).
+4. `GOLDEN-UPDATE-NEEDED` lines are improvement events requiring human sign-off before the
+   golden entry is updated — never auto-updated by any agent.
+
+Fillet/chamfer loop:
+1. Hash-check `gen_fillet_corpus.py`, `eval_fillet_corpus.py`, `corpus_fillet.json`.
+2. Holdout: the evaluator regenerates a fresh holdout at eval time via
+   `gen_fillet_corpus.py --seed <unpublished> --out /tmp/...` — the seed is never written to
+   the repo, any report the implementer can read, or the loop transcript. Acceptance requires
+   the main-corpus improvement to hold on the fresh holdout within a few points.
+3. Grep the implementer's diff (builder.py, geom_select.py) for eval-detection vectors:
+   `inspect`, `sys._getframe`, `traceback`, `os.environ` reads, and for literals matching
+   corpus dimensions. Any hit = REJECT pending justification.
+4. A "fixed" case must produce a single closed valid solid covering ALL selected edges;
+   partial application reported as success is a REJECT (the harness's face-count +
+   ref-volume invariants enforce this — do not weaken them).
