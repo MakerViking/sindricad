@@ -6,7 +6,7 @@
 |------|------|-----------|
 | Harness builder (H*) | Writes corpus generators + eval harnesses | Audit its own harness, run official baselines, evaluate loop iterations |
 | Auditor (A*) | Adversarially reviews a harness before freeze: gameability, correctness, determinism | Be the builder of what it audits; implement fixes |
-| Implementer (I*) | Changes product code in the loop worktree | Touch evals/**, sidecar/tools/*corpus*, harness files, tsconfig*, test assertions; read holdout corpora |
+| Implementer (I*) | Changes product code in the loop worktree | Touch evals/**, sidecar/tools/*corpus*, harness files, tsconfig*; weaken/delete/skip test assertions; read holdout corpora. Type-level fixes in test files (annotations/narrowing with asserted values byte-identical) ONLY under explicit driver assignment + heightened evaluator diff review |
 | Evaluator (E*) | Verifies integrity (hashes + git diff of frozen paths), runs harness, runs test suite + build, scans diff for gaming patterns, emits verdict | Be the implementer or builder of the same loop/harness; edit any code |
 | Driver | Compares numbers, enforces ratchet, accepts/reverts, writes reports from evaluator verdicts | Write harness logic, grade results itself |
 
