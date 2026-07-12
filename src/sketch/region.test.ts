@@ -35,9 +35,9 @@ describe("detectRegions — simple closed rectangle", () => {
   it("a single rectangle entity yields exactly one region with no holes", () => {
     const regions = detectRegions("s1", [rect("r1", 0, 0, 10, 6)]);
     expect(regions).toHaveLength(1);
-    expect(regions[0].holes).toHaveLength(0);
+    expect(regions[0]?.holes).toHaveLength(0);
     // loop is the 4 rectangle corners (unclosed, no repeated last point)
-    expect(regions[0].loop).toHaveLength(4);
+    expect(regions[0]?.loop).toHaveLength(4);
   });
 
   it("a 4-line closed loop (chained by shared endpoints) also yields one region", () => {
@@ -49,7 +49,7 @@ describe("detectRegions — simple closed rectangle", () => {
     ];
     const regions = detectRegions("s1", entities);
     expect(regions).toHaveLength(1);
-    expect(regions[0].holes).toHaveLength(0);
+    expect(regions[0]?.holes).toHaveLength(0);
   });
 
   it("an open 3-line chain (missing the closing side) yields no region", () => {
