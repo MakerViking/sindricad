@@ -299,11 +299,70 @@ async def check_export(ws):
         register("export", "volume", 8000.0, _total_volume(r))
 
 
+async def check_fillet(ws):
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "fl", "type": "fillet", "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "radius": 2}])
+    # 20^3 box, fillet the 4 vertical edges r=2: removes 4*(r^2 - pi r^2/4)*h
+    register("fillet", "volume", 8000.0 - 4 * (4 - _PI) * 20, _total_volume(r))
+    register("fillet", "bodies_eq", 1, _nbodies(r))
+
+
+async def check_chamfer(ws):
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "ch", "type": "chamfer", "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "distance": 2}])
+    # 20^3 box, chamfer 4 vertical edges d=2: removes 4*(d^2/2)*h = 160
+    register("chamfer", "volume", 7840.0, _total_volume(r))
+    register("chamfer", "bodies_eq", 1, _nbodies(r))
+
+
+async def check_draft(ws):
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "dr", "type": "draft",
+         "faces": {"kind": "face", "by": "normal", "dir": [1, 0, 0]}, "angle": 10, "axis": "Z"}])
+    # draft the +X face 10deg about Z (measured constant; flat faces => exact mesh volume)
+    register("draft", "volume", 7294.692, _total_volume(r))
+    register("draft", "bodies_eq", 1, _nbodies(r))
+
+
+async def check_sweep(ws):
+    r = await _rebuild(ws, [
+        {"id": "pa", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "line", "x1": 0, "y1": 0, "x2": 20, "y2": 0}]},
+        {"id": "pr", "type": "sketch", "plane": "YZ",
+         "entities": [{"type": "circle", "radius": 3, "x": 0, "y": 0}]},
+        {"id": "sw", "type": "sweep", "profile": "pr", "path": "pa"}])
+    # r=3 circle swept 20 along X => cylinder volume pi r^2 L
+    register("sweep", "volume", _PI * 9 * 20, _total_volume(r))
+    register("sweep", "bodies_eq", 1, _nbodies(r))
+
+
+async def check_simplify_mesh(ws):
+    # import a triangulated STL box, then simplifyMesh — exercises the real
+    # UnifySameDomain-on-mesh path (import is a measuring instrument, not credited).
+    doc = {"parameters": {}, "features": [_box("b", 20, 20, 20)]}
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "box.stl")
+        exp = await H.ws_call(ws, "export", "c", document=doc, format="stl", path=path)
+        if not exp.get("ok"):
+            print(f"  REFUSE simplifyMesh     — export not ok: {exp.get('error')}")
+            return
+        imp = await H.ws_call(ws, "import", "c", path=path, format="stl")
+        if not imp.get("ok"):
+            print(f"  REFUSE simplifyMesh     — reimport not ok: {imp.get('error')}")
+            return
+        r = await _rebuild(ws, [
+            {"id": "im", "type": "import", "format": "stl", "name": "box", "brep": imp["result"]["brep"]},
+            {"id": "sm", "type": "simplifyMesh", "tolerance": 1}])
+        register("simplifyMesh", "volume", 8000.0, _total_volume(r))
+        register("simplifyMesh", "bodies_eq", 1, _nbodies(r))
+
+
 EXPLICIT_CHECKS = [
     check_box, check_cylinder, check_sphere, check_extrude, check_revolve,
     check_loft, check_shell, check_mirror, check_pattern_rect,
     check_pattern_circular, check_scale, check_move, check_remove_body,
     check_compute_all, check_interference, check_export,
+    check_fillet, check_chamfer, check_draft, check_sweep, check_simplify_mesh,
 ]
 
 
