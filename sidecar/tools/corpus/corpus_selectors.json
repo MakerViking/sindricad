@@ -1,0 +1,11578 @@
+{
+ "seed": 20260714,
+ "n": 220,
+ "counts": {
+  "concentric": 45,
+  "mirrored_twin": 45,
+  "boolean_stack": 40,
+  "dimension_change": 30,
+  "added_feature": 30,
+  "moved_sketch": 30
+ },
+ "hard_fraction": 0.409,
+ "cases": [
+  {
+   "id": "conc_000",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 51.679,
+     "r": 37.843,
+     "h": 20.754
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -37.212,
+      4.557155668987131e-15,
+      10.377
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 233.8098916507668,
+     "curve": "circle",
+     "radius": 37.212,
+     "center": [
+      0.0,
+      0.0,
+      10.377
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.377
+    ],
+    51.679
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_001",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 33.654,
+     "r": 22.795,
+     "h": 23.591
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -27.557,
+      3.374759184410361e-15,
+      11.7955
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 173.14573750994782,
+     "curve": "circle",
+     "radius": 27.557,
+     "center": [
+      0.0,
+      0.0,
+      11.7955
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.7955
+    ],
+    33.654
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_002",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 27.724,
+     "r": 5.413,
+     "h": 9.948
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -16.2,
+      1.9839278146187122e-15,
+      4.974
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 101.78760197630929,
+     "curve": "circle",
+     "radius": 16.2,
+     "center": [
+      0.0,
+      0.0,
+      4.974
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     4.974
+    ],
+    27.724
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_003",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 47.611,
+     "r": 25.106,
+     "h": 15.764
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -18.65,
+      2.2839662804098134e-15,
+      7.882
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 117.18140597889928,
+     "curve": "circle",
+     "radius": 18.65,
+     "center": [
+      0.0,
+      0.0,
+      7.882
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.882
+    ],
+    25.106
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_004",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 61.026,
+     "r": 43.95,
+     "h": 15.261
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -38.866,
+      4.759712249566103e-15,
+      7.6305
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 244.20228014884177,
+     "curve": "circle",
+     "radius": 38.866,
+     "center": [
+      0.0,
+      0.0,
+      7.6305
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.6305
+    ],
+    61.026
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_005",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 67.624,
+     "r": 9.227,
+     "h": 14.702
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -5.439,
+      6.6608539405624545e-16,
+      7.351
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.17424488574977,
+     "curve": "circle",
+     "radius": 5.439,
+     "center": [
+      0.0,
+      0.0,
+      7.351
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.351
+    ],
+    9.227
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_006",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 38.735,
+     "r": 28.931,
+     "h": 21.62
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -24.382,
+      2.985933825681077e-15,
+      10.81
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 153.1966241596527,
+     "curve": "circle",
+     "radius": 24.382,
+     "center": [
+      0.0,
+      0.0,
+      10.81
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.81
+    ],
+    28.931
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_007",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 53.156,
+     "r": 15.174,
+     "h": 18.634
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -9.328,
+      1.142350534244651e-15,
+      9.317
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 58.60955254537118,
+     "curve": "circle",
+     "radius": 9.328,
+     "center": [
+      0.0,
+      0.0,
+      9.317
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     9.317
+    ],
+    15.174
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_008",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 41.696,
+     "r": 17.409,
+     "h": 23.809
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -35.639,
+      4.364518727481253e-15,
+      11.9045
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 223.9264411625733,
+     "curve": "circle",
+     "radius": 35.639,
+     "center": [
+      0.0,
+      0.0,
+      11.9045
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.9045
+    ],
+    41.696
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_009",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 49.967,
+     "r": 42.8,
+     "h": 13.142
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -25.868,
+      3.167916340034373e-15,
+      6.571
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 162.53343752612153,
+     "curve": "circle",
+     "radius": 25.868,
+     "center": [
+      0.0,
+      0.0,
+      6.571
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     6.571
+    ],
+    42.8
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_010",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 25.45,
+     "r": 4.828,
+     "h": 8.465
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -3.64,
+      4.457714348896366e-16,
+      4.2325
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.870794518133692,
+     "curve": "circle",
+     "radius": 3.64,
+     "center": [
+      0.0,
+      0.0,
+      4.2325
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     4.2325
+    ],
+    4.828
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_011",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 27.155,
+     "r": 5.613,
+     "h": 10.209
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.105,
+      5.027175110499885e-16,
+      5.1045
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 25.79247568597221,
+     "curve": "circle",
+     "radius": 4.105,
+     "center": [
+      0.0,
+      0.0,
+      5.1045
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     5.1045
+    ],
+    5.613
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_012",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 26.625,
+     "r": 15.733,
+     "h": 18.851
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -20.976,
+      2.568819125891488e-15,
+      9.4255
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 131.796095003399,
+     "curve": "circle",
+     "radius": 20.976,
+     "center": [
+      0.0,
+      0.0,
+      9.4255
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     9.4255
+    ],
+    26.625
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_013",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 50.441,
+     "r": 43.325,
+     "h": 23.69
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -24.872,
+      3.045941518839297e-15,
+      11.845
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 156.27538496017064,
+     "curve": "circle",
+     "radius": 24.872,
+     "center": [
+      0.0,
+      0.0,
+      11.845
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.845
+    ],
+    43.325
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_014",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 36.057,
+     "r": 6.9,
+     "h": 23.579
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.184,
+      5.123922207632526e-16,
+      11.7895
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 26.28884732523939,
+     "curve": "circle",
+     "radius": 4.184,
+     "center": [
+      0.0,
+      0.0,
+      11.7895
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.7895
+    ],
+    6.9
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_015",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 60.141,
+     "r": 52.81,
+     "h": 11.086
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -34.611,
+      4.238625036528904e-15,
+      5.543
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 217.46732666679264,
+     "curve": "circle",
+     "radius": 34.611,
+     "center": [
+      0.0,
+      0.0,
+      5.543
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     5.543
+    ],
+    52.81
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_016",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 49.226,
+     "r": 20.338,
+     "h": 16.208
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -12.446,
+      1.5241954062187959e-15,
+      8.104
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 78.20052433315713,
+     "curve": "circle",
+     "radius": 12.446,
+     "center": [
+      0.0,
+      0.0,
+      8.104
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     8.104
+    ],
+    20.338
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_017",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 20.768,
+     "r": 7.761,
+     "h": 19.012
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.727,
+      8.238199017864246e-16,
+      9.506
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 42.26698756139708,
+     "curve": "circle",
+     "radius": 6.727,
+     "center": [
+      0.0,
+      0.0,
+      9.506
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     9.506
+    ],
+    7.761
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_018",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 40.776,
+     "r": 5.969,
+     "h": 20.703
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -34.459,
+      4.2200104051818644e-15,
+      10.3515
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 216.51228250010138,
+     "curve": "circle",
+     "radius": 34.459,
+     "center": [
+      0.0,
+      0.0,
+      10.3515
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.3515
+    ],
+    40.776
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_019",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 46.523,
+     "r": 24.91,
+     "h": 14.296
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -27.287,
+      3.3416937208333824e-15,
+      7.148
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 171.44927747700936,
+     "curve": "circle",
+     "radius": 27.287,
+     "center": [
+      0.0,
+      0.0,
+      7.148
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.148
+    ],
+    46.523
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_020",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 28.478,
+     "r": 15.024,
+     "h": 21.769
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -23.192,
+      2.8402008565825415e-15,
+      10.8845
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 145.71963364410897,
+     "curve": "circle",
+     "radius": 23.192,
+     "center": [
+      0.0,
+      0.0,
+      10.8845
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.8845
+    ],
+    28.478
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_021",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 27.986,
+     "r": 5.266,
+     "h": 7.042
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -16.029,
+      1.9629863543532925e-15,
+      3.521
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 100.7131772887816,
+     "curve": "circle",
+     "radius": 16.029,
+     "center": [
+      0.0,
+      0.0,
+      3.521
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     3.521
+    ],
+    27.986
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_022",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 25.085,
+     "r": 4.623,
+     "h": 15.93
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -3.608,
+      4.4185256513236504e-16,
+      7.965
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.669732588303948,
+     "curve": "circle",
+     "radius": 3.608,
+     "center": [
+      0.0,
+      0.0,
+      7.965
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.965
+    ],
+    4.623
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_023",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 34.382,
+     "r": 25.452,
+     "h": 23.49
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.113,
+      2.0957380673808654e-15,
+      11.745
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 107.52415016176425,
+     "curve": "circle",
+     "radius": 17.113,
+     "center": [
+      0.0,
+      0.0,
+      11.745
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.745
+    ],
+    25.452
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_024",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 41.717,
+     "r": 30.92,
+     "h": 10.365
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -25.827,
+      3.1628952881578692e-15,
+      5.1825
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 162.27582692852718,
+     "curve": "circle",
+     "radius": 25.827,
+     "center": [
+      0.0,
+      0.0,
+      5.1825
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     5.1825
+    ],
+    30.92
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_025",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 40.046,
+     "r": 19.063,
+     "h": 14.226
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -11.157,
+      -3.5883648804884466e-15,
+      7.113
+     ],
+     "dir": [
+      -3.2162452993532727e-16,
+      1.0,
+      0.0
+     ],
+     "length": 70.10149847220264,
+     "curve": "circle",
+     "radius": 11.157,
+     "center": [
+      0.0,
+      0.0,
+      7.113
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.113
+    ],
+    19.063
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_026",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 28.526,
+     "r": 9.464,
+     "h": 9.981
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.829,
+      8.363112991377274e-16,
+      4.9905
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 42.9078724627294,
+     "curve": "circle",
+     "radius": 6.829,
+     "center": [
+      0.0,
+      0.0,
+      4.9905
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     4.9905
+    ],
+    9.464
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_027",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 48.558,
+     "r": 10.553,
+     "h": 9.549
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -34.479,
+      4.222459698780159e-15,
+      4.7745
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 216.63794620624495,
+     "curve": "circle",
+     "radius": 34.479,
+     "center": [
+      0.0,
+      0.0,
+      4.7745
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     4.7745
+    ],
+    48.558
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_028",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 48.097,
+     "r": 8.361,
+     "h": 21.12
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.899,
+      8.44883826731759e-16,
+      10.56
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 43.34769543423196,
+     "curve": "circle",
+     "radius": 6.899,
+     "center": [
+      0.0,
+      0.0,
+      10.56
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.56
+    ],
+    8.361
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_029",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 37.05,
+     "r": 10.413,
+     "h": 20.36
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -23.145,
+      2.834445016626549e-15,
+      10.18
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 145.42432393467152,
+     "curve": "circle",
+     "radius": 23.145,
+     "center": [
+      0.0,
+      0.0,
+      10.18
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.18
+    ],
+    37.05
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_030",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 33.039,
+     "r": 15.502,
+     "h": 15.071
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -22.839,
+      2.7969708245726398e-15,
+      7.5355
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 143.50166923067457,
+     "curve": "circle",
+     "radius": 22.839,
+     "center": [
+      0.0,
+      0.0,
+      7.5355
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.5355
+    ],
+    33.039
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_031",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 19.003,
+     "r": 13.256,
+     "h": 6.369
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -15.252,
+      1.8678312980595434e-15,
+      3.1845
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 95.83114230510307,
+     "curve": "circle",
+     "radius": 15.252,
+     "center": [
+      0.0,
+      0.0,
+      3.1845
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     3.1845
+    ],
+    19.003
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_032",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 17.354,
+     "r": 8.514,
+     "h": 14.99
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.002,
+      7.350330088482414e-16,
+      7.495
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 37.71167821369187,
+     "curve": "circle",
+     "radius": 6.002,
+     "center": [
+      0.0,
+      0.0,
+      7.495
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.495
+    ],
+    8.514
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_033",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 54.401,
+     "r": 21.703,
+     "h": 14.608
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -31.19,
+      3.819673366540595e-15,
+      7.304
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 195.97254973093135,
+     "curve": "circle",
+     "radius": 31.19,
+     "center": [
+      0.0,
+      0.0,
+      7.304
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.304
+    ],
+    54.401
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_034",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 55.372,
+     "r": 24.945,
+     "h": 23.772
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -31.552,
+      3.864005580669729e-15,
+      11.886
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 198.2470628121303,
+     "curve": "circle",
+     "radius": 31.552,
+     "center": [
+      0.0,
+      0.0,
+      11.886
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.886
+    ],
+    55.372
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_035",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 45.092,
+     "r": 26.413,
+     "h": 13.639
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -26.018,
+      3.1862860420215837e-15,
+      6.8195
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 163.4759153221985,
+     "curve": "circle",
+     "radius": 26.018,
+     "center": [
+      0.0,
+      0.0,
+      6.8195
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     6.8195
+    ],
+    45.092
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_036",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 32.271,
+     "r": 17.037,
+     "h": 7.407
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -25.467,
+      -8.19081190386298e-15,
+      3.7035
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 160.01388021794253,
+     "curve": "circle",
+     "radius": 25.467,
+     "center": [
+      0.0,
+      0.0,
+      3.7035
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     3.7035
+    ],
+    32.271
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_037",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 31.558,
+     "r": 10.094,
+     "h": 11.851
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -23.407,
+      2.8665307627642096e-15,
+      5.9255
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 147.07051848515255,
+     "curve": "circle",
+     "radius": 23.407,
+     "center": [
+      0.0,
+      0.0,
+      5.9255
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     5.9255
+    ],
+    31.558
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_038",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 33.117,
+     "r": 15.542,
+     "h": 21.987
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -20.92,
+      2.561961103816263e-15,
+      10.9935
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 131.44423662619695,
+     "curve": "circle",
+     "radius": 20.92,
+     "center": [
+      0.0,
+      0.0,
+      10.9935
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.9935
+    ],
+    33.117
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_039",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 20.09,
+     "r": 7.417,
+     "h": 12.714
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.729,
+      5.791354713167833e-16,
+      6.357
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.71318331765227,
+     "curve": "circle",
+     "radius": 4.729,
+     "center": [
+      0.0,
+      0.0,
+      6.357
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     6.357
+    ],
+    7.417
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_040",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 22.933,
+     "r": 10.759,
+     "h": 23.298
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.46,
+      2.1382333113112787e-15,
+      11.649
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 109.70441546335559,
+     "curve": "circle",
+     "radius": 17.46,
+     "center": [
+      0.0,
+      0.0,
+      11.649
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     11.649
+    ],
+    22.933
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_041",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 54.417,
+     "r": 20.267,
+     "h": 14.759
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -39.947,
+      4.8920965685539325e-15,
+      7.3795
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 250.99440346590293,
+     "curve": "circle",
+     "radius": 39.947,
+     "center": [
+      0.0,
+      0.0,
+      7.3795
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     7.3795
+    ],
+    54.417
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_042",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 35.672,
+     "r": 18.777,
+     "h": 17.58
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -24.024,
+      -7.726707707166304e-15,
+      8.79
+     ],
+     "dir": [
+      -3.2162452993532737e-16,
+      1.0,
+      0.0
+     ],
+     "length": 150.94724381968237,
+     "curve": "circle",
+     "radius": 24.024,
+     "center": [
+      0.0,
+      0.0,
+      8.79
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     8.79
+    ],
+    35.672
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_043",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 23.293,
+     "r": 6.626,
+     "h": 20.738
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.716,
+      5.775434304778918e-16,
+      10.369
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.63150190865893,
+     "curve": "circle",
+     "radius": 4.716,
+     "center": [
+      0.0,
+      0.0,
+      10.369
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     10.369
+    ],
+    6.626
+   ],
+   "note": ""
+  },
+  {
+   "id": "conc_044",
+   "category": "concentric",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "pipe",
+    "params": {
+     "R": 31.176,
+     "r": 13.528,
+     "h": 8.765
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.557,
+      1.2928596258598609e-15,
+      4.3825
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 66.33158728789489,
+     "curve": "circle",
+     "radius": 10.557,
+     "center": [
+      0.0,
+      0.0,
+      4.3825
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     0.0,
+     0.0,
+     4.3825
+    ],
+    13.528
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_000",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 50.507,
+     "d": 33.478,
+     "h": 9.011,
+     "holes": [
+      [
+       10.789,
+       0,
+       4.317
+      ],
+      [
+       -10.789,
+       0,
+       4.317
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -21.053,
+      5.286800231919124e-16,
+      4.5055
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.12451097109427,
+     "curve": "circle",
+     "radius": 4.317,
+     "center": [
+      -16.736,
+      0.0,
+      4.5055
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -10.789,
+     0.0,
+     4.5055
+    ],
+    4.317
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_001",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 55.693,
+     "d": 30.416,
+     "h": 9.495,
+     "holes": [
+      [
+       5.337,
+       0,
+       4.634
+      ],
+      [
+       -5.337,
+       0,
+       4.634
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      3.1109999999999998,
+      5.675013267248835e-16,
+      4.747499999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.116280713470204,
+     "curve": "circle",
+     "radius": 4.634,
+     "center": [
+      7.745,
+      0.0,
+      4.747499999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.337,
+     0.0,
+     4.7475
+    ],
+    4.634
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_002",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 44.773,
+     "d": 31.891,
+     "h": 8.786,
+     "holes": [
+      [
+       8.784,
+       0,
+       4.373
+      ],
+      [
+       -8.784,
+       0,
+       4.373
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      9.215,
+      5.355380452671376e-16,
+      4.393000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.47636934829633,
+     "curve": "circle",
+     "radius": 4.373,
+     "center": [
+      13.588,
+      0.0,
+      4.393000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     8.784,
+     0.0,
+     4.393
+    ],
+    4.373
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_003",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 77.339,
+     "d": 38.011,
+     "h": 9.566,
+     "holes": [
+      [
+       10.962,
+       0,
+       3.513
+      ],
+      [
+       -10.962,
+       0,
+       3.513
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      13.119000000000002,
+      4.302184205404652e-16,
+      4.783000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.07282998412188,
+     "curve": "circle",
+     "radius": 3.513,
+     "center": [
+      16.632,
+      0.0,
+      4.783000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     10.962,
+     0.0,
+     4.783
+    ],
+    3.513
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_004",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 63.389,
+     "d": 26.605,
+     "h": 8.586,
+     "holes": [
+      [
+       16.02,
+       0,
+       4.957
+      ],
+      [
+       -16.02,
+       0,
+       4.957
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -28.711000000000002,
+      6.070574183373429e-16,
+      4.292999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 31.145749567689215,
+     "curve": "circle",
+     "radius": 4.957,
+     "center": [
+      -23.754,
+      0.0,
+      4.292999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -16.02,
+     0.0,
+     4.293
+    ],
+    4.957
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_005",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 74.738,
+     "d": 37.273,
+     "h": 11.38,
+     "holes": [
+      [
+       15.97,
+       0,
+       3.704
+      ],
+      [
+       -15.97,
+       0,
+       3.704
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      18.335,
+      4.536091744041796e-16,
+      5.690000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 23.272918377793186,
+     "curve": "circle",
+     "radius": 3.704,
+     "center": [
+      22.039,
+      0.0,
+      5.690000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     15.97,
+     0.0,
+     5.69
+    ],
+    3.704
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_006",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 72.02,
+     "d": 23.986,
+     "h": 15.874,
+     "holes": [
+      [
+       15.505,
+       0,
+       2.639
+      ],
+      [
+       -15.505,
+       0,
+       2.639
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -22.381,
+      3.2318429029498647e-16,
+      7.937000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 16.581326025646927,
+     "curve": "circle",
+     "radius": 2.639,
+     "center": [
+      -19.742,
+      0.0,
+      7.937000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -15.505,
+     0.0,
+     7.937
+    ],
+    2.639
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_007",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 79.213,
+     "d": 39.048,
+     "h": 16.786,
+     "holes": [
+      [
+       9.367,
+       0,
+       4.932
+      ],
+      [
+       -9.367,
+       0,
+       4.932
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.484,
+      6.039958013394747e-16,
+      8.393
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 30.98866993500972,
+     "curve": "circle",
+     "radius": 4.932,
+     "center": [
+      -12.552,
+      0.0,
+      8.393
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.367,
+     0.0,
+     8.393
+    ],
+    4.932
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_008",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 50.132,
+     "d": 38.127,
+     "h": 14.072,
+     "holes": [
+      [
+       15.255,
+       0,
+       3.685
+      ],
+      [
+       -15.255,
+       0,
+       3.685
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -21.930999999999997,
+      4.512823454857997e-16,
+      7.036000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 23.153537856956774,
+     "curve": "circle",
+     "radius": 3.685,
+     "center": [
+      -18.246,
+      0.0,
+      7.036000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -15.255,
+     0.0,
+     7.036
+    ],
+    3.685
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_009",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 42.015,
+     "d": 27.685,
+     "h": 18.179,
+     "holes": [
+      [
+       8.045,
+       0,
+       4.637
+      ],
+      [
+       -8.045,
+       0,
+       4.637
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -15.393999999999998,
+      5.678687207646276e-16,
+      9.089500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.135130269391738,
+     "curve": "circle",
+     "radius": 4.637,
+     "center": [
+      -10.757,
+      0.0,
+      9.089500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -8.045,
+     0.0,
+     9.0895
+    ],
+    4.637
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_010",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 45.613,
+     "d": 27.944,
+     "h": 19.885,
+     "holes": [
+      [
+       10.741,
+       0,
+       2.59
+      ],
+      [
+       -10.741,
+       0,
+       2.59
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -19.344,
+      -8.330075325324977e-16,
+      9.942500000000003
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 16.27344994559513,
+     "curve": "circle",
+     "radius": 2.59,
+     "center": [
+      -16.754,
+      0.0,
+      9.942500000000003
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -10.741,
+     0.0,
+     9.9425
+    ],
+    2.59
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_011",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 46.182,
+     "d": 20.82,
+     "h": 13.627,
+     "holes": [
+      [
+       7.969,
+       0,
+       4.777
+      ],
+      [
+       -7.969,
+       0,
+       4.777
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -14.072,
+      5.850137759526907e-16,
+      6.813500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 30.014776212396885,
+     "curve": "circle",
+     "radius": 4.777,
+     "center": [
+      -9.295,
+      0.0,
+      6.813500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -7.969,
+     0.0,
+     6.8135
+    ],
+    4.777
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_012",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 57.719,
+     "d": 39.4,
+     "h": 10.96,
+     "holes": [
+      [
+       11.585,
+       0,
+       3.121
+      ],
+      [
+       -11.585,
+       0,
+       3.121
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      10.968,
+      3.8221226601388894e-16,
+      5.48
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 19.609821343707488,
+     "curve": "circle",
+     "radius": 3.121,
+     "center": [
+      14.089,
+      0.0,
+      5.48
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     11.585,
+     0.0,
+     5.48
+    ],
+    3.121
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_013",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 45.343,
+     "d": 20.113,
+     "h": 9.536,
+     "holes": [
+      [
+       7.393,
+       0,
+       4.391
+      ],
+      [
+       -7.393,
+       0,
+       4.391
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -13.45,
+      5.377424095056028e-16,
+      4.768000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.589466683825563,
+     "curve": "circle",
+     "radius": 4.391,
+     "center": [
+      -9.059,
+      0.0,
+      4.768000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -7.393,
+     0.0,
+     4.768
+    ],
+    4.391
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_014",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 42.323,
+     "d": 32.561,
+     "h": 17.303,
+     "holes": [
+      [
+       6.293,
+       0,
+       4.763
+      ],
+      [
+       -6.293,
+       0,
+       4.763
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      3.3629999999999995,
+      5.832992704338843e-16,
+      8.651499999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.92681161809637,
+     "curve": "circle",
+     "radius": 4.763,
+     "center": [
+      8.126,
+      0.0,
+      8.651499999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     6.293,
+     0.0,
+     8.6515
+    ],
+    4.763
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_015",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 74.559,
+     "d": 39.572,
+     "h": 13.323,
+     "holes": [
+      [
+       23.347,
+       0,
+       4.734
+      ],
+      [
+       -23.347,
+       0,
+       4.734
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      22.447000000000003,
+      5.79747794716357e-16,
+      6.6615
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.744599244188162,
+     "curve": "circle",
+     "radius": 4.734,
+     "center": [
+      27.181,
+      0.0,
+      6.6615
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     23.347,
+     0.0,
+     6.6615
+    ],
+    4.734
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_016",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 57.619,
+     "d": 28.211,
+     "h": 18.517,
+     "holes": [
+      [
+       12.974,
+       0,
+       3.505
+      ],
+      [
+       -12.974,
+       0,
+       3.505
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      11.222999999999999,
+      4.292387031011473e-16,
+      9.258499999999998
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.02256450166445,
+     "curve": "circle",
+     "radius": 3.505,
+     "center": [
+      14.728,
+      0.0,
+      9.258499999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     12.974,
+     0.0,
+     9.2585
+    ],
+    3.505
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_017",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 74.776,
+     "d": 31.418,
+     "h": 12.759,
+     "holes": [
+      [
+       18.299,
+       0,
+       3.984
+      ],
+      [
+       -18.299,
+       0,
+       3.984
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      22.570999999999998,
+      4.878992847803055e-16,
+      6.3795
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 25.032210263803467,
+     "curve": "circle",
+     "radius": 3.984,
+     "center": [
+      26.555,
+      0.0,
+      6.3795
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     18.299,
+     0.0,
+     6.3795
+    ],
+    3.984
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_018",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 61.325,
+     "d": 24.904,
+     "h": 12.1,
+     "holes": [
+      [
+       5.334,
+       0,
+       2.806
+      ],
+      [
+       -5.334,
+       0,
+       2.806
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -9.329,
+      3.436358918407473e-16,
+      6.050000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 17.630617971945913,
+     "curve": "circle",
+     "radius": 2.806,
+     "center": [
+      -6.523,
+      0.0,
+      6.050000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.334,
+     0.0,
+     6.05
+    ],
+    2.806
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_019",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 74.75,
+     "d": 30.118,
+     "h": 9.76,
+     "holes": [
+      [
+       10.669,
+       0,
+       3.289
+      ],
+      [
+       -10.669,
+       0,
+       3.289
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.844,
+      4.027863322395645e-16,
+      4.879999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 20.66539647531366,
+     "curve": "circle",
+     "radius": 3.289,
+     "center": [
+      -14.555,
+      0.0,
+      4.879999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -10.669,
+     0.0,
+     4.88
+    ],
+    3.289
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_020",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 63.869,
+     "d": 32.721,
+     "h": 10.806,
+     "holes": [
+      [
+       9.156,
+       0,
+       4.65
+      ],
+      [
+       -9.156,
+       0,
+       4.65
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -18.095,
+      5.694607616035193e-16,
+      5.402999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.216811678385085,
+     "curve": "circle",
+     "radius": 4.65,
+     "center": [
+      -13.445,
+      0.0,
+      5.402999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.156,
+     0.0,
+     5.403
+    ],
+    4.65
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_021",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 58.115,
+     "d": 31.046,
+     "h": 17.191,
+     "holes": [
+      [
+       19.37,
+       0,
+       3.301
+      ],
+      [
+       -19.37,
+       0,
+       3.301
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      19.164,
+      4.042559083985413e-16,
+      8.595500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 20.740794698999814,
+     "curve": "circle",
+     "radius": 3.301,
+     "center": [
+      22.465,
+      0.0,
+      8.595500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     19.37,
+     0.0,
+     8.5955
+    ],
+    3.301
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_022",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 44.166,
+     "d": 32.089,
+     "h": 16.287,
+     "holes": [
+      [
+       7.765,
+       0,
+       3.68
+      ],
+      [
+       -7.765,
+       0,
+       3.68
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -15.564,
+      4.50670022086226e-16,
+      8.1435
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 23.122121930420874,
+     "curve": "circle",
+     "radius": 3.68,
+     "center": [
+      -11.884,
+      0.0,
+      8.1435
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -7.765,
+     0.0,
+     8.1435
+    ],
+    3.68
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_023",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 59.368,
+     "d": 34.744,
+     "h": 8.455,
+     "holes": [
+      [
+       12.946,
+       0,
+       4.701
+      ],
+      [
+       -12.946,
+       0,
+       4.701
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      14.014,
+      5.757064602791707e-16,
+      4.227499999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.537254129051238,
+     "curve": "circle",
+     "radius": 4.701,
+     "center": [
+      18.715,
+      0.0,
+      4.227499999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     12.946,
+     0.0,
+     4.2275
+    ],
+    4.701
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_024",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 47.197,
+     "d": 26.844,
+     "h": 14.152,
+     "holes": [
+      [
+       11.124,
+       0,
+       3.161
+      ],
+      [
+       -11.124,
+       0,
+       3.161
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -15.934,
+      3.8711085321047834e-16,
+      7.0760000000000005
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 19.861148755994677,
+     "curve": "circle",
+     "radius": 3.161,
+     "center": [
+      -12.773,
+      0.0,
+      7.0760000000000005
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.124,
+     0.0,
+     7.076
+    ],
+    3.161
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_025",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 60.471,
+     "d": 29.497,
+     "h": 8.468,
+     "holes": [
+      [
+       5.727,
+       0,
+       3.111
+      ],
+      [
+       -5.727,
+       0,
+       3.111
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      3.4119999999999995,
+      -1.0005739126288033e-15,
+      4.234
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 19.546989490635696,
+     "curve": "circle",
+     "radius": 3.111,
+     "center": [
+      6.523,
+      0.0,
+      4.234
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.727,
+     0.0,
+     4.234
+    ],
+    3.111
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_026",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 51.91,
+     "d": 29.151,
+     "h": 12.737,
+     "holes": [
+      [
+       11.532,
+       0,
+       4.321
+      ],
+      [
+       -11.532,
+       0,
+       4.321
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.226,
+      5.291698819115713e-16,
+      6.368500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.14964371232299,
+     "curve": "circle",
+     "radius": 4.321,
+     "center": [
+      -12.905,
+      0.0,
+      6.368500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.532,
+     0.0,
+     6.3685
+    ],
+    4.321
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_027",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 55.044,
+     "d": 25.818,
+     "h": 14.862,
+     "holes": [
+      [
+       8.173,
+       0,
+       4.955
+      ],
+      [
+       -8.173,
+       0,
+       4.955
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      7.4,
+      6.068124889775135e-16,
+      7.431000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 31.13318319707485,
+     "curve": "circle",
+     "radius": 4.955,
+     "center": [
+      12.355,
+      0.0,
+      7.431000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     8.173,
+     0.0,
+     7.431
+    ],
+    4.955
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_028",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 76.225,
+     "d": 29.04,
+     "h": 13.012,
+     "holes": [
+      [
+       14.068,
+       0,
+       4.647
+      ],
+      [
+       -14.068,
+       0,
+       4.647
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -24.695999999999998,
+      5.690933675637751e-16,
+      6.506
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.19796212246354,
+     "curve": "circle",
+     "radius": 4.647,
+     "center": [
+      -20.049,
+      0.0,
+      6.506
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -14.068,
+     0.0,
+     6.506
+    ],
+    4.647
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_029",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 46.044,
+     "d": 24.213,
+     "h": 13.826,
+     "holes": [
+      [
+       5.181,
+       0,
+       2.982
+      ],
+      [
+       -5.181,
+       0,
+       2.982
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      3.308,
+      1.6894636992786277e-15,
+      6.913
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 18.736458586009526,
+     "curve": "circle",
+     "radius": 2.982,
+     "center": [
+      6.29,
+      0.0,
+      6.913
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.181,
+     0.0,
+     6.913
+    ],
+    2.982
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_030",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 76.183,
+     "d": 32.81,
+     "h": 13.346,
+     "holes": [
+      [
+       11.572,
+       0,
+       2.566
+      ],
+      [
+       -11.572,
+       0,
+       2.566
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -19.18,
+      3.142443686612108e-16,
+      6.673000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 16.122653498222817,
+     "curve": "circle",
+     "radius": 2.566,
+     "center": [
+      -16.614,
+      0.0,
+      6.673000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.572,
+     0.0,
+     6.673
+    ],
+    2.566
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_031",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 63.139,
+     "d": 29.6,
+     "h": 17.39,
+     "holes": [
+      [
+       9.983,
+       0,
+       3.236
+      ],
+      [
+       -9.983,
+       0,
+       3.236
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -16.314,
+      3.962957042040835e-16,
+      8.695
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 20.33238765403314,
+     "curve": "circle",
+     "radius": 3.236,
+     "center": [
+      -13.078,
+      0.0,
+      8.695
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.983,
+     0.0,
+     8.695
+    ],
+    3.236
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_032",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 69.113,
+     "d": 36.153,
+     "h": 14.012,
+     "holes": [
+      [
+       9.509,
+       0,
+       2.569
+      ],
+      [
+       -9.509,
+       0,
+       2.569
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -14.915,
+      -8.262534174038558e-16,
+      7.006
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 16.14150305414436,
+     "curve": "circle",
+     "radius": 2.569,
+     "center": [
+      -12.346,
+      0.0,
+      7.006
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.509,
+     0.0,
+     7.006
+    ],
+    2.569
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_033",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 64.322,
+     "d": 38.284,
+     "h": 13.509,
+     "holes": [
+      [
+       18.574,
+       0,
+       4.183
+      ],
+      [
+       -18.574,
+       0,
+       4.183
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -29.9,
+      5.122697560833378e-16,
+      6.7545
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 26.28256413993221,
+     "curve": "circle",
+     "radius": 4.183,
+     "center": [
+      -25.717,
+      0.0,
+      6.7545
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -18.574,
+     0.0,
+     6.7545
+    ],
+    4.183
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_034",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 58.122,
+     "d": 25.113,
+     "h": 8.902,
+     "holes": [
+      [
+       6.89,
+       0,
+       4.694
+      ],
+      [
+       -6.89,
+       0,
+       4.694
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      6.6499999999999995,
+      5.748492075197676e-16,
+      4.4510000000000005
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.493271831900977,
+     "curve": "circle",
+     "radius": 4.694,
+     "center": [
+      11.344,
+      0.0,
+      4.4510000000000005
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     6.89,
+     0.0,
+     4.451
+    ],
+    4.694
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_035",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 66.689,
+     "d": 39.563,
+     "h": 10.194,
+     "holes": [
+      [
+       7.296,
+       0,
+       3.581
+      ],
+      [
+       -7.296,
+       0,
+       3.581
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      8.458,
+      4.3854601877466716e-16,
+      5.097000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.500086585010102,
+     "curve": "circle",
+     "radius": 3.581,
+     "center": [
+      12.039,
+      0.0,
+      5.097000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     7.296,
+     0.0,
+     5.097
+    ],
+    3.581
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_036",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 58.449,
+     "d": 34.58,
+     "h": 17.528,
+     "holes": [
+      [
+       6.059,
+       0,
+       3.371
+      ],
+      [
+       -6.059,
+       0,
+       3.371
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      5.8759999999999994,
+      4.128284359925728e-16,
+      8.764
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 21.180617670502386,
+     "curve": "circle",
+     "radius": 3.371,
+     "center": [
+      9.247,
+      0.0,
+      8.764
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     6.059,
+     0.0,
+     8.764
+    ],
+    3.371
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_037",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 40.031,
+     "d": 38.065,
+     "h": 19.027,
+     "holes": [
+      [
+       5.922,
+       0,
+       3.46
+      ],
+      [
+       -5.922,
+       0,
+       3.46
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -12.985,
+      -1.1128208735762325e-15,
+      9.5135
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 21.73982116284137,
+     "curve": "circle",
+     "radius": 3.46,
+     "center": [
+      -9.525,
+      0.0,
+      9.5135
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.922,
+     0.0,
+     9.5135
+    ],
+    3.46
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_038",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 47.779,
+     "d": 26.313,
+     "h": 13.829,
+     "holes": [
+      [
+       7.906,
+       0,
+       3.689
+      ],
+      [
+       -7.906,
+       0,
+       3.689
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      5.904999999999999,
+      4.517722042054586e-16,
+      6.9145
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 23.178670598185494,
+     "curve": "circle",
+     "radius": 3.689,
+     "center": [
+      9.594,
+      0.0,
+      6.9145
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     7.906,
+     0.0,
+     6.9145
+    ],
+    3.689
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_039",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 49.766,
+     "d": 33.104,
+     "h": 18.927,
+     "holes": [
+      [
+       9.3,
+       0,
+       3.933
+      ],
+      [
+       -9.3,
+       0,
+       3.933
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      8.629,
+      4.816535861046539e-16,
+      9.4635
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.71176781313731,
+     "curve": "circle",
+     "radius": 3.933,
+     "center": [
+      12.562,
+      0.0,
+      9.4635
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     9.3,
+     0.0,
+     9.4635
+    ],
+    3.933
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_040",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 59.825,
+     "d": 26.095,
+     "h": 16.2,
+     "holes": [
+      [
+       9.297,
+       0,
+       3.9
+      ],
+      [
+       -9.297,
+       0,
+       3.9
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.709,
+      4.776122516674677e-16,
+      8.100000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.504422698000383,
+     "curve": "circle",
+     "radius": 3.9,
+     "center": [
+      -13.809,
+      0.0,
+      8.100000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.297,
+     0.0,
+     8.1
+    ],
+    3.9
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_041",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 74.096,
+     "d": 28.362,
+     "h": 17.543,
+     "holes": [
+      [
+       13.24,
+       0,
+       4.661
+      ],
+      [
+       -13.24,
+       0,
+       4.661
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -20.768,
+      5.708078730825813e-16,
+      8.7715
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.285926716764042,
+     "curve": "circle",
+     "radius": 4.661,
+     "center": [
+      -16.107,
+      0.0,
+      8.7715
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -13.24,
+     0.0,
+     8.7715
+    ],
+    4.661
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_042",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 65.483,
+     "d": 26.388,
+     "h": 19.398,
+     "holes": [
+      [
+       14.46,
+       0,
+       4.329
+      ],
+      [
+       -14.46,
+       0,
+       4.329
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -24.52,
+      5.301495993508892e-16,
+      9.698999999999998
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.199909194780428,
+     "curve": "circle",
+     "radius": 4.329,
+     "center": [
+      -20.191,
+      0.0,
+      9.698999999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -14.46,
+     0.0,
+     9.699
+    ],
+    4.329
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_043",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 63.937,
+     "d": 24.152,
+     "h": 10.546,
+     "holes": [
+      [
+       9.967,
+       0,
+       2.578
+      ],
+      [
+       -9.967,
+       0,
+       2.578
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      9.745000000000001,
+      3.157139448201876e-16,
+      5.273
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 16.19805172190897,
+     "curve": "circle",
+     "radius": 2.578,
+     "center": [
+      12.323,
+      0.0,
+      5.273
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     9.967,
+     0.0,
+     5.273
+    ],
+    2.578
+   ],
+   "note": ""
+  },
+  {
+   "id": "mirror_044",
+   "category": "mirrored_twin",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 48.63,
+     "d": 25.068,
+     "h": 8.4,
+     "holes": [
+      [
+       8.099,
+       0,
+       3.018
+      ],
+      [
+       -8.099,
+       0,
+       3.018
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      6.075,
+      -9.706628313448177e-16,
+      4.199999999999999
+     ],
+     "dir": [
+      -3.2162452993532727e-16,
+      1.0,
+      0.0
+     ],
+     "length": 18.96265325706799,
+     "curve": "circle",
+     "radius": 3.018,
+     "center": [
+      9.093,
+      0.0,
+      4.199999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     8.099,
+     0.0,
+     4.2
+    ],
+    3.018
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_000",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 118.755,
+     "d": 91.658,
+     "h": 14.304,
+     "holes": [
+      [
+       -8.034,
+       10.573,
+       6.943
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -13.123,
+      8.133,
+      7.152000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 43.624155587747865,
+     "curve": "circle",
+     "radius": 6.943,
+     "center": [
+      -6.18,
+      8.133,
+      7.152000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -8.034,
+     10.573,
+     7.152
+    ],
+    6.943
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_001",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 53.809,
+     "d": 32.528,
+     "h": 11.82,
+     "holes": [
+      [
+       -9.45,
+       -7.404,
+       3.653
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.922,
+      -5.694999999999999,
+      5.91
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.952475927127026,
+     "curve": "circle",
+     "radius": 3.653,
+     "center": [
+      -7.269,
+      -5.695,
+      5.91
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.45,
+     -7.404,
+     5.91
+    ],
+    3.653
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_002",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 104.651,
+     "d": 69.073,
+     "h": 9.213,
+     "holes": [
+      [
+       -20.402,
+       -6.519,
+       5.438
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -21.132,
+      -5.014999999999999,
+      4.6065000000000005
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.167961700442596,
+     "curve": "circle",
+     "radius": 5.438,
+     "center": [
+      -15.694,
+      -5.015,
+      4.6065000000000005
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -20.402,
+     -6.519,
+     4.6065
+    ],
+    5.438
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_003",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 71.397,
+     "d": 31.226,
+     "h": 15.358,
+     "holes": [
+      [
+       5.424,
+       4.172,
+       3.55
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      0.6219999999999999,
+      3.2090000000000005,
+      7.679000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.30530784048753,
+     "curve": "circle",
+     "radius": 3.55,
+     "center": [
+      4.172,
+      3.209,
+      7.679000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.424,
+     4.172,
+     7.679
+    ],
+    3.55
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_004",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 50.041,
+     "d": 69.044,
+     "h": 16.247,
+     "holes": [
+      [
+       6.266,
+       -3.202,
+       3.566
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      1.2540000000000004,
+      -2.4629999999999996,
+      8.1235
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.405838805402404,
+     "curve": "circle",
+     "radius": 3.566,
+     "center": [
+      4.82,
+      -2.463,
+      8.1235
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     6.266,
+     -3.202,
+     8.1235
+    ],
+    3.566
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_005",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 53.79,
+     "d": 58.842,
+     "h": 10.536,
+     "holes": [
+      [
+       9.922,
+       3.554,
+       6.283
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      1.3489999999999993,
+      2.734000000000001,
+      5.268000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 39.47725328500934,
+     "curve": "circle",
+     "radius": 6.283,
+     "center": [
+      7.632,
+      2.734,
+      5.268000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     9.922,
+     3.554,
+     5.268
+    ],
+    6.283
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_006",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 54.406,
+     "d": 36.155,
+     "h": 13.276,
+     "holes": [
+      [
+       -6.065,
+       -7.791,
+       6.356
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -11.021,
+      -5.992999999999997,
+      6.637999999999998
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 39.93592581243345,
+     "curve": "circle",
+     "radius": 6.356,
+     "center": [
+      -4.665,
+      -5.993,
+      6.637999999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -6.065,
+     -7.791,
+     6.638
+    ],
+    6.356
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_007",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 72.696,
+     "d": 42.326,
+     "h": 18.816,
+     "holes": [
+      [
+       -4.9,
+       -6.18,
+       3.857
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.626,
+      -4.753999999999999,
+      9.408000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.234245729791667,
+     "curve": "circle",
+     "radius": 3.857,
+     "center": [
+      -3.769,
+      -4.754,
+      9.408000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.9,
+     -6.18,
+     9.408
+    ],
+    3.857
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_008",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 81.022,
+     "d": 58.288,
+     "h": 11.141,
+     "holes": [
+      [
+       20.428,
+       7.207,
+       4.372
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      11.342,
+      5.5440000000000005,
+      5.570499999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.47008616298915,
+     "curve": "circle",
+     "radius": 4.372,
+     "center": [
+      15.714,
+      5.544,
+      5.570499999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     20.428,
+     7.207,
+     5.5705
+    ],
+    4.372
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_009",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 85.901,
+     "d": 37.185,
+     "h": 19.795,
+     "holes": [
+      [
+       5.472,
+       1.635,
+       7.224
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -3.0150000000000006,
+      1.258000000000004,
+      9.8975
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 45.38973065906533,
+     "curve": "circle",
+     "radius": 7.224,
+     "center": [
+      4.209,
+      1.258,
+      9.8975
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.472,
+     1.635,
+     9.8975
+    ],
+    7.224
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_010",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 90.331,
+     "d": 52.234,
+     "h": 16.574,
+     "holes": [
+      [
+       16.133,
+       0.29,
+       4.425
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      7.985,
+      0.22300000000000056,
+      8.286999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.803094984269666,
+     "curve": "circle",
+     "radius": 4.425,
+     "center": [
+      12.41,
+      0.223,
+      8.286999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     16.133,
+     0.29,
+     8.287
+    ],
+    4.425
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_011",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 59.342,
+     "d": 28.704,
+     "h": 12.462,
+     "holes": [
+      [
+       3.05,
+       2.812,
+       3.67
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -1.3239999999999998,
+      2.1630000000000003,
+      6.231000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 23.059290077349083,
+     "curve": "circle",
+     "radius": 3.67,
+     "center": [
+      2.346,
+      2.163,
+      6.231000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     3.05,
+     2.812,
+     6.231
+    ],
+    3.67
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_012",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 114.117,
+     "d": 53.244,
+     "h": 13.749,
+     "holes": [
+      [
+       -0.905,
+       5.814,
+       5.512
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.207999999999999,
+      4.472000000000001,
+      6.874500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.63291741317387,
+     "curve": "circle",
+     "radius": 5.512,
+     "center": [
+      -0.696,
+      4.472,
+      6.874500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -0.905,
+     5.814,
+     6.8745
+    ],
+    5.512
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_013",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 86.477,
+     "d": 56.643,
+     "h": 16.647,
+     "holes": [
+      [
+       -15.304,
+       2.044,
+       5.434
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.206,
+      1.5720000000000007,
+      8.3235
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.142828959213865,
+     "curve": "circle",
+     "radius": 5.434,
+     "center": [
+      -11.772,
+      1.572,
+      8.3235
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -15.304,
+     2.044,
+     8.3235
+    ],
+    5.434
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_014",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 49.443,
+     "d": 32.639,
+     "h": 12.181,
+     "holes": [
+      [
+       -9.287,
+       -6.453,
+       5.944
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.144000000000001,
+      0.9800000000000004,
+      6.090499999999998
+     ],
+     "dir": [
+      1.0,
+      1.8678045501769118e-16,
+      -1.49424364014153e-16
+     ],
+     "length": 33.02535828239069,
+     "curve": "circle",
+     "radius": 5.944,
+     "center": [
+      -7.144,
+      -4.964,
+      6.090499999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.287,
+     -6.453,
+     6.0905
+    ],
+    5.944
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_015",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 54.333,
+     "d": 75.966,
+     "h": 11.47,
+     "holes": [
+      [
+       -0.539,
+       2.69,
+       5.236
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -5.651,
+      2.0690000000000004,
+      5.734999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 32.898758268392314,
+     "curve": "circle",
+     "radius": 5.236,
+     "center": [
+      -0.415,
+      2.069,
+      5.734999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -0.539,
+     2.69,
+     5.735
+    ],
+    5.236
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_016",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 119.73,
+     "d": 70.483,
+     "h": 14.968,
+     "holes": [
+      [
+       -11.566,
+       -6.895,
+       6.785
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -15.682,
+      -5.303999999999999,
+      7.484000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 42.631412309213495,
+     "curve": "circle",
+     "radius": 6.785,
+     "center": [
+      -8.897,
+      -5.304,
+      7.484000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.566,
+     -6.895,
+     7.484
+    ],
+    6.785
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_017",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 72.094,
+     "d": 44.088,
+     "h": 19.799,
+     "holes": [
+      [
+       -3.471,
+       -5.34,
+       5.163
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.833,
+      -4.107999999999999,
+      9.8995
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 32.44008574096821,
+     "curve": "circle",
+     "radius": 5.163,
+     "center": [
+      -2.67,
+      -4.108,
+      9.8995
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -3.471,
+     -5.34,
+     9.8995
+    ],
+    5.163
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_018",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 62.866,
+     "d": 47.351,
+     "h": 10.852,
+     "holes": [
+      [
+       -2.477,
+       -1.069,
+       6.662
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.567,
+      -0.8219999999999992,
+      5.426000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 41.8585805164304,
+     "curve": "circle",
+     "radius": 6.662,
+     "center": [
+      -1.905,
+      -0.822,
+      5.426000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -2.477,
+     -1.069,
+     5.426
+    ],
+    6.662
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_019",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 85.942,
+     "d": 46.741,
+     "h": 17.822,
+     "holes": [
+      [
+       -11.908,
+       9.572,
+       7.751
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -16.911,
+      7.363000000000001,
+      8.911000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 48.70096931594898,
+     "curve": "circle",
+     "radius": 7.751,
+     "center": [
+      -9.16,
+      7.363,
+      8.911000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.908,
+     9.572,
+     8.911
+    ],
+    7.751
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_020",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 55.916,
+     "d": 30.923,
+     "h": 13.112,
+     "holes": [
+      [
+       -0.533,
+       3.021,
+       4.19
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.6000000000000005,
+      2.3240000000000003,
+      6.556000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 26.326546437082474,
+     "curve": "circle",
+     "radius": 4.19,
+     "center": [
+      -0.41,
+      2.324,
+      6.556000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -0.533,
+     3.021,
+     6.556
+    ],
+    4.19
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_021",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 70.277,
+     "d": 31.573,
+     "h": 14.051,
+     "holes": [
+      [
+       -11.003,
+       2.569,
+       4.995
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -13.459,
+      1.9760000000000006,
+      7.025500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 31.384510609362028,
+     "curve": "circle",
+     "radius": 4.995,
+     "center": [
+      -8.464,
+      1.976,
+      7.025500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.003,
+     2.569,
+     7.0255
+    ],
+    4.995
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_022",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 47.496,
+     "d": 57.461,
+     "h": 12.524,
+     "holes": [
+      [
+       -9.216,
+       -3.574,
+       3.858
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.947000000000001,
+      -2.7489999999999997,
+      6.2620000000000005
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.240528915098842,
+     "curve": "circle",
+     "radius": 3.858,
+     "center": [
+      -7.089,
+      -2.749,
+      6.2620000000000005
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.216,
+     -3.574,
+     6.262
+    ],
+    3.858
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_023",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 95.773,
+     "d": 65.913,
+     "h": 14.072,
+     "holes": [
+      [
+       -6.201,
+       6.348,
+       3.576
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.346,
+      4.883000000000002,
+      7.036000000000001
+     ],
+     "dir": [
+      5.665538897647979e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.4686706584742,
+     "curve": "circle",
+     "radius": 3.576,
+     "center": [
+      -4.77,
+      4.883,
+      7.036000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -6.201,
+     6.348,
+     7.036
+    ],
+    3.576
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_024",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 47.687,
+     "d": 52.237,
+     "h": 8.934,
+     "holes": [
+      [
+       9.607,
+       10.061,
+       4.609
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      2.7809999999999997,
+      7.739000000000001,
+      4.466999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 28.959201080790713,
+     "curve": "circle",
+     "radius": 4.609,
+     "center": [
+      7.39,
+      7.739,
+      4.466999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     9.607,
+     10.061,
+     4.467
+    ],
+    4.609
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_025",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 73.182,
+     "d": 33.365,
+     "h": 8.136,
+     "holes": [
+      [
+       -7.314,
+       1.888,
+       3.524
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -9.15,
+      1.4520000000000004,
+      4.068
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.14194502250086,
+     "curve": "circle",
+     "radius": 3.524,
+     "center": [
+      -5.626,
+      1.452,
+      4.068
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -7.314,
+     1.888,
+     4.068
+    ],
+    3.524
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_026",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 53.584,
+     "d": 63.424,
+     "h": 17.717,
+     "holes": [
+      [
+       -1.911,
+       -11.443,
+       4.224
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -5.694,
+      -8.802,
+      8.8585
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 26.540174737526574,
+     "curve": "circle",
+     "radius": 4.224,
+     "center": [
+      -1.47,
+      -8.802,
+      8.8585
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -1.911,
+     -11.443,
+     8.8585
+    ],
+    4.224
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_027",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 47.954,
+     "d": 32.318,
+     "h": 13.428,
+     "holes": [
+      [
+       1.836,
+       -3.856,
+       5.251
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -3.8390000000000004,
+      -2.966000000000002,
+      6.713999999999999
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 32.993006048000005,
+     "curve": "circle",
+     "radius": 5.251,
+     "center": [
+      1.412,
+      -2.966,
+      6.713999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     1.836,
+     -3.856,
+     6.714
+    ],
+    5.251
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_028",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 83.962,
+     "d": 45.551,
+     "h": 11.084,
+     "holes": [
+      [
+       -6.135,
+       -6.989,
+       4.408
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -9.127,
+      -5.3759999999999994,
+      5.542000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.696280834047624,
+     "curve": "circle",
+     "radius": 4.408,
+     "center": [
+      -4.719,
+      -5.376,
+      5.542000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -6.135,
+     -6.989,
+     5.542
+    ],
+    4.408
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_029",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 85.371,
+     "d": 81.888,
+     "h": 11.663,
+     "holes": [
+      [
+       -3.739,
+       0.827,
+       5.862
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.738,
+      0.6360000000000033,
+      5.831499999999998
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 36.83203227068673,
+     "curve": "circle",
+     "radius": 5.862,
+     "center": [
+      -2.876,
+      0.636,
+      5.831499999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -3.739,
+     0.827,
+     5.8315
+    ],
+    5.862
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_030",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 68.145,
+     "d": 57.517,
+     "h": 13.939,
+     "holes": [
+      [
+       -9.234,
+       -1.163,
+       3.556
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.658999999999999,
+      -0.8949999999999996,
+      6.9695
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 22.34300695233061,
+     "curve": "circle",
+     "radius": 3.556,
+     "center": [
+      -7.103,
+      -0.895,
+      6.9695
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -9.234,
+     -1.163,
+     6.9695
+    ],
+    3.556
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_031",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 74.076,
+     "d": 67.465,
+     "h": 16.671,
+     "holes": [
+      [
+       -0.27,
+       1.079,
+       4.036
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.244,
+      0.8300000000000004,
+      8.3355
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 25.358935899776807,
+     "curve": "circle",
+     "radius": 4.036,
+     "center": [
+      -0.208,
+      0.83,
+      8.3355
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -0.27,
+     1.079,
+     8.3355
+    ],
+    4.036
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_032",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 89.049,
+     "d": 76.93,
+     "h": 19.516,
+     "holes": [
+      [
+       18.035,
+       -5.645,
+       3.487
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      10.386,
+      -4.342,
+      9.758
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 21.909467166135215,
+     "curve": "circle",
+     "radius": 3.487,
+     "center": [
+      13.873,
+      -4.342,
+      9.758
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     18.035,
+     -5.645,
+     9.758
+    ],
+    3.487
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_033",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 82.438,
+     "d": 31.581,
+     "h": 17.301,
+     "holes": [
+      [
+       -2.535,
+       1.62,
+       5.293
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.243,
+      1.2460000000000007,
+      8.650500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 33.25689983090155,
+     "curve": "circle",
+     "radius": 5.293,
+     "center": [
+      -1.95,
+      1.246,
+      8.650500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -2.535,
+     1.62,
+     8.6505
+    ],
+    5.293
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_034",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 58.15,
+     "d": 54.2,
+     "h": 10.064,
+     "holes": [
+      [
+       3.332,
+       1.567,
+       6.721
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.1579999999999995,
+      1.205000000000001,
+      5.032
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 42.229288449554,
+     "curve": "circle",
+     "radius": 6.721,
+     "center": [
+      2.563,
+      1.205,
+      5.032
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     3.332,
+     1.567,
+     5.032
+    ],
+    6.721
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_035",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 56.526,
+     "d": 52.839,
+     "h": 18.558,
+     "holes": [
+      [
+       1.088,
+       10.66,
+       6.041
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -5.204000000000001,
+      8.2,
+      9.279
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 37.95672244067188,
+     "curve": "circle",
+     "radius": 6.041,
+     "center": [
+      0.837,
+      8.2,
+      9.279
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     1.088,
+     10.66,
+     9.279
+    ],
+    6.041
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_036",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 67.96,
+     "d": 56.523,
+     "h": 11.708,
+     "holes": [
+      [
+       -12.176,
+       3.12,
+       5.356
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -14.722,
+      2.400000000000003,
+      5.853999999999999
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 33.65274050525386,
+     "curve": "circle",
+     "radius": 5.356,
+     "center": [
+      -9.366,
+      2.4,
+      5.853999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -12.176,
+     3.12,
+     5.854
+    ],
+    5.356
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_037",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 84.046,
+     "d": 33.272,
+     "h": 15.361,
+     "holes": [
+      [
+       -4.947,
+       3.601,
+       5.589
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -9.394,
+      2.770000000000001,
+      7.680500000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 35.116722681826715,
+     "curve": "circle",
+     "radius": 5.589,
+     "center": [
+      -3.805,
+      2.77,
+      7.680500000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.947,
+     3.601,
+     7.6805
+    ],
+    5.589
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_038",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 70.899,
+     "d": 40.084,
+     "h": 11.539,
+     "holes": [
+      [
+       10.43,
+       -4.684,
+       6.104
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      1.9189999999999996,
+      -3.6029999999999993,
+      5.769500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 38.352563115024196,
+     "curve": "circle",
+     "radius": 6.104,
+     "center": [
+      8.023,
+      -3.603,
+      5.769500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     10.43,
+     -4.684,
+     5.7695
+    ],
+    6.104
+   ],
+   "note": ""
+  },
+  {
+   "id": "bool_039",
+   "category": "boolean_stack",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 78.035,
+     "d": 78.405,
+     "h": 8.842,
+     "holes": [
+      [
+       -11.697,
+       9.021,
+       3.027
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -12.024999999999999,
+      6.939,
+      4.420999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 19.019201924832608,
+     "curve": "circle",
+     "radius": 3.027,
+     "center": [
+      -8.998,
+      6.939,
+      4.420999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -11.697,
+     9.021,
+     4.421
+    ],
+    3.027
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_000",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 44.327,
+     "d": 18.653,
+     "h": 53.246
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      13.1485
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 826.8315309999999,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     26.623
+    ],
+    826.8315,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_001",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 44.212,
+     "d": 57.705,
+     "h": 19.295
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.8295,
+      -14.1345,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 19.295,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -22.106,
+     -28.8525,
+     0.0
+    ],
+    19.295
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_002",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 116.882,
+     "d": 72.096,
+     "h": 24.182
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      28.7575,
+      -17.7385,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 24.182,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     58.441,
+     -36.048,
+     0.0
+    ],
+    24.182
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_003",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 32.971,
+     "d": 32.603,
+     "h": 27.851
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      7.618
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1074.953513,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     13.9255
+    ],
+    1074.9535,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_004",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 43.541,
+     "d": 43.466,
+     "h": 27.746
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -13.4905,
+      -13.467,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 27.746,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -21.7705,
+     -21.733,
+     0.0
+    ],
+    27.746
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_005",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 31.392,
+     "d": 48.321,
+     "h": 28.703
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      -1.7763568394002505e-15,
+      -3.552713678800501e-15,
+      11.816500000000007
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1516.8928319999998,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     -0.0,
+     -0.0,
+     14.3515
+    ],
+    1516.8928,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_006",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 57.284,
+     "d": 25.67,
+     "h": 14.22
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      20.328,
+      -9.1095,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 14.22,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     28.642,
+     -12.835,
+     0.0
+    ],
+    14.22
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_007",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 23.806,
+     "d": 23.904,
+     "h": 38.832
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      10.1605
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 569.0586239999999,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     19.416
+    ],
+    569.0586,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_008",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 51.401,
+     "d": 26.612,
+     "h": 28.009
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      9.7275
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1367.883412,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     14.0045
+    ],
+    1367.8834,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_009",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 23.812,
+     "d": 19.412,
+     "h": 23.311
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      -1.7763568394002505e-15,
+      0.0,
+      8.012
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 462.23854399999993,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     -0.0,
+     0.0,
+     11.6555
+    ],
+    462.2385,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_010",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 53.807,
+     "d": 37.298,
+     "h": 32.546
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      9.0745
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 2006.8934860000002,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     16.273
+    ],
+    2006.8935,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_011",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 49.875,
+     "d": 34.645,
+     "h": 22.271
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      8.667
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1727.9193750000002,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     11.1355
+    ],
+    1727.9194,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_012",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 55.258,
+     "d": 39.175,
+     "h": 36.247
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      14.412000000000004
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 2164.73215,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     18.1235
+    ],
+    2164.7321,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_013",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 27.368,
+     "d": 79.6,
+     "h": 18.627
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      9.8975,
+      -28.7865,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 18.627,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     13.684,
+     -39.8,
+     0.0
+    ],
+    18.627
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_014",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 12.278,
+     "d": 19.549,
+     "h": 25.992
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      10.4665
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 240.022622,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     12.996
+    ],
+    240.0226,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_015",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 45.536,
+     "d": 68.405,
+     "h": 26.952
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      10.391,
+      15.6095,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 26.952,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     22.768,
+     34.2025,
+     0.0
+    ],
+    26.952
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_016",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 53.586,
+     "d": 30.944,
+     "h": 40.531
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      3.552713678800501e-15,
+      1.7763568394002505e-15,
+      14.846
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1658.1651839999997,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     20.2655
+    ],
+    1658.1652,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_017",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 58.29,
+     "d": 29.278,
+     "h": 18.908
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      1.7763568394002505e-15,
+      6.537
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1706.6146199999996,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     9.454
+    ],
+    1706.6146,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_018",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 68.806,
+     "d": 29.271,
+     "h": 18.772
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -17.603,
+      -7.4885,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 18.772,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -34.403,
+     -14.6355,
+     0.0
+    ],
+    18.772
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_019",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 24.241,
+     "d": 22.485,
+     "h": 39.437
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      10.92
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 545.0588849999999,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     19.7185
+    ],
+    545.0589,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_020",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 24.149,
+     "d": 27.063,
+     "h": 12.254
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      -1.7763568394002505e-15,
+      3.2809999999999993
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 653.544387,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     -0.0,
+     6.127
+    ],
+    653.5444,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_021",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 89.944,
+     "d": 84.443,
+     "h": 26.579
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      20.8615,
+      19.5855,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 26.579,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     44.972,
+     42.2215,
+     0.0
+    ],
+    26.579
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_022",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 70.834,
+     "d": 98.951,
+     "h": 26.406
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -16.414,
+      22.9295,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 26.406,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -35.417,
+     49.4755,
+     0.0
+    ],
+    26.406
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_023",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 32.075,
+     "d": 76.136,
+     "h": 12.202
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.388,
+      24.658,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 12.202,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -16.0375,
+     38.068,
+     0.0
+    ],
+    12.202
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_024",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 18.18,
+     "d": 28.41,
+     "h": 29.727
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.2535,
+      -11.335,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 29.727,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -9.09,
+     -14.205,
+     0.0
+    ],
+    29.727
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_025",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 16.076,
+     "d": 56.121,
+     "h": 52.028
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      14.1035
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 902.2011960000001,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     26.014
+    ],
+    902.2012,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_026",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 15.323,
+     "d": 43.525,
+     "h": 24.717
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      -8.881784197001252e-16,
+      0.0,
+      6.863499999999998
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 666.9335749999999,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     -0.0,
+     0.0,
+     12.3585
+    ],
+    666.9336,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_027",
+   "category": "dimension_change",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 113.409,
+     "d": 63.546,
+     "h": 14.896
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -26.3755,
+      14.779,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 14.896,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -56.7045,
+     31.773,
+     0.0
+    ],
+    14.896
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_028",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 30.509,
+     "d": 12.095,
+     "h": 20.905
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      8.3315
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 369.00635500000004,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     10.4525
+    ],
+    369.0064,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "dim_029",
+   "category": "dimension_change",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 15.79,
+     "d": 10.236,
+     "h": 32.67
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      11.2025
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 161.62643999999997,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     0.0,
+     0.0,
+     16.335
+    ],
+    161.6264,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_000",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 110.104,
+     "d": 74.996,
+     "h": 18.489,
+     "holes": [
+      [
+       -1.979,
+       -1.049,
+       5.814
+      ],
+      [
+       -46.238,
+       -28.684,
+       5.814
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.116,
+      -0.6899999999999993,
+      9.244500000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 36.530439375942116,
+     "curve": "circle",
+     "radius": 5.814,
+     "center": [
+      -1.302,
+      -0.69,
+      9.244500000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -1.979,
+     -1.049,
+     9.2445
+    ],
+    5.814
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_001",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 60.8,
+     "d": 72.104,
+     "h": 18.887,
+     "holes": [
+      [
+       -2.557,
+       -1.353,
+       3.867
+      ],
+      [
+       -23.533,
+       -29.185,
+       3.867
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -5.796,
+      -1.0209999999999995,
+      9.4435
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.29707758286346,
+     "curve": "circle",
+     "radius": 3.867,
+     "center": [
+      -1.929,
+      -1.021,
+      9.4435
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -2.557,
+     -1.353,
+     9.4435
+    ],
+    3.867
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_002",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 105.793,
+     "d": 59.914,
+     "h": 17.757,
+     "holes": [
+      [
+       -5.817,
+       -1.727,
+       3.032
+      ],
+      [
+       -46.864,
+       -23.925,
+       3.032
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.970000000000001,
+      -1.169000000000001,
+      8.878500000000003
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 19.050617851368507,
+     "curve": "circle",
+     "radius": 3.032,
+     "center": [
+      -3.938,
+      -1.169,
+      8.878500000000003
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.817,
+     -1.727,
+     8.8785
+    ],
+    3.032
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_003",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 71.856,
+     "d": 70.456,
+     "h": 13.549,
+     "holes": [
+      [
+       7.099,
+       -0.566,
+       4.045
+      ],
+      [
+       28.883,
+       28.183,
+       4.045
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      0.7869999999999999,
+      -0.3849999999999995,
+      6.7745
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 25.415484567541426,
+     "curve": "circle",
+     "radius": 4.045,
+     "center": [
+      4.832,
+      -0.385,
+      6.7745
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     7.099,
+     -0.566,
+     6.7745
+    ],
+    4.045
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_004",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 71.263,
+     "d": 70.689,
+     "h": 8.566,
+     "holes": [
+      [
+       -5.969,
+       -3.908,
+       4.068
+      ],
+      [
+       -28.563,
+       -28.276,
+       4.068
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.134,
+      -2.6619999999999995,
+      4.283000000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 25.559997829606555,
+     "curve": "circle",
+     "radius": 4.068,
+     "center": [
+      -4.066,
+      -2.662,
+      4.283000000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.969,
+     -3.908,
+     4.283
+    ],
+    4.068
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_005",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 107.981,
+     "d": 58.144,
+     "h": 15.061,
+     "holes": [
+      [
+       -0.306,
+       6.919,
+       5.747
+      ],
+      [
+       45.244,
+       20.325,
+       5.747
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -5.959,
+      4.793000000000004,
+      7.5305
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 36.10946596036108,
+     "curve": "circle",
+     "radius": 5.747,
+     "center": [
+      -0.212,
+      4.793,
+      7.5305
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -0.306,
+     6.919,
+     7.5305
+    ],
+    5.747
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_006",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 49.629,
+     "d": 61.916,
+     "h": 18.649,
+     "holes": [
+      [
+       3.547,
+       5.516,
+       5.805
+      ],
+      [
+       -16.01,
+       22.153,
+       5.805
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -2.772,
+      4.716999999999998,
+      9.3245
+     ],
+     "dir": [
+      -3.216245299353273e-16,
+      1.0,
+      0.0
+     ],
+     "length": 36.47389070817749,
+     "curve": "circle",
+     "radius": 5.805,
+     "center": [
+      3.033,
+      4.717,
+      9.3245
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     3.547,
+     5.516,
+     9.3245
+    ],
+    5.805
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_007",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 86.156,
+     "d": 61.702,
+     "h": 17.023,
+     "holes": [
+      [
+       1.987,
+       6.271,
+       4.672
+      ],
+      [
+       35.406,
+       23.179,
+       4.672
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -3.1639999999999997,
+      4.758000000000001,
+      8.511499999999998
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.355041755143024,
+     "curve": "circle",
+     "radius": 4.672,
+     "center": [
+      1.508,
+      4.758,
+      8.511499999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     1.987,
+     6.271,
+     8.5115
+    ],
+    4.672
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_008",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 91.152,
+     "d": 58.406,
+     "h": 17.148,
+     "holes": [
+      [
+       -7.993,
+       -1.529,
+       5.444
+      ],
+      [
+       -37.132,
+       -20.759,
+       5.444
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -11.219000000000001,
+      -1.1049999999999969,
+      8.573999999999998
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.205660812285664,
+     "curve": "circle",
+     "radius": 5.444,
+     "center": [
+      -5.775,
+      -1.105,
+      8.573999999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -7.993,
+     -1.529,
+     8.574
+    ],
+    5.444
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_009",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 75.053,
+     "d": 47.997,
+     "h": 19.579,
+     "holes": [
+      [
+       -4.339,
+       -4.568,
+       4.475
+      ],
+      [
+       -30.052,
+       16.523,
+       4.475
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.478,
+      -3.1609999999999996,
+      9.7895
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 28.11725424962865,
+     "curve": "circle",
+     "radius": 4.475,
+     "center": [
+      -3.003,
+      -3.161,
+      9.7895
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.339,
+     -4.568,
+     9.7895
+    ],
+    4.475
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_010",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 66.272,
+     "d": 55.956,
+     "h": 18.229,
+     "holes": [
+      [
+       -4.771,
+       5.286,
+       4.906
+      ],
+      [
+       -25.23,
+       20.072,
+       4.906
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.939,
+      4.468000000000001,
+      9.1145
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 30.825307117023048,
+     "curve": "circle",
+     "radius": 4.906,
+     "center": [
+      -4.033,
+      4.468,
+      9.1145
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.771,
+     5.286,
+     9.1145
+    ],
+    4.906
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_011",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 65.9,
+     "d": 46.404,
+     "h": 14.852,
+     "holes": [
+      [
+       -2.899,
+       4.38,
+       4.92
+      ],
+      [
+       -25.03,
+       -15.282,
+       4.92
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.318,
+      3.6230000000000007,
+      7.426000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 30.91327171132356,
+     "curve": "circle",
+     "radius": 4.92,
+     "center": [
+      -2.398,
+      3.623,
+      7.426000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -2.899,
+     4.38,
+     7.426
+    ],
+    4.92
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_012",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 99.365,
+     "d": 74.248,
+     "h": 11.794,
+     "holes": [
+      [
+       -7.501,
+       -0.182,
+       5.094
+      ],
+      [
+       -41.589,
+       29.03,
+       5.094
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -10.0,
+      -0.11899999999999711,
+      5.8969999999999985
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 32.00654595477281,
+     "curve": "circle",
+     "radius": 5.094,
+     "center": [
+      -4.906,
+      -0.119,
+      5.8969999999999985
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -7.501,
+     -0.182,
+     5.897
+    ],
+    5.094
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_013",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 58.419,
+     "d": 49.333,
+     "h": 10.828,
+     "holes": [
+      [
+       5.38,
+       -0.027,
+       5.655
+      ],
+      [
+       20.554,
+       -16.011,
+       5.655
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -1.818,
+      -0.018999999999999306,
+      5.4140000000000015
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 35.53141291210057,
+     "curve": "circle",
+     "radius": 5.655,
+     "center": [
+      3.837,
+      -0.019,
+      5.4140000000000015
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.38,
+     -0.027,
+     5.414
+    ],
+    5.655
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_014",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 68.815,
+     "d": 84.156,
+     "h": 16.614,
+     "holes": [
+      [
+       -5.483,
+       2.01,
+       5.778
+      ],
+      [
+       25.63,
+       -33.3,
+       5.778
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -9.620999999999999,
+      1.4090000000000034,
+      8.307000000000002
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 36.304244704883644,
+     "curve": "circle",
+     "radius": 5.778,
+     "center": [
+      -3.843,
+      1.409,
+      8.307000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.483,
+     2.01,
+     8.307
+    ],
+    5.778
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_015",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 92.716,
+     "d": 72.128,
+     "h": 18.131,
+     "holes": [
+      [
+       -5.464,
+       -1.947,
+       3.896
+      ],
+      [
+       39.462,
+       -29.168,
+       3.896
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.7059999999999995,
+      -1.3579999999999997,
+      9.0655
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.479289956771666,
+     "curve": "circle",
+     "radius": 3.896,
+     "center": [
+      -3.81,
+      -1.358,
+      9.0655
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.464,
+     -1.947,
+     9.0655
+    ],
+    3.896
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_016",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 68.973,
+     "d": 42.882,
+     "h": 13.314,
+     "holes": [
+      [
+       5.189,
+       4.906,
+       4.074
+      ],
+      [
+       -27.412,
+       14.367,
+       4.074
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      0.28300000000000036,
+      4.119000000000001,
+      6.657
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 25.597696941449634,
+     "curve": "circle",
+     "radius": 4.074,
+     "center": [
+      4.357,
+      4.119,
+      6.657
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     5.189,
+     4.906,
+     6.657
+    ],
+    4.074
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_017",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 64.574,
+     "d": 51.069,
+     "h": 11.89,
+     "holes": [
+      [
+       1.356,
+       4.07,
+       5.494
+      ],
+      [
+       23.793,
+       17.041,
+       5.494
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.492,
+      3.008000000000001,
+      5.945
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.519820077644646,
+     "curve": "circle",
+     "radius": 5.494,
+     "center": [
+      1.002,
+      3.008,
+      5.945
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     1.356,
+     4.07,
+     5.945
+    ],
+    5.494
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_018",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 98.444,
+     "d": 51.362,
+     "h": 13.876,
+     "holes": [
+      [
+       -4.524,
+       -5.035,
+       4.731
+      ],
+      [
+       -41.491,
+       17.95,
+       4.731
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.667,
+      -3.2679999999999993,
+      6.937999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 29.72574968826662,
+     "curve": "circle",
+     "radius": 4.731,
+     "center": [
+      -2.936,
+      -3.268,
+      6.937999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.524,
+     -5.035,
+     6.938
+    ],
+    4.731
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_019",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 64.461,
+     "d": 37.736,
+     "h": 9.084,
+     "holes": [
+      [
+       1.337,
+       -1.896,
+       5.161
+      ],
+      [
+       -24.069,
+       -10.707,
+       5.161
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.034,
+      -1.5979999999999994,
+      4.542
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 32.42751937035385,
+     "curve": "circle",
+     "radius": 5.161,
+     "center": [
+      1.127,
+      -1.598,
+      4.542
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     1.337,
+     -1.896,
+     4.542
+    ],
+    5.161
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_020",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 86.142,
+     "d": 37.895,
+     "h": 13.33,
+     "holes": [
+      [
+       -4.797,
+       0.736,
+       4.309
+      ],
+      [
+       -35.762,
+       11.639,
+       4.309
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.218,
+      0.6000000000000005,
+      6.664999999999999
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 27.074245488636837,
+     "curve": "circle",
+     "radius": 4.309,
+     "center": [
+      -3.909,
+      0.6,
+      6.664999999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.797,
+     0.736,
+     6.665
+    ],
+    4.309
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_021",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 93.085,
+     "d": 55.146,
+     "h": 13.167,
+     "holes": [
+      [
+       6.199,
+       6.587,
+       5.538
+      ],
+      [
+       -38.005,
+       -19.035,
+       5.538
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -1.1370000000000005,
+      4.676000000000001,
+      6.583500000000001
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 34.79628023116055,
+     "curve": "circle",
+     "radius": 5.538,
+     "center": [
+      4.401,
+      4.676,
+      6.583500000000001
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     6.199,
+     6.587,
+     6.5835
+    ],
+    5.538
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_022",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 77.689,
+     "d": 69.098,
+     "h": 14.977,
+     "holes": [
+      [
+       -2.988,
+       -2.556,
+       4.196
+      ],
+      [
+       31.648,
+       -27.353,
+       4.196
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -6.592,
+      -2.0499999999999994,
+      7.488500000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 26.36424554892555,
+     "curve": "circle",
+     "radius": 4.196,
+     "center": [
+      -2.396,
+      -2.05,
+      7.488500000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -2.988,
+     -2.556,
+     7.4885
+    ],
+    4.196
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_023",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 117.391,
+     "d": 66.199,
+     "h": 13.163,
+     "holes": [
+      [
+       3.182,
+       -8.329,
+       4.789
+      ],
+      [
+       50.907,
+       25.31,
+       4.789
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -2.7359999999999998,
+      -5.373999999999999,
+      6.581499999999998
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 30.090174436083036,
+     "curve": "circle",
+     "radius": 4.789,
+     "center": [
+      2.053,
+      -5.374,
+      6.581499999999998
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     3.182,
+     -8.329,
+     6.5815
+    ],
+    4.789
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_024",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 80.358,
+     "d": 46.413,
+     "h": 8.86,
+     "holes": [
+      [
+       -5.84,
+       0.74,
+       3.915
+      ],
+      [
+       33.264,
+       16.291,
+       3.915
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.58,
+      0.5910000000000004,
+      4.43
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 24.598670477608078,
+     "curve": "circle",
+     "radius": 3.915,
+     "center": [
+      -4.665,
+      0.591,
+      4.43
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -5.84,
+     0.74,
+     4.43
+    ],
+    3.915
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_025",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 77.424,
+     "d": 90.069,
+     "h": 17.125,
+     "holes": [
+      [
+       -4.404,
+       -6.863,
+       5.701
+      ],
+      [
+       30.011,
+       36.333,
+       5.701
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.547,
+      -4.434999999999999,
+      8.5625
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 35.82043943623082,
+     "curve": "circle",
+     "radius": 5.701,
+     "center": [
+      -2.846,
+      -4.435,
+      8.5625
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.404,
+     -6.863,
+     8.5625
+    ],
+    5.701
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_026",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 106.34,
+     "d": 61.989,
+     "h": 16.846,
+     "holes": [
+      [
+       1.473,
+       3.145,
+       5.142
+      ],
+      [
+       45.028,
+       22.853,
+       5.142
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -4.130000000000001,
+      2.1610000000000005,
+      8.423000000000002
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 32.308138849517434,
+     "curve": "circle",
+     "radius": 5.142,
+     "center": [
+      1.012,
+      2.161,
+      8.423000000000002
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     1.473,
+     3.145,
+     8.423
+    ],
+    5.142
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_027",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 92.895,
+     "d": 70.293,
+     "h": 18.777,
+     "holes": [
+      [
+       -4.137,
+       5.046,
+       4.535
+      ],
+      [
+       38.913,
+       -27.611,
+       4.535
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -8.013,
+      4.242000000000001,
+      9.3885
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 28.494245368059424,
+     "curve": "circle",
+     "radius": 4.535,
+     "center": [
+      -3.478,
+      4.242,
+      9.3885
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -4.137,
+     5.046,
+     9.3885
+    ],
+    4.535
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_028",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 91.032,
+     "d": 65.156,
+     "h": 15.263,
+     "holes": [
+      [
+       8.233,
+       2.834,
+       3.287
+      ],
+      [
+       -39.229,
+       26.291,
+       3.287
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      2.088,
+      1.8500000000000019,
+      7.631499999999999
+     ],
+     "dir": [
+      5.66553889764798e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 20.652830104699298,
+     "curve": "circle",
+     "radius": 3.287,
+     "center": [
+      5.375,
+      1.85,
+      7.631499999999999
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     8.233,
+     2.834,
+     7.6315
+    ],
+    3.287
+   ],
+   "note": ""
+  },
+  {
+   "id": "added_029",
+   "category": "added_feature",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box_holes",
+    "params": {
+     "w": 90.865,
+     "d": 63.8,
+     "h": 8.508,
+     "holes": [
+      [
+       -6.007,
+       -0.48,
+       3.328
+      ],
+      [
+       39.104,
+       -25.572,
+       3.328
+      ]
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      -7.372999999999999,
+      -0.3229999999999996,
+      4.254
+     ],
+     "dir": [
+      1.2246467991473532e-16,
+      1.0,
+      -0.0
+     ],
+     "length": 20.91044070229366,
+     "curve": "circle",
+     "radius": 3.328,
+     "center": [
+      -4.045,
+      -0.323,
+      4.254
+     ]
+    }
+   },
+   "expected_key": [
+    "edge",
+    "circle",
+    [
+     -6.007,
+     -0.48,
+     4.254
+    ],
+    3.328
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_000",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 32.281,
+     "d": 46.743,
+     "h": 22.033,
+     "pos": [
+      13.487,
+      -9.829,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      -3.552713678800501e-15,
+      11.016499999999997
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1508.9107829999996,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     13.487,
+     -9.829,
+     11.0165
+    ],
+    1508.9108,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_001",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 30.073,
+     "d": 41.068,
+     "h": 14.548,
+     "pos": [
+      -13.567,
+      10.131,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      15.0365,
+      20.534,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 14.548,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     1.4695,
+     30.665,
+     0.0
+    ],
+    14.548
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_002",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 39.4,
+     "d": 34.507,
+     "h": 8.661,
+     "pos": [
+      14.161,
+      -6.709,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      4.3305
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1359.5757999999998,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     14.161,
+     -6.709,
+     4.3305
+    ],
+    1359.5758,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_003",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 34.95,
+     "d": 31.538,
+     "h": 22.709,
+     "pos": [
+      19.211,
+      4.288,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      -1.7763568394002505e-15,
+      11.3545
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1102.2531000000001,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     19.211,
+     4.288,
+     11.3545
+    ],
+    1102.2531,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_004",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 22.52,
+     "d": 24.667,
+     "h": 10.555,
+     "pos": [
+      -4.389,
+      -7.274,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      11.26,
+      12.3335,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 10.555,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     6.871,
+     5.0595,
+     0.0
+    ],
+    10.555
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_005",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 17.974,
+     "d": 48.285,
+     "h": 16.54,
+     "pos": [
+      7.828,
+      -12.232,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      8.987,
+      24.1425,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 16.54,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     16.815,
+     11.9105,
+     0.0
+    ],
+    16.54
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_006",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 33.214,
+     "d": 34.951,
+     "h": 11.598,
+     "pos": [
+      3.88,
+      -3.608,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      5.799
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1160.862514,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     3.88,
+     -3.608,
+     5.799
+    ],
+    1160.8625,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_007",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 18.906,
+     "d": 15.934,
+     "h": 21.751,
+     "pos": [
+      -18.866,
+      14.813,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      9.453,
+      7.967,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 21.751,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -9.413,
+     22.78,
+     0.0
+    ],
+    21.751
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_008",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 13.933,
+     "d": 29.098,
+     "h": 24.569,
+     "pos": [
+      9.953,
+      14.935,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      8.881784197001252e-16,
+      0.0,
+      12.284499999999996
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 405.42243399999995,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     9.953,
+     14.935,
+     12.2845
+    ],
+    405.4224,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_009",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 11.41,
+     "d": 35.684,
+     "h": 16.937,
+     "pos": [
+      -4.711,
+      7.569,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      8.4685
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 407.15443999999997,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     -4.711,
+     7.569,
+     8.4685
+    ],
+    407.1544,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_010",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 13.418,
+     "d": 45.289,
+     "h": 24.791,
+     "pos": [
+      14.966,
+      -11.455,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      12.3955
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 607.687802,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     14.966,
+     -11.455,
+     12.3955
+    ],
+    607.6878,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_011",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 23.426,
+     "d": 29.791,
+     "h": 20.042,
+     "pos": [
+      -17.307,
+      11.115,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      11.713,
+      14.8955,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 20.042,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -5.594,
+     26.0105,
+     0.0
+    ],
+    20.042
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_012",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 46.571,
+     "d": 32.492,
+     "h": 18.864,
+     "pos": [
+      -11.045,
+      -4.714,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      23.2855,
+      16.246,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 18.864,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     12.2405,
+     11.532,
+     0.0
+    ],
+    18.864
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_013",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 29.158,
+     "d": 22.748,
+     "h": 20.622,
+     "pos": [
+      7.304,
+      -11.772,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      10.311
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 663.286184,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     7.304,
+     -11.772,
+     10.311
+    ],
+    663.2862,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_014",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 15.232,
+     "d": 45.217,
+     "h": 17.218,
+     "pos": [
+      -3.521,
+      -7.947,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      8.881784197001252e-16,
+      0.0,
+      8.609
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 688.7453439999999,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     -3.521,
+     -7.947,
+     8.609
+    ],
+    688.7453,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_015",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 40.459,
+     "d": 29.015,
+     "h": 12.788,
+     "pos": [
+      -16.407,
+      10.393,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      20.2295,
+      14.5075,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 12.788,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     3.8225,
+     24.9005,
+     0.0
+    ],
+    12.788
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_016",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 24.553,
+     "d": 12.153,
+     "h": 22.278,
+     "pos": [
+      3.876,
+      18.694,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      11.139
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 298.392609,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     3.876,
+     18.694,
+     11.139
+    ],
+    298.3926,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_017",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 48.442,
+     "d": 24.548,
+     "h": 18.067,
+     "pos": [
+      -19.672,
+      7.795,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      24.221,
+      12.274,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 18.067,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     4.549,
+     20.069,
+     0.0
+    ],
+    18.067
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_018",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 11.798,
+     "d": 32.882,
+     "h": 14.001,
+     "pos": [
+      -8.788,
+      -8.64,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      5.899,
+      16.441,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 14.001,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -2.889,
+     7.801,
+     0.0
+    ],
+    14.001
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_019",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 47.176,
+     "d": 41.444,
+     "h": 6.521,
+     "pos": [
+      8.729,
+      10.064,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      23.588,
+      20.722,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 6.521,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     32.317,
+     30.786,
+     0.0
+    ],
+    6.521
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_020",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 40.057,
+     "d": 22.809,
+     "h": 6.63,
+     "pos": [
+      7.032,
+      17.807,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      3.315000000000001
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 913.6601130000001,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     7.032,
+     17.807,
+     3.315
+    ],
+    913.6601,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_021",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 12.371,
+     "d": 47.165,
+     "h": 16.809,
+     "pos": [
+      -16.147,
+      -4.873,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      6.1855,
+      23.5825,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 16.809,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -9.9615,
+     18.7095,
+     0.0
+    ],
+    16.809
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_022",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 22.484,
+     "d": 37.264,
+     "h": 24.094,
+     "pos": [
+      -9.683,
+      6.138,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      12.046999999999997
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 837.8437760000002,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     -9.683,
+     6.138,
+     12.047
+    ],
+    837.8438,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_023",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 21.749,
+     "d": 29.964,
+     "h": 20.379,
+     "pos": [
+      14.319,
+      9.295,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      1.7763568394002505e-15,
+      10.1895
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 651.6870359999998,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     14.319,
+     9.295,
+     10.1895
+    ],
+    651.687,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_024",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 10.133,
+     "d": 45.666,
+     "h": 19.701,
+     "pos": [
+      12.429,
+      -17.023,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      9.8505
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 462.7335779999999,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     12.429,
+     -17.023,
+     9.8505
+    ],
+    462.7336,
+    null
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_025",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 20.664,
+     "d": 23.006,
+     "h": 11.776,
+     "pos": [
+      9.574,
+      3.855,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      10.332,
+      11.503,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 11.776,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     19.906,
+     15.358,
+     0.0
+    ],
+    11.776
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_026",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 39.228,
+     "d": 24.778,
+     "h": 18.91,
+     "pos": [
+      -9.757,
+      -9.362,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      19.614,
+      12.389,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 18.91,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     9.857,
+     3.027,
+     0.0
+    ],
+    18.91
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_027",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 43.558,
+     "d": 29.254,
+     "h": 21.894,
+     "pos": [
+      4.748,
+      19.05,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      21.779,
+      14.627,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 21.894,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     26.527,
+     33.677,
+     0.0
+    ],
+    21.894
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_028",
+   "category": "moved_sketch",
+   "kind": "edge",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 20.629,
+     "d": 27.303,
+     "h": 12.212,
+     "pos": [
+      -11.383,
+      6.783,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "edge",
+    "by": "match",
+    "fp": {
+     "mid": [
+      10.3145,
+      13.6515,
+      0.0
+     ],
+     "dir": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "length": 12.212,
+     "curve": "line"
+    }
+   },
+   "expected_key": [
+    "edge",
+    "line",
+    [
+     -1.0685,
+     20.4345,
+     0.0
+    ],
+    12.212
+   ],
+   "note": ""
+  },
+  {
+   "id": "moved_029",
+   "category": "moved_sketch",
+   "kind": "face",
+   "mutated_spec": {
+    "archetype": "box",
+    "params": {
+     "w": 29.995,
+     "d": 40.822,
+     "h": 24.032,
+     "pos": [
+      8.478,
+      17.089,
+      0
+     ]
+    }
+   },
+   "selector": {
+    "kind": "face",
+    "by": "match",
+    "fp": {
+     "centroid": [
+      0.0,
+      0.0,
+      12.016000000000004
+     ],
+     "normal": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "area": 1224.4558900000002,
+     "surface": "plane"
+    }
+   },
+   "expected_key": [
+    "face",
+    "plane",
+    [
+     8.478,
+     17.089,
+     12.016
+    ],
+    1224.4559,
+    null
+   ],
+   "note": ""
+  }
+ ]
+}

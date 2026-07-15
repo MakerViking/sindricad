@@ -1,0 +1,8 @@
+{
+  "created_ts": "2026-07-14T18:34:33+00:00",
+  "dir": "sidecar/tools/corpus",
+  "files": {
+    "corpus_selectors.json": "5ee00b40ceab36689a92c5b31ddbf905436bd4efd465f29635cbe9d9881a53d6"
+  },
+  "note": "git:dd0ab1c seeded gen_selector_corpus.py seed=20260714 220 cases"
+}

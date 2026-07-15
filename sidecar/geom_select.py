@@ -47,23 +47,73 @@ edge references need a stable id scheme on the TS side first). Don't go hunting
 for a frontend caller; there isn't one yet.
 """
 
+import json
 import math
+import os
 
 from build123d import Axis, Vector, GeomType
 
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
 
-# --- tolerances (world mm; position tol is bbox-relative so it scales with part) ---
-ANG_TOL = 0.02       # ~1.1deg of slack on (1 - |dot|) for dir/normal
-POS_DRIFT = 0.5      # mm of absolute positional drift budget (kernel disagreement)
-REL_DRIFT = 1e-3     # + this * bbox diagonal
-LEN_REL_TOL = 0.02   # 2% on length / radius
-AREA_REL_TOL = 0.05  # 5% on area
-TIE_BAND = 0.15      # runner-up within 15% of best => a genuine tie (need nth)
-ACCEPT_MAX = 2.5     # best cost above this => resolvable but marginal (lossy)
+# --- tunable scoring constants -----------------------------------------------
+# These 13 numbers are the ONLY thing that governs how `by:"match"` scores
+# candidates; they are externalized to selector_tuning.json (next to this file)
+# so an optimization loop can tune them without editing resolver logic. The
+# hardcoded defaults below are authoritative fallbacks: if the JSON is missing a
+# key (or the whole file), the shipped behavior is unchanged. Values are applied
+# to module globals so the resolver body can keep referencing them by name; the
+# oracle overrides them per-experiment via configure().
+#
+#   ANG_TOL      ~1.1deg of slack on (1 - |dot|) for dir/normal
+#   POS_DRIFT    mm of absolute positional drift budget (kernel disagreement)
+#   REL_DRIFT    + this * bbox diagonal (position tol scales with the part)
+#   LEN_REL_TOL  2% on length / radius
+#   AREA_REL_TOL 5% on area
+#   TIE_BAND     runner-up within 15% of best => a genuine tie (need nth)
+#   ACCEPT_MAX   best cost above this => resolvable but marginal (lossy)
+#   W_*          scoring weights, per normalized error term
+_DEFAULTS = {
+    "ANG_TOL": 0.02,
+    "POS_DRIFT": 0.5,
+    "REL_DRIFT": 1e-3,
+    "LEN_REL_TOL": 0.02,
+    "AREA_REL_TOL": 0.05,
+    "TIE_BAND": 0.15,
+    "ACCEPT_MAX": 2.5,
+    "W_POS": 3.0,
+    "W_DIR": 2.0,
+    "W_LEN": 1.0,
+    "W_RAD": 2.0,
+    "W_AREA": 1.0,
+    "W_TYPE": 4.0,
+}
+_TUNING = dict(_DEFAULTS)
 
-# scoring weights (per normalized error term)
-W_POS, W_DIR, W_LEN, W_RAD, W_AREA, W_TYPE = 3.0, 2.0, 1.0, 2.0, 1.0, 4.0
+
+def _apply_tuning():
+    """Push the current _TUNING values onto module globals (ANG_TOL, W_POS, ...)."""
+    globals().update({k: float(_TUNING[k]) for k in _DEFAULTS})
+
+
+def configure(src):
+    """Override tuning constants from a dict or a JSON file path.
+
+    Missing keys keep their default. Unknown keys are ignored. The oracle calls
+    this once per experiment with the config under test; the app auto-loads
+    selector_tuning.json at import (below) for the shipped values.
+    """
+    if isinstance(src, str):
+        with open(src) as f:
+            src = json.load(f)
+    _TUNING.update({k: src[k] for k in _DEFAULTS if k in src})
+    _apply_tuning()
+
+
+_apply_tuning()
+try:
+    configure(os.path.join(os.path.dirname(__file__), "selector_tuning.json"))
+except FileNotFoundError:
+    pass
 
 
 # --- small helpers -----------------------------------------------------------

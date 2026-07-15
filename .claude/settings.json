@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(norn/ledger.jsonl)", "Write(norn/ledger.jsonl)",
+      "Edit(norn/protocol.md)", "Write(norn/protocol.md)",
+      "Edit(norn/manifest.json)", "Write(norn/manifest.json)",
+      "Edit(norn/baseline/**)", "Write(norn/baseline/**)",
+      "Edit(norn/splits/**)", "Write(norn/splits/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {"type": "command", "command": "bash ~/.claude/skills/norn/hooks/guard-norn.sh"}
+        ]
+      }
+    ]
+  }
+}

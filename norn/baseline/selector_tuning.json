@@ -1,0 +1,15 @@
+{
+  "ANG_TOL": 0.02,
+  "POS_DRIFT": 0.5,
+  "REL_DRIFT": 0.001,
+  "LEN_REL_TOL": 0.02,
+  "AREA_REL_TOL": 0.05,
+  "TIE_BAND": 0.15,
+  "ACCEPT_MAX": 2.5,
+  "W_POS": 3.0,
+  "W_DIR": 2.0,
+  "W_LEN": 1.0,
+  "W_RAD": 2.0,
+  "W_AREA": 1.0,
+  "W_TYPE": 4.0
+}
