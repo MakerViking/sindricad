@@ -61,6 +61,9 @@ from build123d import (
     Solid,
     Compound,
     Shape,
+    Text,
+    FontStyle,
+    Align,
     GeomType,
     Keep,
     Kind,
@@ -3743,6 +3746,122 @@ def _hexagon_lines(cx, cy, R, eid):
     ]
 
 
+_TEXT_FONT_STYLE = {
+    "regular": FontStyle.REGULAR, "bold": FontStyle.BOLD,
+    "italic": FontStyle.ITALIC, "bolditalic": FontStyle.BOLDITALIC,
+}
+_TEXT_HALIGN = {"left": Align.MIN, "center": Align.CENTER, "right": Align.MAX}
+
+
+def _entity_edge(e, val):
+    """One build123d edge for a line/arc/circle/spline entity — used as a text path.
+    Returns None for non-curve entities or on any construction failure."""
+    t = e.get("type")
+    try:
+        if t == "line":
+            return Edge.make_line((val(e["x1"]), val(e["y1"]), 0), (val(e["x2"]), val(e["y2"]), 0))
+        if t == "arc":
+            return Edge.make_three_point_arc(
+                (val(e["x1"]), val(e["y1"]), 0), (val(e["mx"]), val(e["my"]), 0), (val(e["x2"]), val(e["y2"]), 0))
+        if t == "circle":
+            return Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Edge.make_circle(val(e["radius"]))
+        if t == "spline":
+            pts = [(val(p["x"]), val(p["y"]), 0) for p in e.get("points", [])]
+            if len(pts) >= 2:
+                return Edge.make_spline(pts)
+    except Exception:
+        return None
+    return None
+
+
+def _text_faces(e, val, path_edge=None):
+    """build123d faces for a `text` sketch entity (2D, on the sketch's local XY),
+    anchored at (x, y), rotated, aligned; text-on-path when `path_edge` is set. Shared
+    by the solid build and the preview op so glyphs match exactly. Best-effort: returns
+    [] on empty/whitespace text or ANY font/glyph failure (one bad font can't fail the
+    whole rebuild)."""
+    txt = e.get("text") or ""
+    if not txt.strip():
+        return []
+    try:
+        kw = {
+            "font_size": val(e["height"]),
+            "font_style": _TEXT_FONT_STYLE.get(e.get("style", "regular"), FontStyle.REGULAR),
+            "align": (_TEXT_HALIGN.get(e.get("align", "left"), Align.MIN), Align.CENTER),
+            "rotation": val(e.get("angle", 0) or 0),
+        }
+        if e.get("font"):
+            kw["font"] = e["font"]
+        if path_edge is not None:
+            kw["path"] = path_edge
+            if e.get("positionOnPath") is not None:
+                kw["position_on_path"] = val(e["positionOnPath"])
+        if e.get("boxWidth") is not None:
+            kw["single_line_width"] = val(e["boxWidth"])
+        text = Text(txt, **kw)
+        # text-on-path is already positioned by the path; a free text is anchored at (x,y)
+        located = text if path_edge is not None else Pos(val(e.get("x", 0) or 0), val(e.get("y", 0) or 0)) * text
+        return list(located.faces())
+    except Exception:
+        return []
+
+
+def _wire_polyline(wire):
+    """Sample a glyph-contour wire to a closed 2D polyline [[x,y], ...] in edge order."""
+    pts = []
+    for ed in wire.edges():
+        try:
+            n = max(2, min(24, int((ed.length or 1) / 0.3) + 2))
+        except Exception:
+            n = 8
+        for i in range(n):
+            p = ed.position_at(i / n)
+            pts.append([round(p.X, 4), round(p.Y, 4)])
+    if pts:
+        pts.append(list(pts[0]))  # close the loop
+    return pts
+
+
+def _num_or(x, default=0.0):
+    if isinstance(x, (int, float)):
+        return x
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def tessellate_text(entity, path_entity=None):
+    """Per-glyph 2D outlines for a text entity: {"faces": [{"outer": [[x,y]...],
+    "holes": [[[x,y]...]]}]} in FINAL sketch-2D coords (anchor/rotation/align/path
+    applied). Uses _text_faces so the preview matches the extruded solid exactly.
+    Stateless/read-only; entity fields are already resolved numbers from the client."""
+    def v(x):
+        return _num_or(x, 0.0)
+    path_edge = _entity_edge(path_entity, v) if path_entity else None
+    out = []
+    for fc in _text_faces(entity, v, path_edge):
+        out.append({
+            "outer": _wire_polyline(fc.outer_wire()),
+            "holes": [_wire_polyline(w) for w in fc.inner_wires()],
+        })
+    return {"faces": out}
+
+
+def list_fonts():
+    """Available system font families (OCCT Font_FontMgr, fontconfig-backed). Read-only."""
+    try:
+        from OCP.Font import Font_FontMgr
+        from OCP.TColStd import TColStd_SequenceOfHAsciiString
+
+        mgr = Font_FontMgr.GetInstance_s()
+        seq = TColStd_SequenceOfHAsciiString()
+        mgr.GetAvailableFontsNames(seq)
+        return {"families": sorted({seq.Value(i).ToCString() for i in range(1, seq.Length() + 1)})}
+    except Exception:
+        return {"families": []}
+
+
 def _build_sketch(f, val, datums=None):
     """Build a 2D sketch and locate it onto its plane (algebra mode).
 
@@ -3768,6 +3887,8 @@ def _build_sketch(f, val, datums=None):
         by_id = {e["id"]: e for e in entities if e.get("id")}
         for pat in f["patterns"]:
             entities.extend(_expand_pattern(pat, by_id, val))
+    by_id_all = {e["id"]: e for e in entities if e.get("id")}  # text pathRef lookup
+    text_local = []  # glyph faces (2D local); integrated into faces + located_faces below
 
     for e in entities:
         if e.get("construction"):
@@ -3808,9 +3929,16 @@ def _build_sketch(f, val, datums=None):
                 all_edges.append(ed)
         elif et == "point":
             continue  # a sketch point is reference/snap-only, never part of a profile
+        elif et == "text":
+            ref = e.get("pathRef")
+            path_edge = _entity_edge(by_id_all[ref], val) if ref and ref in by_id_all else None
+            # glyph CONTOURS deliberately never enter all_edges — feeding them to
+            # _subdivide_faces' splitter would fragment overlapping profiles + explode cost
+            text_local.extend(_text_faces(e, val, path_edge))
 
     if edges:
         faces.extend(_faces_from_edges(edges))
+    faces.extend(text_local)  # glyph faces union into the whole-sketch profile (extrude)
 
     # the located open/closed path wire from the free edges (for sweep paths)
     path_wire = _path_wire(edges, plane)
@@ -3820,6 +3948,8 @@ def _build_sketch(f, val, datums=None):
     # parity), and touching/overlapping loops split at the shared boundaries. This
     # mirrors the frontend arrangement (src/sketch/region.ts).
     located_faces = _subdivide_faces(all_edges, plane)
+    for tf in text_local:  # each glyph is separately region-selectable in mixed geometry
+        located_faces.extend((plane * tf).faces())
 
     if faces:
         # Union the loop faces into the whole-sketch profile in ONE OCCT boolean

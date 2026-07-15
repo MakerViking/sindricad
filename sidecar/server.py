@@ -574,6 +574,26 @@ def _import_job(path, fmt):
         return {"error": {"message": str(ex)}}
 
 
+def _list_fonts_job():
+    """Worker: enumerate system font families (read-only)."""
+    from builder import list_fonts
+
+    try:
+        return list_fonts()
+    except Exception as ex:
+        return {"error": {"message": str(ex)}}
+
+
+def _tessellate_text_job(entity, path_entity):
+    """Worker: per-glyph 2D outlines for a text entity (read-only preview)."""
+    from builder import tessellate_text
+
+    try:
+        return tessellate_text(entity, path_entity)
+    except Exception as ex:
+        return {"error": {"message": str(ex)}}
+
+
 # --- server process ---------------------------------------------------------
 
 
@@ -820,6 +840,14 @@ async def handle(ws):
                     # a one-time import (mesh read + B-rep build) can run longer than a
                     # rebuild; give it a roomier budget than JOB_TIMEOUT.
                     res = await _run(loop, _import_job, req["path"], req["format"], timeout=90.0)
+                    await ws.send(_reply_for(req_id, res))
+
+                elif op == "listFonts":
+                    res = await _run(loop, _list_fonts_job, timeout=JOB_TIMEOUT)
+                    await ws.send(_reply_for(req_id, res))
+
+                elif op == "tessellateText":
+                    res = await _run(loop, _tessellate_text_job, req["entity"], req.get("pathEntity"), timeout=JOB_TIMEOUT)
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "ping":
