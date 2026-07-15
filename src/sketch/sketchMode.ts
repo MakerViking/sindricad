@@ -9,6 +9,9 @@ import type { Feature, PlaneSpec, SketchConstraint, SketchPattern } from "../typ
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
+import { TextPanel } from "./textPanel";
+import type { TextValues } from "./textPanel";
+import { fetchFonts } from "./textCache";
 import { SketchDimensions } from "./sketchDimensions";
 import { entityDims, type DimField } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
@@ -61,7 +64,8 @@ export type SketchTool =
   | "hexHoles"
   | "honeycomb"
   | "boltCircle"
-  | "gridHoles";
+  | "gridHoles"
+  | "text";
 
 // PRESET_PATTERNS/ENTITY_PATTERNS/PATTERN_TOOLS live in patternFlow.ts (imported
 // above); CONSTRAINT_TOOLS lives in constraintTools.ts (also imported above).
@@ -114,6 +118,8 @@ export class SketchMode {
   private gridSnap = true;
   private constructionMode = false;
   private dimsVisible = true;
+  private readonly textPanel = new TextPanel();
+  private fonts: string[] = []; // system fonts for the text tool (loaded on enter)
   private viewLocked = true; // lock the camera square to the sketch plane
   private dim: DimInput;
   private dims: SketchDimensions;
@@ -170,6 +176,7 @@ export class SketchMode {
     this.editingId = editId ?? null;
     this.plane = this.overlay.planeFor(plane);
     this.store = store;
+    if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
 
     // load existing entities if editing
     this.entities = [];
@@ -252,6 +259,7 @@ export class SketchMode {
     this.pendingDrag = null;
     this.dim.hide();
     this.dims.hide();
+    this.textPanel.hide();
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
     this.removeGrid();
@@ -289,6 +297,7 @@ export class SketchMode {
     this.dragFrom = null;
     this.pendingDrag = null;
     this.dim.hide();
+    this.textPanel.hide();
     this.overlay.setPreview([]);
     dismissContextMenu();
     this.clickPts = [];
@@ -296,6 +305,12 @@ export class SketchMode {
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     this.patternFlow.flushPending(); // don't lose an in-progress pattern
     this.onState?.();
+  }
+
+  /** Public re-draw hook: e.g. async glyph outlines for a text entity just arrived,
+   *  so the active sketch's curves (incl. text) need repainting. No-op when inactive. */
+  redraw(): void {
+    if (this.active) this.refreshActive();
   }
 
   /** Rebuild the active sketch's committed curves + snap candidates + editable
@@ -441,6 +456,7 @@ export class SketchMode {
     if (this.tool === "arc") return this.arcClick(p);
     if (this.tool === "spline") return this.splineClick(p);
     if (this.tool === "point") return this.pointClick(p);
+    if (this.tool === "text") return this.textClick(p, e.clientX, e.clientY);
     if (this.tool === "polygon") return this.polygonClick(p);
     if (this.tool === "slot") return this.slotClick(p);
     if (this.tool === "circle2") return this.circle2Click(p);
@@ -577,6 +593,28 @@ export class SketchMode {
     this.overlay.setPreview([]);
     this.requestSolve();
     this.onState?.();
+  }
+
+  /** Text tool: click to anchor, then a floating panel for the string/font/size/style.
+   *  Live preview follows the panel; ✓ commits a text entity, ✕/Esc cancels. */
+  private textClick(p: THREE.Vector2, screenX: number, screenY: number) {
+    const build = (v: TextValues): ResolvedEntity => ({
+      type: "text", id: newEntityId(), text: v.text,
+      x: p.x, y: p.y, height: v.height, style: v.style, align: v.align, angle: v.angle,
+      ...(v.font ? { font: v.font } : {}),
+      ...(this.constructionMode ? { construction: true } : {}),
+    });
+    this.textPanel.show({ x: screenX, y: screenY }, this.fonts, { height: 10 }, {
+      onChange: (v) => this.overlay.setPreview(curveObjects([build(v)], this.plane, PREVIEW_COLOR)),
+      onCommit: (v) => {
+        this.entities.push(build(v));
+        this.overlay.setPreview([]);
+        this.refreshActive();
+        this.requestSolve();
+        this.onState?.();
+      },
+      onCancel: () => this.overlay.setPreview([]),
+    });
   }
 
   // --- patterns: click to place, drag to size, type counts, click to commit. Each
@@ -803,6 +841,10 @@ export class SketchMode {
     }
     if (e.type === "spline") {
       return { type: "spline", id, points: e.points.map((q) => rp(q.x, q.y)), ...c };
+    }
+    if (e.type === "text") {
+      const at = rp(e.x, e.y); // reflect the anchor; keep the string/style (glyphs aren't mirrored)
+      return { ...e, id, x: at.x, y: at.y };
     }
     // point
     const q = rp((e as Extract<ResolvedEntity, { type: "point" }>).x, (e as Extract<ResolvedEntity, { type: "point" }>).y);

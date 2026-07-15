@@ -36,6 +36,16 @@ export class TauriGeometry implements GeometryBackend {
     }
   }
 
+  // Text is not ported to the Rust spike backend yet (glyph faces need OCCT fonts);
+  // gracefully return nothing so text renders/extrudes as empty under VITE_GEOM=rust.
+  async tessellateText(): Promise<import("./client").TextFace[]> {
+    return [];
+  }
+
+  async listFonts(): Promise<string[]> {
+    return [];
+  }
+
   async export(
     doc: CadDocument,
     format: ExportFormat,

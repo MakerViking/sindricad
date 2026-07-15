@@ -10,6 +10,7 @@ const PATHS: Record<string, string> = {
   spline: `<path d="M3 17 C 7 5, 11 5, 13 12 S 19 19, 21 7" fill="none"/><circle cx="3" cy="17" r="1.5" fill="currentColor"/><circle cx="13" cy="12" r="1.5" fill="currentColor"/><circle cx="21" cy="7" r="1.5" fill="currentColor"/>`,
   polygon: `<polygon points="12,3 20,9 17,19 7,19 4,9"/>`,
   point: `<circle cx="12" cy="12" r="2.2" fill="currentColor"/>`,
+  text: `<path d="M4 6 H20 M12 6 V19" fill="none"/>`,
   slot: `<path d="M8 8 A 4 4 0 0 0 8 16 L16 16 A 4 4 0 0 0 16 8 Z"/>`,
   patternRect: `<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/>`,
   patternCircular: `<circle cx="12" cy="4" r="2.4"/><circle cx="19" cy="9" r="2.4"/><circle cx="16.5" cy="18" r="2.4"/><circle cx="7.5" cy="18" r="2.4"/><circle cx="5" cy="9" r="2.4"/>`,

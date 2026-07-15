@@ -98,8 +98,9 @@ export function detectRegions(
   sketchId: string,
   allEntities: ResolvedEntity[],
 ): Region[] {
-  // construction geometry is reference-only — it never forms a profile
-  const entities = allEntities.filter((e) => !e.construction);
+  // construction geometry is reference-only — it never forms a profile. Text glyphs
+  // are their own filled meshes (overlay), never part of line/arc region detection.
+  const entities = allEntities.filter((e) => !e.construction && e.type !== "text");
 
   // Per-entity polyline segments + bbox, for cheap crossing detection and tracing.
   const perEntity = entities.map((e) => {

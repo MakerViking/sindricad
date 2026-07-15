@@ -18,6 +18,10 @@ type RawReply<T> =
 type Pending = (msg: RawReply<unknown>) => void;
 type StatusListener = (connected: boolean) => void;
 
+/** One tessellated glyph face: an outer contour + zero or more hole contours (the
+ *  counters in o/a/e), each a closed 2D polyline in final sketch coordinates. */
+export type TextFace = { outer: [number, number][]; holes: [number, number][][] };
+
 // One overlapping body pair from an interference check.
 export interface ClashPair {
   a: string;
@@ -33,6 +37,11 @@ export interface ClashPair {
 // to which backend is wired up (see VITE_GEOM in main.ts).
 export interface GeometryBackend {
   rebuild(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
+  /** Per-glyph 2D outlines for a sketch text entity (the sidecar owns fonts, so
+   *  preview outlines come from it and match the extruded solid exactly). */
+  tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]>;
+  /** System font family names for the text tool's font picker. */
+  listFonts(): Promise<string[]>;
   export(
     doc: CadDocument,
     format: ExportFormat,
@@ -509,5 +518,18 @@ export class Geometry implements GeometryBackend {
       return { ok: true, ...(r.pairs !== undefined ? { pairs: r.pairs } : {}) };
     }
     return { ok: false, message: msg.error?.message };
+  }
+
+  async tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]> {
+    const msg = await this.call<{ faces: TextFace[] }>("tessellateText", {
+      entity,
+      ...(pathEntity ? { pathEntity } : {}),
+    });
+    return msg.ok ? (msg.result.faces ?? []) : [];
+  }
+
+  async listFonts(): Promise<string[]> {
+    const msg = await this.call<{ families: string[] }>("listFonts", {});
+    return msg.ok ? (msg.result.families ?? []) : [];
   }
 }

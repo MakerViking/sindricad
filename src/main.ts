@@ -29,6 +29,7 @@ import { toast } from "./ui/toast";
 import { FEATURE_META } from "./ui/featureMeta";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
+import { setTextBackend } from "./sketch/textCache";
 import { SketchPlane } from "./sketch/plane";
 import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
@@ -83,6 +84,12 @@ void checkRecovery(store);
 const overlay = new SketchOverlay();
 viewport.addToScene(overlay.group);
 const sketch = new SketchMode(viewport, overlay);
+// Sidecar owns fonts: glyph outlines arrive async via tessellateText; repaint the
+// right surface (active sketch or committed overlay) when they land.
+setTextBackend(geometry, () => {
+  if (sketch.active) sketch.redraw();
+  else overlay.update(store.document);
+});
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
@@ -769,7 +776,7 @@ function editFeature(id: string) {
 // --- ribbon / keymap actions ---
 const SKETCH_TOOLS = new Set([
   "line", "rectangle", "centerRectangle", "circle", "circle2", "circle3",
-  "arc", "polygon", "slot", "spline", "point",
+  "arc", "polygon", "slot", "spline", "point", "text",
   "boltCircle", "hexHoles", "gridHoles", "patternRect", "patternCircular", "honeycomb",
 ]);
 // sketch MODIFY tools (ribbon action -> sketch tool name)

@@ -18,6 +18,8 @@ import {
   type Region,
 } from "./region";
 import { dimensionSegments } from "./entityDims";
+import { getCachedText, warmText } from "./textCache";
+import type { TextFace } from "../geometry/client";
 import type { SnapKind } from "./snap";
 
 export interface WorldRegion {
@@ -73,6 +75,15 @@ const FILL_SELECTED_MAT = new THREE.MeshBasicMaterial({
   color: SELECT_COLOR,
   transparent: true,
   opacity: 0.34,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+});
+
+// filled glyph interior (text reads as solid); outlines carry the curve/construction color
+const TEXT_FILL_MAT = new THREE.MeshBasicMaterial({
+  color: 0xcfe0ff,
+  transparent: true,
+  opacity: 0.9,
   side: THREE.DoubleSide,
   depthWrite: false,
 });
@@ -305,16 +316,51 @@ export function curveObjects(
   plane: SketchPlane,
   color: number,
 ): THREE.Object3D[] {
+  warmText(ents); // fetch glyph outlines for any text entities; repaints when they land
   const out: THREE.Object3D[] = [];
   for (const e of ents) {
     if (e.type === "point") {
       out.push(pointMarker(plane.to3D(e.x, e.y), e.construction ? 0xffa64d : color));
       continue;
     }
+    if (e.type === "text") {
+      const faces = getCachedText(e);
+      if (faces && faces.length) out.push(textObjects(faces, plane, color, !!e.construction));
+      continue;
+    }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
     out.push(e.construction ? constructionLine(pts) : polyline(pts, color));
   }
   return out;
+}
+
+/** One THREE.Group for a text entity: an outline THREE.Line per glyph contour plus a
+ *  filled glyph mesh (skipped for construction text). Kept to ONE object per entity so
+ *  curveObjects' one-object-per-entity contract (see sketchMode preview) holds. */
+function textObjects(
+  faces: TextFace[],
+  plane: SketchPlane,
+  color: number,
+  construction: boolean,
+): THREE.Group {
+  const g = new THREE.Group();
+  const basis = plane.basisMatrix(); // local glyph XY -> world on the sketch plane
+  for (const f of faces) {
+    for (const loop of [f.outer, ...f.holes]) {
+      const pts = loop.map(([x, y]) => plane.to3D(x, y));
+      g.add(construction ? constructionLine(pts) : polyline(pts, color));
+    }
+    if (!construction) {
+      const shape = new THREE.Shape(f.outer.map(([x, y]) => new THREE.Vector2(x, y)));
+      for (const h of f.holes) shape.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x, y))));
+      const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), TEXT_FILL_MAT);
+      mesh.applyMatrix4(basis);
+      mesh.renderOrder = 11;
+      g.add(mesh);
+    }
+  }
+  g.renderOrder = 12;
+  return g;
 }
 
 /** a small "+" glyph (two short crossed segments) marking a sketch point */
