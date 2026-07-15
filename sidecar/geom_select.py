@@ -458,6 +458,14 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
     if by == "match":
         fp = sel["fp"]
         edges = list(part.edges())
+        # A circle reference resolves to a circle when any exist: a rim selector must not
+        # collapse onto a straight body edge just because its absolute position drifted
+        # (e.g. a mirror-twin hole that translated under an upstream edit). Removing only
+        # non-circles is monotonic — it never reorders the circle candidates.
+        if fp.get("curve") == "circle":
+            circles = [e for e in edges if _edge_curve(e) == "circle"]
+            if circles:
+                edges = circles
         tol_pos = POS_DRIFT + REL_DRIFT * _bbox_diag(part)
         rank_of = _circle_center_groups(edges, tol_pos)
         best, conf, lossy, reason = _resolve_one(
