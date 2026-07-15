@@ -80,6 +80,22 @@ export function resolveRealEntities(
         y: resolveNum(e.y, params),
         ...c,
       });
+    } else if (e.type === "text") {
+      out.push({
+        type: "text", id,
+        text: e.text,
+        x: resolveNum(e.x ?? 0, params),
+        y: resolveNum(e.y ?? 0, params),
+        height: resolveNum(e.height, params),
+        angle: resolveNum(e.angle ?? 0, params),
+        ...(e.font !== undefined ? { font: e.font } : {}),
+        ...(e.style !== undefined ? { style: e.style } : {}),
+        ...(e.align !== undefined ? { align: e.align } : {}),
+        ...(e.pathRef !== undefined ? { pathRef: e.pathRef } : {}),
+        ...(e.positionOnPath !== undefined ? { positionOnPath: resolveNum(e.positionOnPath, params) } : {}),
+        ...(e.boxWidth !== undefined ? { boxWidth: resolveNum(e.boxWidth, params) } : {}),
+        ...c,
+      });
     }
   }
   return out;
@@ -115,5 +131,16 @@ export function toSketchEntity(e: ResolvedEntity): SketchEntity {
   if (e.type === "spline")
     return { type: "spline", id: e.id, points: e.points.map((p) => ({ x: p.x, y: p.y })), ...c };
   if (e.type === "point") return { type: "point", id: e.id, x: e.x, y: e.y, ...c };
+  if (e.type === "text")
+    return {
+      type: "text", id: e.id, text: e.text, x: e.x, y: e.y, height: e.height, angle: e.angle,
+      ...(e.font !== undefined ? { font: e.font } : {}),
+      ...(e.style !== undefined ? { style: e.style } : {}),
+      ...(e.align !== undefined ? { align: e.align } : {}),
+      ...(e.pathRef !== undefined ? { pathRef: e.pathRef } : {}),
+      ...(e.positionOnPath !== undefined ? { positionOnPath: e.positionOnPath } : {}),
+      ...(e.boxWidth !== undefined ? { boxWidth: e.boxWidth } : {}),
+      ...c,
+    };
   return { type: "line", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, ...c };
 }

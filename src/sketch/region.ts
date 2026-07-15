@@ -46,6 +46,8 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
       return splinePolyline(e.points, SPLINE_SEGS);
     case "point":
       return [v(e.x, e.y)]; // a point has no extent: a single vertex, no segments
+    case "text":
+      return []; // text is rendered from cached glyph contours, not this single-polyline path
   }
 }
 

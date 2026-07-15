@@ -114,4 +114,8 @@ export type ResolvedEntity =
   | { type: "circle"; id: string; radius: number; x: number; y: number; construction?: boolean }
   | { type: "arc"; id: string; x1: number; y1: number; x2: number; y2: number; mx: number; my: number; construction?: boolean }
   | { type: "spline"; id: string; points: { x: number; y: number }[]; construction?: boolean }
-  | { type: "point"; id: string; x: number; y: number; construction?: boolean };
+  | { type: "point"; id: string; x: number; y: number; construction?: boolean }
+  | { type: "text"; id: string; text: string; x: number; y: number; height: number;
+      font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";
+      align?: "left" | "center" | "right"; angle: number;
+      pathRef?: string; positionOnPath?: number; boxWidth?: number; construction?: boolean };

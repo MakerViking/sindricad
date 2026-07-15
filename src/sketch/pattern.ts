@@ -22,6 +22,8 @@ function translated(e: ResolvedEntity, dx: number, dy: number, id: string): Reso
       return { type: "spline", id, points: e.points.map((p) => ({ x: p.x + dx, y: p.y + dy })), ...c };
     case "point":
       return { type: "point", id, x: e.x + dx, y: e.y + dy, ...c };
+    case "text":
+      return { ...e, id, x: e.x + dx, y: e.y + dy };
   }
 }
 
@@ -44,6 +46,10 @@ function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, id: str
     case "point": {
       const [x, y] = R(e.x, e.y);
       return [{ type: "point", id, x, y, ...c }];
+    }
+    case "text": {
+      const [x, y] = R(e.x, e.y);
+      return [{ ...e, id, x, y, angle: e.angle + (ang * 180) / Math.PI }];
     }
     case "line": {
       const [x1, y1] = R(e.x1, e.y1), [x2, y2] = R(e.x2, e.y2);

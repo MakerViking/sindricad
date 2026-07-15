@@ -84,6 +84,7 @@ export function entityDims(e: ResolvedEntity): EntityDim[] {
   if (e.type === "arc") return []; // radius dim editing comes with the solver
   if (e.type === "spline") return []; // splines are defined by their fit points
   if (e.type === "point") return []; // a point carries no dimension
+  if (e.type === "text") return []; // text has no editable linear dimension
   // line: dimension parallel to it, offset to the left normal
   const a = v(e.x1, e.y1);
   const b = v(e.x2, e.y2);

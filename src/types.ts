@@ -53,7 +53,12 @@ export type SketchEntity =
   // fit-point spline: interpolates a smooth curve through its points (≥2)
   | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean }
   // a sketch point: reference/snap geometry only — never forms a profile
-  | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean };
+  | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean }
+  // Fusion-parity text: filled glyph faces from a system font; extrudes like any profile
+  | { type: "text"; id?: string; text: string; x?: Num; y?: Num; height: Num;
+      font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";
+      align?: "left" | "center" | "right"; angle?: Num;
+      pathRef?: string; positionOnPath?: Num; boxWidth?: Num; construction?: boolean };
 
 // 2D sketch constraints, solved by planegcs. Entities are referenced by their
 // stable id (see sketch/id.ts) — never array index — so edit operations that
