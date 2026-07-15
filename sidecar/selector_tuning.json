@@ -4,7 +4,7 @@
   "REL_DRIFT": 0.001,
   "LEN_REL_TOL": 0.02,
   "AREA_REL_TOL": 0.05,
-  "TIE_BAND": 0.15,
+  "TIE_BAND": 0.05,
   "ACCEPT_MAX": 2.5,
   "W_POS": 3.0,
   "W_DIR": 2.0,
