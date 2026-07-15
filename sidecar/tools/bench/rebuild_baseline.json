@@ -1,0 +1,27 @@
+{
+ "doc_sha": "7ba2be42313ec428ccb2234760d5bb9972a5741caaafd1d0a424bbdf497ca7c2",
+ "volume": 74371.02893717035,
+ "p50_ms_at_capture": 20436.8,
+ "bodies": 5,
+ "faces": 647,
+ "errors": 10,
+ "failing_ids": [
+  "f115",
+  "f141",
+  "f162",
+  "f163",
+  "f164",
+  "f165",
+  "f166",
+  "f168",
+  "f169",
+  "f174"
+ ],
+ "owners_sizes": [
+  9,
+  9,
+  10,
+  297,
+  330
+ ]
+}
