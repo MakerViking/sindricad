@@ -1815,7 +1815,7 @@ def _env_sig():
             except Exception:
                 pass
             here = os.path.dirname(os.path.abspath(__file__))
-            for name in ("builder.py", "geom_select.py", "tessellate.py"):
+            for name in ("builder.py", "geom_select.py", "tessellate.py", "selector_tuning.json"):
                 try:
                     with open(os.path.join(here, name), "rb") as fh:
                         h.update(fh.read())
@@ -1961,12 +1961,17 @@ def _disk_store():
 
 
 def _body_fingerprint(shape):
-    """Cheap identity check for a restored body (design §3.3): face count + volume
-    + bbox. BinTools preserves doubles exactly, so comparison is tight; a mismatch
-    means the restore diverged and the checkpoint is treated as a miss."""
+    """Cheap identity check for a restored body (design §3.3): face/edge/vertex counts
+    + volume + bbox. BinTools preserves doubles exactly, so comparison is tight; a
+    mismatch means the restore diverged and the checkpoint is treated as a miss. The
+    exact edge/vertex counts catch a same-volume/same-bbox but topologically different
+    solid that the aggregate volume/bbox alone would wave through (they are deterministic
+    integers, so they never cause a false miss on OCCT float noise)."""
     bb = shape.bounding_box()
     return {
         "f": len(shape.faces()),
+        "e": len(shape.edges()),
+        "vx": len(shape.vertices()),
         "v": round(shape.volume, 6),
         "b": [round(x, 4) for x in (bb.min.X, bb.min.Y, bb.min.Z,
                                     bb.max.X, bb.max.Y, bb.max.Z)],
@@ -2082,8 +2087,9 @@ def _restore_from_disk(store, chain_keys):
 
 
 # RAM snapshots kept per feature (beyond disk checkpoints); bounds worker memory
-# at 10k features — a resume below the window falls through to the disk cache.
-_RAM_SNAP_WINDOW = 50
+# (~0.2 MB/snapshot measured, so 300 ≈ 60 MB) — a resume below the window falls
+# through to the disk cache. SINDRI_RAM_SNAP_WINDOW overrides for large docs / tight RAM.
+_RAM_SNAP_WINDOW = int(os.environ.get("SINDRI_RAM_SNAP_WINDOW", "300"))
 
 
 def rebuild_cached(document, diagnostics=None):
