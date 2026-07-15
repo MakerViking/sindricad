@@ -72,6 +72,7 @@ AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
 #   TIE_BAND     runner-up within 15% of best => a genuine tie (need nth)
 #   ACCEPT_MAX   best cost above this => resolvable but marginal (lossy)
 #   W_*          scoring weights, per normalized error term
+#   W_RANK       penalty per rank step for concentric rims (scale-invariant)
 _DEFAULTS = {
     "ANG_TOL": 0.02,
     "POS_DRIFT": 0.5,
@@ -86,6 +87,7 @@ _DEFAULTS = {
     "W_RAD": 2.0,
     "W_AREA": 1.0,
     "W_TYPE": 4.0,
+    "W_RANK": 2.0,
 }
 _TUNING = dict(_DEFAULTS)
 
@@ -239,10 +241,101 @@ def _face_radius(f):
         return None
 
 
+# --- concentric rank (scale-invariant rim discriminator) ---------------------
+
+
+def _rank_in_center_group(e, part, tol):
+    """(rank, group_size) for a circle edge `e` within its shared-center group in
+    `part`. rank = number of concentric siblings with strictly smaller radius
+    (0 = innermost); scale-invariant under a uniform mutation. Returns (None, None)
+    for a non-circle / degenerate edge. Strictly-less-than counting is robust to `e`
+    appearing (or not) in a fresh part.edges() list."""
+    c, r = _edge_center(e), _edge_radius(e)
+    if c is None or r is None:
+        return None, None
+    sibs = []
+    for x in part.edges():
+        if _edge_curve(x) == "circle":
+            cc, rr = _edge_center(x), _edge_radius(x)
+            if cc is not None and rr is not None and _dist(cc, c) < tol:
+                sibs.append(rr)
+    rank = sum(1 for rr in sibs if rr < r - 1e-9)
+    return rank, len(sibs)
+
+
+def _circle_center_groups(edges, tol):
+    """Map id(e) -> (rank, group_size) for every circle edge in `edges`. Circles whose
+    centers coincide within `tol` form one group; rank is the index in the group's
+    ascending-radius order. Keyed by id(e), so the caller MUST score over this same
+    edge-list instance."""
+    circles = []
+    for e in edges:
+        if _edge_curve(e) == "circle":
+            c, r = _edge_center(e), _edge_radius(e)
+            if c is not None and r is not None:
+                circles.append((e, c, r))
+    out = {}
+    for e, c, r in circles:
+        sibs = [rr for (_x, cc, rr) in circles if _dist(cc, c) < tol]
+        out[id(e)] = (sum(1 for rr in sibs if rr < r - 1e-9), len(sibs))
+    return out
+
+
+# --- fingerprint authoring (canonical; corpus + frontend should both use this) ---
+
+
+def edge_fingerprint(e, part):
+    """Author an edge selector fingerprint from a real edge. For a circle, additionally
+    records radius_rank/radius_group so concentric rims survive a scale mutation that
+    makes the absolute radius (and midpoint, a circumference point) stale."""
+    m, d = _edge_mid(e), _edge_dir(e)
+    fp = {"mid": [m.X, m.Y, m.Z], "dir": [d.X, d.Y, d.Z], "length": e.length, "curve": _edge_curve(e)}
+    if _edge_curve(e) == "circle":
+        r, c = _edge_radius(e), _edge_center(e)
+        if r is not None:
+            fp["radius"] = r
+        if c is not None:
+            fp["center"] = [c.X, c.Y, c.Z]
+        rank, gsize = _rank_in_center_group(e, part, POS_DRIFT + REL_DRIFT * _bbox_diag(part))
+        if gsize is not None:
+            fp["radius_rank"], fp["radius_group"] = rank, gsize
+    return fp
+
+
+def face_fingerprint(f, part):
+    """Author a face selector fingerprint. `part` is accepted for symmetry with
+    edge_fingerprint and future concentric-face rank support (unused today)."""
+    c, n = _face_centroid(f), _face_normal(f)
+    fp = {"centroid": [c.X, c.Y, c.Z], "normal": [n.X, n.Y, n.Z], "area": f.area, "surface": _face_surface(f)}
+    r = _face_radius(f)
+    if r is not None:
+        fp["radius"] = r
+    return fp
+
+
 # --- scoring -----------------------------------------------------------------
 
 
-def _edge_cost(e, fp, tol_pos):
+def _edge_cost(e, fp, tol_pos, rank_info=None):
+    # Concentric rim (radius_group >= 2): under a uniform scale mutation the midpoint
+    # (a CIRCUMFERENCE point, not the center), length, and absolute radius all go stale
+    # and favor the wrong rim. Score only the scale-stable signals — center (locates the
+    # family), curve type, and the radius RANK within the shared-center group. rank_info
+    # is (rank, group_size) for THIS edge in the current part, or None.
+    if _edge_curve(e) == "circle" and fp.get("radius_group", 1) >= 2 and "radius_rank" in fp:
+        c = _edge_center(e)
+        cost = W_POS * _dist(c, _v(fp["center"])) / tol_pos if (c is not None and "center" in fp) else 0.0
+        if fp.get("curve") and _edge_curve(e) != fp["curve"]:
+            cost += W_TYPE
+        if rank_info is not None and rank_info[1] == fp["radius_group"]:
+            cost += W_RANK * abs(rank_info[0] - fp["radius_rank"])
+        else:
+            # group size changed under mutation: fall back to the (stale) absolute radius
+            r = _edge_radius(e)
+            if "radius" in fp and r is not None:
+                cost += W_RAD * _rel_err(r, fp["radius"]) / LEN_REL_TOL
+        return cost
+
     cost = W_POS * _dist(_edge_mid(e), _v(fp["mid"])) / tol_pos
     if "dir" in fp:
         dot = abs(_edge_dir(e).dot(_unit(_v(fp["dir"]))))
@@ -364,9 +457,11 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         return [min(part.edges(), key=lambda e: _dist(e.center(), p))]
     if by == "match":
         fp = sel["fp"]
+        edges = list(part.edges())
         tol_pos = POS_DRIFT + REL_DRIFT * _bbox_diag(part)
+        rank_of = _circle_center_groups(edges, tol_pos)
         best, conf, lossy, reason = _resolve_one(
-            list(part.edges()), lambda e: _edge_cost(e, fp, tol_pos), _canonical_key_edge, sel.get("nth")
+            edges, lambda e: _edge_cost(e, fp, tol_pos, rank_of.get(id(e))), _canonical_key_edge, sel.get("nth")
         )
         _push_diag(diag, feature_id, "edge", 1 if best else 0, conf, lossy, reason)
         return [best] if best is not None else []
@@ -379,9 +474,11 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         return list(out.values())
     if by == "tangentChain":
         fp = sel["seed"]
+        edges = list(part.edges())
         tol_pos = POS_DRIFT + REL_DRIFT * _bbox_diag(part)
+        rank_of = _circle_center_groups(edges, tol_pos)
         seed, conf, lossy, reason = _resolve_one(
-            list(part.edges()), lambda e: _edge_cost(e, fp, tol_pos), _canonical_key_edge, None
+            edges, lambda e: _edge_cost(e, fp, tol_pos, rank_of.get(id(e))), _canonical_key_edge, None
         )
         if seed is None:
             _push_diag(diag, feature_id, "edge", 0, 0.0, True, "tangentChain seed not found")

@@ -89,26 +89,8 @@ def entity_key(kind, ent):
     return edge_key(ent) if kind == "edge" else face_key(ent)
 
 
-def edge_fp(e):
-    """Author an EdgeFingerprint from a real edge (same fields the frontend persists)."""
-    m, d = gs._edge_mid(e), gs._edge_dir(e)
-    fp = {"mid": [m.X, m.Y, m.Z], "dir": [d.X, d.Y, d.Z], "length": e.length, "curve": gs._edge_curve(e)}
-    if gs._edge_curve(e) == "circle":
-        r, c = gs._edge_radius(e), gs._edge_center(e)
-        if r is not None:
-            fp["radius"] = r
-        if c is not None:
-            fp["center"] = [c.X, c.Y, c.Z]
-    return fp
-
-
-def face_fp(f):
-    c, n = gs._face_centroid(f), gs._face_normal(f)
-    fp = {"centroid": [c.X, c.Y, c.Z], "normal": [n.X, n.Y, n.Z], "area": f.area, "surface": gs._face_surface(f)}
-    r = gs._face_radius(f)
-    if r is not None:
-        fp["radius"] = r
-    return fp
+# Fingerprint authoring is geom_select.edge_fingerprint / face_fingerprint (the canonical
+# path the real frontend also uses), so the corpus and the resolver share one vocabulary.
 
 
 # --- independent structural locators (ground-truth entity identity) -----------
@@ -187,7 +169,7 @@ def make_case(cid, category, kind, orig_spec, mut_spec, locate, tol_note=""):
         ment = locate(mp)
         if oent is None or ment is None:
             return None
-        fp = edge_fp(oent) if kind == "edge" else face_fp(oent)
+        fp = gs.edge_fingerprint(oent, op) if kind == "edge" else gs.face_fingerprint(oent, op)
         key = entity_key(kind, ment)
         if None in (key[2],) or (kind == "edge" and key[3] is None):
             return None  # degenerate geometry

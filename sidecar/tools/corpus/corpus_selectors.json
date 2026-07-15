@@ -44,7 +44,9 @@
       0.0,
       0.0,
       10.377
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -92,7 +94,9 @@
       0.0,
       0.0,
       11.7955
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -140,7 +144,9 @@
       0.0,
       0.0,
       4.974
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -188,7 +194,9 @@
       0.0,
       0.0,
       7.882
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -236,7 +244,9 @@
       0.0,
       0.0,
       7.6305
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -284,7 +294,9 @@
       0.0,
       0.0,
       7.351
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -332,7 +344,9 @@
       0.0,
       0.0,
       10.81
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -380,7 +394,9 @@
       0.0,
       0.0,
       9.317
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -428,7 +444,9 @@
       0.0,
       0.0,
       11.9045
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -476,7 +494,9 @@
       0.0,
       0.0,
       6.571
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -524,7 +544,9 @@
       0.0,
       0.0,
       4.2325
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -572,7 +594,9 @@
       0.0,
       0.0,
       5.1045
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -620,7 +644,9 @@
       0.0,
       0.0,
       9.4255
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -668,7 +694,9 @@
       0.0,
       0.0,
       11.845
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -716,7 +744,9 @@
       0.0,
       0.0,
       11.7895
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -764,7 +794,9 @@
       0.0,
       0.0,
       5.543
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -812,7 +844,9 @@
       0.0,
       0.0,
       8.104
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -860,7 +894,9 @@
       0.0,
       0.0,
       9.506
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -908,7 +944,9 @@
       0.0,
       0.0,
       10.3515
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -956,7 +994,9 @@
       0.0,
       0.0,
       7.148
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1004,7 +1044,9 @@
       0.0,
       0.0,
       10.8845
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1052,7 +1094,9 @@
       0.0,
       0.0,
       3.521
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1100,7 +1144,9 @@
       0.0,
       0.0,
       7.965
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1148,7 +1194,9 @@
       0.0,
       0.0,
       11.745
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1196,7 +1244,9 @@
       0.0,
       0.0,
       5.1825
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1244,7 +1294,9 @@
       0.0,
       0.0,
       7.113
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1292,7 +1344,9 @@
       0.0,
       0.0,
       4.9905
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1340,7 +1394,9 @@
       0.0,
       0.0,
       4.7745
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1388,7 +1444,9 @@
       0.0,
       0.0,
       10.56
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1436,7 +1494,9 @@
       0.0,
       0.0,
       10.18
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1484,7 +1544,9 @@
       0.0,
       0.0,
       7.5355
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1532,7 +1594,9 @@
       0.0,
       0.0,
       3.1845
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1580,7 +1644,9 @@
       0.0,
       0.0,
       7.495
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1628,7 +1694,9 @@
       0.0,
       0.0,
       7.304
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1676,7 +1744,9 @@
       0.0,
       0.0,
       11.886
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1724,7 +1794,9 @@
       0.0,
       0.0,
       6.8195
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1772,7 +1844,9 @@
       0.0,
       0.0,
       3.7035
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1820,7 +1894,9 @@
       0.0,
       0.0,
       5.9255
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1868,7 +1944,9 @@
       0.0,
       0.0,
       10.9935
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1916,7 +1994,9 @@
       0.0,
       0.0,
       6.357
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -1964,7 +2044,9 @@
       0.0,
       0.0,
       11.649
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -2012,7 +2094,9 @@
       0.0,
       0.0,
       7.3795
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -2060,7 +2144,9 @@
       0.0,
       0.0,
       8.79
-     ]
+     ],
+     "radius_rank": 1,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -2108,7 +2194,9 @@
       0.0,
       0.0,
       10.369
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -2156,7 +2244,9 @@
       0.0,
       0.0,
       4.3825
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 2
     }
    },
    "expected_key": [
@@ -2216,7 +2306,9 @@
       -16.736,
       0.0,
       4.5055
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2276,7 +2368,9 @@
       7.745,
       0.0,
       4.747499999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2336,7 +2430,9 @@
       13.588,
       0.0,
       4.393000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2396,7 +2492,9 @@
       16.632,
       0.0,
       4.783000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2456,7 +2554,9 @@
       -23.754,
       0.0,
       4.292999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2516,7 +2616,9 @@
       22.039,
       0.0,
       5.690000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2576,7 +2678,9 @@
       -19.742,
       0.0,
       7.937000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2636,7 +2740,9 @@
       -12.552,
       0.0,
       8.393
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2696,7 +2802,9 @@
       -18.246,
       0.0,
       7.036000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2756,7 +2864,9 @@
       -10.757,
       0.0,
       9.089500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2816,7 +2926,9 @@
       -16.754,
       0.0,
       9.942500000000003
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2876,7 +2988,9 @@
       -9.295,
       0.0,
       6.813500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2936,7 +3050,9 @@
       14.089,
       0.0,
       5.48
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -2996,7 +3112,9 @@
       -9.059,
       0.0,
       4.768000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3056,7 +3174,9 @@
       8.126,
       0.0,
       8.651499999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3116,7 +3236,9 @@
       27.181,
       0.0,
       6.6615
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3176,7 +3298,9 @@
       14.728,
       0.0,
       9.258499999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3236,7 +3360,9 @@
       26.555,
       0.0,
       6.3795
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3296,7 +3422,9 @@
       -6.523,
       0.0,
       6.050000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3356,7 +3484,9 @@
       -14.555,
       0.0,
       4.879999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3416,7 +3546,9 @@
       -13.445,
       0.0,
       5.402999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3476,7 +3608,9 @@
       22.465,
       0.0,
       8.595500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3536,7 +3670,9 @@
       -11.884,
       0.0,
       8.1435
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3596,7 +3732,9 @@
       18.715,
       0.0,
       4.227499999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3656,7 +3794,9 @@
       -12.773,
       0.0,
       7.0760000000000005
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3716,7 +3856,9 @@
       6.523,
       0.0,
       4.234
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3776,7 +3918,9 @@
       -12.905,
       0.0,
       6.368500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3836,7 +3980,9 @@
       12.355,
       0.0,
       7.431000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3896,7 +4042,9 @@
       -20.049,
       0.0,
       6.506
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -3956,7 +4104,9 @@
       6.29,
       0.0,
       6.913
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4016,7 +4166,9 @@
       -16.614,
       0.0,
       6.673000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4076,7 +4228,9 @@
       -13.078,
       0.0,
       8.695
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4136,7 +4290,9 @@
       -12.346,
       0.0,
       7.006
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4196,7 +4352,9 @@
       -25.717,
       0.0,
       6.7545
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4256,7 +4414,9 @@
       11.344,
       0.0,
       4.4510000000000005
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4316,7 +4476,9 @@
       12.039,
       0.0,
       5.097000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4376,7 +4538,9 @@
       9.247,
       0.0,
       8.764
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4436,7 +4600,9 @@
       -9.525,
       0.0,
       9.5135
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4496,7 +4662,9 @@
       9.594,
       0.0,
       6.9145
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4556,7 +4724,9 @@
       12.562,
       0.0,
       9.4635
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4616,7 +4786,9 @@
       -13.809,
       0.0,
       8.100000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4676,7 +4848,9 @@
       -16.107,
       0.0,
       8.7715
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4736,7 +4910,9 @@
       -20.191,
       0.0,
       9.698999999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4796,7 +4972,9 @@
       12.323,
       0.0,
       5.273
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4856,7 +5034,9 @@
       9.093,
       0.0,
       4.199999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4911,7 +5091,9 @@
       -6.18,
       8.133,
       7.152000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -4966,7 +5148,9 @@
       -7.269,
       -5.695,
       5.91
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5021,7 +5205,9 @@
       -15.694,
       -5.015,
       4.6065000000000005
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5076,7 +5262,9 @@
       4.172,
       3.209,
       7.679000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5131,7 +5319,9 @@
       4.82,
       -2.463,
       8.1235
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5186,7 +5376,9 @@
       7.632,
       2.734,
       5.268000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5241,7 +5433,9 @@
       -4.665,
       -5.993,
       6.637999999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5296,7 +5490,9 @@
       -3.769,
       -4.754,
       9.408000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5351,7 +5547,9 @@
       15.714,
       5.544,
       5.570499999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5406,7 +5604,9 @@
       4.209,
       1.258,
       9.8975
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5461,7 +5661,9 @@
       12.41,
       0.223,
       8.286999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5516,7 +5718,9 @@
       2.346,
       2.163,
       6.231000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5571,7 +5775,9 @@
       -0.696,
       4.472,
       6.874500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5626,7 +5832,9 @@
       -11.772,
       1.572,
       8.3235
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5681,7 +5889,9 @@
       -7.144,
       -4.964,
       6.090499999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5736,7 +5946,9 @@
       -0.415,
       2.069,
       5.734999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5791,7 +6003,9 @@
       -8.897,
       -5.304,
       7.484000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5846,7 +6060,9 @@
       -2.67,
       -4.108,
       9.8995
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5901,7 +6117,9 @@
       -1.905,
       -0.822,
       5.426000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -5956,7 +6174,9 @@
       -9.16,
       7.363,
       8.911000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6011,7 +6231,9 @@
       -0.41,
       2.324,
       6.556000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6066,7 +6288,9 @@
       -8.464,
       1.976,
       7.025500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6121,7 +6345,9 @@
       -7.089,
       -2.749,
       6.2620000000000005
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6176,7 +6402,9 @@
       -4.77,
       4.883,
       7.036000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6231,7 +6459,9 @@
       7.39,
       7.739,
       4.466999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6286,7 +6516,9 @@
       -5.626,
       1.452,
       4.068
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6341,7 +6573,9 @@
       -1.47,
       -8.802,
       8.8585
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6396,7 +6630,9 @@
       1.412,
       -2.966,
       6.713999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6451,7 +6687,9 @@
       -4.719,
       -5.376,
       5.542000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6506,7 +6744,9 @@
       -2.876,
       0.636,
       5.831499999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6561,7 +6801,9 @@
       -7.103,
       -0.895,
       6.9695
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6616,7 +6858,9 @@
       -0.208,
       0.83,
       8.3355
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6671,7 +6915,9 @@
       13.873,
       -4.342,
       9.758
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6726,7 +6972,9 @@
       -1.95,
       1.246,
       8.650500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6781,7 +7029,9 @@
       2.563,
       1.205,
       5.032
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6836,7 +7086,9 @@
       0.837,
       8.2,
       9.279
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6891,7 +7143,9 @@
       -9.366,
       2.4,
       5.853999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -6946,7 +7200,9 @@
       -3.805,
       2.77,
       7.680500000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -7001,7 +7257,9 @@
       8.023,
       -3.603,
       5.769500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -7056,7 +7314,9 @@
       -8.998,
       6.939,
       4.420999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8394,7 +8654,9 @@
       -1.302,
       -0.69,
       9.244500000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8454,7 +8716,9 @@
       -1.929,
       -1.021,
       9.4435
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8514,7 +8778,9 @@
       -3.938,
       -1.169,
       8.878500000000003
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8574,7 +8840,9 @@
       4.832,
       -0.385,
       6.7745
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8634,7 +8902,9 @@
       -4.066,
       -2.662,
       4.283000000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8694,7 +8964,9 @@
       -0.212,
       4.793,
       7.5305
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8754,7 +9026,9 @@
       3.033,
       4.717,
       9.3245
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8814,7 +9088,9 @@
       1.508,
       4.758,
       8.511499999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8874,7 +9150,9 @@
       -5.775,
       -1.105,
       8.573999999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8934,7 +9212,9 @@
       -3.003,
       -3.161,
       9.7895
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -8994,7 +9274,9 @@
       -4.033,
       4.468,
       9.1145
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9054,7 +9336,9 @@
       -2.398,
       3.623,
       7.426000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9114,7 +9398,9 @@
       -4.906,
       -0.119,
       5.8969999999999985
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9174,7 +9460,9 @@
       3.837,
       -0.019,
       5.4140000000000015
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9234,7 +9522,9 @@
       -3.843,
       1.409,
       8.307000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9294,7 +9584,9 @@
       -3.81,
       -1.358,
       9.0655
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9354,7 +9646,9 @@
       4.357,
       4.119,
       6.657
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9414,7 +9708,9 @@
       1.002,
       3.008,
       5.945
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9474,7 +9770,9 @@
       -2.936,
       -3.268,
       6.937999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9534,7 +9832,9 @@
       1.127,
       -1.598,
       4.542
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9594,7 +9894,9 @@
       -3.909,
       0.6,
       6.664999999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9654,7 +9956,9 @@
       4.401,
       4.676,
       6.583500000000001
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9714,7 +10018,9 @@
       -2.396,
       -2.05,
       7.488500000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9774,7 +10080,9 @@
       2.053,
       -5.374,
       6.581499999999998
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9834,7 +10142,9 @@
       -4.665,
       0.591,
       4.43
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9894,7 +10204,9 @@
       -2.846,
       -4.435,
       8.5625
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -9954,7 +10266,9 @@
       1.012,
       2.161,
       8.423000000000002
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -10014,7 +10328,9 @@
       -3.478,
       4.242,
       9.3885
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -10074,7 +10390,9 @@
       5.375,
       1.85,
       7.631499999999999
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [
@@ -10134,7 +10452,9 @@
       -4.045,
       -0.323,
       4.254
-     ]
+     ],
+     "radius_rank": 0,
+     "radius_group": 1
     }
    },
    "expected_key": [

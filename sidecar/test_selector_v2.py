@@ -14,6 +14,7 @@ from build123d import Box, Cylinder
 from geom_select import (
     resolve_edges,
     resolve_faces,
+    edge_fingerprint,
     _edge_curve,
     _edge_mid,
     _edge_dir,
@@ -30,17 +31,10 @@ def _approx(a, b, tol=1e-3):
     return abs(a - b) <= tol
 
 
-def edge_fp(e):
-    """Build an EdgeFingerprint dict from a real edge (same helpers the resolver uses)."""
-    m, d = _edge_mid(e), _edge_dir(e)
-    fp = {"mid": [m.X, m.Y, m.Z], "dir": [d.X, d.Y, d.Z], "length": e.length, "curve": _edge_curve(e)}
-    if _edge_curve(e) == "circle":
-        r, c = _edge_radius(e), _edge_center(e)
-        if r is not None:
-            fp["radius"] = r
-        if c is not None:
-            fp["center"] = [c.X, c.Y, c.Z]
-    return fp
+def edge_fp(e, part):
+    """Author an edge fingerprint via the canonical geom_select helper (records
+    radius_rank/radius_group for concentric rims)."""
+    return edge_fingerprint(e, part)
 
 
 def face_fp(f):
@@ -65,7 +59,7 @@ def test_match_picks_one_edge_where_axis_grabs_all():
         and abs(_edge_dir(e).X) > 0.99
         and _approx(_edge_mid(e).Y, 10) and _approx(_edge_mid(e).Z, 5)
     )
-    got = resolve_edges(box, {"kind": "edge", "by": "match", "fp": edge_fp(target)})
+    got = resolve_edges(box, {"kind": "edge", "by": "match", "fp": edge_fp(target, box)})
     assert len(got) == 1, f"match should pick exactly 1 edge, got {len(got)}"
     m = _edge_mid(got[0])
     assert _approx(m.Y, 10) and _approx(m.Z, 5), f"match picked the wrong X edge: mid={m}"
@@ -91,8 +85,8 @@ def test_concentric_disambiguated_and_dedup():
     inner = min(top_circles, key=lambda e: _edge_radius(e))
 
     # match must pick the RIGHT circle by radius/center (same midpoint family, same center).
-    got_outer = resolve_edges(tube, {"kind": "edge", "by": "match", "fp": edge_fp(outer)})
-    got_inner = resolve_edges(tube, {"kind": "edge", "by": "match", "fp": edge_fp(inner)})
+    got_outer = resolve_edges(tube, {"kind": "edge", "by": "match", "fp": edge_fp(outer, tube)})
+    got_inner = resolve_edges(tube, {"kind": "edge", "by": "match", "fp": edge_fp(inner, tube)})
     assert _approx(_edge_radius(got_outer[0]), 10, 0.05), "match should pick the r=10 circle"
     assert _approx(_edge_radius(got_inner[0]), 5, 0.05), "match should pick the r=5 circle"
 
@@ -100,8 +94,8 @@ def test_concentric_disambiguated_and_dedup():
     both = resolve_edges(
         tube,
         [
-            {"kind": "edge", "by": "match", "fp": edge_fp(outer)},
-            {"kind": "edge", "by": "match", "fp": edge_fp(inner)},
+            {"kind": "edge", "by": "match", "fp": edge_fp(outer, tube)},
+            {"kind": "edge", "by": "match", "fp": edge_fp(inner, tube)},
         ],
     )
     radii = sorted(round(_edge_radius(e), 1) for e in both)
@@ -121,7 +115,7 @@ def test_face_match_picks_top():
 def test_tangentchain_on_box_is_single_edge():
     box = Box(20, 20, 10)
     seed = next(e for e in box.edges() if _edge_curve(e) == "line")
-    got = resolve_edges(box, {"kind": "edge", "by": "tangentChain", "seed": edge_fp(seed)})
+    got = resolve_edges(box, {"kind": "edge", "by": "tangentChain", "seed": edge_fp(seed, box)})
     # box edges meet at 90°, so the tangent chain is just the seed.
     assert len(got) == 1, f"box tangentChain should be 1 edge (no tangent neighbors), got {len(got)}"
     print(PASS, "tangentChain on a box edge = the seed alone")
@@ -138,11 +132,42 @@ def test_bad_match_is_best_effort_with_diagnostic():
     print(PASS, "poor match resolves best-effort and records a diagnostic")
 
 
+def test_concentric_survives_scale_mutation():
+    # Author on the ORIGINAL outer rim, then uniformly scale the pipe. The absolute radius
+    # (and the circumference-point midpoint) go stale and now match the INNER rim, but the
+    # radius RANK (outermost) is scale-invariant and must still pick the outer rim.
+    pipe = Cylinder(20, 12) - Cylinder(10, 12)
+    top = [e for e in pipe.edges() if _edge_curve(e) == "circle" and _approx(_edge_mid(e).Z, 6, 0.05)]
+    outer = max(top, key=_edge_radius)
+    fp = edge_fp(outer, pipe)
+    assert fp.get("radius_group") == 2 and fp.get("radius_rank") == 1, f"outer rim fp={fp}"
+    scaled = Cylinder(34, 12) - Cylinder(17, 12)  # radii x1.7; stale abs radius 20 is now nearer inner 17
+    got = resolve_edges(scaled, {"kind": "edge", "by": "match", "fp": fp})
+    picked_r = _edge_radius(got[0]) if got else None
+    assert len(got) == 1 and _approx(picked_r, 34, 0.1), \
+        f"scale-mutated match must pick the OUTER rim (r~34), got r={picked_r}"
+    print(PASS, "concentric outer rim survives a uniform scale mutation via radius rank")
+
+
+def test_single_hole_group1_uses_abs_radius():
+    # A lone hole rim has radius_group=1, so the concentric branch stays OFF and the legacy
+    # absolute-radius path resolves it (correct: box-hole mutations do not scale the radius).
+    box = Box(40, 40, 10) - Cylinder(5, 30)
+    rim = max((e for e in box.edges() if _edge_curve(e) == "circle"), key=lambda e: _edge_mid(e).Z)
+    fp = edge_fp(rim, box)
+    assert fp.get("radius_group") == 1, f"single-hole rim must be group 1, got {fp}"
+    got = resolve_edges(box, {"kind": "edge", "by": "match", "fp": fp})
+    assert len(got) == 1 and _approx(_edge_radius(got[0]), 5, 0.05), "group=1 rim must resolve via abs radius"
+    print(PASS, "single-hole rim: group=1, legacy abs-radius path intact")
+
+
 def main():
     print("Selector v2 resolver tests")
     test_match_picks_one_edge_where_axis_grabs_all()
     test_offace_returns_face_edges()
     test_concentric_disambiguated_and_dedup()
+    test_concentric_survives_scale_mutation()
+    test_single_hole_group1_uses_abs_radius()
     test_face_match_picks_top()
     test_tangentchain_on_box_is_single_edge()
     test_bad_match_is_best_effort_with_diagnostic()
