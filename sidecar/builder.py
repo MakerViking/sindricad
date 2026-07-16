@@ -3774,6 +3774,39 @@ def _entity_edge(e, val):
     return None
 
 
+def _measure_text_width(s, font_size, font_style, font):
+    if not s.strip():
+        return 0.0
+    try:
+        kw = {"font_size": font_size, "font_style": font_style}
+        if font:
+            kw["font"] = font
+        bb = Text(s, **kw).bounding_box()
+        return bb.max.X - bb.min.X
+    except Exception:
+        return 1e9  # measurement failed: don't force a break
+
+
+def _wrap_text(txt, box_w, font_size, font_style, font):
+    """Greedy word-wrap `txt` to lines fitting box_w (mm), preserving explicit newlines —
+    build123d's single_line_width does NOT wrap, so we do it by measuring. Capped so a
+    huge string can't stall the per-keystroke preview."""
+    if box_w <= 0 or len(txt) > 400:
+        return txt
+    lines = []
+    for para in txt.split("\n"):
+        line = ""
+        for word in para.split(" "):
+            cand = f"{line} {word}".strip()
+            if line and _measure_text_width(cand, font_size, font_style, font) > box_w:
+                lines.append(line)
+                line = word
+            else:
+                line = cand
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _text_faces(e, val, path_edge=None):
     """build123d faces for a `text` sketch entity (2D, on the sketch's local XY),
     anchored at (x, y), rotated, aligned; text-on-path when `path_edge` is set. Shared
@@ -3796,8 +3829,9 @@ def _text_faces(e, val, path_edge=None):
             kw["path"] = path_edge
             if e.get("positionOnPath") is not None:
                 kw["position_on_path"] = val(e["positionOnPath"])
-        if e.get("boxWidth") is not None:
-            kw["single_line_width"] = val(e["boxWidth"])
+        box_w = e.get("boxWidth")
+        if box_w is not None and path_edge is None:
+            txt = _wrap_text(txt, val(box_w), kw["font_size"], kw["font_style"], e.get("font"))
         text = Text(txt, **kw)
         # text-on-path is already positioned by the path; a free text is anchored at (x,y)
         located = text if path_edge is not None else Pos(val(e.get("x", 0) or 0), val(e.get("y", 0) or 0)) * text

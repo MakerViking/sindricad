@@ -121,6 +121,9 @@ export class SketchMode {
   private dimsVisible = true;
   private readonly textPanel = new TextPanel();
   private fonts: string[] = []; // system fonts for the text tool (loaded on enter)
+  // re-runnable preview builder for the in-progress text (glyph outlines arrive async,
+  // so the preview must be rebuilt when they land — see redraw()).
+  private textPreviewGen: (() => THREE.Object3D[]) | null = null;
   private viewLocked = true; // lock the camera square to the sketch plane
   private dim: DimInput;
   private dims: SketchDimensions;
@@ -311,7 +314,9 @@ export class SketchMode {
   /** Public re-draw hook: e.g. async glyph outlines for a text entity just arrived,
    *  so the active sketch's curves (incl. text) need repainting. No-op when inactive. */
   redraw(): void {
-    if (this.active) this.refreshActive();
+    if (!this.active) return;
+    this.refreshActive();
+    if (this.textPreviewGen) this.overlay.setPreview(this.textPreviewGen()); // re-show text preview
   }
 
   /** Rebuild the active sketch's committed curves + snap candidates + editable
@@ -596,25 +601,53 @@ export class SketchMode {
     this.onState?.();
   }
 
+  /** the smallest rectangle entity that contains `p`, or null — used to format text
+   *  INSIDE a drawn box (centered + wrapped to the box width). */
+  private rectContaining(p: THREE.Vector2): { x: number; y: number; width: number } | null {
+    let best: { x: number; y: number; width: number } | null = null;
+    let bestArea = Infinity;
+    for (const e of this.entities) {
+      if (e.type !== "rectangle") continue;
+      if (Math.abs(p.x - e.x) <= e.width / 2 && Math.abs(p.y - e.y) <= e.height / 2) {
+        const area = e.width * e.height;
+        if (area < bestArea) { bestArea = area; best = { x: e.x, y: e.y, width: e.width }; }
+      }
+    }
+    return best;
+  }
+
   /** Text tool: click to anchor, then a floating panel for the string/font/size/style.
-   *  Live preview follows the panel; ✓ commits a text entity, ✕/Esc cancels. */
+   *  Clicking INSIDE a rectangle binds the text into that box (centered + wrapped to its
+   *  width). Live preview follows the panel; ✓ commits a text entity, ✕/Esc cancels. */
   private textClick(p: THREE.Vector2, screenX: number, screenY: number) {
+    const box = this.rectContaining(p); // format text inside a drawn square, if any
+    const anchor = box ? { x: box.x, y: box.y } : { x: p.x, y: p.y };
     const build = (v: TextValues): ResolvedEntity => ({
       type: "text", id: newEntityId(), text: v.text,
-      x: p.x, y: p.y, height: v.height, style: v.style, align: v.align, angle: v.angle,
+      x: anchor.x, y: anchor.y, height: v.height, style: v.style,
+      align: box ? "center" : v.align, angle: v.angle,
       ...(v.font ? { font: v.font } : {}),
+      ...(v.boxWidth ? { boxWidth: v.boxWidth } : box ? { boxWidth: box.width } : {}),
       ...(this.constructionMode ? { construction: true } : {}),
     });
-    this.textPanel.show({ x: screenX, y: screenY }, this.fonts, { height: 10 }, {
-      onChange: (v) => this.overlay.setPreview(curveObjects([build(v)], this.plane, PREVIEW_COLOR)),
+    const initial: Partial<TextValues> = { height: 10, ...(box ? { boxWidth: box.width, align: "center" } : {}) };
+    this.textPanel.show({ x: screenX, y: screenY }, this.fonts, initial, {
+      onChange: (v) => {
+        this.textPreviewGen = () => curveObjects([build(v)], this.plane, PREVIEW_COLOR);
+        this.overlay.setPreview(this.textPreviewGen());
+      },
       onCommit: (v) => {
+        this.textPreviewGen = null;
         this.entities.push(build(v));
         this.overlay.setPreview([]);
         this.refreshActive();
         this.requestSolve();
         this.onState?.();
       },
-      onCancel: () => this.overlay.setPreview([]),
+      onCancel: () => {
+        this.textPreviewGen = null;
+        this.overlay.setPreview([]);
+      },
     });
   }
 

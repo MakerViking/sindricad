@@ -10,6 +10,7 @@ export interface TextValues {
   style: "regular" | "bold" | "italic" | "bolditalic";
   align: "left" | "center" | "right";
   angle: number;
+  boxWidth?: number; // wrap width (mm) — text fits inside this box
 }
 
 function styleOf(bold: boolean, italic: boolean): TextValues["style"] {
@@ -38,6 +39,7 @@ export class TextPanel {
       background: "#20242c", border: "1px solid #3a4150", borderRadius: "6px",
       boxShadow: "0 6px 20px rgba(0,0,0,0.4)", font: "12px system-ui, sans-serif",
       color: "#dce3ee", width: "300px", maxWidth: "calc(100vw - 24px)", boxSizing: "border-box",
+      colorScheme: "dark", // native <select> dropdown + number spinners render dark
     } as CSSStyleDeclaration);
     document.body.appendChild(this.root);
   }
@@ -111,6 +113,16 @@ export class TextPanel {
     align.value = initial.align ?? "left";
     row(label("B", bold), bold, label("I", italic), italic, align);
 
+    const boxW = document.createElement("input");
+    boxW.type = "number";
+    boxW.min = "0";
+    boxW.step = "0.5";
+    boxW.value = initial.boxWidth ? String(initial.boxWidth) : "";
+    boxW.placeholder = "0 = no box";
+    Object.assign(boxW.style, { flex: "1", minWidth: "0" });
+    inputStyle(boxW);
+    row(label("Box width (mm)"), boxW);
+
     this.read = (): TextValues => ({
       text: ta.value,
       ...(font.value ? { font: font.value } : {}),
@@ -118,10 +130,11 @@ export class TextPanel {
       style: styleOf(bold.checked, italic.checked),
       align: align.value as TextValues["align"],
       angle: parseFloat(angle.value) || 0,
+      ...(parseFloat(boxW.value) > 0 ? { boxWidth: parseFloat(boxW.value) } : {}),
     });
 
     const emit = () => this.onChange?.(this.read!());
-    for (const el of [ta, font, size, angle, bold, italic, align]) {
+    for (const el of [ta, font, size, angle, bold, italic, align, boxW]) {
       el.addEventListener("input", emit);
       el.addEventListener("change", emit);
     }
