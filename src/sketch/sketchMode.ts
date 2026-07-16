@@ -12,6 +12,7 @@ import { DimInput } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
+import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions } from "./sketchDimensions";
 import { entityDims, type DimField } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
@@ -930,7 +931,7 @@ export class SketchMode {
   }
 
   private onKey(e: KeyboardEvent) {
-    if (e.target instanceof HTMLInputElement) return; // typing in a dim field
+    if (isEditableTarget(e.target)) return; // typing in a dim/text field, not a shortcut
     // a pattern being placed/edited: Delete removes it, Esc keeps it as-is
     if (this.patternFlow.hasPending()) {
       if (e.key === "Delete" || e.key === "Backspace") {

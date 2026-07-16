@@ -37,7 +37,7 @@ export class TextPanel {
       position: "fixed", zIndex: "50", display: "none", padding: "8px",
       background: "#20242c", border: "1px solid #3a4150", borderRadius: "6px",
       boxShadow: "0 6px 20px rgba(0,0,0,0.4)", font: "12px system-ui, sans-serif",
-      color: "#dce3ee", width: "220px",
+      color: "#dce3ee", width: "300px", maxWidth: "calc(100vw - 24px)", boxSizing: "border-box",
     } as CSSStyleDeclaration);
     document.body.appendChild(this.root);
   }
@@ -59,8 +59,8 @@ export class TextPanel {
     this.active = true;
     this.root.innerHTML = "";
     this.root.style.display = "block";
-    this.root.style.left = `${Math.min(screen.x, window.innerWidth - 240)}px`;
-    this.root.style.top = `${Math.min(screen.y, window.innerHeight - 220)}px`;
+    this.root.style.left = `${Math.max(8, Math.min(screen.x, window.innerWidth - 316))}px`;
+    this.root.style.top = `${Math.max(8, Math.min(screen.y, window.innerHeight - 240))}px`;
 
     const row = (...kids: HTMLElement[]) => {
       const d = document.createElement("div");
@@ -83,7 +83,7 @@ export class TextPanel {
 
     const font = document.createElement("select");
     inputStyle(font);
-    font.style.flex = "1";
+    Object.assign(font.style, { flex: "1", minWidth: "0", maxWidth: "100%" });
     const def = new Option("Default font", "");
     font.appendChild(def);
     for (const f of fonts) font.appendChild(new Option(f, f));

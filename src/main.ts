@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { DocumentStore } from "./document/store";
 import { EXAMPLE_BRACKET } from "./document/example";
 import { Timeline } from "./ui/timeline";
+import { isEditableTarget } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
 import { Inspector } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
@@ -1071,7 +1072,7 @@ installKeymap(
 // imported geometry, where there's no feature to delete); otherwise delete the
 // selected timeline feature.
 window.addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement) return;
+  if (isEditableTarget(e.target)) return; // typing in a field, not a shortcut
   if (toolBusy()) return;
   if (e.key !== "Delete" && e.key !== "Backspace") return;
   if (deleteSelectedFace()) return;
