@@ -124,6 +124,10 @@ export class SketchMode {
   // re-runnable preview builder for the in-progress text (glyph outlines arrive async,
   // so the preview must be rebuilt when they land — see redraw()).
   private textPreviewGen: (() => THREE.Object3D[]) | null = null;
+  // text tool: press-drag defines a box (wrap width); a plain click is a point anchor.
+  private textBoxStart: THREE.Vector2 | null = null;
+  private textBoxEnd: THREE.Vector2 | null = null;
+  private textBoxScreen: { x: number; y: number } | null = null;
   private viewLocked = true; // lock the camera square to the sketch plane
   private dim: DimInput;
   private dims: SketchDimensions;
@@ -462,7 +466,14 @@ export class SketchMode {
     if (this.tool === "arc") return this.arcClick(p);
     if (this.tool === "spline") return this.splineClick(p);
     if (this.tool === "point") return this.pointClick(p);
-    if (this.tool === "text") return this.textClick(p, e.clientX, e.clientY);
+    if (this.tool === "text") {
+      // begin a text placement: drag to define a box, or release in place for a point anchor
+      this.textBoxStart = p.clone();
+      this.textBoxEnd = null;
+      this.textBoxScreen = { x: e.clientX, y: e.clientY };
+      try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+      return;
+    }
     if (this.tool === "polygon") return this.polygonClick(p);
     if (this.tool === "slot") return this.slotClick(p);
     if (this.tool === "circle2") return this.circle2Click(p);
@@ -616,12 +627,15 @@ export class SketchMode {
     return best;
   }
 
-  /** Text tool: click to anchor, then a floating panel for the string/font/size/style.
-   *  Clicking INSIDE a rectangle binds the text into that box (centered + wrapped to its
-   *  width). Live preview follows the panel; ✓ commits a text entity, ✕/Esc cancels. */
-  private textClick(p: THREE.Vector2, screenX: number, screenY: number) {
-    const box = this.rectContaining(p); // format text inside a drawn square, if any
-    const anchor = box ? { x: box.x, y: box.y } : { x: p.x, y: p.y };
+  /** Open the text panel for a placement. `explicitBox` is a dragged box; otherwise a
+   *  click that lands inside a rectangle binds the text into it (centered + wrapped). */
+  private openTextPanel(
+    clickPoint: THREE.Vector2,
+    screen: { x: number; y: number },
+    explicitBox?: { x: number; y: number; width: number },
+  ) {
+    const box = explicitBox ?? this.rectContaining(clickPoint);
+    const anchor = box ? { x: box.x, y: box.y } : { x: clickPoint.x, y: clickPoint.y };
     const build = (v: TextValues): ResolvedEntity => ({
       type: "text", id: newEntityId(), text: v.text,
       x: anchor.x, y: anchor.y, height: v.height, style: v.style,
@@ -631,7 +645,7 @@ export class SketchMode {
       ...(this.constructionMode ? { construction: true } : {}),
     });
     const initial: Partial<TextValues> = { height: 10, ...(box ? { boxWidth: box.width, align: "center" } : {}) };
-    this.textPanel.show({ x: screenX, y: screenY }, this.fonts, initial, {
+    this.textPanel.show(screen, this.fonts, initial, {
       onChange: (v) => {
         this.textPreviewGen = () => curveObjects([build(v)], this.plane, PREVIEW_COLOR);
         this.overlay.setPreview(this.textPreviewGen());
@@ -950,6 +964,18 @@ export class SketchMode {
     }
     if (PATTERN_TOOLS.has(this.tool)) {
       this.patternMove(hit.p, e);
+      return;
+    }
+
+    if (this.textBoxStart) {
+      this.textBoxEnd = hit.p.clone();
+      const s = this.textBoxStart, w = Math.abs(hit.p.x - s.x), h = Math.abs(hit.p.y - s.y);
+      if (w > 0.5 && h > 0.5) {
+        this.overlay.setPreview(curveObjects(
+          [{ type: "rectangle", id: "__textbox__", width: w, height: h, x: (s.x + hit.p.x) / 2, y: (s.y + hit.p.y) / 2, construction: true }],
+          this.plane, PREVIEW_COLOR,
+        ));
+      }
       return;
     }
 
@@ -1468,6 +1494,23 @@ export class SketchMode {
   }
 
   private endDrag(pointerId?: number) {
+    if (this.textBoxStart) {
+      // finish a text placement: a real drag = a box (wrap width); a click = point anchor
+      const s = this.textBoxStart, screen = this.textBoxScreen ?? { x: 0, y: 0 }, end = this.textBoxEnd;
+      this.textBoxStart = null;
+      this.textBoxEnd = null;
+      this.textBoxScreen = null;
+      if (pointerId != null) {
+        try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
+      }
+      this.overlay.setPreview([]);
+      if (end && Math.abs(end.x - s.x) > 1 && Math.abs(end.y - s.y) > 1) {
+        this.openTextPanel(s, screen, { x: (s.x + end.x) / 2, y: (s.y + end.y) / 2, width: Math.abs(end.x - s.x) });
+      } else {
+        this.openTextPanel(s, screen);
+      }
+      return;
+    }
     if (!this.dragFrom) return;
     this.dragFrom = null;
     this.dragSnapshot = null; // committed — drop the revert buffer

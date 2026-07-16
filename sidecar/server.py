@@ -115,6 +115,13 @@ def _worker_init(hb=None, hb_idx=None):
     import builder  # noqa: F401  (warm the import)
     import tessellate  # noqa: F401
 
+    # Warm the OCCT font subsystem (~1.6 s cold on the first glyph build) at startup so
+    # the user's first sketch-text/tessellateText isn't laggy.
+    try:
+        builder._text_faces({"text": "A", "height": 1}, lambda x: x)
+    except Exception:
+        pass
+
     if hb is not None:
         def _tick(i):
             hb.value += 1  # single writer (this worker); no lock needed
