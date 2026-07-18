@@ -14,6 +14,7 @@ import { resolveEntities } from "./resolve";
 import {
   detectRegions,
   entityPolyline,
+  glyphRegion,
   pointInRegion,
   type Region,
 } from "./region";
@@ -21,6 +22,7 @@ import { dimensionSegments } from "./entityDims";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
 import type { SnapKind } from "./snap";
+import type { ResolvedEntity } from "./snap";
 
 export interface WorldRegion {
   sketchId: string;
@@ -29,6 +31,8 @@ export interface WorldRegion {
   centroid3D: THREE.Vector3;
   interior3D: THREE.Vector3; // a point inside the material — selection anchor
   fill?: THREE.Mesh; // the fill mesh, for hover/selection recoloring
+  groupId?: string; // regions selected/hovered as a unit (all glyphs of one text)
+  entityId?: string; // the source text entity, for double-click-to-edit
 }
 
 export const CURVE_COLOR = 0x5b9bff; // under-constrained blue
@@ -79,14 +83,8 @@ const FILL_SELECTED_MAT = new THREE.MeshBasicMaterial({
   depthWrite: false,
 });
 
-// filled glyph interior (text reads as solid); outlines carry the curve/construction color
-const TEXT_FILL_MAT = new THREE.MeshBasicMaterial({
-  color: 0xcfe0ff,
-  transparent: true,
-  opacity: 0.9,
-  side: THREE.DoubleSide,
-  depthWrite: false,
-});
+// filled glyph interior is drawn by the region fill layer (fillMesh) so it can
+// show hover/selection and be picked for extrude — see SketchOverlay.glyphWorldRegions.
 
 export class SketchOverlay {
   readonly group = new THREE.Group();
@@ -166,23 +164,69 @@ export class SketchOverlay {
         this.fills.add(wr.fill);
         this.regions.push(wr);
       }
+      // Text glyphs are selectable/extrudable profiles too, but they skip line/arc
+      // region detection — build them from the cached glyph tessellation instead.
+      for (const wr of this.glyphWorldRegions(ents, plane, f.id)) {
+        wr.fill = fillMesh(wr.region, plane, this.fillMaterial(wr));
+        this.fills.add(wr.fill);
+        this.regions.push(wr);
+      }
     }
   }
 
+  /** Selectable regions for each non-construction text entity's glyph faces,
+   *  sourced from the client-side tessellation cache (empty until glyphs warm —
+   *  the async cache fill triggers a repaint, so they appear a frame later). */
+  private glyphWorldRegions(
+    ents: ResolvedEntity[],
+    plane: SketchPlane,
+    sketchId: string,
+  ): WorldRegion[] {
+    const out: WorldRegion[] = [];
+    for (const e of ents) {
+      if (e.type !== "text" || e.construction) continue;
+      const faces = getCachedText(e);
+      if (!faces) continue;
+      for (const face of faces) {
+        const region = glyphRegion(sketchId, face.outer, face.holes);
+        out.push({
+          sketchId,
+          region,
+          plane,
+          centroid3D: plane.to3D(region.centroid.x, region.centroid.y),
+          interior3D: plane.to3D(region.interior.x, region.interior.y),
+          groupId: `${sketchId}:${e.id}`, // all glyphs of one text select/extrude together
+          entityId: e.id,
+        });
+      }
+    }
+    return out;
+  }
+
   /** Profile fills for the active sketch being edited (which `update()` hides).
-   *  Sketch mode calls this so areas are visible + selectable while drawing. */
-  setActiveRegions(regions: Region[], plane: SketchPlane, sketchId = "__active__") {
+   *  Sketch mode calls this so areas are visible + selectable while drawing.
+   *  `textEnts` (the resolved entity list) lets glyph faces become fills/regions
+   *  too — text skips `detectRegions`, so it's threaded in separately. */
+  setActiveRegions(
+    regions: Region[],
+    plane: SketchPlane,
+    sketchId = "__active__",
+    textEnts: ResolvedEntity[] = [],
+  ) {
     this.clearGroup(this.activeFills);
     this.activeRegions = [];
-    for (const region of regions) {
-      const wr: WorldRegion = {
+    const withGlyphs: WorldRegion[] = [
+      ...regions.map((region) => ({
         sketchId,
         region,
         plane,
         centroid3D: plane.to3D(region.centroid.x, region.centroid.y),
         interior3D: plane.to3D(region.interior.x, region.interior.y),
-      };
-      wr.fill = fillMesh(region, plane, this.fillMaterial(wr));
+      })),
+      ...this.glyphWorldRegions(textEnts, plane, sketchId),
+    ];
+    for (const wr of withGlyphs) {
+      wr.fill = fillMesh(wr.region, plane, this.fillMaterial(wr));
       this.activeFills.add(wr.fill);
       this.activeRegions.push(wr);
     }
@@ -190,8 +234,21 @@ export class SketchOverlay {
 
   private fillMaterial(wr: WorldRegion): THREE.MeshBasicMaterial {
     if (this.isRegionSelected(wr)) return FILL_SELECTED_MAT;
-    if (this.hovered === wr) return FILL_HOVER_MAT;
+    if (this.isHovered(wr)) return FILL_HOVER_MAT;
     return FILL_MAT;
+  }
+  /** A region is hover-lit if the cursor is on it — or on any sibling in its group
+   *  (so hovering one glyph highlights the whole text it belongs to). */
+  private isHovered(wr: WorldRegion): boolean {
+    const h = this.hovered;
+    if (!h) return false;
+    return h === wr || (h.groupId !== undefined && h.groupId === wr.groupId);
+  }
+  /** All regions selected/hovered as a unit with `wr` (its whole text), or just
+   *  `wr` when it has no group. */
+  private regionGroup(wr: WorldRegion): WorldRegion[] {
+    if (wr.groupId === undefined) return [wr];
+    return [...this.regions, ...this.activeRegions].filter((r) => r.groupId === wr.groupId);
   }
 
   // --- region (area) selection: shared by the sketch and the extrude tool ---
@@ -205,18 +262,25 @@ export class SketchOverlay {
     );
   }
   /** Toggle a region's selection. `additive` (Ctrl/Shift) keeps the rest; a plain
-   *  click replaces the whole selection with just this region. */
+   *  click replaces the whole selection with just this region. A grouped region (a
+   *  text's glyphs) toggles as one unit — all its glyph anchors move together. */
   toggleRegionSelection(wr: WorldRegion, additive: boolean) {
+    const group = this.regionGroup(wr);
+    const pts = group.map(
+      (r) => [r.interior3D.x, r.interior3D.y, r.interior3D.z] as [number, number, number],
+    );
+    const inGroup = (p: [number, number, number]) =>
+      group.some((r) => pointInRegion(r.plane.to2D(new THREE.Vector3(p[0], p[1], p[2])), r.region));
     const sel = this.isRegionSelected(wr);
-    const c = wr.interior3D;
     if (!additive) {
-      this.selectedRegionPoints = sel && this.selectedRegionPoints.length === 1 ? [] : [[c.x, c.y, c.z]];
+      // plain click: this group becomes the whole selection — unless it already WAS
+      // the whole selection, in which case a second click clears it.
+      const soleSelection = sel && this.selectedRegionPoints.every(inGroup);
+      this.selectedRegionPoints = soleSelection ? [] : pts;
     } else if (sel) {
-      this.selectedRegionPoints = this.selectedRegionPoints.filter(
-        (p) => !pointInRegion(wr.plane.to2D(new THREE.Vector3(p[0], p[1], p[2])), wr.region),
-      );
+      this.selectedRegionPoints = this.selectedRegionPoints.filter((p) => !inGroup(p));
     } else {
-      this.selectedRegionPoints.push([c.x, c.y, c.z]);
+      this.selectedRegionPoints.push(...pts);
     }
     this.recolorFills();
   }
@@ -245,6 +309,31 @@ export class SketchOverlay {
       if (pointInRegion(p, wr.region)) return wr;
     }
     return null;
+  }
+  /** The text entity id whose glyph group's bounding box contains `p` — a GENEROUS
+   *  hit (the whole text block, not just glyph ink) so double-click-to-edit lands
+   *  even in the gaps between letters. Smallest text wins when several overlap.
+   *  `p` is a 2D sketch-plane point; returns null when no text is under it. */
+  activeTextIdAt(p: THREE.Vector2): string | null {
+    type B = { id: string; minx: number; miny: number; maxx: number; maxy: number };
+    const bounds = new Map<string, B>();
+    for (const wr of this.activeRegions) {
+      if (!wr.groupId || wr.entityId === undefined) continue; // only glyph regions
+      let b = bounds.get(wr.groupId);
+      if (!b) { b = { id: wr.entityId, minx: Infinity, miny: Infinity, maxx: -Infinity, maxy: -Infinity }; bounds.set(wr.groupId, b); }
+      for (const pt of wr.region.loop) {
+        b.minx = Math.min(b.minx, pt.x); b.miny = Math.min(b.miny, pt.y);
+        b.maxx = Math.max(b.maxx, pt.x); b.maxy = Math.max(b.maxy, pt.y);
+      }
+    }
+    let best: string | null = null;
+    let bestArea = Infinity;
+    for (const b of bounds.values()) {
+      if (p.x < b.minx || p.x > b.maxx || p.y < b.miny || p.y > b.maxy) continue;
+      const area = (b.maxx - b.minx) * (b.maxy - b.miny);
+      if (area < bestArea) { bestArea = area; best = b.id; }
+    }
+    return best;
   }
   /** Front-most COMMITTED region whose material the cursor ray hits — lets a visible
    *  sketch's profile areas be selected directly in the model view (not just inside
@@ -344,20 +433,13 @@ function textObjects(
   construction: boolean,
 ): THREE.Group {
   const g = new THREE.Group();
-  const basis = plane.basisMatrix(); // local glyph XY -> world on the sketch plane
   for (const f of faces) {
     for (const loop of [f.outer, ...f.holes]) {
       const pts = loop.map(([x, y]) => plane.to3D(x, y));
       g.add(construction ? constructionLine(pts) : polyline(pts, color));
     }
-    if (!construction) {
-      const shape = new THREE.Shape(f.outer.map(([x, y]) => new THREE.Vector2(x, y)));
-      for (const h of f.holes) shape.holes.push(new THREE.Path(h.map(([x, y]) => new THREE.Vector2(x, y))));
-      const mesh = new THREE.Mesh(new THREE.ShapeGeometry(shape), TEXT_FILL_MAT);
-      mesh.applyMatrix4(basis);
-      mesh.renderOrder = 11;
-      g.add(mesh);
-    }
+    // The solid glyph fill is drawn by the region layer (fillMesh) so it can show
+    // hover/selection state and be picked for extrude — see glyphWorldRegions.
   }
   g.renderOrder = 12;
   return g;

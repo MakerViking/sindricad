@@ -93,8 +93,16 @@ export class DimInput {
       });
       this.root.appendChild(no);
     }
-    // focus first field so typing goes straight to it
-    this.fields[0]?.input.focus();
+    // focus first field so typing goes straight to it. show() is often called from
+    // a pointerdown handler (e.g. extrude's pick→drag), where the browser moves
+    // focus to the click target AFTER this handler returns — so re-focus next frame
+    // too, or the field silently never holds focus and typing/Tab do nothing.
+    const focusFirst = () => {
+      const f = this.fields[0];
+      if (f && this.active) { f.input.focus(); f.input.select(); }
+    };
+    focusFirst();
+    requestAnimationFrame(focusFirst);
   }
 
   private onKey(e: KeyboardEvent, field: Field) {
@@ -121,6 +129,9 @@ export class DimInput {
       const v = values[f.def.name];
       if (!f.userDriven && v != null) {
         f.input.value = String(displayValue(v, f.def.kind));
+        // Keep the live value SELECTED while it tracks the cursor (Fusion-style), so
+        // typing a number at any moment replaces it instead of appending.
+        if (document.activeElement === f.input) f.input.select();
       }
     }
   }

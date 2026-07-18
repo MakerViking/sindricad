@@ -13,7 +13,9 @@ Python loop — single-threaded and GIL-bound. On a 6-sphere union @0.01mm that 
 """
 
 from OCP.BRep import BRep_Tool
+from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.GeomAbs import GeomAbs_Line
 from OCP.TopAbs import TopAbs_Orientation
 from OCP.TopLoc import TopLoc_Location
 
@@ -171,7 +173,6 @@ def _sample_by_param(e, n):
     if w is None:
         return None
     try:
-        from OCP.BRepAdaptor import BRepAdaptor_Curve
         ad = BRepAdaptor_Curve(w)
         u0, u1 = ad.FirstParameter(), ad.LastParameter()
         if not (u1 > u0):
@@ -181,6 +182,24 @@ def _sample_by_param(e, n):
             p = ad.Value(u0 + (u1 - u0) * (j / n))
             pts.append([p.X(), p.Y(), p.Z()])
         return pts
+    except Exception:
+        return None
+
+
+def _line_endpoints(w):
+    """The two endpoints of a straight edge, or None if it isn't a line. A line is
+    exactly its endpoints, so sampling n+1 arc-length points on it is pure waste —
+    and glyph strokes (text booleans) are overwhelmingly straight, so skipping them
+    roughly halves wireframe extraction on engraved/embossed text."""
+    if w is None:
+        return None
+    try:
+        ad = BRepAdaptor_Curve(w)
+        if ad.GetType() != GeomAbs_Line:
+            return None
+        p0 = ad.Value(ad.FirstParameter())
+        p1 = ad.Value(ad.LastParameter())
+        return [[p0.X(), p0.Y(), p0.Z()], [p1.X(), p1.Y(), p1.Z()]]
     except Exception:
         return None
 
@@ -197,15 +216,19 @@ def _edge_points(e, n):
                     return hit
         except Exception:
             key = None
-    try:
-        pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
-    except Exception:
-        # arc-length parameterisation failed (degenerate seam/pole edge) — fall
-        # back to raw-parameter sampling so a valid body still renders its
-        # wireframe instead of the whole tessellation reply erroring out.
-        pts = _sample_by_param(e, n)
-        if pts is None:
-            return None
+    line_pts = _line_endpoints(w)
+    if line_pts is not None:
+        pts = line_pts
+    else:
+        try:
+            pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
+        except Exception:
+            # arc-length parameterisation failed (degenerate seam/pole edge) — fall
+            # back to raw-parameter sampling so a valid body still renders its
+            # wireframe instead of the whole tessellation reply erroring out.
+            pts = _sample_by_param(e, n)
+            if pts is None:
+                return None
     if key is not None:
         if len(_EDGE_MEMO) > 200_000:
             _EDGE_MEMO.clear()

@@ -83,6 +83,11 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 
 const GRID_STEP = 5;
 
+// Sentinel id for the in-progress text tool's live-preview entity: it lives on the
+// active entity list (so it repaints through the normal render path) but is never
+// committed — filtered out at serialization and dropped on tool switch/cancel.
+const TEXT_PREVIEW_ID = "__textpreview__";
+
 export class SketchMode {
   active = false;
   tool: SketchTool = "select";
@@ -121,9 +126,6 @@ export class SketchMode {
   private dimsVisible = true;
   private readonly textPanel = new TextPanel();
   private fonts: string[] = []; // system fonts for the text tool (loaded on enter)
-  // re-runnable preview builder for the in-progress text (glyph outlines arrive async,
-  // so the preview must be rebuilt when they land — see redraw()).
-  private textPreviewGen: (() => THREE.Object3D[]) | null = null;
   // text tool: press-drag defines a box (wrap width); a plain click is a point anchor.
   private textBoxStart: THREE.Vector2 | null = null;
   private textBoxEnd: THREE.Vector2 | null = null;
@@ -236,7 +238,7 @@ export class SketchMode {
         id: this.editingId ?? store.nextId(),
         type: "sketch",
         plane: this.plane.serialize(),
-        entities: this.entities.map(toSketchEntity),
+        entities: this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID).map(toSketchEntity),
         ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
         ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
       };
@@ -306,9 +308,9 @@ export class SketchMode {
     this.pendingDrag = null;
     this.dim.hide();
     this.textPanel.hide();
+    // drop any uncommitted text preview left on the active list when switching tools
+    if (this.dropTextPreview()) this.refreshActive();
     this.overlay.setPreview([]);
-    dismissContextMenu();
-    this.clickPts = [];
     this.constraintTools.resetPending();
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     this.patternFlow.flushPending(); // don't lose an in-progress pattern
@@ -316,11 +318,10 @@ export class SketchMode {
   }
 
   /** Public re-draw hook: e.g. async glyph outlines for a text entity just arrived,
-   *  so the active sketch's curves (incl. text) need repainting. No-op when inactive. */
+   *  so the active sketch's curves (incl. text + its live preview entity) need
+   *  repainting. No-op when inactive. */
   redraw(): void {
-    if (!this.active) return;
-    this.refreshActive();
-    if (this.textPreviewGen) this.overlay.setPreview(this.textPreviewGen()); // re-show text preview
+    if (this.active) this.refreshActive();
   }
 
   /** Rebuild the active sketch's committed curves + snap candidates + editable
@@ -334,10 +335,16 @@ export class SketchMode {
     this.overlay.setActiveRegions(
       detectRegions(this.editingId ?? "__active__", [...this.entities, ...derived]),
       this.plane,
+      this.editingId ?? "__active__",
+      [...this.entities, ...derived],
     );
     this.candidates = candidatesFromEntities([...this.entities, ...derived]);
     if (this.dimsVisible) this.dims.show(this.entities, this.plane);
     else this.dims.hide();
+    // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
+    // via redraw()) fires no pointer event, so force a frame or it won't draw until
+    // the next mouse move.
+    this.viewport.requestRender();
   }
 
   /** Lightweight per-frame refresh for dragging: only the curve geometry moves,
@@ -434,6 +441,16 @@ export class SketchMode {
         this.editPattern(de.id.split("#")[0] ?? de.id);
         return;
       }
+      // DOUBLE-click text → re-open the text panel to edit it in place. (Text isn't
+      // pickable as an entity — entitySegments is empty — so it's found via its glyph
+      // group's bounding box, a generous hit that lands even between letters.)
+      if (e.detail >= 2) {
+        const te = this.textEntityAt(raw);
+        if (te) {
+          this.editText(te, e);
+          return;
+        }
+      }
       // a real (hand-drawn) entity's body under the cursor → (de)select it
       const idx = pickEntity(this.entities, raw, this.pickTol());
       const hit = idx >= 0 ? this.entities[idx] : undefined;
@@ -467,7 +484,10 @@ export class SketchMode {
     if (this.tool === "spline") return this.splineClick(p);
     if (this.tool === "point") return this.pointClick(p);
     if (this.tool === "text") {
-      // begin a text placement: drag to define a box, or release in place for a point anchor
+      // click on existing text → edit it (discoverable: the text tool also edits);
+      // otherwise begin a placement: drag to define a box, or release for a point anchor
+      const te = this.textEntityAt(p);
+      if (te) { this.editText(te, e); return; }
       this.textBoxStart = p.clone();
       this.textBoxEnd = null;
       this.textBoxScreen = { x: e.clientX, y: e.clientY };
@@ -614,14 +634,31 @@ export class SketchMode {
 
   /** the smallest rectangle entity that contains `p`, or null — used to format text
    *  INSIDE a drawn box (centered + wrapped to the box width). */
-  private rectContaining(p: THREE.Vector2): { x: number; y: number; width: number } | null {
+  /** Plane-frame angle (radians) of the current view's screen-right direction. The
+   *  sketch view squares to the plane but can sit at any 90° rotation (nearest-square
+   *  entry — enterSketchView), so text is placed relative to what the user currently
+   *  sees as horizontal, not the plane's raw +X (which may point up/down on screen). */
+  private viewRightAngle(): number {
+    const right = new THREE.Vector3().setFromMatrixColumn(this.viewport.rig.active.matrixWorld, 0);
+    return Math.atan2(right.dot(this.plane.v), right.dot(this.plane.u));
+  }
+
+  private rectContaining(
+    p: THREE.Vector2,
+    phi: number,
+  ): { x: number; y: number; width: number } | null {
     let best: { x: number; y: number; width: number } | null = null;
     let bestArea = Infinity;
     for (const e of this.entities) {
       if (e.type !== "rectangle") continue;
       if (Math.abs(p.x - e.x) <= e.width / 2 && Math.abs(p.y - e.y) <= e.height / 2) {
         const area = e.width * e.height;
-        if (area < bestArea) { bestArea = area; best = { x: e.x, y: e.y, width: e.width }; }
+        if (area < bestArea) {
+          bestArea = area;
+          // wrap width = the rect's extent along the view's horizontal (screen-right)
+          const w = e.width * Math.abs(Math.cos(phi)) + e.height * Math.abs(Math.sin(phi));
+          best = { x: e.x, y: e.y, width: w };
+        }
       }
     }
     return best;
@@ -629,38 +666,103 @@ export class SketchMode {
 
   /** Open the text panel for a placement. `explicitBox` is a dragged box; otherwise a
    *  click that lands inside a rectangle binds the text into it (centered + wrapped). */
+  /** The text entity (if any) under a 2D sketch point — generous bounding-box hit. */
+  /** Remove the in-progress text preview entity from the active list. Returns true
+   *  if one was present (so callers can skip a repaint when nothing changed). */
+  private dropTextPreview(): boolean {
+    const before = this.entities.length;
+    this.entities = this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID);
+    return this.entities.length !== before;
+  }
+
+  private textEntityAt(p: THREE.Vector2): Extract<ResolvedEntity, { type: "text" }> | null {
+    const id = this.overlay.activeTextIdAt(p);
+    if (!id) return null;
+    const te = this.entities.find((x) => x.id === id);
+    return te && te.type === "text" ? te : null;
+  }
+
+  /** Re-open the text panel to edit an existing text, anchored near the pointer. */
+  private editText(te: Extract<ResolvedEntity, { type: "text" }>, e: PointerEvent) {
+    this.openTextPanel(
+      new THREE.Vector2(te.x, te.y),
+      { x: e.clientX, y: e.clientY },
+      undefined,
+      te,
+      this.viewRightAngle(),
+    );
+  }
+
   private openTextPanel(
     clickPoint: THREE.Vector2,
     screen: { x: number; y: number },
     explicitBox?: { x: number; y: number; width: number },
+    editEntity?: Extract<ResolvedEntity, { type: "text" }>,
+    viewPhi = 0,
   ) {
-    const box = explicitBox ?? this.rectContaining(clickPoint);
-    const anchor = box ? { x: box.x, y: box.y } : { x: clickPoint.x, y: clickPoint.y };
+    // Text advances along the view's screen-right; `phiDeg` is baked into the stored
+    // (plane-frame) angle so 0° in the panel = horizontal as the user sees it, and
+    // editing subtracts it back out to show the user-facing angle.
+    const phiDeg = (viewPhi * 180) / Math.PI;
+    const box = editEntity
+      ? editEntity.boxWidth !== undefined
+        ? { x: editEntity.x, y: editEntity.y, width: editEntity.boxWidth }
+        : undefined
+      : (explicitBox ?? this.rectContaining(clickPoint, viewPhi));
+    const anchor = editEntity
+      ? { x: editEntity.x, y: editEntity.y }
+      : box
+        ? { x: box.x, y: box.y }
+        : { x: clickPoint.x, y: clickPoint.y };
+    const id = editEntity ? editEntity.id : newEntityId();
+    const construction = editEntity ? !!editEntity.construction : this.constructionMode;
     const build = (v: TextValues): ResolvedEntity => ({
-      type: "text", id: newEntityId(), text: v.text,
+      type: "text", id, text: v.text,
       x: anchor.x, y: anchor.y, height: v.height, style: v.style,
-      align: box ? "center" : v.align, angle: v.angle,
+      align: box ? "center" : v.align, angle: v.angle + phiDeg,
       ...(v.font ? { font: v.font } : {}),
       ...(v.boxWidth ? { boxWidth: v.boxWidth } : box ? { boxWidth: box.width } : {}),
-      ...(this.constructionMode ? { construction: true } : {}),
+      ...(editEntity?.pathRef !== undefined ? { pathRef: editEntity.pathRef } : {}),
+      ...(editEntity?.positionOnPath !== undefined ? { positionOnPath: editEntity.positionOnPath } : {}),
+      ...(construction ? { construction: true } : {}),
     });
-    const initial: Partial<TextValues> = { height: 10, ...(box ? { boxWidth: box.width, align: "center" } : {}) };
+    const initial: Partial<TextValues> = editEntity
+      ? {
+          text: editEntity.text, height: editEntity.height, angle: editEntity.angle - phiDeg,
+          ...(editEntity.style ? { style: editEntity.style } : {}),
+          ...(editEntity.align ? { align: editEntity.align } : {}),
+          ...(editEntity.font ? { font: editEntity.font } : {}),
+          ...(editEntity.boxWidth !== undefined ? { boxWidth: editEntity.boxWidth } : {}),
+        }
+      : { height: 10, ...(box ? { boxWidth: box.width, align: "center" } : {}) };
+    // Editing: hide the original text so only the live preview shows; keep it to
+    // restore if the edit is cancelled. editEntity is already the live list object.
+    const original = editEntity;
+    if (editEntity) {
+      this.entities = this.entities.filter((e) => e.id !== id);
+      this.selected.clear();
+      this.overlay.clearRegionSelection();
+      this.refreshActive();
+    }
     this.textPanel.show(screen, this.fonts, initial, {
       onChange: (v) => {
-        this.textPreviewGen = () => curveObjects([build(v)], this.plane, PREVIEW_COLOR);
-        this.overlay.setPreview(this.textPreviewGen());
+        // live preview via a temporary entity on the active list — reuses the proven
+        // committed-render path (setActiveSketch), which repaints when glyphs arrive.
+        this.dropTextPreview();
+        this.entities.push({ ...build(v), id: TEXT_PREVIEW_ID });
+        this.refreshActive();
       },
       onCommit: (v) => {
-        this.textPreviewGen = null;
+        this.entities = this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID && e.id !== id);
         this.entities.push(build(v));
-        this.overlay.setPreview([]);
         this.refreshActive();
         this.requestSolve();
         this.onState?.();
       },
       onCancel: () => {
-        this.textPreviewGen = null;
-        this.overlay.setPreview([]);
+        this.dropTextPreview();
+        if (original) this.entities.push(original); // restore the unedited text
+        this.refreshActive();
       },
     });
   }
@@ -1504,11 +1606,19 @@ export class SketchMode {
         try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
       }
       this.overlay.setPreview([]);
-      if (end && Math.abs(end.x - s.x) > 1 && Math.abs(end.y - s.y) > 1) {
-        this.openTextPanel(s, screen, { x: (s.x + end.x) / 2, y: (s.y + end.y) / 2, width: Math.abs(end.x - s.x) });
-      } else {
-        this.openTextPanel(s, screen);
+      const phi = this.viewRightAngle();
+      if (end) {
+        const dx = end.x - s.x, dy = end.y - s.y;
+        const cos = Math.cos(phi), sin = Math.sin(phi);
+        const wView = Math.abs(dx * cos + dy * sin); // box extent along screen-right (wrap width)
+        const hView = Math.abs(-dx * sin + dy * cos); // box extent along screen-up
+        if (wView > 1 && hView > 1) {
+          const cx = (s.x + end.x) / 2, cy = (s.y + end.y) / 2;
+          this.openTextPanel(new THREE.Vector2(cx, cy), screen, { x: cx, y: cy, width: wView }, undefined, phi);
+          return;
+        }
       }
+      this.openTextPanel(s, screen, undefined, undefined, phi);
       return;
     }
     if (!this.dragFrom) return;

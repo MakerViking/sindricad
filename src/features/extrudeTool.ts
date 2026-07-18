@@ -142,8 +142,21 @@ export class ExtrudeTool {
       const v = this.dim.getValue("distance");
       if (v != null) this.distance = v; // the field is the truth: typed sign wins
     }
-    this.dim.position(e.clientX, e.clientY);
+    this.positionDim(anchor);
     this.updatePreview();
+  }
+
+  /** Park the depth input at a STABLE spot near the profile — anchored to the
+   *  selection center (which doesn't move while you drag depth), offset off the
+   *  geometry and clamped inside the viewport. Following the cursor made the box
+   *  (and its buttons) impossible to click. */
+  private positionDim(anchor: THREE.Vector3 = this.anchor()) {
+    const s = this.viewport.projectToScreen(anchor);
+    const rect = this.viewport.domElement.getBoundingClientRect();
+    const boxW = 160, boxH = 46, m = 12;
+    const fx = Math.max(rect.left + m, Math.min(s.x + 28, rect.right - boxW - m));
+    const fy = Math.max(rect.top + m, Math.min(s.y + 28, rect.bottom - boxH - m));
+    this.dim.position(fx - 16, fy - 16); // dim.position adds a +16 cursor offset
   }
 
   private onDown(e: PointerEvent) {
@@ -194,6 +207,7 @@ export class ExtrudeTool {
         "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
       );
     }
+    this.positionDim();
     this.updatePreview();
   }
 

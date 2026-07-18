@@ -2,7 +2,7 @@
 // detectRegions, pointInLoop/pointInRegion.
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { detectRegions, entityPolyline, pointInRegion } from "./region";
+import { detectRegions, entityPolyline, glyphRegion, pointInRegion } from "./region";
 import type { ResolvedEntity } from "./snap";
 
 const line = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity =>
@@ -28,6 +28,30 @@ describe("entityPolyline", () => {
     const p = entityPolyline(circle("c1", 0, 0, 3));
     expect(p[0]).toEqual(p[p.length - 1]);
     expect(p.length).toBeGreaterThan(3);
+  });
+});
+
+describe("glyphRegion — a tessellated glyph face becomes an extrudable profile", () => {
+  it("a square outer with a square hole yields a ring whose interior avoids the hole", () => {
+    // 10×10 outer, 4×4 centered hole (like the counter of an 'O')
+    const outer: [number, number][] = [[-5, -5], [5, -5], [5, 5], [-5, 5]];
+    const holes: [number, number][][] = [[[-2, -2], [2, -2], [2, 2], [-2, 2]]];
+    const region = glyphRegion("s1", outer, holes);
+
+    expect(region.sketchId).toBe("s1");
+    expect(region.loop).toHaveLength(4);
+    expect(region.holes).toHaveLength(1);
+    // the selection anchor must sit in the material — inside the outer, outside the hole
+    expect(pointInRegion(region.interior, region)).toBe(true);
+    // a point in the counter (hole) is NOT part of the material
+    expect(pointInRegion(new THREE.Vector2(0, 0), region)).toBe(false);
+  });
+
+  it("a solid glyph face (no holes) keeps its whole area", () => {
+    const outer: [number, number][] = [[0, 0], [6, 0], [6, 4], [0, 4]];
+    const region = glyphRegion("s1", outer, []);
+    expect(region.holes).toHaveLength(0);
+    expect(pointInRegion(new THREE.Vector2(3, 2), region)).toBe(true);
   });
 });
 

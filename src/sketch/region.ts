@@ -180,6 +180,20 @@ function mkRegion(
   return { sketchId, loop, holes, centroid, interior: interiorPoint(loop, holes, centroid) };
 }
 
+/** Build a selectable Region from one tessellated glyph face (outer boundary +
+ *  holes, in sketch-2D mm). Text skips the line/arc arrangement entirely — its
+ *  faces arrive pre-formed from the sidecar's font tessellation (cached client-
+ *  side), so each glyph face becomes its own extrudable profile. */
+export function glyphRegion(
+  sketchId: string,
+  outer: [number, number][],
+  holes: [number, number][][],
+): Region {
+  const loop = outer.map(([x, y]) => new THREE.Vector2(x, y));
+  const holeLoops = holes.map((h) => h.map(([x, y]) => new THREE.Vector2(x, y)));
+  return mkRegion(sketchId, loop, holeLoops);
+}
+
 function centroidOf(loop: THREE.Vector2[]): THREE.Vector2 {
   const c = new THREE.Vector2();
   for (const p of loop) c.add(p);

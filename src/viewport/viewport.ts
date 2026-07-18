@@ -283,10 +283,10 @@ export class Viewport {
     this.highlighter.clearHover();
     this.requestRender();
     if (hit?.kind === "edge") { this.highlighter.hoverEdge(hit.line); this.regionHoverAt?.(-1, -1); return; }
-    if (hit?.kind === "face") { this.highlighter.hoverFace(hit.faceId); this.regionHoverAt?.(-1, -1); return; }
-    // no solid edge/face under the cursor → a visible sketch's region may be (clicking
-    // through a hole, or with the body hidden). The face ALWAYS wins when present.
-    this.regionHoverAt?.(e.clientX, e.clientY);
+    // Sketch has PRIORITY over the body: hover a visible sketch's region if one is
+    // under the cursor; only fall back to the solid face when no region is there.
+    if (this.regionHoverAt?.(e.clientX, e.clientY)) return;
+    if (hit?.kind === "face") { this.highlighter.hoverFace(hit.faceId); return; }
   }
 
   private handleClick(e: PointerEvent) {
@@ -311,11 +311,11 @@ export class Viewport {
     const hit = this.model
       ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model)
       : null;
-    // A solid FACE always wins. Only when nothing solid is under the cursor (clicking
-    // through a honeycomb hole, or with the body hidden) does a click select a visible
-    // sketch's profile area — so face selection (delete/press-pull) keeps working with
-    // a sketch shown.
-    if (!hit && this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    // Sketch has PRIORITY over the body: a visible sketch's profile area under the
+    // cursor is selected instead of the solid FACE behind/under it (the user asked for
+    // sketch-first). An EDGE hit is more specific and still wins; face selection resumes
+    // once the sketch is hidden/consumed (its regions vanish from overlay.regions).
+    if (hit?.kind !== "edge" && this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)) return;
     // a click on a construction plane (where it doesn't overlap the body) selects it
     if (!hit && this.datumQuads.length) {
       const dh = this.rayFrom(e.clientX, e.clientY).intersectObjects(this.datumQuads, false)[0];

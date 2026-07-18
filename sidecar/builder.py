@@ -2156,6 +2156,17 @@ def rebuild_cached(document, diagnostics=None):
 
     t_build = time.monotonic()
     snaps_out = []
+    # Diagnostic: WHERE the incremental resume started. resume_from == 0 (or src=full)
+    # means the whole history replayed (checkpoint miss) — the usual cause of a
+    # surprise multi-second rebuild; a high resume_from means only the tail features
+    # (e.g. one expensive boolean) ran, so the cost is genuine OCCT geometry.
+    if features:
+        _rp = resume[0] if resume else 0
+        print(
+            f"[rebuild-cached] features={len(features)} resume_from={_rp} "
+            f"src={'full' if resume is None else ('disk' if from_disk else 'RAM')}",
+            flush=True,
+        )
     part, errors, bodies = rebuild(
         document, diagnostics=diagnostics, resume=resume,
         snapshots_out=snaps_out, persist=persist,
@@ -3051,6 +3062,37 @@ def _noop_eps(ref):
     return max(1e-6, 1e-4 * (ref or 0.0))
 
 
+def _serial_bool(base, tool, kind):
+    """A boolean (kind = "fuse" | "cut" | "common") forced SERIAL.
+
+    build123d's `+`/`-`/`&` hardcode `SetRunParallel(True)`, but OCCT's parallel BOP is
+    pathologically slow — ~5-6x — when the tool is MANY small disjoint solids, e.g.
+    joining/cutting the ~36 glyph prisms of a sketch text into a body (measured on the
+    Basket doc: 1.3s parallel -> 0.23s serial, byte-identical volume + face count). Same
+    UnifySameDomain clean and result shape as build123d, so it's a drop-in for the
+    operators. `base`/`tool` must already be Compound/Solid (have `.wrapped`)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse, BRepAlgoAPI_Cut, BRepAlgoAPI_Common
+    from OCP.TopTools import TopTools_ListOfShape
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    op = {"fuse": BRepAlgoAPI_Fuse, "cut": BRepAlgoAPI_Cut, "common": BRepAlgoAPI_Common}[kind]()
+    la = TopTools_ListOfShape(); la.Append(base.wrapped)
+    lb = TopTools_ListOfShape(); lb.Append(tool.wrapped)
+    op.SetArguments(la)
+    op.SetTools(lb)
+    op.SetRunParallel(False)
+    op.Build()
+    shape = op.Shape()
+    up = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    up.AllowInternalEdges(False)
+    try:
+        up.Build()
+        shape = up.Shape()
+    except Exception:
+        pass  # keep the un-cleaned result rather than fail the whole boolean
+    return Compound(shape)
+
+
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
@@ -3090,7 +3132,7 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
             return
         merged = solid
         for b in hits:
-            merged = merged + _as_compound(b["shape"])  # `+` fuses solids
+            merged = _serial_bool(merged, _as_compound(b["shape"]), "fuse")  # serial: parallel BOP is ~5x slower for many-glyph tools
         # No-op guard: the fused volume should exceed what was already there. If it
         # doesn't, the prism sat entirely inside the body and added no material.
         merged_vol, hit_vol = _try_vol(merged), _sum_hit_vol(hits)
@@ -3114,7 +3156,7 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
         results, removed, measured = [], 0.0, False
         for b in hits:
             before = _try_vol(b["shape"])
-            newshape = _as_compound(b["shape"]) - solid
+            newshape = _serial_bool(_as_compound(b["shape"]), solid, "cut")
             after = _try_vol(newshape)
             results.append((b, newshape))
             if before is not None and after is not None:
@@ -3134,7 +3176,7 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
             )
         results = []
         for b in hits:
-            newshape = _as_compound(b["shape"]) & solid
+            newshape = _serial_bool(_as_compound(b["shape"]), solid, "common")
             v = _try_vol(newshape)
             if v is not None and v < eps(_try_vol(b["shape"])):
                 raise ValueError(
