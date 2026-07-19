@@ -10,7 +10,7 @@
 //! NOTE: the Windows Job Object path is `#[cfg(windows)]` and can only be
 //! compile-verified on a Windows target / in CI.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +21,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// Handle to the running sidecar, stored in Tauri managed state. Carries the
 /// per-launch WebSocket auth token so the frontend can fetch it via the
@@ -167,6 +169,30 @@ impl Sidecar {
         #[cfg(unix)]
         cmd.process_group(0);
 
+        // no console window for the sidecar (python.exe is a console-subsystem
+        // binary; without this every launch pops an empty terminal)
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
+        // Windows release builds are windows_subsystem="windows": the println!
+        // mirroring below goes nowhere, which made the first field failure
+        // undiagnosable. Mirror everything to <app_data>/sidecar.log too
+        // (truncated each launch).
+        let log = app
+            .path()
+            .app_data_dir()
+            .ok()
+            .and_then(|d| {
+                std::fs::create_dir_all(&d).ok()?;
+                std::fs::File::create(d.join("sidecar.log")).ok()
+            })
+            .map(|f| Arc::new(Mutex::new(f)));
+        if let Some(l) = &log {
+            if let Ok(mut f) = l.lock() {
+                let _ = writeln!(f, "spawn: {:?} {:?} (cwd {:?})", rt.python, rt.script, rt.cwd);
+            }
+        }
+
         let mut child = cmd.spawn()?;
 
         // Windows: put the child (and its future pool workers) in a kill-on-close job.
@@ -179,19 +205,31 @@ impl Sidecar {
         let ready = Arc::new(AtomicBool::new(false));
         if let Some(out) = child.stdout.take() {
             let ready = ready.clone();
+            let log = log.clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(out).lines().map_while(Result::ok) {
                     if line.contains("LISTENING") {
                         ready.store(true, Ordering::SeqCst);
                     }
                     println!("[sidecar] {line}");
+                    if let Some(l) = &log {
+                        if let Ok(mut f) = l.lock() {
+                            let _ = writeln!(f, "{line}");
+                        }
+                    }
                 }
             });
         }
         if let Some(err) = child.stderr.take() {
+            let log = log.clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(err).lines().map_while(Result::ok) {
                     eprintln!("[sidecar:err] {line}");
+                    if let Some(l) = &log {
+                        if let Ok(mut f) = l.lock() {
+                            let _ = writeln!(f, "err: {line}");
+                        }
+                    }
                 }
             });
         }
@@ -204,6 +242,15 @@ impl Sidecar {
                         "[sidecar] WARNING: no LISTENING after 20s — the geometry engine \
                          may have failed to start (check [sidecar:err] above)"
                     );
+                    if let Some(l) = &log {
+                        if let Ok(mut f) = l.lock() {
+                            let _ = writeln!(
+                                f,
+                                "WARNING: no LISTENING after 20s — the geometry engine \
+                                 may have failed to start (see err: lines above)"
+                            );
+                        }
+                    }
                 }
             });
         }
