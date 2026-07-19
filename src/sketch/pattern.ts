@@ -7,7 +7,9 @@ import type { Num, Params, SketchPattern } from "../types";
 import type { ResolvedEntity } from "./snap";
 import { resolveNum } from "./resolve";
 
-function translated(e: ResolvedEntity, dx: number, dy: number, id: string): ResolvedEntity {
+/** an entity translated by (dx,dy) as a fresh object — shared by pattern
+ *  expansion (derived copies) and the select tool's whole-entity body drag */
+export function translated(e: ResolvedEntity, dx: number, dy: number, id: string): ResolvedEntity {
   const c = e.construction ? { construction: true as const } : {};
   switch (e.type) {
     case "line":

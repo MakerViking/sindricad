@@ -18,10 +18,8 @@ import { fmtLength, parseField, displayValue } from "../ui/units";
 interface DimLabel {
   el: HTMLDivElement;
   anchor: THREE.Vector2;
-  index: number;
-  field: DimField;
   valueMm: number;
-  commit?: (mm: number) => void; // extras (constraint dims) carry their own writer
+  commit: (mm: number) => void; // writes the value (entity field or constraint)
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value) */
@@ -53,11 +51,11 @@ export class SketchDimensions {
     this.plane = plane;
     entities.forEach((e, i) => {
       for (const d of entityDims(e)) {
-        this.addLabel({ anchor: d.labelPos, index: i, field: d.field, valueMm: d.valueMm });
+        this.addLabel({ anchor: d.labelPos, valueMm: d.valueMm, commit: (mm) => this.onEdit(i, d.field, mm) });
       }
     });
     for (const x of extras) {
-      this.addLabel({ anchor: x.anchor, index: -1, field: "length", valueMm: x.valueMm, commit: x.commit });
+      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit });
     }
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
@@ -110,10 +108,8 @@ export class SketchDimensions {
       e.stopPropagation();
       if (e.key === "Enter") {
         const mm = parseField(input.value, "length");
-        if (mm != null && mm > 0) {
-          if (label.commit) label.commit(mm);
-          else this.onEdit(label.index, label.field, mm);
-        } else revert();
+        if (mm != null && mm > 0) label.commit(mm);
+        else revert();
       } else if (e.key === "Escape") revert();
     });
     input.addEventListener("blur", revert); // edit committed -> show() rebuilds anyway

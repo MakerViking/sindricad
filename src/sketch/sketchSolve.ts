@@ -31,6 +31,12 @@ export interface SolvePass {
 const TAU = Math.PI * 2;
 const ccwDelta = (from: number, to: number) => ((to - from) % TAU + TAU) % TAU;
 
+/** THE position-coincidence key: two points merge into one solver point iff
+ *  their keys match (0.001mm buckets). Anything else that needs "are these
+ *  endpoints attached?" (e.g. the body drag's neighbor stretch) must use this
+ *  same key, or its notion of attachment drifts from the solver's. */
+export const coincKey = (x: number, y: number) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
+
 export async function compileAndSolve(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
@@ -38,7 +44,7 @@ export async function compileAndSolve(
 ): Promise<SolvePass> {
   const points: SPoint[] = [];
   const pointByKey = new Map<string, string>();
-  const key = (x: number, y: number) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
+  const key = coincKey;
   // mergeable points coincide by position (shared corners); unique points (centers,
   // interior spline points) always get their own identity — see file header.
   const getPoint = (x: number, y: number, mergeable = true): string => {

@@ -13,14 +13,14 @@ import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
-import { SketchDimensions } from "./sketchDimensions";
-import { entityDims, constraintDims, type DimField } from "./entityDims";
+import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
+import { entityDims, constraintDims, dimRefPoints, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
 import { circumcenter } from "./arc";
-import { compileAndSolve } from "./sketchSolve";
+import { compileAndSolve, coincKey } from "./sketchSolve";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
-import { expandPattern } from "./pattern";
+import { expandPattern, translated } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { detectRegions, rectCorners } from "./region";
@@ -113,15 +113,17 @@ export class SketchMode {
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
-  // armed on pointerdown over an entity body, becomes a move after a small
-  // screen-space threshold — a plain click falls through to selection on up.
+  // armed cheaply on pointerdown over an entity body; the snapshot and the
+  // neighbor-stretch closures are built only when the move actually starts
+  // (past a small screen-space threshold) — a plain click stays free and
+  // falls through to selection on up.
   private moveDrag: {
     idx: number;
     startClient: { x: number; y: number };
     last: THREE.Vector2;
     started: boolean;
     shift: boolean;
-    stretch: ((dx: number, dy: number) => void)[]; // coincident neighbor endpoints riding along
+    stretch: ((dx: number, dy: number) => void)[]; // filled when the move starts
   } | null = null;
   private solveBusy = false; // a solve is in flight (drag or constraint)
   private solveDirty = false; // a constraint/dimension solve is pending
@@ -130,6 +132,9 @@ export class SketchMode {
   private lastCursor = new THREE.Vector2();
   // dimension tool: the first picked point of a two-pick distance (p2p / p2l)
   private dimFirst: { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null = null;
+  // distance-constraint dims, computed once per refreshActive() in activeCurves()
+  // and reused for the clickable labels (constraintDimExtras)
+  private cdims: ConstraintDim[] = [];
   private editingId: string | null = null;
   private store: DocumentStore | undefined;
   private grid: THREE.GridHelper | null = null;
@@ -419,11 +424,11 @@ export class SketchMode {
     this.refreshActive();
   }
 
-  /** Add/replace the driving dimension on an entity, then re-solve. */
   /** clickable labels for the distance constraints: editing one writes the
-   *  constraint's driving value and re-solves */
-  private constraintDimExtras(): { anchor: THREE.Vector2; valueMm: number; commit: (mm: number) => void }[] {
-    return constraintDims(this.entities, this.constraints).map((d) => ({
+   *  constraint's driving value and re-solves. Reads the cdims activeCurves()
+   *  computed earlier in the same refreshActive() pass. */
+  private constraintDimExtras(): ExtraDim[] {
+    return this.cdims.map((d) => ({
       anchor: d.labelPos,
       valueMm: d.valueMm,
       commit: (mm: number) => {
@@ -437,6 +442,7 @@ export class SketchMode {
     }));
   }
 
+  /** Add/replace the driving dimension on an entity, then re-solve. */
   private setDrivingDimension(c: SketchConstraint) {
     this.constraints = this.constraints.filter((k) => {
       if (c.type === "distance" && k.type === "distance") return k.line !== c.line;
@@ -500,14 +506,13 @@ export class SketchMode {
       const idx = pickEntity(this.entities, raw, this.pickTol());
       const hit = idx >= 0 ? this.entities[idx] : undefined;
       if (hit) {
-        this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // Esc revert
         this.moveDrag = {
           idx,
           startClient: { x: e.clientX, y: e.clientY },
           last: raw.clone(),
           started: false,
           shift: e.shiftKey,
-          stretch: this.stretchTargets(idx, this.attachmentPoints(hit)),
+          stretch: [],
         };
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
@@ -1166,25 +1171,16 @@ export class SketchMode {
   }
 
   // --- dimension: click an entity, type a driving value -----------------
-  /** nearest dimensionable reference point within pick tolerance: entity
-   *  endpoints, rectangle corners, circle centers, sketch points, spline ends.
-   *  The returned `p` index matches the p2pDistance/p2lDistance semantics. */
+  /** nearest dimensionable reference point within pick tolerance — the
+   *  candidate set and `p` semantics come from entityDims.dimRefPoints() */
   private pickDimPoint(p: THREE.Vector2): { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null {
     const tol = this.pickTol();
     let best: { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null = null;
     let bestD = tol * tol;
-    const consider = (e: ResolvedEntity, idx: number, x: number, y: number) => {
-      const dx = x - p.x, dy = y - p.y, d = dx * dx + dy * dy;
-      if (d <= bestD) { bestD = d; best = { e, p: idx, pos: new THREE.Vector2(x, y) }; }
-    };
     for (const e of this.entities) {
-      if (e.type === "line" || e.type === "arc") { consider(e, 0, e.x1, e.y1); consider(e, 1, e.x2, e.y2); }
-      else if (e.type === "circle" || e.type === "point") consider(e, 0, e.x, e.y);
-      else if (e.type === "rectangle") rectCorners(e.x, e.y, e.width, e.height).forEach((q, k) => consider(e, k, q.x, q.y));
-      else if (e.type === "spline") {
-        const a = e.points[0], b = e.points[e.points.length - 1];
-        if (a) consider(e, 0, a.x, a.y);
-        if (b) consider(e, 1, b.x, b.y);
+      for (const r of dimRefPoints(e)) {
+        const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
+        if (d <= bestD) { bestD = d; best = { e, p: r.p, pos: r.pos }; }
       }
     }
     return best;
@@ -1264,13 +1260,18 @@ export class SketchMode {
           const dx = e.clientX - md.startClient.x, dy = e.clientY - md.startClient.y;
           if (dx * dx + dy * dy < 16) return; // <4px: still a click, not a move
           md.started = true;
+          // nothing has moved yet, so build the revert snapshot and the
+          // neighbor-stretch set from the still-pristine positions
+          this.dragSnapshot = JSON.parse(JSON.stringify(this.entities));
+          const ent = this.entities[md.idx];
+          if (ent) md.stretch = this.stretchTargets(md.idx, this.attachmentPoints(ent));
         }
         const dx = raw.x - md.last.x, dy = raw.y - md.last.y;
         md.last.copy(raw);
         const ent = this.entities[md.idx];
-        if (ent) this.translateEntity(ent, dx, dy);
+        if (ent) this.entities[md.idx] = translated(ent, dx, dy, ent.id);
         for (const s of md.stretch) s(dx, dy);
-        this.refreshActive();
+        this.refreshDragGeometry(); // curves only; dims/regions/candidates rebuilt on endDrag
         return;
       }
       const hit = this.snapAt(e.clientX, e.clientY);
@@ -1568,8 +1569,10 @@ export class SketchMode {
       objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
     }
     if (this.dimsVisible) {
-      const cdims = constraintDims(this.entities, this.constraints);
-      objs.push(...dimensionLineObjects(this.entities, this.plane, cdims.flatMap((d) => d.lines)));
+      this.cdims = constraintDims(this.entities, this.constraints);
+      objs.push(...dimensionLineObjects(this.entities, this.plane, this.cdims.flatMap((d) => d.lines)));
+    } else {
+      this.cdims = [];
     }
     if (derived.length) objs.push(...curveObjects(derived, this.plane, this.activeColor()));
     return objs;
@@ -1802,14 +1805,6 @@ export class SketchMode {
   }
 
   // --- interactive drag: grab a point, geometry follows, constraints hold ---
-  /** translate a whole entity by (dx, dy) in place */
-  private translateEntity(e: ResolvedEntity, dx: number, dy: number) {
-    if (e.type === "line") { e.x1 += dx; e.y1 += dy; e.x2 += dx; e.y2 += dy; }
-    else if (e.type === "arc") { e.x1 += dx; e.y1 += dy; e.x2 += dx; e.y2 += dy; e.mx += dx; e.my += dy; }
-    else if (e.type === "spline") { for (const q of e.points) { q.x += dx; q.y += dy; } }
-    else { e.x += dx; e.y += dy; } // rectangle / circle / point / text: center or anchor
-  }
-
   /** the moved entity's attachment points: positions where neighbors may coincide */
   private attachmentPoints(e: ResolvedEntity): THREE.Vector2[] {
     if (e.type === "line" || e.type === "arc") {
@@ -1826,12 +1821,13 @@ export class SketchMode {
   }
 
   /** mutators for OTHER entities' endpoints that coincide with `pts` — the same
-   *  position-based merge the solver does, so a chained neighbor's endpoint rides
-   *  along instead of silently detaching. Rectangles/circles are skipped (their
-   *  shape can't follow a single corner); arcs re-solve their through-point after. */
+   *  position-based merge the solver does (shared coincKey, so "rides along
+   *  during drag" and "merged solver point on release" agree exactly).
+   *  Rectangles/circles are skipped (their shape can't follow a single corner);
+   *  arcs re-solve their through-point after. */
   private stretchTargets(movedIdx: number, pts: THREE.Vector2[]): ((dx: number, dy: number) => void)[] {
-    const EPS = 1e-3;
-    const near = (x: number, y: number) => pts.some((q) => Math.abs(q.x - x) < EPS && Math.abs(q.y - y) < EPS);
+    const keys = new Set(pts.map((q) => coincKey(q.x, q.y)));
+    const near = (x: number, y: number) => keys.has(coincKey(x, y));
     const out: ((dx: number, dy: number) => void)[] = [];
     this.entities.forEach((e, i) => {
       if (i === movedIdx) return;

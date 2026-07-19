@@ -9,6 +9,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { circumcenter } from "./arc";
 import { rectCorners } from "./region";
+import { paramOnSeg } from "./geom2d";
 
 export type DimField = "width" | "height" | "diameter" | "length";
 type V = THREE.Vector2;
@@ -122,27 +123,36 @@ export function dimensionSegments(ents: ResolvedEntity[]): [V, V][] {
 
 // --- constraint-based dimensions (p2pDistance / p2lDistance) -----------------
 
-/** resolve a dimension pick (entity + p index, see the SketchConstraint docs)
- *  to its current 2D position */
-function refPoint(e: ResolvedEntity, p: number): V | null {
-  if (e.type === "line") return p === 0 ? v(e.x1, e.y1) : v(e.x2, e.y2);
+/** THE enumeration of an entity's dimensionable reference points, with each
+ *  one's pick index `p` (the SketchConstraint p2p/p2l semantics: 0/1 =
+ *  endpoints, 0..3 = rectangle corners, 2 = arc center; circles and sketch
+ *  points expose their single point at 0). The picker, the label renderer, and
+ *  the docs in types.ts all hang off this one list. */
+export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
+  if (e.type === "line") return [{ p: 0, pos: v(e.x1, e.y1) }, { p: 1, pos: v(e.x2, e.y2) }];
   if (e.type === "arc") {
-    if (p === 2) {
-      const cc = circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my });
-      return cc ? v(cc.x, cc.y) : null;
-    }
-    return p === 0 ? v(e.x1, e.y1) : v(e.x2, e.y2);
+    const out = [{ p: 0, pos: v(e.x1, e.y1) }, { p: 1, pos: v(e.x2, e.y2) }];
+    const cc = circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my });
+    if (cc) out.push({ p: 2, pos: v(cc.x, cc.y) });
+    return out;
   }
-  if (e.type === "circle" || e.type === "point") return v(e.x, e.y);
+  if (e.type === "circle" || e.type === "point") return [{ p: 0, pos: v(e.x, e.y) }];
   if (e.type === "rectangle") {
-    const c = rectCorners(e.x, e.y, e.width, e.height)[p];
-    return c ? v(c.x, c.y) : null;
+    return rectCorners(e.x, e.y, e.width, e.height).map((q, k) => ({ p: k, pos: v(q.x, q.y) }));
   }
   if (e.type === "spline") {
-    const q = p === 0 ? e.points[0] : e.points[e.points.length - 1];
-    return q ? v(q.x, q.y) : null;
+    const out: { p: number; pos: V }[] = [];
+    const a = e.points[0], b = e.points[e.points.length - 1];
+    if (a) out.push({ p: 0, pos: v(a.x, a.y) });
+    if (b && e.points.length > 1) out.push({ p: 1, pos: v(b.x, b.y) });
+    return out;
   }
-  return null;
+  return [];
+}
+
+/** resolve a dimension pick (entity + p index) to its current 2D position */
+function refPoint(e: ResolvedEntity, p: number): V | null {
+  return dimRefPoints(e).find((r) => r.p === p)?.pos ?? null;
 }
 
 export interface ConstraintDim {
@@ -158,27 +168,29 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
   const byId = new Map(ents.map((e) => [e.id, e]));
   const out: ConstraintDim[] = [];
   constraints.forEach((c, i) => {
+    // each branch yields the measured pair (a, b); the shared tail draws it
+    let a: V | null = null;
+    let b: V | null = null;
+    let value = 0;
     if (c.type === "p2pDistance") {
       const e1 = byId.get(c.e1), e2 = byId.get(c.e2);
-      const a = e1 ? refPoint(e1, c.p1) : null;
-      const b = e2 ? refPoint(e2, c.p2) : null;
-      if (!a || !b || a.distanceTo(b) < 1e-6) return;
-      const dir = b.clone().sub(a).normalize();
-      const lin = linear(a, b, v(-dir.y, dir.x), a.distanceTo(b));
-      out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: c.value, lines: lin.lines });
+      a = e1 ? refPoint(e1, c.p1) : null;
+      b = e2 ? refPoint(e2, c.p2) : null;
+      value = c.value;
     } else if (c.type === "p2lDistance") {
       const pe = byId.get(c.e), le = byId.get(c.line);
-      const a = pe ? refPoint(pe, c.p) : null;
-      if (!a || !le || le.type !== "line") return;
-      const dx = le.x2 - le.x1, dy = le.y2 - le.y1;
-      const l2 = dx * dx + dy * dy || 1;
-      const t = ((a.x - le.x1) * dx + (a.y - le.y1) * dy) / l2;
-      const f = v(le.x1 + t * dx, le.y1 + t * dy); // foot of the perpendicular
-      if (a.distanceTo(f) < 1e-6) return;
-      const dir = f.clone().sub(a).normalize();
-      const lin = linear(a, f, v(-dir.y, dir.x), a.distanceTo(f));
-      out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: c.value, lines: lin.lines });
-    }
+      a = pe ? refPoint(pe, c.p) : null;
+      if (a && le && le.type === "line") {
+        const A = v(le.x1, le.y1), B = v(le.x2, le.y2);
+        const t = paramOnSeg(A, B, a);
+        b = v(le.x1 + t * (le.x2 - le.x1), le.y1 + t * (le.y2 - le.y1)); // foot of the perpendicular
+      }
+      value = c.value;
+    } else return;
+    if (!a || !b || a.distanceTo(b) < 1e-6) return;
+    const dir = b.clone().sub(a).normalize();
+    const lin = linear(a, b, v(-dir.y, dir.x), a.distanceTo(b));
+    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: value, lines: lin.lines });
   });
   return out;
 }
