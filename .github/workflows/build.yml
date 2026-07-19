@@ -137,6 +137,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy's strip pass chokes on the bundled sidecar runtime's
+          # OCCT/CPython shared objects (AppImage leg: "failed to run linuxdeploy").
+          # NO_STRIP is linuxdeploy's own escape hatch; harmless on the other OSes.
+          NO_STRIP: true
           # UNSIGNED builds for now (Apple Developer Program deferred — no budget).
           # macOS ships unsigned (open via right-click -> Open); Windows unsigned runs
           # with a SmartScreen warning. To SIGN later: add the APPLE_* / Windows
@@ -145,7 +149,8 @@ jobs:
         with:
           # bundle-only config ships sidecar-runtime/ as a resource. (No macOS signing
           # block here, so tauri produces an unsigned .app without attempting codesign.)
-          args: --config src-tauri/tauri.bundle.conf.json
+          # --verbose so bundler sub-tool failures (linuxdeploy) show their real output.
+          args: --verbose --config src-tauri/tauri.bundle.conf.json
 
       # KNOWN FOLLOW-UP (macOS notarization): notarization is NOT recursive, so every
       # embedded Mach-O under sidecar-runtime (libpython + the cadquery-ocp .dylibs)
