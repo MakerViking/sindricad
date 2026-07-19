@@ -20,12 +20,26 @@ from OCP.TopAbs import TopAbs_Orientation
 from OCP.TopLoc import TopLoc_Location
 
 
-def tessellate(shape, tolerance=0.1, angular_tolerance=0.5):
+def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, density_cap=None,
+                diag=None, normals_out=None):
     """Return (positions, indices, face_ids).
 
     positions : flat [x,y,z, ...] floats
     indices   : flat [i,j,k, ...] triangle index triples
     face_ids  : [f0, f1, ...] one B-rep face id per triangle (len = len(indices)//3)
+
+    textures    : optional [(spec, [Face,...]), ...] from
+                  texture.resolve_body_textures() — targeted faces get
+                  texture.displace_face()'s denser, displaced chunk instead of
+                  the plain one below (same faceId tags, so faceTriangles
+                  grouping needs no changes for a subdivided textured face).
+    density_cap : per-face triangle budget passed through to displace_face
+                  (None = texture.py's own export-tier safety cap).
+    normals_out : optional list — receives (vertex_base, flat_normals) chunks
+                  for each TEXTURED face's analytic displaced normals, so the
+                  viewport payload can shade coarse displacement smoothly
+                  (untextured faces are absent: the caller derives theirs from
+                  the triangles, same as the client always did).
     """
     # Mesh the entire solid at once, in parallel (isInParallel=True). This fills an
     # incremental triangulation onto every TopoDS_Face, which we read back below.
@@ -35,11 +49,42 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5):
     indices = []
     face_ids = []
 
+    face_specs = {}
+    if textures:
+        from builder import _face_fp
+        # later texture feature wins a face both target (timeline order = most
+        # recent edit takes effect, same intuition as any other re-applied op)
+        for spec, faces in textures:
+            for f in faces:
+                face_specs[_face_fp(f)] = spec
+
     for fid, face in enumerate(shape.faces()):
         loc = TopLoc_Location()
         tri = BRep_Tool.Triangulation_s(face.wrapped, loc)
         if tri is None:
             continue  # degenerate face with no triangulation — skip it
+
+        if face_specs:
+            from builder import _face_fp
+            spec = face_specs.get(_face_fp(face))
+            if spec is not None:
+                from texture import displace_face
+                try:
+                    local_pos, local_idx, local_norm = displace_face(
+                        face, tri, loc, loc.IsIdentity(), spec, density_cap,
+                        diag=diag, feature_id=spec.get("feature_id"),
+                    )
+                    base = len(positions) // 3
+                    positions.extend(local_pos)
+                    indices.extend(i + base for i in local_idx)
+                    face_ids.extend([fid] * (len(local_idx) // 3))
+                    if normals_out is not None:
+                        normals_out.append((base, local_norm))
+                    continue
+                except Exception:
+                    pass  # never crash a rebuild on a texture bug — fall through
+                    # to the plain untextured path below for this face
+
         trsf = loc.Transformation()  # face-local -> world placement
         base = len(positions) // 3
         # batched readback: bind lookups once and extend in one call per face —
@@ -74,7 +119,7 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5):
     return positions, indices, face_ids
 
 
-def tessellate_bodies(bodies, tolerance=0.1):
+def tessellate_bodies(bodies, tolerance=0.1, density_cap=None, diag=None):
     """Tessellate a list of bodies into ONE merged render payload, plus per-body
     metadata. Face ids stay globally unique across bodies (running offset) so the
     frontend can both highlight a clicked CAD face and map it back to its body.
@@ -89,11 +134,13 @@ def tessellate_bodies(bodies, tolerance=0.1):
     meta = []
     face_base = 0
     from builder import _face_fp  # same fingerprint the provenance owner-map uses
+    import texture as _texture
     for b in bodies:
         sh = b.get("shape")
         if sh is None:
             continue
-        pos, idx, fids = tessellate(sh, tolerance)
+        textures = _texture.resolve_body_textures(b, diag) if b.get("_textures") else None
+        pos, idx, fids = tessellate(sh, tolerance, textures=textures, density_cap=density_cap, diag=diag)
         vbase = len(positions) // 3
         positions.extend(pos)
         indices.extend(i + vbase for i in idx)
@@ -109,6 +156,25 @@ def tessellate_bodies(bodies, tolerance=0.1):
         )
         face_base += n_faces
     return positions, indices, face_ids, meta
+
+
+def vertex_normals(positions, indices):
+    """Area-weighted per-vertex normals for a whole mesh (flat lists in/out) —
+    the same accumulation three.js's computeVertexNormals does, run server-side
+    so a textured body's payload can carry normals for ALL its vertices: plain
+    faces get these, textured chunks are overwritten with texture.py's analytic
+    displaced normals (smooth shading at coarse displacement density)."""
+    import numpy as np
+
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    I = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    fn = np.cross(P[I[:, 1]] - P[I[:, 0]], P[I[:, 2]] - P[I[:, 0]])  # length ∝ area
+    N = np.zeros_like(P)
+    for k in range(3):
+        np.add.at(N, I[:, k], fn)
+    ln = np.linalg.norm(N, axis=1)
+    ln[ln < 1e-12] = 1.0
+    return (N / ln[:, None]).ravel().tolist()
 
 
 def edge_polylines(shape, n=24):

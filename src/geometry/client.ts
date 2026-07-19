@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, ExportFormat, Feature, ImportFormat, ImportReply, RebuildReply, RebuildResult } from "../types";
+import type { CadDocument, ExportFormat, F32Wire, Feature, ImportFormat, ImportReply, RebuildReply, RebuildResult, U32Wire } from "../types";
 
 // The sidecar's wire-level reply envelope (see sidecar/server.py's _ok/_err):
 // every call resolves to one of these two shapes; `result`'s type is per-op,
@@ -103,9 +103,12 @@ interface WireBodyFull {
   name: string;
   etag: string;
   unchanged?: false;
-  positions: number[];
-  indices: number[];
-  faceIds: number[];
+  positions: F32Wire;
+  indices: U32Wire;
+  faceIds: U32Wire;
+  // present only for a body with texture features: analytic displaced normals
+  // (plain faces carry the same accumulation the client would compute)
+  normals?: F32Wire;
   faceOwners?: (string | null)[];
   edges?: { points: [number, number, number][]; body?: string }[];
   faceCount?: number;
@@ -221,6 +224,7 @@ export class Geometry implements GeometryBackend {
 
   private connect() {
     const ws = new WebSocket(this.wsUrl());
+    ws.binaryType = "arraybuffer"; // binary mesh frames (default "blob" would need async reads)
     this.ws = ws;
 
     ws.onopen = () => {
@@ -231,6 +235,10 @@ export class Geometry implements GeometryBackend {
     };
 
     ws.onmessage = (e) => {
+      if (typeof e.data !== "string") {
+        this.handleBinaryReply(e.data as ArrayBuffer);
+        return;
+      }
       let msg: any;
       try {
         msg = JSON.parse(e.data);
@@ -284,6 +292,52 @@ export class Geometry implements GeometryBackend {
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10_000);
   }
 
+  /** Decode a binary mesh reply (see server.py's _encode_binary_reply for the
+   *  layout: [u32 LE header_len][JSON header][pad to 4][buf0][buf1]...). The
+   *  header is the normal {id, ok, result} envelope with each big mesh array
+   *  replaced by {"$buf": i} into result.$buffers ({dtype, len} in wire
+   *  order); buffers become TypedArray VIEWS over this frame's ArrayBuffer —
+   *  zero copy, no JSON number parsing. Resolves the same pending map the
+   *  JSON path does; a malformed frame is logged like a JSON parse failure. */
+  private handleBinaryReply(buf: ArrayBuffer) {
+    try {
+      const dv = new DataView(buf);
+      const headerLen = dv.getUint32(0, true);
+      const header = JSON.parse(
+        new TextDecoder().decode(new Uint8Array(buf, 4, headerLen)),
+      ) as { id: string; ok: boolean; result: WireRebuildResult & { $buffers?: { dtype: string; len: number }[] } };
+      let offset = 4 + headerLen + ((4 - (headerLen % 4)) % 4);
+      const views: (Float32Array | Uint32Array)[] = [];
+      for (const meta of header.result.$buffers ?? []) {
+        views.push(
+          meta.dtype === "f32"
+            ? new Float32Array(buf, offset, meta.len)
+            : new Uint32Array(buf, offset, meta.len),
+        );
+        offset += meta.len * 4;
+      }
+      const resolveBuf = (v: unknown) => views[(v as { $buf: number }).$buf]!;
+      for (const b of header.result.bodies ?? []) {
+        if (b.unchanged) continue;
+        const fb = b as WireBodyFull;
+        fb.positions = resolveBuf(fb.positions) as Float32Array;
+        if (fb.normals !== undefined) fb.normals = resolveBuf(fb.normals) as Float32Array;
+        fb.indices = resolveBuf(fb.indices) as Uint32Array;
+        fb.faceIds = resolveBuf(fb.faceIds) as Uint32Array;
+      }
+      delete header.result.$buffers;
+      const resolve = this.pending.get(header.id);
+      if (resolve) {
+        this.pending.delete(header.id);
+        resolve(header as RawReply<unknown>);
+      }
+    } catch (err) {
+      // as unrecoverable as a bad JSON frame: we may not even have a valid id
+      // to resolve — log and let onclose/reconnect settle the pending call
+      console.error("[geometry] bad binary frame from sidecar:", err);
+    }
+  }
+
   private call<T>(op: string, extra: object): Promise<RawReply<T>> {
     const id = crypto.randomUUID();
     const raw = JSON.stringify({ id, op, ...extra });
@@ -324,13 +378,13 @@ export class Geometry implements GeometryBackend {
     }
     if (!payload) payload = { document: doc, revision: this.revision + 1 };
 
-    let msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance, known });
+    let msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance, known, binary: true });
     if (msg.ok && msg.result?.resync) {
       // worker respawned or lost sync — one full resend recovers everything
       this.lastSent = null;
       this.bodyMesh.clear();
       payload = { document: doc, revision: this.revision + 1 };
-      msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance });
+      msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance, binary: true });
     }
     if (msg.ok && !msg.result?.resync) {
       this.revision = payload.revision;
@@ -342,7 +396,7 @@ export class Geometry implements GeometryBackend {
         // we claimed an etag the cache no longer backs (e.g. page kept state
         // across a worker respawn race) — resync with a full request
         this.bodyMesh.clear();
-        msg = await this.call<WireRebuildResult>("rebuild", { document: doc, revision: ++this.revision, tolerance });
+        msg = await this.call<WireRebuildResult>("rebuild", { document: doc, revision: ++this.revision, tolerance, binary: true });
         if (msg.ok && msg.result?.protocol === 2) assembled = this.assemble(msg.result);
       }
       if (msg.ok && assembled !== null) return { ok: true, result: assembled };
@@ -360,7 +414,7 @@ export class Geometry implements GeometryBackend {
   async computeAll(doc: CadDocument, tolerance = 0.1): Promise<RebuildReply> {
     this.bodyMesh.clear();
     this.lastSent = null;
-    const msg = await this.call<WireRebuildResult>("computeAll", { document: doc, revision: ++this.revision, tolerance });
+    const msg = await this.call<WireRebuildResult>("computeAll", { document: doc, revision: ++this.revision, tolerance, binary: true });
     if (msg.ok && msg.result?.protocol === 2) {
       const assembled = this.assemble(msg.result);
       if (assembled !== null) return { ok: true, result: assembled };
@@ -395,20 +449,41 @@ export class Geometry implements GeometryBackend {
     }
     for (const id of this.bodyMesh.keys()) if (!live.has(id)) this.bodyMesh.delete(id);
 
-    const positions: number[] = [];
-    const indices: number[] = [];
-    const faceIds: number[] = [];
+    // second pass: preallocated typed arrays (total sizes are known), filled
+    // with .set() for the float arrays — accepts number[] AND typed-array
+    // sources alike, so mixed cached-stub/JSON-fallback bodies need no branch.
+    // Replaces the old per-element push loops (~1M elements on big documents).
+    let totalVerts3 = 0;
+    let totalTris3 = 0;
+    for (const p of payloads) {
+      totalVerts3 += p.positions.length;
+      totalTris3 += p.indices.length;
+    }
+    // sidecar sends explicit normals only for textured bodies; bodies without
+    // keep their zero-initialized slice, and render.ts falls back to
+    // computeVertexNormals for an all-zero slice.
+    const anyNormals = payloads.some((p) => p.normals !== undefined);
+    const positions = new Float32Array(totalVerts3);
+    const normals = anyNormals ? new Float32Array(totalVerts3) : undefined;
+    const indices = new Uint32Array(totalTris3);
+    const faceIds = new Uint32Array(totalTris3);
     const edges: RebuildEdge[] = [];
     const meta: RebuildBody[] = [];
     let faceBase = 0;
     let ek = 0;
+    let vOff = 0;
+    let iOff = 0;
     for (const p of payloads) {
-      const vbase = positions.length / 3;
-      // explicit loops: Array.push(...huge) overflows the stack. for-of yields the
-      // element as a plain number (index access would be number|undefined here).
-      for (const val of p.positions) positions.push(val);
-      for (const val of p.indices) indices.push(val + vbase);
-      for (const val of p.faceIds) faceIds.push(val + faceBase);
+      const vbase = vOff / 3;
+      positions.set(p.positions, vOff);
+      if (normals && p.normals !== undefined) normals.set(p.normals, vOff);
+      vOff += p.positions.length;
+      // indices/faceIds need per-element offsets — indexed reads work on both
+      // union members, and writes into a preallocated Uint32Array are cheap
+      const pi = p.indices, pf = p.faceIds;
+      for (let k = 0; k < pi.length; k++) indices[iOff + k] = (pi[k] as number) + vbase;
+      for (let k = 0; k < pf.length; k++) faceIds[iOff + k] = (pf[k] as number) + faceBase;
+      iOff += pi.length;
       for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, ...(e.body !== undefined ? { body: e.body } : {}) });
       meta.push({
         id: p.id, name: p.name, faceStart: faceBase,
@@ -419,7 +494,7 @@ export class Geometry implements GeometryBackend {
       faceBase += p.faceCount ?? 0;
     }
     const out: RebuildResult = {
-      mesh: { positions, indices, faceIds },
+      mesh: { positions, indices, faceIds, ...(normals ? { normals } : {}) },
       edges,
       // the wire can supply `bbox: null` when nothing has built yet (no
       // bodies); preserved as-is — RebuildResult models bbox as always-present.

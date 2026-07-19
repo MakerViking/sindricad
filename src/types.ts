@@ -213,7 +213,27 @@ export type Feature =
   // Remove bodies by id (mainstream MCAD "Remove"). Runs at its point in the timeline and
   // drops the listed bodies from the model — the way to delete a body from the
   // browser. Body ids are positional, so this is appended at the end.
-  | { id: string; type: "removeBody"; bodies: string[] };
+  | { id: string; type: "removeBody"; bodies: string[] }
+  // Printed surface texture: real mesh displacement (not appearance-only), computed
+  // by the sidecar at tessellation time. `faces` absent = whole body (then `body`
+  // names the target, required); present = the operated face set (mirrors
+  // shell/draft's `faces`, not press-pull's singular `face`).
+  | {
+      id: string;
+      type: "texture";
+      kind: "knurl" | "hex" | "waves" | "ribs" | "voronoi" | "noise" | "image";
+      faces?: Selector | Selector[];
+      body?: string; // required when faces is absent; optional disambiguator otherwise
+      depth: Num; // mm, displacement magnitude
+      scale: Num; // mm, pattern period / cell size
+      angle?: Num; // degrees — orientation (waves/ribs vertical vs diagonal; knurl/hex lattice rotation)
+      offset?: Num; // mm, phase shift (advanced)
+      sharpness?: Num; // 0..1, edge crispness (knurl/hex/waves/ribs)
+      direction?: "out" | "in" | "both"; // procedural kinds: emboss/deboss/symmetric (default "out")
+      seed?: Num; // voronoi/noise
+      invert?: boolean; // image kind: emboss vs deboss sample reading
+      imagePath?: string; // image kind: absolute path, sidecar reads by path (like import's brep flow)
+    };
 
 export type FeatureType = Feature["type"];
 
@@ -276,8 +296,14 @@ export interface ResolveDiag {
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
 }
 
+// Mesh wire arrays arrive either as plain JSON number arrays (text replies,
+// the Rust in-process backend) or as typed-array views over a binary WS frame
+// — every consumer only indexes / reads .length, valid on both members.
+export type F32Wire = number[] | Float32Array;
+export type U32Wire = number[] | Uint32Array;
+
 export interface RebuildResult {
-  mesh: { positions: number[]; indices: number[]; faceIds: number[] };
+  mesh: { positions: F32Wire; indices: U32Wire; faceIds: U32Wire; normals?: F32Wire };
   edges: { id: string; points: [number, number, number][]; body?: string }[];
   bbox: { min: Vec3; max: Vec3 };
   // per-body metadata: which faceId range each body occupies in the merged mesh

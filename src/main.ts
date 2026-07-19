@@ -40,6 +40,7 @@ import { MoveTool } from "./features/moveTool";
 import { MeasureTool } from "./features/measureTool";
 import { SectionTool } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
+import { TextureTool } from "./features/textureTool";
 import { createFeatureStarters } from "./features/featureStarters";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
@@ -98,6 +99,7 @@ const moveTool = new MoveTool(viewport, store);
 const measure = new MeasureTool(viewport);
 const section = new SectionTool(viewport);
 const planeOffset = new PlaneOffsetTool(viewport);
+const textureTool = new TextureTool(viewport, store);
 
 // Debug handles for console + headless frontend-logic tests. Gated to DEV so
 // they're absent from production bundles — a post-XSS attacker shouldn't be
@@ -112,6 +114,7 @@ if (import.meta.env.DEV) {
   (window as any).extrude = extrude;
   (window as any).edgeFeature = edgeFeature;
   (window as any).pressPull = pressPull;
+  (window as any).textureTool = textureTool;
   (window as any).solveSketch = solveSketch;
 }
 void initSolver(); // warm up the constraint solver WASM
@@ -329,7 +332,7 @@ function deleteSelectedFace(): boolean {
 // Guard predicates checked at the top of every start* tool + interactive helper:
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || measure.active || section.active || planePick || isChoiceOpen();
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || planePick || isChoiceOpen();
 }
 // True when the current rebuild produced a solid body (something to modify).
 function hasBody(): boolean {
@@ -362,6 +365,7 @@ const starters = createFeatureStarters({
   pressPull,
   moveTool,
   planeOffset,
+  texture: textureTool,
   canvas,
   toolBusy,
   hasBody,
@@ -769,6 +773,9 @@ function editFeature(id: string) {
     case "extrude":
       if (!extrude.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
       break;
+    case "texture":
+      if (!textureTool.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      break;
     default:
       break; // inspector focus (selectFeature above) is the edit surface for the rest
   }
@@ -895,6 +902,9 @@ function handleAction(action: string) {
       break;
     case "draft":
       starters.startDraft();
+      break;
+    case "texture":
+      starters.startTexture();
       break;
     case "pattern":
       void starters.startPattern();

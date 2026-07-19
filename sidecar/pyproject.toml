@@ -6,6 +6,9 @@ requires-python = ">=3.10,<3.13"
 dependencies = [
     "build123d>=0.9",
     "websockets>=13",
+    "numpy>=2",
+    "scipy>=1.15",
+    "pillow>=10",
 ]
 
 [tool.uv]

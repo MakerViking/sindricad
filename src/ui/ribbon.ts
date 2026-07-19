@@ -81,6 +81,7 @@ export const MODEL: Group[] = [
           { action: "draft", label: "Draft", iconName: "draft" },
         ],
       },
+      { action: "texture", label: "Texture", iconName: "texture" },
     ],
   },
   {

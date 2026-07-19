@@ -49,3 +49,4 @@ credentials.*
 .idea/
 *.swp
 .fable/
+.claude/worktrees/

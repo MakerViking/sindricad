@@ -32,6 +32,7 @@ const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>
   cleanUp: [["tolerance", "Tolerance", "length"]],
   scale: [["factor", "Factor", "count"]],
   move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
+  texture: [["depth", "Depth", "length"], ["scale", "Scale", "length"], ["angle", "Angle", "angle"], ["offset", "Offset", "length"], ["sharpness", "Sharpness", "count"], ["seed", "Seed", "count"]],
 };
 
 /** Whether selecting this feature type actually opens an editor (numeric fields

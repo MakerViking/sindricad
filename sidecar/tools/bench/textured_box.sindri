@@ -1,0 +1,20 @@
+{
+  "parameters": {},
+  "features": [
+    {
+      "id": "s1",
+      "type": "sketch",
+      "plane": "XY",
+      "entities": [{"type": "rectangle", "width": 40, "height": 40, "x": 0, "y": 0}]
+    },
+    {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new"},
+    {
+      "id": "tex1",
+      "type": "texture",
+      "kind": "knurl",
+      "faces": {"by": "all"},
+      "depth": 0.4,
+      "scale": 2.0
+    }
+  ]
+}

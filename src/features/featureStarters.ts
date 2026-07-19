@@ -13,6 +13,7 @@ import type { EdgeFeatureTool } from "./edgeFeatureTool";
 import type { PressPullTool } from "./pressPullTool";
 import type { MoveTool } from "./moveTool";
 import type { PlaneOffsetTool } from "./planeOffsetTool";
+import type { TextureTool } from "./textureTool";
 import { choose } from "../ui/choice";
 import { setPrompt } from "../ui/prompt";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
@@ -27,6 +28,7 @@ export interface FeatureStartersDeps {
   pressPull: PressPullTool;
   moveTool: MoveTool;
   planeOffset: PlaneOffsetTool;
+  texture: TextureTool;
   canvas: HTMLCanvasElement;
   toolBusy: () => boolean;
   hasBody: () => boolean;
@@ -49,6 +51,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     pressPull,
     moveTool,
     planeOffset,
+    texture,
     canvas,
     toolBusy,
     hasBody,
@@ -526,6 +529,20 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     });
   }
 
+  // Texture: printed surface texture (knurl/hex/waves/ribs/voronoi/noise/image
+  // heightmap) over selected faces or a whole body. No pick-then-drag gesture
+  // like Shell/Draft — it rides the ambient selection with a docked panel
+  // (click/Ctrl-click faces, or toggle Whole Body in the panel), so it just
+  // hands off to the tool directly.
+  function startTexture() {
+    if (toolBusy()) return;
+    if (!hasBody()) {
+      setStatus("Texture: create or import a body first", "");
+      return;
+    }
+    texture.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+  }
+
   // Pattern: replicate the active body — rectangular grid or circular array. Edit
   // counts / spacing / angle in the inspector.
   async function startPattern() {
@@ -598,6 +615,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     startPrimitive,
     startShell,
     startDraft,
+    startTexture,
     startPattern,
     startExtrude,
   };

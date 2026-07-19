@@ -39,8 +39,13 @@ def doc_sha(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def single_run(doc_path):
-    """One cold rebuild in this (fresh) process; time ONLY rebuild(), not imports."""
+def single_run(doc_path, tessellate_flag=False):
+    """One cold rebuild in this (fresh) process; time ONLY rebuild(), not imports.
+
+    `tessellate_flag` additionally times tessellate() (with any body textures
+    resolved) after the rebuild — rebuild() itself only validates/stores a
+    texture spec, all the displacement cost lands in tessellate(), so a doc
+    with texture features is invisible to this benchmark without it."""
     os.environ["SINDRI_DISK_CACHE"] = "0"
     sys.path.insert(0, SIDECAR)
     import builder
@@ -54,7 +59,7 @@ def single_run(doc_path):
         volume = float(part.volume)
     except Exception:
         volume = 0.0
-    return {
+    out = {
         "ms": ms,
         "bodies": len(bodies),
         "faces": len(part.faces()) if part is not None else 0,
@@ -63,6 +68,21 @@ def single_run(doc_path):
         "volume": volume,
         "owners_sizes": sorted(len(b.get("owners") or {}) for b in bodies),
     }
+    if tessellate_flag:
+        from tessellate import tessellate
+        from texture import resolve_body_textures
+
+        t1 = time.perf_counter()
+        tris = 0
+        for b in bodies:
+            if b.get("shape") is None:
+                continue
+            textures = resolve_body_textures(b) if b.get("_textures") else None
+            _pos, idx, _fids = tessellate(b["shape"], 0.1, textures=textures)
+            tris += len(idx) // 3
+        out["tessellate_ms"] = (time.perf_counter() - t1) * 1000.0
+        out["tris"] = tris
+    return out
 
 
 _INV_KEYS = ("bodies", "faces", "errors", "failing_ids", "owners_sizes")
@@ -77,6 +97,8 @@ def main():
     ap.add_argument("--doc", required=True)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--single", action="store_true", help="internal: one run, print metrics")
+    ap.add_argument("--tessellate", action="store_true",
+                     help="also time tessellate() per body (needed to see texture-displacement cost)")
     ap.add_argument("--capture-baseline", action="store_true")
     ap.add_argument("--baseline", default=DEFAULT_BASELINE)
     ap.add_argument("--vol-tol", type=float, default=1e-4)   # 0.01%
@@ -86,15 +108,15 @@ def main():
     doc_path = os.path.abspath(args.doc)
 
     if args.single:
-        print(json.dumps(single_run(doc_path)))
+        print(json.dumps(single_run(doc_path, tessellate_flag=args.tessellate)))
         return 0
 
     runs = []
     for i in range(args.runs):
-        r = subprocess.run(
-            [sys.executable, os.path.abspath(__file__), "--single", "--doc", doc_path],
-            capture_output=True, text=True,
-        )
+        cmd = [sys.executable, os.path.abspath(__file__), "--single", "--doc", doc_path]
+        if args.tessellate:
+            cmd.append("--tessellate")
+        r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0 or not r.stdout.strip():
             print(f"run {i} crashed (exit {r.returncode}): {r.stderr[-400:]}", file=sys.stderr)
             return 2
@@ -115,6 +137,9 @@ def main():
         "errors": inv0["errors"], "volume": round(volume, 4),
         "owners_sizes": inv0["owners_sizes"], "runs_consistent": runs_consistent,
     }
+    if args.tessellate:
+        out["tessellate_p50_ms"] = round(statistics.median(x["tessellate_ms"] for x in runs), 1)
+        out["tris"] = runs[0]["tris"]
 
     if args.capture_baseline:
         base = {"doc_sha": sha, "volume": volume, "p50_ms_at_capture": round(p50, 1), **inv0}

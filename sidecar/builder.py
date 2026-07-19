@@ -96,6 +96,7 @@ from geom_select import (
     POS_DRIFT,
     REL_DRIFT,
 )
+import texture
 
 PLANES = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
@@ -1416,6 +1417,28 @@ def _handle_draft(f, ctx):
     act["shape"] = _draft(act["shape"], faces, ctx.val(f["angle"]), f.get("axis", "Z"))
 
 
+def _handle_texture(f, ctx):
+    # Two-phase, like every other selector feature but lazier: validate NOW
+    # (so a bad kind/param/image path shows red on the timeline immediately)
+    # against the CURRENT shape via a THROWAWAY resolve, but never touch
+    # act["shape"] — the spec is stored raw and re-resolved once, lazily,
+    # against the FINAL shape at tessellation/export time (texture.py's
+    # resolve_body_textures), so it survives downstream topology changes the
+    # same way every other lossy-tolerant selector already does.
+    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Texture")
+    if act is None:
+        raise ValueError("Texture: the target body no longer exists")
+    sel = f.get("faces") or {"by": "all"}
+    found = texture._resolve_texture_faces(act["shape"], sel)
+    if not found:
+        raise ValueError("no face found for texture")
+    spec = texture.validate_texture_spec(f)
+    # REBIND, never mutate in place: body dicts are shallow-copied by
+    # _snapshot() (dict(b)), so appending to an EXISTING list would corrupt
+    # any earlier snapshot's view of "_textures" through the shared reference.
+    act["_textures"] = (act.get("_textures") or []) + [spec]
+
+
 def _handle_pattern_rect(f, ctx):
     act = ctx.require_active("Pattern")
     act["shape"] = _pattern_rect(
@@ -1501,6 +1524,7 @@ _FEATURE_HANDLERS = {
     "sphere": _handle_sphere,
     "shell": _handle_shell,
     "draft": _handle_draft,
+    "texture": _handle_texture,
     "patternRect": _handle_pattern_rect,
     "patternCircular": _handle_pattern_circular,
     "simplifyMesh": _handle_simplify_mesh,
@@ -1722,7 +1746,8 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             # geometric selectors and delete chips a later join re-absorbs
             sh = _drop_debris(sh)
         out_bodies.append({"id": b["id"], "name": b["name"], "shape": sh,
-                           "owners": b.get("_owners") or {}})
+                           "owners": b.get("_owners") or {},
+                           "_textures": b.get("_textures")})
 
     shapes = [b["shape"] for b in out_bodies if b["shape"] is not None]
     if not shapes:

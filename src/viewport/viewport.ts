@@ -651,6 +651,34 @@ export class Viewport {
     this.requestRender();
   }
 
+  /** Paint these faces as selected (used to pre-highlight a texture feature's
+   *  saved member faces when re-opening it for editing). */
+  selectFaces(faceIds: number[]) {
+    if (!this.highlighter) return;
+    const already = new Set(this.highlighter.getSelectedFaces());
+    for (const f of faceIds) if (!already.has(f)) this.highlighter.toggleSelectFace(f);
+    this.requestRender();
+  }
+
+  /** Find the faceId whose centroid is nearest `point` (world units, model-scaled
+   *  tolerance) — the rebuild-stable way to re-locate a face a saved `by:"nearest"`
+   *  selector refers to (mirrors edgeLineByMid for faces instead of edges), so a
+   *  texture feature's saved member faces can be re-highlighted on edit-reopen. */
+  faceIdNear(point: [number, number, number]): number | null {
+    if (!this.model) return null;
+    const target = new THREE.Vector3(point[0], point[1], point[2]);
+    let best: number | null = null;
+    let bestDist = Infinity;
+    for (const body of this.model.bodies) {
+      for (const faceId of body.faceTriangles.keys()) {
+        const d = this.faceCentroidWorld(faceId).distanceTo(target);
+        if (d < bestDist) { bestDist = d; best = faceId; }
+      }
+    }
+    const tol = midMatchTol(this.model.box.getSize(this.projScratch).length());
+    return best != null && bestDist <= tol ? best : null;
+  }
+
   /** Paint the edges nearest these midpoints red (fillet/chamfer failures).
    *  Replaces the previous error set; pass [] to clear. Re-apply after each
    *  rebuild (setModel rebuilds the highlighter, wiping paint by design). */

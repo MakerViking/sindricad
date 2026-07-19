@@ -29,4 +29,5 @@ export const FEATURE_META: Record<FeatureType, { glyph: string; label: string }>
   scale: { glyph: "⤢", label: "Scale" },
   move: { glyph: "✥", label: "Move" },
   removeBody: { glyph: "🗑", label: "Remove Body" },
+  texture: { glyph: "▦", label: "Texture" },
 };

@@ -119,6 +119,7 @@ export function buildBodyMesh(
   etag: string | undefined,
 ): BodyMesh {
   const { positions, indices, faceIds } = result.mesh;
+  const meshNormals = result.mesh.normals;
   const { faceStart, faceCount } = meta;
   const faceEnd = faceStart + faceCount;
 
@@ -127,6 +128,8 @@ export function buildBodyMesh(
   // number> pays hashing/boxing on 3 lookups per triangle.
   const remap = new Int32Array(positions.length / 3).fill(-1);
   const localPositions: number[] = [];
+  const localNormals: number[] = [];
+  let anyNormal = false; // an all-zero slice = "sidecar sent none for this body"
   const localIndices: number[] = [];
   const localFaceIds: number[] = [];
   const local = (gi: number): number => {
@@ -138,6 +141,11 @@ export function buildBodyMesh(
     if (x === undefined || y === undefined || z === undefined) return -1; // in range; unreachable
     li = localPositions.length / 3;
     localPositions.push(x, y, z);
+    if (meshNormals) {
+      const nx = meshNormals[base] ?? 0, ny = meshNormals[base + 1] ?? 0, nz = meshNormals[base + 2] ?? 0;
+      localNormals.push(nx, ny, nz);
+      if (nx !== 0 || ny !== 0 || nz !== 0) anyNormal = true;
+    }
     remap[gi] = li;
     return li;
   };
@@ -153,7 +161,11 @@ export function buildBodyMesh(
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(localPositions, 3));
   geo.setIndex(localIndices);
-  geo.computeVertexNormals();
+  // a textured body ships sidecar-computed normals (analytic on displaced
+  // faces — smooth shading at coarse displacement density); everything else
+  // keeps the usual client-side accumulation.
+  if (anyNormal) geo.setAttribute("normal", new THREE.Float32BufferAttribute(localNormals, 3));
+  else geo.computeVertexNormals();
 
   // per-vertex color baked to the base albedo; highlight recolors a face's
   // vertices without disturbing lighting (material.color is white).

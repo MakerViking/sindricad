@@ -22,18 +22,22 @@ on stdout once bound, which the Rust shell waits for before opening the webview.
 
 import asyncio
 import ctypes
+import hashlib
 import hmac
 import json
 import multiprocessing as mp
 import os
 import secrets
 import signal
+import struct
 import sys
 import threading
 import time
 import urllib.parse
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+
+import numpy as np
 
 import websockets
 
@@ -148,6 +152,15 @@ def _warmup():
 # (the fixed ~1.4 s/edit).
 _MESH_CACHE = {}
 
+# Textured-face triangle budgets. Viewport stays interactive while scrubbing
+# depth/scale; export gets much more headroom (per-face cap + a document-wide
+# hard cap + a printable-sweet-spot warning, both applied in _export_job /
+# _export_project_job below).
+VIEWPORT_DENSITY_CAP = 80_000
+EXPORT_DENSITY_CAP_PER_FACE = 200_000
+EXPORT_TRIANGLE_HARD_CAP = 10_000_000
+EXPORT_TRIANGLE_WARN = 500_000
+
 # Below this, a mesh's tessellate+build cost doesn't recoup a disk write. An
 # interactive param drag re-tessellates every tick with a brand-new content key
 # (guaranteed cache miss on write AND on the next tick's read) — writing every
@@ -201,22 +214,41 @@ def _body_payload(b, tolerance):
     RAM identity cache AND the disk mesh_key — is keyed on that EFFECTIVE value,
     never the raw request. Two bodies of different sizes (or one body whose bbox
     changed) must not share a cache slot keyed by a tolerance neither was actually
-    tessellated at."""
+    tessellated at.
+
+    A body's mesh also depends on its "_textures" spec list, which the shape
+    identity check CANNOT see (texture never mutates body["shape"] — see
+    texture.py's module docstring). Both the RAM identity check and the disk
+    mesh_key additionally key on a hash of that spec list, so scrubbing a
+    texture-only parameter (depth/scale/…) can't serve a stale pre-edit mesh."""
     import pickle
     import uuid as _uuid
 
     from tessellate import tessellate, edge_polylines_by_body
     from builder import _face_fp, on_feature_tick
+    from texture import resolve_body_textures
 
     bid, sh = b["id"], b.get("shape")
     requested = tolerance
+    if b.get("_textures"):
+        from texture import CODE_VERSION as _tex_ver
+        # code version rides in the key: a texture-algorithm update must not
+        # serve meshes displaced by the previous version from the disk cache
+        texture_key = "v%d:%s" % (_tex_ver, json.dumps(b.get("_textures"), sort_keys=True))
+    else:
+        texture_key = None
     ent = _MESH_CACHE.get(bid)
     # RAM hit BEFORE the bbox: _effective_tolerance is a pure function of
     # (shape, requested), so identical shape identity + identical request imply
     # an identical effective tolerance — an unchanged body (the common case
     # during an interactive drag of some OTHER body) skips the OCCT bbox walk
     # entirely instead of paying it on every tick.
-    if ent is not None and ent["shape"] is sh and ent["requested"] == requested:
+    if (
+        ent is not None
+        and ent["shape"] is sh
+        and ent["requested"] == requested
+        and ent.get("texture_key") == texture_key
+    ):
         return ent
     if sh is not None:
         tolerance = _effective_tolerance(sh, tolerance)
@@ -225,6 +257,8 @@ def _body_payload(b, tolerance):
     mk = b.get("meshKey")
     if mk:
         mesh_key = "%s-t%s" % (mk, tolerance)
+        if texture_key:
+            mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     payload = None
     if mesh_key:
         try:
@@ -236,7 +270,10 @@ def _body_payload(b, tolerance):
             payload = None
     if payload is None:
         t0 = time.monotonic()
-        pos, idx, fids = tessellate(sh, tolerance)
+        textures = resolve_body_textures(b) if b.get("_textures") else None
+        norm_chunks = [] if textures else None
+        pos, idx, fids = tessellate(sh, tolerance, textures=textures,
+                                    density_cap=VIEWPORT_DENSITY_CAP, normals_out=norm_chunks)
         owners_map = b.get("owners") or {}
         face_owners = [owners_map.get(_face_fp(face)) for face in sh.faces()]
         edges = edge_polylines_by_body([b])
@@ -247,6 +284,16 @@ def _body_payload(b, tolerance):
             "faceOwners": face_owners, "edges": edges,
             "faceCount": (max(fids) + 1) if fids else 0,
         }
+        if norm_chunks:
+            # a textured body ships explicit normals: plain faces get the same
+            # area-weighted accumulation the client would compute, textured
+            # chunks the analytic displaced normals — coarse displacement then
+            # SHADES smoothly instead of showing triangle-grain.
+            from tessellate import vertex_normals
+            norms = vertex_normals(pos, idx)
+            for vbase, chunk in norm_chunks:
+                norms[vbase * 3:vbase * 3 + len(chunk)] = chunk
+            payload["normals"] = norms
         build_ms = (time.monotonic() - t0) * 1000.0
         if mesh_key and build_ms >= _MESH_PERSIST_MIN_MS:
             try:
@@ -255,7 +302,7 @@ def _body_payload(b, tolerance):
             except Exception:
                 pass
     ent = {"shape": sh, "requested": requested, "tolerance": tolerance,
-           "etag": _uuid.uuid4().hex, "payload": payload}
+           "etag": _uuid.uuid4().hex, "payload": payload, "texture_key": texture_key}
     _MESH_CACHE[bid] = ent
     if on_feature_tick is not None:
         try:
@@ -430,11 +477,22 @@ def _compute_all_job(payload, tolerance):
 def _export_job(document, fmt, path, body=None, separate=False):
     """Worker: rebuild + export. Default exports the merged part to `path`; `body`
     (a body id) exports just that body; `separate` writes EACH body to its own
-    '<base>-<name>.<ext>'. Returns {"path"} (+ {"paths"} for separate) or {"error"}."""
+    '<base>-<name>.<ext>'. Returns {"path"} (+ {"paths"} for separate) or {"error"}.
+
+    Textured bodies can't go through build123d's BRep-native exporters.export()
+    (texture is mesh-only, applied at tessellation time — see texture.py), so an
+    STL/3MF target with a texture anywhere branches to tessellate()+mesh_writers
+    at export grade instead; a document with NO textures takes the exact same
+    export(...) calls as before, unchanged. STEP is BRep-only regardless —
+    texture never reaches it, so a textured body exported as STEP gets a
+    non-blocking warning instead of a silent drop."""
     import os
     import re
     from builder import rebuild_cached
     from exporters import export
+    from tessellate import tessellate
+    from texture import resolve_body_textures
+    import mesh_writers
 
     # rebuild_cached, not rebuild: export runs in the SAME long-lived worker as
     # edits, so a warm cache makes this ~0 s instead of a gratuitous full rebuild
@@ -452,11 +510,44 @@ def _export_job(document, fmt, path, body=None, separate=False):
     warnings = [
         {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
     ]
+    any_textured = any(b.get("_textures") for b in live)
+    if fmt == "step" and any_textured:
+        warnings.append({"message": "texture is not represented in STEP exports"})
 
     def _done(res):
         if warnings:
             res["warnings"] = warnings
         return res
+
+    def _mesh_export(target_bodies, p):
+        """Concatenate target_bodies into one merged, textured, export-grade mesh
+        and write it via mesh_writers. Raises past the triangle hard cap — a
+        document-wide safety net so a pathological scale/depth combo can't
+        allocate an unbounded mesh."""
+        positions, mindices = [], []
+        for b in target_bodies:
+            textures = resolve_body_textures(b) if b.get("_textures") else None
+            pos, idx, _fids = tessellate(
+                b["shape"], tolerance=0.02, angular_tolerance=0.3,
+                textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
+            )
+            vbase = len(positions) // 3
+            positions.extend(pos)
+            mindices.extend(i + vbase for i in idx)
+        ntri = len(mindices) // 3
+        if ntri > EXPORT_TRIANGLE_HARD_CAP:
+            raise ValueError(
+                f"textured export too dense ({ntri:,} triangles) — reduce texture scale or depth"
+            )
+        if ntri > EXPORT_TRIANGLE_WARN:
+            warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
+        if fmt == "stl":
+            mesh_writers.write_stl(positions, mindices, p)
+        elif fmt == "3mf":
+            mesh_writers.write_plain_3mf(positions, mindices, p)
+        else:
+            raise ValueError(f"texture is not supported for {fmt} export")
+        return p
 
     if separate:
         if not live:
@@ -477,7 +568,10 @@ def _export_job(document, fmt, path, body=None, separate=False):
                 cand, i = f"{name}_{i}", i + 1
             used.add(cand)
             p = f"{base}-{cand}{ext}"
-            export(b["shape"], fmt, p)
+            if b.get("_textures") and fmt in ("stl", "3mf"):
+                _mesh_export([b], p)
+            else:
+                export(b["shape"], fmt, p)
             written.append(p)
         return _done({"path": path, "paths": written})
 
@@ -485,8 +579,12 @@ def _export_job(document, fmt, path, body=None, separate=False):
         tgt = next((b for b in live if b["id"] == body), None)
         if tgt is None:
             return {"error": {"message": f"body '{body}' not found to export"}}
+        if tgt.get("_textures") and fmt in ("stl", "3mf"):
+            return _done({"path": _mesh_export([tgt], path)})
         return _done({"path": export(tgt["shape"], fmt, path)})
 
+    if any_textured and fmt in ("stl", "3mf"):
+        return _done({"path": _mesh_export(live, path)})
     return _done({"path": export(part, fmt, path)})
 
 
@@ -497,6 +595,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     from builder import rebuild_cached
     from project3mf import sanitize_inputs, write_project_3mf
     from tessellate import tessellate
+    from texture import resolve_body_textures
 
     part, errors, bodies = rebuild_cached(document)
     live = [b for b in bodies if b.get("shape") is not None]
@@ -511,8 +610,10 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     for b in live:
         # Export-grade tolerance — the viewport default (0.1) is visibly faceted
         # on a printed part.
+        textures = resolve_body_textures(b) if b.get("_textures") else None
         positions, indices, _face_ids = tessellate(
-            b["shape"], tolerance=0.02, angular_tolerance=0.3
+            b["shape"], tolerance=0.02, angular_tolerance=0.3,
+            textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
         )
         if not indices:
             continue  # degenerate body with no triangulation — skip, like exports do
@@ -651,6 +752,70 @@ def _reply_for(req_id, res):
     if "error" in res:
         return _err(req_id, res["error"]["message"], res["error"].get("feature_id"))
     return _ok(req_id, res)
+
+
+# Binary mesh reply (opt-in via `"binary": true` on rebuild/computeAll requests).
+# Wire layout, all integers little-endian:
+#   [u32 header_len][header_len bytes UTF-8 JSON header][pad to 4][buf0][buf1]...
+# The header is the normal {"id","ok","result"} envelope except each per-body
+# mesh array (positions/normals -> f32, indices/faceIds -> u32) is replaced by
+# {"$buf": i} referencing result.$buffers[i] = {"dtype","len"} (len = element
+# count) in on-wire order; the client computes offsets sequentially. Both
+# dtypes are 4 bytes/element, so after the single header pad every buffer is
+# 4-aligned for free — INVARIANT: adding a wider dtype requires per-buffer
+# padding. f32 is lossless vs today's end state (the client always builds
+# Float32BufferAttributes). Everything else (stubs, edges, faceOwners, bbox,
+# diagnostics) stays inline JSON in the header.
+_WIRE_F32 = np.dtype("<f4")
+_WIRE_U32 = np.dtype("<u4")
+
+
+def _encode_binary_reply(req_id, res):
+    """Encode a successful protocol-2 rebuild result as one binary frame.
+    Raises on anything unexpected — _reply_bytes falls back to the JSON text
+    reply, so an encode bug can never break a rebuild."""
+    buffers = []
+    buf_meta = []
+
+    def take(vals, dtype, tag):
+        arr = np.asarray(vals, dtype=dtype)
+        buffers.append(arr.tobytes())
+        buf_meta.append({"dtype": tag, "len": int(arr.size)})
+        return {"$buf": len(buf_meta) - 1}
+
+    bodies_out = []
+    for b in res.get("bodies", []):
+        if b.get("unchanged"):
+            bodies_out.append(b)
+            continue
+        nb = dict(b)
+        nb["positions"] = take(b["positions"], _WIRE_F32, "f32")
+        if "normals" in b:
+            nb["normals"] = take(b["normals"], _WIRE_F32, "f32")
+        nb["indices"] = take(b["indices"], _WIRE_U32, "u32")
+        nb["faceIds"] = take(b["faceIds"], _WIRE_U32, "u32")
+        bodies_out.append(nb)
+
+    header_obj = dict(res)
+    header_obj["bodies"] = bodies_out
+    header_obj["$buffers"] = buf_meta
+    header = json.dumps({"id": req_id, "ok": True, "result": header_obj}).encode("utf-8")
+    pad = (-len(header)) % 4
+    parts = [struct.pack("<I", len(header)), header, b"\x00" * pad]
+    parts.extend(buffers)
+    return b"".join(parts)
+
+
+def _reply_bytes(req_id, res, binary):
+    """Dispatch a rebuild/computeAll result to its wire form: binary frame when
+    the client opted in and the result is a successful mesh reply; the plain
+    JSON text reply otherwise (errors, resync, opt-out, or encoder failure)."""
+    if not binary or "error" in res or res.get("resync"):
+        return _reply_for(req_id, res)
+    try:
+        return _encode_binary_reply(req_id, res)
+    except Exception:
+        return _reply_for(req_id, res)
 
 
 def _new_pool():
@@ -806,7 +971,7 @@ async def handle(ws):
                         loop, _rebuild_delta_job, payload, tol, req.get("known"),
                         on_progress=_building,
                     )
-                    await ws.send(_reply_for(req_id, res))
+                    await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
                 elif op == "computeAll":
                     tol = req.get("tolerance", 0.1)
@@ -819,7 +984,7 @@ async def handle(ws):
 
                     res = await _run_stall(loop, _compute_all_job, payload, tol,
                                            on_progress=_building2)
-                    await ws.send(_reply_for(req_id, res))
+                    await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
                 elif op == "export":
                     res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), timeout=DOC_TIMEOUT)
@@ -888,7 +1053,11 @@ async def main():
         # the frontend sees as a permanent "connecting to sidecar". 128 MiB is
         # plenty for a multi-body doc of imported meshes (each capped at 64 MiB
         # decoded by builder.py) while bounding a single message's memory cost.
-        async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024):
+        # compression=None: the socket is 127.0.0.1-only, so permessage-deflate
+        # (the websockets default) buys no bandwidth and costs real CPU both
+        # sides — measured 84ms to deflate one 5MB mesh reply.
+        async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024,
+                                    compression=None):
             # readiness signal the Rust shell waits for before connecting
             print(f"LISTENING {PORT}", flush=True)
             await asyncio.Future()  # run forever
