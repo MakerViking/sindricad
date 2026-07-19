@@ -120,6 +120,38 @@ A `.sindri` file is JSON: a parameter table and an ordered list of features.
 
 Any numeric field is either a literal (`5`) or the name of a parameter (`"width"`).
 
+## Install
+
+SindriCAD is in beta and the builds are unsigned for now; installers come straight out
+of CI. Until the first tagged release lands on the
+[Releases page](https://github.com/MakerViking/sindricad/releases), download the newest
+build from the latest green run on the
+[Actions page](https://github.com/MakerViking/sindricad/actions/workflows/build.yml):
+open the run, scroll to Artifacts (downloading needs a GitHub login). Everything is
+bundled, including Python and the geometry engine; nothing else to install.
+
+### Windows
+
+1. Download the `sindricad-windows-latest` artifact and unzip it.
+2. Run `nsis/SindriCAD_0.1.0_x64-setup.exe`, or `msi/SindriCAD_0.1.0_x64_en-US.msi` if
+   you prefer MSI.
+3. The build is unsigned, so SmartScreen will warn "Windows protected your PC". Click
+   "More info", then "Run anyway".
+
+SindriCAD needs Microsoft Edge WebView2, which Windows 10 and 11 already ship; the
+setup exe fetches it automatically if it is missing.
+
+### Linux
+
+`.deb` and `.rpm` packages are in the `sindricad-ubuntu-22.04` artifact
+(`sudo dpkg -i SindriCAD_0.1.0_amd64.deb`, or `sudo rpm -i` the `.rpm`). An AppImage
+is in the works.
+
+### macOS
+
+The build in `sindricad-macos-14` is unsigned: right-click the app, choose Open, then
+confirm. Apple code signing is planned.
+
 ## Build and run
 
 Prerequisites: Node, a Rust toolchain, Python 3.12, [uv](https://docs.astral.sh/uv/),
