@@ -122,20 +122,17 @@ Any numeric field is either a literal (`5`) or the name of a parameter (`"width"
 
 ## Install
 
-SindriCAD is in beta and the builds are unsigned for now; installers come straight out
-of CI. Until the first tagged release lands on the
-[Releases page](https://github.com/MakerViking/sindricad/releases), download the newest
-build from the latest green run on the
-[Actions page](https://github.com/MakerViking/sindricad/actions/workflows/build.yml):
-open the run, scroll to Artifacts (downloading needs a GitHub login). Everything is
-bundled, including Python and the geometry engine; nothing else to install.
+Beta installers for Windows, Linux, and macOS live on the
+[latest beta release](https://github.com/MakerViking/sindricad/releases/tag/beta),
+rebuilt automatically from every green `main` build. No GitHub account needed.
+Everything is bundled, including Python and the geometry engine; nothing else to
+install. The builds are unsigned for now.
 
 ### Windows
 
-1. Download the `sindricad-windows-latest` artifact and unzip it.
-2. Run `nsis/SindriCAD_0.1.0_x64-setup.exe`, or `msi/SindriCAD_0.1.0_x64_en-US.msi` if
-   you prefer MSI.
-3. The build is unsigned, so SmartScreen will warn "Windows protected your PC". Click
+1. Download `SindriCAD_0.1.0_x64-setup.exe` (or the `.msi`) from the
+   [latest beta](https://github.com/MakerViking/sindricad/releases/tag/beta).
+2. The build is unsigned, so SmartScreen will warn "Windows protected your PC". Click
    "More info", then "Run anyway".
 
 SindriCAD needs Microsoft Edge WebView2, which Windows 10 and 11 already ship; the
@@ -143,14 +140,13 @@ setup exe fetches it automatically if it is missing.
 
 ### Linux
 
-`.deb`, `.rpm`, and `.AppImage` builds are in the `sindricad-ubuntu-22.04` artifact
-(`sudo dpkg -i SindriCAD_0.1.0_amd64.deb`, `sudo rpm -i` the `.rpm`, or
-`chmod +x` and run the AppImage on any distro).
+Grab the `.AppImage` (`chmod +x`, runs on any distro), or the `.deb` / `.rpm`
+(`sudo dpkg -i SindriCAD_0.1.0_amd64.deb`, or `sudo rpm -i` the `.rpm`).
 
 ### macOS
 
-The build in `sindricad-macos-14` is unsigned: right-click the app, choose Open, then
-confirm. Apple code signing is planned.
+The `.dmg` is unsigned: right-click the app, choose Open, then confirm. Apple code
+signing is planned.
 
 ## Build and run
 

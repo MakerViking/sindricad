@@ -188,6 +188,43 @@ jobs:
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
 
+  # Rolling "beta" pre-release: every green main build replaces the installers on
+  # the releases/tag/beta page, so the download link in the README is stable and
+  # needs no GitHub login (Actions artifacts do). Job-level concurrency serializes
+  # racing main pushes.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    concurrency:
+      group: release-beta
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta
+          name: SindriCAD beta (rolling)
+          prerelease: true
+          body: |
+            Rolling beta: rebuilt automatically from the latest `main`
+            (commit ${{ github.sha }}). The builds are unsigned for now:
+            Windows shows a SmartScreen warning ("More info", then "Run anyway");
+            on macOS right-click the app and choose Open. Install notes are in the
+            [README](https://github.com/MakerViking/sindricad#install).
+          files: |
+            dist/**/*.AppImage
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.dmg
+            dist/**/*.msi
+            dist/**/*setup.exe
+
   # docs/IMPROVEMENT-AUDIT.md §5.4: the opt-in `rust-geom` feature (src-tauri/src/geom.rs,
   # 2320 lines / 67 unwrap-or-expect calls) is never compiled by the `build` job above
   # (default build is OCCT-free by design — see the Cargo.toml comment on the feature),
