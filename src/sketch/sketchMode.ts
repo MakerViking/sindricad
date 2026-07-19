@@ -583,26 +583,42 @@ export class SketchMode {
   }
 
   /** rubber-band preview for the multi-click primitive tools */
-  private multiClickPreview(cursor: THREE.Vector2) {
+  private multiClickPreview(cursor: THREE.Vector2, e?: PointerEvent) {
     const pv: ResolvedEntity[] = [];
+    let dims: Record<string, number> | null = null;
     if (this.tool === "polygon" && this.clickPts.length === 1) {
       const a = this.clickPts[0];
-      if (a) pv.push(...this.polygonLines(a, cursor).map((e) => ({ ...e, id: "" })));
+      if (a) {
+        const vertex = this.polygonVertex(a, cursor);
+        pv.push(...this.polygonLines(a, vertex).map((ent) => ({ ...ent, id: "" })));
+        dims = { radius: a.distanceTo(vertex) };
+      }
     } else if (this.tool === "slot") {
       if (this.clickPts.length === 1) {
         const a = this.clickPts[0];
-        if (a) pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
+        if (a) {
+          const b = this.slotEnd(a, cursor);
+          pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+          dims = { length: a.distanceTo(b) };
+        }
       } else if (this.clickPts.length === 2) {
         const [a, b] = this.clickPts;
-        if (a && b) pv.push(...this.slotEntities(a, b, this.slotHalfWidth(a, b, cursor)));
+        if (a && b) {
+          const half = this.slotHalf(a, b, cursor);
+          pv.push(...this.slotEntities(a, b, half));
+          dims = { width: half * 2 };
+        }
       }
     } else if (this.tool === "circle2" && this.clickPts.length === 1) {
       const a = this.clickPts[0];
       if (a) {
-        const ctr = a.clone().add(cursor).multiplyScalar(0.5);
-        pv.push({ type: "circle", id: "", radius: a.distanceTo(cursor) / 2, x: ctr.x, y: ctr.y });
+        const end = this.circle2End(a, cursor);
+        const ctr = a.clone().add(end).multiplyScalar(0.5);
+        pv.push({ type: "circle", id: "", radius: a.distanceTo(end) / 2, x: ctr.x, y: ctr.y });
+        dims = { diameter: a.distanceTo(end) };
       }
     } else if (this.tool === "circle3") {
+      // fully determined by the three picked points — no dimension to type
       if (this.clickPts.length === 1) {
         const a = this.clickPts[0];
         if (a) pv.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: cursor.x, y2: cursor.y });
@@ -614,11 +630,96 @@ export class SketchMode {
     } else if (this.tool === "centerRectangle" && this.clickPts.length === 1) {
       const c = this.clickPts[0];
       if (c) {
-        const w = Math.abs(cursor.x - c.x) * 2, h = Math.abs(cursor.y - c.y) * 2;
+        const { w, h } = this.centerRectSize(c, cursor);
         pv.push({ type: "rectangle", id: "", width: w, height: h, x: c.x, y: c.y });
+        dims = { width: w, height: h };
       }
     }
-    this.overlay.setPreview(pv.map((e) => this.entityCurve(e)));
+    if (dims) {
+      this.dim.updateFromCursor(dims);
+      if (e) this.dim.position(e.clientX, e.clientY);
+    }
+    this.overlay.setPreview(pv.map((ent) => this.entityCurve(ent)));
+  }
+
+  // --- typed dims for the multi-click tools: the same isUserDriven gating the
+  // single-drag tools use in computeGeometry(), shared by preview + commit ------
+
+  /** dim fields per multi-click tool (and phase, for slot); Enter commits at the cursor */
+  private showMultiDimFields() {
+    const t = this.tool;
+    const defs =
+      t === "circle2"
+        ? [{ name: "diameter", label: "⌀" }]
+        : t === "polygon"
+          ? [{ name: "radius", label: "R" }]
+          : t === "centerRectangle"
+            ? [{ name: "width", label: "W" }, { name: "height", label: "H" }]
+            : t === "slot"
+              ? this.clickPts.length === 1
+                ? [{ name: "length", label: "L" }]
+                : [{ name: "width", label: "W" }]
+              : null;
+    if (!defs) return;
+    this.dim.show(defs, () => this.multiClickAt(this.lastCursor.clone()));
+  }
+
+  private multiClickAt(p: THREE.Vector2) {
+    if (this.tool === "polygon") this.polygonClick(p);
+    else if (this.tool === "slot") this.slotClick(p);
+    else if (this.tool === "circle2") this.circle2Click(p);
+    else if (this.tool === "centerRectangle") this.centerRectClick(p);
+  }
+
+  /** circle2: the second diameter endpoint, honoring a typed ⌀ (along a→cursor) */
+  private circle2End(a: THREE.Vector2, cursor: THREE.Vector2): THREE.Vector2 {
+    if (!this.dim.isUserDriven("diameter")) return cursor.clone();
+    const dia = this.dim.getValue("diameter");
+    if (dia == null || dia <= 0) return cursor.clone();
+    const dir = cursor.clone().sub(a);
+    if (dir.lengthSq() < 1e-8) dir.set(1, 0);
+    else dir.normalize();
+    return a.clone().add(dir.multiplyScalar(dia));
+  }
+
+  /** polygon: the first vertex, honoring a typed circumradius R (along center→cursor) */
+  private polygonVertex(center: THREE.Vector2, cursor: THREE.Vector2): THREE.Vector2 {
+    if (!this.dim.isUserDriven("radius")) return cursor.clone();
+    const r = this.dim.getValue("radius");
+    if (r == null || r <= 0) return cursor.clone();
+    const dir = cursor.clone().sub(center);
+    if (dir.lengthSq() < 1e-8) dir.set(1, 0);
+    else dir.normalize();
+    return center.clone().add(dir.multiplyScalar(r));
+  }
+
+  /** centerRectangle: full width/height, honoring typed values */
+  private centerRectSize(c: THREE.Vector2, cursor: THREE.Vector2): { w: number; h: number } {
+    let w = Math.abs(cursor.x - c.x) * 2;
+    let h = Math.abs(cursor.y - c.y) * 2;
+    if (this.dim.isUserDriven("width")) w = this.dim.getValue("width") ?? w;
+    if (this.dim.isUserDriven("height")) h = this.dim.getValue("height") ?? h;
+    return { w, h };
+  }
+
+  /** slot: the axis end point, honoring a typed length L (along a→cursor) */
+  private slotEnd(a: THREE.Vector2, cursor: THREE.Vector2): THREE.Vector2 {
+    if (!this.dim.isUserDriven("length")) return cursor.clone();
+    const len = this.dim.getValue("length");
+    if (len == null || len <= 0) return cursor.clone();
+    const dir = cursor.clone().sub(a);
+    if (dir.lengthSq() < 1e-8) dir.set(1, 0);
+    else dir.normalize();
+    return a.clone().add(dir.multiplyScalar(len));
+  }
+
+  /** slot: half-width from the cursor, honoring a typed full width W */
+  private slotHalf(a: THREE.Vector2, b: THREE.Vector2, cursor: THREE.Vector2): number {
+    if (this.dim.isUserDriven("width")) {
+      const w = this.dim.getValue("width");
+      if (w != null && w > 0) return w / 2;
+    }
+    return this.slotHalfWidth(a, b, cursor);
   }
 
   // --- point: a single click drops a reference/snap point ---------------
@@ -793,13 +894,16 @@ export class SketchMode {
   private polygonClick(p: THREE.Vector2) {
     if (!this.clickPts.length) {
       this.clickPts = [p.clone()];
+      this.showMultiDimFields(); // R
       return;
     }
     const center = this.clickPts[0];
     this.clickPts = [];
     this.overlay.setPreview([]);
     if (!center) return;
-    this.commitPolygon(center, p);
+    const vertex = this.polygonVertex(center, p);
+    this.dim.hide();
+    this.commitPolygon(center, vertex);
   }
   /** the n line entities of an inscribed regular polygon (first vertex at `vertex`) */
   private polygonLines(center: THREE.Vector2, vertex: THREE.Vector2): ResolvedEntity[] {
@@ -835,8 +939,15 @@ export class SketchMode {
 
   // --- slot: two center points, then a width point → rounded slot --------
   private slotClick(p: THREE.Vector2) {
-    if (this.clickPts.length < 2) {
-      this.clickPts.push(p.clone());
+    if (!this.clickPts.length) {
+      this.clickPts = [p.clone()];
+      this.showMultiDimFields(); // L
+      return;
+    }
+    if (this.clickPts.length === 1) {
+      const a = this.clickPts[0];
+      this.clickPts.push(a ? this.slotEnd(a, p) : p.clone());
+      this.showMultiDimFields(); // W (replaces the L field)
       return;
     }
     // third click sets the half-width (distance from the slot axis)
@@ -844,7 +955,8 @@ export class SketchMode {
     this.clickPts = [];
     this.overlay.setPreview([]);
     if (!a || !b) return;
-    const w = this.slotHalfWidth(a, b, p);
+    const w = this.slotHalf(a, b, p);
+    this.dim.hide();
     this.commitSlot(a, b, w);
   }
   private slotHalfWidth(a: THREE.Vector2, b: THREE.Vector2, cursor: THREE.Vector2): number {
@@ -890,14 +1002,17 @@ export class SketchMode {
   private circle2Click(p: THREE.Vector2) {
     if (!this.clickPts.length) {
       this.clickPts = [p.clone()];
+      this.showMultiDimFields(); // ⌀
       return;
     }
     const a = this.clickPts[0];
     this.clickPts = [];
     this.overlay.setPreview([]);
     if (!a) return;
-    const center = a.clone().add(p).multiplyScalar(0.5);
-    const r = a.distanceTo(p) / 2;
+    const end = this.circle2End(a, p);
+    const center = a.clone().add(end).multiplyScalar(0.5);
+    const r = a.distanceTo(end) / 2;
+    this.dim.hide();
     this.commitCircle(center, r);
   }
 
@@ -928,15 +1043,16 @@ export class SketchMode {
   private centerRectClick(p: THREE.Vector2) {
     if (!this.clickPts.length) {
       this.clickPts = [p.clone()];
+      this.showMultiDimFields(); // W/H
       return;
     }
     const center = this.clickPts[0];
     this.clickPts = [];
     this.overlay.setPreview([]);
     if (!center) return;
-    const w = Math.abs(p.x - center.x) * 2;
-    const h = Math.abs(p.y - center.y) * 2;
+    const { w, h } = this.centerRectSize(center, p);
     if (w < 1e-4 || h < 1e-4) return;
+    this.dim.hide();
     const ent: ResolvedEntity = { type: "rectangle", id: newEntityId(), width: w, height: h, x: center.x, y: center.y };
     if (this.constructionMode) ent.construction = true;
     this.entities.push(ent);
@@ -1061,7 +1177,7 @@ export class SketchMode {
     }
     if (this.tool === "polygon" || this.tool === "slot" || this.tool === "circle2" ||
         this.tool === "circle3" || this.tool === "centerRectangle") {
-      this.multiClickPreview(hit.p);
+      this.multiClickPreview(hit.p, e);
       return;
     }
     if (PATTERN_TOOLS.has(this.tool)) {
