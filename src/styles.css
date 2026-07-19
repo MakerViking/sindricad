@@ -1538,6 +1538,11 @@ button.finish:hover {
   font-weight: 600;
   letter-spacing: 0.3px;
 }
+.welcome-logo {
+  display: block;
+  height: 30px;
+  width: auto;
+}
 .modal-close {
   background: transparent;
   border: none;

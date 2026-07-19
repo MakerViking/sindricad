@@ -1,4 +1,9 @@
-# SindriCAD
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/sindricad-lockup-dark.svg">
+    <img src="assets/brand/sindricad-lockup.svg" alt="SindriCAD" width="480">
+  </picture>
+</p>
 
 Parametric CAD for Linux, built for 3D printing.
 

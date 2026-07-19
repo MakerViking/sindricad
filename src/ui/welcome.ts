@@ -8,6 +8,7 @@
 import { pushModal, popModal } from "./choice";
 import { esc } from "./escape";
 import { getRecentFiles, forgetRecent } from "../io/recentFiles";
+import logoUrl from "../../assets/brand/sindricad-lockup-app.svg";
 import {
   TA_WELCOME_URL,
   currentAccount,
@@ -102,7 +103,11 @@ export class WelcomeScreen {
     const head = document.createElement("div");
     head.className = "modal-head";
     const h2 = document.createElement("h2");
-    h2.textContent = "Welcome to SindriCAD";
+    const logo = document.createElement("img");
+    logo.src = logoUrl;
+    logo.alt = "SindriCAD";
+    logo.className = "welcome-logo";
+    h2.appendChild(logo);
     head.appendChild(h2);
     const x = document.createElement("button");
     x.className = "modal-close";

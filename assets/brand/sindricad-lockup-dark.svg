@@ -1,0 +1,25 @@
+<svg width="640" height="200" viewBox="0 0 640 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SindriCAD">
+  <defs>
+    <linearGradient id="moltenLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#33517A"/>
+      <stop offset="0.45" stop-color="#FF7C36"/>
+      <stop offset="1" stop-color="#DE3A16"/>
+    </linearGradient>
+  </defs>
+
+  <!-- mark, scaled and left-aligned -->
+  <g transform="translate(20,32) scale(0.62)">
+    <polyline points="150,64 110,110 70,156" fill="none" stroke="#8FA9CC" stroke-width="1.5" stroke-dasharray="3 5" opacity="0.3"/>
+    <path d="M150 64 C150 44 96 44 82 68 C74 84 84 98 110 110 C136 122 146 136 138 152 C124 176 70 176 70 156"
+          fill="none" stroke="url(#moltenLight)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="144" y="58" width="12" height="12" rx="2" fill="#FFFFFF" stroke="#FF5A2C" stroke-width="2.5"/>
+    <rect x="104" y="104" width="12" height="12" rx="2" fill="#FFFFFF" stroke="#FF5A2C" stroke-width="2.5"/>
+    <rect x="64" y="150" width="12" height="12" rx="2" fill="#FFFFFF" stroke="#FF5A2C" stroke-width="2.5"/>
+  </g>
+
+  <!-- wordmark: convert to outlines before shipping so it renders identically everywhere -->
+  <text x="176" y="112" font-family="'Segoe UI',system-ui,-apple-system,Helvetica,Arial,sans-serif" font-size="58" font-weight="700" letter-spacing="-1.5">
+    <tspan fill="#E9EFF6">Sindri</tspan><tspan fill="#FF5A2C">CAD</tspan>
+  </text>
+  <text x="178" y="146" font-family="'Segoe UI',system-ui,-apple-system,Helvetica,Arial,sans-serif" font-size="18" fill="#9AACBF">Parametric CAD, forged in the open.</text>
+</svg>
