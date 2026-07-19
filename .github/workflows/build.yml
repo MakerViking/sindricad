@@ -131,6 +131,19 @@ jobs:
         shell: pwsh
         run: ./scripts/build-sidecar-runtime.ps1
 
+      # linuxdeploy resolves every ELF's dependencies by soname lookup, which can't
+      # see the runtime's manylinux-vendored dirs (scipy.libs etc. reference their
+      # mangled sonames via $ORIGIN rpaths). First AppImage run died on exactly that:
+      # "Could not find dependency: libquadmath-2284e583.so.0.0.0". Put every runtime
+      # dir holding a real shared library (lib*.so*, not python extension modules)
+      # on LD_LIBRARY_PATH so dependency deployment can find the vendored names.
+      - name: Expose vendored sidecar libs to linuxdeploy (AppImage)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          dirs=$(find "$PWD/src-tauri/sidecar-runtime" -name 'lib*.so*' -printf '%h\n' | sort -u | paste -sd: -)
+          echo "LD_LIBRARY_PATH=$dirs" >> "$GITHUB_ENV"
+          echo "vendored lib dirs:"; echo "$dirs" | tr ':' '\n'
+
       # --- build + bundle. The bundle-only config ships sidecar-runtime/ as a resource
       #     and (on macOS) turns on hardened runtime + entitlements. ---
       - name: Build + bundle Tauri app
