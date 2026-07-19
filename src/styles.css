@@ -134,32 +134,17 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-/* brand lockup: a small forged anvil glyph + the wordmark (set in index.html) */
+/* brand lockup: the SindriCAD mark + wordmark (assets/brand, set in index.html) */
 .brand {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-weight: 650;
-  font-size: 13px;
-  letter-spacing: 0.2px;
-  color: var(--text);
   white-space: nowrap;
 }
-.brand::before {
-  content: "";
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  border-radius: var(--r-sm);
-  background:
-    radial-gradient(circle at 30% 25%, var(--accent-hot), var(--accent) 55%, #c24f1e 100%);
-  box-shadow:
-    0 0 10px var(--accent-glow),
-    inset 0 1px 1px rgba(255, 255, 255, 0.35);
-  /* anvil silhouette punched out of the molten chip */
-  -webkit-mask: var(--anvil) center / 13px 13px no-repeat;
-          mask: var(--anvil) center / 13px 13px no-repeat;
-  --anvil: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M3 7h10c0 2-1 3-3 3l1 3h3v2H6v-2h2l-1-3H5a2 2 0 0 1-2-2V7zm12 0h5l-1 3h-3a3 3 0 0 1-1-3zM8 17h8v2l1 2H7l1-2v-2z"/></svg>');
+.brand img {
+  display: block;
+  height: 22px;
+  width: auto;
 }
 
 .context-tab {
