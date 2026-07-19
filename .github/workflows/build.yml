@@ -144,12 +144,27 @@ jobs:
           echo "LD_LIBRARY_PATH=$dirs" >> "$GITHUB_ENV"
           echo "vendored lib dirs:"; echo "$dirs" | tr ':' '\n'
 
+      # Rolling-beta versioning: the updater compares semver, and every build being
+      # 0.1.0 would mean "never an update". CI builds get 0.1.<run_number>; local
+      # dev builds stay at the checked-in 0.1.0.
+      - name: Stamp rolling version
+        shell: bash
+        run: |
+          v="0.1.${{ github.run_number }}"
+          node -e "const fs=require('fs');const f='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f));j.version='$v';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+          echo "stamped $v"
+
       # --- build + bundle. The bundle-only config ships sidecar-runtime/ as a resource
       #     and (on macOS) turns on hardened runtime + entitlements. ---
       - name: Build + bundle Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # In-app updater: updater bundles are minisign-signed with this key
+          # (createUpdaterArtifacts in the bundle overlay config). Separate from OS
+          # code signing, which stays deferred below.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           # linuxdeploy's strip pass chokes on the bundled sidecar runtime's
           # OCCT/CPython shared objects (AppImage leg: "failed to run linuxdeploy").
           # NO_STRIP is linuxdeploy's own escape hatch; harmless on the other OSes.
@@ -187,11 +202,16 @@ jobs:
             src-tauri/target/release/bundle/**/*.app
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.sig
 
   # Rolling "beta" pre-release: every green main build replaces the installers on
   # the releases/tag/beta page, so the download link in the README is stable and
-  # needs no GitHub login (Actions artifacts do). Job-level concurrency serializes
-  # racing main pushes.
+  # needs no GitHub login (Actions artifacts do). The release is deleted and
+  # recreated each time: asset names carry the stamped version, so updating in
+  # place would accumulate stale installers. latest.json feeds the in-app updater
+  # (tauri-plugin-updater): per-platform updater-bundle URL + minisign signature.
+  # Job-level concurrency serializes racing main pushes.
   release:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -201,29 +221,47 @@ jobs:
     concurrency:
       group: release-beta
       cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: beta
-          name: SindriCAD beta (rolling)
-          prerelease: true
-          body: |
-            Rolling beta: rebuilt automatically from the latest `main`
-            (commit ${{ github.sha }}). The builds are unsigned for now:
-            Windows shows a SmartScreen warning ("More info", then "Run anyway");
-            on macOS right-click the app and choose Open. Install notes are in the
-            [README](https://github.com/MakerViking/sindricad#install).
-          files: |
-            dist/**/*.AppImage
-            dist/**/*.deb
-            dist/**/*.rpm
-            dist/**/*.dmg
-            dist/**/*.msi
-            dist/**/*setup.exe
+      - name: Assemble latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="0.1.${{ github.run_number }}"
+          base="https://github.com/${{ github.repository }}/releases/download/beta"
+          d="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n --arg v "$v" --arg d "$d" '{version:$v, pub_date:$d, platforms:{}}' > latest.json
+          add() { # $1 = updater platform key, $2 = updater bundle path
+            [ -n "$2" ] && [ -f "$2" ] || { echo "NOTE: no bundle for $1"; return 0; }
+            sig="$2.sig"
+            [ -f "$sig" ] || { echo "WARNING: $2 has no .sig — $1 left out of latest.json"; return 0; }
+            jq --arg k "$1" --arg u "$base/$(basename "$2")" --rawfile s "$sig" \
+              '.platforms[$k] = {signature: $s, url: $u}' latest.json > t && mv t latest.json
+          }
+          add linux-x86_64  "$(find dist -name '*.AppImage'   | head -1)"
+          add windows-x86_64 "$(find dist -name '*setup.exe'  | head -1)"
+          add darwin-aarch64 "$(find dist -name '*.app.tar.gz' | head -1)"  # macos-14 runners are arm64
+          cat latest.json
+
+      - name: Publish rolling beta release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No spaces in Tauri bundle filenames, so plain word-splitting is safe here.
+          files=$(find dist -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+            -o -name '*.dmg' -o -name '*.msi' -o -name '*setup.exe' \
+            -o -name '*.app.tar.gz' -o -name '*.sig' \))
+          gh release delete beta --repo ${{ github.repository }} --cleanup-tag --yes || true
+          gh release create beta --repo ${{ github.repository }} \
+            --prerelease --target ${{ github.sha }} \
+            --title "SindriCAD beta (rolling)" \
+            --notes "Rolling beta 0.1.${{ github.run_number }}, rebuilt automatically from the latest \`main\` (commit ${{ github.sha }}). The builds are unsigned for now: Windows shows a SmartScreen warning (\"More info\", then \"Run anyway\"); on macOS right-click the app and choose Open. Install notes are in the [README](https://github.com/${{ github.repository }}#install). Installed apps update themselves from this release." \
+            $files latest.json
 
   # docs/IMPROVEMENT-AUDIT.md §5.4: the opt-in `rust-geom` feature (src-tauri/src/geom.rs,
   # 2320 lines / 67 unwrap-or-expect calls) is never compiled by the `build` job above

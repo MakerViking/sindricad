@@ -130,18 +130,21 @@ install. The builds are unsigned for now.
 
 ### Windows
 
-1. Download `SindriCAD_0.1.0_x64-setup.exe` (or the `.msi`) from the
+1. Download `SindriCAD_<version>_x64-setup.exe` (or the `.msi`) from the
    [latest beta](https://github.com/MakerViking/sindricad/releases/tag/beta).
 2. The build is unsigned, so SmartScreen will warn "Windows protected your PC". Click
    "More info", then "Run anyway".
 
 SindriCAD needs Microsoft Edge WebView2, which Windows 10 and 11 already ship; the
-setup exe fetches it automatically if it is missing.
+setup exe fetches it automatically if it is missing. Once installed, SindriCAD
+updates itself: it checks the beta release at startup and offers a one-click
+restart-and-update.
 
 ### Linux
 
-Grab the `.AppImage` (`chmod +x`, runs on any distro), or the `.deb` / `.rpm`
-(`sudo dpkg -i SindriCAD_0.1.0_amd64.deb`, or `sudo rpm -i` the `.rpm`).
+Grab the `.AppImage` (`chmod +x`, runs on any distro, updates itself in place), or
+the `.deb` / `.rpm` (`sudo dpkg -i` / `sudo rpm -i`; updates come from your package
+manager workflow, not in-app).
 
 ### macOS
 

@@ -7,6 +7,8 @@
     "core:default",
     "core:event:default",
     "dialog:default",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://tinkeratlas.com/*" }, { "url": "http://localhost:3000/*" }]

@@ -53,6 +53,8 @@ glam = { version = "0.24", optional = true }
 # solid and writes the mesh as a 3MF via this crate. The SHIPPING colored-3MF export
 # is done by the Python sidecar, so this is opt-in with the rest of the spike.
 threemf = { version = "0.8", optional = true }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [features]
 # Off by default: the default build has zero OCCT/cmake dependency. Turn on to

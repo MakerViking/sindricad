@@ -15,6 +15,7 @@ import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
 import { toggleShortcutHUD } from "./input/shortcuts";
+import { checkForUpdates, scheduleStartupUpdateCheck } from "./ui/updates";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
@@ -256,12 +257,21 @@ new Menubar(document.getElementById("menubar")!, [
       { label: "Sign out", disabled: () => !currentAccount(), onClick: () => void signOutFlow() },
     ],
   },
+  {
+    label: "Help",
+    items: [
+      { label: "Keyboard Shortcuts", shortcut: "?", onClick: () => toggleShortcutHUD() },
+      { separator: true, label: "" },
+      { label: "Check for Updates…", onClick: () => void checkForUpdates(true) },
+    ],
+  },
 ]);
 
 // warm the TinkerAtlas identity cache from disk (offline-safe), then show the
 // welcome screen unless the user turned it off (its footer checkbox).
 void warmAccount();
 if (welcomeOnStartup()) welcome.open();
+scheduleStartupUpdateCheck();
 
 const docnameEl = document.getElementById("docname")!;
 // mouse-visible undo/redo (Ctrl+Z was the ONLY way before — invisible affordance)

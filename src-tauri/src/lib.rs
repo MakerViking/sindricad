@@ -109,12 +109,27 @@ fn recovery_clear(app: tauri::AppHandle, slot: String) -> Result<(), String> {
     }
 }
 
+/// In-app updates only apply to formats the Tauri updater can replace: the NSIS
+/// install on Windows, the .app on macOS, and the AppImage on Linux. A deb/rpm
+/// install belongs to the package manager, so the frontend hides the update UI
+/// when this is false.
+#[tauri::command]
+fn updates_supported() -> bool {
+    if cfg!(target_os = "linux") {
+        std::env::var_os("APPIMAGE").is_some()
+    } else {
+        true
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
 
     // The Rust/OCCT geometry commands (`geom_rebuild`/`geom_export`) only exist when
     // the `rust-geom` feature is on (VITE_GEOM=rust). generate_handler! won't accept
@@ -127,6 +142,7 @@ pub fn run() {
         geom::geom_rebuild,
         geom::geom_export,
         sidecar_token,
+        updates_supported,
         recovery_write,
         recovery_read,
         recovery_list,
@@ -158,6 +174,7 @@ pub fn run() {
     #[cfg(not(feature = "rust-geom"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         sidecar_token,
+        updates_supported,
         recovery_write,
         recovery_read,
         recovery_list,
