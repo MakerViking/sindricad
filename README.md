@@ -9,10 +9,15 @@ editor, and it is not a geometry kernel of its own. It drives
 geometry, and puts a real modeling UI and a print workflow on top.
 
 It runs natively on Linux, where good parametric CAD has always been thin on the
-ground, and it takes a colored multi-material model all the way to a Snapmaker U1
-print without leaving the app.
+ground, and it is built for 3D printing: color a multi-material model, export it as a
+ready-to-slice OrcaSlicer project set up for the Snapmaker U1, and send the sliced
+G-code to the printer over the LAN.
 
 > Named for Sindri, the dwarven smith of Norse myth.
+
+**Status: beta, in ongoing development.** SindriCAD already builds real printed parts,
+but the feature set is still filling out and rough edges remain. Expect frequent
+releases, report what breaks, and keep backups of documents you care about.
 
 ## What it does
 
@@ -47,6 +52,9 @@ machine, so a colored parametric part reaches a print without a manual export da
 - **Direct device layer**: a Rust Moonraker client (`src-tauri/src/printer.rs`) uploads
   G-code to the printer over the LAN with a filament-mapping dialog, reads the palette
   back from the printer, and monitors the running print.
+
+U1 support will keep growing: I add features as I come up with them and have time
+for them.
 
 ## Architecture
 
