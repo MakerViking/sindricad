@@ -1474,6 +1474,12 @@ button.finish:hover {
   border-color: var(--accent-hot);
   color: var(--accent-hot);
 }
+/* non-select tools: labels visible but click-through (a label floating over a
+   circle center must not swallow the dimension/draw pick underneath) */
+.sketch-dims.dims-passive .sketch-dim {
+  pointer-events: none;
+  cursor: default;
+}
 .sketch-dim input {
   width: 52px;
   border: 1px solid var(--line-strong);

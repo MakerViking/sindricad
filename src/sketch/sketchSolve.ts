@@ -135,6 +135,15 @@ export async function compileAndSolve(
   // resolve a circle/arc center to its solver point id
   const centerPoint = (entId: string): string | undefined =>
     centers.get(entId) ?? arcMap.get(entId)?.center;
+  // resolve a dimension pick: rectangle corners by index, circle centers
+  // regardless of index, arc center at index 2, else entity endpoints
+  const dimPoint = (entId: string, idx: number): string | undefined => {
+    const rc = rectMap.get(entId);
+    if (rc) return rc[idx];
+    if (centers.has(entId)) return centers.get(entId);
+    if (idx === 2) return arcMap.get(entId)?.center;
+    return endpointPoint(entId, idx);
+  };
   const isCircle = (id: string) => centers.has(id);
   constraints.forEach((c, i) => {
     const id = `k${i}`; // user constraint ids never collide with `~` implicit ones
@@ -144,6 +153,14 @@ export async function compileAndSolve(
     else if (c.type === "perpendicular") { if (isLine(c.l1) && isLine(c.l2)) cons.push({ id, type: "perpendicular", l1: c.l1, l2: c.l2 }); }
     else if (c.type === "equal") { if (isLine(c.l1) && isLine(c.l2)) cons.push({ id, type: "equal", l1: c.l1, l2: c.l2 }); }
     else if (c.type === "distance") { const e = ends.get(c.line); if (e) cons.push({ id, type: "distance", a: e[0], b: e[1], value: c.value }); }
+    else if (c.type === "p2pDistance") {
+      const a = dimPoint(c.e1, c.p1), b = dimPoint(c.e2, c.p2);
+      if (a && b && a !== b) cons.push({ id, type: "distance", a, b, value: c.value });
+    }
+    else if (c.type === "p2lDistance") {
+      const p = dimPoint(c.e, c.p);
+      if (p && isLine(c.line)) cons.push({ id, type: "p2lDistance", p, line: c.line, value: c.value });
+    }
     else if (c.type === "diameter") { if (centers.has(c.circle)) cons.push({ id, type: "diameter", circle: c.circle, value: c.value }); }
     else if (c.type === "tangent") { if (isLine(c.line) && isCircle(c.circle)) cons.push({ id, type: "tangentLC", line: c.line, circle: c.circle }); }
     else if (c.type === "coincident") {

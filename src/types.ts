@@ -72,6 +72,14 @@ export type SketchConstraint =
   | { type: "equal"; l1: string; l2: string }
   | { type: "distance"; line: string; value: number }
   | { type: "diameter"; circle: string; value: number }
+  // p2pDistance: driving distance between two picked points. `p*` selects the
+  // point on each entity: 0/1 = start/end (lines, arcs, spline ends), 0..3 =
+  // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
+  // resolves to its center. Point entities ignore the index.
+  | { type: "p2pDistance"; e1: string; p1: number; e2: string; p2: number; value: number }
+  // p2lDistance: driving perpendicular distance from a picked point to a line
+  // entity (same `p` semantics as p2pDistance)
+  | { type: "p2lDistance"; e: string; p: number; line: string; value: number }
   // tangent: a line and a circle/arc touch (line tangent to the circle)
   | { type: "tangent"; line: string; circle: string }
   // coincident: two entity endpoints share a position. `e1`/`e2` are entity ids;

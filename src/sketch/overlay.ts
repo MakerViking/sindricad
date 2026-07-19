@@ -470,8 +470,9 @@ export function polyline(points: THREE.Vector3[], color: number): THREE.Line {
 export function dimensionLineObjects(
   ents: ReturnType<typeof resolveEntities>,
   plane: SketchPlane,
+  extraSegs: [THREE.Vector2, THREE.Vector2][] = [],
 ): THREE.Object3D[] {
-  const segs = dimensionSegments(ents);
+  const segs = [...dimensionSegments(ents), ...extraSegs];
   if (!segs.length) return [];
   const pts: THREE.Vector3[] = [];
   for (const [a, b] of segs) pts.push(plane.to3D(a.x, a.y), plane.to3D(b.x, b.y));

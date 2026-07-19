@@ -21,6 +21,14 @@ interface DimLabel {
   index: number;
   field: DimField;
   valueMm: number;
+  commit?: (mm: number) => void; // extras (constraint dims) carry their own writer
+}
+
+/** an extra, non-entity label (e.g. a distance constraint's value) */
+export interface ExtraDim {
+  anchor: THREE.Vector2;
+  valueMm: number;
+  commit: (mm: number) => void;
 }
 
 export class SketchDimensions {
@@ -40,7 +48,7 @@ export class SketchDimensions {
     document.body.appendChild(this.root);
   }
 
-  show(entities: ResolvedEntity[], plane: SketchPlane) {
+  show(entities: ResolvedEntity[], plane: SketchPlane, extras: ExtraDim[] = []) {
     this.clear();
     this.plane = plane;
     entities.forEach((e, i) => {
@@ -48,6 +56,9 @@ export class SketchDimensions {
         this.addLabel({ anchor: d.labelPos, index: i, field: d.field, valueMm: d.valueMm });
       }
     });
+    for (const x of extras) {
+      this.addLabel({ anchor: x.anchor, index: -1, field: "length", valueMm: x.valueMm, commit: x.commit });
+    }
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
   }
@@ -57,6 +68,13 @@ export class SketchDimensions {
     this.raf = 0;
     this.plane = null;
     this.clear();
+  }
+
+  /** Labels accept clicks only in the select tool. While a drawing or dimension
+   *  tool is active they stay visible but pointer-transparent — a label floating
+   *  over a circle's center must not swallow the pick underneath it. */
+  setInteractive(on: boolean) {
+    this.root.classList.toggle("dims-passive", !on);
   }
 
   private clear() {
@@ -92,8 +110,10 @@ export class SketchDimensions {
       e.stopPropagation();
       if (e.key === "Enter") {
         const mm = parseField(input.value, "length");
-        if (mm != null && mm > 0) this.onEdit(label.index, label.field, mm);
-        else revert();
+        if (mm != null && mm > 0) {
+          if (label.commit) label.commit(mm);
+          else this.onEdit(label.index, label.field, mm);
+        } else revert();
       } else if (e.key === "Escape") revert();
     });
     input.addEventListener("blur", revert); // edit committed -> show() rebuilds anyway

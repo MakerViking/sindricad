@@ -14,7 +14,7 @@ import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions } from "./sketchDimensions";
-import { entityDims, type DimField } from "./entityDims";
+import { entityDims, constraintDims, type DimField } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
 import { circumcenter } from "./arc";
@@ -23,9 +23,10 @@ import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { expandPattern } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
-import { detectRegions } from "./region";
+import { detectRegions, rectCorners } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
+import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, type PatternHost } from "./patternFlow";
@@ -111,11 +112,24 @@ export class SketchMode {
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
+  // whole-entity body drag (select tool, no grab point under the cursor):
+  // armed on pointerdown over an entity body, becomes a move after a small
+  // screen-space threshold — a plain click falls through to selection on up.
+  private moveDrag: {
+    idx: number;
+    startClient: { x: number; y: number };
+    last: THREE.Vector2;
+    started: boolean;
+    shift: boolean;
+    stretch: ((dx: number, dy: number) => void)[]; // coincident neighbor endpoints riding along
+  } | null = null;
   private solveBusy = false; // a solve is in flight (drag or constraint)
   private solveDirty = false; // a constraint/dimension solve is pending
   private entityVersion = 0; // bumped on every entity change; guards stale solves
   private conflict = false; // last solve reported conflicting (over-)constraints
   private lastCursor = new THREE.Vector2();
+  // dimension tool: the first picked point of a two-pick distance (p2p / p2l)
+  private dimFirst: { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null = null;
   private editingId: string | null = null;
   private store: DocumentStore | undefined;
   private grid: THREE.GridHelper | null = null;
@@ -267,6 +281,7 @@ export class SketchMode {
     this.dragFrom = null;
     this.dragSnapshot = null;
     this.pendingDrag = null;
+    this.moveDrag = null;
     this.dim.hide();
     this.dims.hide();
     this.textPanel.hide();
@@ -306,6 +321,8 @@ export class SketchMode {
     this.filletFirst = null;
     this.dragFrom = null;
     this.pendingDrag = null;
+    this.moveDrag = null;
+    this.dimFirst = null;
     this.dim.hide();
     this.textPanel.hide();
     // drop any uncommitted text preview left on the active list when switching tools
@@ -314,6 +331,7 @@ export class SketchMode {
     this.constraintTools.resetPending();
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     this.patternFlow.flushPending(); // don't lose an in-progress pattern
+    this.dims.setInteractive(t === "select");
     this.onState?.();
   }
 
@@ -339,7 +357,7 @@ export class SketchMode {
       [...this.entities, ...derived],
     );
     this.candidates = candidatesFromEntities([...this.entities, ...derived]);
-    if (this.dimsVisible) this.dims.show(this.entities, this.plane);
+    if (this.dimsVisible) this.dims.show(this.entities, this.plane, this.constraintDimExtras());
     else this.dims.hide();
     // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
     // via redraw()) fires no pointer event, so force a frame or it won't draw until
@@ -402,10 +420,36 @@ export class SketchMode {
   }
 
   /** Add/replace the driving dimension on an entity, then re-solve. */
+  /** clickable labels for the distance constraints: editing one writes the
+   *  constraint's driving value and re-solves */
+  private constraintDimExtras(): { anchor: THREE.Vector2; valueMm: number; commit: (mm: number) => void }[] {
+    return constraintDims(this.entities, this.constraints).map((d) => ({
+      anchor: d.labelPos,
+      valueMm: d.valueMm,
+      commit: (mm: number) => {
+        const c = this.constraints[d.cIndex];
+        if (c && (c.type === "p2pDistance" || c.type === "p2lDistance")) {
+          c.value = mm;
+          this.requestSolve();
+          this.onState?.();
+        }
+      },
+    }));
+  }
+
   private setDrivingDimension(c: SketchConstraint) {
     this.constraints = this.constraints.filter((k) => {
       if (c.type === "distance" && k.type === "distance") return k.line !== c.line;
       if (c.type === "diameter" && k.type === "diameter") return k.circle !== c.circle;
+      if (c.type === "p2pDistance" && k.type === "p2pDistance") {
+        const same =
+          (k.e1 === c.e1 && k.p1 === c.p1 && k.e2 === c.e2 && k.p2 === c.p2) ||
+          (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1);
+        return !same;
+      }
+      if (c.type === "p2lDistance" && k.type === "p2lDistance") {
+        return !(k.e === c.e && k.p === c.p && k.line === c.line);
+      }
       return true;
     });
     this.constraints.push(c);
@@ -451,17 +495,21 @@ export class SketchMode {
           return;
         }
       }
-      // a real (hand-drawn) entity's body under the cursor → (de)select it
+      // a real (hand-drawn) entity's body under the cursor → arm a body drag;
+      // a plain click (no movement) falls through to selection in endDrag()
       const idx = pickEntity(this.entities, raw, this.pickTol());
       const hit = idx >= 0 ? this.entities[idx] : undefined;
       if (hit) {
-        const id = hit.id;
-        if (e.shiftKey) {
-          if (!this.selected.delete(id)) this.selected.add(id);
-        } else {
-          this.selected = new Set([id]);
-        }
-        this.refreshActive();
+        this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // Esc revert
+        this.moveDrag = {
+          idx,
+          startClient: { x: e.clientX, y: e.clientY },
+          last: raw.clone(),
+          started: false,
+          shift: e.shiftKey,
+          stretch: this.stretchTargets(idx, this.attachmentPoints(hit)),
+        };
+        try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
       }
       // otherwise select a profile AREA to extrude — includes patterned cells and
@@ -1118,7 +1166,61 @@ export class SketchMode {
   }
 
   // --- dimension: click an entity, type a driving value -----------------
+  /** nearest dimensionable reference point within pick tolerance: entity
+   *  endpoints, rectangle corners, circle centers, sketch points, spline ends.
+   *  The returned `p` index matches the p2pDistance/p2lDistance semantics. */
+  private pickDimPoint(p: THREE.Vector2): { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null {
+    const tol = this.pickTol();
+    let best: { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null = null;
+    let bestD = tol * tol;
+    const consider = (e: ResolvedEntity, idx: number, x: number, y: number) => {
+      const dx = x - p.x, dy = y - p.y, d = dx * dx + dy * dy;
+      if (d <= bestD) { bestD = d; best = { e, p: idx, pos: new THREE.Vector2(x, y) }; }
+    };
+    for (const e of this.entities) {
+      if (e.type === "line" || e.type === "arc") { consider(e, 0, e.x1, e.y1); consider(e, 1, e.x2, e.y2); }
+      else if (e.type === "circle" || e.type === "point") consider(e, 0, e.x, e.y);
+      else if (e.type === "rectangle") rectCorners(e.x, e.y, e.width, e.height).forEach((q, k) => consider(e, k, q.x, q.y));
+      else if (e.type === "spline") {
+        const a = e.points[0], b = e.points[e.points.length - 1];
+        if (a) consider(e, 0, a.x, a.y);
+        if (b) consider(e, 1, b.x, b.y);
+      }
+    }
+    return best;
+  }
+
   private dimensionClick(p: THREE.Vector2) {
+    const pt = this.pickDimPoint(p);
+    // second pick of a two-pick distance dimension
+    if (this.dimFirst) {
+      const first = this.dimFirst;
+      this.dimFirst = null;
+      if (pt && !(pt.e.id === first.e.id && pt.p === first.p)) {
+        const cur = first.pos.distanceTo(pt.pos);
+        if (cur < 1e-6) return; // coincident points carry no distance
+        this.setDrivingDimension({ type: "p2pDistance", e1: first.e.id, p1: first.p, e2: pt.e.id, p2: pt.p, value: cur });
+        return;
+      }
+      const idx = pickEntity(this.entities, p, this.pickTol());
+      const e = idx >= 0 ? this.entities[idx] : undefined;
+      if (e && e.type === "line" && e.id !== first.e.id) {
+        // perpendicular distance to the infinite line
+        const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
+        const len = Math.hypot(dx, dy) || 1;
+        const cur = Math.abs((first.pos.x - e.x1) * dy - (first.pos.y - e.y1) * dx) / len;
+        if (cur < 1e-6) return; // the point lies on the line
+        this.setDrivingDimension({ type: "p2lDistance", e: first.e.id, p: first.p, line: e.id, value: cur });
+        return;
+      }
+      return; // picked nothing usable: two-pick flow reset
+    }
+    // point first → start a two-pick distance
+    if (pt) {
+      this.dimFirst = pt;
+      toast("Dimension: pick a second point, or a line for a point-to-line distance");
+      return;
+    }
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0) return;
     const e = this.entities[idx];
@@ -1152,6 +1254,23 @@ export class SketchMode {
       if (this.dragFrom) {
         const w = this.planePoint(e); // raw cursor; snapping off for smooth drag
         if (w) this.queueDrag(w);
+        return;
+      }
+      if (this.moveDrag) {
+        const raw = this.planePoint(e);
+        if (!raw) return;
+        const md = this.moveDrag;
+        if (!md.started) {
+          const dx = e.clientX - md.startClient.x, dy = e.clientY - md.startClient.y;
+          if (dx * dx + dy * dy < 16) return; // <4px: still a click, not a move
+          md.started = true;
+        }
+        const dx = raw.x - md.last.x, dy = raw.y - md.last.y;
+        md.last.copy(raw);
+        const ent = this.entities[md.idx];
+        if (ent) this.translateEntity(ent, dx, dy);
+        for (const s of md.stretch) s(dx, dy);
+        this.refreshActive();
         return;
       }
       const hit = this.snapAt(e.clientX, e.clientY);
@@ -1231,11 +1350,12 @@ export class SketchMode {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      if (this.dragFrom) {
+      if (this.dragFrom || this.moveDrag) {
         // cancel an in-progress drag: revert geometry to its pre-drag positions
         if (this.dragSnapshot) this.entities = this.dragSnapshot;
         this.dragSnapshot = null;
         this.dragFrom = null;
+        this.moveDrag = null;
         this.pendingDrag = null;
         this.conflict = false;
         this.refreshActive();
@@ -1243,7 +1363,7 @@ export class SketchMode {
         return;
       }
       if (this.base || this.arcStart || this.filletFirst != null || this.splinePts.length ||
-          this.clickPts.length || this.constraintTools.hasPending()) {
+          this.clickPts.length || this.dimFirst || this.constraintTools.hasPending()) {
         this.base = null;
         this.chainStart = null;
         this.arcStart = null;
@@ -1251,6 +1371,7 @@ export class SketchMode {
         this.filletFirst = null;
         this.splinePts = [];
         this.clickPts = [];
+        this.dimFirst = null;
         this.constraintTools.resetPending();
         this.dim.hide();
         this.overlay.setPreview([]);
@@ -1446,7 +1567,10 @@ export class SketchMode {
     } else {
       objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
     }
-    if (this.dimsVisible) objs.push(...dimensionLineObjects(this.entities, this.plane));
+    if (this.dimsVisible) {
+      const cdims = constraintDims(this.entities, this.constraints);
+      objs.push(...dimensionLineObjects(this.entities, this.plane, cdims.flatMap((d) => d.lines)));
+    }
     if (derived.length) objs.push(...curveObjects(derived, this.plane, this.activeColor()));
     return objs;
   }
@@ -1678,6 +1802,55 @@ export class SketchMode {
   }
 
   // --- interactive drag: grab a point, geometry follows, constraints hold ---
+  /** translate a whole entity by (dx, dy) in place */
+  private translateEntity(e: ResolvedEntity, dx: number, dy: number) {
+    if (e.type === "line") { e.x1 += dx; e.y1 += dy; e.x2 += dx; e.y2 += dy; }
+    else if (e.type === "arc") { e.x1 += dx; e.y1 += dy; e.x2 += dx; e.y2 += dy; e.mx += dx; e.my += dy; }
+    else if (e.type === "spline") { for (const q of e.points) { q.x += dx; q.y += dy; } }
+    else { e.x += dx; e.y += dy; } // rectangle / circle / point / text: center or anchor
+  }
+
+  /** the moved entity's attachment points: positions where neighbors may coincide */
+  private attachmentPoints(e: ResolvedEntity): THREE.Vector2[] {
+    if (e.type === "line" || e.type === "arc") {
+      return [new THREE.Vector2(e.x1, e.y1), new THREE.Vector2(e.x2, e.y2)];
+    }
+    if (e.type === "rectangle") return rectCorners(e.x, e.y, e.width, e.height).map((q) => q.clone());
+    if (e.type === "spline") {
+      const last = e.points.length - 1;
+      const a = e.points[0], b = e.points[last];
+      return a && b ? [new THREE.Vector2(a.x, a.y), new THREE.Vector2(b.x, b.y)] : [];
+    }
+    if (e.type === "circle" || e.type === "point") return [new THREE.Vector2(e.x, e.y)];
+    return [];
+  }
+
+  /** mutators for OTHER entities' endpoints that coincide with `pts` — the same
+   *  position-based merge the solver does, so a chained neighbor's endpoint rides
+   *  along instead of silently detaching. Rectangles/circles are skipped (their
+   *  shape can't follow a single corner); arcs re-solve their through-point after. */
+  private stretchTargets(movedIdx: number, pts: THREE.Vector2[]): ((dx: number, dy: number) => void)[] {
+    const EPS = 1e-3;
+    const near = (x: number, y: number) => pts.some((q) => Math.abs(q.x - x) < EPS && Math.abs(q.y - y) < EPS);
+    const out: ((dx: number, dy: number) => void)[] = [];
+    this.entities.forEach((e, i) => {
+      if (i === movedIdx) return;
+      if (e.type === "line" || e.type === "arc") {
+        if (near(e.x1, e.y1)) out.push((dx, dy) => { e.x1 += dx; e.y1 += dy; });
+        if (near(e.x2, e.y2)) out.push((dx, dy) => { e.x2 += dx; e.y2 += dy; });
+      } else if (e.type === "spline") {
+        const last = e.points.length - 1;
+        for (const k of [0, last]) {
+          const q = e.points[k];
+          if (q && near(q.x, q.y)) out.push((dx, dy) => { q.x += dx; q.y += dy; });
+        }
+      } else if (e.type === "point") {
+        if (near(e.x, e.y)) out.push((dx, dy) => { e.x += dx; e.y += dy; });
+      }
+    });
+    return out;
+  }
+
   /** Find the nearest solver-controlled point (line endpoint or circle centre)
    *  within pick tolerance of p. All entity types expand to solver points. */
   private pickPoint(p: THREE.Vector2): THREE.Vector2 | null {
@@ -1735,6 +1908,32 @@ export class SketchMode {
         }
       }
       this.openTextPanel(s, screen, undefined, undefined, phi);
+      return;
+    }
+    if (this.moveDrag) {
+      const md = this.moveDrag;
+      this.moveDrag = null;
+      if (pointerId != null) {
+        try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
+      }
+      const ent = this.entities[md.idx];
+      if (!md.started) {
+        // never moved: this was a click — the original (de)select behavior
+        this.dragSnapshot = null;
+        if (ent) {
+          if (md.shift) {
+            if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
+          } else {
+            this.selected = new Set([ent.id]);
+          }
+          this.refreshActive();
+        }
+        return;
+      }
+      this.dragSnapshot = null; // committed — drop the revert buffer
+      this.refreshActive();
+      this.requestSolve(); // re-satisfy constraints at the new position
+      this.onState?.(); // undo checkpoint
       return;
     }
     if (!this.dragFrom) return;
