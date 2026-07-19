@@ -143,9 +143,9 @@ setup exe fetches it automatically if it is missing.
 
 ### Linux
 
-`.deb` and `.rpm` packages are in the `sindricad-ubuntu-22.04` artifact
-(`sudo dpkg -i SindriCAD_0.1.0_amd64.deb`, or `sudo rpm -i` the `.rpm`). An AppImage
-is in the works.
+`.deb`, `.rpm`, and `.AppImage` builds are in the `sindricad-ubuntu-22.04` artifact
+(`sudo dpkg -i SindriCAD_0.1.0_amd64.deb`, `sudo rpm -i` the `.rpm`, or
+`chmod +x` and run the AppImage on any distro).
 
 ### macOS
 
