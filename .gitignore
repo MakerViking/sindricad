@@ -50,3 +50,6 @@ credentials.*
 *.swp
 .fable/
 .claude/worktrees/
+
+# session handoff doc: internal working state, never on GitHub (esp. public repos)
+handoff.md
