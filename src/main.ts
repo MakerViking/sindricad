@@ -15,7 +15,7 @@ import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
 import { toggleShortcutHUD } from "./input/shortcuts";
-import { checkForUpdates, scheduleStartupUpdateCheck } from "./ui/updates";
+import { checkForUpdates, scheduleStartupUpdateCheck, showAbout } from "./ui/updates";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
@@ -266,6 +266,7 @@ new Menubar(document.getElementById("menubar")!, [
       { label: "Keyboard Shortcuts", shortcut: "?", onClick: () => toggleShortcutHUD() },
       { separator: true, label: "" },
       { label: "Check for Updates…", onClick: () => void checkForUpdates(true) },
+      { label: "About SindriCAD", onClick: () => void showAbout() },
     ],
   },
 ]);

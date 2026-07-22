@@ -21,6 +21,24 @@ async function updatesSupported(): Promise<boolean> {
   }
 }
 
+/** the packaged app's version ("dev" in a plain-browser session). CI stamps
+ *  packaged builds 0.1.<run>; local builds carry tauri.conf.json's 0.1.0. */
+export async function appVersion(): Promise<string> {
+  if (!isTauri()) return "dev";
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return await getVersion();
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Help → About: the one place to read off which version is running. */
+export async function showAbout(): Promise<void> {
+  const { listModal } = await import("./choice");
+  await listModal("About SindriCAD", [`Version ${await appVersion()}`]);
+}
+
 /** Check the beta feed and prompt to install when an update exists. An available
  *  update always prompts; `interactive` additionally surfaces "up to date",
  *  "not applicable here", and failures (the quiet startup check stays silent). */
@@ -33,7 +51,7 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
     const { check } = await import("@tauri-apps/plugin-updater");
     const update = await check();
     if (!update) {
-      if (interactive) toast("SindriCAD is up to date.");
+      if (interactive) toast(`SindriCAD ${await appVersion()} is up to date.`);
       return;
     }
     const pick = await choose(`Update ${update.version} is available`, [
