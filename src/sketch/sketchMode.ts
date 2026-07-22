@@ -14,7 +14,7 @@ import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
-import { entityDims, constraintDims, dimRefPoints, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
 import { circumcenter } from "./arc";
@@ -110,6 +110,14 @@ export class SketchMode {
   private patterns: SketchPattern[] = []; // associative pattern definitions
   private lastDof = -1;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
+  // click-vs-drag bookkeeping for a grabbed POINT: which entity owns it, where
+  // the pointer went down (screen px), and whether it ever moved past the same
+  // 4px threshold moveDrag uses. A stationary click on a vertex must still
+  // SELECT the owning entity instead of silently doing nothing.
+  private dragEntIdx = -1;
+  private dragStartClient = { x: 0, y: 0 };
+  private dragMoved = false;
+  private dragShift = false;
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
@@ -171,6 +179,7 @@ export class SketchMode {
     this.dims = new SketchDimensions(viewport, (i, f, mm) =>
       this.editDimension(i, f, mm),
     );
+    this.dims.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.boundDown = (e) => this.onPointerDown(e);
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
@@ -351,6 +360,9 @@ export class SketchMode {
    * dimension labels. Called when the entity list changes — and on drag end. */
   private refreshActive() {
     this.entityVersion++; // bump guards in-flight constraint solves against staleness
+    // current zoom → mm-per-pixel, so dimension badges keep screen clearance
+    // from the geometry they label (they're click targets in the select tool)
+    setDimPixelScale(this.viewport.pixelWorldSize(this.plane.origin));
     const derived = this.derivedEntities(); // computed once, shared below
     this.overlay.setActiveSketch(this.activeCurves(derived));
     // profile-area fills for the active sketch (hidden from overlay.update),
@@ -462,6 +474,27 @@ export class SketchMode {
     this.requestSolve();
   }
 
+  /** Geometry-beats-label: called from a dimension badge's pointerdown when the
+   *  badge sits over sketch geometry (common at low zoom — the badge is a DOM
+   *  element above the canvas, so the canvas never sees the click). Select the
+   *  entity under the cursor and return true; the badge then skips its
+   *  value-edit. False = nothing underneath, the badge behaves normally. */
+  private labelOverlapSelect(e: PointerEvent): boolean {
+    if (this.tool !== "select") return false;
+    const raw = this.planePoint(e);
+    if (!raw) return false;
+    const idx = pickEntity(this.entities, raw, this.pickTol());
+    const ent = idx >= 0 ? this.entities[idx] : undefined;
+    if (!ent) return false;
+    if (e.shiftKey) {
+      if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
+    } else {
+      this.selected = new Set([ent.id]);
+    }
+    this.refreshActive();
+    return true;
+  }
+
   private onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return; // left only; middle/right still navigate
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
@@ -473,7 +506,11 @@ export class SketchMode {
       // grab a point to drag it — connected/constrained geometry follows
       const gp = this.pickPoint(p);
       if (gp) {
-        this.dragFrom = gp.clone();
+        this.dragFrom = gp.p.clone();
+        this.dragEntIdx = gp.idx;
+        this.dragStartClient = { x: e.clientX, y: e.clientY };
+        this.dragMoved = false;
+        this.dragShift = e.shiftKey;
         this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
@@ -1183,6 +1220,22 @@ export class SketchMode {
         if (d <= bestD) { bestD = d; best = { e, p: r.p, pos: r.pos }; }
       }
     }
+    if (!best) {
+      // Clicked INSIDE a circle, clear of the rim: treat it as the circle's
+      // CENTER — the position-dimensioning handle (Fusion parity: rim click =
+      // diameter). Without this the center was a ~9px invisible hotspot and
+      // "dimension a circle's position" read as impossible. Innermost circle
+      // wins so concentric circles stay addressable.
+      let bestR = Infinity;
+      for (const e of this.entities) {
+        if (e.type !== "circle") continue;
+        const d = Math.hypot(e.x - p.x, e.y - p.y);
+        if (d < e.radius - tol && e.radius < bestR) {
+          bestR = e.radius;
+          best = { e, p: 0, pos: new THREE.Vector2(e.x, e.y) };
+        }
+      }
+    }
     return best;
   }
 
@@ -1248,6 +1301,11 @@ export class SketchMode {
     }
     if (!this.active || this.tool === "select") {
       if (this.dragFrom) {
+        if (!this.dragMoved) {
+          const dx = e.clientX - this.dragStartClient.x, dy = e.clientY - this.dragStartClient.y;
+          if (dx * dx + dy * dy < 16) return; // <4px: still a click — don't solve yet
+          this.dragMoved = true;
+        }
         const w = this.planePoint(e); // raw cursor; snapping off for smooth drag
         if (w) this.queueDrag(w);
         return;
@@ -1328,7 +1386,13 @@ export class SketchMode {
   }
 
   private onKey(e: KeyboardEvent) {
-    if (isEditableTarget(e.target)) return; // typing in a dim/text field, not a shortcut
+    // The dim box auto-focuses while drawing, so nearly every in-sketch Esc
+    // arrives with an editable target — it must still cancel (same carve-out
+    // extrudeTool.onKey has). Only Esc aimed at OUR dim box passes; any other
+    // editor (dimension-label inline edit, rename fields) keeps handling its
+    // own keys, and all non-Escape keys still never fire shortcuts while typing.
+    const escInOwnDim = e.key === "Escape" && this.dim.isActive && this.dim.ownsTarget(e.target);
+    if (!escInOwnDim && isEditableTarget(e.target)) return; // typing in a dim/text field, not a shortcut
     // a pattern being placed/edited: Delete removes it, Esc keeps it as-is
     if (this.patternFlow.hasPending()) {
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -1849,16 +1913,19 @@ export class SketchMode {
 
   /** Find the nearest solver-controlled point (line endpoint or circle centre)
    *  within pick tolerance of p. All entity types expand to solver points. */
-  private pickPoint(p: THREE.Vector2): THREE.Vector2 | null {
+  private pickPoint(p: THREE.Vector2): { p: THREE.Vector2; idx: number } | null {
     const tol = this.pickTol();
     let best: THREE.Vector2 | null = null;
+    let bestIdx = -1;
     let bestD = tol * tol;
+    let cur = -1;
     const consider = (x: number, y: number) => {
       const dx = x - p.x, dy = y - p.y;
       const d = dx * dx + dy * dy;
-      if (d <= bestD) { bestD = d; best = new THREE.Vector2(x, y); }
+      if (d <= bestD) { bestD = d; best = new THREE.Vector2(x, y); bestIdx = cur; }
     };
-    for (const e of this.entities) {
+    this.entities.forEach((e, i) => {
+      cur = i;
       if (e.type === "line") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
       else if (e.type === "circle") consider(e.x, e.y);
       else if (e.type === "arc") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
@@ -1869,8 +1936,8 @@ export class SketchMode {
         consider(e.x - hw, e.y - hh); consider(e.x + hw, e.y - hh);
         consider(e.x + hw, e.y + hh); consider(e.x - hw, e.y + hh);
       }
-    }
-    return best;
+    });
+    return best ? { p: best, idx: bestIdx } : null;
   }
 
   /** Queue a drag target; pump serializes solves (latest target wins). */
@@ -1934,11 +2001,29 @@ export class SketchMode {
     }
     if (!this.dragFrom) return;
     this.dragFrom = null;
-    this.dragSnapshot = null; // committed — drop the revert buffer
     this.pendingDrag = null;
     if (pointerId != null) {
       try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
     }
+    if (!this.dragMoved) {
+      // never moved: a click on a vertex — (de)select the owning entity, same
+      // behavior as clicking its body (users click near endpoints constantly;
+      // this used to silently do nothing)
+      this.dragSnapshot = null;
+      const ent = this.entities[this.dragEntIdx];
+      this.dragEntIdx = -1;
+      if (ent) {
+        if (this.dragShift) {
+          if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
+        } else {
+          this.selected = new Set([ent.id]);
+        }
+      }
+      this.refreshActive();
+      return;
+    }
+    this.dragEntIdx = -1;
+    this.dragSnapshot = null; // committed — drop the revert buffer
     this.refreshActive(); // restore snap candidates + dimension labels at final positions
     this.onState?.();
   }

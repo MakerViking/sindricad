@@ -19,6 +19,7 @@ import {
   type Region,
 } from "./region";
 import { dimensionSegments } from "./entityDims";
+import { circumcenter } from "./arc";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
 import type { SnapKind } from "./snap";
@@ -409,7 +410,7 @@ export function curveObjects(
   const out: THREE.Object3D[] = [];
   for (const e of ents) {
     if (e.type === "point") {
-      out.push(pointMarker(plane.to3D(e.x, e.y), e.construction ? 0xffa64d : color));
+      out.push(pointMarker(plane, e.x, e.y, e.construction ? 0xffa64d : color));
       continue;
     }
     if (e.type === "text") {
@@ -418,7 +419,24 @@ export function curveObjects(
       continue;
     }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
-    out.push(e.construction ? constructionLine(pts) : polyline(pts, color));
+    const curve = e.construction ? constructionLine(pts) : polyline(pts, color);
+    // Circles/arcs get a visible center "+": the center is a snap target and
+    // the dimension tool's position handle — invisible, nobody finds it.
+    // Grouped so the one-object-per-entity contract holds.
+    const center =
+      e.type === "circle"
+        ? { x: e.x, y: e.y }
+        : e.type === "arc"
+          ? circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my })
+          : null;
+    if (center) {
+      const g = new THREE.Group();
+      g.add(curve, pointMarker(plane, center.x, center.y, e.construction ? 0xffa64d : color));
+      g.renderOrder = 12;
+      out.push(g);
+    } else {
+      out.push(curve);
+    }
   }
   return out;
 }
@@ -445,12 +463,14 @@ function textObjects(
   return g;
 }
 
-/** a small "+" glyph (two short crossed segments) marking a sketch point */
-function pointMarker(at: THREE.Vector3, color: number): THREE.Object3D {
+/** a small "+" glyph (two short crossed segments) marking a sketch point.
+ *  Built in PLANE coordinates — world-axis offsets would push strokes out of
+ *  the plane on XZ/YZ sketches (edge-on, half the cross vanished). */
+function pointMarker(plane: SketchPlane, x: number, y: number, color: number): THREE.Object3D {
   const s = 0.9;
   const pts = [
-    new THREE.Vector3(at.x - s, at.y, at.z), new THREE.Vector3(at.x + s, at.y, at.z),
-    new THREE.Vector3(at.x, at.y - s, at.z), new THREE.Vector3(at.x, at.y + s, at.z),
+    plane.to3D(x - s, y), plane.to3D(x + s, y),
+    plane.to3D(x, y - s), plane.to3D(x, y + s),
   ];
   const g = new THREE.BufferGeometry().setFromPoints(pts);
   const seg = new THREE.LineSegments(g, lineMat(color));

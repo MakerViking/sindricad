@@ -20,6 +20,7 @@ interface DimLabel {
   anchor: THREE.Vector2;
   valueMm: number;
   commit: (mm: number) => void; // writes the value (entity field or constraint)
+  suppressEdit?: boolean; // pointerdown was forwarded to geometry underneath
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value) */
@@ -36,6 +37,12 @@ export class SketchDimensions {
   private raf = 0; // non-zero while the position loop is running
   private scratch = new THREE.Vector3();
   private lastCamHash = "";
+  /** Geometry-beats-label: a badge can sit ON the entity it labels (low zoom),
+   *  and since it's a DOM element above the canvas it would swallow the click
+   *  meant to SELECT that entity. The owner installs this hook; return true =
+   *  "geometry under the cursor claimed the click" — the label then skips its
+   *  value-edit for that click. */
+  onOverlapPick: ((e: PointerEvent) => boolean) | null = null;
 
   constructor(
     private viewport: Viewport,
@@ -86,9 +93,16 @@ export class SketchDimensions {
     el.textContent = fmtLength(d.valueMm);
     el.title = "Click to edit";
     const label: DimLabel = { el, ...d };
-    el.addEventListener("pointerdown", (e) => e.stopPropagation());
+    el.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      label.suppressEdit = this.onOverlapPick?.(e) ?? false;
+    });
     el.addEventListener("click", (e) => {
       e.stopPropagation();
+      if (label.suppressEdit) {
+        label.suppressEdit = false;
+        return;
+      }
       this.beginEdit(label);
     });
     this.root.appendChild(el);

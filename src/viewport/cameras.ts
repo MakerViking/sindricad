@@ -398,9 +398,18 @@ export function createCameraRig(
     },
     restoreUp() {
       rollAngle = 0;
+      // Re-seat the orbit AFTER changing up: updateCameraUp() only rebuilds the
+      // internal up-basis — the stored spherical state still encodes the OLD
+      // basis, so without setPosition the same numbers decode to a different
+      // world position on the next tick (exiting a top-plane sketch snapped the
+      // camera to a side-on view — the flat sketch "disappeared" edge-on).
+      // Same getPosition→updateCameraUp→setPosition pattern as the library's
+      // own applyCameraUp().
+      const pos = controls.getPosition(new THREE.Vector3());
       persp.up.set(0, 0, 1);
       ortho.up.set(0, 0, 1);
       controls.updateCameraUp();
+      controls.setPosition(pos.x, pos.y, pos.z, false);
     },
     roll(angle) {
       // accumulate; the bank is re-applied every frame in update(). Cheap and

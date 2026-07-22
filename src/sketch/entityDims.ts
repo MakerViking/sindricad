@@ -26,6 +26,22 @@ export interface EntityDim {
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
+// Screen-space clearance for dimension offsets: the world-mm floor alone lets a
+// badge sit ON the geometry it labels at low zoom (3 mm can project to 2 px),
+// and the labels are click-targets in the select tool — a badge over a line
+// swallows the click meant to select the line. SketchMode feeds the current
+// mm-per-pixel each refresh; 0 (the default — e.g. inspector usage, which never
+// renders labels) keeps the pure world-space behavior.
+let mmPerPx = 0;
+export function setDimPixelScale(scale: number) {
+  mmPerPx = scale;
+}
+const LABEL_CLEAR_PX = 18; // ≳ the rendered badge height
+
+function dimOffset(worldOff: number): number {
+  return Math.max(worldOff, LABEL_CLEAR_PX * mmPerPx);
+}
+
 /** arrowhead (a small "V") at `tip`, opening back along `dir` */
 function arrow(tip: V, dir: V, size: number): [V, V][] {
   const back = tip.clone().sub(dir.clone().multiplyScalar(size));
@@ -38,7 +54,7 @@ function arrow(tip: V, dir: V, size: number): [V, V][] {
 
 /** a linear dimension measuring a..b, offset perpendicular by `offDir`*off */
 function linear(a: V, b: V, offDir: V, value: number): { labelPos: V; lines: [V, V][] } {
-  const off = clamp(value * 0.16, 3, 12);
+  const off = dimOffset(clamp(value * 0.16, 3, 12));
   const da = a.clone().add(offDir.clone().multiplyScalar(off));
   const db = b.clone().add(offDir.clone().multiplyScalar(off));
   const dir = db.clone().sub(da).normalize();
@@ -79,7 +95,7 @@ export function entityDims(e: ResolvedEntity): EntityDim[] {
         field: "diameter",
         label: "Diameter",
         valueMm: e.radius * 2,
-        labelPos: v(e.x, e.y + clamp(e.radius * 0.25, 2, 6)),
+        labelPos: v(e.x, e.y + dimOffset(clamp(e.radius * 0.25, 2, 6))),
         lines,
         write: (mm) => { e.radius = mm / 2; },
       },

@@ -39,6 +39,13 @@ export class DimInput {
     return this.active;
   }
 
+  /** true when `el` is one of THIS dim box's inputs — lets the owning tool's
+   *  capture-phase key handler act on Escape for its own box without stealing
+   *  Esc from other editors (e.g. a dimension label's inline value input). */
+  ownsTarget(el: EventTarget | null): boolean {
+    return el instanceof Node && this.root.contains(el);
+  }
+
   show(
     defs: DimFieldDef[],
     onCommit: (values: Record<string, number>) => void,
