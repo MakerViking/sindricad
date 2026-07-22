@@ -88,3 +88,38 @@ describe("edit preview (roll-to-position)", () => {
     store.endEditPreview(false);
   });
 });
+
+describe("palette persistence", () => {
+  let store: DocumentStore;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    store = new DocumentStore(stubBackend([]), doc());
+  });
+  afterEach(() => void vi.useRealTimers());
+
+  it("a synced palette survives save/reload even with zero body assignments", () => {
+    const synced = [
+      { name: "Polymaker PLA", color: "#ff8800", material: "PLA" },
+      { name: "eSun PETG", color: "#0044ff", material: "PETG" },
+    ];
+    store.applyFilamentSync(synced);
+    const reloaded = new DocumentStore(stubBackend([]), doc());
+    reloaded.load(store.toJSON());
+    expect(reloaded.colorPalette[0]).toMatchObject(synced[0]!);
+    expect(reloaded.colorPalette[1]).toMatchObject(synced[1]!);
+  });
+
+  it("an untouched default palette is still omitted from the saved doc (byte stability)", () => {
+    const json = store.toJSON();
+    expect(json).not.toContain('"palette"'); // same bytes an old build wrote
+    // load() applies the hiddenBodies migration once, so compare two saves
+    // AFTER a load cycle: a re-opened doc must re-save byte-identically.
+    const reloaded = new DocumentStore(stubBackend([]), doc());
+    reloaded.load(json);
+    const migrated = reloaded.toJSON();
+    expect(migrated).not.toContain('"palette"');
+    const again = new DocumentStore(stubBackend([]), doc());
+    again.load(migrated);
+    expect(again.toJSON()).toBe(migrated);
+  });
+});

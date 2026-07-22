@@ -230,6 +230,7 @@ export async function exportPrintProject(
     await reportError(`Print export failed: ${res.message ?? "unknown error"}`);
     return null;
   }
+  void warnUnloadedFilaments(store, bodies.map((b) => b.id));
   // Only surface a modal when there are warnings (features that didn't build) —
   // the silent-staging path (Stage D) shouldn't pop a dialog on the happy path.
   if (res.warnings?.length) {
@@ -240,6 +241,43 @@ export async function exportPrintProject(
     await listModal("Exported project — with warnings", [res.path ?? path, ...lines]);
   }
   return res.path ?? path;
+}
+
+/** Best-effort post-export check: warn when the design uses palette slots whose
+ *  toolhead has no filament loaded, or leaves bodies unassigned (they export as
+ *  extruder 1). Fire-and-forget and bounded to 1.5s client-side (the shared
+ *  Rust HTTP client has a 10s timeout — a warning arriving that late is worse
+ *  than none): unreachable/slow/unconfigured printer → silently no warning.
+ *  Never blocks or fails the export itself. */
+async function warnUnloadedFilaments(store: DocumentStore, bodyIds: string[]) {
+  try {
+    const { activePrinterId, printerFilaments } = await import("../print/printerClient");
+    const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 1500));
+    const filaments = await Promise.race([printerFilaments(activePrinterId()), timeout]);
+    const assigned = store.bodyColorsMap();
+    const usedSlots = new Set<number>();
+    let unassigned = 0;
+    for (const id of bodyIds) {
+      const slot = assigned[id];
+      if (slot == null) {
+        unassigned++;
+        usedSlots.add(0); // project3mf defaults unassigned bodies to slot 0
+      } else {
+        usedSlots.add(slot);
+      }
+    }
+    const empty = [...usedSlots].filter((s) => !filaments[s]?.present).sort();
+    if (!empty.length && !unassigned) return;
+    const parts: string[] = [];
+    if (empty.length) {
+      parts.push(`slot${empty.length > 1 ? "s" : ""} ${empty.map((s) => s + 1).join(", ")} ha${empty.length > 1 ? "ve" : "s"} no filament loaded on the printer`);
+    }
+    if (unassigned) parts.push(`${unassigned} bod${unassigned > 1 ? "ies are" : "y is"} unassigned (defaulting to slot 1)`);
+    const { toast } = await import("../ui/toast");
+    toast(`Exported, but ${parts.join("; ")}.`, { kind: "warning" });
+  } catch {
+    // printer offline/slow/unconfigured — the check is best-effort by design
+  }
 }
 
 

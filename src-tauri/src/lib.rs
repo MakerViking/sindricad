@@ -157,6 +157,8 @@ pub fn run() {
         printer::printer_set_filament,
         printer::printer_monitor_start,
         printer::printer_monitor_stop,
+        printer::printer_camera_start,
+        printer::printer_camera_stop,
         slicer::settings_get,
         slicer::settings_set,
         slicer::print_staging_path,
@@ -189,6 +191,8 @@ pub fn run() {
         printer::printer_set_filament,
         printer::printer_monitor_start,
         printer::printer_monitor_stop,
+        printer::printer_camera_start,
+        printer::printer_camera_stop,
         slicer::settings_get,
         slicer::settings_set,
         slicer::print_staging_path,
@@ -206,6 +210,7 @@ pub fn run() {
 
     let app = builder
         .manage(printer::Monitors::default())
+        .manage(printer::Cameras::default())
         .setup(|app| {
             match Sidecar::spawn(app.handle()) {
                 Ok(s) => {

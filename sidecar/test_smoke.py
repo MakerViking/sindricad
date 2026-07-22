@@ -1383,6 +1383,11 @@ def test_export_project_3mf():
     )
     assert palette[1]["color"] == "#3050E0", "RRGGBBAA should normalize to #RRGGBB"
     assert not colors0, "out-of-range slot must be dropped"
+    pal_mat, _, _ = sanitize_inputs(
+        [{"name": "Red", "color": "#e03030", "material": "PLA"},
+         {"name": "Blue", "color": "#3050E0"}], {}, {})
+    assert pal_mat[0]["material"] == "PLA", "material must survive sanitize"
+    assert "material" not in pal_mat[1], "absent material stays absent"
 
     doc = {"parameters": {}, "features": [
         {"id": "s1", "type": "sketch", "plane": "XY",
@@ -1400,7 +1405,8 @@ def test_export_project_3mf():
         path = os.path.join(td, "proj.3mf")
         res = server._export_project_job(
             doc, path,
-            [{"name": "Red", "color": "#E03030"}, {"name": "Blue", "color": "#3050E0"}],
+            [{"name": "Red", "color": "#E03030", "material": "PETG"},
+             {"name": "Blue", "color": "#3050E0"}],
             {b1: 1},                # b0 unassigned → extruder 1
             {b0: "Left"},
             {"printer_model": "Snapmaker U1"},
@@ -1435,9 +1441,11 @@ def test_export_project_3mf():
     assert ext["2"] == "1", "unassigned body → extruder 1"
     assert ext["3"] == "2", "slot 1 → extruder 2 (1-based)"
     assert proj["filament_colour"] == ["#E03030", "#3050E0"]
+    assert proj["filament_type"] == ["PETG", "PLA"], \
+        "material → filament_type at its slot; material-less slot defaults PLA"
     assert proj["printer_model"] == "Snapmaker U1", "caller settings must survive"
     print("  project-3MF OK: zip layout, extruder metadata, filament_colour, "
-          "shared centering transform, sanitize")
+          "filament_type, shared centering transform, sanitize")
 
 
 if __name__ == "__main__":

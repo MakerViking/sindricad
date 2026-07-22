@@ -57,10 +57,14 @@ def sanitize_inputs(palette, body_colors, body_names):
     pal = []
     for slot in list(palette or [])[:MAX_SLOTS]:
         slot = slot if isinstance(slot, dict) else {}
-        pal.append({
+        entry = {
             "name": str(slot.get("name") or f"Filament {len(pal) + 1}")[:MAX_NAME],
             "color": _norm_color(slot.get("color")),
-        })
+        }
+        material = str(slot.get("material") or "").strip()[:MAX_NAME]
+        if material:
+            entry["material"] = material
+        pal.append(entry)
     colors = {}
     for bid, idx in dict(body_colors or {}).items():
         try:
@@ -174,6 +178,11 @@ def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
     # exactly the palette. Caller settings (e.g. a fully flattened profile in the
     # CLI path) override anything we derive here.
     proj = {"filament_colour": [s["color"] for s in palette]} if palette else {}
+    # filament_type parallels filament_colour when the palette knows materials
+    # (printer-synced slots carry them). Slots without one fall back to PLA —
+    # Orca's own default for an unconfigured slot.
+    if palette and any(s.get("material") for s in palette):
+        proj["filament_type"] = [s.get("material") or "PLA" for s in palette]
     proj.update(settings or {})
 
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:

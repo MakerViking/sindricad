@@ -30,6 +30,12 @@ export class BrowserTree {
   private selectedId: string | null = null;
   private collapsed = new Set<string>(); // folder names that are collapsed
   private printerOnline: boolean | null = null; // last printer-sync outcome (null = unknown → grey dot)
+  // passive printer checks (F1): one-shot probe + a single 30s staleness poll.
+  // BOTH are guarded by these fields — render() fires on every doc edit, so an
+  // unguarded re-arm here would probe the LAN per keystroke.
+  private probedOnce = false;
+  private pollTimer: number | null = null;
+  private staleSlots = new Set<number>(); // palette slots that differ from the printer (render-only)
   private lastSig = ""; // skip redundant rebuilds (doc + build both fire)
   // per-render map of row id → start-inline-rename, for programmatic rename
   // (right-click a body in the viewport → Rename…). Rebuilt on every real render.
@@ -120,7 +126,7 @@ export class BrowserTree {
       .map((b) => `${b.id}=${bodyLabel(b)}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}${this.isBodySelected?.(b.id) ? ":s" : ""}#${this.store.bodyColorSlot(b.id) ?? ""}`)
       .join(",");
     const palSig = this.store.colorPalette.map((s) => `${s.name}:${s.color}:${s.material ?? ""}`).join(",");
-    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}|${this.printerOnline}`;
+    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}|${this.printerOnline}|${[...this.staleSlots].join(",")}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
     this.renameHooks.clear(); // rebuilt below with the fresh rows
@@ -209,15 +215,20 @@ export class BrowserTree {
    *  to a slot, so editing one recolors everything using it. The header carries a
    *  connection dot + "sync from printer" button (Stage C). */
   private renderPalette() {
+    this.armPrinterChecks();
     const pal = this.store.colorPalette;
     const collapsed = this.collapsed.has("Palette");
     const head = document.createElement("div");
     head.className = "tree-folder";
-    const dotColor = this.printerOnline == null ? "#888" : this.printerOnline ? "#3ba55d" : "#d23b30";
+    const stale = this.printerOnline === true && this.staleSlots.size > 0;
+    const dotColor = this.printerOnline == null ? "#888" : !this.printerOnline ? "#d23b30" : stale ? "#d2a83b" : "#3ba55d";
+    const dotTitle = stale
+      ? `Printer filaments changed since sync (slot${this.staleSlots.size > 1 ? "s" : ""} ${[...this.staleSlots].map((i) => i + 1).join(", ")}) — click ⇅ to re-sync`
+      : "Printer connection";
     head.innerHTML =
       `<span class="tree-caret">${collapsed ? "▸" : "▾"}</span><span class="feature-icon">◳</span><span>Palette</span>` +
       `<span style="flex:1"></span>` +
-      `<span class="pal-dot" title="Printer connection" style="width:8px;height:8px;border-radius:50%;background:${dotColor};display:inline-block;margin-right:6px"></span>` +
+      `<span class="pal-dot" title="${esc(dotTitle)}" style="width:8px;height:8px;border-radius:50%;background:${dotColor};display:inline-block;margin-right:6px"></span>` +
       `<button class="pal-sync" title="Sync filaments from printer" style="background:none;border:none;color:inherit;cursor:pointer;font-size:13px;padding:0 4px;margin-right:6px">⇅</button>` +
       `<span class="tree-count">${pal.length}</span>`;
     head.addEventListener("click", (e) => {
@@ -247,6 +258,58 @@ export class BrowserTree {
       );
       this.el.appendChild(row);
     });
+  }
+
+  /** Passive printer checks, armed ONCE from the first renderPalette reach:
+   *  a one-shot probe (lights the dot without a sync click) and a single 30s
+   *  staleness poll (re-diffs printer filaments vs the palette WITHOUT applying;
+   *  skipped while the tab is hidden or the folder is collapsed). The tree
+   *  lives for the app's lifetime, so the interval is never torn down. */
+  private armPrinterChecks() {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    if (!this.probedOnce) {
+      this.probedOnce = true;
+      void (async () => {
+        try {
+          const { activePrinterId, printerProbe } = await import("../print/printerClient");
+          const info = await printerProbe(activePrinterId());
+          this.printerOnline = info.online;
+        } catch {
+          this.printerOnline = false; // passive — no toast
+        }
+        this.render();
+      })();
+    }
+    if (this.pollTimer == null) {
+      this.pollTimer = window.setInterval(() => void this.pollStaleness(), 30_000);
+    }
+  }
+
+  private async pollStaleness() {
+    if (document.visibilityState !== "visible" || this.collapsed.has("Palette")) return;
+    try {
+      const { activePrinterId, printerFilaments } = await import("../print/printerClient");
+      const filaments = await printerFilaments(activePrinterId());
+      this.printerOnline = true;
+      this.staleSlots = this.filamentDiffSlots(filaments);
+    } catch {
+      this.printerOnline = false;
+      this.staleSlots.clear();
+    }
+    this.render();
+  }
+
+  /** Slots where the printer's loaded filament differs from the palette — the
+   *  same name/color criteria the sync-confirm dialog diffs on. */
+  private filamentDiffSlots(filaments: { index: number; present: boolean; vendor: string; material: string; color: string }[]): Set<number> {
+    const cur = this.store.colorPalette;
+    const out = new Set<number>();
+    filaments.forEach((f, i) => {
+      if (!f.present || i >= cur.length) return;
+      const name = `${f.vendor} ${f.material}`.trim() || `Toolhead ${f.index + 1}`;
+      if (cur[i]?.name !== name || cur[i]?.color !== f.color) out.add(i);
+    });
+    return out;
   }
 
   /** Pull the printer's loaded filaments into the palette, 1:1 by toolhead index.
@@ -300,6 +363,7 @@ export class BrowserTree {
     }
 
     this.store.applyFilamentSync(proposed);
+    this.staleSlots.clear(); // palette now matches the printer by construction
     this.render();
     toast("Palette synced from printer.", { kind: "info" });
   }

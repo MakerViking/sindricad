@@ -330,14 +330,20 @@ export class ExtrudeTool {
       this.committing = true;
       // in edit mode the SAVED operation is the presumptive choice; otherwise
       // the direction-derived guess is.
-      const guess = this.editId ? (this.editOp ?? op) : op;
+      let guess = this.editId ? (this.editOp ?? op) : op;
+      // All-glyph profile (sketch text): a flush emboss on a body direction-
+      // guesses "join", but joined text can never print in its own color — bias
+      // the default to New Body so the two-tone path is one Enter away. Cut
+      // (engraving) guesses stay untouched.
+      const isTextProfile = this.selected.every((wr) => wr.entityId !== undefined);
+      if (!this.editId && isTextProfile && guess === "join") guess = "new";
       // op === "cut" ⇔ the extrude direction enters solid (currentOperation).
       // Flag whichever op would then do nothing, so the choice is informed.
       const into = op === "cut";
       const opts: { value: Op; label: string; hint: string }[] = [
         { value: "join", label: "Join", hint: into ? "⚠ likely no effect (profile is inside)" : "merge" },
         { value: "cut", label: "Cut", hint: into ? "remove" : "⚠ nothing to cut here" },
-        { value: "new", label: "New Body", hint: "separate" },
+        { value: "new", label: "New Body", hint: isTextProfile ? "separate — assign its own print color" : "separate" },
         { value: "intersect", label: "Intersect", hint: "keep overlap" },
       ];
       opts.sort((a, b) => (a.value === guess ? -1 : b.value === guess ? 1 : 0)); // default first

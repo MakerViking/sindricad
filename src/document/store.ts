@@ -552,7 +552,10 @@ export class DocumentStore {
     if (this.suppressed.size) out.suppressed = [...this.suppressed];
     if (this.rollback !== null) out.rollback = this.rollback;
     for (const { overlay } of this.overlays) overlay.writeJSON(out as unknown as Record<string, unknown>);
-    if (this.bodyColors.size) out.palette = this.palette; // only meaningful alongside assignments
+    // Persist the palette whenever it carries information: body assignments
+    // reference it, and a synced/customized palette is project state in its own
+    // right (the "design in loaded colors" premise) even with zero assignments.
+    if (this.bodyColors.size || !this.paletteIsDefault()) out.palette = this.palette;
     return JSON.stringify(out, null, 2);
   }
   load(json: string) {

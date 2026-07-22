@@ -21,6 +21,7 @@ export interface TextureValues {
   seed: number;
   invert: boolean;
   imagePath?: string;
+  colorSlot?: number; // palette slot for a two-tone inlay; undefined = body color
 }
 
 const KIND_OPTIONS: [TextureKind, string][] = [
@@ -81,7 +82,13 @@ export class TexturePanel {
   }
 
   show(
-    opts: { editing: boolean; mode: TextureMode; summary: string; initial: Partial<TextureValues> },
+    opts: {
+      editing: boolean;
+      mode: TextureMode;
+      summary: string;
+      initial: Partial<TextureValues>;
+      palette?: { name: string; color: string }[];
+    },
     handlers: {
       onCommit: (v: TextureValues) => void;
       onCancel: () => void;
@@ -215,6 +222,17 @@ export class TexturePanel {
     updateVisibility();
     kind.addEventListener("change", () => { updateVisibility(); emit(); });
 
+    // --- Inlay color: which palette slot the textured faces print in (two-tone).
+    // Only shown when the caller passed a palette (i.e. in a doc with bodies).
+    const colorSlot = document.createElement("select");
+    inputStyle(colorSlot);
+    Object.assign(colorSlot.style, { flex: "1" });
+    colorSlot.appendChild(new Option("Body color", ""));
+    (opts.palette ?? []).forEach((s, i) => colorSlot.appendChild(new Option(`${s.name} (slot ${i + 1})`, String(i))));
+    colorSlot.value = opts.initial.colorSlot != null ? String(opts.initial.colorSlot) : "";
+    const colorRow = row(label("Print color"), colorSlot);
+    if (!opts.palette?.length) colorRow.style.display = "none";
+
     // --- Advanced: offset ---
     const details = document.createElement("details");
     const summary = document.createElement("summary");
@@ -245,10 +263,11 @@ export class TexturePanel {
       seed: parseFloat(seed.value) || 1,
       invert: invert.checked,
       ...(imagePath ? { imagePath } : {}),
+      ...(colorSlot.value !== "" ? { colorSlot: Number(colorSlot.value) } : {}),
     });
 
     const emit = () => this.onChange?.(this.read!());
-    for (const el of [depth, scale, angle, sharpness, direction, seed, invert, offset]) {
+    for (const el of [depth, scale, angle, sharpness, direction, seed, invert, offset, colorSlot]) {
       el.addEventListener("input", emit);
       el.addEventListener("change", emit);
     }

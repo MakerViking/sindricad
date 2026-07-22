@@ -78,6 +78,12 @@ def validate_texture_spec(f):
     }
     if kind == "image":
         spec["imagePath"] = image_path
+    # Two-tone inlay: which palette slot the textured faces print in. Kept out
+    # of the spec when unset so old docs hash identically (texture_key). Never
+    # affects displaced geometry — do NOT bump CODE_VERSION for it.
+    color_slot = f.get("colorSlot")
+    if isinstance(color_slot, (int, float)) and not isinstance(color_slot, bool) and int(color_slot) >= 0:
+        spec["colorSlot"] = int(color_slot)
     return spec
 
 

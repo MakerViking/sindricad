@@ -399,6 +399,7 @@ export class Viewport {
   // per-body assigned colors (body id → hex) shown as the default base when no
   // analysis overlay is active; pushed from main.ts on color change + rebuild.
   private bodyPaint: Record<string, string> = {};
+  private texturePaint: Record<number, string> = {};
   // zebra-stripe + curvature-comb overlays (display-only; re-applied on rebuild)
   private zebra = false;
   private zebraMat: THREE.ShaderMaterial | null = null;
@@ -454,8 +455,12 @@ export class Viewport {
         return beta < this.draftThreshold ? OVERHANG : WALL;
       });
     } else {
-      // default appearance: assigned per-body colors, else the neutral shade
+      // default appearance: per-face texture-inlay colors win over the body's
+      // assigned color, else the neutral shade. (component/draft overlays above
+      // deliberately mask both — analysis modes stay mutually exclusive.)
       this.highlighter.setBase((fid) => {
+        const texHex = this.texturePaint[fid];
+        if (texHex) return new THREE.Color(texHex);
         const bid = this.faceIdToBodyId(fid);
         const hex = bid ? this.bodyPaint[bid] : undefined;
         return hex ? new THREE.Color(hex) : BASE_COLOR;
@@ -468,6 +473,13 @@ export class Viewport {
    *  overlay is currently masking them. */
   setBodyPaint(map: Record<string, string>) {
     this.bodyPaint = map;
+    if (this.analysis === "none") this.applyAnalysis();
+  }
+
+  /** per-face texture-inlay colors (global face id → hex), from texture features
+   *  carrying a colorSlot — same lifecycle as setBodyPaint. */
+  setTexturePaint(map: Record<number, string>) {
+    this.texturePaint = map;
     if (this.analysis === "none") this.applyAnalysis();
   }
 

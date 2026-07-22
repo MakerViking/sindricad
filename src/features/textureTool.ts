@@ -128,6 +128,7 @@ export class TextureTool {
       seed: (f.seed as number) ?? 1,
       invert: f.invert ?? false,
       ...(f.imagePath ? { imagePath: f.imagePath } : {}),
+      ...(typeof f.colorSlot === "number" ? { colorSlot: f.colorSlot } : {}),
     };
     this.awaitingRollback = true;
     this.lastFaceIds = [];
@@ -172,7 +173,7 @@ export class TextureTool {
 
   private openPanel(editing: boolean) {
     this.panel.show(
-      { editing, mode: this.mode, summary: this.currentSummary(), initial: this.values },
+      { editing, mode: this.mode, summary: this.currentSummary(), initial: this.values, palette: this.store.colorPalette },
       {
         onCommit: (v) => { this.values = v; this.commit(); },
         onCancel: () => this.cancel(),
@@ -315,7 +316,15 @@ export class TextureTool {
 
   private buildFeature(): Feature | null {
     const v = this.values;
-    const base = { id: this.previewId, type: "texture" as const, kind: v.kind, depth: v.depth, scale: v.scale, ...this.kindFields(v) };
+    const base = {
+      id: this.previewId,
+      type: "texture" as const,
+      kind: v.kind,
+      depth: v.depth,
+      scale: v.scale,
+      ...(v.colorSlot != null ? { colorSlot: v.colorSlot } : {}), // two-tone inlay slot (any kind)
+      ...this.kindFields(v),
+    };
     if (this.mode === "faces") {
       const sel = this.viewport.selectedFacesForPressPull();
       if (!sel || !sel.faceIds.length) return null;

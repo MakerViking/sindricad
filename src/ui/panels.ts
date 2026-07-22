@@ -7,20 +7,23 @@ import type { Viewport } from "../viewport/viewport";
 import type { GeometryBackend } from "../geometry/client";
 import { esc } from "./escape";
 import { getUnit, toDisplay, round } from "./units";
+import { printerCameraStart, printerCameraStop, onPrinterCameraFrame, onPrinterCameraOffline } from "../print/printerClient";
 
 /** One floating "measure-panel" element with optional Esc-to-dismiss. Only one
  *  instance's content is ever shown at a time per panel — open() replaces it. */
 class FloatingPanel {
   private el: HTMLDivElement | null = null;
   private onEsc: ((e: KeyboardEvent) => void) | null = null;
+  private onClose: (() => void) | null = null;
 
-  open(html: string, opts: { closeOnEsc?: boolean } = {}): HTMLDivElement {
+  open(html: string, opts: { closeOnEsc?: boolean; onClose?: () => void } = {}): HTMLDivElement {
     this.close();
     const el = document.createElement("div");
     el.className = "measure-panel";
     el.innerHTML = html;
     document.body.appendChild(el);
     this.el = el;
+    this.onClose = opts.onClose ?? null;
     if (opts.closeOnEsc) {
       this.onEsc = (e) => {
         if (e.key === "Escape") this.close();
@@ -31,6 +34,11 @@ class FloatingPanel {
   }
 
   close() {
+    // fire the teardown hook first (and only once) — panels with live
+    // subscriptions (camera) rely on EVERY dismissal path landing here.
+    const hook = this.onClose;
+    this.onClose = null;
+    hook?.();
     this.el?.remove();
     this.el = null;
     if (this.onEsc) {
@@ -171,7 +179,50 @@ export function createPanels(deps: PanelsDeps) {
     thr.addEventListener("input", apply);
   }
 
-  return { showProperties, showInterference, showOverhangSettings, closeOverhangSettings };
+  // --- Printer camera: live snapshot frames from the Rust poller. The webview
+  // never dials the LAN — Rust polls the printer's webcam and pushes JPEG
+  // data: URLs (CSP img-src already allows data:). Polling stops on ANY panel
+  // dismissal via the onClose hook (Esc included).
+  const cameraPanel = new FloatingPanel();
+  async function showCameraPanel(printerId: string) {
+    const html =
+      `<div class="measure-title">Camera — ${esc(printerId)}</div>` +
+      `<img class="camera-frame" alt="printer camera" style="display:block;max-width:480px;min-width:320px;min-height:180px;background:#111">` +
+      `<div class="camera-offline" style="display:none;padding:8px;color:#e24a3b">camera unavailable <button class="camera-retry">Retry</button></div>` +
+      `<div class="measure-hint">~1 frame/s · Esc to close</div>`;
+    let unlistenFrame: (() => void) | null = null;
+    let unlistenOffline: (() => void) | null = null;
+    const el = cameraPanel.open(html, {
+      closeOnEsc: true,
+      onClose: () => {
+        void printerCameraStop(printerId).catch(() => {});
+        unlistenFrame?.();
+        unlistenOffline?.();
+      },
+    });
+    const img = el.querySelector(".camera-frame") as HTMLImageElement;
+    const offline = el.querySelector(".camera-offline") as HTMLDivElement;
+    const start = async () => {
+      offline.style.display = "none";
+      try {
+        await printerCameraStart(printerId);
+      } catch {
+        offline.style.display = "block";
+      }
+    };
+    unlistenFrame = await onPrinterCameraFrame((e) => {
+      if (e.id !== printerId) return;
+      offline.style.display = "none";
+      img.src = e.data_url;
+    });
+    unlistenOffline = await onPrinterCameraOffline((id) => {
+      if (id === printerId) offline.style.display = "block";
+    });
+    (el.querySelector(".camera-retry") as HTMLButtonElement).addEventListener("click", () => void start());
+    await start();
+  }
+
+  return { showProperties, showInterference, showOverhangSettings, closeOverhangSettings, showCameraPanel };
 }
 
 export type Panels = ReturnType<typeof createPanels>;

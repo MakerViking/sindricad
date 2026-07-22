@@ -276,6 +276,19 @@ def _body_payload(b, tolerance):
                                     density_cap=VIEWPORT_DENSITY_CAP, normals_out=norm_chunks)
         owners_map = b.get("owners") or {}
         face_owners = [owners_map.get(_face_fp(face)) for face in sh.faces()]
+        # Two-tone inlay preview: dense per-face palette-slot array, same
+        # sh.faces() enumeration the fid convention uses. Sparse-by-convention —
+        # None (omitted key) when no texture on this body carries a colorSlot.
+        tex_color_slots = None
+        if textures:
+            face_specs = {}
+            for spec, faces in textures:
+                for f in faces:
+                    face_specs[_face_fp(f)] = spec  # later feature wins, like tessellate
+            tex_color_slots = [(face_specs.get(_face_fp(face)) or {}).get("colorSlot")
+                               for face in sh.faces()]
+            if not any(s is not None for s in tex_color_slots):
+                tex_color_slots = None
         edges = edge_polylines_by_body([b])
         for e in edges:
             e.pop("id", None)  # ids are assigned client-side after assembly
@@ -284,6 +297,8 @@ def _body_payload(b, tolerance):
             "faceOwners": face_owners, "edges": edges,
             "faceCount": (max(fids) + 1) if fids else 0,
         }
+        if tex_color_slots:
+            payload["textureColorSlots"] = tex_color_slots
         if norm_chunks:
             # a textured body ships explicit normals: plain faces get the same
             # area-weighted accumulation the client would compute, textured

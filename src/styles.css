@@ -1317,6 +1317,10 @@ button.finish:hover {
   border-color: var(--error);
   background: linear-gradient(180deg, rgba(80, 24, 24, 0.55), var(--panel-2));
 }
+.toast-warning {
+  border-color: #d2a83b;
+  background: linear-gradient(180deg, rgba(80, 62, 16, 0.5), var(--panel-2));
+}
 .toast-msg {
   overflow: hidden;
   text-overflow: ellipsis;

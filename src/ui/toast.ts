@@ -6,7 +6,7 @@
 // ("Show" → select the failing feature).
 
 export interface ToastOptions {
-  kind?: "error" | "info";
+  kind?: "error" | "warning" | "info";
   action?: { label: string; onClick: () => void };
   timeout?: number; // ms; errors default longer
 }
@@ -59,5 +59,5 @@ export function toast(message: string, opts: ToastOptions = {}) {
   el.appendChild(close);
 
   host.appendChild(el);
-  timer = window.setTimeout(dismiss, opts.timeout ?? (kind === "error" ? 8000 : 3500));
+  timer = window.setTimeout(dismiss, opts.timeout ?? (kind === "error" ? 8000 : kind === "warning" ? 6000 : 3500));
 }

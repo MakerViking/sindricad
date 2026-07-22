@@ -36,6 +36,14 @@ pub struct PrinterConfig {
     pub host: String,
     pub port: u16,
     pub kind: PrinterKind,
+    /// port of the printer's webcam HTTP server (U1 ships it on :80). Defaulted
+    /// so a printers.json written before this field existed still deserializes.
+    #[serde(default = "default_webcam_port")]
+    pub webcam_port: u16,
+}
+
+fn default_webcam_port() -> u16 {
+    80
 }
 
 // --- error taxonomy (mapped to toasts on the frontend) ------------------------
@@ -85,6 +93,7 @@ fn seed_registry() -> Vec<PrinterConfig> {
             host: "192.168.0.46".into(),
             port: 7125,
             kind: PrinterKind::MoonrakerU1,
+            webcam_port: 80,
         },
         PrinterConfig {
             id: "qidi-xplus4".into(),
@@ -92,6 +101,7 @@ fn seed_registry() -> Vec<PrinterConfig> {
             host: "192.168.0.76".into(),
             port: 10088,
             kind: PrinterKind::Moonraker,
+            webcam_port: 80,
         },
     ]
 }
@@ -137,6 +147,10 @@ fn resolve(app: &AppHandle, id: &str) -> PResult<PrinterConfig> {
 
 fn base_url(cfg: &PrinterConfig) -> String {
     format!("http://{}:{}", cfg.host, cfg.port)
+}
+
+fn webcam_base_url(cfg: &PrinterConfig) -> String {
+    format!("http://{}:{}", cfg.host, cfg.webcam_port)
 }
 
 fn http() -> PResult<reqwest::Client> {
@@ -557,6 +571,96 @@ pub fn printer_monitor_stop(app: AppHandle, id: String) -> PResult<()> {
     Ok(())
 }
 
+// --- camera monitor (poll snapshot.jpg → emit "printer:camera-frame") ----------
+//
+// Lifecycle is PANEL-driven, deliberately decoupled from the print-status
+// monitor: frames only flow while someone is looking at them. The U1's webcam
+// server (fw 1.3.0) serves /webcam/snapshot.jpg (and a native ~11fps MJPEG
+// stream we don't use — 1fps snapshots are enough for "is the print ok" and an
+// order of magnitude less bandwidth). Frames reach the webview as data: URLs,
+// which the strict CSP already allows in img-src — no CSP change, no LAN access
+// from the webview.
+
+/// Separate map from `Monitors`: camera polling starts/stops with its panel,
+/// not with print monitoring.
+#[derive(Default)]
+pub struct Cameras(pub Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>);
+
+#[derive(Serialize, Clone)]
+struct CameraFrameEvent {
+    id: String,
+    data_url: String,
+}
+
+#[tauri::command]
+pub fn printer_camera_start(app: AppHandle, id: String) -> PResult<()> {
+    let cfg = resolve(&app, &id)?;
+    let url = format!("{}/webcam/snapshot.jpg", webcam_base_url(&cfg));
+    let cameras = app.state::<Cameras>();
+    if let Some(h) = cameras.0.lock().unwrap().remove(&id) {
+        h.abort();
+    }
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let client = match http() {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = app2.emit("printer:camera-offline", id2.clone());
+                if let Some(m) = app2.try_state::<Cameras>() {
+                    m.0.lock().unwrap().remove(&id2);
+                }
+                return;
+            }
+        };
+        let mut fails = 0u8;
+        // no terminal-state exit — the camera has no "printing" concept; it
+        // stops on explicit printer_camera_stop or repeated fetch failure.
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let frame = async {
+                let resp = client.get(&url).send().await.ok()?;
+                if !resp.status().is_success() {
+                    return None;
+                }
+                resp.bytes().await.ok()
+            }
+            .await;
+            match frame {
+                Some(bytes) => {
+                    fails = 0;
+                    use base64::Engine;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    let _ = app2.emit(
+                        "printer:camera-frame",
+                        CameraFrameEvent { id: id2.clone(), data_url: format!("data:image/jpeg;base64,{b64}") },
+                    );
+                }
+                None => {
+                    fails += 1;
+                    if fails >= 3 {
+                        let _ = app2.emit("printer:camera-offline", id2.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(m) = app2.try_state::<Cameras>() {
+            m.0.lock().unwrap().remove(&id2);
+        }
+    });
+    cameras.0.lock().unwrap().insert(id, handle);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn printer_camera_stop(app: AppHandle, id: String) -> PResult<()> {
+    if let Some(h) = app.state::<Cameras>().0.lock().unwrap().remove(&id) {
+        h.abort();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +687,27 @@ mod tests {
         assert!(!valid_host("192.168.0.46/x"));
         assert!(!valid_host("a@b"));
         assert!(!valid_host(""));
+    }
+
+    #[test]
+    fn webcam_url_uses_its_own_port() {
+        let cfg = PrinterConfig {
+            id: "t".into(),
+            name: "t".into(),
+            host: "192.168.0.46".into(),
+            port: 7125,
+            kind: PrinterKind::MoonrakerU1,
+            webcam_port: 8080,
+        };
+        assert_eq!(webcam_base_url(&cfg), "http://192.168.0.46:8080");
+        assert_eq!(base_url(&cfg), "http://192.168.0.46:7125");
+    }
+
+    #[test]
+    fn printer_config_deserializes_without_webcam_port() {
+        // a printers.json written before the field existed must still load.
+        let old = r#"{"id":"u1","name":"U1","host":"192.168.0.46","port":7125,"kind":"MoonrakerU1"}"#;
+        let cfg: PrinterConfig = serde_json::from_str(old).unwrap();
+        assert_eq!(cfg.webcam_port, 80);
     }
 }

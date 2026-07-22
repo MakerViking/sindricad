@@ -110,6 +110,7 @@ interface WireBodyFull {
   // (plain faces carry the same accumulation the client would compute)
   normals?: F32Wire;
   faceOwners?: (string | null)[];
+  textureColorSlots?: (number | null)[];
   edges?: { points: [number, number, number][]; body?: string }[];
   faceCount?: number;
 }
@@ -489,6 +490,7 @@ export class Geometry implements GeometryBackend {
         id: p.id, name: p.name, faceStart: faceBase,
         faceCount: p.faceCount ?? 0,
         ...(p.faceOwners !== undefined ? { faceOwners: p.faceOwners } : {}),
+        ...(p.textureColorSlots !== undefined ? { textureColorSlots: p.textureColorSlots } : {}),
         ...(p.etag !== undefined ? { etag: p.etag } : {}),
       });
       faceBase += p.faceCount ?? 0;

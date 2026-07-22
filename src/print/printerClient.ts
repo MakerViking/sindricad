@@ -13,6 +13,7 @@ export interface PrinterConfig {
   host: string;
   port: number;
   kind: PrinterKind;
+  webcam_port: number;
 }
 
 export interface ToolheadFilament {
@@ -91,6 +92,22 @@ export function onPrinterStatus(fn: (e: PrintStatus & { id: string }) => void): 
 }
 export function onPrinterOffline(fn: (id: string) => void): Promise<UnlistenFn> {
   return listen<string>("printer:offline", (ev) => fn(ev.payload));
+}
+
+// --- camera (snapshot polling → data-URL frames; panel-driven lifecycle) ------
+
+export function printerCameraStart(id: string): Promise<void> {
+  return invoke("printer_camera_start", { id });
+}
+export function printerCameraStop(id: string): Promise<void> {
+  return invoke("printer_camera_stop", { id });
+}
+/** JPEG frames as data: URLs, ~1 fps while a camera panel is open. */
+export function onPrinterCameraFrame(fn: (e: { id: string; data_url: string }) => void): Promise<UnlistenFn> {
+  return listen<{ id: string; data_url: string }>("printer:camera-frame", (ev) => fn(ev.payload));
+}
+export function onPrinterCameraOffline(fn: (id: string) => void): Promise<UnlistenFn> {
+  return listen<string>("printer:camera-offline", (ev) => fn(ev.payload));
 }
 
 // --- active-printer selection (display concern → localStorage) ----------------

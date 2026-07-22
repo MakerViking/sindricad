@@ -20,6 +20,8 @@ import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMo
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
+import { activePrinterId } from "./print/printerClient";
+import { setPrinterPillClick } from "./print/printStatusLine";
 import { installAutosave, checkRecovery } from "./io/recovery";
 import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
 import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
@@ -210,6 +212,7 @@ new Menubar(document.getElementById("menubar")!, [
       { separator: true, label: "" },
       { label: "Open in OrcaSlicer…", onClick: () => void openInOrca(store, geometry) },
       { label: "Send to Printer…", onClick: () => void sendToPrinter(store, geometry) },
+      { label: "Camera…", onClick: () => void panels.showCameraPanel(activePrinterId()) },
     ],
   },
   {
@@ -568,6 +571,22 @@ function computeBodyPaint(): Record<string, string> {
   return out;
 }
 
+// two-tone texture inlays: per-face palette overrides (global face id → hex),
+// from the sidecar's textureColorSlots (dense per-body face array, sparse key).
+function computeTexturePaint(): Record<number, string> {
+  const pal = store.colorPalette;
+  const out: Record<number, string> = {};
+  for (const b of store.buildState.result?.bodies ?? []) {
+    const slots = b.textureColorSlots;
+    if (!slots) continue;
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i];
+      if (s != null && pal[s]) out[b.faceStart + i] = pal[s]!.color;
+    }
+  }
+  return out;
+}
+
 // Failed-commit visibility: a feature that errors in the rebuild leaves the
 // model looking UNCHANGED (its body keeps the old mesh), so without an active
 // notification the only signal is the small status line — "nothing happened".
@@ -598,6 +617,7 @@ store.onBuild((s) => {
       viewport.setModel(s.result, firstModel, hidden);
       firstModel = false;
       viewport.setBodyPaint(computeBodyPaint()); // apply assigned per-body colors
+      viewport.setTexturePaint(computeTexturePaint()); // + per-face inlay colors
     } else {
       viewport.clearModel();
     }
@@ -751,6 +771,8 @@ const projBtn = document.getElementById("proj") as HTMLButtonElement;
 projBtn.addEventListener("click", () => handleAction("persp"));
 
 const panels = createPanels({ store, viewport, geometry, hasBody, setStatus, selBtn });
+// clicking the live print-progress pill opens the camera on the active printer.
+setPrinterPillClick(() => void panels.showCameraPanel(activePrinterId()));
 
 function editFeature(id: string) {
   selectFeature(id);

@@ -157,12 +157,76 @@ def variant_project():
     print(f"  wrote {path}")
 
 
+# --- Variant E: PROJECT format + per-triangle mmu_segmentation (F2 Stage 4 gate)
+# The unverified combination the two-tone texture export depends on: ONE object
+# inside the BambuStudio-flavored project layout (model_settings extruder rows,
+# project_settings filament slots) whose top-face triangles carry
+# slic3rpe:mmu_segmentation. PASS = Orca opens it as a U1 project AND slices the
+# top face on extruder 2 while the body stays on extruder 1.
+def variant_project_mmuseg():
+    v, t = _box(0, 0, 0)
+    # every triangle tagged explicitly (no fallback ambiguity): body=ext1 ("4"),
+    # top face (triangles 2,3) = ext2 ("8") — mirrors what the production
+    # exporter will emit for a colorSlot-tagged textured face.
+    seg = ["4"] * 12
+    seg[2] = seg[3] = "8"
+    tris = "".join(
+        f'<triangle v1="{a}" v2="{b}" v3="{c}" slic3rpe:mmu_segmentation="{seg[i]}"/>'
+        for i, (a, b, c) in enumerate(t))
+    verts = _verts_xml(v)
+    model = f"""<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US"
+ xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
+ xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"
+ xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"
+ xmlns:BambuStudio="http://schemas.bambulab.com/package/2021">
+ <metadata name="Application">SindriCAD</metadata>
+ <metadata name="BambuStudio:3mfVersion">1</metadata>
+ <resources>
+  <m:basematerials id="1">
+   <m:base name="Red" displaycolor="#E03030FF"/>
+   <m:base name="Blue" displaycolor="#3050E0FF"/>
+  </m:basematerials>
+  <object id="2" type="model" name="TwoToneCube" pid="1" pindex="0"><mesh><vertices>{verts}</vertices><triangles>{tris}</triangles></mesh></object>
+ </resources>
+ <build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 125 125 0" printable="1"/></build>
+</model>"""
+    model_settings = """<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <object id="2">
+    <metadata key="name" value="TwoToneCube"/>
+    <metadata key="extruder" value="1"/>
+    <part id="1" subtype="normal_part">
+      <metadata key="name" value="TwoToneCube"/>
+    </part>
+  </object>
+</config>"""
+    import json
+    proj = json.dumps({
+        "filament_colour": ["#E03030", "#3050E0"],
+        "printer_model": "Snapmaker U1", "printer_variant": "0.4",
+        "version": "2.4.0.0",
+    }, indent=1)
+    os.makedirs(OUT, exist_ok=True)
+    path = f"{OUT}/E_project_mmuseg.3mf"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", CT)
+        z.writestr("_rels/.rels", RELS)
+        z.writestr("3D/3dmodel.model", model)
+        z.writestr("Metadata/model_settings.config", model_settings)
+        z.writestr("Metadata/project_settings.config", proj)
+    print(f"  wrote {path}")
+
+
 if __name__ == "__main__":
     print("colored-3MF spike → " + OUT)
     variant_objects()
     variant_mmuseg()
     variant_colorgroup()
     variant_project()
-    print("Open all four in OrcaSlicer; report which show Red+Blue mapped to "
+    variant_project_mmuseg()
+    print("Open all five in OrcaSlicer; report which show Red+Blue mapped to "
           "separate toolheads/filaments. D must open AS A PROJECT with the "
-          "Snapmaker U1 preset selected.")
+          "Snapmaker U1 preset selected. E is the F2-Stage-4 gate: PASS = the "
+          "cube opens as a project on the U1 preset AND its top shows the "
+          "second filament color (per-triangle paint inside a project 3MF).")
