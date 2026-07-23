@@ -535,11 +535,208 @@ fn avatar_url_allowed(url: &str) -> bool {
             .unwrap_or(false)
 }
 
+// --- bug reports ------------------------------------------------------------------
+//
+// In-app bug reporter: assembles a scrubbed diagnostic payload (description,
+// breadcrumbs, sidecar-log tail, optional document) and POSTs it to the
+// TinkerAtlas ingest endpoint. Works signed OUT (anonymous report, no bearer)
+// — the primary use case is "the app is broken", possibly before first
+// sign-in. Redaction happens HERE, natively, before anything leaves the
+// machine; the server re-scrubs as defense in depth but must never be the
+// only line.
+
+const LOG_TAIL_BYTES: usize = 100_000;
+const MAX_DOCUMENT_BYTES: usize = 1_500_000;
+
+/// Redact the username segment of OS user directories, generically: any
+/// `\Users\<name>` (drive or UNC form) and `/home/<name>` / `/Users/<name>`.
+/// Pattern-based rather than resolving THIS machine's home dir, so paths
+/// embedded from other machines/users (in logs or pasted text) scrub too.
+fn redact_user_paths(s: &str) -> String {
+    fn redact_after(hay: &str, needle_lower: &str, sep: &[char]) -> String {
+        let mut out = String::with_capacity(hay.len());
+        let lower = hay.to_lowercase();
+        let mut i = 0;
+        while let Some(rel) = lower[i..].find(needle_lower) {
+            let start = i + rel + needle_lower.len();
+            out.push_str(&hay[i..start]);
+            let rest = &hay[start..];
+            let seg_end = rest
+                .find(|c: char| sep.contains(&c) || c.is_whitespace() || c == '"' || c == '\'')
+                .unwrap_or(rest.len());
+            if seg_end > 0 {
+                out.push_str("[REDACTED]");
+            }
+            i = start + seg_end;
+        }
+        out.push_str(&hay[i..]);
+        out
+    }
+    let s = redact_after(s, "\\users\\", &['\\', '/']);
+    let s = redact_after(&s, "/home/", &['/', '\\']);
+    redact_after(&s, "/users/", &['/', '\\'])
+}
+
+/// FNV-1a 64-bit, hex — dedup fingerprint (collision-tolerant grouping key,
+/// not a security hash; avoids a new crate for sha2).
+fn fnv1a64_hex(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// last `max` bytes of the sidecar log, lossily decoded (never fails the
+/// report over a missing/unreadable log — the report IS the diagnostic path).
+fn read_log_tail(app: &AppHandle, max: usize) -> Option<String> {
+    let path = app.path().app_data_dir().ok()?.join("sidecar.log");
+    let bytes = std::fs::read(path).ok()?;
+    let start = bytes.len().saturating_sub(max);
+    Some(String::from_utf8_lossy(&bytes[start..]).into_owned())
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct BugReportResult {
+    pub bug_id: Option<String>,
+    pub deduplicated: bool,
+}
+
+#[tauri::command]
+pub async fn ta_bug_report(
+    app: AppHandle,
+    description: String,
+    app_version: String,
+    sidecar_connected: bool,
+    include_log: bool,
+    breadcrumbs: Vec<String>,
+    document_json: Option<String>,
+) -> TResult<BugReportResult> {
+    let description = description.trim().to_string();
+    if description.is_empty() {
+        return Err(TaError::new(TaErrCode::Config, "describe the problem first"));
+    }
+    // signed-out is fine — report goes anonymous
+    let account = read_account(&app).unwrap_or(None);
+
+    let clean_description = redact_user_paths(&description);
+    let first_line = clean_description.lines().next().unwrap_or("bug report");
+    let title: String = first_line.chars().take(120).collect();
+    let fingerprint = fnv1a64_hex(&format!("{app_version}|{first_line}"));
+
+    let log_tail = if include_log {
+        read_log_tail(&app, LOG_TAIL_BYTES).map(|t| redact_user_paths(&t))
+    } else {
+        None
+    };
+    let breadcrumbs: Vec<String> = breadcrumbs
+        .iter()
+        .rev()
+        .take(20)
+        .rev()
+        .map(|b| redact_user_paths(b))
+        .collect();
+
+    let document_value: Option<serde_json::Value> = match document_json {
+        Some(ref s) if s.len() > MAX_DOCUMENT_BYTES => {
+            return Err(TaError::new(
+                TaErrCode::Config,
+                "document too large to attach — send the report without it",
+            ));
+        }
+        Some(ref s) => Some(serde_json::from_str(s).map_err(|e| {
+            TaError::new(TaErrCode::Config, format!("document isn't valid JSON: {e}"))
+        })?),
+        None => None,
+    };
+
+    let body = serde_json::json!({
+        "title": title,
+        "description": clean_description,
+        "app_version": app_version,
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "sidecar_connected": sidecar_connected,
+        "log_tail": log_tail,
+        "breadcrumbs": breadcrumbs,
+        "fingerprint": fingerprint,
+        "document_json": document_value,
+    });
+
+    let client = http(Duration::from_secs(30))?;
+    let mut req = client.post(format!("{BASE}/api/desktop/bug-report")).json(&body);
+    if let Some(acct) = &account {
+        req = req.bearer_auth(&acct.token);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| TaError::new(TaErrCode::Unreachable, e.to_string()))?;
+    let status = resp.status();
+    if status.as_u16() == 429 {
+        return Err(TaError::new(
+            TaErrCode::Rejected,
+            "too many reports from this connection — try again later",
+        ));
+    }
+    if !status.is_success() {
+        let msg = resp.text().await.unwrap_or_default();
+        return Err(TaError::new(
+            TaErrCode::Rejected,
+            format!("server rejected the report (HTTP {status}): {msg}"),
+        ));
+    }
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| TaError::new(TaErrCode::Protocol, e.to_string()))?;
+    Ok(BugReportResult {
+        bug_id: v.get("bug_id").and_then(|x| x.as_str()).map(String::from),
+        deduplicated: v.get("deduplicated").and_then(|x| x.as_bool()).unwrap_or(false),
+    })
+}
+
 // --- tests -----------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_path_redaction() {
+        // Windows drive + the exact field-log shape
+        assert_eq!(
+            redact_user_paths(r"spawn: C:\Users\jrabi\AppData\Local\SindriCAD\python.exe"),
+            r"spawn: C:\Users\[REDACTED]\AppData\Local\SindriCAD\python.exe"
+        );
+        // UNC form
+        assert_eq!(
+            redact_user_paths(r"\\HOST\Users\someone\share"),
+            r"\\HOST\Users\[REDACTED]\share"
+        );
+        // Unix + macOS homes, including a NON-current-machine name
+        assert_eq!(
+            redact_user_paths("path /home/alice/proj/x.py and /Users/bob/y"),
+            "path /home/[REDACTED]/proj/x.py and /Users/[REDACTED]/y"
+        );
+        // segment ends at whitespace/quote
+        assert_eq!(
+            redact_user_paths(r#"log at "C:\Users\name" end"#),
+            r#"log at "C:\Users\[REDACTED]" end"#
+        );
+        // untouched text stays byte-identical
+        assert_eq!(redact_user_paths("no paths here"), "no paths here");
+    }
+
+    #[test]
+    fn fingerprint_is_stable_hex() {
+        let a = fnv1a64_hex("0.1.48|geometry engine connection lost");
+        assert_eq!(a.len(), 16);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(a, fnv1a64_hex("0.1.48|geometry engine connection lost"));
+        assert_ne!(a, fnv1a64_hex("0.1.49|geometry engine connection lost"));
+    }
 
     #[test]
     fn token_sanitization() {

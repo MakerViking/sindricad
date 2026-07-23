@@ -11,6 +11,8 @@ export interface ToastOptions {
   timeout?: number; // ms; errors default longer
 }
 
+import { crumb } from "../diagnostics/breadcrumbs";
+
 let stack: HTMLDivElement | null = null;
 
 function ensureStack(): HTMLDivElement {
@@ -25,6 +27,7 @@ function ensureStack(): HTMLDivElement {
 export function toast(message: string, opts: ToastOptions = {}) {
   const host = ensureStack();
   const kind = opts.kind ?? "info";
+  crumb(`[${kind}] ${message}`); // toasts double as bug-report breadcrumbs
   // keep the stack short — oldest goes first
   while (host.children.length >= 3) host.firstElementChild?.remove();
 

@@ -22,6 +22,8 @@ import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportM
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
+import { createBugReporter } from "./ui/bugReporter";
+import "./diagnostics/breadcrumbs"; // installs window error listeners (bug-report trail)
 import { installAutosave, checkRecovery } from "./io/recovery";
 import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
 import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
@@ -772,6 +774,7 @@ const projBtn = document.getElementById("proj") as HTMLButtonElement;
 projBtn.addEventListener("click", () => handleAction("persp"));
 
 const panels = createPanels({ store, viewport, geometry, hasBody, setStatus, selBtn });
+createBugReporter({ store, geometry }); // floating bug icon, bottom-right
 // clicking the live print-progress pill opens the camera on the active printer.
 setPrinterPillClick(() => void panels.showCameraPanel(activePrinterId()));
 

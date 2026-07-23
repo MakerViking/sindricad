@@ -171,7 +171,8 @@ pub fn run() {
         tinkeratlas::ta_ping,
         tinkeratlas::ta_staging_path,
         tinkeratlas::ta_publish,
-        tinkeratlas::ta_avatar
+        tinkeratlas::ta_avatar,
+        tinkeratlas::ta_bug_report
     ]);
     #[cfg(not(feature = "rust-geom"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -205,7 +206,8 @@ pub fn run() {
         tinkeratlas::ta_ping,
         tinkeratlas::ta_staging_path,
         tinkeratlas::ta_publish,
-        tinkeratlas::ta_avatar
+        tinkeratlas::ta_avatar,
+        tinkeratlas::ta_bug_report
     ]);
 
     let app = builder

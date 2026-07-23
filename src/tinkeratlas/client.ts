@@ -86,6 +86,25 @@ export function taPing(): Promise<boolean> {
   return invoke("ta_ping");
 }
 
+/** Submit an in-app bug report (works signed out — goes anonymous). */
+export function taBugReport(args: {
+  description: string;
+  appVersion: string;
+  sidecarConnected: boolean;
+  includeLog: boolean;
+  breadcrumbs: string[];
+  documentJson?: string;
+}): Promise<{ bug_id: string | null; deduplicated: boolean }> {
+  return invoke("ta_bug_report", {
+    description: args.description,
+    appVersion: args.appVersion,
+    sidecarConnected: args.sidecarConnected,
+    includeLog: args.includeLog,
+    breadcrumbs: args.breadcrumbs,
+    documentJson: args.documentJson ?? null,
+  });
+}
+
 /** Staging path under app_data/publish/ for the sidecar to export into. */
 export function taStagingPath(name: string, ext: string): Promise<string> {
   return invoke("ta_staging_path", { name, ext });
