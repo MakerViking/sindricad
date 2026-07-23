@@ -189,6 +189,14 @@ impl Sidecar {
             .map(|f| Arc::new(Mutex::new(f)));
         if let Some(l) = &log {
             if let Ok(mut f) = l.lock() {
+                // self-identifying header: field logs get pasted without context
+                let _ = writeln!(
+                    f,
+                    "SindriCAD {} ({} {})",
+                    app.package_info().version,
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
                 let _ = writeln!(f, "spawn: {:?} {:?} (cwd {:?})", rt.python, rt.script, rt.cwd);
             }
         }
