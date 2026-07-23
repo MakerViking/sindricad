@@ -62,8 +62,9 @@ _TOKEN: str | None = None
 # Origin (a non-browser client like a Python prober) is allowed — the token
 # alone gates it.
 ALLOWED_ORIGINS = {
-    "tauri://localhost",
-    "https://tauri.localhost",
+    "tauri://localhost",       # Linux (WebKitGTK) + macOS (WKWebView)
+    "http://tauri.localhost",  # Windows WebView2 (useHttpsScheme off — the default)
+    "https://tauri.localhost", # Windows WebView2 with useHttpsScheme on
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 }
@@ -932,6 +933,11 @@ def _authorized(request) -> bool:
         return False
     origin = request.headers.get("Origin", "")
     if origin and origin not in ALLOWED_ORIGINS:
+        # Loud on stderr (mirrored to sidecar.log): a silent origin rejection
+        # looked like a healthy-but-unreachable sidecar for three field reports
+        # straight — the Windows webview origin was missing from the allowlist.
+        print(f"[auth] rejected WS handshake from origin {origin!r} "
+              f"(allowed: {sorted(ALLOWED_ORIGINS)})", file=sys.stderr, flush=True)
         return False
     return True
 
