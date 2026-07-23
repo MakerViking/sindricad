@@ -328,7 +328,18 @@ export class TextureTool {
     if (this.mode === "faces") {
       const sel = this.viewport.selectedFacesForPressPull();
       if (!sel || !sel.faceIds.length) return null;
-      return { ...base, faces: sel.selectors.length === 1 ? sel.selectors[0]! : sel.selectors } as Feature;
+      // Bind the target body. Without it the sidecar falls back to the ACTIVE
+      // (last-created) body and resolves the face selector against the wrong
+      // shape — so with >1 body the texture lands on a random face of the last
+      // body, not the one clicked. A texture applies to a single body, so if the
+      // selection spans bodies keep only faces on the bound (first) one rather
+      // than silently resolving the rest against the wrong shape.
+      const body = sel.bodyId ?? undefined;
+      const selectors = body
+        ? sel.selectors.filter((_, i) => this.viewport.faceIdToBodyId(sel.faceIds[i]!) === body)
+        : sel.selectors;
+      if (!selectors.length) return null;
+      return { ...base, ...(body ? { body } : {}), faces: selectors.length === 1 ? selectors[0]! : selectors } as Feature;
     }
     const body = this.viewport.getSelectedBodies()[0];
     if (!body) return null;

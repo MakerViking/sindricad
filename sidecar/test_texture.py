@@ -272,6 +272,35 @@ def test_missing_image_is_feature_error_not_crash():
     print(PASS, "missing texture image is a contained feature error, not a crash")
 
 
+def test_texture_targets_bound_body_not_active_in_multibody():
+    # Regression: with >1 body, a texture that omits `body` falls back to the
+    # ACTIVE (last-created) body and resolves its face selector against the wrong
+    # shape — so it lands on a random face of the wrong body (field report). The
+    # frontend now binds `body`; the sidecar must honor it over require_active.
+    feats = _box(1, 20, 20, 5, x=0)[1] + _box(2, 20, 20, 5, x=100)[1]
+    sel = {"kind": "face", "by": "nearest", "point": [0, 0, 5]}  # aimed at body1's top
+
+    # no body → require_active fallback lands on body2 (the last one built)
+    part, errors, bodies = rebuild({"parameters": {}, "features": feats + [
+        {"id": "tex", "type": "texture", "kind": "knurl", "depth": 0.4, "scale": 2.0, "faces": sel}]})
+    assert not errors, errors
+    by_id = {b["id"]: b for b in bodies}
+    assert by_id["body2"].get("_textures") and not by_id["body1"].get("_textures"), \
+        "sanity: without `body`, the texture wrongly lands on the active (last) body"
+
+    # body=body1 → honored, texture lands on the intended body
+    part, errors, bodies = rebuild({"parameters": {}, "features": feats + [
+        {"id": "tex", "type": "texture", "kind": "knurl", "depth": 0.4, "scale": 2.0,
+         "body": "body1", "faces": sel}]})
+    assert not errors, errors
+    by_id = {b["id"]: b for b in bodies}
+    assert by_id["body1"].get("_textures") and not by_id["body2"].get("_textures"), \
+        "with `body=body1`, the texture must land on body1, not the active body"
+    resolved = texture.resolve_body_textures(by_id["body1"])
+    assert resolved and resolved[0][1], "the bound-body selector must resolve to a face"
+    print(PASS, "texture honors bound `body` over active-body fallback (multi-body)")
+
+
 def main():
     print("Surface-texture tests")
     test_validate_texture_spec_rejects_bad_input()
@@ -284,6 +313,7 @@ def main():
     test_height_field_kinds_in_zero_one_and_angle_rotates()
     test_height_field_image_bilinear()
     test_texture_selector_survives_downstream_fillet()
+    test_texture_targets_bound_body_not_active_in_multibody()
     test_missing_image_is_feature_error_not_crash()
     print("ALL PASS")
 
