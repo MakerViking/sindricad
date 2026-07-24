@@ -15,9 +15,12 @@ import type { ResolvedEntity } from "./snap";
 import { entityDims, type DimField } from "./entityDims";
 import { fmtLength, parseField, displayValue } from "../ui/units";
 
-/** format a dim value for display: length in the display unit, angle in degrees */
-const fmtDim = (mm: number, kind?: "length" | "angle") =>
-  kind === "angle" ? `${displayValue(mm, "angle")}°` : fmtLength(mm);
+/** format a dim value for display: length in the display unit, angle in degrees;
+ *  driven (reference) dims are wrapped in brackets. */
+const fmtDim = (mm: number, kind?: "length" | "angle", driven?: boolean) => {
+  const s = kind === "angle" ? `${displayValue(mm, "angle")}°` : fmtLength(mm);
+  return driven ? `(${s})` : s;
+};
 
 interface DimLabel {
   el: HTMLDivElement;
@@ -25,6 +28,7 @@ interface DimLabel {
   valueMm: number;
   commit: (mm: number) => void; // writes the value (entity field or constraint)
   kind?: "length" | "angle"; // default length; angle → degrees, no unit scaling
+  driven?: boolean; // reference dim: bracketed + read-only
   suppressEdit?: boolean; // pointerdown was forwarded to geometry underneath
 }
 
@@ -34,6 +38,7 @@ export interface ExtraDim {
   valueMm: number; // degrees when kind==="angle"
   commit: (mm: number) => void;
   kind?: "length" | "angle";
+  driven?: boolean;
 }
 
 export class SketchDimensions {
@@ -68,7 +73,7 @@ export class SketchDimensions {
       }
     });
     for (const x of extras) {
-      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}) });
+      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}), ...(x.driven ? { driven: true } : {}) });
     }
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
@@ -95,22 +100,26 @@ export class SketchDimensions {
 
   private addLabel(d: Omit<DimLabel, "el">) {
     const el = document.createElement("div");
-    el.className = "sketch-dim";
-    el.textContent = fmtDim(d.valueMm, d.kind);
-    el.title = "Click to edit";
+    el.className = d.driven ? "sketch-dim sketch-dim-driven" : "sketch-dim";
+    el.textContent = fmtDim(d.valueMm, d.kind, d.driven);
     const label: DimLabel = { el, ...d };
     el.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       label.suppressEdit = this.onOverlapPick?.(e) ?? false;
     });
-    el.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (label.suppressEdit) {
-        label.suppressEdit = false;
-        return;
-      }
-      this.beginEdit(label);
-    });
+    if (d.driven) {
+      el.title = "Reference dimension (measured, not driving)";
+    } else {
+      el.title = "Click to edit";
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (label.suppressEdit) {
+          label.suppressEdit = false;
+          return;
+        }
+        this.beginEdit(label);
+      });
+    }
     this.root.appendChild(el);
     this.labels.push(label);
   }

@@ -18,6 +18,7 @@ import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimFie
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
 import { circumcenter, arcCenterRadius } from "./arc";
+import { signedAngleDeg } from "./geom2d";
 import { compileAndSolve, coincKey } from "./sketchSolve";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { expandPattern, translated } from "./pattern";
@@ -88,20 +89,6 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 
 const GRID_STEP = 5;
 
-/** Signed angle (degrees, in (-180,180]) from line l1's direction to line l2's,
- *  matching planegcs's l2l_angle sense so seeding an angle dim with it is a no-op. */
-function signedAngleDeg(
-  l1: { x1: number; y1: number; x2: number; y2: number },
-  l2: { x1: number; y1: number; x2: number; y2: number },
-): number {
-  const a = Math.atan2(l1.y2 - l1.y1, l1.x2 - l1.x1);
-  const b = Math.atan2(l2.y2 - l2.y1, l2.x2 - l2.x1);
-  let d = ((b - a) * 180) / Math.PI;
-  while (d > 180) d -= 360;
-  while (d <= -180) d += 360;
-  return d;
-}
-
 // Sentinel id for the in-progress text tool's live-preview entity: it lives on the
 // active entity list (so it repaints through the normal render path) but is never
 // committed — filtered out at serialization and dropped on tool switch/cancel.
@@ -171,6 +158,7 @@ export class SketchMode {
   private gridVisible = true;
   private gridSnap = true;
   private constructionMode = false;
+  private referenceMode = false; // dimensions placed as driven/reference (measured only)
   private dimsVisible = true;
   private readonly textPanel = new TextPanel();
   private fonts: string[] = []; // system fonts for the text tool (loaded on enter)
@@ -423,6 +411,14 @@ export class SketchMode {
   setConstruction(on: boolean) {
     this.constructionMode = on;
   }
+  setReferenceDim(on: boolean) {
+    this.referenceMode = on;
+  }
+  /** place a dimension, stamping it driven (reference, measured-only) when the
+   *  Reference palette toggle is on. */
+  private placeDim(c: SketchConstraint) {
+    this.setDrivingDimension(this.referenceMode ? ({ ...c, driven: true } as SketchConstraint) : c);
+  }
   setDimensionsVisible(on: boolean) {
     this.dimsVisible = on;
     this.refreshActive(); // toggles both the dimension lines and the value labels
@@ -466,6 +462,7 @@ export class SketchMode {
       anchor: d.labelPos,
       valueMm: d.valueMm,
       ...(d.kind ? { kind: d.kind } : {}),
+      ...(d.driven ? { driven: true } : {}),
       commit: (val: number) => {
         const c = this.constraints[d.cIndex];
         if (c && (c.type === "p2pDistance" || c.type === "p2lDistance" || c.type === "radius" || c.type === "angle")) {
@@ -1290,7 +1287,7 @@ export class SketchMode {
       if (pt && !(pt.e.id === first.e.id && pt.p === first.p)) {
         const cur = first.pos.distanceTo(pt.pos);
         if (cur < 1e-6) return; // coincident points carry no distance
-        this.setDrivingDimension({ type: "p2pDistance", e1: first.e.id, p1: first.p, e2: pt.e.id, p2: pt.p, value: cur });
+        this.placeDim({ type: "p2pDistance", e1: first.e.id, p1: first.p, e2: pt.e.id, p2: pt.p, value: cur });
         return;
       }
       const idx = pickEntity(this.entities, p, this.pickTol());
@@ -1301,7 +1298,7 @@ export class SketchMode {
         const len = Math.hypot(dx, dy) || 1;
         const cur = Math.abs((first.pos.x - e.x1) * dy - (first.pos.y - e.y1) * dx) / len;
         if (cur < 1e-6) return; // the point lies on the line
-        this.setDrivingDimension({ type: "p2lDistance", e: first.e.id, p: first.p, line: e.id, value: cur });
+        this.placeDim({ type: "p2lDistance", e: first.e.id, p: first.p, line: e.id, value: cur });
         return;
       }
       return; // picked nothing usable: two-pick flow reset
@@ -1348,7 +1345,7 @@ export class SketchMode {
     this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
       const val = this.dim.getValue("angle") ?? cur;
       this.dim.hide();
-      this.setDrivingDimension({ type: "angle", l1: l1.id, l2: l2.id, value: val });
+      this.placeDim({ type: "angle", l1: l1.id, l2: l2.id, value: val });
     });
     this.dim.updateFromCursor({ angle: cur });
     toast("Angle: type the included angle between the two lines");
@@ -1361,7 +1358,7 @@ export class SketchMode {
     this.dim.show([{ name: "radius", label: "R", kind: "length" }], () => {
       const mm = this.dim.getValue("radius") ?? cur;
       this.dim.hide();
-      this.setDrivingDimension({ type: "radius", e: e.id, value: mm });
+      this.placeDim({ type: "radius", e: e.id, value: mm });
     });
     this.dim.updateFromCursor({ radius: cur });
   }

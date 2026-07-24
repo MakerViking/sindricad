@@ -82,4 +82,22 @@ describe("constraintDims (radius + angle driving dims)", () => {
     const cons: SketchConstraint[] = [{ type: "radius", e: "gone", value: 3 }];
     expect(constraintDims([], cons)).toEqual([]);
   });
+
+  it("driving p2pDistance shows the stored value; driven shows the measured value", () => {
+    const l: ResolvedEntity = { type: "line", id: "l", x1: 0, y1: 0, x2: 10, y2: 0 };
+    const driving = constraintDims([l], [{ type: "p2pDistance", e1: "l", p1: 0, e2: "l", p2: 1, value: 7 }]);
+    expect(driving[0]!.driven).toBeFalsy();
+    expect(driving[0]!.valueMm).toBe(7); // stored driving value
+
+    const driven = constraintDims([l], [{ type: "p2pDistance", e1: "l", p1: 0, e2: "l", p2: 1, value: 999, driven: true }]);
+    expect(driven[0]!.driven).toBe(true);
+    expect(driven[0]!.valueMm).toBeCloseTo(10); // live measurement, not the stale 999
+  });
+
+  it("driven radius reports the measured radius", () => {
+    const c: ResolvedEntity = { type: "circle", id: "c", radius: 5, x: 0, y: 0 };
+    const dims = constraintDims([c], [{ type: "radius", e: "c", value: 99, driven: true }]);
+    expect(dims[0]!.driven).toBe(true);
+    expect(dims[0]!.valueMm).toBeCloseTo(5);
+  });
 });

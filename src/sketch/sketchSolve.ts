@@ -20,6 +20,7 @@ import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, t
 import { circumcenter } from "./arc";
 import { rectCorners } from "./region";
 import type { SketchConstraint } from "../types";
+import { isDriven } from "../types";
 
 export interface SolvePass {
   entities: ResolvedEntity[];
@@ -157,6 +158,7 @@ export async function compileAndSolve(
     ends.has(id) ? "line" : centers.has(id) ? "circle" : arcMap.has(id) ? "arc" : undefined;
   constraints.forEach((c, i) => {
     const id = `k${i}`; // user constraint ids never collide with `~` implicit ones
+    if (isDriven(c)) return; // reference dim: measured only, never constrains
     if (c.type === "horizontal") { if (isLine(c.line)) cons.push({ id, type: "horizontal", line: c.line }); }
     else if (c.type === "vertical") { if (isLine(c.line)) cons.push({ id, type: "vertical", line: c.line }); }
     else if (c.type === "parallel") { if (isLine(c.l1) && isLine(c.l2)) cons.push({ id, type: "parallel", l1: c.l1, l2: c.l2 }); }

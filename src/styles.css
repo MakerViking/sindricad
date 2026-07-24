@@ -1478,6 +1478,18 @@ button.finish:hover {
   border-color: var(--accent-hot);
   color: var(--accent-hot);
 }
+/* driven (reference) dimension: measured-only, shown bracketed + muted, read-only */
+.sketch-dim-driven {
+  border-style: dashed;
+  border-color: var(--text-dim, #8a90a0);
+  color: var(--text-dim, #8a90a0);
+  cursor: default;
+}
+.sketch-dim-driven:hover {
+  background: rgba(18, 20, 25, 0.92);
+  border-color: var(--text-dim, #8a90a0);
+  color: var(--text-dim, #8a90a0);
+}
 /* non-select tools: labels visible but click-through (a label floating over a
    circle center must not swallow the dimension/draw pick underneath) */
 .sketch-dims.dims-passive .sketch-dim {

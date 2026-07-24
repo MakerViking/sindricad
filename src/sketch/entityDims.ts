@@ -7,9 +7,10 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
+import { isDriven } from "../types";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { rectCorners } from "./region";
-import { paramOnSeg } from "./geom2d";
+import { paramOnSeg, signedAngleDeg } from "./geom2d";
 
 export type DimField = "width" | "height" | "diameter" | "length";
 type V = THREE.Vector2;
@@ -177,6 +178,7 @@ export interface ConstraintDim {
   valueMm: number; // the driving value (degrees when kind==="angle")
   lines: [V, V][];
   kind?: "length" | "angle"; // default length; angle → value shown in degrees
+  driven?: boolean; // reference dim: shown in brackets, measured live, read-only
 }
 
 /** annotation + label geometry for the distance constraints (the driving dims
@@ -185,6 +187,7 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
   const byId = new Map(ents.map((e) => [e.id, e]));
   const out: ConstraintDim[] = [];
   constraints.forEach((c, i) => {
+    const driven = isDriven(c);
     // radius (circle/arc): a radial line from center to rim + an "R" label
     if (c.type === "radius") {
       const e = byId.get(c.e);
@@ -198,7 +201,7 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       } else return;
       const d = v(Math.SQRT1_2, Math.SQRT1_2); // 45° radial
       out.push({
-        cIndex: i, valueMm: c.value,
+        cIndex: i, valueMm: driven ? r : c.value, driven,
         labelPos: v(cx + d.x * r * 0.6, cy + d.y * r * 0.6),
         lines: [[v(cx, cy), v(cx + d.x * r, cy + d.y * r)]],
       });
@@ -210,10 +213,12 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       if (!l1 || l1.type !== "line" || !l2 || l2.type !== "line") return;
       const m1 = v((l1.x1 + l1.x2) / 2, (l1.y1 + l1.y2) / 2);
       const m2 = v((l2.x1 + l2.x2) / 2, (l2.y1 + l2.y2) / 2);
-      out.push({ cIndex: i, valueMm: c.value, labelPos: m1.clone().add(m2).multiplyScalar(0.5), lines: [], kind: "angle" });
+      out.push({ cIndex: i, valueMm: driven ? signedAngleDeg(l1, l2) : c.value, labelPos: m1.clone().add(m2).multiplyScalar(0.5), lines: [], kind: "angle", driven });
       return;
     }
-    // each branch yields the measured pair (a, b); the shared tail draws it
+    // each branch yields the measured pair (a, b); the shared tail draws it.
+    // (distance/diameter aren't handled here — their measurement always shows via
+    // the entity's own length/diameter badge, so reference mode doesn't apply.)
     let a: V | null = null;
     let b: V | null = null;
     let value = 0;
@@ -232,10 +237,12 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       }
       value = c.value;
     } else return;
-    if (!a || !b || a.distanceTo(b) < 1e-6) return;
+    if (!a || !b) return;
+    const meas = a.distanceTo(b);
+    if (meas < 1e-6) return;
     const dir = b.clone().sub(a).normalize();
-    const lin = linear(a, b, v(-dir.y, dir.x), a.distanceTo(b));
-    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: value, lines: lin.lines });
+    const lin = linear(a, b, v(-dir.y, dir.x), meas);
+    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: driven ? meas : value, lines: lin.lines, driven });
   });
   return out;
 }

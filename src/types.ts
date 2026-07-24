@@ -70,16 +70,21 @@ export type SketchConstraint =
   | { type: "parallel"; l1: string; l2: string }
   | { type: "perpendicular"; l1: string; l2: string }
   | { type: "equal"; l1: string; l2: string }
+  // A driven (reference) dimension is measurement-only: the solver ignores it and
+  // it renders bracketed with the live measured value (see `isDriven`). Only the
+  // *placed* dims (p2pDistance/p2lDistance/radius/angle) carry `driven?` — a line's
+  // length and a circle's diameter always show their measurement via the entity's
+  // own length/diameter badge, so reference mode doesn't apply to them.
   | { type: "distance"; line: string; value: number }
   | { type: "diameter"; circle: string; value: number }
   // p2pDistance: driving distance between two picked points. `p*` selects the
   // point on each entity: 0/1 = start/end (lines, arcs, spline ends), 0..3 =
   // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
   // resolves to its center. Point entities ignore the index.
-  | { type: "p2pDistance"; e1: string; p1: number; e2: string; p2: number; value: number }
+  | { type: "p2pDistance"; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean }
   // p2lDistance: driving perpendicular distance from a picked point to a line
   // entity (same `p` semantics as p2pDistance)
-  | { type: "p2lDistance"; e: string; p: number; line: string; value: number }
+  | { type: "p2lDistance"; e: string; p: number; line: string; value: number; driven?: boolean }
   // tangent: a line and a circle/arc touch (line tangent to the circle)
   | { type: "tangent"; line: string; circle: string }
   // coincident: two entity endpoints share a position. `e1`/`e2` are entity ids;
@@ -92,9 +97,9 @@ export type SketchConstraint =
   // symmetric: two endpoints mirror across a line (the symmetry axis)
   | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string }
   // angle: driving included angle (DEGREES) between two lines (solver works in radians)
-  | { type: "angle"; l1: string; l2: string; value: number }
+  | { type: "angle"; l1: string; l2: string; value: number; driven?: boolean }
   // radius: driving radius (mm) of a circle OR arc entity `e`
-  | { type: "radius"; e: string; value: number }
+  | { type: "radius"; e: string; value: number; driven?: boolean }
   // fix/lock: pin an entity point in place. `p` uses the dimPoint semantics
   // (0..3 = rect corner, circle center regardless of index, 2 = arc center,
   // else line/arc/spline endpoint). Fully removes that point's 2 DOF.
@@ -106,6 +111,13 @@ export type SketchConstraint =
   // tangent2: general tangency between two curves (line/circle/arc, not line+line).
   // The older { type:"tangent"; line; circle } form is still accepted (old files).
   | { type: "tangent2"; a: string; b: string };
+
+/** A driven (reference) dimension is measurement-only: the solver skips it and it
+ *  renders bracketed with the live measured value. The single place that names the
+ *  concept — only the placed dims (p2pDistance/p2lDistance/radius/angle) can be driven. */
+export function isDriven(c: SketchConstraint): boolean {
+  return (c as { driven?: boolean }).driven === true;
+}
 
 // A parametric pattern inside a sketch. Stored as a DEFINITION (sources + params)
 // and expanded to derived entities at build/render time, so it stays editable

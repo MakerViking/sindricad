@@ -56,3 +56,18 @@ export function distToSeg(p1: V, p2: V, q: V): number {
   const t = Math.max(0, Math.min(1, paramOnSeg(p1, p2, q)));
   return q.distanceTo(v(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t));
 }
+
+/** Signed included angle (degrees, in (-180,180]) from line l1's direction to
+ *  line l2's. Matches planegcs's l2l_angle sense, so seeding an angle dimension
+ *  with it is a solve no-op. Used for the driving angle seed and the driven readout. */
+export function signedAngleDeg(
+  l1: { x1: number; y1: number; x2: number; y2: number },
+  l2: { x1: number; y1: number; x2: number; y2: number },
+): number {
+  const a = Math.atan2(l1.y2 - l1.y1, l1.x2 - l1.x1);
+  const b = Math.atan2(l2.y2 - l2.y1, l2.x2 - l2.x1);
+  let d = ((b - a) * 180) / Math.PI;
+  while (d > 180) d -= 360;
+  while (d <= -180) d += 360;
+  return d;
+}
