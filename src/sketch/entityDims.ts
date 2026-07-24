@@ -108,7 +108,8 @@ export function entityDims(e: ResolvedEntity): EntityDim[] {
   if (e.type === "text") return []; // text has no editable linear dimension
   if (e.type === "polygon") {
     const rr = e.radius;
-    const c = v(Math.cos(e.angle), Math.sin(e.angle));
+    const a = (e.angle * Math.PI) / 180; // stored degrees
+    const c = v(Math.cos(a), Math.sin(a));
     return [{
       field: "radius", label: "Radius", valueMm: rr,
       labelPos: v(e.x + c.x * rr * 0.6, e.y + c.y * rr * 0.6),

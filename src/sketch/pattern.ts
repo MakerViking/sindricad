@@ -88,7 +88,7 @@ export function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, 
       return [{ type: "spline", id, points: e.points.map((p) => { const [x, y] = R(p.x, p.y); return { x, y }; }), ...c }];
     case "polygon": {
       const [x, y] = R(e.x, e.y);
-      return [{ type: "polygon", id, x, y, radius: e.radius, sides: e.sides, angle: e.angle + ang, ...c }];
+      return [{ type: "polygon", id, x, y, radius: e.radius, sides: e.sides, angle: e.angle + (ang * 180) / Math.PI, ...c }];
     }
     case "slot": {
       const [x1, y1] = R(e.x1, e.y1), [x2, y2] = R(e.x2, e.y2);

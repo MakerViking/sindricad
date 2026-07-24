@@ -47,7 +47,9 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
     case "point":
       return [v(e.x, e.y)]; // a point has no extent: a single vertex, no segments
     case "polygon":
-      return closed(polygonPoints(e.x, e.y, e.radius, e.sides, e.angle));
+      // e.angle is stored in DEGREES (like every other angle field); the math
+      // helper below works in radians.
+      return closed(polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180));
     case "slot":
       return closed(slotOutline(e.x1, e.y1, e.x2, e.y2, e.width));
     case "text":

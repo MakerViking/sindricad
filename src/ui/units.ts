@@ -73,7 +73,10 @@ export function snap(v: number, step: number): number {
   return round(Math.round(v / step) * step);
 }
 
-export type FieldKind = "length" | "angle" | "count";
+// FieldKind lives in the document layer (numFields.ts); re-exported here for
+// the input-side consumers that historically import it from units.
+import type { FieldKind } from "../document/numFields";
+export type { FieldKind };
 
 /** numeric value to show in a field: angles stay in degrees, lengths convert */
 export function displayValue(mm: number, kind: FieldKind = "length"): number {

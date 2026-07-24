@@ -5,6 +5,7 @@
 
 import type { CadDocument, Feature, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend } from "../geometry/client";
+import { FORMAT_VERSION, migrateDocument } from "./migrate";
 
 export interface RebuildState {
   building: boolean;
@@ -33,9 +34,6 @@ const DEFAULT_PALETTE: { name: string; color: string }[] = [
   { name: "Red", color: "#d23b30" },
   { name: "Blue", color: "#3050c8" },
 ];
-
-/** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
-const FORMAT_VERSION = 1;
 
 /** A persisted display-only override map (id -> value): sketch/body/plane
  *  visibility, body names, and body colors all hand-rolled the same shape —
@@ -113,11 +111,16 @@ export class DocumentStore {
     progress: null,
   };
 
+  /** surfaced when load() finds something worth telling the user (e.g. a file
+   *  written by a newer app version). Wired to a toast in main.ts. */
+  onLoadWarning?: (msg: string) => void;
+
   constructor(
     private geometry: GeometryBackend,
     initial: CadDocument,
   ) {
     this.doc = clone(initial);
+    migrateDocument(this.doc); // the seed doc skips load(); normalize it the same way
     // long-rebuild progress frames -> live "building 57/103" in the timeline
     geometry.onProgress?.((feature) => {
       if (!this.build.building) return;
@@ -565,6 +568,7 @@ export class DocumentStore {
     } catch (e) {
       throw new Error(`could not read document: ${e instanceof Error ? e.message : String(e)}`);
     }
+    for (const w of migrateDocument(parsed)) this.onLoadWarning?.(w);
     this.pushUndo();
     this.redoStack = [];
     // split persisted project state back out of the document; keep `this.doc`
@@ -575,6 +579,7 @@ export class DocumentStore {
     this.palette = parsed.palette?.length ? parsed.palette.map((s) => ({ ...s })) : DEFAULT_PALETTE.map((s) => ({ ...s }));
     this.doc = {
       parameters: parsed.parameters ?? {},
+      ...(parsed.paramDefs ? { paramDefs: parsed.paramDefs } : {}),
       features: parsed.features ?? [],
       ...(parsed.viewOverrides ? { viewOverrides: parsed.viewOverrides } : {}),
     };

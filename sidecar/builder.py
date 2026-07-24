@@ -4056,7 +4056,7 @@ def _build_sketch(f, val, datums=None):
             cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
             r = val(e["radius"])
             n = max(3, int(round(val(e["sides"]))))
-            ang = val(e.get("angle", 0))
+            ang = math.radians(val(e.get("angle", 0)))  # stored DEGREES (format v2)
             pts = [
                 (cx + math.cos(ang + i / n * 2 * math.pi) * r, cy + math.sin(ang + i / n * 2 * math.pi) * r)
                 for i in range(n)

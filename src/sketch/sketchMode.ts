@@ -18,7 +18,7 @@ import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine } from "./modify";
-import { newEntityId, notePatternId } from "./id";
+import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { signedAngleDeg } from "./geom2d";
 import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
@@ -535,26 +535,35 @@ export class SketchMode {
     });
   }
 
-  /** Add/replace the driving dimension on an entity, then re-solve. */
+  /** Add/replace the driving dimension on an entity, then re-solve. A dim gets
+   *  its stable id at birth; a replacement inherits the replaced dim's id, so a
+   *  parameter binding survives retyping the dimension. */
   private setDrivingDimension(c: SketchConstraint) {
-    this.constraints = this.constraints.filter((k) => {
-      if (c.type === "distance" && k.type === "distance") return k.line !== c.line;
-      if (c.type === "diameter" && k.type === "diameter") return k.circle !== c.circle;
+    const sameTarget = (k: SketchConstraint): boolean => {
+      if (c.type === "distance" && k.type === "distance") return k.line === c.line;
+      if (c.type === "diameter" && k.type === "diameter") return k.circle === c.circle;
       if (c.type === "p2pDistance" && k.type === "p2pDistance") {
-        const same =
+        return (
           (k.e1 === c.e1 && k.p1 === c.p1 && k.e2 === c.e2 && k.p2 === c.p2) ||
-          (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1);
-        return !same;
+          (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1)
+        );
       }
       if (c.type === "p2lDistance" && k.type === "p2lDistance") {
-        return !(k.e === c.e && k.p === c.p && k.line === c.line);
+        return k.e === c.e && k.p === c.p && k.line === c.line;
       }
-      if (c.type === "radius" && k.type === "radius") return k.e !== c.e;
+      if (c.type === "radius" && k.type === "radius") return k.e === c.e;
       if (c.type === "angle" && k.type === "angle") {
-        return !((k.l1 === c.l1 && k.l2 === c.l2) || (k.l1 === c.l2 && k.l2 === c.l1));
+        return (k.l1 === c.l1 && k.l2 === c.l2) || (k.l1 === c.l2 && k.l2 === c.l1);
       }
-      return true;
+      return false;
+    };
+    let replacedId: string | undefined;
+    this.constraints = this.constraints.filter((k) => {
+      if (!sameTarget(k)) return true;
+      if (isDimConstraint(k) && k.id) replacedId = k.id;
+      return false;
     });
+    if (isDimConstraint(c) && !c.id) c.id = replacedId ?? newConstraintId();
     this.constraints.push(c);
     this.requestSolve();
   }
@@ -769,7 +778,7 @@ export class SketchMode {
       const a = this.clickPts[0];
       if (a) {
         const vertex = this.polygonVertex(a, cursor);
-        pv.push({ type: "polygon", id: "", x: a.x, y: a.y, radius: a.distanceTo(vertex), sides: Math.max(3, Math.round(this.polygonSides)), angle: Math.atan2(vertex.y - a.y, vertex.x - a.x) });
+        pv.push({ type: "polygon", id: "", x: a.x, y: a.y, radius: a.distanceTo(vertex), sides: Math.max(3, Math.round(this.polygonSides)), angle: (Math.atan2(vertex.y - a.y, vertex.x - a.x) * 180) / Math.PI });
         dims = { radius: a.distanceTo(vertex) };
       }
     } else if (this.tool === "slot") {
@@ -1088,11 +1097,11 @@ export class SketchMode {
     this.commitPolygon(center, vertex);
   }
   /** Commit a regular polygon as one parametric entity (rigid — the solver
-   *  skips it; `angle` is the first-vertex angle in RADIANS). */
+   *  skips it; `angle` is the first-vertex angle in DEGREES). */
   private commitPolygon(center: THREE.Vector2, vertex: THREE.Vector2) {
     const r = center.distanceTo(vertex);
     if (r < 1e-4) return;
-    const angle = Math.atan2(vertex.y - center.y, vertex.x - center.x);
+    const angle = (Math.atan2(vertex.y - center.y, vertex.x - center.x) * 180) / Math.PI;
     const e: ResolvedEntity = {
       type: "polygon", id: newEntityId(), x: center.x, y: center.y,
       radius: r, sides: Math.max(3, Math.round(this.polygonSides)), angle,

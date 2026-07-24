@@ -85,6 +85,7 @@ if ("__TAURI_INTERNALS__" in window) {
   });
 }
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
+store.onLoadWarning = (msg) => toast(msg);
 // crash-safety: periodic recovery snapshots + restore-on-launch prompt
 installAutosave(store);
 void checkRecovery(store);

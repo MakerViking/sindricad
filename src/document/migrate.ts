@@ -1,0 +1,92 @@
+// Load-time document migration to FORMAT_VERSION 2 (parameters engine era).
+// Mutates the parsed document in place and returns user-facing warnings.
+// Everything here is idempotent, so it can safely run on every load.
+//
+// v1 → v2 changes:
+//  - polygon.angle was stored in RADIANS (the lone outlier — every other angle
+//    field is degrees); v2 stores DEGREES.
+//  - dimension constraints gain a stable `id` ("c" prefix, sketch/id.ts).
+//  - bare parameter NAMES stored in numeric fields ("distance": "thickness")
+//    become model parameters (dN rows in `paramDefs` with a target binding) and
+//    the field is rewritten to the cached number — loss-free, same geometry.
+//  - plain user parameters get a paramDefs row (expr = the literal).
+
+import type { CadDocument, ParamDef, ParamTarget } from "../types";
+import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFields";
+import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id";
+
+/** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
+export const FORMAT_VERSION = 2;
+
+export function migrateDocument(parsed: CadDocument): string[] {
+  const version = parsed.version ?? 1;
+  if (version > FORMAT_VERSION) {
+    // Best effort: load what we understand, but don't rewrite shapes we don't.
+    return [
+      "This file was made by a newer version of SindriCAD — unknown data (e.g. parameter expressions) may be lost if you save it here.",
+    ];
+  }
+
+  const features = parsed.features ?? [];
+  const params = parsed.parameters ?? {};
+  const defs: Record<string, ParamDef> = parsed.paramDefs ?? {};
+
+  // --- v1: polygon.angle radians → degrees ---
+  if (version < 2) {
+    for (const f of features) {
+      if (f.type !== "sketch") continue;
+      for (const e of f.entities) {
+        if (e.type === "polygon" && typeof e.angle === "number") {
+          e.angle = (e.angle * 180) / Math.PI;
+        }
+      }
+    }
+  }
+
+  // --- stamp dimension-constraint ids (reserve all loaded ones first) ---
+  const dims = features.flatMap((f) => (f.type === "sketch" ? (f.constraints ?? []).filter(isDimConstraint) : []));
+  for (const c of dims) noteConstraintId(c.id);
+  for (const c of dims) c.id ??= newConstraintId();
+
+  // --- seed paramDefs rows for plain user parameters ---
+  for (const [name, value] of Object.entries(params)) {
+    if (!defs[name]) defs[name] = { expr: String(value), value, unit: "mm" };
+  }
+
+  // --- bare-name numeric fields → model parameters (dN) ---
+  let nextD = 1;
+  for (const name of Object.keys(defs)) {
+    const m = /^d(\d+)$/.exec(name);
+    if (m) nextD = Math.max(nextD, Number(m[1]) + 1);
+  }
+  const bind = (holder: object, field: string, unit: ParamDef["unit"], target: ParamTarget) => {
+    const h = holder as Record<string, unknown>;
+    const raw = h[field];
+    if (typeof raw !== "string") return;
+    const value = params[raw];
+    if (value === undefined) return; // not a known param — leave for the legacy path
+    h[field] = value;
+    defs[`d${nextD++}`] = { expr: raw, value, unit, target };
+  };
+  for (const f of features) {
+    for (const [field, , kind] of FEATURE_NUM_FIELDS[f.type] ?? []) {
+      bind(f, field, kindUnit(kind), { kind: "feature", feature: f.id, field });
+    }
+    if (f.type !== "sketch") continue;
+    for (const e of f.entities) {
+      // Only solver-rigid shapes may be owned by a parameter; other entities'
+      // bare names stay on the legacy resolveNum/val() path untouched.
+      const fields = RIGID_ENTITY_NUM_FIELDS[e.type];
+      if (!fields || !e.id) continue;
+      for (const [field, kind] of fields) {
+        bind(e, field, kindUnit(kind), { kind: "entity", sketch: f.id, entity: e.id, field });
+      }
+    }
+  }
+
+  // keep files clean: don't persist an empty table
+  if (Object.keys(defs).length > 0) parsed.paramDefs = defs;
+  else delete parsed.paramDefs;
+
+  return [];
+}

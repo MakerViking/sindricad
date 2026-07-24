@@ -54,7 +54,7 @@ describe("transforms keep shapes parametric", () => {
   it("rotated adds to a polygon's angle and stays a polygon (no explode)", () => {
     const [r] = rotated(poly, 0, 0, Math.PI / 2, "p2") as [Extract<ResolvedEntity, { type: "polygon" }>];
     expect(r.type).toBe("polygon");
-    expect(r.angle).toBeCloseTo(0.5 + Math.PI / 2);
+    expect(r.angle).toBeCloseTo(0.5 + 90); // polygon.angle is stored in DEGREES
   });
   it("scaled multiplies a polygon radius and a slot width", () => {
     const p = scaled(poly, 0, 0, 2, "p2") as Extract<ResolvedEntity, { type: "polygon" }>;

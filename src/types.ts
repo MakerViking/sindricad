@@ -55,8 +55,10 @@ export type SketchEntity =
   // a sketch point: reference/snap geometry only — never forms a profile
   | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean }
   // parametric shapes: rigid regular polygon (center/radius/sides + first-vertex
-  // angle) and center-to-center slot (two arc centers + width). The solver treats
-  // them as fixed; they're edited via their own parameter dimensions.
+  // angle, DEGREES — like every other angle field; pre-v2 files stored radians
+  // and are migrated on load) and center-to-center slot (two arc centers +
+  // width). The solver treats them as fixed; they're edited via their own
+  // parameter dimensions.
   | { type: "polygon"; id?: string; x: Num; y: Num; radius: Num; sides: Num; angle: Num; construction?: boolean }
   | { type: "slot"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; width: Num; construction?: boolean }
   // Fusion-parity text: filled glyph faces from a system font; extrudes like any profile
@@ -80,16 +82,20 @@ export type SketchConstraint =
   // *placed* dims (p2pDistance/p2lDistance/radius/angle) carry `driven?` — a line's
   // length and a circle's diameter always show their measurement via the entity's
   // own length/diameter badge, so reference mode doesn't apply to them.
-  | { type: "distance"; line: string; value: number }
-  | { type: "diameter"; circle: string; value: number }
+  //
+  // The value-bearing dims carry `id?` (see sketch/id.ts, "c" prefix): the stable
+  // identity a parameter binding (ParamTarget) references — dims are otherwise
+  // index-referenced, and edit operations splice the constraint array.
+  | { type: "distance"; id?: string; line: string; value: number }
+  | { type: "diameter"; id?: string; circle: string; value: number }
   // p2pDistance: driving distance between two picked points. `p*` selects the
   // point on each entity: 0/1 = start/end (lines, arcs, spline ends), 0..3 =
   // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
   // resolves to its center. Point entities ignore the index.
-  | { type: "p2pDistance"; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean }
+  | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean }
   // p2lDistance: driving perpendicular distance from a picked point to a line
   // entity (same `p` semantics as p2pDistance)
-  | { type: "p2lDistance"; e: string; p: number; line: string; value: number; driven?: boolean }
+  | { type: "p2lDistance"; id?: string; e: string; p: number; line: string; value: number; driven?: boolean }
   // tangent: a line and a circle/arc touch (line tangent to the circle)
   | { type: "tangent"; line: string; circle: string }
   // coincident: two entity endpoints share a position. `e1`/`e2` are entity ids;
@@ -102,9 +108,9 @@ export type SketchConstraint =
   // symmetric: two endpoints mirror across a line (the symmetry axis)
   | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string }
   // angle: driving included angle (DEGREES) between two lines (solver works in radians)
-  | { type: "angle"; l1: string; l2: string; value: number; driven?: boolean }
+  | { type: "angle"; id?: string; l1: string; l2: string; value: number; driven?: boolean }
   // radius: driving radius (mm) of a circle OR arc entity `e`
-  | { type: "radius"; e: string; value: number; driven?: boolean }
+  | { type: "radius"; id?: string; e: string; value: number; driven?: boolean }
   // fix/lock: pin an entity point in place. `p` uses the dimPoint semantics
   // (0..3 = rect corner, circle center regardless of index, 2 = arc center,
   // else line/arc/spline endpoint). Fully removes that point's 2 DOF.
@@ -294,8 +300,41 @@ export type ViewCubeSide =
   | "bottom";
 export type ViewOverride = { normal: [number, number, number]; up: [number, number, number] };
 
+// --- parameters/equations engine (frontend-only; the sidecar sees numbers) ---
+
+/** Canonical unit kind of a parameter: lengths are mm, angles degrees, counts raw. */
+export type ParamUnit = "mm" | "deg" | "count";
+
+/** Where a MODEL parameter's evaluated value is written. All ids are the existing
+ *  stable ids (feature.id, entity.id, pattern.id, constraint.id) — never indices.
+ *  Entity targets are only used for solver-rigid shapes (polygon/slot/text);
+ *  solved geometry is driven through a dimension constraint instead. */
+export type ParamTarget =
+  | { kind: "feature"; feature: string; field: string }
+  | { kind: "constraint"; sketch: string; constraint: string }
+  | { kind: "entity"; sketch: string; entity: string; field: string }
+  | { kind: "pattern"; sketch: string; pattern: string; field: string };
+
+/** One row of the parameter table. `expr` is the source of truth; `value` is the
+ *  cached evaluation result in canonical units and is ALWAYS present, so a build
+ *  (and any pre-expression reader) can run without evaluating anything. */
+export interface ParamDef {
+  expr: string;
+  value: number;
+  unit: ParamUnit;
+  comment?: string;
+  /** present = model parameter (dN, drives one field); absent = user parameter. */
+  target?: ParamTarget;
+  /** RESERVED (unimplemented): driven-dim params are geometry→value sources. */
+  driven?: boolean;
+}
+
 export interface CadDocument {
   parameters: Params;
+  /** Parameter table (source of truth for expressions). `parameters` is the
+   *  derived name→value cache regenerated from this on save/send, so the sidecar
+   *  and pre-v2 readers keep working off plain numbers. Absent = legacy doc. */
+  paramDefs?: Record<string, ParamDef>;
   features: Feature[];
   // optional per-side ViewCube redefinitions; persisted with the document.
   viewOverrides?: Partial<Record<ViewCubeSide, ViewOverride>>;

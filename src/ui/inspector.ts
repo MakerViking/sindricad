@@ -11,29 +11,7 @@ import { FEATURE_META } from "./featureMeta";
 import { getUnit, onUnitChange, toDisplay, fromDisplay, round, displayValue } from "./units";
 import { resolveEntities, toSketchEntity } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
-
-type FieldKind = "length" | "angle" | "count";
-// editable numeric fields per feature type: [field, label, kind]
-const NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>> = {
-  extrude: [["distance", "Distance", "length"]],
-  fillet: [["radius", "Radius", "length"]],
-  chamfer: [["distance", "Length", "length"]],
-  "press-pull": [["distance", "Distance", "length"]],
-  revolve: [["angle", "Angle", "angle"]],
-  datumPlane: [["offset", "Offset", "length"]],
-  box: [["length", "Length", "length"], ["width", "Width", "length"], ["height", "Height", "length"]],
-  cylinder: [["radius", "Radius", "length"], ["height", "Height", "length"]],
-  sphere: [["radius", "Radius", "length"]],
-  shell: [["thickness", "Thickness", "length"]],
-  draft: [["angle", "Angle", "angle"]],
-  patternRect: [["countX", "Count X", "count"], ["countY", "Count Y", "count"], ["spacingX", "Spacing X", "length"], ["spacingY", "Spacing Y", "length"]],
-  patternCircular: [["count", "Count", "count"], ["angle", "Angle", "angle"]],
-  simplifyMesh: [["tolerance", "Angle tol", "angle"]],
-  cleanUp: [["tolerance", "Tolerance", "length"]],
-  scale: [["factor", "Factor", "count"]],
-  move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
-  texture: [["depth", "Depth", "length"], ["scale", "Scale", "length"], ["angle", "Angle", "angle"], ["offset", "Offset", "length"], ["sharpness", "Sharpness", "count"], ["seed", "Seed", "count"]],
-};
+import { FEATURE_NUM_FIELDS as NUM_FIELDS } from "../document/numFields";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
