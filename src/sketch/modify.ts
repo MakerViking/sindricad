@@ -157,7 +157,8 @@ export function trimEntity(
     return ents.flatMap((o, i) => (i === index ? pieces : [o]));
   }
 
-  if (e.type !== "line") return del();
+  if (e.type !== "line") return del(); // rectangle/spline + rigid polygon/slot: deleted whole
+  // defer: trim/break/offset on rigid polygon/slot no-op or explode; revisit when a user hits it
 
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const params = new Set<number>([0, 1]);

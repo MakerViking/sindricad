@@ -31,6 +31,8 @@ function entCenter(e: ResolvedEntity): THREE.Vector2 {
     case "line": return V((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2);
     case "arc": return V(e.mx, e.my);
     case "circle": case "point": case "rectangle": case "text": return V(e.x, e.y);
+    case "polygon": return V(e.x, e.y);
+    case "slot": return V((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2);
     case "spline": { const p = e.points[Math.floor(e.points.length / 2)] ?? e.points[0]; return p ? V(p.x, p.y) : V(0, 0); }
   }
 }

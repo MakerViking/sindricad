@@ -4052,6 +4052,40 @@ def _build_sketch(f, val, datums=None):
                 all_edges.append(ed)
         elif et == "point":
             continue  # a sketch point is reference/snap-only, never part of a profile
+        elif et == "polygon":
+            cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
+            r = val(e["radius"])
+            n = max(3, int(round(val(e["sides"]))))
+            ang = val(e.get("angle", 0))
+            pts = [
+                (cx + math.cos(ang + i / n * 2 * math.pi) * r, cy + math.sin(ang + i / n * 2 * math.pi) * r)
+                for i in range(n)
+            ]
+            for i in range(n):
+                p, q = pts[i], pts[(i + 1) % n]
+                ed = Edge.make_line((p[0], p[1], 0), (q[0], q[1], 0))
+                edges.append(ed)
+                all_edges.append(ed)
+        elif et == "slot":
+            ax, ay = val(e["x1"]), val(e["y1"])
+            bx, by = val(e["x2"]), val(e["y2"])
+            w = val(e["width"]) / 2  # half-width = cap radius
+            dx, dy = bx - ax, by - ay
+            L = math.hypot(dx, dy) or 1.0
+            dx, dy = dx / L, dy / L
+            nx, ny = -dy * w, dx * w  # left perpendicular * radius
+            a1, a2 = (ax + nx, ay + ny), (ax - nx, ay - ny)
+            b1, b2 = (bx + nx, by + ny), (bx - nx, by - ny)
+            a_tip = (ax - dx * w, ay - dy * w)
+            b_tip = (bx + dx * w, by + dy * w)
+            for ed in (
+                Edge.make_line((a1[0], a1[1], 0), (b1[0], b1[1], 0)),
+                Edge.make_three_point_arc((b1[0], b1[1], 0), (b_tip[0], b_tip[1], 0), (b2[0], b2[1], 0)),
+                Edge.make_line((b2[0], b2[1], 0), (a2[0], a2[1], 0)),
+                Edge.make_three_point_arc((a2[0], a2[1], 0), (a_tip[0], a_tip[1], 0), (a1[0], a1[1], 0)),
+            ):
+                edges.append(ed)
+                all_edges.append(ed)
         elif et == "text":
             ref = e.get("pathRef")
             path_edge = _entity_edge(by_id_all[ref], val) if ref and ref in by_id_all else None

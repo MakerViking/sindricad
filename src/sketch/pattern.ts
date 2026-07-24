@@ -24,6 +24,10 @@ export function translated(e: ResolvedEntity, dx: number, dy: number, id: string
       return { type: "spline", id, points: e.points.map((p) => ({ x: p.x + dx, y: p.y + dy })), ...c };
     case "point":
       return { type: "point", id, x: e.x + dx, y: e.y + dy, ...c };
+    case "polygon":
+      return { type: "polygon", id, x: e.x + dx, y: e.y + dy, radius: e.radius, sides: e.sides, angle: e.angle, ...c };
+    case "slot":
+      return { type: "slot", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, width: e.width, ...c };
     case "text":
       return { ...e, id, x: e.x + dx, y: e.y + dy };
   }
@@ -48,6 +52,8 @@ export function scaled(e: ResolvedEntity, cx: number, cy: number, f: number, id:
     case "arc": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2), [mx, my] = S(e.mx, e.my); return { type: "arc", id, x1, y1, x2, y2, mx, my, ...c }; }
     case "spline": return { type: "spline", id, points: e.points.map((p) => { const [x, y] = S(p.x, p.y); return { x, y }; }), ...c };
     case "point": { const [x, y] = S(e.x, e.y); return { type: "point", id, x, y, ...c }; }
+    case "polygon": { const [x, y] = S(e.x, e.y); return { type: "polygon", id, x, y, radius: e.radius * a, sides: e.sides, angle: e.angle, ...c }; }
+    case "slot": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2); return { type: "slot", id, x1, y1, x2, y2, width: e.width * a, ...c }; }
     case "text": { const [x, y] = S(e.x, e.y); return { ...e, id, x, y, height: e.height * a }; }
   }
 }
@@ -80,6 +86,14 @@ export function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, 
     }
     case "spline":
       return [{ type: "spline", id, points: e.points.map((p) => { const [x, y] = R(p.x, p.y); return { x, y }; }), ...c }];
+    case "polygon": {
+      const [x, y] = R(e.x, e.y);
+      return [{ type: "polygon", id, x, y, radius: e.radius, sides: e.sides, angle: e.angle + ang, ...c }];
+    }
+    case "slot": {
+      const [x1, y1] = R(e.x1, e.y1), [x2, y2] = R(e.x2, e.y2);
+      return [{ type: "slot", id, x1, y1, x2, y2, width: e.width, ...c }];
+    }
     case "rectangle": {
       const hw = e.width / 2, hh = e.height / 2;
       const corners = ([[e.x - hw, e.y - hh], [e.x + hw, e.y - hh], [e.x + hw, e.y + hh], [e.x - hw, e.y + hh]] as [number, number][])

@@ -54,6 +54,11 @@ export type SketchEntity =
   | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean }
   // a sketch point: reference/snap geometry only — never forms a profile
   | { type: "point"; id?: string; x: Num; y: Num; construction?: boolean }
+  // parametric shapes: rigid regular polygon (center/radius/sides + first-vertex
+  // angle) and center-to-center slot (two arc centers + width). The solver treats
+  // them as fixed; they're edited via their own parameter dimensions.
+  | { type: "polygon"; id?: string; x: Num; y: Num; radius: Num; sides: Num; angle: Num; construction?: boolean }
+  | { type: "slot"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; width: Num; construction?: boolean }
   // Fusion-parity text: filled glyph faces from a system font; extrudes like any profile
   | { type: "text"; id?: string; text: string; x?: Num; y?: Num; height: Num;
       font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";

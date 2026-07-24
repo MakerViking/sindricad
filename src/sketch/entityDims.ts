@@ -12,7 +12,7 @@ import { circumcenter, arcCenterRadius } from "./arc";
 import { rectCorners } from "./region";
 import { paramOnSeg, signedAngleDeg } from "./geom2d";
 
-export type DimField = "width" | "height" | "diameter" | "length";
+export type DimField = "width" | "height" | "diameter" | "length" | "radius";
 type V = THREE.Vector2;
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
@@ -106,6 +106,31 @@ export function entityDims(e: ResolvedEntity): EntityDim[] {
   if (e.type === "spline") return []; // splines are defined by their fit points
   if (e.type === "point") return []; // a point carries no dimension
   if (e.type === "text") return []; // text has no editable linear dimension
+  if (e.type === "polygon") {
+    const rr = e.radius;
+    const c = v(Math.cos(e.angle), Math.sin(e.angle));
+    return [{
+      field: "radius", label: "Radius", valueMm: rr,
+      labelPos: v(e.x + c.x * rr * 0.6, e.y + c.y * rr * 0.6),
+      lines: [[v(e.x, e.y), v(e.x + c.x * rr, e.y + c.y * rr)]],
+      write: (mm) => { e.radius = mm; },
+    }];
+  }
+  if (e.type === "slot") {
+    const A = v(e.x1, e.y1), B = v(e.x2, e.y2);
+    const len = A.distanceTo(B) || 1;
+    const dir = B.clone().sub(A).multiplyScalar(1 / len);
+    const perp = v(-dir.y, dir.x);
+    const ll = linear(A, B, perp, len);
+    const wa = A.clone().addScaledVector(perp, e.width / 2), wb = A.clone().addScaledVector(perp, -e.width / 2);
+    const wl = linear(wa, wb, dir.clone().negate(), e.width);
+    return [
+      { field: "length", label: "Length", valueMm: len, labelPos: ll.labelPos, lines: ll.lines,
+        write: (mm) => { e.x2 = e.x1 + dir.x * mm; e.y2 = e.y1 + dir.y * mm; } },
+      { field: "width", label: "Width", valueMm: e.width, labelPos: wl.labelPos, lines: wl.lines,
+        write: (mm) => { e.width = mm; } },
+    ];
+  }
   // line: dimension parallel to it, offset to the left normal
   const a = v(e.x1, e.y1);
   const b = v(e.x2, e.y2);

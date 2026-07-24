@@ -96,6 +96,10 @@ export function resolveRealEntities(
         ...(e.boxWidth !== undefined ? { boxWidth: resolveNum(e.boxWidth, params) } : {}),
         ...c,
       });
+    } else if (e.type === "polygon") {
+      out.push({ type: "polygon", id, x: resolveNum(e.x, params), y: resolveNum(e.y, params), radius: resolveNum(e.radius, params), sides: resolveNum(e.sides, params), angle: resolveNum(e.angle, params), ...c });
+    } else if (e.type === "slot") {
+      out.push({ type: "slot", id, x1: resolveNum(e.x1, params), y1: resolveNum(e.y1, params), x2: resolveNum(e.x2, params), y2: resolveNum(e.y2, params), width: resolveNum(e.width, params), ...c });
     }
   }
   return out;
@@ -131,6 +135,8 @@ export function toSketchEntity(e: ResolvedEntity): SketchEntity {
   if (e.type === "spline")
     return { type: "spline", id: e.id, points: e.points.map((p) => ({ x: p.x, y: p.y })), ...c };
   if (e.type === "point") return { type: "point", id: e.id, x: e.x, y: e.y, ...c };
+  if (e.type === "polygon") return { type: "polygon", id: e.id, x: e.x, y: e.y, radius: e.radius, sides: e.sides, angle: e.angle, ...c };
+  if (e.type === "slot") return { type: "slot", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, width: e.width, ...c };
   if (e.type === "text")
     return {
       type: "text", id: e.id, text: e.text, x: e.x, y: e.y, height: e.height, angle: e.angle,

@@ -769,7 +769,7 @@ export class SketchMode {
       const a = this.clickPts[0];
       if (a) {
         const vertex = this.polygonVertex(a, cursor);
-        pv.push(...this.polygonLines(a, vertex).map((ent) => ({ ...ent, id: "" })));
+        pv.push({ type: "polygon", id: "", x: a.x, y: a.y, radius: a.distanceTo(vertex), sides: Math.max(3, Math.round(this.polygonSides)), angle: Math.atan2(vertex.y - a.y, vertex.x - a.x) });
         dims = { radius: a.distanceTo(vertex) };
       }
     } else if (this.tool === "slot") {
@@ -784,7 +784,7 @@ export class SketchMode {
         const [a, b] = this.clickPts;
         if (a && b) {
           const half = this.slotHalf(a, b, cursor);
-          pv.push(...this.slotEntities(a, b, half));
+          pv.push({ type: "slot", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y, width: half * 2 });
           dims = { width: half * 2 };
         }
       }
@@ -1087,33 +1087,18 @@ export class SketchMode {
     this.dim.hide();
     this.commitPolygon(center, vertex);
   }
-  /** the n line entities of an inscribed regular polygon (first vertex at `vertex`) */
-  private polygonLines(center: THREE.Vector2, vertex: THREE.Vector2): ResolvedEntity[] {
-    const n = Math.max(3, this.polygonSides);
-    const r = center.distanceTo(vertex);
-    if (r < 1e-4) return [];
-    const a0 = Math.atan2(vertex.y - center.y, vertex.x - center.x);
-    const pts: THREE.Vector2[] = [];
-    for (let i = 0; i < n; i++) {
-      const a = a0 + (i / n) * Math.PI * 2;
-      pts.push(new THREE.Vector2(center.x + Math.cos(a) * r, center.y + Math.sin(a) * r));
-    }
-    const out: ResolvedEntity[] = [];
-    for (let i = 0; i < n; i++) {
-      const a = pts[i], b = pts[(i + 1) % n];
-      if (!a || !b) continue;
-      out.push({ type: "line", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y });
-    }
-    return out;
-  }
+  /** Commit a regular polygon as one parametric entity (rigid — the solver
+   *  skips it; `angle` is the first-vertex angle in RADIANS). */
   private commitPolygon(center: THREE.Vector2, vertex: THREE.Vector2) {
-    const lines = this.polygonLines(center, vertex);
-    if (!lines.length) return;
-    for (const l of lines) {
-      l.id = newEntityId();
-      if (this.constructionMode) l.construction = true;
-      this.entities.push(l);
-    }
+    const r = center.distanceTo(vertex);
+    if (r < 1e-4) return;
+    const angle = Math.atan2(vertex.y - center.y, vertex.x - center.x);
+    const e: ResolvedEntity = {
+      type: "polygon", id: newEntityId(), x: center.x, y: center.y,
+      radius: r, sides: Math.max(3, Math.round(this.polygonSides)), angle,
+    };
+    if (this.constructionMode) e.construction = true;
+    this.entities.push(e);
     this.refreshActive();
     this.requestSolve();
     this.onState?.();
@@ -1148,33 +1133,12 @@ export class SketchMode {
     const n = new THREE.Vector2(-dir.y, dir.x);
     return Math.max(0.5, Math.abs(cursor.clone().sub(a).dot(n)));
   }
-  /** two straight sides + two end arcs of a rounded slot (axis a→b, radius w) */
-  private slotEntities(a: THREE.Vector2, b: THREE.Vector2, w: number): ResolvedEntity[] {
-    const dir = b.clone().sub(a);
-    const len = dir.length();
-    if (len < 1e-4 || w < 1e-4) return [];
-    dir.divideScalar(len);
-    const n = new THREE.Vector2(-dir.y, dir.x).multiplyScalar(w);
-    const a1 = a.clone().add(n), a2 = a.clone().sub(n);
-    const b1 = b.clone().add(n), b2 = b.clone().sub(n);
-    // arc through-points: the far tip of each semicircular cap
-    const aTip = a.clone().sub(dir.clone().multiplyScalar(w));
-    const bTip = b.clone().add(dir.clone().multiplyScalar(w));
-    return [
-      { type: "line", id: "", x1: a1.x, y1: a1.y, x2: b1.x, y2: b1.y },
-      { type: "arc", id: "", x1: b1.x, y1: b1.y, x2: b2.x, y2: b2.y, mx: bTip.x, my: bTip.y },
-      { type: "line", id: "", x1: b2.x, y1: b2.y, x2: a2.x, y2: a2.y },
-      { type: "arc", id: "", x1: a2.x, y1: a2.y, x2: a1.x, y2: a1.y, mx: aTip.x, my: aTip.y },
-    ];
-  }
   private commitSlot(a: THREE.Vector2, b: THREE.Vector2, w: number) {
-    const ents = this.slotEntities(a, b, w);
-    if (!ents.length) return;
-    for (const e of ents) {
-      e.id = newEntityId();
-      if (this.constructionMode) e.construction = true;
-      this.entities.push(e);
-    }
+    // w is the half-width (distance from the axis); the slot entity stores overall width
+    if (a.distanceTo(b) < 1e-4 || w < 1e-4) return;
+    const e: ResolvedEntity = { type: "slot", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, width: 2 * w };
+    if (this.constructionMode) e.construction = true;
+    this.entities.push(e);
     this.refreshActive();
     this.requestSolve();
     this.onState?.();
@@ -2142,7 +2106,8 @@ export class SketchMode {
   }
 
   /** Find the nearest solver-controlled point (line endpoint or circle centre)
-   *  within pick tolerance of p. All entity types expand to solver points. */
+   *  within pick tolerance of p. Rigid shapes (polygon/slot) are intentionally
+   *  excluded — they don't expand to solver points. */
   private pickPoint(p: THREE.Vector2): { p: THREE.Vector2; idx: number } | null {
     const tol = this.pickTol();
     let best: THREE.Vector2 | null = null;

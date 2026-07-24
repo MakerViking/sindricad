@@ -46,6 +46,10 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
       return splinePolyline(e.points, SPLINE_SEGS);
     case "point":
       return [v(e.x, e.y)]; // a point has no extent: a single vertex, no segments
+    case "polygon":
+      return closed(polygonPoints(e.x, e.y, e.radius, e.sides, e.angle));
+    case "slot":
+      return closed(slotOutline(e.x1, e.y1, e.x2, e.y2, e.width));
     case "text":
       return []; // text is rendered from cached glyph contours, not this single-polyline path
   }
@@ -91,6 +95,32 @@ export function circleLoop(
     const a = (i / segs) * Math.PI * 2;
     out.push(new THREE.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r));
   }
+  return out;
+}
+
+/** vertices of a regular polygon (center, circumradius, sides, first-vertex angle) */
+export function polygonPoints(cx: number, cy: number, r: number, sides: number, angle: number): THREE.Vector2[] {
+  const n = Math.max(3, Math.round(sides));
+  const out: THREE.Vector2[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = angle + (i / n) * Math.PI * 2;
+    out.push(new THREE.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r));
+  }
+  return out;
+}
+
+/** closed outline of a center-to-center slot: two straight sides + two end caps
+ *  (arc centers A=(x1,y1), B=(x2,y2), overall width w). */
+export function slotOutline(x1: number, y1: number, x2: number, y2: number, w: number, segs = 16): THREE.Vector2[] {
+  const r = w / 2;
+  let dx = x2 - x1, dy = y2 - y1;
+  const len = Math.hypot(dx, dy) || 1;
+  dx /= len; dy /= len;
+  const ap = Math.atan2(dx, -dy); // angle of the left perpendicular (-dy, dx)
+  const P = (cx: number, cy: number, a: number) => new THREE.Vector2(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+  const out: THREE.Vector2[] = [P(x1, y1, ap)]; // A + perp
+  for (let i = 1; i <= segs; i++) out.push(P(x2, y2, ap - (i / segs) * Math.PI)); // B cap → B − perp
+  for (let i = 0; i < segs; i++) out.push(P(x1, y1, ap + Math.PI - (i / segs) * Math.PI)); // A cap → toward A + perp
   return out;
 }
 
