@@ -763,6 +763,7 @@ palette.onToggle = (key, value) => {
     case "snap": sketch.setGridSnap(value); break;
     case "profile": overlay.setFillsVisible(value); break;
     case "dimensions": sketch.setDimensionsVisible(value); break;
+    case "constraints": sketch.setConstraintsVisible(value); break;
   }
 };
 palette.onLookAt = () => sketch.lookAt();

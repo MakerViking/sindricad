@@ -168,7 +168,7 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
 }
 
 /** resolve a dimension pick (entity + p index) to its current 2D position */
-function refPoint(e: ResolvedEntity, p: number): V | null {
+export function refPoint(e: ResolvedEntity, p: number): V | null {
   return dimRefPoints(e).find((r) => r.p === p)?.pos ?? null;
 }
 

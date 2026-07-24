@@ -1,7 +1,7 @@
 // The Sketch Palette (mainstream MCAD's right-docked panel shown while sketching).
 // Toggles control drawing/display options; "Look At" re-squares the camera.
 
-export type PaletteToggle = "lockView" | "construction" | "reference" | "grid" | "snap" | "profile" | "dimensions";
+export type PaletteToggle = "lockView" | "construction" | "reference" | "grid" | "snap" | "profile" | "dimensions" | "constraints";
 
 interface ToggleDef {
   key: PaletteToggle;
@@ -16,6 +16,7 @@ const TOGGLES: ToggleDef[] = [
   { key: "snap", label: "Snap", default: true },
   { key: "profile", label: "Show Profile", default: true },
   { key: "dimensions", label: "Show Dimensions", default: true },
+  { key: "constraints", label: "Show Constraints", default: true },
 ];
 
 export class SketchPalette {

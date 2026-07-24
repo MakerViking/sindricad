@@ -38,6 +38,19 @@ const ccwDelta = (from: number, to: number) => ((to - from) % TAU + TAU) % TAU;
  *  same key, or its notion of attachment drifts from the solver's. */
 export const coincKey = (x: number, y: number) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
 
+/** The solver id for the user constraint at index `i`. Composite constraints
+ *  append a NON-numeric suffix (e.g. `${constraintKey(i)}a`), so the leading
+ *  integer always decodes back to the index — see constraintIndexOf. This is the
+ *  single source of the id⇄index convention (planegcs conflict reporting decodes it). */
+export const constraintKey = (i: number) => `k${i}`;
+
+/** Inverse of constraintKey: the constraint index a solver id belongs to, or
+ *  null for implicit ids (rectangle edges `<id>~h0`, the drag pin, etc.). */
+export function constraintIndexOf(id: string): number | null {
+  const m = /^k(\d+)/.exec(id);
+  return m && m[1] !== undefined ? Number(m[1]) : null;
+}
+
 export async function compileAndSolve(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
@@ -157,7 +170,7 @@ export async function compileAndSolve(
   const kindOf = (id: string): "line" | "circle" | "arc" | undefined =>
     ends.has(id) ? "line" : centers.has(id) ? "circle" : arcMap.has(id) ? "arc" : undefined;
   constraints.forEach((c, i) => {
-    const id = `k${i}`; // user constraint ids never collide with `~` implicit ones
+    const id = constraintKey(i); // user constraint ids never collide with `~` implicit ones
     if (isDriven(c)) return; // reference dim: measured only, never constrains
     if (c.type === "horizontal") { if (isLine(c.line)) cons.push({ id, type: "horizontal", line: c.line }); }
     else if (c.type === "vertical") { if (isLine(c.line)) cons.push({ id, type: "vertical", line: c.line }); }

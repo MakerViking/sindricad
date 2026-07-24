@@ -1496,6 +1496,31 @@ button.finish:hover {
   pointer-events: none;
   cursor: default;
 }
+/* constraint glyphs: small square badges showing a relationship's type */
+.sketch-glyphs { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+.sketch-glyph {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(18, 20, 25, 0.9);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 3px;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: var(--shadow-1);
+}
+.sketch-glyph:hover { border-color: var(--accent-hot); color: var(--accent-hot); }
+.sketch-glyph.conflict { border-color: #ff4444; color: #ff4444; }
+.sketch-glyphs.glyphs-passive .sketch-glyph { pointer-events: none; cursor: default; }
 .sketch-dim input {
   width: 52px;
   border: 1px solid var(--line-strong);

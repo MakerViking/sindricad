@@ -14,12 +14,14 @@ import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
+import { SketchGlyphs } from "./sketchGlyphs";
+import { constraintGlyphs } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { signedAngleDeg } from "./geom2d";
-import { compileAndSolve, coincKey } from "./sketchSolve";
+import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
@@ -97,6 +99,17 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 
 const GRID_STEP = 5;
 
+// Map planegcs conflict ids back to constraint indices. Implicit ids (rect
+// edges `<id>~h0`, the drag pin) decode to null and are skipped.
+function parseConflictIdx(ids: string[]): Set<number> {
+  const s = new Set<number>();
+  for (const id of ids) {
+    const i = constraintIndexOf(id);
+    if (i !== null) s.add(i);
+  }
+  return s;
+}
+
 // Tools that operate on the current multi-selection, so setTool must keep it.
 const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
 
@@ -173,6 +186,12 @@ export class SketchMode {
   private constructionMode = false;
   private referenceMode = false; // dimensions placed as driven/reference (measured only)
   private dimsVisible = true;
+  private glyphsVisible = true; // show constraint glyphs on canvas
+  // Glyph cIndex and conflictIdx are POSITIONAL into this.constraints. The handle
+  // stays valid because every this.constraints mutation is followed by
+  // refreshActive(), which re-show()s glyphs with fresh indices before the next
+  // input frame — so a click can't carry a stale index. (No per-constraint UID.)
+  private conflictIdx = new Set<number>(); // constraint indices the solver flagged conflicting
   private readonly textPanel = new TextPanel();
   private fonts: string[] = []; // system fonts for the text tool (loaded on enter)
   // text tool: press-drag defines a box (wrap width); a plain click is a point anchor.
@@ -182,6 +201,7 @@ export class SketchMode {
   private viewLocked = true; // lock the camera square to the sketch plane
   private dim: DimInput;
   private dims: SketchDimensions;
+  private glyphs: SketchGlyphs;
   private boundDown: (e: PointerEvent) => void;
   private boundMove: (e: PointerEvent) => void;
   private boundUp: (e: PointerEvent) => void;
@@ -202,6 +222,8 @@ export class SketchMode {
       this.editDimension(i, f, mm),
     );
     this.dims.onOverlapPick = (e) => this.labelOverlapSelect(e);
+    this.glyphs = new SketchGlyphs(viewport);
+    this.glyphs.onDelete = (i) => this.deleteConstraint(i);
     this.boundDown = (e) => this.onPointerDown(e);
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
@@ -320,6 +342,7 @@ export class SketchMode {
     this.moveDrag = null;
     this.dim.hide();
     this.dims.hide();
+    this.glyphs.hide();
     this.textPanel.hide();
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
@@ -372,6 +395,7 @@ export class SketchMode {
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     this.patternFlow.flushPending(); // don't lose an in-progress pattern
     this.dims.setInteractive(t === "select");
+    this.glyphs.setInteractive(t === "select");
     this.onState?.();
   }
 
@@ -402,6 +426,8 @@ export class SketchMode {
     this.candidates = candidatesFromEntities([...this.entities, ...derived]);
     if (this.dimsVisible) this.dims.show(this.entities, this.plane, this.constraintDimExtras());
     else this.dims.hide();
+    if (this.glyphsVisible) this.glyphs.show(constraintGlyphs(this.entities, this.constraints), this.plane, this.conflictIdx);
+    else this.glyphs.hide();
     // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
     // via redraw()) fires no pointer event, so force a frame or it won't draw until
     // the next mouse move.
@@ -438,6 +464,19 @@ export class SketchMode {
   setDimensionsVisible(on: boolean) {
     this.dimsVisible = on;
     this.refreshActive(); // toggles both the dimension lines and the value labels
+  }
+  setConstraintsVisible(on: boolean) {
+    this.glyphsVisible = on;
+    this.refreshActive();
+  }
+  /** Delete the constraint at `cIndex` (clicked its glyph) and re-solve. */
+  private deleteConstraint(cIndex: number) {
+    if (cIndex < 0 || cIndex >= this.constraints.length) return;
+    this.constraints.splice(cIndex, 1);
+    this.conflictIdx.clear(); // indices shift; the next solve repopulates
+    this.requestSolve();
+    this.refreshActive();
+    this.onState?.();
   }
   /** Lock the camera square to the sketch plane: re-square now and disable orbit
    *  (mouse + SpaceMouse) so the view can't tilt off the plane. Unlock = free orbit. */
@@ -2025,6 +2064,7 @@ export class SketchMode {
           const r = await compileAndSolve(this.entities, this.constraints, d);
           if (!this.active || !this.dragFrom) break; // drag ended/cancelled mid-solve
           this.conflict = r.conflicts.length > 0;
+          this.conflictIdx = parseConflictIdx(r.conflicts);
           if (!this.conflict) this.entities = r.entities;
           this.lastDof = r.dof;
           if (this.dragFrom) this.dragFrom.set(d.toX, d.toY); // track grabbed pt
@@ -2038,6 +2078,7 @@ export class SketchMode {
           // geometry changed mid-solve (a draw committed): discard, re-solve
           if (this.entityVersion !== ver) { this.solveDirty = true; continue; }
           this.conflict = r.conflicts.length > 0;
+          this.conflictIdx = parseConflictIdx(r.conflicts);
           if (!this.conflict) this.entities = r.entities; // keep last good on conflict
           this.lastDof = r.dof;
           this.refreshActive();

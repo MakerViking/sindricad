@@ -10,6 +10,7 @@
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
+import { camHash } from "../viewport/camHash";
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, type DimField } from "./entityDims";
@@ -160,10 +161,4 @@ export class SketchDimensions {
       l.el.style.transform = `translate(${s.x}px, ${s.y}px) translate(-50%, -50%)`;
     }
   };
-}
-
-function camHash(cam: THREE.Camera): string {
-  const p = cam.position;
-  const q = cam.quaternion;
-  return `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)},${q.x.toFixed(3)},${q.y.toFixed(3)},${q.z.toFixed(3)},${q.w.toFixed(3)}`;
 }
