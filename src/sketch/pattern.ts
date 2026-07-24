@@ -35,9 +35,26 @@ function rotPt(x: number, y: number, cx: number, cy: number, ang: number): [numb
   return [cx + dx * co - dy * si, cy + dx * si + dy * co];
 }
 
+/** Uniformly scale an entity about (cx,cy) by factor `f`. Unlike rotation, a
+ *  uniform scale keeps every type (a rectangle stays a rectangle). */
+export function scaled(e: ResolvedEntity, cx: number, cy: number, f: number, id: string): ResolvedEntity {
+  const c = e.construction ? { construction: true as const } : {};
+  const a = Math.abs(f); // radii/sizes stay positive
+  const S = (x: number, y: number): [number, number] => [cx + (x - cx) * f, cy + (y - cy) * f];
+  switch (e.type) {
+    case "line": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2); return { type: "line", id, x1, y1, x2, y2, ...c }; }
+    case "circle": { const [x, y] = S(e.x, e.y); return { type: "circle", id, radius: e.radius * a, x, y, ...c }; }
+    case "rectangle": { const [x, y] = S(e.x, e.y); return { type: "rectangle", id, width: e.width * a, height: e.height * a, x, y, ...c }; }
+    case "arc": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2), [mx, my] = S(e.mx, e.my); return { type: "arc", id, x1, y1, x2, y2, mx, my, ...c }; }
+    case "spline": return { type: "spline", id, points: e.points.map((p) => { const [x, y] = S(p.x, p.y); return { x, y }; }), ...c };
+    case "point": { const [x, y] = S(e.x, e.y); return { type: "point", id, x, y, ...c }; }
+    case "text": { const [x, y] = S(e.x, e.y); return { ...e, id, x, y, height: e.height * a }; }
+  }
+}
+
 /** Rotate an entity about (cx,cy) by `ang` radians. A rectangle can't carry
  *  rotation (it's axis-aligned), so it becomes a 4-line loop. */
-function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, id: string): ResolvedEntity[] {
+export function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, id: string): ResolvedEntity[] {
   const c = e.construction ? { construction: true as const } : {};
   const R = (x: number, y: number) => rotPt(x, y, cx, cy, ang);
   switch (e.type) {

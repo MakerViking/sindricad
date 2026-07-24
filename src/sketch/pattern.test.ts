@@ -1,7 +1,7 @@
 // Unit tests for expandPattern (src/sketch/pattern.ts). Mirrors the Python port
 // (sidecar/builder.py _expand_pattern) — see the file header comment there.
 import { describe, it, expect } from "vitest";
-import { expandPattern } from "./pattern";
+import { expandPattern, scaled, rotated } from "./pattern";
 import type { ResolvedEntity } from "./snap";
 import type { Params, SketchPattern } from "../types";
 
@@ -102,5 +102,40 @@ describe("expandPattern / patternCircular", () => {
     // Math.round(2.5) = 3 in JS; Python round(2.5) = 2 (round-half-to-even) —
     // so `out` currently disagrees with what builder.py would build.
     expect(out).toHaveLength(2); // count - 1, once the divergence is resolved
+  });
+});
+
+describe("scaled", () => {
+  it("scales a line about a base point", () => {
+    const s = scaled({ type: "line", id: "l", x1: 1, y1: 0, x2: 2, y2: 0 }, 0, 0, 2, "l2") as Extract<ResolvedEntity, { type: "line" }>;
+    expect(s.type).toBe("line");
+    expect([s.x1, s.y1, s.x2, s.y2]).toEqual([2, 0, 4, 0]);
+  });
+  it("scales a circle's radius and center", () => {
+    const s = scaled({ type: "circle", id: "c", radius: 5, x: 10, y: 0 }, 0, 0, 2, "c2") as Extract<ResolvedEntity, { type: "circle" }>;
+    expect(s.radius).toBe(10);
+    expect(s.x).toBe(20);
+  });
+  it("scales a rectangle about its own center (center fixed, size grows)", () => {
+    const s = scaled({ type: "rectangle", id: "r", width: 10, height: 4, x: 3, y: 3 }, 3, 3, 2, "r2") as Extract<ResolvedEntity, { type: "rectangle" }>;
+    expect(s.width).toBe(20);
+    expect(s.height).toBe(8);
+    expect(s.x).toBe(3);
+    expect(s.y).toBe(3);
+  });
+});
+
+describe("rotated", () => {
+  it("rotates a line 90° about the origin", () => {
+    const [r] = rotated({ type: "line", id: "l", x1: 1, y1: 0, x2: 2, y2: 0 }, 0, 0, Math.PI / 2, "l2") as [Extract<ResolvedEntity, { type: "line" }>];
+    expect(r.x1).toBeCloseTo(0);
+    expect(r.y1).toBeCloseTo(1);
+    expect(r.x2).toBeCloseTo(0);
+    expect(r.y2).toBeCloseTo(2);
+  });
+  it("explodes a rotated rectangle into 4 lines", () => {
+    const out = rotated({ type: "rectangle", id: "r", width: 10, height: 4, x: 0, y: 0 }, 0, 0, Math.PI / 4, "r2");
+    expect(out).toHaveLength(4);
+    expect(out.every((e) => e.type === "line")).toBe(true);
   });
 });

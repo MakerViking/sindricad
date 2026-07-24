@@ -21,7 +21,7 @@ import { circumcenter, arcCenterRadius } from "./arc";
 import { signedAngleDeg } from "./geom2d";
 import { compileAndSolve, coincKey } from "./sketchSolve";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
-import { expandPattern, translated } from "./pattern";
+import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { detectRegions, rectCorners } from "./region";
@@ -50,6 +50,10 @@ export type SketchTool =
   | "trim"
   | "fillet"
   | "chamfer"
+  | "move"
+  | "copy"
+  | "rotate"
+  | "scale"
   | "offset"
   | "extend"
   | "break"
@@ -79,6 +83,10 @@ const MODIFY_TOOLS = new Set<SketchTool>([
   "trim",
   "fillet",
   "chamfer",
+  "move",
+  "copy",
+  "rotate",
+  "scale",
   "offset",
   "extend",
   "break",
@@ -88,6 +96,9 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 ]);
 
 const GRID_STEP = 5;
+
+// Tools that operate on the current multi-selection, so setTool must keep it.
+const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
 
 // Sentinel id for the in-progress text tool's live-preview entity: it lives on the
 // active entity list (so it repaints through the normal render path) but is never
@@ -148,6 +159,8 @@ export class SketchMode {
   // first line picked for an angular dimension (set while its length DimInput is
   // open; a second line click switches length → angle)
   private dimLineFirst: string | null = null;
+  // Move/Copy tool: first (base) point picked; the second click sets the offset.
+  private moveBase: THREE.Vector2 | null = null;
   // distance-constraint dims, computed once per refreshActive() in activeCurves()
   // and reused for the clickable labels (constraintDimExtras)
   private cdims: ConstraintDim[] = [];
@@ -334,7 +347,9 @@ export class SketchMode {
   setTool(t: SketchTool) {
     // Mirror operates on the current multi-selection, so keep it; every other
     // tool starts from a clean slate.
-    const keepSelection = t === "mirror";
+    // Mirror + the transform tools (move/copy/rotate/scale) operate on the
+    // current multi-selection, so keep it; every other tool starts clean.
+    const keepSelection = KEEPS_SELECTION.has(t);
     this.tool = t;
     this.base = null;
     this.chainStart = null;
@@ -347,6 +362,7 @@ export class SketchMode {
     this.moveDrag = null;
     this.dimFirst = null;
     this.dimLineFirst = null;
+    this.moveBase = null;
     this.dim.hide();
     this.textPanel.hide();
     // drop any uncommitted text preview left on the active list when switching tools
@@ -618,6 +634,9 @@ export class SketchMode {
     if (this.tool === "trim") return this.trimClick(p);
     if (this.tool === "fillet") return this.filletClick(p);
     if (this.tool === "chamfer") return this.chamferClick(p);
+    if (this.tool === "move" || this.tool === "copy") return this.moveClick(p);
+    if (this.tool === "rotate") return this.rotateClick(p);
+    if (this.tool === "scale") return this.scaleClick(p);
     if (this.tool === "offset") return this.offsetClick(p);
     if (this.tool === "extend") return this.extendClick(p);
     if (this.tool === "break") return this.breakClick(p);
@@ -767,7 +786,7 @@ export class SketchMode {
       t === "circle2"
         ? [{ name: "diameter", label: "⌀" }]
         : t === "polygon"
-          ? [{ name: "radius", label: "R" }, { name: "sides", label: "N" }]
+          ? [{ name: "radius", label: "R" }, { name: "sides", label: "N", kind: "count" as const }]
           : t === "centerRectangle"
             ? [{ name: "width", label: "W" }, { name: "height", label: "H" }]
             : t === "slot"
@@ -1818,6 +1837,76 @@ export class SketchMode {
     this.filletFirst = null;
     this.dim.hide();
     this.afterModify();
+  }
+
+  /** replace each selected entity with map(e) (flattened); others unchanged. Owns
+   *  the selection: it re-selects the transform's output, so a rotate that explodes
+   *  a rectangle into fresh-id lines leaves those lines selected (not a stale id). */
+  private transformSelection(map: (e: ResolvedEntity) => ResolvedEntity[]) {
+    const next: ResolvedEntity[] = [];
+    const sel = new Set<string>();
+    for (const e of this.entities) {
+      if (this.selected.has(e.id)) {
+        for (const m of map(e)) { next.push(m); sel.add(m.id); }
+      } else next.push(e);
+    }
+    this.entities = next;
+    this.selected = sel;
+    this.afterModify();
+  }
+
+  /** keep the id for a single-entity result; give an exploded result (a rotated
+   *  rectangle → 4 lines) fresh ids so nothing collides. */
+  private reid(rot: ResolvedEntity[]): ResolvedEntity[] {
+    return rot.length === 1 ? rot : rot.map((r) => ({ ...r, id: newEntityId() }));
+  }
+
+  /** Move/Copy: click a base point, then a destination — translate the whole
+   *  selection. Move mutates in place; Copy leaves the originals and selects the copies. */
+  private moveClick(p: THREE.Vector2) {
+    if (!this.selected.size) { toast("Select entities first, then Move/Copy"); return; }
+    if (!this.moveBase) { this.moveBase = p.clone(); toast("Click the destination point"); return; }
+    const dx = p.x - this.moveBase.x, dy = p.y - this.moveBase.y;
+    this.moveBase = null;
+    if (this.tool === "copy") {
+      const copies: ResolvedEntity[] = [];
+      const sel = new Set<string>();
+      for (const e of this.entities) {
+        if (!this.selected.has(e.id)) continue;
+        const id = newEntityId();
+        copies.push(translated(e, dx, dy, id));
+        sel.add(id);
+      }
+      this.entities = [...this.entities, ...copies];
+      this.selected = sel; // leave the copies selected (Fusion-style)
+      this.afterModify();
+    } else {
+      this.transformSelection((e) => [translated(e, dx, dy, e.id)]);
+    }
+  }
+
+  /** Rotate the selection about a clicked center by a typed angle (degrees). */
+  private rotateClick(p: THREE.Vector2) {
+    if (!this.selected.size) { toast("Select entities first, then Rotate"); return; }
+    const cx = p.x, cy = p.y;
+    this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
+      const ang = ((this.dim.getValue("angle") ?? 0) * Math.PI) / 180;
+      this.dim.hide();
+      this.transformSelection((e) => this.reid(rotated(e, cx, cy, ang, e.id)));
+    });
+    toast("Rotate: type an angle in degrees");
+  }
+
+  /** Scale the selection about a clicked base point by a typed factor. */
+  private scaleClick(p: THREE.Vector2) {
+    if (!this.selected.size) { toast("Select entities first, then Scale"); return; }
+    const cx = p.x, cy = p.y;
+    this.dim.show([{ name: "factor", label: "×", kind: "count" }], () => {
+      const f = this.dim.getValue("factor") ?? 1;
+      this.dim.hide();
+      if (f > 0) this.transformSelection((e) => [scaled(e, cx, cy, f, e.id)]);
+    });
+    toast("Scale: type a factor (e.g. 2 or 0.5)");
   }
   private offsetClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());

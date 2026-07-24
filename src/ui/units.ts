@@ -73,16 +73,16 @@ export function snap(v: number, step: number): number {
   return round(Math.round(v / step) * step);
 }
 
-export type FieldKind = "length" | "angle";
+export type FieldKind = "length" | "angle" | "count";
 
 /** numeric value to show in a field: angles stay in degrees, lengths convert */
 export function displayValue(mm: number, kind: FieldKind = "length"): number {
-  return kind === "angle" ? round(mm) : round(toDisplay(mm));
+  return kind === "length" ? round(toDisplay(mm)) : round(mm); // angle/count: raw
 }
 
 /** parse a typed field back to mm (length) or degrees (angle); null if invalid */
 export function parseField(raw: string, kind: FieldKind = "length"): number | null {
   const v = parseFloat(raw);
   if (Number.isNaN(v)) return null;
-  return kind === "angle" ? v : fromDisplay(v);
+  return kind === "length" ? fromDisplay(v) : v; // angle/count: raw number
 }

@@ -11,7 +11,7 @@ import { getUnit, displayValue, parseField } from "../ui/units";
 export interface DimFieldDef {
   name: string;
   label: string;
-  kind?: "length" | "angle"; // default length
+  kind?: "length" | "angle" | "count"; // default length; count = raw number, no unit
 }
 
 interface Field {
@@ -60,7 +60,7 @@ export class DimInput {
       const wrap = document.createElement("label");
       wrap.className = "dim-field";
       wrap.textContent =
-        def.kind === "angle" ? `${def.label}°` : `${def.label} ${getUnit()}`;
+        def.kind === "angle" ? `${def.label}°` : def.kind === "count" ? def.label : `${def.label} ${getUnit()}`;
       const input = document.createElement("input");
       input.type = "text";
       input.inputMode = "decimal";

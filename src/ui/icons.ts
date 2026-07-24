@@ -63,6 +63,8 @@ const PATHS: Record<string, string> = {
   computeAll: `<path d="M12 4a8 8 0 1 1-7.4 5"/><path d="M4 4v5h5"/>`,
   scale: `<path d="M4 10V4h6"/><path d="M20 14v6h-6"/><rect x="4" y="4" width="10" height="10" rx="0.5"/>`,
   move: `<path d="M12 3v18M3 12h18"/><path d="M12 3l-3 3m3-3l3 3M12 21l-3-3m3 3l3-3M3 12l3-3m-3 3l3 3M21 12l-3-3m3 3l-3 3"/>`,
+  rotate: `<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/>`,
+  copy: `<rect x="9" y="9" width="11" height="11" rx="1"/><path d="M5 15V5a1 1 0 0 1 1-1h9"/>`,
   // insert / construct
   import: `<path d="M12 3v11m0 0l-4-4m4 4l4-4"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/>`,
   datumPlane: `<path d="M3 9l9-4 9 4-9 4z"/><line x1="12" y1="13" x2="12" y2="20"/><circle cx="12" cy="20" r="1.4" fill="currentColor"/>`,
