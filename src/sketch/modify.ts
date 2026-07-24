@@ -6,6 +6,7 @@ import type { ResolvedEntity } from "./snap";
 import { entitySegments } from "./region";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
+import { coincKey } from "./sketchSolve";
 import {
   segIntersect,
   segCircleIntersect,
@@ -270,6 +271,109 @@ export function offsetEntity(
   }
   if (!copy) return null;
   return [...ents, copy];
+}
+
+type LineE = Extract<ResolvedEntity, { type: "line" }>;
+
+/**
+ * Offset a connected chain of LINE entities as a unit, mitering the corners —
+ * the common "offset this profile in/out" case (polygon outlines, polylines,
+ * a rectangle drawn as 4 lines). Returns the entities with the offset chain
+ * ADDED (originals kept), or null when the clicked entity isn't part of a
+ * simple line chain (a lone line or a junction) — the caller then falls back to
+ * single-entity offset. `dist` sign picks the side.
+ *
+ * Considers ONLY line entities; arcs in a profile are ignored (not joined) — a
+ * line-line corner with a coincident arc endpoint miters the two lines and skips
+ * the arc. defer: mixed line+arc chain joins; revisit when arc offset is added.
+ */
+export function offsetLineChain(
+  ents: ResolvedEntity[],
+  index: number,
+  dist: number,
+): ResolvedEntity[] | null {
+  if (ents[index]?.type !== "line") return null;
+  // endpoint key -> line-entity indices touching it. coincKey is the solver's
+  // canonical coincidence key, so "connected" here matches what the solver merges.
+  const touch = new Map<string, number[]>();
+  ents.forEach((e, i) => {
+    if (e.type !== "line") return;
+    for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
+      const arr = touch.get(k);
+      if (arr) arr.push(i); else touch.set(k, [i]);
+    }
+  });
+
+  // connected component of lines containing `index`; bail on any junction (a
+  // shared vertex touched by >2 lines) — not a simple chain
+  const comp = new Set<number>();
+  const stack = [index];
+  while (stack.length) {
+    const i = stack.pop();
+    if (i === undefined || comp.has(i)) continue;
+    const e = ents[i];
+    if (!e || e.type !== "line") continue;
+    comp.add(i);
+    for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
+      const arr = touch.get(k);
+      if (!arr) continue;
+      if (arr.length > 2) return null; // junction
+      for (const j of arr) if (j !== i) stack.push(j);
+    }
+  }
+  if (comp.size < 2) return null; // a lone line — caller handles it
+
+  // order the chain into a directed path. Start at a free end (a vertex touched
+  // by only one line) for an open chain; any line for a closed loop. Within a
+  // junction-free component, touch[k].length IS that vertex's chain degree.
+  let start = -1, startKey = "";
+  for (const i of comp) {
+    const e = ents[i] as LineE;
+    if (touch.get(coincKey(e.x1, e.y1))?.length === 1) { start = i; startKey = coincKey(e.x1, e.y1); break; }
+    if (touch.get(coincKey(e.x2, e.y2))?.length === 1) { start = i; startKey = coincKey(e.x2, e.y2); break; }
+  }
+  const closed = start === -1;
+  if (closed) { start = comp.values().next().value as number; const s = ents[start] as LineE; startKey = coincKey(s.x1, s.y1); }
+
+  // walk: each step yields the line's [from, to] in path order
+  const path: { from: THREE.Vector2; to: THREE.Vector2 }[] = [];
+  const used = new Set<number>();
+  let cur = start, curKey = startKey;
+  while (cur !== -1 && !used.has(cur)) {
+    used.add(cur);
+    const e = ents[cur] as LineE;
+    const a = v(e.x1, e.y1), b = v(e.x2, e.y2);
+    const fromA = coincKey(a.x, a.y) === curKey;
+    const from = fromA ? a : b, to = fromA ? b : a;
+    path.push({ from, to });
+    const toKey = coincKey(to.x, to.y);
+    const arr = touch.get(toKey) ?? [];
+    const nxt = arr.find((j) => j !== cur && !used.has(j)); // touch⊆comp here
+    cur = nxt ?? -1;
+    curKey = toKey;
+  }
+  if (path.length < 2) return null;
+
+  // offset each segment to its left normal by dist
+  const seg = path.map(({ from, to }) => {
+    const dir = to.clone().sub(from).normalize();
+    const n = v(-dir.y, dir.x).multiplyScalar(dist);
+    return { a: from.clone().add(n), b: to.clone().add(n) };
+  });
+  // miter join adjacent offset segments (and the wrap corner when closed)
+  const joinAt = (i: number, j: number) => {
+    const s0 = seg[i], s1 = seg[j];
+    if (!s0 || !s1) return;
+    const m = lineIntersect(s0.a, s0.b, s1.a, s1.b);
+    if (m) { s0.b = m; s1.a = m; } // shared corner → the miter point
+  };
+  for (let i = 0; i < seg.length - 1; i++) joinAt(i, i + 1);
+  if (closed) joinAt(seg.length - 1, 0);
+
+  const offsetLines: ResolvedEntity[] = seg.map((s) => ({
+    type: "line", id: newEntityId(), x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y,
+  }));
+  return [...ents, ...offsetLines];
 }
 
 /** Break: split the clicked curve at the click point. A line/arc splits into two

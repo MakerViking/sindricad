@@ -15,7 +15,7 @@ import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
-import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, breakAt, extendLine } from "./modify";
+import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { signedAngleDeg } from "./geom2d";
@@ -1913,7 +1913,8 @@ export class SketchMode {
     if (idx < 0) return;
     this.dim.show([{ name: "offset", label: "Offset", kind: "length" }], () => {
       const d = this.dim.getValue("offset") ?? 1;
-      const res = offsetEntity(this.entities, idx, d);
+      // a connected line chain offsets as a mitered unit; else a single entity
+      const res = offsetLineChain(this.entities, idx, d) ?? offsetEntity(this.entities, idx, d);
       if (res) this.entities = res;
       this.dim.hide();
       this.afterModify();

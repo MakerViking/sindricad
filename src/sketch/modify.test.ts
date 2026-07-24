@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { trimEntity, breakAt, extendLine, chamferCorner, offsetEntity } from "./modify";
+import { trimEntity, breakAt, extendLine, chamferCorner, offsetEntity, offsetLineChain } from "./modify";
 import type { ResolvedEntity } from "./snap";
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -100,5 +100,54 @@ describe("offsetEntity — arc", () => {
     const out = offsetEntity(ents, 0, 3)!;
     expect(out.length).toBe(2);
     expect(arcRadius(out[1])).toBeCloseTo(8, 1);
+  });
+});
+
+describe("offsetLineChain", () => {
+  const round = (n: number) => Math.round(n * 100) / 100;
+  const offsetEnds = (all: ResolvedEntity[], originalIds: string[]) =>
+    all.filter((e) => e.type === "line" && !originalIds.includes(e.id))
+      .flatMap((e) => [[round((e as any).x1), round((e as any).y1)], [round((e as any).x2), round((e as any).y2)]]);
+
+  it("miters an open L-chain of two lines", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "A", x1: 0, y1: 0, x2: 10, y2: 0 },
+      { type: "line", id: "B", x1: 10, y1: 0, x2: 10, y2: 10 },
+    ];
+    const out = offsetLineChain(ents, 0, 2)!;
+    expect(out).not.toBeNull();
+    expect(out.length).toBe(4); // 2 originals + 2 offset
+    const ends = offsetEnds(out, ["A", "B"]);
+    // offset up (+y) for A, left (−x) for B, mitered at (8,2)
+    expect(ends).toContainEqual([8, 2]); // the shared miter corner
+    expect(ends).toContainEqual([0, 2]); // A's free end offset
+    expect(ends).toContainEqual([8, 10]); // B's free end offset
+  });
+
+  it("offsets a closed square inward into a smaller concentric square", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "L0", x1: 0, y1: 0, x2: 10, y2: 0 },
+      { type: "line", id: "L1", x1: 10, y1: 0, x2: 10, y2: 10 },
+      { type: "line", id: "L2", x1: 10, y1: 10, x2: 0, y2: 10 },
+      { type: "line", id: "L3", x1: 0, y1: 10, x2: 0, y2: 0 },
+    ];
+    const out = offsetLineChain(ents, 0, 2)!;
+    expect(out.length).toBe(8); // 4 originals + 4 offset
+    const ends = offsetEnds(out, ["L0", "L1", "L2", "L3"]);
+    for (const corner of [[2, 2], [8, 2], [8, 8], [2, 8]]) expect(ends).toContainEqual(corner);
+  });
+
+  it("returns null for a lone line (caller falls back to single-entity offset)", () => {
+    const ents: ResolvedEntity[] = [{ type: "line", id: "A", x1: 0, y1: 0, x2: 10, y2: 0 }];
+    expect(offsetLineChain(ents, 0, 2)).toBeNull();
+  });
+
+  it("returns null at a junction (a vertex shared by 3+ lines)", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "A", x1: 0, y1: 0, x2: 10, y2: 0 },
+      { type: "line", id: "B", x1: 10, y1: 0, x2: 10, y2: 10 },
+      { type: "line", id: "C", x1: 10, y1: 0, x2: 20, y2: 0 }, // T-junction at (10,0)
+    ];
+    expect(offsetLineChain(ents, 0, 2)).toBeNull();
   });
 });
