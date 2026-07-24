@@ -1353,7 +1353,29 @@ def _handle_revolve(f, ctx):
 
 
 def _handle_loft(f, ctx):
-    solid = loft([ctx.sketches[s]["sketch"] for s in f["sketches"]])
+    # Fusion flow: loft through the SELECTED profile regions (each on its own
+    # sketch, in the order given). Resolving the region anchor to a Face — the
+    # same region picking extrude uses — keeps a ring's HOLE, and build123d's
+    # loft blends faces-with-holes into a tube natively. The legacy `sketches`
+    # path lofts whole un-consumed sketch profiles (ribbon fallback).
+    profs = f.get("profiles")
+    if profs:
+        sections = []
+        for pr in profs:
+            entry = ctx.sketches.get(pr["sketch"])
+            if entry is None or not entry.get("faces"):
+                raise ValueError("a loft profile's sketch has no closed area")
+            cells = [(fc, fc.bounding_box()) for fc in entry["faces"]]
+            rf = _region_face_at(cells, Vector(*pr["region"]))
+            if rf is None:
+                raise ValueError("no profile found under a selected loft area")
+            sections.append(rf)
+    else:
+        sections = [ctx.sketches[s]["sketch"] for s in f.get("sketches", [])]
+        sections = [s for s in sections if s is not None]
+    if len(sections) < 2:
+        raise ValueError("loft needs at least two profiles")
+    solid = loft(sections)
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
 
 

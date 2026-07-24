@@ -34,6 +34,16 @@ export type SConstraint =
   | { id: string; type: "p2lDistance"; p: PointId; line: string; value: number }
   | { id: string; type: "diameter"; circle: string; value: number }
   | { id: string; type: "tangentLC"; line: string; circle: string }
+  | { id: string; type: "tangentLA"; line: string; arc: string }
+  | { id: string; type: "tangentCC"; c1: string; c2: string }
+  | { id: string; type: "tangentCA"; circle: string; arc: string }
+  | { id: string; type: "tangentAA"; a1: string; a2: string }
+  | { id: string; type: "angleLL"; l1: string; l2: string; value: number } // radians
+  | { id: string; type: "circleRadius"; circle: string; value: number }
+  | { id: string; type: "arcRadius"; arc: string; value: number }
+  | { id: string; type: "equalRadiusCC"; c1: string; c2: string }
+  | { id: string; type: "equalRadiusCA"; circle: string; arc: string }
+  | { id: string; type: "equalRadiusAA"; a1: string; a2: string }
   | { id: string; type: "pointOnLine"; p: PointId; line: string }
   | { id: string; type: "pointOnPerpBisector"; p: PointId; line: string }
   | { id: string; type: "symmetric"; a: PointId; b: PointId; line: string };
@@ -154,6 +164,26 @@ function toGcsConstraint(c: SConstraint): any {
       return { id: c.id, type: "circle_diameter", c_id: c.circle, diameter: c.value };
     case "tangentLC":
       return { id: c.id, type: "tangent_lc", l_id: c.line, c_id: c.circle };
+    case "tangentLA":
+      return { id: c.id, type: "tangent_la", l_id: c.line, a_id: c.arc };
+    case "tangentCC":
+      return { id: c.id, type: "tangent_cc", c1_id: c.c1, c2_id: c.c2 };
+    case "tangentCA":
+      return { id: c.id, type: "tangent_ca", c_id: c.circle, a_id: c.arc };
+    case "tangentAA":
+      return { id: c.id, type: "tangent_aa", a1_id: c.a1, a2_id: c.a2 };
+    case "angleLL":
+      return { id: c.id, type: "l2l_angle_ll", l1_id: c.l1, l2_id: c.l2, angle: c.value };
+    case "circleRadius":
+      return { id: c.id, type: "circle_radius", c_id: c.circle, radius: c.value };
+    case "arcRadius":
+      return { id: c.id, type: "arc_radius", a_id: c.arc, radius: c.value };
+    case "equalRadiusCC":
+      return { id: c.id, type: "equal_radius_cc", c1_id: c.c1, c2_id: c.c2 };
+    case "equalRadiusCA":
+      return { id: c.id, type: "equal_radius_ca", c1_id: c.circle, a2_id: c.arc };
+    case "equalRadiusAA":
+      return { id: c.id, type: "equal_radius_aa", a1_id: c.a1, a2_id: c.a2 };
     case "pointOnLine":
       return { id: c.id, type: "point_on_line_pl", p_id: c.p, l_id: c.line };
     case "pointOnPerpBisector":

@@ -406,8 +406,16 @@ export function createCameraRig(
       // Same getPosition→updateCameraUp→setPosition pattern as the library's
       // own applyCameraUp().
       const pos = controls.getPosition(new THREE.Vector3());
-      persp.up.set(0, 0, 1);
-      ortho.up.set(0, 0, 1);
+      // Z-up is the model default, but exiting a sketch on a Z-normal plane (XY,
+      // or a plane parallel to it) leaves the camera looking straight DOWN -Z —
+      // where world +Z is PARALLEL to the view axis. That is a degenerate orbit
+      // basis: the pole sits on the view direction, so orbit gimbal-locks and
+      // "moves a little, then jams" (SpaceMouse and mouse alike). Fall back to
+      // Y-up for a near-vertical view so the basis stays well-conditioned.
+      const fwd = controls.getTarget(new THREE.Vector3()).sub(pos).normalize();
+      const up = Math.abs(fwd.z) > 0.999 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(0, 0, 1);
+      persp.up.copy(up);
+      ortho.up.copy(up);
       controls.updateCameraUp();
       controls.setPosition(pos.x, pos.y, pos.z, false);
     },

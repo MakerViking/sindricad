@@ -90,7 +90,22 @@ export type SketchConstraint =
   // midpoint: a point (endpoint of `e`/`p`) sits at the midpoint of a line
   | { type: "midpoint"; e: string; p: number; line: string }
   // symmetric: two endpoints mirror across a line (the symmetry axis)
-  | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string };
+  | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string }
+  // angle: driving included angle (DEGREES) between two lines (solver works in radians)
+  | { type: "angle"; l1: string; l2: string; value: number }
+  // radius: driving radius (mm) of a circle OR arc entity `e`
+  | { type: "radius"; e: string; value: number }
+  // fix/lock: pin an entity point in place. `p` uses the dimPoint semantics
+  // (0..3 = rect corner, circle center regardless of index, 2 = arc center,
+  // else line/arc/spline endpoint). Fully removes that point's 2 DOF.
+  | { type: "fix"; e: string; p: number }
+  // collinear: two lines share one infinite axis (parallel + endpoint-on-line)
+  | { type: "collinear"; l1: string; l2: string }
+  // equalRadius: two circles/arcs (in any mix) share a radius
+  | { type: "equalRadius"; a: string; b: string }
+  // tangent2: general tangency between two curves (line/circle/arc, not line+line).
+  // The older { type:"tangent"; line; circle } form is still accepted (old files).
+  | { type: "tangent2"; a: string; b: string };
 
 // A parametric pattern inside a sketch. Stored as a DEFINITION (sources + params)
 // and expanded to derived entities at build/render time, so it stays editable
@@ -158,7 +173,11 @@ export type Feature =
   // shape — this is the data-loss bug the field fixes, so old docs now get a
   // separate body instead, not a resurrected overwrite).
   | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num; operation?: "new" | "join" | "cut" | "intersect" }
-  | { id: string; type: "loft"; sketches: string[]; operation?: "new" | "join" | "cut" | "intersect" }
+  // Loft blends through 2+ profiles in order. `profiles` (Fusion flow) lofts the
+  // SELECTED profile regions across sketches — each carries its sketch id + a 3D
+  // interior anchor (a ring keeps its hole → a tube). `sketches` is the legacy
+  // whole-un-consumed-sketch fallback (ribbon). One of the two is present.
+  | { id: string; type: "loft"; profiles?: { sketch: string; region: [number, number, number] }[]; sketches?: string[]; operation?: "new" | "join" | "cut" | "intersect" }
   // Sweep a closed profile sketch along an open path sketch (a line/arc/spline).
   | { id: string; type: "sweep"; profile: string; path: string; operation: "new" | "join" | "cut" }
   // A persistent construction/datum plane in the timeline. Carries no geometry;

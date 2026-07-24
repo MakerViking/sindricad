@@ -18,6 +18,7 @@ import {
   pointInRegion,
   type Region,
 } from "./region";
+import { worldPointInRegion } from "./regionSelect";
 import { dimensionSegments } from "./entityDims";
 import { circumcenter } from "./arc";
 import { getCachedText, warmText } from "./textCache";
@@ -257,10 +258,14 @@ export class SketchOverlay {
   selectedRegions(): WorldRegion[] {
     return this.regions.filter((wr) => this.isRegionSelected(wr));
   }
+  // A stored 3D anchor counts for a region only if it lies ON that region's plane
+  // AND inside its material — see worldPointInRegion for why the coplanarity gate
+  // is essential (parallel-sketch projection bug, loft workflow).
+  private pointHitsRegion(p: [number, number, number], wr: WorldRegion): boolean {
+    return worldPointInRegion(new THREE.Vector3(p[0], p[1], p[2]), wr.plane, wr.region);
+  }
   isRegionSelected(wr: WorldRegion): boolean {
-    return this.selectedRegionPoints.some((p) =>
-      pointInRegion(wr.plane.to2D(new THREE.Vector3(p[0], p[1], p[2])), wr.region),
-    );
+    return this.selectedRegionPoints.some((p) => this.pointHitsRegion(p, wr));
   }
   /** Toggle a region's selection. `additive` (Ctrl/Shift) keeps the rest; a plain
    *  click replaces the whole selection with just this region. A grouped region (a
@@ -271,7 +276,7 @@ export class SketchOverlay {
       (r) => [r.interior3D.x, r.interior3D.y, r.interior3D.z] as [number, number, number],
     );
     const inGroup = (p: [number, number, number]) =>
-      group.some((r) => pointInRegion(r.plane.to2D(new THREE.Vector3(p[0], p[1], p[2])), r.region));
+      group.some((r) => this.pointHitsRegion(p, r));
     const sel = this.isRegionSelected(wr);
     if (!additive) {
       // plain click: this group becomes the whole selection — unless it already WAS

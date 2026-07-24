@@ -29,6 +29,16 @@ export function arcRadius(
   return c ? c.distanceTo(start) : 0;
 }
 
+/** center + radius of a 3-point arc entity (start/end + through-point), or null
+ *  if the three points are collinear. One place for the reconstruction every
+ *  arc consumer (dimensions, modify tools, fix) otherwise re-inlines. */
+export function arcCenterRadius(
+  e: { x1: number; y1: number; x2: number; y2: number; mx: number; my: number },
+): { c: THREE.Vector2; r: number } | null {
+  const c = circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my });
+  return c ? { c, r: Math.hypot(e.x1 - c.x, e.y1 - c.y) } : null;
+}
+
 /** sample the arc start → through → end as a polyline of n+1 points */
 export function arcPolyline(
   start: THREE.Vector2,

@@ -15,9 +15,9 @@ import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
-import { pickEntity, trimEntity, filletCorner, offsetEntity, breakAt, extendLine } from "./modify";
+import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, breakAt, extendLine } from "./modify";
 import { newEntityId, notePatternId } from "./id";
-import { circumcenter } from "./arc";
+import { circumcenter, arcCenterRadius } from "./arc";
 import { compileAndSolve, coincKey } from "./sketchSolve";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { expandPattern, translated } from "./pattern";
@@ -48,6 +48,7 @@ export type SketchTool =
   | "dimension"
   | "trim"
   | "fillet"
+  | "chamfer"
   | "offset"
   | "extend"
   | "break"
@@ -61,6 +62,8 @@ export type SketchTool =
   | "concentric"
   | "symmetric"
   | "midpoint"
+  | "collinear"
+  | "fix"
   | "patternRect"
   | "patternCircular"
   | "hexHoles"
@@ -74,6 +77,7 @@ export type SketchTool =
 const MODIFY_TOOLS = new Set<SketchTool>([
   "trim",
   "fillet",
+  "chamfer",
   "offset",
   "extend",
   "break",
@@ -83,6 +87,20 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 ]);
 
 const GRID_STEP = 5;
+
+/** Signed angle (degrees, in (-180,180]) from line l1's direction to line l2's,
+ *  matching planegcs's l2l_angle sense so seeding an angle dim with it is a no-op. */
+function signedAngleDeg(
+  l1: { x1: number; y1: number; x2: number; y2: number },
+  l2: { x1: number; y1: number; x2: number; y2: number },
+): number {
+  const a = Math.atan2(l1.y2 - l1.y1, l1.x2 - l1.x1);
+  const b = Math.atan2(l2.y2 - l2.y1, l2.x2 - l2.x1);
+  let d = ((b - a) * 180) / Math.PI;
+  while (d > 180) d -= 360;
+  while (d <= -180) d += 360;
+  return d;
+}
 
 // Sentinel id for the in-progress text tool's live-preview entity: it lives on the
 // active entity list (so it repaints through the normal render path) but is never
@@ -140,6 +158,9 @@ export class SketchMode {
   private lastCursor = new THREE.Vector2();
   // dimension tool: the first picked point of a two-pick distance (p2p / p2l)
   private dimFirst: { e: ResolvedEntity; p: number; pos: THREE.Vector2 } | null = null;
+  // first line picked for an angular dimension (set while its length DimInput is
+  // open; a second line click switches length → angle)
+  private dimLineFirst: string | null = null;
   // distance-constraint dims, computed once per refreshActive() in activeCurves()
   // and reused for the clickable labels (constraintDimExtras)
   private cdims: ConstraintDim[] = [];
@@ -337,6 +358,7 @@ export class SketchMode {
     this.pendingDrag = null;
     this.moveDrag = null;
     this.dimFirst = null;
+    this.dimLineFirst = null;
     this.dim.hide();
     this.textPanel.hide();
     // drop any uncommitted text preview left on the active list when switching tools
@@ -443,10 +465,11 @@ export class SketchMode {
     return this.cdims.map((d) => ({
       anchor: d.labelPos,
       valueMm: d.valueMm,
-      commit: (mm: number) => {
+      ...(d.kind ? { kind: d.kind } : {}),
+      commit: (val: number) => {
         const c = this.constraints[d.cIndex];
-        if (c && (c.type === "p2pDistance" || c.type === "p2lDistance")) {
-          c.value = mm;
+        if (c && (c.type === "p2pDistance" || c.type === "p2lDistance" || c.type === "radius" || c.type === "angle")) {
+          c.value = val;
           this.requestSolve();
           this.onState?.();
         }
@@ -467,6 +490,10 @@ export class SketchMode {
       }
       if (c.type === "p2lDistance" && k.type === "p2lDistance") {
         return !(k.e === c.e && k.p === c.p && k.line === c.line);
+      }
+      if (c.type === "radius" && k.type === "radius") return k.e !== c.e;
+      if (c.type === "angle" && k.type === "angle") {
+        return !((k.l1 === c.l1 && k.l2 === c.l2) || (k.l1 === c.l2 && k.l2 === c.l1));
       }
       return true;
     });
@@ -593,6 +620,7 @@ export class SketchMode {
     if (this.tool === "dimension") return this.dimensionClick(p);
     if (this.tool === "trim") return this.trimClick(p);
     if (this.tool === "fillet") return this.filletClick(p);
+    if (this.tool === "chamfer") return this.chamferClick(p);
     if (this.tool === "offset") return this.offsetClick(p);
     if (this.tool === "extend") return this.extendClick(p);
     if (this.tool === "break") return this.breakClick(p);
@@ -742,7 +770,7 @@ export class SketchMode {
       t === "circle2"
         ? [{ name: "diameter", label: "⌀" }]
         : t === "polygon"
-          ? [{ name: "radius", label: "R" }]
+          ? [{ name: "radius", label: "R" }, { name: "sides", label: "N" }]
           : t === "centerRectangle"
             ? [{ name: "width", label: "W" }, { name: "height", label: "H" }]
             : t === "slot"
@@ -991,6 +1019,9 @@ export class SketchMode {
     this.clickPts = [];
     this.overlay.setPreview([]);
     if (!center) return;
+    // honor a typed side count (N); blank/invalid keeps the current count
+    const rawN = this.dim.getValue("sides");
+    if (rawN != null && Number.isFinite(rawN)) this.polygonSides = Math.max(3, Math.min(64, Math.round(rawN)));
     const vertex = this.polygonVertex(center, p);
     this.dim.hide();
     this.commitPolygon(center, vertex);
@@ -1241,6 +1272,17 @@ export class SketchMode {
 
   private dimensionClick(p: THREE.Vector2) {
     const pt = this.pickDimPoint(p);
+    // ANGLE: a first line already has its length DimInput open, and the user
+    // clicks a second line's body → convert to an angular dimension instead.
+    if (this.dimLineFirst && !pt) {
+      const idx = pickEntity(this.entities, p, this.pickTol());
+      const e2 = idx >= 0 ? this.entities[idx] : undefined;
+      if (e2 && e2.type === "line" && e2.id !== this.dimLineFirst) {
+        const first = this.entities.find((x) => x.id === this.dimLineFirst);
+        this.dimLineFirst = null;
+        if (first && first.type === "line") { this.dim.hide(); this.showAngleDim(first, e2); return; }
+      }
+    }
     // second pick of a two-pick distance dimension
     if (this.dimFirst) {
       const first = this.dimFirst;
@@ -1276,12 +1318,15 @@ export class SketchMode {
     if (!e) return;
     if (e.type === "line") {
       const cur = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+      this.dimLineFirst = e.id; // arm angle-on-second-line while this input is open
       this.dim.show([{ name: "length", label: "L", kind: "length" }], () => {
         const mm = this.dim.getValue("length") ?? cur;
         this.dim.hide();
+        this.dimLineFirst = null;
         this.setDrivingDimension({ type: "distance", line: e.id, value: mm });
       });
       this.dim.updateFromCursor({ length: cur }); // seed with the current length
+      toast("Dimension: type a length, or click another line for the angle between them");
     } else if (e.type === "circle") {
       const cur = e.radius * 2;
       this.dim.show([{ name: "diameter", label: "⌀", kind: "length" }], () => {
@@ -1290,8 +1335,35 @@ export class SketchMode {
         this.setDrivingDimension({ type: "diameter", circle: e.id, value: mm });
       });
       this.dim.updateFromCursor({ diameter: cur }); // seed with the current diameter
+    } else if (e.type === "arc") {
+      this.showRadiusDim(e);
     }
-    // rectangles/arcs/splines: no single driving dim in v1
+    // rectangles/splines: no single driving dim in v1
+  }
+
+  /** Angular driving dimension between two lines. Seeds the DimInput with the
+   *  current (signed) angle so applying it doesn't snap the geometry. */
+  private showAngleDim(l1: ResolvedEntity & { type: "line" }, l2: ResolvedEntity & { type: "line" }) {
+    const cur = signedAngleDeg(l1, l2);
+    this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
+      const val = this.dim.getValue("angle") ?? cur;
+      this.dim.hide();
+      this.setDrivingDimension({ type: "angle", l1: l1.id, l2: l2.id, value: val });
+    });
+    this.dim.updateFromCursor({ angle: cur });
+    toast("Angle: type the included angle between the two lines");
+  }
+
+  /** Radius driving dimension for an arc (circles use diameter). */
+  private showRadiusDim(e: ResolvedEntity & { type: "arc" }) {
+    const cr = arcCenterRadius(e);
+    const cur = cr ? cr.r : 0;
+    this.dim.show([{ name: "radius", label: "R", kind: "length" }], () => {
+      const mm = this.dim.getValue("radius") ?? cur;
+      this.dim.hide();
+      this.setDrivingDimension({ type: "radius", e: e.id, value: mm });
+    });
+    this.dim.updateFromCursor({ radius: cur });
   }
 
   private onPointerMove(e: PointerEvent) {
@@ -1723,6 +1795,28 @@ export class SketchMode {
   private applyFillet(iA: number, iB: number) {
     const r = this.dim.getValue("radius") ?? 2;
     const res = filletCorner(this.entities, iA, iB, r);
+    if (res) this.entities = res;
+    this.filletFirst = null;
+    this.dim.hide();
+    this.afterModify();
+  }
+  private chamferClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    if (idx < 0 || this.entities[idx]?.type !== "line") return;
+    if (this.filletFirst == null) {
+      this.filletFirst = idx;
+      return;
+    }
+    if (idx === this.filletFirst) return;
+    const second = idx;
+    const first = this.filletFirst;
+    this.dim.show([{ name: "distance", label: "D", kind: "length" }], () =>
+      this.applyChamfer(first, second),
+    );
+  }
+  private applyChamfer(iA: number, iB: number) {
+    const d = this.dim.getValue("distance") ?? 2;
+    const res = chamferCorner(this.entities, iA, iB, d);
     if (res) this.entities = res;
     this.filletFirst = null;
     this.dim.hide();

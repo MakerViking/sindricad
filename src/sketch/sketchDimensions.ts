@@ -15,19 +15,25 @@ import type { ResolvedEntity } from "./snap";
 import { entityDims, type DimField } from "./entityDims";
 import { fmtLength, parseField, displayValue } from "../ui/units";
 
+/** format a dim value for display: length in the display unit, angle in degrees */
+const fmtDim = (mm: number, kind?: "length" | "angle") =>
+  kind === "angle" ? `${displayValue(mm, "angle")}°` : fmtLength(mm);
+
 interface DimLabel {
   el: HTMLDivElement;
   anchor: THREE.Vector2;
   valueMm: number;
   commit: (mm: number) => void; // writes the value (entity field or constraint)
+  kind?: "length" | "angle"; // default length; angle → degrees, no unit scaling
   suppressEdit?: boolean; // pointerdown was forwarded to geometry underneath
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value) */
 export interface ExtraDim {
   anchor: THREE.Vector2;
-  valueMm: number;
+  valueMm: number; // degrees when kind==="angle"
   commit: (mm: number) => void;
+  kind?: "length" | "angle";
 }
 
 export class SketchDimensions {
@@ -62,7 +68,7 @@ export class SketchDimensions {
       }
     });
     for (const x of extras) {
-      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit });
+      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}) });
     }
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
@@ -90,7 +96,7 @@ export class SketchDimensions {
   private addLabel(d: Omit<DimLabel, "el">) {
     const el = document.createElement("div");
     el.className = "sketch-dim";
-    el.textContent = fmtLength(d.valueMm);
+    el.textContent = fmtDim(d.valueMm, d.kind);
     el.title = "Click to edit";
     const label: DimLabel = { el, ...d };
     el.addEventListener("pointerdown", (e) => {
@@ -112,17 +118,19 @@ export class SketchDimensions {
   private beginEdit(label: DimLabel) {
     const input = document.createElement("input");
     input.type = "text";
-    input.value = String(displayValue(label.valueMm));
+    input.value = String(displayValue(label.valueMm, label.kind));
     label.el.textContent = "";
     label.el.appendChild(input);
     input.focus();
     input.select();
-    const revert = () => { label.el.textContent = fmtLength(label.valueMm); };
+    const revert = () => { label.el.textContent = fmtDim(label.valueMm, label.kind); };
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Enter") {
-        const mm = parseField(input.value, "length");
-        if (mm != null && mm > 0) label.commit(mm);
+        const val = parseField(input.value, label.kind ?? "length");
+        // lengths must be positive; angles may be any finite (signed) value
+        const ok = val != null && (label.kind === "angle" ? Number.isFinite(val) : val > 0);
+        if (ok) label.commit(val);
         else revert();
       } else if (e.key === "Escape") revert();
     });

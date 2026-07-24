@@ -150,6 +150,7 @@ export const SKETCH: Group[] = [
     label: "MODIFY",
     items: [
       { action: "fillet-sketch", label: "Fillet", iconName: "fillet", key: "F" },
+      { action: "chamfer-sketch", label: "Chamfer", iconName: "chamfer" },
       { action: "trim", label: "Trim", iconName: "trim", key: "T" },
       { action: "extend", label: "Extend", iconName: "extend" },
       { action: "offset", label: "Offset", iconName: "offset", key: "O" },
@@ -184,7 +185,9 @@ export const SKETCH: Group[] = [
           { action: "coincident", label: "Coincident", iconName: "coincident" },
           { action: "concentric", label: "Concentric", iconName: "concentric" },
           { action: "midpoint", label: "Midpoint", iconName: "midpoint" },
+          { action: "collinear", label: "Collinear", iconName: "collinear" },
           { action: "symmetric", label: "Symmetric", iconName: "symmetric" },
+          { action: "fix", label: "Fix", iconName: "fix" },
         ],
       },
     ],

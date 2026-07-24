@@ -37,7 +37,7 @@ const PATHS: Record<string, string> = {
   trim: `<path d="M5 5l6 6"/><path d="M19 5l-6 6"/><path d="M11 13l-6 6"/><circle cx="13" cy="13" r="2"/>`,
   offset: `<rect x="7" y="7" width="10" height="10"/><rect x="3.5" y="3.5" width="17" height="17" stroke-dasharray="2 2"/>`,
   extend: `<line x1="4" y1="12" x2="14" y2="12"/><path d="M14 8l4 4-4 4"/>`,
-  fillet: `<path d="M4 20 L4 10 A 10 10 0 0 1 14 10 L20 10" fill="none"/>`,
+  fillet: `<path d="M5 4 L5 11 Q5 19 13 19 L20 19 M5 11 L5 19 L13 19" fill="none"/>`,
   break: `<line x1="4" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="20" y2="12"/><line x1="11" y1="7" x2="11" y2="17"/><line x1="13" y1="7" x2="13" y2="17"/>`,
 
   // modeling create
@@ -92,6 +92,8 @@ const PATHS: Record<string, string> = {
   concentric: `<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1" fill="currentColor"/>`,
   symmetric: `<line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/><circle cx="6" cy="12" r="2"/><circle cx="18" cy="12" r="2"/>`,
   midpoint: `<line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2" fill="currentColor"/>`,
+  collinear: `<line x1="3" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>`,
+  fix: `<line x1="12" y1="4" x2="12" y2="14"/><path d="M8 4h8"/><path d="M9 14h6l-3 6z" fill="currentColor"/>`,
 };
 
 export function icon(name: string): string {

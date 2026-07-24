@@ -126,3 +126,19 @@ describe("detectRegions — circle-inside-rectangle hole handling", () => {
     expect(pointInRegion(new THREE.Vector2(100, 100), disk)).toBe(false);
   });
 });
+
+describe("detectRegions — thin-ring interior anchor (field bug: outer ring selects inner circle)", () => {
+  // Two concentric circles with a thin ring (inner_r/outer_r = 0.914 > 0.9), the
+  // exact Test1.sindri geometry. The region's `interior` anchor MUST land in the
+  // ring material — not in the hole. When it fell in the hole (0,0), selecting the
+  // ring stored an anchor inside the disk, so the disk highlighted/extruded instead.
+  it("the annulus anchor is inside its own material, not the hole", () => {
+    const regions = detectRegions("s1", [circle("outer", 0, 0, 27.5), circle("inner", 0, 0, 25.123885645485018)]);
+    expect(regions).toHaveLength(2);
+    const annulus = regions.find((r) => r.holes.length > 0)!;
+    const disk = regions.find((r) => r.holes.length === 0)!;
+    // the anchor must be in the annulus material and NOT in the disk (the hole)
+    expect(pointInRegion(annulus.interior, annulus)).toBe(true);
+    expect(pointInRegion(annulus.interior, disk)).toBe(false);
+  });
+});

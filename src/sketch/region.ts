@@ -270,6 +270,36 @@ function interiorPoint(
       if (ok(p)) return p;
     }
   }
+  // Ray-sampling toward the outer vertices can't reach the material of a THIN
+  // ring: every centroid→vertex sample up to t=0.9 still lands inside the hole
+  // (inner_r/outer_r > 0.9). Falling through to `centroid` returned a point in
+  // the HOLE — which then highlighted/extruded the inner disk instead of the
+  // ring (field bug: "selecting the outer ring selects the inner circle").
+  // Scanline fallback: on a horizontal line across the region, the midpoint
+  // between two consecutive boundary crossings that lands outside every hole is
+  // guaranteed to be in the material. Try several heights so a line that only
+  // grazes a hole's extreme isn't the sole chance.
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of loop) { minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
+  const rings = [loop, ...holes];
+  for (const frac of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8, 0.1, 0.9]) {
+    const y = minY + (maxY - minY) * frac;
+    const xs: number[] = [];
+    for (const ring of rings) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[i], b = ring[j];
+        if (!a || !b) continue;
+        if ((a.y > y) !== (b.y > y)) xs.push(((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x);
+      }
+    }
+    xs.sort((m, n) => m - n);
+    for (let k = 0; k + 1 < xs.length; k++) {
+      const xk = xs[k], xk1 = xs[k + 1];
+      if (xk === undefined || xk1 === undefined) continue;
+      const p = new THREE.Vector2((xk + xk1) / 2, y);
+      if (ok(p)) return p;
+    }
+  }
   return centroid; // best effort
 }
 

@@ -5,6 +5,7 @@ import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import { entitySegments } from "./region";
 import { newEntityId } from "./id";
+import { arcCenterRadius } from "./arc";
 import {
   segIntersect,
   segCircleIntersect,
@@ -14,6 +15,59 @@ import {
 } from "./geom2d";
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
+
+const TAU = Math.PI * 2;
+/** CCW angular distance from `from` to `to`, always in [0, TAU) */
+const ccwDelta = (from: number, to: number) => (((to - from) % TAU) + TAU) % TAU;
+
+/** Build an arc entity from a center, radius and a CCW angular span (start + delta>0). */
+function arcFromSpan(
+  C: THREE.Vector2,
+  R: number,
+  aStart: number,
+  delta: number,
+  src: { construction?: boolean },
+): ResolvedEntity {
+  const aEnd = aStart + delta;
+  const aMid = aStart + delta / 2;
+  return {
+    type: "arc",
+    id: newEntityId(),
+    x1: C.x + Math.cos(aStart) * R, y1: C.y + Math.sin(aStart) * R,
+    x2: C.x + Math.cos(aEnd) * R, y2: C.y + Math.sin(aEnd) * R,
+    mx: C.x + Math.cos(aMid) * R, my: C.y + Math.sin(aMid) * R,
+    ...constr(src),
+  };
+}
+
+/** An arc's center, radius, CCW start angle and CCW sweep (delta>0), from its 3
+ *  stored points — oriented so the through-point lies inside the sweep (matches
+ *  the reconstruction in sketchSolve). Null for a degenerate/collinear arc. */
+function arcGeom(e: { x1: number; y1: number; x2: number; y2: number; mx: number; my: number }):
+  { C: THREE.Vector2; R: number; aStart: number; delta: number } | null {
+  const cr = arcCenterRadius(e);
+  if (!cr) return null;
+  const C = cr.c, R = cr.r;
+  const aS = Math.atan2(e.y1 - C.y, e.x1 - C.x);
+  const aE = Math.atan2(e.y2 - C.y, e.x2 - C.x);
+  const aT = Math.atan2(e.my - C.y, e.mx - C.x);
+  const throughFwd = ccwDelta(aS, aT) <= ccwDelta(aS, aE);
+  return throughFwd
+    ? { C, R, aStart: aS, delta: ccwDelta(aS, aE) }
+    : { C, R, aStart: aE, delta: ccwDelta(aE, aS) };
+}
+
+/** angles (atan2, unbounded) at which other entities cross the circle (C,R) */
+function circleCrossAngles(ents: ResolvedEntity[], index: number, C: THREE.Vector2, R: number): number[] {
+  const out: number[] = [];
+  ents.forEach((o, i) => {
+    if (i === index) return;
+    for (const [a, b] of entitySegments(o)) {
+      for (const h of segCircleIntersect(a, b, C, R)) out.push(Math.atan2(h.y - C.y, h.x - C.x));
+    }
+  });
+  return out;
+}
 
 /** spread that copies a construction flag only when set — avoids emitting an
  *  explicit `construction: undefined`, which exactOptionalPropertyTypes rejects. */
@@ -47,8 +101,9 @@ function distToEntity(e: ResolvedEntity, p: THREE.Vector2): number {
 }
 
 /**
- * Trim: remove the clicked portion of a line up to its nearest intersections.
- * Non-line entities (or lines with no crossing) are deleted whole.
+ * Trim: remove the clicked portion of a curve up to its nearest intersections.
+ * Lines split into the outer segments; arcs into the outer sub-arcs; a circle
+ * becomes the complementary arc. A curve with no usable crossing is deleted whole.
  */
 export function trimEntity(
   ents: ResolvedEntity[],
@@ -57,7 +112,51 @@ export function trimEntity(
 ): ResolvedEntity[] {
   const e = ents[index];
   if (!e) return ents;
-  if (e.type !== "line") return ents.filter((_, i) => i !== index);
+  const del = () => ents.filter((_, i) => i !== index);
+
+  if (e.type === "circle") {
+    const C = v(e.x, e.y), R = e.radius;
+    const norm = (a: number) => ((a % TAU) + TAU) % TAU;
+    const angs = [...new Set(circleCrossAngles(ents, index, C, R).map(norm))].sort((a, b) => a - b);
+    if (angs.length < 2) return del(); // nothing to trim against
+    const tc = norm(Math.atan2(click.y - C.y, click.x - C.x));
+    // the CCW span [lo,hi] between adjacent crossings that contains the click
+    let lo = angs[angs.length - 1]!, hi = angs[0]!;
+    for (let k = 0; k < angs.length; k++) {
+      const a = angs[k]!, b = angs[(k + 1) % angs.length]!;
+      if (ccwDelta(a, tc) <= ccwDelta(a, b)) { lo = a; hi = b; break; }
+    }
+    const keep = ccwDelta(hi, lo); // complement of the removed span
+    if (keep < 1e-3) return del();
+    return ents.flatMap((o, i) => (i === index ? [arcFromSpan(C, R, hi, keep, e)] : [o]));
+  }
+
+  if (e.type === "arc") {
+    const g = arcGeom(e);
+    if (!g) return del();
+    const { C, R, aStart, delta } = g;
+    const params = new Set<number>([0, 1]);
+    for (const ang of circleCrossAngles(ents, index, C, R)) {
+      const t = ccwDelta(aStart, ang) / delta;
+      if (t > 1e-4 && t < 1 - 1e-4) params.add(t);
+    }
+    const sorted = [...params].sort((a, b) => a - b);
+    if (sorted.length <= 2) return del();
+    const tc = Math.max(0, Math.min(1, ccwDelta(aStart, Math.atan2(click.y - C.y, click.x - C.x)) / delta));
+    let lo = 0, hi = 1;
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i]!, b = sorted[i + 1]!;
+      if (tc >= a && tc <= b) { lo = a; hi = b; break; }
+    }
+    const pieces: ResolvedEntity[] = [];
+    const keep = (ta: number, tb: number) => {
+      if (tb - ta > 1e-3) pieces.push(arcFromSpan(C, R, aStart + ta * delta, (tb - ta) * delta, e));
+    };
+    keep(0, lo); keep(hi, 1);
+    return ents.flatMap((o, i) => (i === index ? pieces : [o]));
+  }
+
+  if (e.type !== "line") return del();
 
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const params = new Set<number>([0, 1]);
@@ -164,12 +263,17 @@ export function offsetEntity(
     const dir = v(e.x2 - e.x1, e.y2 - e.y1).normalize();
     const n = v(-dir.y, dir.x).multiplyScalar(dist); // left normal
     copy = { type: "line", id, x1: e.x1 + n.x, y1: e.y1 + n.y, x2: e.x2 + n.x, y2: e.y2 + n.y };
+  } else if (e.type === "arc") {
+    // concentric offset: positive dist grows the radius (away from the center)
+    const g = arcGeom(e);
+    if (g && g.R + dist > 1e-3) copy = arcFromSpan(g.C, g.R + dist, g.aStart, g.delta, {});
   }
   if (!copy) return null;
   return [...ents, copy];
 }
 
-/** Break: split the clicked curve at the click point into two pieces. */
+/** Break: split the clicked curve at the click point. A line/arc splits into two
+ *  pieces; a circle opens into a single arc starting/ending at the click point. */
 export function breakAt(
   ents: ResolvedEntity[],
   index: number,
@@ -186,7 +290,24 @@ export function breakAt(
     const b: ResolvedEntity = { type: "line", id: newEntityId(), x1: m.x, y1: m.y, x2: p2.x, y2: p2.y, ...constr(e) };
     return ents.flatMap((o, i) => (i === index ? [a, b] : [o]));
   }
-  return ents; // arc/circle break later
+  if (e.type === "circle") {
+    // open the closed loop at the click angle → one arc sweeping (almost) full circle
+    const C = v(e.x, e.y), R = e.radius;
+    const ac = Math.atan2(click.y - C.y, click.x - C.x);
+    const gap = 1e-3; // tiny opening so start ≠ end (a valid arc)
+    return ents.flatMap((o, i) => (i === index ? [arcFromSpan(C, R, ac + gap, TAU - 2 * gap, e)] : [o]));
+  }
+  if (e.type === "arc") {
+    const g = arcGeom(e);
+    if (!g) return ents;
+    const { C, R, aStart, delta } = g;
+    let t = ccwDelta(aStart, Math.atan2(click.y - C.y, click.x - C.x)) / delta;
+    t = Math.max(0.02, Math.min(0.98, t));
+    const a = arcFromSpan(C, R, aStart, t * delta, e);
+    const b = arcFromSpan(C, R, aStart + t * delta, (1 - t) * delta, e);
+    return ents.flatMap((o, i) => (i === index ? [a, b] : [o]));
+  }
+  return ents;
 }
 
 // --- geometric constraints (applied once; a full solver maintains them) ---
@@ -234,14 +355,16 @@ export function makeEqual(ents: ResolvedEntity[], iA: number, iB: number): Resol
   return ents.map((o, j) => (j === iB ? { ...B, x2: B.x1 + d.x, y2: B.y1 + d.y } : o));
 }
 
-/** Extend: lengthen the clicked end of a line to the nearest crossing. */
+/** Extend: lengthen the clicked end of a line or arc to the nearest crossing. */
 export function extendLine(
   ents: ResolvedEntity[],
   index: number,
   click: THREE.Vector2,
 ): ResolvedEntity[] | null {
   const e = ents[index];
-  if (!e || e.type !== "line") return null;
+  if (!e) return null;
+  if (e.type === "arc") return extendArc(ents, index, e, click);
+  if (e.type !== "line") return null;
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const extendEnd2 = paramOnSeg(p1, p2, click) >= 0.5; // which end is near the click
   const dir = p2.clone().sub(p1).normalize();
@@ -272,5 +395,72 @@ export function extendLine(
       ? { ...o, x2: np.x, y2: np.y }
       : { ...o, x1: np.x, y1: np.y };
   });
+  return out;
+}
+
+/** Extend an arc's near-clicked end along its circle to the nearest crossing. */
+function extendArc(
+  ents: ResolvedEntity[],
+  index: number,
+  e: Extract<ResolvedEntity, { type: "arc" }>,
+  click: THREE.Vector2,
+): ResolvedEntity[] | null {
+  const g = arcGeom(e);
+  if (!g) return null;
+  const { C, R, aStart, delta } = g;
+  const ac = Math.atan2(click.y - C.y, click.x - C.x);
+  const nearEnd = ccwDelta(aStart, ac) > delta / 2; // click closer to end than start
+  const aEnd = aStart + delta;
+  let best: number | null = null;
+  for (const raw of circleCrossAngles(ents, index, C, R)) {
+    if (ccwDelta(aStart, raw) <= delta + 1e-6) continue; // already on the arc
+    // gap = how far to sweep (CCW past the end, or CW before the start) to reach it
+    const gap = nearEnd ? ccwDelta(aEnd, raw) : ccwDelta(raw, aStart);
+    if (gap > 1e-4 && gap < TAU - delta - 1e-4 && (best === null || gap < best)) best = gap;
+  }
+  if (best === null) return null;
+  const grown = nearEnd
+    ? arcFromSpan(C, R, aStart, delta + best, e)
+    : arcFromSpan(C, R, aStart - best, delta + best, e);
+  const kept = { ...grown, id: e.id }; // survive: keep id + constraints
+  return ents.map((o, i) => (i === index ? kept : o));
+}
+
+/**
+ * Chamfer the corner where two line entities meet: shorten both to the setback
+ * points and insert a straight bevel line. `dist` is the equal setback along
+ * each line. Returns null if it can't (parallel/collinear/too-big).
+ */
+export function chamferCorner(
+  ents: ResolvedEntity[],
+  iA: number,
+  iB: number,
+  dist: number,
+): ResolvedEntity[] | null {
+  const A = ents[iA], B = ents[iB];
+  if (A?.type !== "line" || B?.type !== "line") return null;
+  const a1 = v(A.x1, A.y1), a2 = v(A.x2, A.y2);
+  const b1 = v(B.x1, B.y1), b2 = v(B.x2, B.y2);
+  const corner = lineIntersect(a1, a2, b1, b2);
+  if (!corner) return null; // parallel
+
+  const aFar = a1.distanceTo(corner) >= a2.distanceTo(corner) ? a1 : a2;
+  const bFar = b1.distanceTo(corner) >= b2.distanceTo(corner) ? b1 : b2;
+  const d1 = aFar.clone().sub(corner).normalize();
+  const d2 = bFar.clone().sub(corner).normalize();
+  const cosT = Math.max(-1, Math.min(1, d1.dot(d2)));
+  const theta = Math.acos(cosT);
+  if (theta < 1e-3 || Math.PI - theta < 1e-3) return null; // collinear
+  if (dist > aFar.distanceTo(corner) || dist > bFar.distanceTo(corner)) return null; // too big
+
+  const T1 = corner.clone().add(d1.clone().multiplyScalar(dist));
+  const T2 = corner.clone().add(d2.clone().multiplyScalar(dist));
+
+  const newA: ResolvedEntity = { ...A, x1: aFar.x, y1: aFar.y, x2: T1.x, y2: T1.y };
+  const newB: ResolvedEntity = { ...B, x1: bFar.x, y1: bFar.y, x2: T2.x, y2: T2.y };
+  const bevel: ResolvedEntity = { type: "line", id: newEntityId(), x1: T1.x, y1: T1.y, x2: T2.x, y2: T2.y };
+
+  const out = ents.map((o, i) => (i === iA ? newA : i === iB ? newB : o));
+  out.push(bevel);
   return out;
 }

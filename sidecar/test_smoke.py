@@ -593,6 +593,32 @@ def test_revolve_loft_operation():
           f"frustum vol {bodies[1]['shape'].volume:.0f}")
 
 
+def test_loft_profiles_keeps_holes_as_tube():
+    """Fusion-flow loft: lofting the SELECTED ring profiles (region anchors on two
+    sketches) keeps each ring's hole, so two concentric-circle rings blend into a
+    hollow TUBE — not a solid cone (the whole-sketch loft lofts the outer wire
+    only). Volume = outer frustum (r25->r16) minus inner frustum (r20->r13.178)."""
+    ring_lo = {"id": "s1", "type": "sketch", "plane": "XY", "entities": [
+        {"type": "circle", "id": "a", "x": 0, "y": 0, "radius": 25},
+        {"type": "circle", "id": "b", "x": 0, "y": 0, "radius": 20}]}
+    ring_hi = {"id": "s2", "type": "sketch",
+               "plane": {"origin": [0, 0, 24], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+               "entities": [
+                   {"type": "circle", "id": "c", "x": 0, "y": 0, "radius": 16},
+                   {"type": "circle", "id": "d", "x": 0, "y": 0, "radius": 13.178}]}
+    lf = {"id": "lf", "type": "loft", "operation": "new", "profiles": [
+        {"sketch": "s1", "region": [22.5, 0, 0]},   # anchor in the lower ring
+        {"sketch": "s2", "region": [14.5, 0, 24]}]}  # anchor in the upper ring
+    _p, err, bodies = rebuild({"parameters": {}, "features": [ring_lo, ring_hi, lf]})
+    assert not err, err
+    assert len(bodies) == 1, f"loft new -> 1 body, got {len(bodies)}"
+    vol = bodies[0]["shape"].volume
+    # a solid cone would be ~32191; the tube is ~11153 (hole preserved)
+    assert 11000 < vol < 11300, f"expected a hollow tube (~11153), got {vol:.0f} (a cone would be ~32191)"
+    assert len(bodies[0]["shape"].faces()) == 4, "tube = outer + inner side + 2 end rings"
+    print(f"  loft profiles OK: two rings -> hollow tube vol {vol:.0f} (hole kept)")
+
+
 def test_fillet_failure_diagnostics():
     """When a fillet/chamfer fails, the per-edge probe names the offending
     edges' midpoints in an `edgeOpFailed` diagnostic (so the UI can paint
@@ -1491,6 +1517,7 @@ if __name__ == "__main__":
     test_simplify_mesh()
     test_sweep()
     test_revolve_loft_operation()
+    test_loft_profiles_keeps_holes_as_tube()
     test_boolean_guards_combine_sweep()
     test_fillet_failure_diagnostics()
     test_scale_and_move()

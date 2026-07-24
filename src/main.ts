@@ -41,6 +41,7 @@ import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { PressPullTool } from "./features/pressPullTool";
+import { LoftTool } from "./features/loftTool";
 import { MoveTool } from "./features/moveTool";
 import { MeasureTool } from "./features/measureTool";
 import { SectionTool } from "./features/sectionTool";
@@ -100,6 +101,7 @@ setTextBackend(geometry, () => {
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
+const loftTool = new LoftTool(viewport, overlay, store);
 const moveTool = new MoveTool(viewport, store);
 const measure = new MeasureTool(viewport);
 const section = new SectionTool(viewport);
@@ -348,7 +350,7 @@ function deleteSelectedFace(): boolean {
 // Guard predicates checked at the top of every start* tool + interactive helper:
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || planePick || isChoiceOpen();
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || loftTool.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || planePick || isChoiceOpen();
 }
 // True when the current rebuild produced a solid body (something to modify).
 function hasBody(): boolean {
@@ -379,6 +381,7 @@ const starters = createFeatureStarters({
   extrude,
   edgeFeature,
   pressPull,
+  loftTool,
   moveTool,
   planeOffset,
   texture: textureTool,
@@ -448,7 +451,7 @@ store.onBuild((s) => {
 
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
-  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) sketch.enter(plane, store);
+  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !loftTool.active && !planeOffset.active) sketch.enter(plane, store);
 };
 
 // --- sketch visibility (MCAD-style: a sketch consumed by a feature hides by
@@ -460,7 +463,8 @@ function isSketchConsumed(id: string): boolean {
       (f.type === "extrude" && f.sketch === id) ||
       (f.type === "revolve" && f.sketch === id) ||
       (f.type === "sweep" && (f.profile === id || f.path === id)) ||
-      (f.type === "loft" && f.sketches.includes(id)),
+      (f.type === "loft" &&
+        (!!f.sketches?.includes(id) || !!f.profiles?.some((p) => p.sketch === id))),
   );
 }
 function isSketchVisible(id: string): boolean {
@@ -708,21 +712,24 @@ const SKETCH_PROMPTS: Record<string, string> = {
   centerRectangle: "Center Rectangle: click the center, then a corner · Esc",
   mirror: "Mirror: with entities selected, click a line to mirror across · Esc",
   dimension: "Dimension: click a line (length) or circle (⌀), type a value + Enter · Esc",
-  trim: "Trim: click a curve to remove it (trimmed to nearest crossings) · Esc",
+  trim: "Trim: click a curve (line/arc/circle) to remove it up to the nearest crossings · Esc",
   fillet: "Fillet: click two lines, then type a radius + Enter · Esc",
+  chamfer: "Chamfer: click two lines, then type a setback distance + Enter · Esc",
   offset: "Offset: click a curve, then type an offset distance + Enter · Esc",
-  extend: "Extend: click a line near the end to lengthen to the nearest crossing · Esc",
-  break: "Break: click a line where you want to split it · Esc",
+  extend: "Extend: click a line or arc near an end to lengthen it to the nearest crossing · Esc",
+  break: "Break: click a line or arc to split it (a circle opens into an arc) · Esc",
   horizontal: "Horizontal: click a line to make it horizontal · Esc",
   vertical: "Vertical: click a line to make it vertical · Esc",
   parallel: "Parallel: click two lines to make the 2nd parallel to the 1st · Esc",
   perpendicular: "Perpendicular: click two lines · Esc",
-  equal: "Equal: click two lines to make the 2nd the same length as the 1st · Esc",
-  tangent: "Tangent: click a line and a circle to make them tangent · Esc",
+  equal: "Equal: click two lines (equal length) or two circles/arcs (equal radius) · Esc",
+  tangent: "Tangent: click two curves (line, circle or arc) to make them tangent · Esc",
   coincident: "Coincident: click two endpoints to make them coincide · Esc",
-  concentric: "Concentric: click two circles to share a center · Esc",
+  concentric: "Concentric: click two circles/arcs to share a center · Esc",
   midpoint: "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
+  collinear: "Collinear: click two lines to put them on the same axis · Esc",
   symmetric: "Symmetric: click two endpoints, then the symmetry axis line · Esc",
+  fix: "Fix: click a point, endpoint or circle/arc center to lock it in place · Esc",
 };
 
 // --- sketch mode state -> UI (ribbon context, palette, prompt) ---
@@ -827,6 +834,7 @@ const SKETCH_TOOLS = new Set([
 const SKETCH_MODIFY: Record<string, SketchTool> = {
   trim: "trim",
   "fillet-sketch": "fillet",
+  "chamfer-sketch": "chamfer",
   offset: "offset",
   extend: "extend",
   break: "break",
@@ -841,7 +849,9 @@ const SKETCH_MODIFY: Record<string, SketchTool> = {
   coincident: "coincident",
   concentric: "concentric",
   midpoint: "midpoint",
+  collinear: "collinear",
   symmetric: "symmetric",
+  fix: "fix",
 };
 function handleAction(action: string) {
   if (!NON_REPEATABLE.has(action)) lastAction = action; // for "Repeat <command>"
@@ -1101,7 +1111,7 @@ installKeymap(
     // while sketching, the sketch tool owns its tool keys + Esc/Enter
     if (sketch.active && SKETCH_TOOLS.has(a)) return;
     if (a === "escape") {
-      if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !planeOffset.active) {
+      if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !loftTool.active && !planeOffset.active) {
         viewport.clearSelection();
         selectFeature(null);
       }

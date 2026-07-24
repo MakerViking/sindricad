@@ -69,6 +69,7 @@ export async function compileAndSolve(
   const splineMap = new Map<string, string[]>(); // spline entity id -> fit-point ids
   const rectMap = new Map<string, string[]>(); // rectangle entity id -> 4 corner points
   const pointMap = new Map<string, string>(); // point entity id -> its solver point
+  const fixedPts = new Set<string>(); // solver point ids pinned by a `fix` constraint
 
   for (const e of entities) {
     if (e.type === "line") {
@@ -151,6 +152,9 @@ export async function compileAndSolve(
     return endpointPoint(entId, idx);
   };
   const isCircle = (id: string) => centers.has(id);
+  // entity kind by id (line/circle/arc) — one lookup for the tangent/equal ladders
+  const kindOf = (id: string): "line" | "circle" | "arc" | undefined =>
+    ends.has(id) ? "line" : centers.has(id) ? "circle" : arcMap.has(id) ? "arc" : undefined;
   constraints.forEach((c, i) => {
     const id = `k${i}`; // user constraint ids never collide with `~` implicit ones
     if (c.type === "horizontal") { if (isLine(c.line)) cons.push({ id, type: "horizontal", line: c.line }); }
@@ -188,7 +192,45 @@ export async function compileAndSolve(
       const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
       if (a && b && isLine(c.line)) cons.push({ id, type: "symmetric", a, b, line: c.line });
     }
+    else if (c.type === "angle") {
+      if (isLine(c.l1) && isLine(c.l2)) cons.push({ id, type: "angleLL", l1: c.l1, l2: c.l2, value: (c.value * Math.PI) / 180 });
+    }
+    else if (c.type === "radius") {
+      if (centers.has(c.e)) cons.push({ id, type: "circleRadius", circle: c.e, value: c.value });
+      else if (arcMap.has(c.e)) cons.push({ id, type: "arcRadius", arc: c.e, value: c.value });
+    }
+    else if (c.type === "fix") {
+      const p = dimPoint(c.e, c.p);
+      if (p) fixedPts.add(p);
+    }
+    else if (c.type === "collinear") {
+      if (isLine(c.l1) && isLine(c.l2)) {
+        cons.push({ id: `${id}p`, type: "parallel", l1: c.l1, l2: c.l2 });
+        const e2 = ends.get(c.l2);
+        if (e2) cons.push({ id: `${id}o`, type: "pointOnLine", p: e2[0], line: c.l1 });
+      }
+    }
+    else if (c.type === "equalRadius") {
+      const ka = kindOf(c.a), kb = kindOf(c.b);
+      if (ka === "circle" && kb === "circle") cons.push({ id, type: "equalRadiusCC", c1: c.a, c2: c.b });
+      else if (ka === "arc" && kb === "arc") cons.push({ id, type: "equalRadiusAA", a1: c.a, a2: c.b });
+      else if (ka === "circle" && kb === "arc") cons.push({ id, type: "equalRadiusCA", circle: c.a, arc: c.b });
+      else if (ka === "arc" && kb === "circle") cons.push({ id, type: "equalRadiusCA", circle: c.b, arc: c.a });
+    }
+    else if (c.type === "tangent2") {
+      const ka = kindOf(c.a), kb = kindOf(c.b);
+      if (ka === "line" && kb === "circle") cons.push({ id, type: "tangentLC", line: c.a, circle: c.b });
+      else if (ka === "circle" && kb === "line") cons.push({ id, type: "tangentLC", line: c.b, circle: c.a });
+      else if (ka === "line" && kb === "arc") cons.push({ id, type: "tangentLA", line: c.a, arc: c.b });
+      else if (ka === "arc" && kb === "line") cons.push({ id, type: "tangentLA", line: c.b, arc: c.a });
+      else if (ka === "circle" && kb === "circle") cons.push({ id, type: "tangentCC", c1: c.a, c2: c.b });
+      else if (ka === "arc" && kb === "arc") cons.push({ id, type: "tangentAA", a1: c.a, a2: c.b });
+      else if (ka === "circle" && kb === "arc") cons.push({ id, type: "tangentCA", circle: c.a, arc: c.b });
+      else if (ka === "arc" && kb === "circle") cons.push({ id, type: "tangentCA", circle: c.b, arc: c.a });
+    }
   });
+
+  for (const p of points) if (fixedPts.has(p.id)) p.fixed = true;
 
   let dragInput: { point: string; x: number; y: number } | undefined;
   if (drag) {

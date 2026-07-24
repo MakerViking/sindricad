@@ -11,6 +11,7 @@ import { SketchPlane } from "../sketch/plane";
 import type { ExtrudeTool } from "./extrudeTool";
 import type { EdgeFeatureTool } from "./edgeFeatureTool";
 import type { PressPullTool } from "./pressPullTool";
+import type { LoftTool } from "./loftTool";
 import type { MoveTool } from "./moveTool";
 import type { PlaneOffsetTool } from "./planeOffsetTool";
 import type { TextureTool } from "./textureTool";
@@ -26,6 +27,7 @@ export interface FeatureStartersDeps {
   extrude: ExtrudeTool;
   edgeFeature: EdgeFeatureTool;
   pressPull: PressPullTool;
+  loftTool: LoftTool;
   moveTool: MoveTool;
   planeOffset: PlaneOffsetTool;
   texture: TextureTool;
@@ -49,6 +51,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     extrude,
     edgeFeature,
     pressPull,
+    loftTool,
     moveTool,
     planeOffset,
     texture,
@@ -58,7 +61,6 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     setStatus,
     selectFeature,
     noteCommitted,
-    isSketchConsumed,
     getSelectedFeature,
     setPlanePick,
   } = deps;
@@ -415,20 +417,12 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     store.addFeature({ id: store.nextId(), type: "revolve", sketch: wr.sketchId, axis, angle: 360, operation } as Feature);
   }
 
-  // Loft: blend through two or more free (un-consumed) sketch profiles, in timeline
-  // order. Sketches already used by another feature are excluded.
-  async function startLoft() {
+  // Loft: interactive Fusion-style tool — click profiles in order, the loft
+  // previews live once two are picked (see LoftTool). Any profiles already
+  // selected in the model view seed the tool.
+  function startLoft() {
     if (toolBusy()) return;
-    const free = store.document.features.filter(
-      (f) => f.type === "sketch" && !isSketchConsumed(f.id),
-    );
-    if (free.length < 2) {
-      setStatus("Loft: needs at least two un-consumed sketch profiles", "");
-      return;
-    }
-    const operation = await chooseSolidOperation("Loft — operation");
-    if (!operation) return;
-    store.addFeature({ id: store.nextId(), type: "loft", sketches: free.map((f) => f.id), operation } as Feature);
+    loftTool.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
   // Sweep: select a closed profile region, then pick a second (open) sketch as the

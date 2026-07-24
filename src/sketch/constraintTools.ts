@@ -9,6 +9,7 @@ import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { pickEntity } from "./modify";
+import { dimRefPoints } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
 
 export const CONSTRAINT_TOOLS = new Set<SketchTool>([
@@ -22,7 +23,13 @@ export const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "concentric",
   "symmetric",
   "midpoint",
+  "collinear",
+  "fix",
 ]);
+
+/** line/circle/arc are the tangency-capable curves; circle/arc carry a radius+center. */
+const isCurve = (e: ResolvedEntity) => e.type === "line" || e.type === "circle" || e.type === "arc";
+const isRound = (e: ResolvedEntity) => e.type === "circle" || e.type === "arc";
 
 /** The slice of SketchMode these click flows read/write — live accessors, not copies. */
 export interface ConstraintHost {
@@ -69,10 +76,12 @@ export class ConstraintTools {
     if (t === "coincident" || t === "symmetric" || t === "midpoint") {
       return this.pointConstraintClick(p);
     }
+    if (t === "fix") return this.fixClick(p);
     if (t === "tangent") return this.tangentClick(p);
+    if (t === "equal") return this.equalClick(p);
     if (t === "concentric") return this.concentricClick(p);
 
-    // line-based constraints (horizontal/vertical/parallel/perpendicular/equal)
+    // line-based constraints (horizontal/vertical/parallel/perpendicular/collinear)
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, this.host.pickTol());
     const ent = idx >= 0 ? entities[idx] : undefined;
@@ -91,7 +100,7 @@ export class ConstraintTools {
       if (!a || a === id) return;
       if (t === "parallel") this.addConstraint({ type: "parallel", l1: a, l2: id });
       else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a, l2: id });
-      else if (t === "equal") this.addConstraint({ type: "equal", l1: a, l2: id });
+      else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a, l2: id });
     }
   }
 
@@ -163,34 +172,63 @@ export class ConstraintTools {
     if (e?.type === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: e.id });
   }
 
-  private tangentClick(p: THREE.Vector2) {
+  /** Two-pick flow shared by tangent/equal/concentric: returns [first, second]
+   *  once a second valid curve lands (both pass `ok`, distinct); null while
+   *  arming the first pick or on an invalid pick. Uses the filletFirst slot. */
+  private pickPair(p: THREE.Vector2, ok: (e: ResolvedEntity) => boolean): [ResolvedEntity, ResolvedEntity] | null {
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, this.host.pickTol());
-    if (idx < 0) return;
-    const e = entities[idx];
-    if (!e) return;
-    if (this.host.getFilletFirst() == null) {
-      // store first pick if it's a line or a circle
-      if (e.type === "line" || e.type === "circle") this.host.setFilletFirst(idx);
-      return;
-    }
+    const e = idx >= 0 ? entities[idx] : undefined;
+    if (!e || !ok(e)) return null;
+    if (this.host.getFilletFirst() == null) { this.host.setFilletFirst(idx); return null; }
     const first = entities[this.host.getFilletFirst()!];
     this.host.setFilletFirst(null);
-    if (!first || first.id === e.id) return;
-    const line = first.type === "line" ? first : e.type === "line" ? e : null;
-    const circle = first.type === "circle" ? first : e.type === "circle" ? e : null;
-    if (line && circle) this.addConstraint({ type: "tangent", line: line.id, circle: circle.id });
+    if (!first || first.id === e.id) return null;
+    return [first, e];
+  }
+
+  /** tangent between two curves: line/circle/arc, in any mix except line+line.
+   *  Emits the general `tangent2`; the compiler picks the right planegcs variant. */
+  private tangentClick(p: THREE.Vector2) {
+    const pair = this.pickPair(p, isCurve);
+    if (!pair) return;
+    const [first, e] = pair;
+    if (first.type === "line" && e.type === "line") return; // two lines can't be tangent
+    this.addConstraint({ type: "tangent2", a: first.id, b: e.id });
+  }
+
+  /** equal: two lines share length, or two circles/arcs share radius. */
+  private equalClick(p: THREE.Vector2) {
+    const pair = this.pickPair(p, isCurve);
+    if (!pair) return;
+    const [first, e] = pair;
+    if (first.type === "line" && e.type === "line") {
+      this.addConstraint({ type: "equal", l1: first.id, l2: e.id });
+    } else if (isRound(first) && isRound(e)) {
+      this.addConstraint({ type: "equalRadius", a: first.id, b: e.id });
+    }
   }
 
   private concentricClick(p: THREE.Vector2) {
-    const entities = this.host.entities();
-    const idx = pickEntity(entities, p, this.host.pickTol());
-    if (idx < 0 || entities[idx]?.type !== "circle") return;
-    if (this.host.getFilletFirst() == null) { this.host.setFilletFirst(idx); return; }
-    const a = entities[this.host.getFilletFirst()!];
-    this.host.setFilletFirst(null);
-    const b = entities[idx];
-    if (a && b && a.id !== b.id && a.type === "circle") this.addConstraint({ type: "concentric", c1: a.id, c2: b.id });
+    const pair = this.pickPair(p, isRound); // circles and arcs both carry a center
+    if (!pair) return;
+    this.addConstraint({ type: "concentric", c1: pair[0].id, c2: pair[1].id });
+  }
+
+  /** fix/lock: pin the nearest addressable point of any entity. Reuses
+   *  dimRefPoints (line/arc endpoints, arc/circle centers, rect corners, spline
+   *  ends) so the `p`-index convention lives in exactly one place. */
+  private fixClick(p: THREE.Vector2) {
+    const tol = this.host.pickTol();
+    let best: { id: string; p: number } | null = null;
+    let bestD = tol * tol;
+    for (const e of this.host.entities()) {
+      for (const r of dimRefPoints(e)) {
+        const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
+        if (d <= bestD) { bestD = d; best = { id: e.id, p: r.p }; }
+      }
+    }
+    if (best) this.addConstraint({ type: "fix", e: best.id, p: best.p });
   }
 
   private addConstraint(c: SketchConstraint) {

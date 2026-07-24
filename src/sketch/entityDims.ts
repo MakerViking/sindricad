@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
-import { circumcenter } from "./arc";
+import { circumcenter, arcCenterRadius } from "./arc";
 import { rectCorners } from "./region";
 import { paramOnSeg } from "./geom2d";
 
@@ -174,8 +174,9 @@ function refPoint(e: ResolvedEntity, p: number): V | null {
 export interface ConstraintDim {
   cIndex: number; // index into the constraints array (write target)
   labelPos: V;
-  valueMm: number; // the driving value
+  valueMm: number; // the driving value (degrees when kind==="angle")
   lines: [V, V][];
+  kind?: "length" | "angle"; // default length; angle → value shown in degrees
 }
 
 /** annotation + label geometry for the distance constraints (the driving dims
@@ -184,6 +185,34 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
   const byId = new Map(ents.map((e) => [e.id, e]));
   const out: ConstraintDim[] = [];
   constraints.forEach((c, i) => {
+    // radius (circle/arc): a radial line from center to rim + an "R" label
+    if (c.type === "radius") {
+      const e = byId.get(c.e);
+      if (!e) return;
+      let cx = 0, cy = 0, r = 0;
+      if (e.type === "circle") { cx = e.x; cy = e.y; r = e.radius; }
+      else if (e.type === "arc") {
+        const cr = arcCenterRadius(e);
+        if (!cr) return;
+        cx = cr.c.x; cy = cr.c.y; r = cr.r;
+      } else return;
+      const d = v(Math.SQRT1_2, Math.SQRT1_2); // 45° radial
+      out.push({
+        cIndex: i, valueMm: c.value,
+        labelPos: v(cx + d.x * r * 0.6, cy + d.y * r * 0.6),
+        lines: [[v(cx, cy), v(cx + d.x * r, cy + d.y * r)]],
+      });
+      return;
+    }
+    // angle (line-to-line): a label between the two lines, value in degrees
+    if (c.type === "angle") {
+      const l1 = byId.get(c.l1), l2 = byId.get(c.l2);
+      if (!l1 || l1.type !== "line" || !l2 || l2.type !== "line") return;
+      const m1 = v((l1.x1 + l1.x2) / 2, (l1.y1 + l1.y2) / 2);
+      const m2 = v((l2.x1 + l2.x2) / 2, (l2.y1 + l2.y2) / 2);
+      out.push({ cIndex: i, valueMm: c.value, labelPos: m1.clone().add(m2).multiplyScalar(0.5), lines: [], kind: "angle" });
+      return;
+    }
     // each branch yields the measured pair (a, b); the shared tail draws it
     let a: V | null = null;
     let b: V | null = null;
