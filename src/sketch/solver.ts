@@ -62,7 +62,9 @@ export interface SolveResult {
   arcs: Record<string, { radius: number }>; // solved radii (angles recomputed from points)
   dof: number;
   ok: boolean;
-  conflicts: string[];
+  conflicts: string[]; // constraints that can't be satisfied (sketch is inconsistent)
+  redundant: string[]; // constraints removable without changing DOF (over-defined)
+  partiallyRedundant: string[]; // constraints that partially duplicate others
 }
 
 let wrapperPromise: Promise<GcsWrapper> | null = null;
@@ -130,13 +132,16 @@ export async function solveSketch(input: SolveInput): Promise<SolveResult> {
     arcs,
     dof: w.gcs.dof(),
     ok: status === SolveStatus.Success,
-    conflicts: safeConflicts(w),
+    conflicts: safeList(() => w.get_gcs_conflicting_constraints?.()),
+    redundant: safeList(() => w.get_gcs_redundant_constraints?.()),
+    partiallyRedundant: safeList(() => w.get_gcs_partially_redundant_constraints?.()),
   };
 }
 
-function safeConflicts(w: GcsWrapper): string[] {
+/** Read a planegcs diagnostic list, tolerating a missing method / throw. */
+function safeList(get: () => string[] | undefined): string[] {
   try {
-    return w.get_gcs_conflicting_constraints?.() ?? [];
+    return get() ?? [];
   } catch {
     return [];
   }

@@ -16,6 +16,15 @@ export interface ConstraintGlyph {
   pos: THREE.Vector2; // 2D sketch-plane position
 }
 
+/** The solver's diagnosis of a constraint, or null if clean. Conflict (can't be
+ *  satisfied) takes precedence over over-defined (redundant/removable). This is
+ *  the single source of that precedence — glyph and dimension badges both use it,
+ *  so their red/amber can't drift apart. */
+export type ConstraintDiagnosis = "conflict" | "over";
+export function diagnosisOf(i: number, conflict: Set<number>, over: Set<number>): ConstraintDiagnosis | null {
+  return conflict.has(i) ? "conflict" : over.has(i) ? "over" : null;
+}
+
 /** representative point of an entity for glyph placement */
 function entCenter(e: ResolvedEntity): THREE.Vector2 {
   switch (e.type) {

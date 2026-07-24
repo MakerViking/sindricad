@@ -30,6 +30,8 @@ interface DimLabel {
   commit: (mm: number) => void; // writes the value (entity field or constraint)
   kind?: "length" | "angle"; // default length; angle → degrees, no unit scaling
   driven?: boolean; // reference dim: bracketed + read-only
+  conflict?: boolean; // solver flagged it inconsistent (red)
+  over?: boolean; // solver flagged it redundant / over-defining (amber)
   suppressEdit?: boolean; // pointerdown was forwarded to geometry underneath
 }
 
@@ -40,6 +42,8 @@ export interface ExtraDim {
   commit: (mm: number) => void;
   kind?: "length" | "angle";
   driven?: boolean;
+  conflict?: boolean;
+  over?: boolean;
 }
 
 export class SketchDimensions {
@@ -74,7 +78,7 @@ export class SketchDimensions {
       }
     });
     for (const x of extras) {
-      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}), ...(x.driven ? { driven: true } : {}) });
+      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}), ...(x.driven ? { driven: true } : {}), ...(x.conflict ? { conflict: true } : {}), ...(x.over ? { over: true } : {}) });
     }
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
@@ -101,7 +105,11 @@ export class SketchDimensions {
 
   private addLabel(d: Omit<DimLabel, "el">) {
     const el = document.createElement("div");
-    el.className = d.driven ? "sketch-dim sketch-dim-driven" : "sketch-dim";
+    const cls = ["sketch-dim"];
+    if (d.driven) cls.push("sketch-dim-driven");
+    if (d.conflict) cls.push("conflict");
+    else if (d.over) cls.push("over");
+    el.className = cls.join(" ");
     el.textContent = fmtDim(d.valueMm, d.kind, d.driven);
     const label: DimLabel = { el, ...d };
     el.addEventListener("pointerdown", (e) => {

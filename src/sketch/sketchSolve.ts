@@ -26,7 +26,8 @@ export interface SolvePass {
   entities: ResolvedEntity[];
   dof: number;
   ok: boolean;
-  conflicts: string[];
+  conflicts: string[]; // inconsistent constraints (sketch can't solve)
+  overDefined: string[]; // redundant + partially-redundant (removable / over-defining)
 }
 
 const TAU = Math.PI * 2;
@@ -318,5 +319,5 @@ export async function compileAndSolve(
     return e;
   });
 
-  return { entities: out, dof: r.dof, ok: r.ok, conflicts: r.conflicts };
+  return { entities: out, dof: r.dof, ok: r.ok, conflicts: r.conflicts, overDefined: [...r.redundant, ...r.partiallyRedundant] };
 }

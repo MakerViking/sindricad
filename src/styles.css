@@ -1490,6 +1490,9 @@ button.finish:hover {
   border-color: var(--text-dim, #8a90a0);
   color: var(--text-dim, #8a90a0);
 }
+/* solver-flagged dimensions: red = conflicting, amber = redundant/over-defined */
+.sketch-dim.conflict { border-color: #ff4444; color: #ff4444; }
+.sketch-dim.over { border-color: #e0a020; color: #e0a020; }
 /* non-select tools: labels visible but click-through (a label floating over a
    circle center must not swallow the dimension/draw pick underneath) */
 .sketch-dims.dims-passive .sketch-dim {
@@ -1520,6 +1523,7 @@ button.finish:hover {
 }
 .sketch-glyph:hover { border-color: var(--accent-hot); color: var(--accent-hot); }
 .sketch-glyph.conflict { border-color: #ff4444; color: #ff4444; }
+.sketch-glyph.over { border-color: #e0a020; color: #e0a020; }
 .sketch-glyphs.glyphs-passive .sketch-glyph { pointer-events: none; cursor: default; }
 .sketch-dim input {
   width: 52px;

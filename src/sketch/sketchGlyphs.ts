@@ -6,7 +6,7 @@ import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { camHash } from "../viewport/camHash";
 import type { SketchPlane } from "./plane";
-import type { ConstraintGlyph } from "./glyphs";
+import { diagnosisOf, type ConstraintGlyph } from "./glyphs";
 
 interface GlyphEl {
   el: HTMLDivElement;
@@ -29,14 +29,17 @@ export class SketchGlyphs {
     document.body.appendChild(this.root);
   }
 
-  show(glyphs: ConstraintGlyph[], plane: SketchPlane, conflicts: Set<number>) {
+  show(glyphs: ConstraintGlyph[], plane: SketchPlane, conflicts: Set<number>, over: Set<number>) {
     this.clear();
     this.plane = plane;
     for (const g of glyphs) {
       const el = document.createElement("div");
-      el.className = conflicts.has(g.cIndex) ? "sketch-glyph conflict" : "sketch-glyph";
+      const st = diagnosisOf(g.cIndex, conflicts, over);
+      el.className = st ? `sketch-glyph ${st}` : "sketch-glyph";
       el.textContent = g.label;
-      el.title = "Click to delete this constraint";
+      el.title = st === "conflict" ? "Conflicting constraint — click to delete"
+        : st === "over" ? "Redundant (over-defined) constraint — click to delete"
+        : "Click to delete this constraint";
       el.addEventListener("pointerdown", (e) => e.stopPropagation());
       el.addEventListener("click", (e) => {
         e.stopPropagation();
