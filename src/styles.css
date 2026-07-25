@@ -1234,6 +1234,15 @@ button.active {
 .params-row.param-stale .params-value {
   color: #e0a020;
 }
+/* sketch dim driven by a non-literal expression (fx: prefix in the text) */
+.sketch-dim-fx {
+  color: var(--accent);
+  font-style: italic;
+}
+.sketch-dim input.input-error {
+  border-color: #ff6b6b;
+  outline: none;
+}
 
 /* empty-state for panels (added by component markup) */
 .empty-state {

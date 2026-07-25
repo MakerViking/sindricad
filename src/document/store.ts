@@ -10,6 +10,15 @@ import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { writeTarget } from "./numFields";
 
+/** An expression typed on a sketch dimension while the sketch was OPEN — the
+ *  dim isn't in the document until the sketch commits, so the binding travels
+ *  with the commit (addFeature/replaceFeature) and lands in the same mutate. */
+export interface SketchBinding {
+  target: ParamTarget;
+  expr: string;
+  kind: FieldKind;
+}
+
 export interface RebuildState {
   building: boolean;
   result: RebuildResult | null;
@@ -114,9 +123,10 @@ export class DocumentStore {
     progress: null,
   };
 
-  /** surfaced when load() finds something worth telling the user (e.g. a file
-   *  written by a newer app version). Wired to a toast in main.ts. */
-  onLoadWarning?: (msg: string) => void;
+  /** surfaced when the store hits something worth telling the user without
+   *  failing (newer-version file on load, a dropped sketch binding, a param
+   *  commit that failed mid-cascade). Wired to a toast in main.ts. */
+  onWarning?: (msg: string) => void;
 
   constructor(
     private geometry: GeometryBackend,
@@ -238,21 +248,64 @@ export class DocumentStore {
   /** name → why its value is stale (cycle, unknown ref, non-finite, missing
    *  target) from the last recompute. Empty on a healthy document. */
   paramIssues: Record<string, string> = {};
-  /** sketch ids whose constraint/entity values were rewritten by the last
-   *  parameter recompute — consumed by the sketch re-solve cascade. */
-  private affectedSketches = new Set<string>();
 
   private applyRecompute(r: params.RecomputeResult) {
     this.paramIssues = r.issues;
-    for (const s of r.affectedSketches) this.affectedSketches.add(s);
   }
-  /** Drain the sketches invalidated by parameter edits since the last call.
-   *  defer: consumer is the sketch re-solve cascade, wired in the sketch-dims
-   *  step of the params engine (Tier 3.1). */
-  takeAffectedSketches(): Set<string> {
-    const out = this.affectedSketches;
-    this.affectedSketches = new Set();
-    return out;
+
+  /** Injected (main.ts): headless planegcs re-solve of one sketch feature —
+   *  kept out of the store so the document layer doesn't depend on the WASM
+   *  solver (and tests don't need it). */
+  headlessSolve?: (sketch: Extract<Feature, { type: "sketch" }>, parameters: CadDocument["parameters"]) => Promise<{ entities: Extract<Feature, { type: "sketch" }>["entities"] } | null>;
+  /** Injected: the sketch feature id currently OPEN in the sketch editor (it
+   *  re-solves itself live and must not be overwritten headlessly). */
+  openSketchId?: () => string | null;
+  /** Fired after a value-changing parameter commit landed. Deliberately
+   *  carries NO sketch set: the open sketch's pending (uncommitted) dim
+   *  bindings can't appear in the draft's affected-set, so the consumer must
+   *  rescan unconditionally — filtering here would be a bug. */
+  onParamsApplied?: () => void;
+  /** A closed sketch could not satisfy its dims after a param edit (conflict);
+   *  its coordinates were left unchanged. */
+  onParamSolveIssue?: (sketchId: string) => void;
+
+  /** Value-changing parameter commits are serialized: each one recomputes on a
+   *  DRAFT, headlessly re-solves the affected closed sketches, then lands
+   *  everything (param edit + dim values + solved coordinates) in ONE mutate =
+   *  one undo step = one rebuild. */
+  private paramChain: Promise<void> = Promise.resolve();
+  private queueParamCommit(fn: (d: CadDocument) => void) {
+    this.paramChain = this.paramChain
+      .then(() => this.commitWithCascade(fn))
+      .catch((e) => {
+        console.error("param commit failed:", e);
+        this.onWarning?.("Parameter change failed to apply — see the console for details.");
+      });
+  }
+  private async commitWithCascade(fn: (d: CadDocument) => void): Promise<void> {
+    const draft = clone(this.doc);
+    fn(draft);
+    const r = params.recompute(draft);
+    const open = this.openSketchId?.() ?? null;
+    if (this.headlessSolve) {
+      for (const sid of r.affectedSketches) {
+        if (sid === open) continue;
+        const f = draft.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sid);
+        // a sketch with no constraints has nothing to satisfy — the value
+        // write-back alone was the whole job (e.g. a bound polygon radius)
+        if (!f || !(f.constraints ?? []).length) continue;
+        const solved = await this.headlessSolve(f, draft.parameters);
+        if (solved) f.entities = solved.entities;
+        else this.onParamSolveIssue?.(sid);
+      }
+    }
+    this.mutate((d) => {
+      d.parameters = draft.parameters;
+      if (draft.paramDefs) d.paramDefs = draft.paramDefs;
+      else delete d.paramDefs;
+      d.features = draft.features;
+    });
+    this.onParamsApplied?.();
   }
 
   setParam(name: string, value: number) {
@@ -260,11 +313,12 @@ export class DocumentStore {
   }
 
   /** Set (or create) a parameter from an expression. Returns an error message
-   *  to surface at the input, or null on success. */
+   *  to surface at the input, or null — the commit itself lands async via the
+   *  cascade queue (validation is synchronous against the current document). */
   setParamExpr(name: string, expr: string, unit?: "mm" | "deg" | "count"): string | null {
     const v = params.validateExpr(this.doc, name, expr);
     if (!v.ok) return v.error;
-    this.mutate((d) => void params.commitParamExpr(d, name, expr, unit));
+    this.queueParamCommit((d) => params.commitParamExpr(d, name, expr, unit));
     return null;
   }
 
@@ -273,6 +327,12 @@ export class DocumentStore {
     const bad = params.validateName(params.defsOf(this.doc), name);
     if (bad) return bad;
     return this.setParamExpr(name, expr, unit);
+  }
+
+  /** Validate raw expression input for a (possibly not-yet-committed) binding
+   *  without mutating anything — the sketch dim editor's pre-check. */
+  validateTargetExpr(boundName: string | null, raw: string, kind: FieldKind): { ok: true; value: number } | { ok: false; error: string } {
+    return params.validateExpr(this.doc, boundName, raw, kind);
   }
 
   renameParam(from: string, to: string): string | null {
@@ -309,7 +369,7 @@ export class DocumentStore {
     const bound = params.boundParam(this.doc, target);
     const v = params.validateExpr(this.doc, bound, raw, kind);
     if (!v.ok) return v.error;
-    this.mutate((d) => void params.commitFieldExpr(d, target, raw, kind));
+    this.queueParamCommit((d) => params.commitFieldExpr(d, target, raw, kind));
     return null;
   }
 
@@ -338,12 +398,27 @@ export class DocumentStore {
     return params.isBound(this.doc, target);
   }
 
-  addFeature(feature: Feature, atIndex?: number) {
+  /** Bindings recorded while a sketch was open (expression typed on a dim);
+   *  applied in the SAME mutate as the feature commit so undo stays atomic.
+   *  A binding that stopped validating (its param was deleted mid-edit) is
+   *  dropped LOUDLY — the dim keeps its last value. */
+  private applyBindings(d: CadDocument, bindings?: SketchBinding[]) {
+    for (const b of bindings ?? []) {
+      // re-validate against the final doc — the dim/entity now exists in it
+      const bound = params.boundParam(d, b.target);
+      const v = params.validateExpr(d, bound, b.expr, b.kind);
+      if (v.ok) params.commitFieldExpr(d, b.target, b.expr, b.kind);
+      else this.onWarning?.(`Dimension expression "${b.expr}" was dropped: ${v.error}`);
+    }
+  }
+
+  addFeature(feature: Feature, atIndex?: number, bindings?: SketchBinding[]) {
     // new features land at the rollback marker (mainstream MCAD), which then advances past it
     const at = atIndex ?? this.rollbackIndex;
     if (this.rollback !== null && at <= this.rollback) this.rollback += 1;
     this.mutate((d) => {
       d.features.splice(at, 0, feature);
+      this.applyBindings(d, bindings);
     }, true);
   }
 
@@ -358,10 +433,11 @@ export class DocumentStore {
     });
   }
 
-  replaceFeature(id: string, feature: Feature) {
+  replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[]) {
     this.mutate((d) => {
       const i = d.features.findIndex((f) => f.id === id);
       if (i >= 0) d.features[i] = feature;
+      this.applyBindings(d, bindings);
     }, true);
   }
 
@@ -678,7 +754,7 @@ export class DocumentStore {
     } catch (e) {
       throw new Error(`could not read document: ${e instanceof Error ? e.message : String(e)}`);
     }
-    for (const w of migrateDocument(parsed)) this.onLoadWarning?.(w);
+    for (const w of migrateDocument(parsed)) this.onWarning?.(w);
     this.pushUndo();
     this.redoStack = [];
     // split persisted project state back out of the document; keep `this.doc`

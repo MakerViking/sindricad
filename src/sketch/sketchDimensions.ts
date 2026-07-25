@@ -14,13 +14,13 @@ import { camHash } from "../viewport/camHash";
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, type DimField } from "./entityDims";
-import { fmtLength, parseField, displayValue } from "../ui/units";
+import { fmtLength, parseField, displayValue, isPlainNumber } from "../ui/units";
 
 /** format a dim value for display: length in the display unit, angle in degrees;
- *  driven (reference) dims are wrapped in brackets. */
-const fmtDim = (mm: number, kind?: "length" | "angle", driven?: boolean) => {
+ *  driven (reference) dims are wrapped in brackets, param-driven get fx:. */
+const fmtDim = (mm: number, kind?: "length" | "angle", driven?: boolean, fx?: boolean) => {
   const s = kind === "angle" ? `${displayValue(mm, "angle")}°` : fmtLength(mm);
-  return driven ? `(${s})` : s;
+  return driven ? `(${s})` : fx ? `fx: ${s}` : s;
 };
 
 interface DimLabel {
@@ -33,6 +33,14 @@ interface DimLabel {
   conflict?: boolean; // solver flagged it inconsistent (red)
   over?: boolean; // solver flagged it redundant / over-defining (amber)
   suppressEdit?: boolean; // pointerdown was forwarded to geometry underneath
+  /** the driving expression when this dim is parameter-bound — editing reopens
+   *  it, the label renders `fx: <value>` when it's not a plain literal */
+  expr?: string;
+  /** expression-capable commit: gets the RAW input (number or formula) and
+   *  returns an error to show, or null. Formulas — and any edit on an
+   *  already-bound dim — route through this; a plain number on an unbound dim
+   *  keeps the legacy numeric `commit` (non-bindable fields reject formulas). */
+  commitExpr?: (raw: string) => string | null;
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value) */
@@ -44,6 +52,8 @@ export interface ExtraDim {
   driven?: boolean;
   conflict?: boolean;
   over?: boolean;
+  expr?: string;
+  commitExpr?: (raw: string) => string | null;
 }
 
 export class SketchDimensions {
@@ -63,6 +73,11 @@ export class SketchDimensions {
   constructor(
     private viewport: Viewport,
     private onEdit: (index: number, field: DimField, mm: number) => void,
+    /** expression-capable entity-dim commit (raw input → error | null); when
+     *  set, entity labels accept formulas too. */
+    private onEditExpr?: (index: number, field: DimField, raw: string) => string | null,
+    /** the driving expression for an entity dim, when parameter-bound. */
+    private entityExprOf?: (index: number, field: DimField) => string | undefined,
   ) {
     this.root = document.createElement("div");
     this.root.className = "sketch-dims";
@@ -74,11 +89,18 @@ export class SketchDimensions {
     this.plane = plane;
     entities.forEach((e, i) => {
       for (const d of entityDims(e)) {
-        this.addLabel({ anchor: d.labelPos, valueMm: d.valueMm, commit: (mm) => this.onEdit(i, d.field, mm) });
+        const expr = this.entityExprOf?.(i, d.field);
+        this.addLabel({
+          anchor: d.labelPos,
+          valueMm: d.valueMm,
+          commit: (mm) => this.onEdit(i, d.field, mm),
+          ...(this.onEditExpr ? { commitExpr: (raw: string) => this.onEditExpr!(i, d.field, raw) } : {}),
+          ...(expr ? { expr } : {}),
+        });
       }
     });
     for (const x of extras) {
-      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}), ...(x.driven ? { driven: true } : {}), ...(x.conflict ? { conflict: true } : {}), ...(x.over ? { over: true } : {}) });
+      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}), ...(x.driven ? { driven: true } : {}), ...(x.conflict ? { conflict: true } : {}), ...(x.over ? { over: true } : {}), ...(x.expr ? { expr: x.expr } : {}), ...(x.commitExpr ? { commitExpr: x.commitExpr } : {}) });
     }
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
@@ -105,12 +127,14 @@ export class SketchDimensions {
 
   private addLabel(d: Omit<DimLabel, "el">) {
     const el = document.createElement("div");
+    const fx = !!d.expr && !isPlainNumber(d.expr);
     const cls = ["sketch-dim"];
     if (d.driven) cls.push("sketch-dim-driven");
+    if (fx) cls.push("sketch-dim-fx");
     if (d.conflict) cls.push("conflict");
     else if (d.over) cls.push("over");
     el.className = cls.join(" ");
-    el.textContent = fmtDim(d.valueMm, d.kind, d.driven);
+    el.textContent = fmtDim(d.valueMm, d.kind, d.driven, fx);
     const label: DimLabel = { el, ...d };
     el.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
@@ -119,7 +143,7 @@ export class SketchDimensions {
     if (d.driven) {
       el.title = "Reference dimension (measured, not driving)";
     } else {
-      el.title = "Click to edit";
+      el.title = fx ? `= ${d.expr} · click to edit` : "Click to edit";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         if (label.suppressEdit) {
@@ -136,23 +160,42 @@ export class SketchDimensions {
   private beginEdit(label: DimLabel) {
     const input = document.createElement("input");
     input.type = "text";
-    input.value = String(displayValue(label.valueMm, label.kind));
+    // a param-driven dim reopens its EXPRESSION (Fusion behavior); a plain dim
+    // opens its value in display units
+    const fx = !!label.expr && !isPlainNumber(label.expr);
+    input.value = fx ? label.expr! : String(displayValue(label.valueMm, label.kind));
     label.el.textContent = "";
     label.el.appendChild(input);
     input.focus();
     input.select();
-    const revert = () => { label.el.textContent = fmtDim(label.valueMm, label.kind); };
+    const revert = () => { label.el.textContent = fmtDim(label.valueMm, label.kind, label.driven, fx); };
+    input.addEventListener("input", () => input.classList.remove("input-error"));
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (e.key === "Enter") {
-        const val = parseField(input.value, label.kind ?? "length");
+        const raw = input.value.trim();
+        if (label.commitExpr && (!isPlainNumber(raw) || label.expr !== undefined)) {
+          // formulas — and any edit to an already-bound dim — go through the
+          // expression path so the binding stays consistent
+          const err = label.commitExpr(raw);
+          if (err) {
+            input.classList.add("input-error");
+            input.title = err;
+          }
+          return; // success: refreshActive() rebuilds the labels
+        }
+        const val = parseField(raw, label.kind ?? "length");
         // lengths must be positive; angles may be any finite (signed) value
         const ok = val != null && (label.kind === "angle" ? Number.isFinite(val) : val > 0);
         if (ok) label.commit(val);
         else revert();
       } else if (e.key === "Escape") revert();
     });
-    input.addEventListener("blur", revert); // edit committed -> show() rebuilds anyway
+    input.addEventListener("blur", () => {
+      // edit committed -> show() rebuilds anyway; keep a rejected expression
+      // visible only while focused
+      if (!input.classList.contains("input-error")) revert();
+    });
   }
 
   private loop = () => {

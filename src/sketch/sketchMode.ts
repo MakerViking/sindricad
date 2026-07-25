@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { Feature, PlaneSpec, SketchConstraint, SketchPattern } from "../types";
+import type { Feature, ParamTarget, PlaneSpec, SketchConstraint, SketchPattern } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
@@ -19,6 +19,9 @@ import { constraintGlyphs, diagnosisOf } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
+import { isPlainNumber, parseField } from "../ui/units";
+import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
+import type { SketchBinding } from "../document/store";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { signedAngleDeg } from "./geom2d";
 import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
@@ -219,8 +222,11 @@ export class SketchMode {
     private overlay: SketchOverlay,
   ) {
     this.dim = new DimInput();
-    this.dims = new SketchDimensions(viewport, (i, f, mm) =>
-      this.editDimension(i, f, mm),
+    this.dims = new SketchDimensions(
+      viewport,
+      (i, f, mm) => this.editDimension(i, f, mm),
+      (i, f, raw) => this.commitEntityDimExpr(i, f, raw),
+      (i, f) => this.entityDimExpr(i, f),
     );
     this.dims.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.glyphs = new SketchGlyphs(viewport);
@@ -316,9 +322,9 @@ export class SketchMode {
         ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
       };
       if (this.editingId) {
-        store.replaceFeature(this.editingId, sketch);
+        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id));
       } else {
-        store.addFeature(sketch);
+        store.addFeature(sketch, undefined, this.drainBindings(sketch.id));
       }
     }
     this.cleanup();
@@ -330,6 +336,7 @@ export class SketchMode {
 
   private cleanup() {
     const el = this.viewport.domElement;
+    this.pendingBindings.clear();
     el.removeEventListener("pointerdown", this.boundDown);
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerup", this.boundUp);
@@ -517,12 +524,16 @@ export class SketchMode {
   private constraintDimExtras(): ExtraDim[] {
     return this.cdims.map((d) => {
       const st = diagnosisOf(d.cIndex, this.conflictIdx, this.overIdx);
+      const con = this.constraints[d.cIndex];
+      const key = con && isDimConstraint(con) && con.id ? `c:${con.id}` : null;
+      const expr = key ? this.exprFor(key) : undefined;
       return {
         anchor: d.labelPos,
         valueMm: d.valueMm,
         ...(d.kind ? { kind: d.kind } : {}),
         ...(d.driven ? { driven: true } : {}),
         ...(st === "conflict" ? { conflict: true } : st === "over" ? { over: true } : {}),
+        ...(expr ? { expr } : {}),
         commit: (val: number) => {
           const c = this.constraints[d.cIndex];
           if (c && (c.type === "p2pDistance" || c.type === "p2lDistance" || c.type === "radius" || c.type === "angle")) {
@@ -530,6 +541,16 @@ export class SketchMode {
             this.requestSolve();
             this.onState?.();
           }
+        },
+        commitExpr: (raw: string) => {
+          const c = this.constraints[d.cIndex];
+          if (!c || !isDimConstraint(c)) return "not editable";
+          if (!c.id) c.id = newConstraintId();
+          return this.commitExprInput(`c:${c.id}`, d.kind === "angle" ? "angle" : "length", raw, (v) => {
+            c.value = v;
+            this.requestSolve();
+            this.onState?.();
+          });
         },
       };
     });
@@ -566,6 +587,170 @@ export class SketchMode {
     if (isDimConstraint(c) && !c.id) c.id = replacedId ?? newConstraintId();
     this.constraints.push(c);
     this.requestSolve();
+  }
+
+  // --- parameter bindings on sketch dims -------------------------------------
+  // While the sketch is OPEN its dims aren't in the document yet, so expression
+  // bindings are recorded here (keyed `c:<constraintId>` / `e:<entityId>:<field>`)
+  // and land atomically with the sketch commit (store.applyBindings inside the
+  // same mutate). Bound dims render fx: and reopen their expression.
+  private pendingBindings = new Map<string, { expr: string; kind: FieldKind }>();
+
+  /** the sketch feature id currently open for editing (null for a new sketch
+   *  or when the editor is closed) — the store's cascade must not headlessly
+   *  overwrite it. */
+  get openDocId(): string | null {
+    return this.active ? this.editingId : null;
+  }
+
+  /** binding key → ParamTarget once the owning sketch id is known. */
+  private static targetOf(key: string, sketchId: string): ParamTarget {
+    const [t, id, field] = key.split(":");
+    return t === "c"
+      ? { kind: "constraint", sketch: sketchId, constraint: id! }
+      : { kind: "entity", sketch: sketchId, entity: id!, field: field! };
+  }
+
+  /** SketchBinding list for the commit; targets get the final sketch id. */
+  private drainBindings(sketchId: string): SketchBinding[] {
+    const out: SketchBinding[] = [];
+    for (const [key, b] of this.pendingBindings) {
+      out.push({ target: SketchMode.targetOf(key, sketchId), expr: b.expr, kind: b.kind });
+    }
+    this.pendingBindings.clear();
+    return out;
+  }
+
+  /** the DOCUMENT-side binding for a pending key (editing an existing sketch). */
+  private docBinding(key: string): { name: string; expr: string; value: number } | null {
+    if (!this.editingId || !this.store) return null;
+    return this.store.boundExpr(SketchMode.targetOf(key, this.editingId));
+  }
+
+  /** the driving expression for a bound dim key — pending wins over the doc. */
+  private exprFor(key: string): string | undefined {
+    return this.pendingBindings.get(key)?.expr ?? this.docBinding(key)?.expr;
+  }
+
+  /** Evaluate raw dim input (plain number in display units, or an expression in
+   *  canonical units) — the SINGLE home of the number/formula fork and the
+   *  positivity rule for sketch dims. `expr` is null for plain numbers. */
+  private evalDimInput(raw: string, kind: FieldKind, boundName: string | null): { value: number; expr: string | null } | { error: string } {
+    if (isPlainNumber(raw)) {
+      const value = parseField(raw, kind);
+      if (value == null || (kind !== "angle" && !(value > 0))) return { error: "invalid value" };
+      return { value, expr: null };
+    }
+    if (!this.store) return { error: "no document" };
+    const v = this.store.validateTargetExpr(boundName, raw, kind);
+    if (!v.ok) return { error: v.error };
+    if (kind !== "angle" && !(v.value > 0)) return { error: "must evaluate to a positive value" };
+    return { value: v.value, expr: raw };
+  }
+
+  /** Record/refresh the pending binding for a dim edit: formulas always bind;
+   *  a plain number keeps an EXISTING binding as its literal. */
+  private recordBinding(key: string, expr: string | null, value: number, kind: FieldKind) {
+    if (expr) this.pendingBindings.set(key, { expr, kind });
+    else if (this.pendingBindings.has(key) || this.docBinding(key)) this.pendingBindings.set(key, { expr: String(value), kind });
+  }
+
+  /** Shared raw-input commit for a bindable dim slot with a known key. */
+  private commitExprInput(key: string, kind: FieldKind, raw: string, apply: (value: number) => void): string | null {
+    const r = this.evalDimInput(raw, kind, this.docBinding(key)?.name ?? null);
+    if ("error" in r) return r.error;
+    this.recordBinding(key, r.expr, r.value, kind);
+    apply(r.value);
+    return null;
+  }
+
+  /** Raw label input on an entity dimension. Line length / circle diameter
+   *  convert to their driving constraint (existing behavior) and bind there;
+   *  solver-rigid direct fields (polygon radius, slot width…) bind as entity
+   *  targets. Everything else: numbers only for now.
+   *  defer: expressions on rectangle W/H + derived dims (slot length) — needs
+   *  an auto-constraint conversion; revisit when a user asks for it. */
+  private commitEntityDimExpr(index: number, field: DimField, raw: string): string | null {
+    const e = this.entities[index];
+    if (!e) return "no entity";
+    if (e.type === "line" && field === "length") return this.commitConvertedDim({ type: "distance", line: e.id, value: 0 }, raw);
+    if (e.type === "circle" && field === "diameter") return this.commitConvertedDim({ type: "diameter", circle: e.id, value: 0 }, raw);
+    const bindable = RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field);
+    if (!bindable) return "this dimension can't hold an expression yet";
+    return this.commitExprInput(`e:${e.id}:${field}`, "length", raw, (v) => {
+      entityDims(e).find((d) => d.field === field)?.write(coerceForField(field, v));
+      this.refreshActive();
+      this.onState?.();
+    });
+  }
+
+  /** Entity length/⌀ input that must live on a driving constraint: evaluate
+   *  first, place the constraint (id carries over on replace), then bind. */
+  private commitConvertedDim(base: Extract<SketchConstraint, { type: "distance" } | { type: "diameter" }>, raw: string): string | null {
+    const r = this.evalDimInput(raw, "length", null);
+    if ("error" in r) return r.error;
+    const c = { ...base, value: r.value };
+    this.setDrivingDimension(c); // stamps a fresh id or inherits the replaced dim's
+    this.recordBinding(`c:${(c as { id?: string }).id!}`, r.expr, r.value, "length");
+    this.onState?.();
+    return null;
+  }
+
+  /** the driving expression shown on an entity dim label, when bound. */
+  private entityDimExpr(index: number, field: DimField): string | undefined {
+    const e = this.entities[index];
+    if (!e) return undefined;
+    if (e.type === "line" && field === "length") {
+      const c = this.constraints.find((k): k is Extract<SketchConstraint, { type: "distance" }> => k.type === "distance" && k.line === e.id);
+      return c?.id ? this.exprFor(`c:${c.id}`) : undefined;
+    }
+    if (e.type === "circle" && field === "diameter") {
+      const c = this.constraints.find((k): k is Extract<SketchConstraint, { type: "diameter" }> => k.type === "diameter" && k.circle === e.id);
+      return c?.id ? this.exprFor(`c:${c.id}`) : undefined;
+    }
+    if (RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field)) return this.exprFor(`e:${e.id}:${field}`);
+    return undefined;
+  }
+
+  /** A parameter commit landed (store.onParamsApplied): refresh every bound
+   *  live dim value — document bindings read the table, pending ones
+   *  re-evaluate — then re-solve so the geometry follows. */
+  syncParamValues() {
+    if (!this.active || !this.store) return;
+    const valueFor = (key: string): number | null => {
+      const pend = this.pendingBindings.get(key);
+      if (pend) {
+        const v = this.store!.validateTargetExpr(null, pend.expr, pend.kind);
+        return v.ok ? v.value : null;
+      }
+      return this.docBinding(key)?.value ?? null;
+    };
+    let touched = false;
+    for (const c of this.constraints) {
+      if (!isDimConstraint(c) || !c.id) continue;
+      const next = valueFor(`c:${c.id}`);
+      if (next != null && next !== c.value) {
+        c.value = next;
+        touched = true;
+      }
+    }
+    for (const e of this.entities) {
+      for (const [field] of RIGID_ENTITY_NUM_FIELDS[e.type] ?? []) {
+        const next = valueFor(`e:${e.id}:${field}`);
+        if (next == null) continue;
+        const rec = e as unknown as Record<string, unknown>;
+        const coerced = coerceForField(field, next);
+        if (rec[field] !== coerced) {
+          rec[field] = coerced;
+          touched = true;
+        }
+      }
+    }
+    if (touched) {
+      this.requestSolve();
+      this.refreshActive();
+      this.onState?.();
+    }
   }
 
   /** Geometry-beats-label: called from a dimension badge's pointerdown when the

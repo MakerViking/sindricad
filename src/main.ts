@@ -51,6 +51,7 @@ import { createFeatureStarters } from "./features/featureStarters";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
+import { solveSketchFeature } from "./sketch/headlessSolve";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
 import type { Feature, PlaneDef } from "./types";
@@ -86,7 +87,7 @@ if ("__TAURI_INTERNALS__" in window) {
   });
 }
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
-store.onLoadWarning = (msg) => toast(msg);
+store.onWarning = (msg) => toast(msg);
 // crash-safety: periodic recovery snapshots + restore-on-launch prompt
 installAutosave(store);
 void checkRecovery(store);
@@ -94,6 +95,13 @@ void checkRecovery(store);
 const overlay = new SketchOverlay();
 viewport.addToScene(overlay.group);
 const sketch = new SketchMode(viewport, overlay);
+// params engine ↔ sketcher plumbing: closed sketches re-solve headlessly after
+// a parameter edit; the open one refreshes its live dim values itself.
+store.headlessSolve = solveSketchFeature;
+store.openSketchId = () => sketch.openDocId;
+store.onParamsApplied = () => sketch.syncParamValues();
+store.onParamSolveIssue = (id) =>
+  toast(`Sketch ${id}: dimensions could not be satisfied after the parameter change — geometry left unchanged`);
 // Sidecar owns fonts: glyph outlines arrive async via tessellateText; repaint the
 // right surface (active sketch or committed overlay) when they land.
 setTextBackend(geometry, () => {
