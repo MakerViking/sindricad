@@ -20,6 +20,8 @@ class MockHost implements ConstraintHost {
   getFilletFirst() { return this._fillet; }
   setFilletFirst(i: number | null) { this._fillet = i; }
   requestSolve() { this.solves++; }
+  warnings: string[] = [];
+  warn(msg: string) { this.warnings.push(msg); }
 }
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -119,5 +121,20 @@ describe("constraintTools click flows (Tier 1 additions)", () => {
     const ct = new ConstraintTools(h);
     ct.click(v(10, 0)); // the end (index 1)
     expect(h._cons).toEqual([{ type: "fix", e: "l1", p: 1 }]);
+  });
+
+  it("fix on projected geometry adds nothing and warns (it is already fixed)", () => {
+    const h = new MockHost();
+    h._ents = [{
+      type: "projected", id: "p1",
+      source: { kind: "edge", body: "body1", sel: { kind: "edge", by: "match", fp: { mid: [0, 0, 0], dir: [1, 0, 0] } } },
+      curve: { kind: "line", x1: 0, y1: 0, x2: 10, y2: 0 },
+    }];
+    h._tool = "fix";
+    const ct = new ConstraintTools(h);
+    ct.click(v(10, 0));
+    expect(h._cons).toEqual([]);
+    expect(h.warnings).toHaveLength(1);
+    expect(h.warnings[0]).toMatch(/Break Link/);
   });
 });

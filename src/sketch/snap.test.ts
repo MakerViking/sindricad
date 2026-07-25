@@ -56,3 +56,36 @@ describe("candidatesFromEntities", () => {
     expect(sp).toHaveLength(3);
   });
 });
+
+describe("candidatesFromEntities — projected reference geometry", () => {
+  it("a projected line snaps like a native one: endpoints 100, midpoint 80", () => {
+    const c = candidatesFromEntities([{
+      type: "projected", id: "p1",
+      source: { kind: "edge", body: "body1", sel: { kind: "edge", by: "match", fp: { mid: [0, 0, 0], dir: [1, 0, 0] } } },
+      curve: { kind: "line", x1: 0, y1: 0, x2: 10, y2: 0 },
+    }]);
+    expect(c.filter((x) => x.kind === "endpoint" && x.priority === 100)).toHaveLength(2);
+    const mid = c.find((x) => x.kind === "midpoint")!;
+    expect(mid.priority).toBe(80);
+    expect(mid.p.x).toBe(5);
+  });
+
+  it("a projected circle exposes its center (90); a poly has strong ends and weak interior vertices", () => {
+    const circle = candidatesFromEntities([{
+      type: "projected", id: "pc",
+      source: { kind: "silhouette", body: "body1" },
+      curve: { kind: "circle", x: 3, y: 4, r: 5 },
+    }]);
+    expect(circle).toHaveLength(1);
+    expect(circle[0]!.kind).toBe("center");
+    expect(circle[0]!.priority).toBe(90);
+
+    const poly = candidatesFromEntities([{
+      type: "projected", id: "pp",
+      source: { kind: "silhouette", body: "body1" },
+      curve: { kind: "poly", pts: [[0, 0], [1, 1], [2, 0], [3, 1]] },
+    }]);
+    expect(poly.filter((x) => x.priority === 100)).toHaveLength(2); // real ends
+    expect(poly.filter((x) => x.priority === 60)).toHaveLength(2); // sample vertices
+  });
+});

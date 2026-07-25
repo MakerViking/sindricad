@@ -4,6 +4,8 @@
 // fallback.
 
 import * as THREE from "three";
+import type { ProjectedCurve, ProjectedSource } from "../types";
+import { circumcenter } from "./arc";
 
 export type SnapKind =
   | "free"
@@ -102,6 +104,30 @@ export function candidatesFromEntities(
       for (const p of e.points) add(p.x, p.y, "endpoint", 100); // fit points snap
     } else if (e.type === "point") {
       add(e.x, e.y, "endpoint", 110); // a placed point is a strong snap target
+    } else if (e.type === "projected") {
+      // projected reference curves snap like their native counterparts — that's
+      // half the point of projecting. Poly interior vertices are SAMPLES, not
+      // real model points, so they snap weakly (60).
+      const cv = e.curve;
+      if (cv.kind === "line") {
+        add(cv.x1, cv.y1, "endpoint", 100);
+        add(cv.x2, cv.y2, "endpoint", 100);
+        add((cv.x1 + cv.x2) / 2, (cv.y1 + cv.y2) / 2, "midpoint", 80);
+      } else if (cv.kind === "circle") {
+        add(cv.x, cv.y, "center", 90);
+      } else if (cv.kind === "arc") {
+        add(cv.x1, cv.y1, "endpoint", 100);
+        add(cv.x2, cv.y2, "endpoint", 100);
+        add(cv.mx, cv.my, "midpoint", 80); // exact model point, same as native arcs
+        const cc = circumcenter({ x: cv.x1, y: cv.y1 }, { x: cv.x2, y: cv.y2 }, { x: cv.mx, y: cv.my });
+        if (cc) add(cc.x, cc.y, "center", 90);
+      } else {
+        const pts = cv.pts;
+        pts.forEach(([x, y], i) => {
+          const isEnd = i === 0 || i === pts.length - 1;
+          add(x, y, "endpoint", isEnd ? 100 : 60);
+        });
+      }
     }
   }
   return out;
@@ -121,4 +147,7 @@ export type ResolvedEntity =
   | { type: "text"; id: string; text: string; x: number; y: number; height: number;
       font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";
       align?: "left" | "center" | "right"; angle: number;
-      pathRef?: string; positionOnPath?: number; boxWidth?: number; construction?: boolean };
+      pathRef?: string; positionOnPath?: number; boxWidth?: number; construction?: boolean }
+  // projected reference geometry (fixed/linked): the curve is already plain
+  // numbers, so resolution is a structural pass-through
+  | { type: "projected"; id: string; source: ProjectedSource; curve: ProjectedCurve; stale?: true; construction?: boolean };

@@ -123,3 +123,32 @@ describe("palette persistence", () => {
     expect(again.toJSON()).toBe(migrated);
   });
 });
+
+describe("projected-entity persistence (byte stability)", () => {
+  it("a doc with a projected entity round-trips byte-identically, stale omitted when false", () => {
+    vi.useFakeTimers();
+    const withProjected = (): CadDocument => ({
+      parameters: {},
+      features: [
+        { id: "s1", type: "sketch", plane: "XY", entities: [
+          { type: "projected", id: "p1",
+            source: { kind: "edge", body: "body1",
+              sel: { kind: "edge", by: "match", fp: { mid: [0, 0, 0], dir: [1, 0, 0] } } },
+            curve: { kind: "line", x1: 0, y1: 0, x2: 20, y2: 0 } },
+        ] },
+      ] as Feature[],
+    });
+    const store = new DocumentStore(stubBackend([]), withProjected());
+    const json = store.toJSON();
+    expect(json).toContain('"projected"');
+    expect(json).not.toContain('"stale"'); // omit-when-false, like every persisted flag
+    // load() runs migration once; a re-opened doc must re-save byte-identically
+    const reloaded = new DocumentStore(stubBackend([]), withProjected());
+    reloaded.load(json);
+    const migrated = reloaded.toJSON();
+    const again = new DocumentStore(stubBackend([]), withProjected());
+    again.load(migrated);
+    expect(again.toJSON()).toBe(migrated);
+    vi.useRealTimers();
+  });
+});

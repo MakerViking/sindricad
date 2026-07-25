@@ -30,6 +30,8 @@ export function translated(e: ResolvedEntity, dx: number, dy: number, id: string
       return { type: "slot", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, width: e.width, ...c };
     case "text":
       return { ...e, id, x: e.x + dx, y: e.y + dy };
+    case "projected":
+      return e; // fixed reference geometry — the transform tools refuse it upstream
   }
 }
 
@@ -55,6 +57,7 @@ export function scaled(e: ResolvedEntity, cx: number, cy: number, f: number, id:
     case "polygon": { const [x, y] = S(e.x, e.y); return { type: "polygon", id, x, y, radius: e.radius * a, sides: e.sides, angle: e.angle, ...c }; }
     case "slot": { const [x1, y1] = S(e.x1, e.y1), [x2, y2] = S(e.x2, e.y2); return { type: "slot", id, x1, y1, x2, y2, width: e.width * a, ...c }; }
     case "text": { const [x, y] = S(e.x, e.y); return { ...e, id, x, y, height: e.height * a }; }
+    case "projected": return e; // fixed reference geometry — never transformed
   }
 }
 
@@ -104,6 +107,8 @@ export function rotated(e: ResolvedEntity, cx: number, cy: number, ang: number, 
         return [{ type: "line", id: `${id}.${i}`, x1: c0[0], y1: c0[1], x2: c1[0], y2: c1[1], ...c } as ResolvedEntity];
       });
     }
+    case "projected":
+      return [e]; // fixed reference geometry — never transformed
   }
 }
 
@@ -116,11 +121,19 @@ export function expandPattern(
   const out: ResolvedEntity[] = [];
   let n = 0;
   const did = () => `${pat.id}#${n++}`;
+  // pattern sources: skip missing ids AND projected reference geometry — it is
+  // fixed/linked, never replicated (the UI strips it before the pattern flow;
+  // hand-authored docs degrade the same way instead of emitting duplicate ids)
+  const sources = (ids: string[]) =>
+    ids.flatMap((id) => {
+      const e = byId.get(id);
+      return e && e.type !== "projected" ? [e] : [];
+    });
 
   if (pat.type === "patternRect") {
     const cx = Math.max(1, Math.round(N(pat.countX))), cy = Math.max(1, Math.round(N(pat.countY)));
     const sx = N(pat.spacingX), sy = N(pat.spacingY);
-    const srcs = pat.sources.map((id) => byId.get(id)).filter(Boolean) as ResolvedEntity[];
+    const srcs = sources(pat.sources);
     for (let i = 0; i < cx; i++)
       for (let j = 0; j < cy; j++) {
         if (i === 0 && j === 0) continue; // the original stays as the real entity
@@ -132,7 +145,7 @@ export function expandPattern(
     const full = total !== 0 && Math.abs(Math.abs(total) - 360) < 1e-6;
     const step = ((full ? total / count : total / Math.max(1, count - 1)) * Math.PI) / 180;
     const cx = N(pat.cx), cy = N(pat.cy);
-    const srcs = pat.sources.map((id) => byId.get(id)).filter(Boolean) as ResolvedEntity[];
+    const srcs = sources(pat.sources);
     for (let k = 1; k < count; k++) for (const s of srcs) out.push(...rotated(s, cx, cy, k * step, did()));
   } else if (pat.type === "boltCircle") {
     const count = Math.max(1, Math.round(N(pat.count)));

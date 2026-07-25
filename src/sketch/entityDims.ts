@@ -106,6 +106,7 @@ export function entityDims(e: ResolvedEntity): EntityDim[] {
   if (e.type === "spline") return []; // splines are defined by their fit points
   if (e.type === "point") return []; // a point carries no dimension
   if (e.type === "text") return []; // text has no editable linear dimension
+  if (e.type === "projected") return []; // fixed reference geometry — nothing to edit
   if (e.type === "polygon") {
     const rr = e.radius;
     const a = (e.angle * Math.PI) / 180; // stored degrees

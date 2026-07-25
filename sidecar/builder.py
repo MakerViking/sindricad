@@ -49,6 +49,7 @@ from build123d import (
     Box,
     Cylinder,
     Sphere,
+    Polyline,
     Pos,
     Rot,
     Plane,
@@ -3804,10 +3805,15 @@ def _expand_pattern(pat, by_id, val):
         return f"{pat['id']}#{counter[0] - 1}"
 
     t = pat["type"]
+    # pattern sources skip projected reference geometry (fixed/linked, never
+    # replicated) — mirrors the `sources` filter in expandPattern
+    def srcs_of(ids):
+        return [by_id[s] for s in ids if s in by_id and by_id[s].get("type") != "projected"]
+
     if t == "patternRect":
         cx, cy = max(1, round(val(pat["countX"]))), max(1, round(val(pat["countY"])))
         sx, sy = val(pat["spacingX"]), val(pat["spacingY"])
-        srcs = [by_id[s] for s in pat.get("sources", []) if s in by_id]
+        srcs = srcs_of(pat.get("sources", []))
         for i in range(cx):
             for j in range(cy):
                 if i == 0 and j == 0:
@@ -3819,7 +3825,7 @@ def _expand_pattern(pat, by_id, val):
         full = total != 0 and abs(abs(total) - 360) < 1e-6
         step = math.radians(total / count if full else total / max(1, count - 1))
         cx, cy = val(pat["cx"]), val(pat["cy"])
-        srcs = [by_id[s] for s in pat.get("sources", []) if s in by_id]
+        srcs = srcs_of(pat.get("sources", []))
         for k in range(1, count):
             for s in srcs:
                 out.extend(_rotate_entity(s, cx, cy, k * step, did(), val))
@@ -4119,6 +4125,35 @@ def _build_sketch(f, val, datums=None):
             ):
                 edges.append(ed)
                 all_edges.append(ed)
+        elif et == "projected":
+            # Projected reference geometry: consume the CACHED curve verbatim —
+            # plain numbers authored by the projection recompute, never val()'d
+            # and never resolved here. _build_sketch stays geometry-free (the
+            # checkpoint sketch-replay invariant depends on it); refreshing the
+            # cache against live bodies is the rebuild handler's job.
+            cv = e.get("curve") or {}
+            ck = cv.get("kind")
+            if ck == "line":
+                ed = Edge.make_line((cv["x1"], cv["y1"], 0), (cv["x2"], cv["y2"], 0))
+                edges.append(ed)
+                all_edges.append(ed)
+            elif ck == "circle":
+                faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))
+                all_edges.append(Pos(cv["x"], cv["y"]) * Edge.make_circle(cv["r"]))
+            elif ck == "arc":
+                ed = Edge.make_three_point_arc(
+                    (cv["x1"], cv["y1"], 0),
+                    (cv["mx"], cv["my"], 0),  # through-point
+                    (cv["x2"], cv["y2"], 0),
+                )
+                edges.append(ed)
+                all_edges.append(ed)
+            elif ck == "poly":
+                pts = cv.get("pts") or []
+                if len(pts) >= 2:
+                    for ed in Polyline(*[(p[0], p[1], 0) for p in pts]).edges():
+                        edges.append(ed)
+                        all_edges.append(ed)
         elif et == "text":
             ref = e.get("pathRef")
             path_edge = _entity_edge(by_id_all[ref], val) if ref and ref in by_id_all else None

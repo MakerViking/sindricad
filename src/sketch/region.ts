@@ -54,6 +54,18 @@ export function entityPolyline(e: ResolvedEntity): THREE.Vector2[] {
       return closed(slotOutline(e.x1, e.y1, e.x2, e.y2, e.width));
     case "text":
       return []; // text is rendered from cached glyph contours, not this single-polyline path
+    case "projected":
+      // the cached curve is already plain numbers — sample like the native kinds
+      switch (e.curve.kind) {
+        case "line":
+          return [v(e.curve.x1, e.curve.y1), v(e.curve.x2, e.curve.y2)];
+        case "circle":
+          return closed(circleLoop(e.curve.x, e.curve.y, e.curve.r));
+        case "arc":
+          return arcPolyline(v(e.curve.x1, e.curve.y1), v(e.curve.x2, e.curve.y2), v(e.curve.mx, e.curve.my), ARC_SEGS);
+        case "poly":
+          return e.curve.pts.map(([x, y]) => v(x, y));
+      }
   }
 }
 
@@ -161,10 +173,16 @@ export function detectRegions(
     for (const { e } of perEntity) {
       if (e.type === "rectangle") loops.push(rectCorners(e.x, e.y, e.width, e.height));
       else if (e.type === "circle") loops.push(circleLoop(e.x, e.y, e.radius));
+      // a projected CIRCLE is a closed loop of its own, like a native circle —
+      // its polyline has no free endpoints for the chain tracer to join
+      else if (e.type === "projected" && e.curve.kind === "circle")
+        loops.push(circleLoop(e.curve.x, e.curve.y, e.curve.r));
     }
     const free: Seg[] = [];
     for (const { e, segs } of perEntity)
-      if (e.type === "line" || e.type === "arc" || e.type === "spline") free.push(...segs);
+      if (e.type === "line" || e.type === "arc" || e.type === "spline" ||
+          (e.type === "projected" && e.curve.kind !== "circle"))
+        free.push(...segs);
     loops.push(...traceLoops(free));
   }
 

@@ -1,4 +1,4 @@
-// Load-time document migration to FORMAT_VERSION 2 (parameters engine era).
+// Load-time document migration to the current FORMAT_VERSION.
 // Mutates the parsed document in place and returns user-facing warnings.
 // Everything here is idempotent, so it can safely run on every load.
 //
@@ -10,6 +10,11 @@
 //    become model parameters (dN rows in `paramDefs` with a target binding) and
 //    the field is rewritten to the cached number — loss-free, same geometry.
 //  - plain user parameters get a paramDefs row (expr = the literal).
+//
+// v2 → v3: the "projected" sketch entity (linked reference geometry). A pure
+// ADDITION — no data rewrite, the stamp alone marks the format. Older builds
+// opening a v3 file hit the newer-version warning below and degrade gracefully
+// (unknown entity types are skipped, not crashed on).
 
 import type { CadDocument, ParamDef, ParamTarget } from "../types";
 import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFields";
@@ -17,7 +22,7 @@ import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id
 import { nextDName } from "../params/engine";
 
 /** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
-export const FORMAT_VERSION = 2;
+export const FORMAT_VERSION = 3;
 
 export function migrateDocument(parsed: CadDocument): string[] {
   const version = parsed.version ?? 1;

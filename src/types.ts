@@ -42,6 +42,26 @@ export type Selector =
   | { kind: "edge"; by: "tangentChain"; seed: EdgeFingerprint } // an edge + its tangent-continuous chain
   | { kind: "edge"; by: "ofFace"; face: FaceFingerprint }; // all edges bounding a face
 
+// The cached 2D shape of a "projected" entity (Fusion-style Project): plain
+// numbers only (no Num) — the SIDECAR authors these, rounded to 6 decimals, and
+// refreshes them when the source geometry changes. arc = 3 points like a native
+// arc; poly is the sampled fallback (tilted circles, bsplines, silhouettes).
+export type ProjectedCurve =
+  | { kind: "line"; x1: number; y1: number; x2: number; y2: number }
+  | { kind: "circle"; x: number; y: number; r: number }
+  | { kind: "arc"; x1: number; y1: number; x2: number; y2: number; mx: number; my: number }
+  | { kind: "poly"; pts: [number, number][] };
+
+// What a projected entity is linked TO. Bodies are re-found by fingerprint
+// selector (by:"match" — the sidecar authors the fingerprint); sketch curves by
+// stable ids (no fingerprint needed). A multi-curve pick (a face boundary, a
+// rectangle) emits N sibling entities sharing `group` so Break Link / delete can
+// act on the whole projection.
+export type ProjectedSource =
+  | { kind: "edge" | "faceBoundary"; body: string; sel: Selector; group?: string }
+  | { kind: "sketchCurve"; sketch: string; entity: string; group?: string }
+  | { kind: "silhouette"; body: string; group?: string };
+
 // construction geometry is referenceable but does NOT form profiles.
 // arc = 3 points: start (1), end (2), and a point it passes through (m).
 // `id` is the stable identity that constraints reference (assigned on creation).
@@ -65,7 +85,13 @@ export type SketchEntity =
   | { type: "text"; id?: string; text: string; x?: Num; y?: Num; height: Num;
       font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";
       align?: "left" | "center" | "right"; angle?: Num;
-      pathRef?: string; positionOnPath?: Num; boxWidth?: Num; construction?: boolean };
+      pathRef?: string; positionOnPath?: Num; boxWidth?: Num; construction?: boolean }
+  // linked, FIXED reference geometry projected from existing 3D/2D geometry
+  // (see ProjectedCurve/ProjectedSource). The solver pins it, modify tools
+  // refuse it (Break Link converts it to native). `stale?: true` marks a source
+  // that no longer resolves (last shape kept) — omitted when false (byte
+  // stability, like every persisted flag).
+  | { type: "projected"; id?: string; source: ProjectedSource; curve: ProjectedCurve; stale?: true; construction?: boolean };
 
 // 2D sketch constraints, solved by planegcs. Entities are referenced by their
 // stable id (see sketch/id.ts) — never array index — so edit operations that

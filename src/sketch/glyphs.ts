@@ -34,6 +34,14 @@ function entCenter(e: ResolvedEntity): THREE.Vector2 {
     case "polygon": return V(e.x, e.y);
     case "slot": return V((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2);
     case "spline": { const p = e.points[Math.floor(e.points.length / 2)] ?? e.points[0]; return p ? V(p.x, p.y) : V(0, 0); }
+    case "projected": {
+      const cv = e.curve;
+      if (cv.kind === "line") return V((cv.x1 + cv.x2) / 2, (cv.y1 + cv.y2) / 2);
+      if (cv.kind === "circle") return V(cv.x, cv.y);
+      if (cv.kind === "arc") return V(cv.mx, cv.my);
+      const p = cv.pts[Math.floor(cv.pts.length / 2)] ?? cv.pts[0];
+      return p ? V(p[0], p[1]) : V(0, 0);
+    }
   }
 }
 

@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
-import { pickEntity } from "./modify";
+import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
 import { dimRefPoints } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
 
@@ -48,6 +48,9 @@ export interface ConstraintHost {
   setFilletFirst(idx: number | null): void;
   /** kick the solve pump after a constraint changes */
   requestSolve(): void;
+  /** surface a user-facing warning (SketchMode routes it to the toast layer —
+   *  kept an accessor so these flows stay DOM-free/unit-testable) */
+  warn(msg: string): void;
 }
 
 export class ConstraintTools {
@@ -228,7 +231,12 @@ export class ConstraintTools {
         if (d <= bestD) { bestD = d; best = { id: e.id, p: r.p }; }
       }
     }
-    if (best) this.addConstraint({ type: "fix", e: best.id, p: best.p });
+    if (best) return this.addConstraint({ type: "fix", e: best.id, p: best.p });
+    // no addressable point — explain a click on projected geometry (it exposes
+    // no ref points: it is already fixed) instead of silently doing nothing
+    const entities = this.host.entities();
+    const idx = pickEntity(entities, p, tol);
+    if (entities[idx]?.type === "projected") this.host.warn(PROJECTED_FIXED_MSG);
   }
 
   private addConstraint(c: SketchConstraint) {

@@ -17,7 +17,7 @@ import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
-import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine } from "./modify";
+import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine, PROJECTED_FIXED_MSG } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { isPlainNumber, parseField } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
@@ -35,7 +35,7 @@ import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
-import { PatternFlow, PATTERN_TOOLS, type PatternHost } from "./patternFlow";
+import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 
 export type SketchTool =
   | "select"
@@ -244,6 +244,7 @@ export class SketchMode {
       getFilletFirst: () => this.filletFirst,
       setFilletFirst: (v) => { this.filletFirst = v; },
       requestSolve: () => this.requestSolve(),
+      warn: (msg) => toast(msg),
     };
     this.constraintTools = new ConstraintTools(constraintHost);
     const patternHost: PatternHost = {
@@ -1263,6 +1264,17 @@ export class SketchMode {
   // replicate the current selection; presets emit holes. Delegates to PatternFlow
   // (see patternFlow.ts), which owns the placement/edit state live. -------------
   private patternClick(p: THREE.Vector2) {
+    // entity patterns replicate the selection — drop projected reference
+    // geometry from the sources BEFORE PatternFlow snapshots them
+    if (ENTITY_PATTERNS.has(this.tool)) {
+      const projected = new Set(
+        this.entities.filter((e) => e.type === "projected" && this.selected.has(e.id)).map((e) => e.id),
+      );
+      if (projected.size) {
+        for (const id of projected) this.selected.delete(id);
+        toast(PROJECTED_FIXED_MSG);
+      }
+    }
     this.patternFlow.click(p);
   }
 
@@ -1423,7 +1435,10 @@ export class SketchMode {
     const idx = pickEntity(this.entities, p, this.pickTol());
     const axis = idx >= 0 ? this.entities[idx] : undefined;
     if (!axis || axis.type !== "line") return;
-    const chosen = this.entities.filter((e) => this.selected.has(e.id) && e.id !== axis.id);
+    const selectedSources = this.entities.filter((e) => this.selected.has(e.id) && e.id !== axis.id);
+    // projected geometry is a fixed reference — mirror the rest of the selection
+    const chosen = selectedSources.filter((e) => e.type !== "projected");
+    if (chosen.length < selectedSources.length) toast(PROJECTED_FIXED_MSG);
     if (!chosen.length) return; // nothing selected to mirror
     const a = new THREE.Vector2(axis.x1, axis.y1);
     const b = new THREE.Vector2(axis.x2, axis.y2);
@@ -1625,6 +1640,13 @@ export class SketchMode {
         if (!md.started) {
           const dx = e.clientX - md.startClient.x, dy = e.clientY - md.startClient.y;
           if (dx * dx + dy * dy < 16) return; // <4px: still a click, not a move
+          // projected geometry never body-drags (fixed reference); disarm so a
+          // plain click still selects it in endDrag()
+          if (this.entities[md.idx]?.type === "projected") {
+            this.moveDrag = null;
+            toast(PROJECTED_FIXED_MSG);
+            return;
+          }
           md.started = true;
           // nothing has moved yet, so build the revert snapshot and the
           // neighbor-stretch set from the still-pristine positions
@@ -1936,7 +1958,7 @@ export class SketchMode {
       const normal = this.entities.filter((e) => !this.selected.has(e.id));
       const chosen = this.entities.filter((e) => this.selected.has(e.id));
       if (normal.length) objs.push(...curveObjects(normal, this.plane, this.activeColor()));
-      if (chosen.length) objs.push(...curveObjects(chosen, this.plane, SELECT_COLOR));
+      if (chosen.length) objs.push(...curveObjects(chosen, this.plane, SELECT_COLOR, true));
     } else {
       objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
     }
@@ -1973,9 +1995,9 @@ export class SketchMode {
     const idx = pickEntity(this.entities, p, this.pickTol());
     const preview: THREE.Object3D[] = [];
     const first = this.filletFirst != null ? this.entities[this.filletFirst] : undefined;
-    if (first) preview.push(...curveObjects([first], this.plane, 0x33aaff));
+    if (first) preview.push(...curveObjects([first], this.plane, 0x33aaff, true));
     const hit = idx >= 0 ? this.entities[idx] : undefined;
-    if (hit) preview.push(...curveObjects([hit], this.plane, 0xff5555));
+    if (hit) preview.push(...curveObjects([hit], this.plane, 0xff5555, true));
     this.overlay.setPreview(preview);
   }
 
@@ -2010,12 +2032,13 @@ export class SketchMode {
   }
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0) return;
+    if (idx < 0 || this.guardProjected(this.entities[idx])) return;
     this.entities = trimEntity(this.entities, idx, p);
     this.afterModify();
   }
   private filletClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
+    if (this.guardProjected(idx >= 0 ? this.entities[idx] : undefined)) return;
     if (idx < 0 || this.entities[idx]?.type !== "line") return;
     if (this.filletFirst == null) {
       this.filletFirst = idx;
@@ -2038,6 +2061,7 @@ export class SketchMode {
   }
   private chamferClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
+    if (this.guardProjected(idx >= 0 ? this.entities[idx] : undefined)) return;
     if (idx < 0 || this.entities[idx]?.type !== "line") return;
     if (this.filletFirst == null) {
       this.filletFirst = idx;
@@ -2059,17 +2083,34 @@ export class SketchMode {
     this.afterModify();
   }
 
+  /** Projected geometry is FIXED reference geometry: every modify/transform seam
+   *  calls this and bails with one consistent toast. Delete stays allowed. */
+  private guardProjected(e: ResolvedEntity | undefined): boolean {
+    if (e?.type !== "projected") return false;
+    toast(PROJECTED_FIXED_MSG);
+    return true;
+  }
+
   /** replace each selected entity with map(e) (flattened); others unchanged. Owns
    *  the selection: it re-selects the transform's output, so a rotate that explodes
    *  a rectangle into fresh-id lines leaves those lines selected (not a stale id). */
   private transformSelection(map: (e: ResolvedEntity) => ResolvedEntity[]) {
     const next: ResolvedEntity[] = [];
     const sel = new Set<string>();
+    let skippedProjected = false;
     for (const e of this.entities) {
       if (this.selected.has(e.id)) {
+        if (e.type === "projected") {
+          // fixed reference geometry: keep it (and its selection) untouched
+          skippedProjected = true;
+          next.push(e);
+          sel.add(e.id);
+          continue;
+        }
         for (const m of map(e)) { next.push(m); sel.add(m.id); }
       } else next.push(e);
     }
+    if (skippedProjected) toast(PROJECTED_FIXED_MSG);
     this.entities = next;
     this.selected = sel;
     this.afterModify();
@@ -2091,12 +2132,15 @@ export class SketchMode {
     if (this.tool === "copy") {
       const copies: ResolvedEntity[] = [];
       const sel = new Set<string>();
+      let skippedProjected = false;
       for (const e of this.entities) {
         if (!this.selected.has(e.id)) continue;
+        if (e.type === "projected") { skippedProjected = true; continue; } // linked — can't clone the link
         const id = newEntityId();
         copies.push(translated(e, dx, dy, id));
         sel.add(id);
       }
+      if (skippedProjected) toast(PROJECTED_FIXED_MSG);
       this.entities = [...this.entities, ...copies];
       this.selected = sel; // leave the copies selected (Fusion-style)
       this.afterModify();
@@ -2130,7 +2174,7 @@ export class SketchMode {
   }
   private offsetClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0) return;
+    if (idx < 0 || this.guardProjected(this.entities[idx])) return;
     this.dim.show([{ name: "offset", label: "Offset", kind: "length" }], () => {
       const d = this.dim.getValue("offset") ?? 1;
       // a connected line chain offsets as a mitered unit; else a single entity
@@ -2142,14 +2186,14 @@ export class SketchMode {
   }
   private extendClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0) return;
+    if (idx < 0 || this.guardProjected(this.entities[idx])) return;
     const res = extendLine(this.entities, idx, p);
     if (res) this.entities = res;
     this.afterModify();
   }
   private breakClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0) return;
+    if (idx < 0 || this.guardProjected(this.entities[idx])) return;
     this.entities = breakAt(this.entities, idx, p);
     this.afterModify();
   }

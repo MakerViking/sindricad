@@ -142,3 +142,45 @@ describe("detectRegions — thin-ring interior anchor (field bug: outer ring sel
     expect(pointInRegion(annulus.interior, disk)).toBe(false);
   });
 });
+
+describe("detectRegions — projected reference geometry forms profiles", () => {
+  const pline = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity => ({
+    type: "projected", id,
+    source: { kind: "edge", body: "body1", sel: { kind: "edge", by: "match", fp: { mid: [0, 0, 0], dir: [1, 0, 0] } } },
+    curve: { kind: "line", x1, y1, x2, y2 },
+  });
+
+  it("a square of 4 projected lines chains into one region", () => {
+    const regions = detectRegions("s1", [
+      pline("p1", 0, 0, 20, 0),
+      pline("p2", 20, 0, 20, 20),
+      pline("p3", 20, 20, 0, 20),
+      pline("p4", 0, 20, 0, 0),
+    ]);
+    expect(regions).toHaveLength(1);
+    expect(pointInRegion(new THREE.Vector2(10, 10), regions[0]!)).toBe(true);
+    expect(pointInRegion(new THREE.Vector2(30, 10), regions[0]!)).toBe(false);
+  });
+
+  it("a projected circle is its own closed loop (fast path, like a native circle)", () => {
+    const pc: ResolvedEntity = {
+      type: "projected", id: "pc",
+      source: { kind: "silhouette", body: "body1" },
+      curve: { kind: "circle", x: 0, y: 0, r: 5 },
+    };
+    const regions = detectRegions("s1", [pc]);
+    expect(regions).toHaveLength(1);
+    expect(pointInRegion(new THREE.Vector2(0, 0), regions[0]!)).toBe(true);
+    expect(pointInRegion(new THREE.Vector2(6, 0), regions[0]!)).toBe(false);
+  });
+
+  it("a construction projected entity never forms a profile", () => {
+    const pc: ResolvedEntity = {
+      type: "projected", id: "pc",
+      source: { kind: "silhouette", body: "body1" },
+      curve: { kind: "circle", x: 0, y: 0, r: 5 },
+      construction: true,
+    };
+    expect(detectRegions("s1", [pc])).toHaveLength(0);
+  });
+});

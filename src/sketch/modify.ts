@@ -17,6 +17,10 @@ import {
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
+/** The one guard toast for projected (linked, fixed) reference geometry — every
+ *  modify/transform/constraint seam that refuses to touch it shows this. */
+export const PROJECTED_FIXED_MSG = "Projected geometry is fixed — Break Link to edit it";
+
 const TAU = Math.PI * 2;
 /** CCW angular distance from `from` to `to`, always in [0, TAU) */
 const ccwDelta = (from: number, to: number) => (((to - from) % TAU) + TAU) % TAU;

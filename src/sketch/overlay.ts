@@ -63,6 +63,10 @@ const CONSTRUCTION_MAT = new THREE.LineDashedMaterial({
   gapSize: 1.0,
   depthTest: true,
 });
+// projected reference geometry: purple (linked/fixed, Fusion-style); a stale
+// projection (source no longer resolves — last shape kept) tints amber
+const PROJECTED_COLOR = 0xb07fe8;
+const PROJECTED_STALE_COLOR = 0xd9a24d;
 const FILL_MAT = new THREE.MeshBasicMaterial({
   color: FILL_COLOR,
   transparent: true,
@@ -410,6 +414,7 @@ export function curveObjects(
   ents: ReturnType<typeof resolveEntities>,
   plane: SketchPlane,
   color: number,
+  highlight = false, // emphasis pass (selection / modify hover): color wins even on projected
 ): THREE.Object3D[] {
   warmText(ents); // fetch glyph outlines for any text entities; repaints when they land
   const out: THREE.Object3D[] = [];
@@ -424,19 +429,38 @@ export function curveObjects(
       continue;
     }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
-    const curve = e.construction ? constructionLine(pts) : polyline(pts, color);
-    // Circles/arcs get a visible center "+": the center is a snap target and
-    // the dimension tool's position handle — invisible, nobody finds it.
-    // Grouped so the one-object-per-entity contract holds.
+    // projected geometry keeps its link color (purple; amber when stale) even
+    // as construction — the link state is the more important signal. Emphasis
+    // passes (selection, modify hover) set `highlight` so their color wins:
+    // Delete works on projected entities, so selection must be visible.
+    const projected = e.type === "projected" ? e : null;
+    const drawColor =
+      projected && !highlight
+        ? projected.stale === true ? PROJECTED_STALE_COLOR : PROJECTED_COLOR
+        : color;
+    const curve =
+      !projected && e.construction ? constructionLine(pts) : polyline(pts, drawColor);
+    // Circles/arcs (native or projected) get a visible center "+": the center is
+    // a snap target and the dimension tool's position handle — invisible, nobody
+    // finds it. Grouped so the one-object-per-entity contract holds.
     const center =
       e.type === "circle"
         ? { x: e.x, y: e.y }
         : e.type === "arc"
           ? circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my })
-          : null;
+          : projected?.curve.kind === "circle"
+            ? { x: projected.curve.x, y: projected.curve.y }
+            : projected?.curve.kind === "arc"
+              ? circumcenter(
+                  { x: projected.curve.x1, y: projected.curve.y1 },
+                  { x: projected.curve.x2, y: projected.curve.y2 },
+                  { x: projected.curve.mx, y: projected.curve.my },
+                )
+              : null;
     if (center) {
       const g = new THREE.Group();
-      g.add(curve, pointMarker(plane, center.x, center.y, e.construction ? 0xffa64d : color));
+      const markerColor = projected ? drawColor : e.construction ? 0xffa64d : color;
+      g.add(curve, pointMarker(plane, center.x, center.y, markerColor));
       g.renderOrder = 12;
       out.push(g);
     } else {

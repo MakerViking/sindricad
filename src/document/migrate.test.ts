@@ -96,4 +96,22 @@ describe("migrateDocument", () => {
     migrateDocument(empty);
     expect("paramDefs" in empty).toBe(false);
   });
+
+  it("v3 (projected entities) is a no-op stamp: v3 docs pass through unchanged, twice", () => {
+    expect(FORMAT_VERSION).toBe(3);
+    const doc = v1({
+      version: 3,
+      features: [{ id: "f1", type: "sketch", plane: "XY", entities: [
+        { type: "projected", id: "p1",
+          source: { kind: "edge", body: "body1",
+            sel: { kind: "edge", by: "match", fp: { mid: [0, 0, 0], dir: [1, 0, 0] } } },
+          curve: { kind: "line", x1: 0, y1: 0, x2: 20, y2: 0 } },
+      ] }],
+    });
+    const before = JSON.stringify(doc);
+    expect(migrateDocument(doc)).toEqual([]); // in-format: no warnings
+    expect(JSON.stringify(doc)).toBe(before);
+    migrateDocument(doc); // idempotent
+    expect(JSON.stringify(doc)).toBe(before);
+  });
 });
