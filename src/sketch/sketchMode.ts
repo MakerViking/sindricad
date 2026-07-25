@@ -17,7 +17,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, asLineSeg, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine, PROJECTED_FIXED_MSG } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { isPlainNumber, parseField } from "../ui/units";
@@ -35,7 +35,7 @@ import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu } from "../ui/menu";
-import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
+import { ConstraintTools, CONSTRAINT_TOOLS, curveKind, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
 import type { ProjectionSource } from "../geometry/client";
@@ -167,6 +167,7 @@ export class SketchMode {
   private dragMoved = false;
   private dragShift = false;
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
+  private dragRefusedToast = false; // one fixed-point toast per refused drag gesture
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
   // armed cheaply on pointerdown over an entity body; the snapshot and the
@@ -878,6 +879,7 @@ export class SketchMode {
         this.dragStartClient = { x: e.clientX, y: e.clientY };
         this.dragMoved = false;
         this.dragShift = e.shiftKey;
+        this.dragRefusedToast = false;
         this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
@@ -1595,13 +1597,14 @@ export class SketchMode {
     const pt = this.pickDimPoint(p);
     // ANGLE: a first line already has its length DimInput open, and the user
     // clicks a second line's body → convert to an angular dimension instead.
+    // Projected lines are valid REFERENCE operands here (angle to a reference).
     if (this.dimLineFirst && !pt) {
       const idx = pickEntity(this.entities, p, this.pickTol());
       const e2 = idx >= 0 ? this.entities[idx] : undefined;
-      if (e2 && e2.type === "line" && e2.id !== this.dimLineFirst) {
+      if (e2 && asLineSeg(e2) && e2.id !== this.dimLineFirst) {
         const first = this.entities.find((x) => x.id === this.dimLineFirst);
         this.dimLineFirst = null;
-        if (first && first.type === "line") { this.dim.hide(); this.showAngleDim(first, e2); return; }
+        if (first && asLineSeg(first)) { this.dim.hide(); this.showAngleDim(first, e2); return; }
       }
     }
     // second pick of a two-pick distance dimension
@@ -1616,11 +1619,12 @@ export class SketchMode {
       }
       const idx = pickEntity(this.entities, p, this.pickTol());
       const e = idx >= 0 ? this.entities[idx] : undefined;
-      if (e && e.type === "line" && e.id !== first.e.id) {
+      const seg = e && asLineSeg(e); // native OR projected line
+      if (e && seg && e.id !== first.e.id) {
         // perpendicular distance to the infinite line
-        const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
+        const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
         const len = Math.hypot(dx, dy) || 1;
-        const cur = Math.abs((first.pos.x - e.x1) * dy - (first.pos.y - e.y1) * dx) / len;
+        const cur = Math.abs((first.pos.x - seg.x1) * dy - (first.pos.y - seg.y1) * dx) / len;
         if (cur < 1e-6) return; // the point lies on the line
         this.placeDim({ type: "p2lDistance", e: first.e.id, p: first.p, line: e.id, value: cur });
         return;
@@ -1662,10 +1666,13 @@ export class SketchMode {
     // rectangles/splines: no single driving dim in v1
   }
 
-  /** Angular driving dimension between two lines. Seeds the DimInput with the
-   *  current (signed) angle so applying it doesn't snap the geometry. */
-  private showAngleDim(l1: ResolvedEntity & { type: "line" }, l2: ResolvedEntity & { type: "line" }) {
-    const cur = signedAngleDeg(l1, l2);
+  /** Angular driving dimension between two lines (native, or projected as a
+   *  fixed reference operand). Seeds the DimInput with the current (signed)
+   *  angle so applying it doesn't snap the geometry. */
+  private showAngleDim(l1: ResolvedEntity, l2: ResolvedEntity) {
+    const s1 = asLineSeg(l1), s2 = asLineSeg(l2);
+    if (!s1 || !s2) return;
+    const cur = signedAngleDeg(s1, s2);
     this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
       const val = this.dim.getValue("angle") ?? cur;
       this.dim.hide();
@@ -2447,30 +2454,48 @@ export class SketchMode {
   }
 
   /** Drop constraints that reference an entity that no longer exists (or is the
-   *  wrong type) — e.g. after trim/break removes or splits a constrained line. */
+   *  wrong type) — e.g. after trim/break removes or splits a constrained line.
+   *  Projected entities count via their CURVE kind (curveKind: a projected line
+   *  is a valid line operand). NOTE: the switch is exhaustive on purpose — before
+   *  step 5 the value-dim/fix/collinear/equalRadius/tangent2 types fell through
+   *  and were silently dropped by every modify op; the `satisfies never` default
+   *  makes a future SketchConstraint variant a tsc error here, not a silent drop. */
   private pruneConstraints() {
-    const lineIds = new Set(this.entities.filter((e) => e.type === "line").map((e) => e.id));
-    const circleIds = new Set(this.entities.filter((e) => e.type === "circle").map((e) => e.id));
-    // entities that own an addressable endpoint (line/arc/spline/point)
-    const endIds = new Set(
-      this.entities
-        .filter((e) => e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "point")
-        .map((e) => e.id),
+    const ids = (pred: (e: ResolvedEntity) => boolean) =>
+      new Set(this.entities.filter(pred).map((e) => e.id));
+    const lineIds = ids((e) => curveKind(e) === "line");
+    const circleIds = ids((e) => curveKind(e) === "circle");
+    // entities that own a center (circle/arc), for concentric/radius/equalRadius
+    const roundIds = ids((e) => { const k = curveKind(e); return k === "circle" || k === "arc"; });
+    const curveIds = ids((e) => curveKind(e) !== undefined);
+    // entities that own an addressable endpoint (line/arc/spline/point; projected line/arc/poly)
+    const endIds = ids(
+      (e) =>
+        e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "point" ||
+        (e.type === "projected" && e.curve.kind !== "circle"),
     );
-    // entities that own a center (circle/arc), for concentric
-    const centerIds = new Set(
-      this.entities.filter((e) => e.type === "circle" || e.type === "arc").map((e) => e.id),
-    );
+    // entities exposing at least one dimensionable reference point (p2p/p2l/fix targets)
+    const refIds = ids((e) => dimRefPoints(e).length > 0);
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return lineIds.has(c.line);
-        case "parallel": case "perpendicular": case "equal": return lineIds.has(c.l1) && lineIds.has(c.l2);
+        case "parallel": case "perpendicular": case "equal": case "collinear": case "angle":
+          return lineIds.has(c.l1) && lineIds.has(c.l2);
         case "diameter": return circleIds.has(c.circle);
         case "tangent": return lineIds.has(c.line) && circleIds.has(c.circle);
+        case "tangent2": return curveIds.has(c.a) && curveIds.has(c.b);
+        case "equalRadius": return roundIds.has(c.a) && roundIds.has(c.b);
         case "coincident": return endIds.has(c.e1) && endIds.has(c.e2);
-        case "concentric": return centerIds.has(c.c1) && centerIds.has(c.c2);
+        case "concentric": return roundIds.has(c.c1) && roundIds.has(c.c2);
         case "midpoint": return endIds.has(c.e) && lineIds.has(c.line);
         case "symmetric": return endIds.has(c.e1) && endIds.has(c.e2) && lineIds.has(c.line);
+        case "radius": return roundIds.has(c.e);
+        case "p2pDistance": return refIds.has(c.e1) && refIds.has(c.e2);
+        case "p2lDistance": return refIds.has(c.e) && lineIds.has(c.line);
+        case "fix": return refIds.has(c.e);
+        // unreachable while the switch is exhaustive; keeps (rather than drops)
+        // a variant tsc failed to flag
+        default: return c satisfies never;
       }
     });
   }
@@ -2535,7 +2560,18 @@ export class SketchMode {
           this.overIdx = parseConflictIdx(r.overDefined);
           if (!this.conflict) this.entities = r.entities;
           this.lastDof = r.dof;
-          if (this.dragFrom) this.dragFrom.set(d.toX, d.toY); // track grabbed pt
+          if (r.dragRefused) {
+            // grabbed point is fixed and did NOT move: keep the anchor on it.
+            // Advancing dragFrom to the cursor would re-run the nearest-point
+            // search from a drifted origin and capture an unrelated FREE point
+            // mid-gesture (yanking it to the cursor on release).
+            if (!this.dragRefusedToast) {
+              this.dragRefusedToast = true;
+              toast(r.dragRefused === "projected" ? PROJECTED_FIXED_MSG : "That point is fixed — delete its Fix constraint to move it");
+            }
+          } else if (this.dragFrom) {
+            this.dragFrom.set(d.toX, d.toY); // track grabbed pt
+          }
           this.refreshDragGeometry(); // curves only; dims/candidates rebuilt on endDrag
         } else {
           this.solveDirty = false;

@@ -52,6 +52,18 @@ export type ProjectedCurve =
   | { kind: "arc"; x1: number; y1: number; x2: number; y2: number; mx: number; my: number }
   | { kind: "poly"; pts: [number, number][] };
 
+/** THE addressable end samples of a projected poly: its first and last points,
+ *  collapsed to one entry when the poly is closed (first == last — sidecar
+ *  coordinates are exact, so plain equality is the closure test). The solver,
+ *  the dimension reference points, and the endpoint pickers all address a poly
+ *  through this one rule (indices 0/1 map onto the returned order). */
+export function projEndSamples(cv: Extract<ProjectedCurve, { kind: "poly" }>): [number, number][] {
+  const first = cv.pts[0], last = cv.pts[cv.pts.length - 1];
+  if (!first) return [];
+  if (!last || (last[0] === first[0] && last[1] === first[1])) return [first];
+  return [first, last];
+}
+
 // What a projected entity is linked TO. Bodies are re-found by fingerprint
 // selector (by:"match" — the sidecar authors the fingerprint); sketch curves by
 // stable ids (no fingerprint needed). A multi-curve pick (a face boundary, a

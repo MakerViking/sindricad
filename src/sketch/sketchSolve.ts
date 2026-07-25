@@ -20,7 +20,7 @@ import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, t
 import { circumcenter } from "./arc";
 import { rectCorners } from "./region";
 import type { SketchConstraint } from "../types";
-import { isDriven } from "../types";
+import { isDriven, projEndSamples } from "../types";
 
 export interface SolvePass {
   entities: ResolvedEntity[];
@@ -28,6 +28,12 @@ export interface SolvePass {
   ok: boolean;
   conflicts: string[]; // inconsistent constraints (sketch can't solve)
   overDefined: string[]; // redundant + partially-redundant (removable / over-defining)
+  /** Set when a requested drag was refused because the grabbed point is fixed
+   *  (projected geometry vs a user `fix` constraint — distinct user messaging).
+   *  The caller must NOT advance its drag anchor on a refusal: a drifted anchor
+   *  re-runs the unbounded nearest-point search from the cursor and captures an
+   *  unrelated free point mid-gesture. */
+  dragRefused?: "projected" | "fix";
 }
 
 const TAU = Math.PI * 2;
@@ -46,8 +52,11 @@ export const coincKey = (x: number, y: number) => `${Math.round(x * 1000)},${Mat
 export const constraintKey = (i: number) => `k${i}`;
 
 /** Inverse of constraintKey: the constraint index a solver id belongs to, or
- *  null for implicit ids (rectangle edges `<id>~h0`, the drag pin, etc.). */
+ *  null for implicit ids (rectangle edges `<id>~h0`, projected radius pins
+ *  `<id>~r`, the drag pin, etc.). Any id containing `~` is implicit BY CONTRACT
+ *  — conflict/redundancy reporting must never blame a user constraint for one. */
 export function constraintIndexOf(id: string): number | null {
+  if (id.includes("~")) return null;
   const m = /^k(\d+)/.exec(id);
   return m && m[1] !== undefined ? Number(m[1]) : null;
 }
@@ -84,7 +93,40 @@ export async function compileAndSolve(
   const splineMap = new Map<string, string[]>(); // spline entity id -> fit-point ids
   const rectMap = new Map<string, string[]>(); // rectangle entity id -> 4 corner points
   const pointMap = new Map<string, string>(); // point entity id -> its solver point
-  const fixedPts = new Set<string>(); // solver point ids pinned by a `fix` constraint
+  const fixedPts = new Set<string>(); // solver point ids pinned by a `fix` constraint / projected geometry
+  const projPts = new Set<string>(); // the subset of fixedPts pinned by PROJECTED geometry (drag-refusal messaging)
+  const pinProjected = (...ids: string[]) => { for (const id of ids) { fixedPts.add(id); projPts.add(id); } };
+  // projected circle/arc entity ids: their radius is pinned too (not just the
+  // points), which makes them fully rigid — the inert-constraint check needs this
+  const projRounds = new Set<string>();
+
+  // Compile a 3-point arc into a native solver arc (shared by user arcs and
+  // projected arcs). Returns the registered points, or null when degenerate.
+  const compileArc = (
+    id: string, x1: number, y1: number, x2: number, y2: number, mx: number, my: number,
+  ): { ourS: string; ourE: string; center: string } | null => {
+    const cc = circumcenter({ x: x1, y: y1 }, { x: x2, y: y2 }, { x: mx, y: my });
+    if (!cc) return null; // collinear/degenerate — leave untouched
+    const radius = Math.hypot(x1 - cc.x, y1 - cc.y);
+    const ourS = getPoint(x1, y1);
+    const ourE = getPoint(x2, y2);
+    const center = getPoint(cc.x, cc.y, false); // arc center is not an endpoint
+    const aS = Math.atan2(y1 - cc.y, x1 - cc.x);
+    const aE = Math.atan2(y2 - cc.y, x2 - cc.x);
+    const aT = Math.atan2(my - cc.y, mx - cc.x);
+    // orient the arc CCW so its sweep passes through the through-point
+    const ccwThroughFromStart = ccwDelta(aS, aT) <= ccwDelta(aS, aE);
+    const start = ccwThroughFromStart ? ourS : ourE;
+    const startA = ccwThroughFromStart ? aS : aE;
+    const end = ccwThroughFromStart ? ourE : ourS;
+    const endA = ccwThroughFromStart ? aE : aS;
+    arcs.push({
+      id, center, start, end, radius,
+      startAngle: startA, endAngle: startA + ccwDelta(startA, endA),
+    });
+    arcMap.set(id, { ourS, ourE, center, startIsOurS: ccwThroughFromStart });
+    return { ourS, ourE, center };
+  };
 
   for (const e of entities) {
     if (e.type === "line") {
@@ -110,26 +152,7 @@ export async function compileAndSolve(
       cons.push({ id: `${e.id}~v3`, type: "vertical", line: `${e.id}~3` }); // left
       rectMap.set(e.id, cp);
     } else if (e.type === "arc") {
-      const cc = circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my });
-      if (!cc) continue; // collinear/degenerate — leave untouched
-      const radius = Math.hypot(e.x1 - cc.x, e.y1 - cc.y);
-      const ourS = getPoint(e.x1, e.y1);
-      const ourE = getPoint(e.x2, e.y2);
-      const center = getPoint(cc.x, cc.y, false); // arc center is not an endpoint
-      const aS = Math.atan2(e.y1 - cc.y, e.x1 - cc.x);
-      const aE = Math.atan2(e.y2 - cc.y, e.x2 - cc.x);
-      const aT = Math.atan2(e.my - cc.y, e.mx - cc.x);
-      // orient the arc CCW so its sweep passes through the through-point
-      const ccwThroughFromStart = ccwDelta(aS, aT) <= ccwDelta(aS, aE);
-      const start = ccwThroughFromStart ? ourS : ourE;
-      const startA = ccwThroughFromStart ? aS : aE;
-      const end = ccwThroughFromStart ? ourE : ourS;
-      const endA = ccwThroughFromStart ? aE : aS;
-      arcs.push({
-        id: e.id, center, start, end, radius,
-        startAngle: startA, endAngle: startA + ccwDelta(startA, endA),
-      });
-      arcMap.set(e.id, { ourS, ourE, center, startIsOurS: ccwThroughFromStart });
+      compileArc(e.id, e.x1, e.y1, e.x2, e.y2, e.mx, e.my);
     } else if (e.type === "spline") {
       // endpoints are mergeable (chain with lines); interior points are unique
       const last = e.points.length - 1;
@@ -137,6 +160,48 @@ export async function compileAndSolve(
     } else if (e.type === "point") {
       // a sketch point is mergeable so it can snap onto / coincide with geometry
       pointMap.set(e.id, getPoint(e.x, e.y, true));
+    } else if (e.type === "projected") {
+      // Fixed reference geometry (Fusion Project): compiles as pinned planegcs
+      // primitives so user constraints/dims can attach to it. Endpoints are
+      // MERGEABLE on purpose — a coincident user endpoint fuses with the fixed
+      // point and is thereby anchored (the sticks-to-reference behavior).
+      // Write-back never touches projected entities (they are already exact).
+      const cv = e.curve;
+      if (cv.kind === "line") {
+        const p1 = getPoint(cv.x1, cv.y1);
+        const p2 = getPoint(cv.x2, cv.y2);
+        lines.push({ id: e.id, p1, p2 });
+        ends.set(e.id, [p1, p2]);
+        pinProjected(p1, p2);
+      } else if (cv.kind === "circle") {
+        const c = getPoint(cv.x, cv.y, false); // center is not an endpoint
+        circles.push({ id: e.id, center: c, radius: cv.r });
+        centers.set(e.id, c);
+        pinProjected(c);
+        projRounds.add(e.id);
+        // a planegcs circle radius is a free variable — pin it with an implicit
+        // constraint. `~` ids decode to null in constraintIndexOf, so conflict
+        // reporting can never blame a user constraint for this pin.
+        cons.push({ id: `${e.id}~r`, type: "circleRadius", circle: e.id, value: cv.r });
+      } else if (cv.kind === "arc") {
+        // native arc with all three defining points fixed; arc_rules then holds
+        // radius + sweep angles, so no separate radius pin is needed
+        const m = compileArc(e.id, cv.x1, cv.y1, cv.x2, cv.y2, cv.mx, cv.my);
+        if (m) {
+          pinProjected(m.ourS, m.ourE, m.center);
+          projRounds.add(e.id);
+        }
+      } else {
+        // poly: only the first/last samples are real, addressable model points
+        // (ONE for a closed poly — projEndSamples). Register them like spline
+        // ends (splineMap drives endpointPoint 0/1); no curve primitive —
+        // interior samples never enter the solver.
+        const sampleIds = projEndSamples(cv).map(([x, y]) => getPoint(x, y));
+        if (sampleIds.length) {
+          splineMap.set(e.id, sampleIds);
+          pinProjected(...sampleIds);
+        }
+      }
     }
   }
 
@@ -249,6 +314,7 @@ export async function compileAndSolve(
   for (const p of points) if (fixedPts.has(p.id)) p.fixed = true;
 
   let dragInput: { point: string; x: number; y: number } | undefined;
+  let dragRefused: "projected" | "fix" | undefined;
   if (drag) {
     // Pin whichever solver point sits nearest the grab position. Coincident
     // endpoints have merged into one point, so a grabbed corner moves as a unit.
@@ -259,10 +325,102 @@ export async function compileAndSolve(
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = p; }
     }
-    if (best) dragInput = { point: best.id, x: drag.toX, y: drag.toY };
+    // a FIXED nearest point (projected geometry, or a user endpoint merged onto
+    // it, or a `fix` constraint) cannot move: refuse the drag outright instead
+    // of pitting the temporary drag pin against the fixed flag — and REPORT the
+    // refusal so the caller keeps its anchor on the stationary point
+    if (best && !best.fixed) dragInput = { point: best.id, x: drag.toX, y: drag.toY };
+    else if (best) dragRefused = projPts.has(best.id) ? "projected" : "fix";
   }
 
   const r = await solveSketch({ points, lines, circles, arcs, constraints: cons, ...(dragInput ? { drag: dragInput } : {}) });
+
+  // planegcs never sees a constraint whose operands are ALL fixed — fixed
+  // params aren't solver variables, so such a constraint is silently accepted
+  // even when violated (e.g. a driving dim between two projected points).
+  // Classify these "inert" constraints ourselves: satisfied → redundant
+  // (amber), violated → conflict (red) — through the same reporting channel
+  // the solver's own diagnosis uses.
+  const conflicts = [...r.conflicts];
+  const redundant = [...r.redundant];
+  {
+    // mm (radians for angles) — comfortably above the residual floor left by the
+    // sidecar's 6-decimal curve rounding (a p2p distance between rounded points
+    // can be off by ~1.4e-6 even when nominally exact), and matching its 1e-4 mm
+    // change tolerance: a conceptually-satisfied inert dim must grade amber, not red
+    const INERT_TOL = 1e-4;
+    const pos = new Map(points.map((p) => [p.id, p])); // fixed ⇒ input == solved
+    const lineEnds = new Map(lines.map((l) => [l.id, l]));
+    const radiusOf = new Map<string, number>([
+      ...circles.map((c) => [c.id, c.radius] as const),
+      ...arcs.map((a) => [a.id, a.radius] as const),
+    ]);
+    const centerOf = new Map<string, string>([
+      ...circles.map((c) => [c.id, c.center] as const),
+      ...arcs.map((a) => [a.id, a.center] as const),
+    ]);
+    const fx = (id: string) => fixedPts.has(id);
+    const fxLine = (id: string) => { const l = lineEnds.get(id); return !!l && fx(l.p1) && fx(l.p2); };
+    const fxRound = (id: string) => projRounds.has(id); // center fixed AND radius pinned
+    const P = (id: string) => pos.get(id)!;
+    const dist = (aId: string, bId: string) => { const a = P(aId), b = P(bId); return Math.hypot(a.x - b.x, a.y - b.y); };
+    const lineDir = (id: string) => {
+      const l = lineEnds.get(id)!;
+      const a = P(l.p1), b = P(l.p2);
+      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      return { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+    };
+    const lineLen = (id: string) => { const l = lineEnds.get(id)!; return dist(l.p1, l.p2); };
+    const perpDist = (pId: string, lId: string) => {
+      const l = lineEnds.get(lId)!;
+      const a = P(l.p1), b = P(l.p2), q = P(pId);
+      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      return Math.abs((q.x - a.x) * (b.y - a.y) - (q.y - a.y) * (b.x - a.x)) / len;
+    };
+    const tangentRes = (aId: string, bId: string) => { // two rounds: outer or inner tangency
+      const d = dist(centerOf.get(aId)!, centerOf.get(bId)!);
+      const r1 = radiusOf.get(aId)!, r2 = radiusOf.get(bId)!;
+      return Math.min(Math.abs(d - (r1 + r2)), Math.abs(d - Math.abs(r1 - r2)));
+    };
+    // residual of an inert constraint, or null when any operand is still free
+    const inertResidual = (c: SConstraint): number | null => {
+      switch (c.type) {
+        // self-coincident (both endpoints position-merged into one solver
+        // point, e.g. a user endpoint snapped ONTO the projected point it is
+        // constrained to) is absorbed by the merge — vacuous, not over-defining
+        case "coincident": return c.a !== c.b && fx(c.a) && fx(c.b) ? dist(c.a, c.b) : null;
+        case "horizontal": { if (!fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(P(l.p1).y - P(l.p2).y); }
+        case "vertical": { if (!fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(P(l.p1).x - P(l.p2).x); }
+        case "parallel": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.y - d1.y * d2.x); }
+        case "perpendicular": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.x + d1.y * d2.y); }
+        case "equal": return fxLine(c.l1) && fxLine(c.l2) ? Math.abs(lineLen(c.l1) - lineLen(c.l2)) : null;
+        case "distance": return fx(c.a) && fx(c.b) ? Math.abs(dist(c.a, c.b) - c.value) : null;
+        case "p2lDistance": return fx(c.p) && fxLine(c.line) ? Math.abs(perpDist(c.p, c.line) - c.value) : null;
+        case "diameter": return fxRound(c.circle) ? Math.abs(2 * radiusOf.get(c.circle)! - c.value) : null;
+        case "circleRadius": return fxRound(c.circle) ? Math.abs(radiusOf.get(c.circle)! - c.value) : null;
+        case "arcRadius": return fxRound(c.arc) ? Math.abs(radiusOf.get(c.arc)! - c.value) : null;
+        case "tangentLC": return fxLine(c.line) && fxRound(c.circle) ? Math.abs(perpDist(centerOf.get(c.circle)!, c.line) - radiusOf.get(c.circle)!) : null;
+        case "tangentLA": return fxLine(c.line) && fxRound(c.arc) ? Math.abs(perpDist(centerOf.get(c.arc)!, c.line) - radiusOf.get(c.arc)!) : null;
+        case "tangentCC": return fxRound(c.c1) && fxRound(c.c2) ? tangentRes(c.c1, c.c2) : null;
+        case "tangentCA": return fxRound(c.circle) && fxRound(c.arc) ? tangentRes(c.circle, c.arc) : null;
+        case "tangentAA": return fxRound(c.a1) && fxRound(c.a2) ? tangentRes(c.a1, c.a2) : null;
+        case "angleLL": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); const actual = Math.atan2(d1.x * d2.y - d1.y * d2.x, d1.x * d2.x + d1.y * d2.y); const w = ((actual - c.value) % TAU + TAU + Math.PI) % TAU - Math.PI; return Math.abs(w); }
+        case "equalRadiusCC": return fxRound(c.c1) && fxRound(c.c2) ? Math.abs(radiusOf.get(c.c1)! - radiusOf.get(c.c2)!) : null;
+        case "equalRadiusCA": return fxRound(c.circle) && fxRound(c.arc) ? Math.abs(radiusOf.get(c.circle)! - radiusOf.get(c.arc)!) : null;
+        case "equalRadiusAA": return fxRound(c.a1) && fxRound(c.a2) ? Math.abs(radiusOf.get(c.a1)! - radiusOf.get(c.a2)!) : null;
+        case "pointOnLine": return fx(c.p) && fxLine(c.line) ? perpDist(c.p, c.line) : null;
+        case "pointOnPerpBisector": { if (!fx(c.p) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(dist(c.p, l.p1) - dist(c.p, l.p2)); }
+        case "symmetric": { if (!fx(c.a) || !fx(c.b) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; const A = P(l.p1), d = lineDir(c.line), a = P(c.a), b = P(c.b); const t = (a.x - A.x) * d.x + (a.y - A.y) * d.y; const mx = 2 * (A.x + t * d.x) - a.x, my = 2 * (A.y + t * d.y) - a.y; return Math.hypot(mx - b.x, my - b.y); }
+      }
+    };
+    for (const c of cons) {
+      if (constraintIndexOf(c.id) === null) continue; // implicit pins are exempt
+      const res = inertResidual(c);
+      if (res === null) continue;
+      const list = res <= INERT_TOL ? redundant : conflicts;
+      if (!list.includes(c.id)) list.push(c.id);
+    }
+  }
 
   const out = entities.map((e): ResolvedEntity => {
     if (e.type === "line") {
@@ -319,5 +477,9 @@ export async function compileAndSolve(
     return e;
   });
 
-  return { entities: out, dof: r.dof, ok: r.ok, conflicts: r.conflicts, overDefined: [...r.redundant, ...r.partiallyRedundant] };
+  return {
+    entities: out, dof: r.dof, ok: r.ok && conflicts.length === r.conflicts.length,
+    conflicts, overDefined: [...redundant, ...r.partiallyRedundant],
+    ...(dragRefused ? { dragRefused } : {}),
+  };
 }

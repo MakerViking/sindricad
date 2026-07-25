@@ -8,6 +8,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
+import { projEndSamples } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
 import { dimRefPoints } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
@@ -27,9 +28,20 @@ export const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "fix",
 ]);
 
+/** Effective curve kind for constraint operands: native line/circle/arc, and
+ *  projected reference curves by their cached shape (a projected line IS a line
+ *  operand — that's the point of projecting). Projected polys are samples, not
+ *  a curve, so they stay unaddressable as a curve operand. Exported: SketchMode's
+ *  pruneConstraints keeps constraints alive by this same rule. */
+export const curveKind = (e: ResolvedEntity): "line" | "circle" | "arc" | undefined => {
+  if (e.type === "line" || e.type === "circle" || e.type === "arc") return e.type;
+  if (e.type === "projected" && e.curve.kind !== "poly") return e.curve.kind;
+  return undefined;
+};
+
 /** line/circle/arc are the tangency-capable curves; circle/arc carry a radius+center. */
-const isCurve = (e: ResolvedEntity) => e.type === "line" || e.type === "circle" || e.type === "arc";
-const isRound = (e: ResolvedEntity) => e.type === "circle" || e.type === "arc";
+const isCurve = (e: ResolvedEntity) => curveKind(e) !== undefined;
+const isRound = (e: ResolvedEntity) => { const k = curveKind(e); return k === "circle" || k === "arc"; };
 
 /** The slice of SketchMode these click flows read/write — live accessors, not copies. */
 export interface ConstraintHost {
@@ -88,11 +100,14 @@ export class ConstraintTools {
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, this.host.pickTol());
     const ent = idx >= 0 ? entities[idx] : undefined;
-    if (!ent || ent.type !== "line") return;
-    const id = ent.id;
-    if (t === "horizontal") this.addConstraint({ type: "horizontal", line: id });
-    else if (t === "vertical") this.addConstraint({ type: "vertical", line: id });
-    else {
+    if (!ent || curveKind(ent) !== "line") return;
+    if (t === "horizontal" || t === "vertical") {
+      // constraining the projected line ITSELF is meaningless — it's fixed
+      if (ent.type !== "line") return this.host.warn(PROJECTED_FIXED_MSG);
+      if (t === "horizontal") this.addConstraint({ type: "horizontal", line: ent.id });
+      else this.addConstraint({ type: "vertical", line: ent.id });
+    } else {
+      const id = ent.id;
       // two-line constraints: first click stores, second applies
       if (this.host.getFilletFirst() == null) {
         this.host.setFilletFirst(idx);
@@ -124,6 +139,16 @@ export class ConstraintTools {
         const first = e.points[0], last = e.points[e.points.length - 1];
         if (first) consider(e.id, 0, first.x, first.y);
         if (last) consider(e.id, 1, last.x, last.y);
+      } else if (e.type === "projected") {
+        // projected endpoints are addressable anchors (coincident-to-reference
+        // is the sticks-to-projection behavior); poly exposes first/last samples
+        const cv = e.curve;
+        if (cv.kind === "line" || cv.kind === "arc") {
+          consider(e.id, 0, cv.x1, cv.y1);
+          consider(e.id, 1, cv.x2, cv.y2);
+        } else if (cv.kind === "poly") {
+          projEndSamples(cv).forEach(([x, y], k) => consider(e.id, k, x, y));
+        }
       }
     }
     return best;
@@ -143,7 +168,7 @@ export class ConstraintTools {
       const e = idx >= 0 ? entities[idx] : null;
       const ep = this.pendingEndpoint;
       this.pendingEndpoint = null;
-      if (e?.type === "line" && e.id !== ep.id) this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: e.id });
+      if (e && curveKind(e) === "line" && e.id !== ep.id) this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: e.id });
       return;
     }
     if (t === "coincident") {
@@ -172,7 +197,7 @@ export class ConstraintTools {
     const a = this.pendingEndpoint, b = this.pendingEndpoint2;
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
-    if (e?.type === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: e.id });
+    if (e && curveKind(e) === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: e.id });
   }
 
   /** Two-pick flow shared by tangent/equal/concentric: returns [first, second]
@@ -196,7 +221,7 @@ export class ConstraintTools {
     const pair = this.pickPair(p, isCurve);
     if (!pair) return;
     const [first, e] = pair;
-    if (first.type === "line" && e.type === "line") return; // two lines can't be tangent
+    if (curveKind(first) === "line" && curveKind(e) === "line") return; // two lines can't be tangent
     this.addConstraint({ type: "tangent2", a: first.id, b: e.id });
   }
 
@@ -205,7 +230,7 @@ export class ConstraintTools {
     const pair = this.pickPair(p, isCurve);
     if (!pair) return;
     const [first, e] = pair;
-    if (first.type === "line" && e.type === "line") {
+    if (curveKind(first) === "line" && curveKind(e) === "line") {
       this.addConstraint({ type: "equal", l1: first.id, l2: e.id });
     } else if (isRound(first) && isRound(e)) {
       this.addConstraint({ type: "equalRadius", a: first.id, b: e.id });
@@ -226,14 +251,15 @@ export class ConstraintTools {
     let best: { id: string; p: number } | null = null;
     let bestD = tol * tol;
     for (const e of this.host.entities()) {
+      if (e.type === "projected") continue; // already fixed — fixing it is meaningless
       for (const r of dimRefPoints(e)) {
         const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
         if (d <= bestD) { bestD = d; best = { id: e.id, p: r.p }; }
       }
     }
     if (best) return this.addConstraint({ type: "fix", e: best.id, p: best.p });
-    // no addressable point — explain a click on projected geometry (it exposes
-    // no ref points: it is already fixed) instead of silently doing nothing
+    // no addressable point — explain a click on projected geometry (skipped
+    // above: it is already fixed) instead of silently doing nothing
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, tol);
     if (entities[idx]?.type === "projected") this.host.warn(PROJECTED_FIXED_MSG);

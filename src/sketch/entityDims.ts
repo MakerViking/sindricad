@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
-import { isDriven } from "../types";
+import { isDriven, projEndSamples } from "../types";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { rectCorners } from "./region";
 import { paramOnSeg, signedAngleDeg } from "./geom2d";
@@ -167,6 +167,15 @@ export function dimensionSegments(ents: ResolvedEntity[]): [V, V][] {
 
 // --- constraint-based dimensions (p2pDistance / p2lDistance) -----------------
 
+/** The line segment an entity presents to line-based constraint/dimension
+ *  flows: native lines, and projected lines (fixed reference operands). One
+ *  predicate so the pickers, the solver seeds, and the label renderers agree. */
+export function asLineSeg(e: ResolvedEntity): { x1: number; y1: number; x2: number; y2: number } | null {
+  if (e.type === "line") return e;
+  if (e.type === "projected" && e.curve.kind === "line") return e.curve;
+  return null;
+}
+
 /** THE enumeration of an entity's dimensionable reference points, with each
  *  one's pick index `p` (the SketchConstraint p2p/p2l semantics: 0/1 =
  *  endpoints, 0..3 = rectangle corners, 2 = arc center; circles and sketch
@@ -190,6 +199,21 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
     if (a) out.push({ p: 0, pos: v(a.x, a.y) });
     if (b && e.points.length > 1) out.push({ p: 1, pos: v(b.x, b.y) });
     return out;
+  }
+  if (e.type === "projected") {
+    // fixed reference points user dims/constraints can target — same indices
+    // the solver registers (sketchSolve projected branch): line/arc endpoints
+    // 0/1, arc center 2, circle center 0, poly first/last samples 0/1
+    const cv = e.curve;
+    if (cv.kind === "line") return [{ p: 0, pos: v(cv.x1, cv.y1) }, { p: 1, pos: v(cv.x2, cv.y2) }];
+    if (cv.kind === "circle") return [{ p: 0, pos: v(cv.x, cv.y) }];
+    if (cv.kind === "arc") {
+      const out = [{ p: 0, pos: v(cv.x1, cv.y1) }, { p: 1, pos: v(cv.x2, cv.y2) }];
+      const cc = circumcenter({ x: cv.x1, y: cv.y1 }, { x: cv.x2, y: cv.y2 }, { x: cv.mx, y: cv.my });
+      if (cc) out.push({ p: 2, pos: v(cc.x, cc.y) });
+      return out;
+    }
+    return projEndSamples(cv).map((q, k) => ({ p: k, pos: v(q[0], q[1]) })); // closed poly: one point
   }
   return [];
 }
@@ -237,10 +261,11 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
     // angle (line-to-line): a label between the two lines, value in degrees
     if (c.type === "angle") {
       const l1 = byId.get(c.l1), l2 = byId.get(c.l2);
-      if (!l1 || l1.type !== "line" || !l2 || l2.type !== "line") return;
-      const m1 = v((l1.x1 + l1.x2) / 2, (l1.y1 + l1.y2) / 2);
-      const m2 = v((l2.x1 + l2.x2) / 2, (l2.y1 + l2.y2) / 2);
-      out.push({ cIndex: i, valueMm: driven ? signedAngleDeg(l1, l2) : c.value, labelPos: m1.clone().add(m2).multiplyScalar(0.5), lines: [], kind: "angle", driven });
+      const s1 = l1 && asLineSeg(l1), s2 = l2 && asLineSeg(l2);
+      if (!s1 || !s2) return;
+      const m1 = v((s1.x1 + s1.x2) / 2, (s1.y1 + s1.y2) / 2);
+      const m2 = v((s2.x1 + s2.x2) / 2, (s2.y1 + s2.y2) / 2);
+      out.push({ cIndex: i, valueMm: driven ? signedAngleDeg(s1, s2) : c.value, labelPos: m1.clone().add(m2).multiplyScalar(0.5), lines: [], kind: "angle", driven });
       return;
     }
     // each branch yields the measured pair (a, b); the shared tail draws it.
@@ -257,10 +282,11 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
     } else if (c.type === "p2lDistance") {
       const pe = byId.get(c.e), le = byId.get(c.line);
       a = pe ? refPoint(pe, c.p) : null;
-      if (a && le && le.type === "line") {
-        const A = v(le.x1, le.y1), B = v(le.x2, le.y2);
+      const seg = le && asLineSeg(le);
+      if (a && seg) {
+        const A = v(seg.x1, seg.y1), B = v(seg.x2, seg.y2);
         const t = paramOnSeg(A, B, a);
-        b = v(le.x1 + t * (le.x2 - le.x1), le.y1 + t * (le.y2 - le.y1)); // foot of the perpendicular
+        b = v(seg.x1 + t * (seg.x2 - seg.x1), seg.y1 + t * (seg.y2 - seg.y1)); // foot of the perpendicular
       }
       value = c.value;
     } else return;
