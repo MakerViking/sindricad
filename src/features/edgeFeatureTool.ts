@@ -139,7 +139,9 @@ export class EdgeFeatureTool {
     const f = this.store.document.features.find((x) => x.id === featureId);
     if (!f || (f.type !== "fillet" && f.type !== "chamfer")) return false;
     const value = f.type === "fillet" ? f.radius : f.distance;
-    if (typeof value !== "number") return false; // parameter expression — inspector's job
+    const field = f.type === "fillet" ? "radius" : "distance";
+    if (typeof value !== "number" || this.store.isParamBound({ kind: "feature", feature: f.id, field }))
+      return false; // parameter-driven value — inspector's job
     const sels = Array.isArray(f.edges) ? f.edges : [f.edges];
     if (!sels.length || !sels.every((s) => "point" in s)) return false; // structural selectors — can't re-anchor
 

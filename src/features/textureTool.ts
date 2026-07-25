@@ -109,6 +109,9 @@ export class TextureTool {
     if (!f || f.type !== "texture") return false;
     const numeric = [f.depth, f.scale, f.angle, f.offset, f.sharpness, f.seed];
     if (numeric.some((v) => v !== undefined && typeof v !== "number")) return false; // parameter — inspector's job
+    const fields = ["depth", "scale", "angle", "offset", "sharpness", "seed"];
+    if (fields.some((field) => this.store.isParamBound({ kind: "feature", feature: f.id, field })))
+      return false; // parameter-driven field — inspector's job
 
     this.active = true;
     this.onDone = onDone;

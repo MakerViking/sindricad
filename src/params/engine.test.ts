@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import type { CadDocument, ParamDef } from "../types";
 import {
-  boundParam, commitDeleteParam, commitFieldExpr, commitRenameParam,
-  deleteBlockers, defsOf, isBound, nextDName, recompute, referencesTo, validateExpr, validateName,
+  boundParam, commitDeleteParam, commitFieldExpr, commitNamedFieldExpr, commitRenameParam,
+  deleteBlockers, defsOf, isBound, nextDName, recompute, referencesTo, splitNameValue, validateExpr, validateName,
 } from "./engine";
 
 /** doc with one sketch (polygon e1 + a radius dim c1) and one extrude f2 */
@@ -153,5 +153,29 @@ describe("params engine", () => {
     const doc = fixture({ width: { expr: "40", value: 40, unit: "mm" } });
     (doc.features[1] as unknown as Record<string, unknown>)["distance"] = "width";
     expect(deleteBlockers(doc, "width")).toMatch(/extrude f2 · distance/);
+  });
+
+  it("splitNameValue parses the on-the-fly form only", () => {
+    expect(splitNameValue("width = 30")).toEqual({ name: "width", expr: "30" });
+    expect(splitNameValue("w=len/2 + 5")).toEqual({ name: "w", expr: "len/2 + 5" });
+    expect(splitNameValue("30")).toBeNull();
+    expect(splitNameValue("a + b")).toBeNull();
+    expect(splitNameValue("9x=3")).toBeNull(); // invalid name shape
+  });
+
+  it("commitNamedFieldExpr names a fresh binding or renames an existing dN", () => {
+    const doc = fixture({});
+    const target = { kind: "feature", feature: "f2", field: "distance" } as const;
+    commitNamedFieldExpr(doc, target, "depth", "30", "length");
+    recompute(doc);
+    expect(boundParam(doc, target)).toBe("depth");
+    expect((doc.features[1] as { distance: number }).distance).toBe(30);
+    // referenced by another param, then renamed via a second name= entry
+    defsOf(doc)["twice"] = { expr: "depth * 2", value: 0, unit: "mm" };
+    commitNamedFieldExpr(doc, target, "deep", "35", "length");
+    recompute(doc);
+    expect(boundParam(doc, target)).toBe("deep");
+    expect(defsOf(doc)["twice"]!.expr).toBe("deep * 2"); // rename rewrote the ref
+    expect(doc.parameters["twice"]).toBe(70);
   });
 });

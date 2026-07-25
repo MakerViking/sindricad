@@ -85,7 +85,8 @@ export class ExtrudeTool {
     if (this.active) return false;
     const f = this.store.document.features.find((x) => x.id === featureId);
     if (!f || f.type !== "extrude") return false;
-    if (typeof f.distance !== "number") return false; // parameter expression — inspector's job
+    if (typeof f.distance !== "number" || this.store.isParamBound({ kind: "feature", feature: f.id, field: "distance" }))
+      return false; // parameter-driven distance — inspector's job
 
     this.active = true;
     this.phase = "pick";

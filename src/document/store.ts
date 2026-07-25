@@ -17,6 +17,8 @@ export interface SketchBinding {
   target: ParamTarget;
   expr: string;
   kind: FieldKind;
+  /** Fusion's on-the-fly `name=expr`: bind under this chosen name instead of dN. */
+  name?: string;
 }
 
 export interface RebuildState {
@@ -335,6 +337,11 @@ export class DocumentStore {
     return params.validateExpr(this.doc, boundName, raw, kind);
   }
 
+  /** Name check for a to-be-created parameter (sketch `name=expr` pre-check). */
+  validateParamName(name: string): string | null {
+    return params.validateName(params.defsOf(this.doc), name);
+  }
+
   renameParam(from: string, to: string): string | null {
     const defs = params.defsOf(this.doc);
     if (!(from in defs)) return `no parameter "${from}"`;
@@ -364,9 +371,22 @@ export class DocumentStore {
 
   /** Commit raw user input into a parameter-drivable field as an EXPRESSION
    *  (canonical units — mm/deg; the edit surface converts plain display-unit
-   *  numbers itself and uses setTargetValue). Returns an error or null. */
+   *  numbers itself and uses setTargetValue). Supports Fusion's on-the-fly
+   *  `name=expr` form, which names the field's model parameter. Returns an
+   *  error or null. */
   setTargetExpr(target: ParamTarget, raw: string, kind: FieldKind): string | null {
     const bound = params.boundParam(this.doc, target);
+    const nv = params.splitNameValue(raw);
+    if (nv) {
+      if (nv.name !== bound) {
+        const bad = params.validateName(params.defsOf(this.doc), nv.name);
+        if (bad) return bad;
+      }
+      const v = params.validateExpr(this.doc, bound, nv.expr, kind);
+      if (!v.ok) return v.error;
+      this.queueParamCommit((d) => params.commitNamedFieldExpr(d, target, nv.name, nv.expr, kind));
+      return null;
+    }
     const v = params.validateExpr(this.doc, bound, raw, kind);
     if (!v.ok) return v.error;
     this.queueParamCommit((d) => params.commitFieldExpr(d, target, raw, kind));
@@ -406,9 +426,14 @@ export class DocumentStore {
     for (const b of bindings ?? []) {
       // re-validate against the final doc — the dim/entity now exists in it
       const bound = params.boundParam(d, b.target);
+      const nameBad = b.name && b.name !== bound ? params.validateName(params.defsOf(d), b.name) : null;
       const v = params.validateExpr(d, bound, b.expr, b.kind);
-      if (v.ok) params.commitFieldExpr(d, b.target, b.expr, b.kind);
-      else this.onWarning?.(`Dimension expression "${b.expr}" was dropped: ${v.error}`);
+      if (!v.ok || nameBad) {
+        this.onWarning?.(`Dimension expression "${b.name ? `${b.name}=` : ""}${b.expr}" was dropped: ${nameBad ?? (v.ok ? "" : v.error)}`);
+        continue;
+      }
+      if (b.name) params.commitNamedFieldExpr(d, b.target, b.name, b.expr, b.kind);
+      else params.commitFieldExpr(d, b.target, b.expr, b.kind);
     }
   }
 

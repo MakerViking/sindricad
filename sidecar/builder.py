@@ -1594,9 +1594,19 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     )
 
     def val(x):
-        """Resolve a parameter name to its value, or pass a literal through."""
-        if isinstance(x, str) and x in params:
-            return params[x]
+        """Resolve a parameter name to its value, or pass a numeric literal through.
+
+        Any other string is a hard error: the frontend evaluates expressions and
+        ships plain numbers, so an unresolved string here would otherwise leak
+        into OCCT as garbage (crash or silent junk geometry). The raise is
+        caught by the per-feature error handler -> red chip, build continues."""
+        if isinstance(x, str):
+            if x in params:
+                return params[x]
+            raise ValueError(
+                f'unresolved parameter or expression "{x}" — expected a number '
+                f"(expressions are evaluated by the app before building)"
+            )
         return x
 
     sketches = {}

@@ -276,6 +276,23 @@ export function commitFieldExpr(doc: CadDocument, target: ParamTarget, expr: str
   }
 }
 
+/** Fusion's on-the-fly `name=expr` in a dim field: the field's model param
+ *  gets the CHOSEN name (renaming an existing dN binding). Validate the name
+ *  (validateName) and the expr (validateExpr) first — this trusts its input. */
+export function commitNamedFieldExpr(doc: CadDocument, target: ParamTarget, name: string, expr: string, kind: FieldKind): void {
+  const defs = defsOf(doc);
+  const existing = boundParam(doc, target);
+  if (existing) commitRenameParam(doc, existing, name);
+  else defs[name] = { expr: "0", value: 0, unit: kindUnit(kind), target };
+  defs[name]!.expr = expr;
+}
+
+/** `width=30` typed into a field → { name, expr }; null for normal input. */
+export function splitNameValue(raw: string): { name: string; expr: string } | null {
+  const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\S.*)$/.exec(raw);
+  return m ? { name: m[1]!, expr: m[2]!.trim() } : null;
+}
+
 export interface ParamReference {
   /** referencing param name, or a human label for a legacy bare-name field */
   site: string;
