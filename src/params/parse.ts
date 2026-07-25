@@ -212,8 +212,8 @@ export function parseExpr(src: string): ExprNode {
   return new Parser(tokenize(src)).parse();
 }
 
-/** Parameter names an expression references (constants/functions/units excluded). */
-export function extractRefs(src: string): string[] {
+/** Parameter names a parsed expression references (constants excluded). */
+export function refsOfNode(node: ExprNode): string[] {
   const refs = new Set<string>();
   const walk = (n: ExprNode): void => {
     switch (n.t) {
@@ -234,8 +234,18 @@ export function extractRefs(src: string): string[] {
         return;
     }
   };
-  walk(parseExpr(src));
+  walk(node);
   return [...refs];
+}
+
+/** Parameter names an expression references (constants/functions/units excluded). */
+export function extractRefs(src: string): string[] {
+  return refsOfNode(parseExpr(src));
+}
+
+/** Is `s` a lexically valid parameter identifier? (Same rule as the tokenizer.) */
+export function isIdentName(s: string): boolean {
+  return s.length > 0 && IDENT_START.test(s[0]!) && [...s].every((c) => IDENT_PART.test(c));
 }
 
 /** Rewrite every reference to `from` as `to`, preserving the source verbatim

@@ -14,6 +14,7 @@
 import type { CadDocument, ParamDef, ParamTarget } from "../types";
 import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFields";
 import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id";
+import { nextDName } from "../params/engine";
 
 /** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
 export const FORMAT_VERSION = 2;
@@ -54,11 +55,6 @@ export function migrateDocument(parsed: CadDocument): string[] {
   }
 
   // --- bare-name numeric fields → model parameters (dN) ---
-  let nextD = 1;
-  for (const name of Object.keys(defs)) {
-    const m = /^d(\d+)$/.exec(name);
-    if (m) nextD = Math.max(nextD, Number(m[1]) + 1);
-  }
   const bind = (holder: object, field: string, unit: ParamDef["unit"], target: ParamTarget) => {
     const h = holder as Record<string, unknown>;
     const raw = h[field];
@@ -66,7 +62,7 @@ export function migrateDocument(parsed: CadDocument): string[] {
     const value = params[raw];
     if (value === undefined) return; // not a known param — leave for the legacy path
     h[field] = value;
-    defs[`d${nextD++}`] = { expr: raw, value, unit, target };
+    defs[nextDName(defs)] = { expr: raw, value, unit, target };
   };
   for (const f of features) {
     for (const [field, , kind] of FEATURE_NUM_FIELDS[f.type] ?? []) {

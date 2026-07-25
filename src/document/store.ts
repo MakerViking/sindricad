@@ -3,9 +3,12 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, Feature, ParamTarget, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend } from "../geometry/client";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
+import * as params from "../params/engine";
+import type { FieldKind } from "./numFields";
+import { writeTarget } from "./numFields";
 
 export interface RebuildState {
   building: boolean;
@@ -221,15 +224,107 @@ export class DocumentStore {
     this.pushUndo();
     this.redoStack = [];
     fn(this.doc);
+    // Keep the parameter invariant (bound field number == cached param value)
+    // across EVERY document edit — this also GCs model params whose dim or
+    // feature was just deleted, and refreshes the derived `parameters` cache.
+    if (this.doc.paramDefs) this.applyRecompute(params.recompute(this.doc));
     this.markDirty();
     this.emitDoc();
     this.scheduleRebuild(immediate);
   }
 
+  // --- parameters (engine-backed; see src/params/engine.ts) ---
+
+  /** name → why its value is stale (cycle, unknown ref, non-finite, missing
+   *  target) from the last recompute. Empty on a healthy document. */
+  paramIssues: Record<string, string> = {};
+  /** sketch ids whose constraint/entity values were rewritten by the last
+   *  parameter recompute — consumed by the sketch re-solve cascade. */
+  private affectedSketches = new Set<string>();
+
+  private applyRecompute(r: params.RecomputeResult) {
+    this.paramIssues = r.issues;
+    for (const s of r.affectedSketches) this.affectedSketches.add(s);
+  }
+  /** Drain the sketches invalidated by parameter edits since the last call.
+   *  defer: consumer is the sketch re-solve cascade, wired in the sketch-dims
+   *  step of the params engine (Tier 3.1). */
+  takeAffectedSketches(): Set<string> {
+    const out = this.affectedSketches;
+    this.affectedSketches = new Set();
+    return out;
+  }
+
   setParam(name: string, value: number) {
-    this.mutate((d) => {
-      d.parameters[name] = value;
-    });
+    void this.setParamExpr(name, String(value));
+  }
+
+  /** Set (or create) a parameter from an expression. Returns an error message
+   *  to surface at the input, or null on success. */
+  setParamExpr(name: string, expr: string, unit?: "mm" | "deg" | "count"): string | null {
+    const v = params.validateExpr(this.doc, name, expr);
+    if (!v.ok) return v.error;
+    this.mutate((d) => void params.commitParamExpr(d, name, expr, unit));
+    return null;
+  }
+
+  /** Create a NEW user parameter (validates the name too). */
+  addParam(name: string, expr: string, unit?: "mm" | "deg" | "count"): string | null {
+    const bad = params.validateName(params.defsOf(this.doc), name);
+    if (bad) return bad;
+    return this.setParamExpr(name, expr, unit);
+  }
+
+  renameParam(from: string, to: string): string | null {
+    const defs = params.defsOf(this.doc);
+    if (!(from in defs)) return `no parameter "${from}"`;
+    const bad = params.validateName(defs, to);
+    if (bad) return bad;
+    this.mutate((d) => void params.commitRenameParam(d, from, to));
+    return null;
+  }
+
+  deleteParam(name: string): string | null {
+    const blocked = params.deleteBlockers(this.doc, name);
+    if (blocked) return blocked;
+    this.mutate((d) => void params.commitDeleteParam(d, name));
+    return null;
+  }
+
+  /** Commit raw user input into a parameter-drivable field as an EXPRESSION
+   *  (canonical units — mm/deg; the edit surface converts plain display-unit
+   *  numbers itself and uses setTargetValue). Returns an error or null. */
+  setTargetExpr(target: ParamTarget, raw: string, kind: FieldKind): string | null {
+    const bound = params.boundParam(this.doc, target);
+    const v = params.validateExpr(this.doc, bound, raw, kind);
+    if (!v.ok) return v.error;
+    this.mutate((d) => void params.commitFieldExpr(d, target, raw, kind));
+    return null;
+  }
+
+  /** Commit a plain CANONICAL number into a field. A bound field keeps its
+   *  model param (the expression becomes the literal — Fusion behavior); an
+   *  unbound field is written directly, no param is created. */
+  setTargetValue(target: ParamTarget, canonical: number, kind: FieldKind): void {
+    if (params.boundParam(this.doc, target)) {
+      void this.setTargetExpr(target, String(canonical), kind);
+    } else {
+      this.mutate((d) => void writeTarget(d, target, canonical));
+    }
+  }
+
+  /** The expression driving `target`, when a model param is bound to it. */
+  boundExpr(target: ParamTarget): { name: string; expr: string; value: number } | null {
+    const name = params.boundParam(this.doc, target);
+    if (!name) return null;
+    const def = params.defsOf(this.doc)[name]!;
+    return { name, expr: def.expr, value: def.value };
+  }
+
+  /** True when `target` is driven by a non-literal expression (fx: fields —
+   *  drag tools must not overwrite them). */
+  isParamBound(target: ParamTarget): boolean {
+    return params.isBound(this.doc, target);
   }
 
   addFeature(feature: Feature, atIndex?: number) {
@@ -241,6 +336,10 @@ export class DocumentStore {
     }, true);
   }
 
+  /** NOTE: a numeric field bound to a parameter is re-asserted by the recompute
+   *  in mutate() — a patch that writes such a field simply won't stick. Route
+   *  numeric edits through setTargetValue/setTargetExpr (drag-tool isBound
+   *  guards land in the polish step of Tier 3.1). */
   updateFeature(id: string, patch: Partial<Feature>) {
     this.mutate((d) => {
       const i = d.features.findIndex((f) => f.id === id);

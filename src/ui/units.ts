@@ -89,3 +89,11 @@ export function parseField(raw: string, kind: FieldKind = "length"): number | nu
   if (Number.isNaN(v)) return null;
   return kind === "length" ? fromDisplay(v) : v; // angle/count: raw number
 }
+
+/** A plain numeric literal (display-unit semantics at input surfaces) as
+ *  opposed to an expression (canonical-unit semantics via the params engine).
+ *  "5.0" and "-2e3" are plain; "5 mm", "width/2", "5+3" are expressions. */
+const PLAIN_NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+export function isPlainNumber(raw: string): boolean {
+  return PLAIN_NUMBER.test(raw.trim());
+}

@@ -1124,6 +1124,24 @@ button.active {
   background: var(--bg);
   box-shadow: 0 0 0 3px var(--accent-tint);
 }
+/* rejected expression (kept in the field so the user can fix it) */
+.param-row input.input-error {
+  border-color: #ff6b6b;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
+}
+/* field driven by a non-literal expression (Fusion's fx: convention) */
+.fx-row label::before {
+  content: "fx:";
+  color: var(--accent);
+  font-style: italic;
+  margin-right: 4px;
+}
+/* parameter whose cached value is stale (cycle / missing ref / non-finite) —
+   same amber as the solver's over-defined flag */
+.param-stale input {
+  border-color: #e0a020;
+  box-shadow: 0 0 0 3px rgba(224, 160, 32, 0.15);
+}
 
 /* empty-state for panels (added by component markup) */
 .empty-state {

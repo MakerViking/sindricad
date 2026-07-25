@@ -6,12 +6,13 @@
 // unit (params are treated as lengths). Angles stay in degrees.
 
 import type { DocumentStore } from "../document/store";
-import type { Feature, Num } from "../types";
+import type { Feature, Num, ParamTarget } from "../types";
 import { FEATURE_META } from "./featureMeta";
-import { getUnit, onUnitChange, toDisplay, fromDisplay, round, displayValue } from "./units";
+import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, parseField, fromDisplay } from "./units";
 import { resolveEntities, toSketchEntity } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
 import { FEATURE_NUM_FIELDS as NUM_FIELDS } from "../document/numFields";
+import type { FieldKind } from "../document/numFields";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
@@ -40,14 +41,20 @@ export class Inspector {
     const unit = getUnit();
     this.el.innerHTML = "";
 
-    // --- parameters (treated as lengths in mm) ---
+    // --- parameters (user params only; model params dN live in the dialog) ---
     this.el.appendChild(title(`Parameters (${unit})`));
+    const defs = doc.paramDefs ?? {};
     for (const [name, value] of Object.entries(doc.parameters)) {
-      this.el.appendChild(
-        numberRow(name, round(toDisplay(value)), (v) =>
-          this.store.setParam(name, fromDisplay(v)),
-        ),
+      if (defs[name]?.target) continue; // model param — edited via its field/dim
+      const issue = this.store.paramIssues[name];
+      const row = numberRow(name, round(toDisplay(value)), (v) =>
+        this.store.setParam(name, fromDisplay(v)),
       );
+      if (issue) {
+        row.classList.add("param-stale");
+        row.title = issue;
+      }
+      this.el.appendChild(row);
     }
 
     // --- selected feature editor ---
@@ -89,25 +96,45 @@ export class Inspector {
     this.el.appendChild(title(`${FEATURE_META[f.type].label} · ${f.id}`, true));
     for (const [field, label, kind] of fields) {
       const cur = (f as any)[field] as Num | undefined;
+      const target: ParamTarget = { kind: "feature", feature: f.id, field };
+      const bound = this.store.boundExpr(target);
       const suffix = kind === "length" ? ` ${unit}` : kind === "angle" ? "°" : "";
-      // only lengths get unit conversion; angles + counts are shown raw
-      const shown =
-        typeof cur === "number"
+      // a bound field edits its EXPRESSION (canonical units); a plain field
+      // shows its number in display units (lengths convert, angles/counts raw)
+      const shown = bound
+        ? bound.expr
+        : typeof cur === "number"
           ? String(kind === "length" ? round(toDisplay(cur)) : cur)
           : (cur ?? "");
-      this.el.appendChild(
-        textRow(`${label}${suffix}`, String(shown), (raw) => {
-          const asNum = parseFloat(raw);
-          const isNum = raw !== "" && !Number.isNaN(asNum) && String(asNum) === raw;
-          const val: Num = isNum
-            ? kind === "length"
-              ? fromDisplay(asNum)
-              : asNum
-            : raw; // a parameter name
-          this.store.updateFeature(f.id, { [field]: val } as Partial<Feature>);
-        }),
-      );
+      const row = textRow(`${label}${suffix}`, String(shown), (raw, input) => {
+        const err = this.commitField(target, kind, raw);
+        if (err) {
+          input.classList.add("input-error");
+          input.title = err;
+        } else {
+          this.render(); // re-read: fx badge, computed value, canonical rounding
+        }
+      });
+      if (bound && this.store.isParamBound(target)) {
+        row.classList.add("fx-row");
+        row.title = `${bound.name} = ${bound.expr} = ${round(bound.value)}`;
+      }
+      this.el.appendChild(row);
     }
+  }
+
+  /** Route raw field input: plain number → display-unit value write (keeps a
+   *  bound field's model param as a literal); anything else → expression in
+   *  CANONICAL units (mm/deg) via the params engine. Deliberate semantics fork
+   *  (plan decision R4): bare literals in expressions are canonical so the same
+   *  file evaluates identically on every machine — unit suffixes (0.5 in) are
+   *  the display-unit spelling inside expressions. */
+  private commitField(target: ParamTarget, kind: FieldKind, raw: string): string | null {
+    if (isPlainNumber(raw)) {
+      this.store.setTargetValue(target, parseField(raw, kind)!, kind);
+      return null;
+    }
+    return this.store.setTargetExpr(target, raw, kind);
   }
 }
 
@@ -136,16 +163,19 @@ function numberRow(label: string, value: number, onChange: (v: number) => void):
   return row;
 }
 
-function textRow(label: string, value: string, onChange: (raw: string) => void): HTMLElement {
+function textRow(label: string, value: string, onChange: (raw: string, input: HTMLInputElement) => void): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row";
   const lab = document.createElement("label");
   lab.textContent = label;
   const input = document.createElement("input");
-  input.type = "text"; // text so a parameter name is allowed
+  input.type = "text"; // text so an expression / parameter name is allowed
   input.value = value;
-  input.title = "number or parameter name";
-  input.addEventListener("change", () => onChange(input.value.trim()));
+  input.title = "number, parameter name, or expression (e.g. width/2 + 5)";
+  input.addEventListener("input", () => {
+    input.classList.remove("input-error");
+  });
+  input.addEventListener("change", () => onChange(input.value.trim(), input));
   row.append(lab, input);
   return row;
 }
