@@ -843,7 +843,7 @@ function editFeature(id: string) {
 // --- ribbon / keymap actions ---
 const SKETCH_TOOLS = new Set([
   "line", "rectangle", "centerRectangle", "circle", "circle2", "circle3",
-  "arc", "polygon", "slot", "spline", "point", "text",
+  "arc", "polygon", "slot", "spline", "point", "text", "project",
   "boltCircle", "hexHoles", "gridHoles", "patternRect", "patternCircular", "honeycomb",
 ]);
 // sketch MODIFY tools (ribbon action -> sketch tool name)

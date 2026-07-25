@@ -5,7 +5,8 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { Feature, ParamTarget, PlaneSpec, SketchConstraint, SketchPattern } from "../types";
+import type { Feature, ParamTarget, PlaneSpec, ProjectedSource, SketchConstraint, SketchPattern } from "../types";
+import type { EdgeFingerprint } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
@@ -36,6 +37,8 @@ import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
+import { ProjectPanel } from "./projectPanel";
+import type { ProjectionSource } from "../geometry/client";
 
 export type SketchTool =
   | "select"
@@ -80,7 +83,8 @@ export type SketchTool =
   | "honeycomb"
   | "boltCircle"
   | "gridHoles"
-  | "text";
+  | "text"
+  | "project";
 
 // PRESET_PATTERNS/ENTITY_PATTERNS/PATTERN_TOOLS live in patternFlow.ts (imported
 // above); CONSTRAINT_TOOLS lives in constraintTools.ts (also imported above).
@@ -115,6 +119,18 @@ function parseConflictIdx(ids: string[]): Set<number> {
 
 // Tools that operate on the current multi-selection, so setTool must keep it.
 const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
+
+// Tolerant edge-fingerprint compare for the Project tool's duplicate-pick check.
+// Fingerprints carry unrounded float noise (sidecar-authored), so byte equality
+// is meaningless — same midpoint (within 1e-3 mm), same unoriented tangent, and
+// a matching length when both carry one, is "the same edge".
+function fpClose(a: EdgeFingerprint, b: EdgeFingerprint): boolean {
+  if (Math.hypot(a.mid[0] - b.mid[0], a.mid[1] - b.mid[1], a.mid[2] - b.mid[2]) > 1e-3) return false;
+  const dot = Math.abs(a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1] + a.dir[2] * b.dir[2]);
+  if (dot < 1 - 1e-6) return false;
+  if (a.length != null && b.length != null && Math.abs(a.length - b.length) > 1e-3) return false;
+  return true;
+}
 
 // Sentinel id for the in-progress text tool's live-preview entity: it lives on the
 // active entity list (so it repaints through the normal render path) but is never
@@ -197,6 +213,10 @@ export class SketchMode {
   private conflictIdx = new Set<number>(); // constraint indices the solver flagged conflicting
   private overIdx = new Set<number>(); // indices flagged redundant / over-defining (removable)
   private readonly textPanel = new TextPanel();
+  // Project tool: filter chips (edges&faces / sketch curves) + a one-at-a-time
+  // in-flight gate so a double-click can't race two projectGeometry calls.
+  private readonly projectPanel = new ProjectPanel();
+  private projectBusy = false;
   private fonts: string[] = []; // system fonts for the text tool (loaded on enter)
   // text tool: press-drag defines a box (wrap width); a plain click is a point anchor.
   private textBoxStart: THREE.Vector2 | null = null;
@@ -258,6 +278,13 @@ export class SketchMode {
       onState: () => this.onState?.(),
     };
     this.patternFlow = new PatternFlow(patternHost);
+    // Filter chip clicks land on the panel, not the canvas, so projectHover
+    // doesn't run — clear the other mode's hover feedback explicitly.
+    this.projectPanel.onChange = () => {
+      this.viewport.hoverEntity(null);
+      this.overlay.setPreview([]);
+      this.viewport.requestRender();
+    };
   }
 
   // --- lifecycle ---------------------------------------------------------
@@ -353,6 +380,8 @@ export class SketchMode {
     this.dims.hide();
     this.glyphs.hide();
     this.textPanel.hide();
+    this.projectPanel.hide();
+    this.viewport.hoverEntity(null); // drop any Project-tool 3D hover highlight
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
     this.removeGrid();
@@ -397,6 +426,12 @@ export class SketchMode {
     this.moveBase = null;
     this.dim.hide();
     this.textPanel.hide();
+    // Project tool: chips only while it's active; leaving it drops any 3D hover
+    if (t === "project") this.projectPanel.show(this.viewport.domElement);
+    else {
+      this.projectPanel.hide();
+      this.viewport.hoverEntity(null);
+    }
     // drop any uncommitted text preview left on the active list when switching tools
     if (this.dropTextPreview()) this.refreshActive();
     this.overlay.setPreview([]);
@@ -794,6 +829,13 @@ export class SketchMode {
 
   private onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return; // left only; middle/right still navigate
+    // Project picks 3D model geometry / committed sketch curves — it needs the
+    // raw client coords, so it branches BEFORE the plane-point conversion.
+    if (this.tool === "project") {
+      e.preventDefault();
+      void this.projectClick(e);
+      return;
+    }
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     e.preventDefault();
@@ -1618,6 +1660,10 @@ export class SketchMode {
   }
 
   private onPointerMove(e: PointerEvent) {
+    if (this.active && this.tool === "project") {
+      this.projectHover(e);
+      return;
+    }
     if (this.active && MODIFY_TOOLS.has(this.tool)) {
       this.modifyHover(e);
       return;
@@ -1807,6 +1853,7 @@ export class SketchMode {
     else if (k === "a") this.setTool("arc");
     else if (k === "t") this.setTool("trim");
     else if (k === "o") this.setTool("offset");
+    else if (k === "p") this.setTool("project");
   }
 
   // --- geometry per tool -------------------------------------------------
@@ -2202,6 +2249,169 @@ export class SketchMode {
    *  ConstraintTools (see constraintTools.ts), which owns the 9 click flows. */
   private constraintClick(p: THREE.Vector2) {
     this.constraintTools.click(p);
+  }
+
+  // --- Project (Fusion-style): click 3D model edges, body faces (→ boundary),
+  // or committed sketch curves; each pick calls the projectGeometry aux-op
+  // against the timeline-PREFIX document (store.projectGeometry truncates) and
+  // lands purple linked "projected" entities in the open sketch immediately. ---
+
+  /** the committed sketch feature `id`, when it is a sketch */
+  private sourceSketch(id: string): Extract<Feature, { type: "sketch" }> | null {
+    const f = this.store?.document.features.find((x) => x.id === id);
+    return f && f.type === "sketch" ? f : null;
+  }
+
+  /** a committed sketch's REAL entity by id — derived pattern copies (ids carry
+   *  "#") resolve to null: they don't exist in the document, so the sidecar
+   *  could never re-find them. */
+  private committedSource(sketchId: string, entityId: string): ResolvedEntity | null {
+    const sk = this.sourceSketch(sketchId);
+    if (!sk || !this.store) return null;
+    return resolveRealEntities(sk, this.store.document.parameters).find((x) => x.id === entityId) ?? null;
+  }
+
+  /** hover feedback for the Project tool: model edge/face highlight in Edges &
+   *  faces mode (the model is dimmed 0.25 in sketch view but still raycastable);
+   *  a committed curve highlight via the preview layer in Sketch curves mode. */
+  private projectHover(e: PointerEvent) {
+    if (this.projectPanel.filter === "edges") {
+      this.overlay.setPreview([]);
+      this.viewport.hoverEntity(this.viewport.pickEntity(e.clientX, e.clientY));
+      return;
+    }
+    this.viewport.hoverEntity(null);
+    const hit = this.overlay.committedCurveAt(e.clientX, e.clientY, (w) => this.viewport.projectToScreen(w));
+    const ent = hit ? this.committedSource(hit.sketchId, hit.entityId) : null;
+    const sk = hit ? this.sourceSketch(hit.sketchId) : null;
+    this.overlay.setPreview(
+      ent && sk ? curveObjects([ent], this.overlay.planeFor(sk.plane), 0x33aaff, true) : [],
+    );
+    this.viewport.requestRender();
+  }
+
+  /** does an already-placed projected entity carry (a match selector for) this
+   *  edge fingerprint? Tolerant compare — fps carry float noise, never compare
+   *  them byte-for-byte. */
+  private hasProjectedFp(fp: EdgeFingerprint): boolean {
+    return this.entities.some((x) => {
+      if (x.type !== "projected") return false;
+      const s = x.source;
+      if (s.kind !== "edge" && s.kind !== "faceBoundary") return false;
+      return s.sel.kind === "edge" && s.sel.by === "match" && fpClose(s.sel.fp, fp);
+    });
+  }
+
+  /** One Project pick: resolve what's under the cursor into a ProjectionSource,
+   *  run the op, land the returned curves as projected entities. Await-guarded
+   *  by projectBusy so double-clicks can't race two calls. */
+  private async projectClick(e: PointerEvent) {
+    if (this.projectBusy || !this.store) return;
+    let source: ProjectionSource | null = null;
+    if (this.projectPanel.filter === "sketchCurves") {
+      const hit = this.overlay.committedCurveAt(e.clientX, e.clientY, (w) => this.viewport.projectToScreen(w));
+      if (!hit) {
+        // nothing committed under the cursor — the ACTIVE sketch's own entities
+        // are never valid sources (checked second: a projection usually lies
+        // screen-coincident with its source, and the source must stay pickable)
+        const p = this.planePoint(e);
+        if (p && pickEntity(this.entities, p, this.pickTol()) >= 0) toast("Can't project the active sketch's own curves");
+        return;
+      }
+      if (!this.committedSource(hit.sketchId, hit.entityId)) {
+        toast("Pattern copies can't be projected — pick the pattern's source curve");
+        return;
+      }
+      const dup = this.entities.some(
+        (x) =>
+          x.type === "projected" &&
+          x.source.kind === "sketchCurve" &&
+          x.source.sketch === hit.sketchId &&
+          x.source.entity === hit.entityId,
+      );
+      if (dup) {
+        toast("That curve is already projected into this sketch");
+        return;
+      }
+      source = { kind: "sketchCurve", sketch: hit.sketchId, entity: hit.entityId };
+    } else {
+      const hit = this.viewport.pickEntity(e.clientX, e.clientY);
+      if (!hit) return;
+      if (hit.kind === "edge") {
+        const body = hit.line.userData.body as string | undefined;
+        if (!body) return;
+        // NOT hit.selector: the picker's nearest point is the line's mid VERTEX,
+        // which for a 2-point straight edge is an ENDPOINT — a corner shared by
+        // three edges that "nearest" (center-distance) then resolves to the
+        // wrong one. The middle segment's midpoint is on (or near) the curve
+        // and never a corner.
+        const pts = hit.line.userData.points as [number, number, number][];
+        const k = Math.max(0, Math.ceil(pts.length / 2) - 1);
+        const a = pts[k]!, b = pts[Math.min(pts.length - 1, k + 1)]!;
+        source = {
+          kind: "edge", body,
+          sel: { kind: "edge", by: "nearest", point: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] },
+        };
+      } else {
+        const body = this.viewport.faceIdToBodyId(hit.faceId);
+        if (!body) return;
+        // the raycast hit point re-finds exactly the clicked face: it lies ON
+        // the face's material, so by:"nearest" distance is 0 there and > 0 for
+        // every other face. NOT the face centroid (which can fall off the
+        // material — a washer's annular face — and tie with another face), and
+        // NOT the picker's own selector (may be a by:"normal" GROUP hit, too
+        // broad for one face's boundary).
+        source = { kind: "faceBoundary", body, sel: { kind: "face", by: "nearest", point: hit.point } };
+      }
+    }
+
+    this.projectBusy = true;
+    // Session identity: enter() always assigns a fresh entities array, so if the
+    // sketch was finished and a NEW one started while the op was in flight (a
+    // realistic window — cold-cache prefix rebuilds take seconds), the identity
+    // check below rejects the stale reply instead of landing curves computed
+    // against the old sketch's plane and timeline prefix.
+    const session = this.entities;
+    let results;
+    try {
+      results = await this.store.projectGeometry(this.plane.serialize(), [source], this.editingId);
+    } finally {
+      this.projectBusy = false;
+    }
+    if (!this.active || this.tool !== "project" || this.entities !== session) return; // finished/switched/re-entered mid-flight
+    const r = results[0];
+    if (!r) {
+      toast("geometry engine unavailable");
+      return;
+    }
+    if (!r.ok) {
+      toast(r.error ?? "projection failed"); // sidecar message verbatim ("created after this sketch"…)
+      return;
+    }
+    // body-edge duplicates are detected against the returned fingerprints (the
+    // sketch-curve case was pre-checked above — its ids are stable)
+    const fresh = r.curves.filter(({ fp }) => !(fp && this.hasProjectedFp(fp)));
+    const skipped = r.curves.length - fresh.length;
+    if (skipped) toast(skipped === r.curves.length ? "That edge is already projected into this sketch" : `${skipped} already-projected edge${skipped > 1 ? "s" : ""} skipped`);
+    if (!fresh.length) return;
+    // multi-curve picks (a face boundary, a projected rectangle) emit sibling
+    // entities sharing source.group = the FIRST sibling's entity id (stable:
+    // entity ids are birth-stamped and survive edits)
+    const ids = fresh.map(() => newEntityId());
+    const group = ids.length > 1 ? { group: ids[0]! } : {};
+    fresh.forEach(({ fp, curve }, i) => {
+      // NOTE (plan step 4): a faceBoundary source persists with a per-edge
+      // by:"match" sel — the rebuild refresh handler must resolve it via
+      // resolve_edges (not resolve_faces) when it lands.
+      const src: ProjectedSource =
+        source.kind === "sketchCurve"
+          ? { kind: "sketchCurve", sketch: source.sketch, entity: source.entity, ...group }
+          : { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group };
+      this.entities.push({ type: "projected", id: ids[i]!, source: src, curve });
+    });
+    this.refreshActive();
+    this.requestSolve();
+    this.onState?.();
   }
 
   /** Drop constraints that reference an entity that no longer exists (or is the

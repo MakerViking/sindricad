@@ -3,8 +3,8 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, ParamTarget, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
-import type { GeometryBackend } from "../geometry/client";
+import type { CadDocument, Feature, ParamTarget, PlaneSpec, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { GeometryBackend, ProjectionResult, ProjectionSource } from "../geometry/client";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
@@ -43,6 +43,25 @@ type MetaListener = () => void;
 const clone = (d: CadDocument): CadDocument => structuredClone(d);
 
 const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
+
+/** The features a sketch at a given timeline position may reference: everything
+ *  up to the rollback marker, minus suppressed features — and, when EDITING an
+ *  existing sketch, strictly before that sketch (a source created after it
+ *  cannot exist yet when the sketch rebuilds). Pure so the Project tool's
+ *  prefix-document rule is unit-testable; effectiveDoc() shares the base case. */
+export function prefixFeatures(
+  features: Feature[],
+  rollbackIndex: number,
+  suppressed: ReadonlySet<string>,
+  beforeId: string | null = null,
+): Feature[] {
+  let out = features.slice(0, rollbackIndex);
+  if (beforeId !== null) {
+    const i = out.findIndex((f) => f.id === beforeId);
+    if (i >= 0) out = out.slice(0, i);
+  }
+  return out.filter((f) => !suppressed.has(f.id));
+}
 
 // Default filament palette (≤4 slots for the Snapmaker U1 toolchanger). Editable;
 // bodies/faces reference a slot index so it maps 1:1 to a physical toolhead.
@@ -828,9 +847,7 @@ export class DocumentStore {
   /** the document actually sent to build: features up to the rollback marker,
    *  minus suppressed ones. The full document is what we save/serialize. */
   private effectiveDoc(): CadDocument {
-    let features = this.doc.features
-      .slice(0, this.rollbackIndex)
-      .filter((f) => !this.suppressed.has(f.id));
+    let features = prefixFeatures(this.doc.features, this.rollbackIndex, this.suppressed);
     if (this.editPreview) {
       // roll to the edited feature's position (never past the rollback marker),
       // then append the live edited version if the tool has produced one.
@@ -843,6 +860,19 @@ export class DocumentStore {
     // bodies out of extrude booleans (a hidden body is protected from edits).
     const bodyVisibility = this.bodyVis.size ? Object.fromEntries(this.bodyVis.entries()) : undefined;
     return { parameters: this.doc.parameters, features, ...(bodyVisibility ? { bodyVisibility } : {}) };
+  }
+
+  /** Project 3D sources onto a sketch plane against the PREFIX document for the
+   *  sketch being drawn: `editingId` = the open sketch's feature id when editing
+   *  an existing sketch (sources must live strictly before it), null for a new
+   *  sketch (which lands at the rollback marker, so everything up to it counts).
+   *  Transport failure resolves to []. */
+  projectGeometry(plane: PlaneSpec, sources: ProjectionSource[], editingId: string | null): Promise<ProjectionResult[]> {
+    const doc: CadDocument = {
+      parameters: this.doc.parameters,
+      features: prefixFeatures(this.doc.features, this.rollbackIndex, this.suppressed, editingId),
+    };
+    return this.geometry.projectGeometry(doc, plane, sources);
   }
 
   async rebuildNow() {

@@ -38,15 +38,17 @@ export const SHORTCUTS: Shortcut[] = [
   { key: "t", action: "trim", context: "sketch", label: "Trim" },
   { key: "o", action: "offset", context: "sketch", label: "Offset" },
   { key: "f", action: "fillet-sketch", context: "sketch", label: "Sketch Fillet" },
+  { key: "p", action: "project", context: "sketch", label: "Project" },
   // finish-and-go: E/Q inside a sketch commit it and start the 3D tool
   // (handleAction already finishes an active sketch before any 3D command)
   { key: "e", action: "extrude", context: "sketch", label: "Finish & Extrude" },
   { key: "q", action: "presspull", context: "sketch", label: "Finish & Press/Pull" },
-  // sketch-start conveniences from model mode (L/C/R/A start a sketch with that tool)
+  // sketch-start conveniences from model mode (L/C/R/A/P start a sketch with that tool)
   { key: "l", action: "line", context: "model", label: "Sketch: Line" },
   { key: "c", action: "circle", context: "model", label: "Sketch: Circle" },
   { key: "r", action: "rectangle", context: "model", label: "Sketch: Rectangle" },
   { key: "a", action: "arc", context: "model", label: "Sketch: Arc" },
+  { key: "p", action: "project", context: "model", label: "Sketch: Project" },
   // --- global ---
   { key: "home", action: "fit", context: "global", label: "Fit view" },
   { key: "f6", action: "fit", context: "global", label: "Fit view" },

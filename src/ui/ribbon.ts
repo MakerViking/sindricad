@@ -145,6 +145,7 @@ export const SKETCH: Group[] = [
       { action: "spline", label: "Spline", iconName: "spline" },
       { action: "point", label: "Point", iconName: "point" },
       { action: "text", label: "Text", iconName: "text", key: "T" },
+      { action: "project", label: "Project", iconName: "project", key: "P" },
     ],
   },
   {

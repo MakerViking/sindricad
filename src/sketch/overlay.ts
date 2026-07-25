@@ -156,6 +156,7 @@ export class SketchOverlay {
       const ents = resolveEntities(f, doc.parameters);
 
       for (const obj of curveObjects(ents, plane, CURVE_COLOR)) {
+        obj.userData.sketchId = f.id; // + entityId from curveObjects → Project-tool picking
         this.committed.add(obj);
       }
       for (const region of detectRegions(f.id, ents)) {
@@ -370,6 +371,47 @@ export class SketchOverlay {
     }
   }
 
+  /** The committed sketch curve nearest the cursor, within `maxPx` SCREEN pixels
+   *  (the Project tool's sketch-curve pick). Walks the committed curve objects —
+   *  tagged with {sketchId, entityId} in update()/curveObjects — and measures
+   *  screen-space distance to each polyline segment via `project` (the
+   *  viewport's world→client projection). The active sketch's own curves are
+   *  never here (update() hides them), and only VISIBLE sketches are pickable. */
+  committedCurveAt(
+    clientX: number,
+    clientY: number,
+    project: (world: THREE.Vector3) => { x: number; y: number },
+    maxPx = 9,
+  ): { sketchId: string; entityId: string } | null {
+    let best: { sketchId: string; entityId: string } | null = null;
+    let bestD = maxPx;
+    const w = new THREE.Vector3();
+    for (const obj of this.committed.children) {
+      const tag = obj.userData as { sketchId?: string; entityId?: string };
+      if (!tag.sketchId || !tag.entityId) continue;
+      obj.traverse((o) => {
+        if (!(o as THREE.Line).isLine) return;
+        const pos = (o as THREE.Line).geometry.getAttribute("position");
+        if (!pos) return;
+        const paired = (o as THREE.LineSegments).isLineSegments === true;
+        let prev: { x: number; y: number } | null = null;
+        for (let i = 0; i < pos.count; i++) {
+          // geometry points are world coordinates (plane.to3D baked in)
+          const s = project(w.fromBufferAttribute(pos, i));
+          if (prev) {
+            const d = distToSegmentPx(clientX, clientY, prev, s);
+            if (d < bestD) {
+              bestD = d;
+              best = { sketchId: tag.sketchId!, entityId: tag.entityId! };
+            }
+          }
+          prev = paired && i % 2 === 1 ? null : s;
+        }
+      });
+    }
+    return best;
+  }
+
   /** The active sketch's committed curves (rebuilt only when entities change). */
   setActiveSketch(objects: THREE.Object3D[]) {
     this.clearGroup(this.activeSketch);
@@ -419,13 +461,19 @@ export function curveObjects(
   warmText(ents); // fetch glyph outlines for any text entities; repaints when they land
   const out: THREE.Object3D[] = [];
   for (const e of ents) {
+    // every emitted object carries its entity id (committed-curve picking for
+    // the Project tool; SketchOverlay.update adds the sketch id on top)
+    const add = (o: THREE.Object3D) => {
+      o.userData.entityId = e.id;
+      out.push(o);
+    };
     if (e.type === "point") {
-      out.push(pointMarker(plane, e.x, e.y, e.construction ? 0xffa64d : color));
+      add(pointMarker(plane, e.x, e.y, e.construction ? 0xffa64d : color));
       continue;
     }
     if (e.type === "text") {
       const faces = getCachedText(e);
-      if (faces && faces.length) out.push(textObjects(faces, plane, color, !!e.construction));
+      if (faces && faces.length) add(textObjects(faces, plane, color, !!e.construction));
       continue;
     }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
@@ -462,9 +510,9 @@ export function curveObjects(
       const markerColor = projected ? drawColor : e.construction ? 0xffa64d : color;
       g.add(curve, pointMarker(plane, center.x, center.y, markerColor));
       g.renderOrder = 12;
-      out.push(g);
+      add(g);
     } else {
-      out.push(curve);
+      add(curve);
     }
   }
   return out;
@@ -537,6 +585,19 @@ function constructionLine(points: THREE.Vector3[]): THREE.Line {
   line.computeLineDistances(); // required for dashing
   line.renderOrder = 12;
   return line;
+}
+
+/** screen-space distance (px) from a point to the segment a→b */
+function distToSegmentPx(
+  x: number,
+  y: number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2)) : 0;
+  return Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy));
 }
 
 function fillMesh(region: Region, plane: SketchPlane, material: THREE.Material): THREE.Mesh {

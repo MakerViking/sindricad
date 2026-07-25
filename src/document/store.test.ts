@@ -3,7 +3,7 @@
 // again) plus the live edited version. These tests drive DocumentStore against
 // a stub backend that records every document it is asked to rebuild.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { DocumentStore } from "./store";
+import { DocumentStore, prefixFeatures } from "./store";
 import type { CadDocument, Feature, RebuildReply } from "../types";
 import type { GeometryBackend } from "../geometry/client";
 
@@ -150,5 +150,35 @@ describe("projected-entity persistence (byte stability)", () => {
     again.load(migrated);
     expect(again.toJSON()).toBe(migrated);
     vi.useRealTimers();
+  });
+});
+
+describe("prefixFeatures (Project tool's prefix-document rule)", () => {
+  const feats = (): Feature[] => [
+    { id: "s1", type: "sketch", plane: "XY", entities: [] },
+    { id: "e1", type: "extrude", sketch: "s1", distance: 10, operation: "new" },
+    { id: "s2", type: "sketch", plane: "XY", entities: [] },
+    { id: "e2", type: "extrude", sketch: "s2", distance: 5, operation: "join" },
+  ] as Feature[];
+  const none = new Set<string>();
+
+  it("new sketch: everything up to the rollback marker", () => {
+    expect(prefixFeatures(feats(), 4, none).map((f) => f.id)).toEqual(["s1", "e1", "s2", "e2"]);
+    expect(prefixFeatures(feats(), 2, none).map((f) => f.id)).toEqual(["s1", "e1"]);
+  });
+
+  it("editing an existing sketch: strictly before the edited feature", () => {
+    expect(prefixFeatures(feats(), 4, none, "s2").map((f) => f.id)).toEqual(["s1", "e1"]);
+    // the edited feature itself is never included
+    expect(prefixFeatures(feats(), 4, none, "s1").map((f) => f.id)).toEqual([]);
+  });
+
+  it("suppressed features are excluded", () => {
+    expect(prefixFeatures(feats(), 4, new Set(["e1"]), "e2").map((f) => f.id)).toEqual(["s1", "s2"]);
+  });
+
+  it("edited feature past the rollback marker: the marker still truncates", () => {
+    // rolled back to 2, editing s2 (which sits at index 2, outside the build)
+    expect(prefixFeatures(feats(), 2, none, "s2").map((f) => f.id)).toEqual(["s1", "e1"]);
   });
 });

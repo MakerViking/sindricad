@@ -18,6 +18,9 @@ export interface FaceHit {
   kind: "face";
   faceId: number;
   selector: Selector;
+  /** world-space raycast intersection — a point guaranteed ON the face's
+   *  material (its centroid may not be: annular/holed faces). */
+  point: [number, number, number];
 }
 
 export type Hit = EdgeHit | FaceHit;
@@ -66,7 +69,7 @@ export class Picker {
       const normal =
         fHit.normal?.clone().transformDirection(fHit.object.matrixWorld) ??
         new THREE.Vector3(0, 0, 1);
-      face = { kind: "face", faceId, selector: faceSelector(normal, point) };
+      face = { kind: "face", faceId, selector: faceSelector(normal, point), point: [point.x, point.y, point.z] };
     }
 
     // edge only when on the line (or there's no face under the cursor at all)
