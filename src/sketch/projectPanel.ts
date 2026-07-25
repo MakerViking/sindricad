@@ -1,14 +1,14 @@
 // Selection-filter chips for the sketch Project tool: a small floating bar shown
 // while the tool is active (TextPanel's floating-DOM style — there is no shared
 // FloatingPanel widget, and the Sketch Palette is a persistent checkbox list,
-// the wrong shape for a mutually-exclusive mode pair). A "Body silhouette" chip
-// joins these two when silhouette (HLR) projection lands (plan step 7).
+// the wrong shape for a mutually-exclusive mode set).
 
-export type ProjectFilter = "edges" | "sketchCurves";
+export type ProjectFilter = "edges" | "sketchCurves" | "silhouette";
 
 const CHIPS: { key: ProjectFilter; label: string }[] = [
   { key: "edges", label: "Edges & faces" },
   { key: "sketchCurves", label: "Sketch curves" },
+  { key: "silhouette", label: "Body silhouette" },
 ];
 
 export class ProjectPanel {

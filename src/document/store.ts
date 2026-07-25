@@ -3,8 +3,8 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectionUpdate, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
-import type { GeometryBackend, ProjectionResult, ProjectionSource } from "../geometry/client";
+import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
@@ -1033,7 +1033,7 @@ export class DocumentStore {
    *  an existing sketch (sources must live strictly before it), null for a new
    *  sketch (which lands at the rollback marker, so everything up to it counts).
    *  Transport failure resolves to []. */
-  projectGeometry(plane: PlaneSpec, sources: ProjectionSource[], editingId: string | null): Promise<ProjectionResult[]> {
+  projectGeometry(plane: PlaneSpec, sources: ProjectedSource[], editingId: string | null): Promise<ProjectionResult[]> {
     const doc: CadDocument = {
       parameters: this.doc.parameters,
       features: prefixFeatures(this.doc.features, this.rollbackIndex, this.suppressed, editingId),

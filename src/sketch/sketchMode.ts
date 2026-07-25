@@ -38,7 +38,6 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, curveKind, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
-import type { ProjectionSource } from "../geometry/client";
 
 export type SketchTool =
   | "select"
@@ -2339,10 +2338,12 @@ export class SketchMode {
   }
 
   /** hover feedback for the Project tool: model edge/face highlight in Edges &
-   *  faces mode (the model is dimmed 0.25 in sketch view but still raycastable);
-   *  a committed curve highlight via the preview layer in Sketch curves mode. */
+   *  faces AND Body silhouette modes (the model is dimmed 0.25 in sketch view
+   *  but still raycastable; there is no body-level hover in the viewport, so a
+   *  silhouette pick hovers the face/edge that will resolve to its body); a
+   *  committed curve highlight via the preview layer in Sketch curves mode. */
   private projectHover(e: PointerEvent) {
-    if (this.projectPanel.filter === "edges") {
+    if (this.projectPanel.filter !== "sketchCurves") {
       this.overlay.setPreview([]);
       this.viewport.hoverEntity(this.viewport.pickEntity(e.clientX, e.clientY));
       return;
@@ -2369,12 +2370,12 @@ export class SketchMode {
     });
   }
 
-  /** One Project pick: resolve what's under the cursor into a ProjectionSource,
+  /** One Project pick: resolve what's under the cursor into a ProjectedSource,
    *  run the op, land the returned curves as projected entities. Await-guarded
    *  by projectBusy so double-clicks can't race two calls. */
   private async projectClick(e: PointerEvent) {
     if (this.projectBusy || !this.store) return;
-    let source: ProjectionSource | null = null;
+    let source: ProjectedSource | null = null;
     if (this.projectPanel.filter === "sketchCurves") {
       const hit = this.overlay.committedCurveAt(e.clientX, e.clientY, (w) => this.viewport.projectToScreen(w));
       if (!hit) {
@@ -2404,9 +2405,22 @@ export class SketchMode {
     } else {
       const hit = this.viewport.pickEntity(e.clientX, e.clientY);
       if (!hit) return;
-      if (hit.kind === "edge") {
-        const body = hit.line.userData.body as string | undefined;
-        if (!body) return;
+      const body =
+        hit.kind === "edge"
+          ? (hit.line.userData.body as string | undefined)
+          : this.viewport.faceIdToBodyId(hit.faceId);
+      if (!body) return;
+      if (this.projectPanel.filter === "silhouette") {
+        // any face/edge hit resolves to its whole BODY — the HLR outline source
+        const dup = this.entities.some(
+          (x) => x.type === "projected" && x.source.kind === "silhouette" && x.source.body === body,
+        );
+        if (dup) {
+          toast("That body's silhouette is already projected into this sketch");
+          return;
+        }
+        source = { kind: "silhouette", body };
+      } else if (hit.kind === "edge") {
         // NOT hit.selector: the picker's nearest point is the line's mid VERTEX,
         // which for a 2-point straight edge is an ENDPOINT — a corner shared by
         // three edges that "nearest" (center-distance) then resolves to the
@@ -2420,8 +2434,6 @@ export class SketchMode {
           sel: { kind: "edge", by: "nearest", point: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] },
         };
       } else {
-        const body = this.viewport.faceIdToBodyId(hit.faceId);
-        if (!body) return;
         // the raycast hit point re-finds exactly the clicked face: it lies ON
         // the face's material, so by:"nearest" distance is 0 there and > 0 for
         // every other face. NOT the face centroid (which can fall off the
@@ -2477,7 +2489,11 @@ export class SketchMode {
             // the sidecar's deterministic _entity_edges order (the refresh
             // handler's authoritative sibling correspondence).
             { kind: "sketchCurve", sketch: source.sketch, entity: source.entity, ...group, ...(fresh.length > 1 ? { index: i } : {}) }
-          : { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group };
+          : source.kind === "silhouette"
+            ? // whole-body source: no selector; the refresh re-runs HLR and
+              // re-matches the sibling curves (see _recompute_projections)
+              { kind: "silhouette", body: source.body, ...group }
+            : { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group };
       this.entities.push({ type: "projected", id: ids[i]!, source: src, curve });
     });
     this.refreshActive();

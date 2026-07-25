@@ -183,16 +183,16 @@ def test_error_entries():
         {"kind": "edge", "body": "body1",
          "sel": {"kind": "edge", "by": "match",
                  "fp": {"mid": [999, 999, 999], "dir": [1, 0, 0], "length": 1, "curve": "line"}}},
-        {"kind": "silhouette", "body": "body1"},
+        {"kind": "silhouette", "body": "nope"},
     ])["results"]
     assert [r["ok"] for r in res] == [False] * 5, res
     assert "created after this sketch" in res[0]["error"], res[0]
     assert "created after this sketch" in res[1]["error"], res[1]
     assert "no longer exists" in res[2]["error"], res[2]
     assert "ambiguous" in res[3]["error"], res[3]
-    assert "silhouette" in res[4]["error"], res[4]
+    assert "not available here" in res[4]["error"], res[4]
     assert all(r["curves"] == [] for r in res)
-    print("  error entries OK: missing body/sketch/entity, lossy match, silhouette")
+    print("  error entries OK: missing body/sketch/entity, lossy match, silhouette body")
 
 
 def test_curve_close():

@@ -4517,6 +4517,181 @@ def _curve_close(a, b, tol=1e-4):
     return all(abs(a[k] - b[k]) <= tol for k in a if k != "kind")
 
 
+def _curve_reversed(c):
+    """The same ProjectedCurve traversed the other way (HLR can emit the same
+    outline segment with either orientation across buckets/rebuilds)."""
+    k = c.get("kind")
+    if k == "line":
+        return {"kind": "line", "x1": c["x2"], "y1": c["y2"], "x2": c["x1"], "y2": c["y1"]}
+    if k == "arc":
+        return {**c, "x1": c["x2"], "y1": c["y2"], "x2": c["x1"], "y2": c["y1"]}
+    if k == "poly":
+        return {"kind": "poly", "pts": list(reversed(c.get("pts") or []))}
+    return c  # circle: orientation-free
+
+
+def _curve_rep(c):
+    """Three representative points (end, end, mid) for the nearest-curve metric.
+    A circle has no ends: center twice + a radius-displaced point stand in."""
+    k = c.get("kind")
+    if k == "line":
+        return (c["x1"], c["y1"]), (c["x2"], c["y2"]), \
+            ((c["x1"] + c["x2"]) / 2, (c["y1"] + c["y2"]) / 2)
+    if k == "arc":
+        return (c["x1"], c["y1"]), (c["x2"], c["y2"]), (c["mx"], c["my"])
+    if k == "circle":
+        return (c["x"], c["y"]), (c["x"], c["y"]), (c["x"] + c["r"], c["y"])
+    pts = c.get("pts") or [[0.0, 0.0]]
+    return tuple(pts[0]), tuple(pts[-1]), tuple(pts[len(pts) // 2])
+
+
+def _curve_dist(a, b):
+    """Distance between two ProjectedCurves for silhouette nearest-matching:
+    endpoint distances (orientation-insensitive) + midpoint distance. Different
+    kinds never match (inf) — a resized cylinder's silhouette LINE must track a
+    line, not the nearest rim poly."""
+    if a.get("kind") != b.get("kind"):
+        return float("inf")
+    (a1, a2, am), (b1, b2, bm) = _curve_rep(a), _curve_rep(b)
+
+    def d(p, q):
+        return math.hypot(p[0] - q[0], p[1] - q[1])
+
+    return min(d(a1, b1) + d(a2, b2), d(a1, b2) + d(a2, b1)) + d(am, bm)
+
+
+def _curve_close_either(a, b):
+    """_curve_close, orientation-insensitive: `a` matches `b` as-is or reversed."""
+    return _curve_close(a, b) or _curve_close(_curve_reversed(a), b)
+
+
+def _curve_oriented(c, cached):
+    """`c` or its reverse — whichever endpoint order lies nearer `cached`'s.
+    Matching is orientation-insensitive, but the ASSIGNED curve must keep the
+    cached endpoint order: an HLR orientation flip on unchanged geometry would
+    otherwise swap point indices 0/1 under endpoint-attached constraints/dims
+    (and trip the orientation-sensitive emission gate in
+    _recompute_projections)."""
+    (c1, c2, _cm), (q1, q2, _qm) = _curve_rep(c), _curve_rep(cached)
+
+    def d(p, q):
+        return math.hypot(p[0] - q[0], p[1] - q[1])
+
+    if d(c1, q2) + d(c2, q1) < d(c1, q1) + d(c2, q2):
+        return _curve_reversed(c)
+    return c
+
+
+def _project_silhouette(shape, plane):
+    """The visible outline (HLR) of a body projected onto `plane`, as a list of
+    ProjectedCurve dicts in the plane's 2D frame.
+
+    HLRBRep_Algo with an HLRAlgo_Projector built from the sketch plane's exact
+    right-handed frame (gp_Ax2 sets Y = normal x xdir, matching the plane's
+    y_dir) returns edges ALREADY in projector 2D coordinates (x, y, z=0) — no
+    to_local_coords pass; _project_edge_to_plane against Plane.XY reuses the
+    line/circle/arc-exactness + sampled-poly mapping unchanged.
+
+    Buckets: VCompound (visible sharp edges) + OutLineVCompound (surface
+    silhouettes). The probe's seam pitfall — a cylinder seam lying ON a
+    silhouette generator moves that line INTO VCompound — is covered by this
+    union, and probing shows OCCT promotes ANY outline-coincident regular edge
+    the same way (a tangent edge seen edge-on lands in V too). Rg1LineV/RgNLineV
+    are deliberately EXCLUDED: probing shows they only ever carry visible smooth/
+    sewn edges NOT on the outline (a sphere's seam meridian, a tilted cylinder's
+    seam generator) — stray interior curves that would split regions and break
+    the sphere-projects-to-its-exact-circle contract."""
+    from OCP.BRepLib import BRepLib
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+    from OCP.HLRAlgo import HLRAlgo_Projector
+    from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    o, n, x = plane.origin, plane.z_dir, plane.x_dir
+    ax2 = gp_Ax2(gp_Pnt(o.X, o.Y, o.Z), gp_Dir(n.X, n.Y, n.Z), gp_Dir(x.X, x.Y, x.Z))
+    algo = HLRBRep_Algo()
+    algo.Add(shape.wrapped if hasattr(shape, "wrapped") else shape)
+    algo.Projector(HLRAlgo_Projector(ax2))
+    algo.Update()
+    algo.Hide()  # required — without it the visible/hidden buckets are empty
+    hlr = HLRBRep_HLRToShape(algo)
+    curves = []
+    for comp in (hlr.VCompound(), hlr.OutLineVCompound()):
+        if comp is None or comp.IsNull():
+            continue
+        ex = TopExp_Explorer(comp, TopAbs_EDGE)
+        while ex.More():
+            ed = TopoDS.Edge_s(ex.Current())
+            ex.Next()
+            # HLR edges carry only 2D curve-on-surface data; materialize a 3D
+            # curve first — build123d's length/position_at SEGFAULT without it
+            BRepLib.BuildCurves3d_s(ed)
+            c = _project_edge_to_plane(Edge(ed), Plane.XY)
+            if c["kind"] == "poly":
+                xs = [p[0] for p in c["pts"]]
+                ys = [p[1] for p in c["pts"]]
+                if max(xs) - min(xs) < 1e-6 and max(ys) - min(ys) < 1e-6:
+                    continue  # an edge seen end-on projects to a point: no curve
+            # dedupe near-identical curves either way round (HLR emits the same
+            # segment in several buckets for coincident geometry)
+            if any(_curve_close_either(c, q) for q in curves):
+                continue
+            curves.append(c)
+    return curves
+
+
+def _assign_silhouette(sibs, fresh):
+    """Assign one silhouette group's FRESH curve list to its sibling entities
+    (the correspondence rule — documented in _recompute_projections' docstring).
+    Returns {entity_id: curve-or-None}; None = stale. `sibs` arrive shortlex-
+    sorted; `fresh` is None when the body itself no longer resolves."""
+    if not fresh:
+        return {e["id"]: None for e in sibs}
+    remaining = list(fresh)
+    out = {}
+    movers = []
+    for e in sibs:  # pass 1: cached-curve match (steady state / tiny drift)
+        cached = e.get("curve") or {}
+        m = next((c for c in remaining if _curve_close_either(c, cached)), None)
+        if m is not None:
+            out[e["id"]] = _curve_oriented(m, cached)
+            remaining.remove(m)
+        else:
+            movers.append(e)
+    # pass 2: nearest same-kind curve (a resized body's movers track), pairs
+    # consumed in globally ascending _curve_dist order — greedy-per-sibling
+    # would let a shortlex-earlier sibling steal another mover's clearly
+    # nearer curve on an asymmetric move. Exact ties stay deterministic:
+    # (dist, sibling shortlex position, HLR position).
+    pairs = []
+    for i, e in enumerate(movers):
+        cached = e.get("curve") or {}
+        for j, c in enumerate(remaining):
+            dist = _curve_dist(c, cached)
+            if dist < float("inf"):
+                pairs.append((dist, i, j))
+    taken_sibs = set()
+    taken_curves = set()
+    for _dist, i, j in sorted(pairs):
+        if i in taken_sibs or j in taken_curves:
+            continue
+        e = movers[i]
+        out[e["id"]] = _curve_oriented(remaining[j], e.get("curve") or {})
+        taken_sibs.add(i)
+        taken_curves.add(j)
+    unmatched = [e for i, e in enumerate(movers) if i not in taken_sibs]
+    remaining = [c for j, c in enumerate(remaining) if j not in taken_curves]
+    for i, e in enumerate(unmatched):  # pass 3: positional; beyond the fresh set -> stale
+        out[e["id"]] = remaining[i] if i < len(remaining) else None
+    # Fresh curves left with NO sibling are DROPPED: a shape change can grow new
+    # outline curves, but a refresh only updates existing entities — re-run the
+    # Project pick to bring the new curves in (auto-adding entities from a
+    # rebuild refresh is deferred).
+    return out
+
+
 def _recompute_projections(f, ctx):
     """Associative refresh of one sketch's projected entities, run by
     _handle_sketch right after the sketch is built: re-resolve every source
@@ -4542,7 +4717,21 @@ def _recompute_projections(f, ctx):
     shortlex (length then lexicographic, so "e9" < "e10"), their creation
     order — maps to the i-th edge (misassigns once a sibling was deleted and
     the source later moves; index-carrying entities don't). An index beyond
-    the fresh edge count means that edge is gone -> stale."""
+    the fresh edge count means that edge is gone -> stale.
+
+    Silhouette correspondence: a silhouette source has NO per-curve selectors —
+    the source is the whole body, and the fresh HLR curve LIST can change count
+    and order across rebuilds. Each group's siblings (shortlex id order) are
+    matched against the fresh list in three passes, each fresh curve consumed
+    at most once: (1) cached-curve match within _curve_close tolerance (steady
+    state); (2) NEAREST same-kind curve by _curve_dist — endpoint + midpoint
+    distance, pairs consumed in globally ascending order — so a resized
+    cylinder's silhouette lines track their own side; (3) the remaining
+    siblings positionally against the remaining fresh curves. Assigned curves
+    are orientation-normalized to the cached endpoint order (_curve_oriented).
+    Siblings beyond the fresh set go stale; fresh curves with no sibling are
+    DROPPED (re-run the Project pick to pick up new outline curves — auto-add
+    from a refresh is deferred)."""
     ents = [e for e in f.get("entities") or []
             if isinstance(e, dict) and e.get("type") == "projected" and e.get("id")]
     if not ents:
@@ -4563,11 +4752,37 @@ def _recompute_projections(f, ctx):
     for group in sibs_of.values():
         group.sort(key=lambda x: (len(x["id"]), x["id"]))
 
+    # silhouette groups: one fresh HLR curve list per BODY (computed once), each
+    # (body, group) sibling set assigned from its own copy of that list
+    sil_groups = {}
     for e in ents:
-        try:
-            fresh = _fresh_projection(e, plane, prefix, sibs_of, ctx)
-        except Exception:
-            fresh = None  # any resolution/projection failure = lost source
+        s = e.get("source") or {}
+        if s.get("kind") == "silhouette":
+            sil_groups.setdefault((s.get("body"), s.get("group")), []).append(e)
+    sil_assign = {}
+    sil_fresh = {}
+    for (body_id, _g), group in sil_groups.items():
+        group.sort(key=lambda x: (len(x["id"]), x["id"]))
+        if body_id not in sil_fresh:
+            body = ctx.find_body(body_id)
+            try:
+                sil_fresh[body_id] = (
+                    _project_silhouette(body["shape"], plane)
+                    if body is not None and body.get("shape") is not None
+                    else None
+                )
+            except Exception:
+                sil_fresh[body_id] = None  # HLR failure = lost source (lenient)
+        sil_assign.update(_assign_silhouette(group, sil_fresh[body_id]))
+
+    for e in ents:
+        if (e.get("source") or {}).get("kind") == "silhouette":
+            fresh = sil_assign.get(e["id"])
+        else:
+            try:
+                fresh = _fresh_projection(e, plane, prefix, sibs_of, ctx)
+            except Exception:
+                fresh = None  # any resolution/projection failure = lost source
         if fresh is None:
             if not e.get("stale"):
                 ctx.projections.append(
@@ -4582,7 +4797,8 @@ def _recompute_projections(f, ctx):
 def _fresh_projection(e, plane, prefix, sibs_of, ctx):
     """The freshly-projected curve for one projected entity, or None when its
     source no longer resolves against the prefix state (missing body / sketch /
-    entity, ambiguous match, silhouette — step 7)."""
+    entity, ambiguous match). Silhouette entities never reach here — their
+    group-level correspondence runs in _recompute_projections."""
     src = e.get("source") or {}
     kind = src.get("kind")
     if kind in ("edge", "faceBoundary"):
@@ -4630,7 +4846,7 @@ def _fresh_projection(e, plane, prefix, sibs_of, ctx):
         sibs = sibs_of.get((src.get("sketch"), src.get("entity"))) or []
         idx = next((i for i, s in enumerate(sibs) if s is e), 0)
         return fresh[idx] if idx < len(fresh) else None
-    return None  # silhouette (step 7) / unknown kind: unresolvable for now
+    return None  # unknown kind: unresolvable
 
 
 def _collect_datums(document):
@@ -4679,8 +4895,8 @@ def project_geometry(document, plane_spec, sources):
 
 def _project_source(src, plane, document, bodies, datums):
     """Resolve ONE projection source to its [{fp?, curve}] list, or raise with a
-    user-facing message. Source kinds: edge / faceBoundary / sketchCurve now;
-    silhouette (HLR) is a later step and reports itself as unsupported."""
+    user-facing message. Source kinds: edge / faceBoundary / sketchCurve /
+    silhouette (whole-body HLR outline)."""
     kind = src.get("kind")
     if kind in ("edge", "faceBoundary"):
         body = next((b for b in bodies if b["id"] == src.get("body")), None)
@@ -4741,5 +4957,16 @@ def _project_source(src, plane, document, bodies, datums):
             raise ValueError(f'a "{ent.get("type")}" entity has no curve to project')
         return [{"curve": _project_edge_to_plane(src_plane * ed, plane)} for ed in eds]
     if kind == "silhouette":
-        raise ValueError("silhouette projection is not supported yet")
+        body = next((b for b in bodies if b["id"] == src.get("body")), None)
+        if body is None or body.get("shape") is None:
+            raise ValueError(
+                f'source body "{src.get("body")}" is not available here — '
+                "it may have been created after this sketch"
+            )
+        curves = _project_silhouette(body["shape"], plane)
+        if not curves:
+            raise ValueError("the body has no visible silhouette on this plane")
+        # whole-body source: no per-curve fingerprints (refresh re-runs HLR and
+        # re-matches by curve, see _recompute_projections)
+        return [{"curve": c} for c in curves]
     raise ValueError(f"unknown projection source kind: {kind}")

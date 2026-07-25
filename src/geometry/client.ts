@@ -22,12 +22,6 @@ type StatusListener = (connected: boolean) => void;
  *  counters in o/a/e), each a closed 2D polyline in final sketch coordinates. */
 export type TextFace = { outer: [number, number][]; holes: [number, number][][] };
 
-/** A projectGeometry source on the wire: the persisted ProjectedSource shapes
- *  minus silhouette (HLR — a later step; the sidecar's dispatch already rejects
- *  it with a per-source error). Pick-time edge/face sources use a by:"nearest"
- *  selector; refresh-time ones the stored by:"match" fingerprint selector. */
-export type ProjectionSource = Exclude<ProjectedSource, { kind: "silhouette" }>;
-
 /** Per-source outcome of a projectGeometry call. `curves` carries one entry per
  *  resolved edge (a face boundary yields several); `fp` is the sidecar-authored
  *  edge fingerprint for body-edge sources — the caller wraps it into a
@@ -60,9 +54,12 @@ export interface GeometryBackend {
   tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]>;
   /** Project 3D sources (body edges / face boundaries / cross-sketch curves)
    *  onto a sketch plane. `doc` is the timeline PREFIX for that sketch (the
-   *  caller truncates). Strict per-source resolution; whole-call transport
-   *  failure returns []. */
-  projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectionSource[]): Promise<ProjectionResult[]>;
+   *  caller truncates). Sources are the persisted ProjectedSource shapes:
+   *  pick-time edge/face sources use a by:"nearest" selector, refresh-time
+   *  ones the stored by:"match" fingerprint selector, and silhouette sources
+   *  carry just the body id (the whole-body HLR outline needs no selector).
+   *  Strict per-source resolution; whole-call transport failure returns []. */
+  projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]>;
   /** System font family names for the text tool's font picker. */
   listFonts(): Promise<string[]>;
   export(
@@ -633,7 +630,7 @@ export class Geometry implements GeometryBackend {
     return msg.ok ? (msg.result.faces ?? []) : [];
   }
 
-  async projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectionSource[]): Promise<ProjectionResult[]> {
+  async projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]> {
     const msg = await this.call<{ results: ProjectionResult[] }>("projectGeometry", {
       document: doc,
       plane,
