@@ -21,7 +21,9 @@ async def call(ws, op, **kw):
     await ws.send(json.dumps({"id": rid, "op": op, **kw}))
     while True:
         msg = json.loads(await ws.recv())
-        if msg.get("id") == rid:
+        # skip interim {"status":"building"} progress frames (same id as the
+        # request) — like the real client, only the ok/error frame resolves
+        if msg.get("id") == rid and "status" not in msg:
             return msg
 
 async def rebuild(ws, features, params=None):
@@ -31,22 +33,22 @@ async def rebuild(ws, features, params=None):
 def nbodies(r):
     return len(r["result"].get("bodies", [])) if r.get("ok") else None
 
-async def main():
+async def main(token):
     PASS, FAIL = [], []
     def check(name, cond, info=""):
         (PASS if cond else FAIL).append(name)
         print(f"  {'OK ' if cond else 'FAIL'} {name}{(' — ' + info) if info else ''}")
 
-    async with websockets.connect(f"ws://{HOST}:{PORT}", max_size=64 * 1024 * 1024) as ws:
+    async with websockets.connect(f"ws://{HOST}:{PORT}/?token={token}", max_size=64 * 1024 * 1024) as ws:
         # ping
         r = await call(ws, "ping"); check("ping", r.get("ok") and r["result"]["pong"])
 
         # empty doc
-        r = await rebuild(ws, []); check("empty doc", r["ok"] and not r["result"]["mesh"]["positions"])
+        r = await rebuild(ws, []); check("empty doc", r["ok"] and not r["result"]["bodies"])
 
         # sketch + extrude
         r = await rebuild(ws, [sketch_rect("s", 20, 20), {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"}])
-        check("extrude", r["ok"] and nbodies(r) == 1, f"verts={len(r['result']['mesh']['positions'])//3}")
+        check("extrude", r["ok"] and nbodies(r) == 1, f"verts={len(r['result']['bodies'][0]['positions'])//3}")
 
         # primitives + combine cut (cylinder through box)
         feats = [{"id": "bx", "type": "box", "length": 20, "width": 20, "height": 20},
@@ -116,9 +118,10 @@ async def main():
             r = await call(ws, "export", document={"parameters": {}, "features": box20}, format=fmt, path=p)
             check(f"export {fmt}", r["ok"] and os.path.exists(p) and os.path.getsize(p) > 0)
 
-        # error naming still works (bad fillet)
+        # error naming still works (bad fillet) — feature failures don't blank
+        # the doc anymore: ok reply, geometry that built, featureError attached
         r = await rebuild(ws, box20 + [{"id": "bad", "type": "fillet", "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "radius": 100}])
-        check("error names feature", (not r["ok"]) and r["error"].get("feature_id") == "bad")
+        check("error names feature", r["ok"] and r["result"].get("featureError", {}).get("feature_id") == "bad" and nbodies(r) == 1)
 
     print(f"\n  {len(PASS)} passed, {len(FAIL)} failed" + (f": {FAIL}" if FAIL else ""))
     return 0 if not FAIL else 1
@@ -126,6 +129,10 @@ async def main():
 
 def run():
     env = dict(os.environ)
+    # the server has no open mode — hand it a token and connect with it
+    import secrets
+    token = secrets.token_urlsafe(16)
+    env["SINDRI_SIDECAR_TOKEN"] = token
     proc = subprocess.Popen([sys.executable, "server.py"], cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     try:
@@ -141,7 +148,7 @@ def run():
                 break
         else:
             print("server never became ready"); return 1
-        return asyncio.run(main())
+        return asyncio.run(main(token))
     finally:
         proc.terminate()
         try:

@@ -35,8 +35,12 @@ type DocListener = (doc: CadDocument) => void;
 type BuildListener = (state: RebuildState) => void;
 type MetaListener = () => void;
 
-const clone = (d: CadDocument): CadDocument =>
-  JSON.parse(JSON.stringify(d)) as CadDocument;
+// structuredClone beats the old JSON.parse(JSON.stringify()) round-trip on the
+// multi-MB imported-BREP docs this runs on (undo snapshot + cascade draft are
+// the two hot callers). Safe swap: docs are pure JSON data, and no mutator
+// writes an explicit `undefined` onto a doc object (exactOptionalPropertyTypes
+// forbids it), so the `"hiddenBodies" in f` gates see identical shapes.
+const clone = (d: CadDocument): CadDocument => structuredClone(d);
 
 const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
 
@@ -746,7 +750,11 @@ export class DocumentStore {
   }
 
   // --- serialization ---
-  toJSON(): string {
+  /** The full persistable session as a plain object — everything toJSON()
+   *  writes (geometry doc + suppress set, rollback, overlays, palette).
+   *  Autosave embeds this directly in its envelope so the multi-MB document
+   *  is stringified ONCE, not pretty-printed/re-parsed/re-stringified. */
+  toObject(): CadDocument {
     // Persist the geometry doc PLUS the non-geometry project state that lives in
     // the store (suppress set, rollback marker, sketch visibility) so reopening
     // restores the full session. Empty state is omitted to keep files clean.
@@ -758,7 +766,10 @@ export class DocumentStore {
     // reference it, and a synced/customized palette is project state in its own
     // right (the "design in loaded colors" premise) even with zero assignments.
     if (this.bodyColors.size || !this.paletteIsDefault()) out.palette = this.palette;
-    return JSON.stringify(out, null, 2);
+    return out;
+  }
+  toJSON(): string {
+    return JSON.stringify(this.toObject(), null, 2);
   }
   load(json: string) {
     let parsed: CadDocument;

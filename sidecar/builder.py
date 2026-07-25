@@ -3127,14 +3127,18 @@ def _serial_bool(base, tool, kind):
     joining/cutting the ~36 glyph prisms of a sketch text into a body (measured on the
     Basket doc: 1.3s parallel -> 0.23s serial, byte-identical volume + face count). Same
     UnifySameDomain clean and result shape as build123d, so it's a drop-in for the
-    operators. `base`/`tool` must already be Compound/Solid (have `.wrapped`)."""
+    operators. `base`/`tool` must already be Compound/Solid (have `.wrapped`);
+    `tool` may be a LIST of shapes — one N-tool boolean beats a chained per-tool
+    loop, which redoes the whole op + clean per step (O(n²))."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse, BRepAlgoAPI_Cut, BRepAlgoAPI_Common
     from OCP.TopTools import TopTools_ListOfShape
     from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
 
     op = {"fuse": BRepAlgoAPI_Fuse, "cut": BRepAlgoAPI_Cut, "common": BRepAlgoAPI_Common}[kind]()
     la = TopTools_ListOfShape(); la.Append(base.wrapped)
-    lb = TopTools_ListOfShape(); lb.Append(tool.wrapped)
+    lb = TopTools_ListOfShape()
+    for t in tool if isinstance(tool, (list, tuple)) else [tool]:
+        lb.Append(t.wrapped)
     op.SetArguments(la)
     op.SetTools(lb)
     op.SetRunParallel(False)
@@ -3453,13 +3457,13 @@ def _do_combine(f, bodies, find_body, diag=None):
 
     shape = target["shape"]
     before_vol = _try_vol(shape)
+    # _serial_bool, not build123d's +/-/&: a Combine tool is often a compound
+    # of MANY disjoint solids (explode:false import, multi-region extrude) —
+    # exactly the shape class where OCCT's parallel BOP is ~5x slower than
+    # serial (see _serial_bool). Same UnifySameDomain clean, same result.
+    kind = {"join": "fuse", "cut": "cut", "intersect": "common"}[op]
     for t in tools:
-        if op == "join":
-            shape = shape + t["shape"]
-        elif op == "cut":
-            shape = shape - t["shape"]
-        else:  # intersect
-            shape = shape & t["shape"]
+        shape = _serial_bool(_as_compound(shape), _as_compound(t["shape"]), kind)
     # No-op / destructive guards, same volume-eps convention as
     # _boolean_into_bodies. Only the SILENT failure modes raise: a Cut that
     # removed nothing still consumes the tools (the user loses bodies and gains
@@ -3547,15 +3551,38 @@ def _rot_for(axis, deg):
     return Rot(0, 0, deg)
 
 
+def _fuse_pattern_cells(cells):
+    """Union pattern cells. Bbox-DISJOINT cells (the common grid) need no
+    boolean at all: bbox-disjoint ⇒ solid-disjoint, and fusing disjoint solids
+    yields exactly the compound of them — the old incremental `result + cell`
+    chain spent O(n²) full booleans + UnifySameDomain per cell to produce that
+    (measured 1.8s → ~0 on a 10x10 grid). OVERLAPPING cells keep the
+    incremental chain: one N-tool fuse of mutually-overlapping solids measured
+    ~3x SLOWER than the chain (each chain step collapses the intermediate to
+    one solid, shrinking later steps). Touching-exactly counts as overlapping
+    (tolerance guard) so shared faces still merge like before."""
+    if len(cells) == 1:
+        return cells[0]
+    tol = 1e-6
+    boxes = [c.bounding_box() for c in cells]
+    disjoint = all(
+        a.max.X < b.min.X - tol or b.max.X < a.min.X - tol
+        or a.max.Y < b.min.Y - tol or b.max.Y < a.min.Y - tol
+        or a.max.Z < b.min.Z - tol or b.max.Z < a.min.Z - tol
+        for i, a in enumerate(boxes) for b in boxes[i + 1:]
+    )
+    if disjoint:
+        return _as_compound(cells)
+    result = cells[0]
+    for cell in cells[1:]:
+        result = result + cell
+    return result
+
+
 def _pattern_rect(shape, nx, ny, dx, dy):
     """Replicate a body on an nx×ny grid (spacing dx, dy) and union the copies."""
     nx, ny = max(1, int(round(nx))), max(1, int(round(ny)))
-    result = None
-    for i in range(nx):
-        for j in range(ny):
-            cell = Pos(i * dx, j * dy, 0) * shape
-            result = cell if result is None else result + cell
-    return result
+    return _fuse_pattern_cells([Pos(i * dx, j * dy, 0) * shape for i in range(nx) for j in range(ny)])
 
 
 def _pattern_circular(shape, count, total_angle, axis):
@@ -3564,11 +3591,7 @@ def _pattern_circular(shape, count, total_angle, axis):
     count = max(1, int(round(count)))
     full = abs(total_angle - 360) < 1e-6
     step = total_angle / count if full else (total_angle / (count - 1) if count > 1 else 0)
-    result = None
-    for k in range(count):
-        cell = _rot_for(axis, k * step) * shape
-        result = cell if result is None else result + cell
-    return result
+    return _fuse_pattern_cells([_rot_for(axis, k * step) * shape for k in range(count)])
 
 
 def _draft(shape, faces, angle_deg, axis):
@@ -4123,7 +4146,9 @@ def _build_sketch(f, val, datums=None):
         # (build123d's multi-arg fuse) rather than N sequential pairwise fuses: the
         # old `sk = sk + fc` loop was O(N^2) and cost SECONDS on a honeycomb of a few
         # hundred cells. The batch fuse is ~70x faster and yields the identical union
-        # (verified: same area, same extrude+cut volume/face count).
+        # (verified: same area, same extrude+cut volume/face count). This one stays
+        # on build123d's PARALLEL path deliberately: it fuses planar FACES, not the
+        # many-small-disjoint-SOLID class where _serial_bool's serial win applies.
         sk = faces[0].fuse(*faces[1:]) if len(faces) > 1 else faces[0]
         # Disjoint loops (e.g. a honeycomb of many hexagons) make `sk` a ShapeList,
         # which `plane * sk` rejects — normalize to one Compound first.

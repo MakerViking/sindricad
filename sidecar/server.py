@@ -10,10 +10,15 @@ on the asyncio event loop. Two reasons:
     rebuild runs, instead of blocking the loop on a GIL-holding OCCT call;
   * robustness — OCCT lives in another process, so a kernel crash (segfault on a
     bad boolean) can't take the server down; the pool just respawns the worker.
-OCCT itself meshes and booleans in PARALLEL across all cores (occt_smp.configure),
-so one worker already saturates the CPU — hence a single worker (max_workers=1),
-which also avoids oversubscribing the OCCT thread pool. We use the 'spawn' start
-method so the worker is a clean interpreter (fork + OCCT's threads can deadlock).
+ONE worker (max_workers=1), for reasons that are about correctness, not CPU
+saturation: features form a serial dependency chain (no second rebuild can
+usefully overlap), crash isolation needs a disposable process, and we use the
+'spawn' start method because fork + OCCT's threads can deadlock. Meshing still
+fans out across all cores per op (occt_smp.configure), but the boolean hot path
+is deliberately SERIAL per-op (builder._serial_bool — parallel BOP measured
+~5x slower on many-small-tool fuses), so idle cores during a long rebuild are
+expected, not a lost opportunity (audited 2026-07-25: parallel body chains /
+speculative tessellation refuted — see .fable/parallelism-audit-2026-07-25.md).
 
 Lifecycle: on Linux we ask the kernel to SIGTERM us if our parent (the Tauri
 shell) dies (PR_SET_PDEATHSIG), so we never orphan. We print `LISTENING <port>`
@@ -170,6 +175,78 @@ EXPORT_TRIANGLE_WARN = 500_000
 # (trivial warm edits don't spam the store; anything that cost real time is
 # worth the write).
 _MESH_PERSIST_MIN_MS = 50.0
+
+# Export-grade tessellation (the 0.1 viewport default is visibly faceted on a
+# printed part). Export meshes get their own cache, keyed exactly like the
+# viewport one in _body_payload: RAM shape-identity + texture spec, then a disk
+# artifact under meshKey + export tolerance — so re-exporting an unchanged
+# document skips re-tessellating every body at 0.02mm.
+_EXPORT_TOL = 0.02
+_EXPORT_ANG_TOL = 0.3
+_EXPORT_MESH_CACHE = {}  # body id -> {"shape", "texture_key", "positions", "indices"}
+
+
+def _export_mesh(b):
+    """Export-grade (positions, indices) for one live body, three-tier cached
+    (RAM identity -> disk artifact -> compute + persist), mirroring
+    _body_payload. Worker-side only."""
+    import pickle
+
+    from tessellate import tessellate
+    from texture import resolve_body_textures
+
+    bid, sh = b["id"], b["shape"]
+    if b.get("_textures"):
+        from texture import CODE_VERSION as _tex_ver
+        texture_key = "v%d:%s" % (_tex_ver, json.dumps(b.get("_textures"), sort_keys=True))
+    else:
+        texture_key = None
+    ent = _EXPORT_MESH_CACHE.get(bid)
+    if ent is not None and ent["shape"] is sh and ent["texture_key"] == texture_key:
+        return ent["positions"], ent["indices"]
+
+    mesh_key = None
+    if b.get("meshKey"):
+        mesh_key = "%s-export-t%s" % (b["meshKey"], _EXPORT_TOL)
+        if texture_key:
+            mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
+    mesh = None
+    if mesh_key:
+        try:
+            import geomstore
+            raw = geomstore.default_store().get_mesh(mesh_key)
+            if raw is not None:
+                mesh = pickle.loads(raw)  # trusted local cache, worker-only
+        except Exception:
+            mesh = None
+    if mesh is None:
+        t0 = time.monotonic()
+        textures = resolve_body_textures(b) if b.get("_textures") else None
+        pos, idx, _fids = tessellate(
+            sh, tolerance=_EXPORT_TOL, angular_tolerance=_EXPORT_ANG_TOL,
+            textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
+        )
+        mesh = (pos, idx)
+        if mesh_key and (time.monotonic() - t0) * 1000.0 >= _MESH_PERSIST_MIN_MS:
+            try:
+                import geomstore
+                geomstore.default_store().put_mesh(mesh_key, pickle.dumps(mesh, 5))
+            except Exception:
+                pass
+    _EXPORT_MESH_CACHE[bid] = {
+        "shape": sh, "texture_key": texture_key,
+        "positions": mesh[0], "indices": mesh[1],
+    }
+    return mesh[0], mesh[1]
+
+
+def _prune_export_cache(live):
+    """Drop export-cache entries for deleted/consumed bodies — a stale entry
+    pins its OCCT shape in RAM for the worker's lifetime."""
+    ids = {b["id"] for b in live}
+    for k in list(_EXPORT_MESH_CACHE):
+        if k not in ids:
+            del _EXPORT_MESH_CACHE[k]
 
 # Wire default (also the literal fallback in the "rebuild"/"computeAll" handlers
 # below) — the reference point our size-adaptive scaling is relative to.
@@ -506,14 +583,13 @@ def _export_job(document, fmt, path, body=None, separate=False):
     import re
     from builder import rebuild_cached
     from exporters import export
-    from tessellate import tessellate
-    from texture import resolve_body_textures
     import mesh_writers
 
     # rebuild_cached, not rebuild: export runs in the SAME long-lived worker as
     # edits, so a warm cache makes this ~0 s instead of a gratuitous full rebuild
     part, errors, bodies = rebuild_cached(document)
     live = [b for b in bodies if b.get("shape") is not None]
+    _prune_export_cache(live)
     # Export what BUILT, and warn about what didn't — never silently. Refusing
     # to export ANYTHING because one feature errored blocked the whole
     # import-repair→print loop (one stubborn face held nine good bodies
@@ -540,16 +616,14 @@ def _export_job(document, fmt, path, body=None, separate=False):
         and write it via mesh_writers. Raises past the triangle hard cap — a
         document-wide safety net so a pathological scale/depth combo can't
         allocate an unbounded mesh."""
-        positions, mindices = [], []
+        pos_parts, idx_parts, vbase = [], [], 0
         for b in target_bodies:
-            textures = resolve_body_textures(b) if b.get("_textures") else None
-            pos, idx, _fids = tessellate(
-                b["shape"], tolerance=0.02, angular_tolerance=0.3,
-                textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
-            )
-            vbase = len(positions) // 3
-            positions.extend(pos)
-            mindices.extend(i + vbase for i in idx)
+            pos, idx = _export_mesh(b)
+            pos_parts.append(np.asarray(pos, dtype=np.float64))
+            idx_parts.append(np.asarray(idx, dtype=np.int64) + vbase)
+            vbase += len(pos_parts[-1]) // 3
+        positions = np.concatenate(pos_parts) if pos_parts else np.empty(0)
+        mindices = np.concatenate(idx_parts) if idx_parts else np.empty(0, dtype=np.int64)
         ntri = len(mindices) // 3
         if ntri > EXPORT_TRIANGLE_HARD_CAP:
             raise ValueError(
@@ -610,11 +684,10 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     features become warnings; only zero live bodies is a hard error."""
     from builder import rebuild_cached
     from project3mf import sanitize_inputs, write_project_3mf
-    from tessellate import tessellate
-    from texture import resolve_body_textures
 
     part, errors, bodies = rebuild_cached(document)
     live = [b for b in bodies if b.get("shape") is not None]
+    _prune_export_cache(live)
     if not live:
         if errors:
             e = errors[0]
@@ -625,13 +698,9 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     meshed = []
     for b in live:
         # Export-grade tolerance — the viewport default (0.1) is visibly faceted
-        # on a printed part.
-        textures = resolve_body_textures(b) if b.get("_textures") else None
-        positions, indices, _face_ids = tessellate(
-            b["shape"], tolerance=0.02, angular_tolerance=0.3,
-            textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
-        )
-        if not indices:
+        # on a printed part. Cached across exports of an unchanged body.
+        positions, indices = _export_mesh(b)
+        if not len(indices):
             continue  # degenerate body with no triangulation — skip, like exports do
         meshed.append(
             {"id": b["id"], "name": b["name"], "positions": positions, "indices": indices}

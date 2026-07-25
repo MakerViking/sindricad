@@ -185,7 +185,7 @@ def _height_voronoi(u, v, scale, seed):
     gv = vmin - pad + scale * (iv + jitter[:, :, 1])
     pts = np.stack([gu.ravel(), gv.ravel()], axis=1)
     tree = cKDTree(pts)
-    d, _ = tree.query(np.stack([u, v], axis=1))
+    d, _ = tree.query(np.stack([u, v], axis=1), workers=-1)
     return np.clip(d / (scale * 0.5), 0.0, 1.0)
 
 
@@ -394,7 +394,7 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     G_all = np.stack([gu * ca + gv * sa, -gu * sa + gv * ca], axis=1)  # inverse rotation
     inside = _points_in_polygon(G_all, ring_a, ring_b)
     bnd_ids = np.unique(np.asarray(boundary, dtype=np.int64).ravel())
-    d_bnd, _ = cKDTree(P_mm[bnd_ids]).query(G_all)
+    d_bnd, _ = cKDTree(P_mm[bnd_ids]).query(G_all, workers=-1)
     ni, nj = len(gx), len(gy)
     kept = (inside & (d_bnd > 0.6 * spacing)).reshape(ni, nj)
 
@@ -561,7 +561,7 @@ def _boundary_taper(pts_arr, tris, inset_mm):
     from scipy.spatial import cKDTree
 
     endpoints = pts_arr[np.unique(np.asarray(boundary, dtype=np.int64).ravel())]
-    d, _ = cKDTree(endpoints).query(pts_arr)
+    d, _ = cKDTree(endpoints).query(pts_arr, workers=-1)  # exact same results, all cores
     if inset_mm <= 1e-9:
         return (d > 1e-9).astype(np.float64), edge_count
     return _smoothstep(np.clip(d / inset_mm, 0.0, 1.0)), edge_count

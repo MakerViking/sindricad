@@ -54,7 +54,10 @@ fn slot_file(app: &tauri::AppHandle, slot: &str) -> Result<std::path::PathBuf, S
 }
 
 #[tauri::command]
-fn recovery_write(app: tauri::AppHandle, slot: String, json: String) -> Result<(), String> {
+// async: Tauri runs sync commands on the MAIN thread — a multi-MB snapshot
+// write would stall the UI for its full fs time. async moves it to the runtime
+// pool; the tmp-write + rename stays atomic either way.
+async fn recovery_write(app: tauri::AppHandle, slot: String, json: String) -> Result<(), String> {
     let path = slot_file(&app, &slot)?;
     let tmp = path.with_extension("sindri.tmp");
     std::fs::write(&tmp, json).map_err(|e| e.to_string())?;

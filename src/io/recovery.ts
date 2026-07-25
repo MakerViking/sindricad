@@ -26,7 +26,7 @@ export function slotFor(path: string | null): string {
 interface Envelope {
   source: string | null; // where the document was last saved (null = untitled)
   savedAt: number;
-  doc: unknown; // the full store.toJSON() payload
+  doc: unknown; // the full store.toObject() payload
 }
 
 export function installAutosave(store: DocumentStore) {
@@ -44,13 +44,18 @@ export function installAutosave(store: DocumentStore) {
     if (!store.dirty || writing) return;
     writing = true;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
+      // ONE compact stringify of the whole envelope (was: pretty-print →
+      // parse → re-stringify, three passes over a possibly multi-MB doc) —
+      // and synchronously BEFORE any await, so the snapshot can't see a
+      // half-applied edit that lands while we're suspended.
       const env: Envelope = {
         source: store.filePath,
         savedAt: Date.now(),
-        doc: JSON.parse(store.toJSON()),
+        doc: store.toObject(),
       };
-      await invoke("recovery_write", { slot: slotFor(store.filePath), json: JSON.stringify(env) });
+      const json = JSON.stringify(env);
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("recovery_write", { slot: slotFor(store.filePath), json });
       failCount = 0;
       warned = false;
     } catch (e) {
