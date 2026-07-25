@@ -11,6 +11,7 @@ vi.mock("@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url", () => ({
 }));
 
 import { compileAndSolve, constraintIndexOf } from "./sketchSolve";
+import { breakLink } from "./modify";
 import type { ResolvedEntity } from "./snap";
 import type { ProjectedCurve, SketchConstraint } from "../types";
 
@@ -190,5 +191,60 @@ describe("projected geometry compiles as fixed solver primitives", () => {
     const free = await compileAndSolve(ents, [], { fromX: 20, fromY: 0, toX: 25, toY: 5 });
     expect(free.dragRefused).toBeUndefined();
     expect(free.entities.find((e) => e.id === "u")).toMatchObject({ x2: 25, y2: 5 });
+  });
+});
+
+describe("Break Link — constraints survive the projected→native conversion", () => {
+  it("a dim + coincident to a broken (now native) line still resolve, and the line drags", async () => {
+    const constraints: SketchConstraint[] = [
+      { type: "coincident", e1: "u", p1: 0, e2: "pl", p2: 1 },
+      { type: "p2pDistance", e1: "u", p1: 1, e2: "pl", p2: 0, value: 50 },
+    ];
+    const before = [projected("pl", { kind: "line", x1: 0, y1: 0, x2: 40, y2: 0 }), line("u", 40, 0, 55, 5)];
+    const r1 = await compileAndSolve(before, constraints);
+    expect(r1.ok).toBe(true);
+    expect(r1.conflicts).toEqual([]);
+
+    // Break Link: same id, native line — the constraints keep their targets
+    const broken = breakLink(r1.entities, new Set(["pl"]));
+    expect(broken[0]).toMatchObject({ type: "line", id: "pl" });
+    const r2 = await compileAndSolve(broken, constraints);
+    expect(r2.ok).toBe(true);
+    expect(r2.conflicts).toEqual([]);
+    // fixed→free: the ex-projected line's 4 DOF joined the sketch (never over-constrains)
+    expect(r2.dof).toBeGreaterThan(r1.dof);
+
+    // dragging the ex-projected endpoint now WORKS (it was refused while linked)
+    const r3 = await compileAndSolve(broken, constraints, { fromX: 0, fromY: 0, toX: -5, toY: 3 });
+    expect(r3.dragRefused).toBeUndefined();
+    const dragged = r3.entities.find((e) => e.id === "pl");
+    if (dragged?.type !== "line") throw new Error("line lost");
+    expect(dragged.x1).toBeCloseTo(-5, 6);
+    expect(dragged.y1).toBeCloseTo(3, 6);
+  });
+
+  it("a p2p dim to a broken closed poly (now C0-closed spline) still resolves at index 0", async () => {
+    const closed: ProjectedCurve = { kind: "poly", pts: [[0, 0], [4, 4], [8, 0], [0, 0]] };
+    const constraints: SketchConstraint[] = [
+      { type: "p2pDistance", e1: "u", p1: 0, e2: "pq", p2: 0, value: 10 },
+    ];
+    const ents = [projected("pq", closed), line("u", 10, 0, 20, 0)];
+    const r1 = await compileAndSolve(ents, constraints);
+    expect(r1.ok).toBe(true);
+    expect(r1.conflicts).toEqual([]);
+
+    const broken = breakLink(ents, new Set(["pq"]));
+    expect(broken[0]).toMatchObject({ type: "spline", id: "pq" });
+    const r2 = await compileAndSolve(broken, constraints);
+    expect(r2.ok).toBe(true);
+    expect(r2.conflicts).toEqual([]);
+    const u = r2.entities.find((e) => e.id === "u");
+    if (u?.type !== "line") throw new Error("line lost");
+    // the dim held against the spline's endpoint 0 (same location the closed
+    // poly exposed as its one addressable point)
+    const sp = r2.entities.find((e) => e.id === "pq");
+    if (sp?.type !== "spline") throw new Error("spline lost");
+    const p0 = sp.points[0]!;
+    expect(Math.hypot(u.x1 - p0.x, u.y1 - p0.y)).toBeCloseTo(10, 5);
   });
 });

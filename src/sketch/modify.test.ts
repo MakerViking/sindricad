@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { trimEntity, breakAt, extendLine, chamferCorner, offsetEntity, offsetLineChain } from "./modify";
+import { trimEntity, breakAt, extendLine, chamferCorner, offsetEntity, offsetLineChain, breakLink } from "./modify";
 import type { ResolvedEntity } from "./snap";
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -149,5 +149,57 @@ describe("offsetLineChain", () => {
       { type: "line", id: "C", x1: 10, y1: 0, x2: 20, y2: 0 }, // T-junction at (10,0)
     ];
     expect(offsetLineChain(ents, 0, 2)).toBeNull();
+  });
+});
+
+describe("breakLink — projected → native, same id", () => {
+  const SRC = { kind: "sketchCurve", sketch: "s0", entity: "e0" } as const;
+  const proj = (id: string, curve: any, extra: object = {}): ResolvedEntity =>
+    ({ type: "projected", id, source: SRC, curve, ...extra }) as ResolvedEntity;
+
+  it("maps line/arc/circle curves onto the native field shapes", () => {
+    const ents: ResolvedEntity[] = [
+      proj("L", { kind: "line", x1: 1, y1: 2, x2: 3, y2: 4 }),
+      proj("A", { kind: "arc", x1: 5, y1: 0, x2: -5, y2: 0, mx: 0, my: 5 }),
+      proj("C", { kind: "circle", x: 7, y: 8, r: 2.5 }), // note: r → radius
+    ];
+    const out = breakLink(ents, new Set(["L", "A", "C"]));
+    expect(out[0]).toEqual({ type: "line", id: "L", x1: 1, y1: 2, x2: 3, y2: 4 });
+    expect(out[1]).toEqual({ type: "arc", id: "A", x1: 5, y1: 0, x2: -5, y2: 0, mx: 0, my: 5 });
+    expect(out[2]).toEqual({ type: "circle", id: "C", x: 7, y: 8, radius: 2.5 });
+  });
+
+  it("drops source/stale, carries construction", () => {
+    const ents: ResolvedEntity[] = [
+      proj("S", { kind: "line", x1: 0, y1: 0, x2: 1, y2: 0 }, { stale: true, construction: true }),
+    ];
+    const out = breakLink(ents, new Set(["S"]));
+    // exact shape: no source, no stale, no leftover projected-only fields
+    expect(out[0]).toEqual({ type: "line", id: "S", x1: 0, y1: 0, x2: 1, y2: 0, construction: true });
+  });
+
+  it("poly → spline through the same points; closed poly keeps its closing point", () => {
+    const open: [number, number][] = [[0, 0], [5, 1], [10, 0]];
+    const closed: [number, number][] = [[0, 0], [5, 5], [10, 0], [0, 0]];
+    const out = breakLink(
+      [proj("P", { kind: "poly", pts: open }), proj("Q", { kind: "poly", pts: closed })],
+      new Set(["P", "Q"]),
+    );
+    expect(out[0]).toEqual({ type: "spline", id: "P", points: [{ x: 0, y: 0 }, { x: 5, y: 1 }, { x: 10, y: 0 }] });
+    // C0-closed spline: first == last point survives, so the closed poly's one
+    // addressable endpoint (index 0, projEndSamples) still resolves
+    expect(out[1]).toEqual({
+      type: "spline", id: "Q",
+      points: [{ x: 0, y: 0 }, { x: 5, y: 5 }, { x: 10, y: 0 }, { x: 0, y: 0 }],
+    });
+  });
+
+  it("touches only the listed ids; native entities pass through", () => {
+    const native: ResolvedEntity = { type: "line", id: "n", x1: 0, y1: 0, x2: 1, y2: 1 };
+    const kept = proj("keep", { kind: "line", x1: 0, y1: 0, x2: 2, y2: 0 });
+    const out = breakLink([native, kept, proj("go", { kind: "circle", x: 0, y: 0, r: 1 })], new Set(["go"]));
+    expect(out[0]).toBe(native);
+    expect(out[1]).toBe(kept); // sibling stays linked — Break Link is per-entity
+    expect(out[2]!.type).toBe("circle");
   });
 });

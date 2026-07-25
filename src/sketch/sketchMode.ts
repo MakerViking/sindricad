@@ -18,7 +18,7 @@ import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, asLineSeg, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
-import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine, PROJECTED_FIXED_MSG } from "./modify";
+import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { isPlainNumber, parseField } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
@@ -34,7 +34,7 @@ import { detectRegions, rectCorners } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
-import { contextMenu, dismissContextMenu } from "../ui/menu";
+import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, curveKind, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -1339,9 +1339,7 @@ export class SketchMode {
     // entity patterns replicate the selection — drop projected reference
     // geometry from the sources BEFORE PatternFlow snapshots them
     if (ENTITY_PATTERNS.has(this.tool)) {
-      const projected = new Set(
-        this.entities.filter((e) => e.type === "projected" && this.selected.has(e.id)).map((e) => e.id),
-      );
+      const projected = this.selectedProjectedIds();
       if (projected.size) {
         for (const id of projected) this.selected.delete(id);
         toast(PROJECTED_FIXED_MSG);
@@ -1662,8 +1660,17 @@ export class SketchMode {
       this.dim.updateFromCursor({ diameter: cur }); // seed with the current diameter
     } else if (e.type === "arc") {
       this.showRadiusDim(e);
+    } else if (e.type === "projected" && asLineSeg(e)) {
+      // reference line: no driving dim on fixed geometry, but it IS a valid
+      // angle operand — arm the flow above so a second line click dims the angle
+      this.dimLineFirst = e.id;
+      toast("Reference line: click another line for the angle between them, or a point first for a distance");
+    } else {
+      // no single driving dim on fixed reference geometry — its size is the
+      // source's. Dims TO it (p2p/p2l/angle) attach via the flows above.
+      // guardProjected no-ops for rectangles/splines: no single driving dim in v1
+      this.guardProjected(e);
     }
-    // rectangles/splines: no single driving dim in v1
   }
 
   /** Angular driving dimension between two lines (native, or projected as a
@@ -2108,9 +2115,27 @@ export class SketchMode {
     if (!this.selected.size) return; // nothing to act on → let nav handle it
     e.preventDefault();
     const n = this.selected.size;
-    contextMenu(e.clientX, e.clientY, [
+    const linked = this.selectedProjectedIds().size;
+    const items: CtxItem[] = [
+      ...(linked
+        ? [{ label: linked > 1 ? `Break Link (${linked})` : "Break Link", onClick: () => this.breakSelectedLinks() }]
+        : []),
       { label: n > 1 ? `Delete ${n} entities` : "Delete", danger: true, onClick: () => this.deleteSelected() },
-    ]);
+    ];
+    contextMenu(e.clientX, e.clientY, items);
+  }
+
+  /** Break Link (context menu): the selected projected entities become native
+   *  geometry with the SAME ids — attached constraints/dims stay valid, the
+   *  geometry unfreezes, and the associative refresh skips them from now on
+   *  (they are no longer type "projected"). Breaking one member of a
+   *  multi-curve group (a face boundary's siblings) breaks only that member —
+   *  the others stay linked (Fusion behavior). */
+  private breakSelectedLinks() {
+    const ids = this.selectedProjectedIds();
+    if (!ids.size) return;
+    this.entities = breakLink(this.entities, ids);
+    this.afterModify(); // selection stays: the entities still exist, now native
   }
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
@@ -2171,6 +2196,13 @@ export class SketchMode {
     if (e?.type !== "projected") return false;
     toast(PROJECTED_FIXED_MSG);
     return true;
+  }
+
+  /** ids of the currently-selected projected (linked reference) entities. */
+  private selectedProjectedIds(): Set<string> {
+    return new Set(
+      this.entities.filter((e) => e.type === "projected" && this.selected.has(e.id)).map((e) => e.id),
+    );
   }
 
   /** replace each selected entity with map(e) (flattened); others unchanged. Owns

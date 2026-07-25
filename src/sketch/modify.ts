@@ -21,6 +21,34 @@ const v = (x: number, y: number) => new THREE.Vector2(x, y);
  *  modify/transform/constraint seam that refuses to touch it shows this. */
 export const PROJECTED_FIXED_MSG = "Projected geometry is fixed — Break Link to edit it";
 
+/** Break Link (Fusion): convert the given projected entities to native
+ *  geometry KEEPING their ids, so attached constraints/dims stay valid — and
+ *  since they go fixed→free, the sketch can never become over-constrained by
+ *  the conversion. The source/stale link fields are dropped; construction
+ *  carries over. A closed poly (first sample == last, the projEndSamples
+ *  closure rule) becomes a C0-closed spline: the duplicate closing point is
+ *  kept, so endpoint index 0 — the one addressable point a closed poly
+ *  exposed — still resolves (index 1 lands on the coincident closing point,
+ *  which the solver merges back into it). Non-projected / unlisted entities
+ *  pass through untouched. */
+export function breakLink(ents: ResolvedEntity[], ids: ReadonlySet<string>): ResolvedEntity[] {
+  return ents.map((e): ResolvedEntity => {
+    if (e.type !== "projected" || !ids.has(e.id)) return e;
+    const cv = e.curve;
+    const base = { id: e.id, ...constr(e) };
+    switch (cv.kind) {
+      case "line":
+        return { type: "line", ...base, x1: cv.x1, y1: cv.y1, x2: cv.x2, y2: cv.y2 };
+      case "arc":
+        return { type: "arc", ...base, x1: cv.x1, y1: cv.y1, x2: cv.x2, y2: cv.y2, mx: cv.mx, my: cv.my };
+      case "circle":
+        return { type: "circle", ...base, x: cv.x, y: cv.y, radius: cv.r };
+      case "poly":
+        return { type: "spline", ...base, points: cv.pts.map(([x, y]) => ({ x, y })) };
+    }
+  });
+}
+
 const TAU = Math.PI * 2;
 /** CCW angular distance from `from` to `to`, always in [0, TAU) */
 const ccwDelta = (from: number, to: number) => (((to - from) % TAU) + TAU) % TAU;

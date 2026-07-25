@@ -40,11 +40,11 @@ optional `diag` accumulator, so the rebuild always completes and downstream tool
 can see which selections were shaky. It returns nothing only when the body has no
 candidates at all.
 
-NOTE: `by:"match"` and `by:"tangentChain"` are fully implemented and covered by
-test_selector_v2.py, but the shipping frontend does not emit them yet — it still
-only sends legacy `axis`/`normal`/`nearest`/`all` selectors (deferred: persistent
-edge references need a stable id scheme on the TS side first). Don't go hunting
-for a frontend caller; there isn't one yet.
+NOTE: the frontend now emits `by:"match"` edge selectors — the Project tool
+persists sidecar-authored fingerprints as the source reference of projected
+sketch entities (builder._recompute_projections resolves them on every rebuild,
+and the projectGeometry op authors them). `by:"tangentChain"` is implemented and
+covered by test_selector_v2.py but still has no frontend caller.
 """
 
 import json
