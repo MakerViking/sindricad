@@ -23,10 +23,15 @@ export function openParamsDialog(store: DocumentStore): void {
   });
   el.classList.add("params-dialog");
   render(store, el);
-  // live refresh (a param edit elsewhere, undo, load) — but never yank the DOM
-  // out from under an in-dialog edit in progress
+  // live refresh (async commits landing, undo, load) — but never clobber an
+  // edit in progress. Focus alone is the wrong guard (commits land async while
+  // the dialog keeps focus); track uncommitted KEYSTROKES instead: typing sets
+  // the flag, the change event (Enter/blur = commit or revert) clears it.
+  let editing = false;
+  el.addEventListener("input", () => (editing = true), true);
+  el.addEventListener("change", () => (editing = false), true);
   unsubscribe = store.onDocChange(() => {
-    if (!el.contains(document.activeElement)) render(store, el);
+    if (!editing) render(store, el);
   });
 }
 
