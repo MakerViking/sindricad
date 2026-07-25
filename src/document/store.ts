@@ -4,6 +4,7 @@
 // listeners (viewport, timeline, tree).
 
 import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import { applyProjectionUpdate } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import * as params from "../params/engine";
@@ -430,11 +431,7 @@ export class DocumentStore {
       const entities = f.entities.map((e) => {
         if (e.type !== "projected" || e.id === undefined) return e;
         const u = byEntity.get(e.id);
-        if (!u) return e;
-        if (u.stale) return { ...e, stale: true as const };
-        const next = { ...e, curve: u.curve };
-        delete next.stale; // omit-when-false discipline (byte stability)
-        return next;
+        return u ? applyProjectionUpdate(e, u) : e;
       });
       let nf: Extract<Feature, { type: "sketch" }> = { ...f, entities };
       const solved = await this.solveConstrainedSketch(nf, this.doc.parameters);

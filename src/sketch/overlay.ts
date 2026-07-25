@@ -19,8 +19,8 @@ import {
   type Region,
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
-import { dimensionSegments } from "./entityDims";
-import { circumcenter } from "./arc";
+import { dimensionSegments, asRound } from "./entityDims";
+import { distToSeg } from "./geom2d";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
 import type { SnapKind } from "./snap";
@@ -399,7 +399,7 @@ export class SketchOverlay {
           // geometry points are world coordinates (plane.to3D baked in)
           const s = project(w.fromBufferAttribute(pos, i));
           if (prev) {
-            const d = distToSegmentPx(clientX, clientY, prev, s);
+            const d = distToSeg(prev, s, { x: clientX, y: clientY });
             if (d < bestD) {
               bestD = d;
               best = { sketchId: tag.sketchId!, entityId: tag.entityId! };
@@ -490,21 +490,9 @@ export function curveObjects(
       !projected && e.construction ? constructionLine(pts) : polyline(pts, drawColor);
     // Circles/arcs (native or projected) get a visible center "+": the center is
     // a snap target and the dimension tool's position handle — invisible, nobody
-    // finds it. Grouped so the one-object-per-entity contract holds.
-    const center =
-      e.type === "circle"
-        ? { x: e.x, y: e.y }
-        : e.type === "arc"
-          ? circumcenter({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 }, { x: e.mx, y: e.my })
-          : projected?.curve.kind === "circle"
-            ? { x: projected.curve.x, y: projected.curve.y }
-            : projected?.curve.kind === "arc"
-              ? circumcenter(
-                  { x: projected.curve.x1, y: projected.curve.y1 },
-                  { x: projected.curve.x2, y: projected.curve.y2 },
-                  { x: projected.curve.mx, y: projected.curve.my },
-                )
-              : null;
+    // finds it. Grouped so the one-object-per-entity contract holds. asRound is
+    // the one center rule (incl. circumcenter for projected arcs).
+    const center = asRound(e);
     if (center) {
       const g = new THREE.Group();
       const markerColor = projected ? drawColor : e.construction ? 0xffa64d : color;
@@ -585,19 +573,6 @@ function constructionLine(points: THREE.Vector3[]): THREE.Line {
   line.computeLineDistances(); // required for dashing
   line.renderOrder = 12;
   return line;
-}
-
-/** screen-space distance (px) from a point to the segment a→b */
-function distToSegmentPx(
-  x: number,
-  y: number,
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-): number {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 > 0 ? Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2)) : 0;
-  return Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy));
 }
 
 function fillMesh(region: Region, plane: SketchPlane, material: THREE.Material): THREE.Mesh {

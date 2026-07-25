@@ -343,7 +343,11 @@ export async function compileAndSolve(
   // the solver's own diagnosis uses.
   const conflicts = [...r.conflicts];
   const redundant = [...r.redundant];
-  {
+  // No fixed points (no projected geometry, no `fix`) ⇒ no constraint can be
+  // inert (every inertResidual arm requires fx/fxLine/fxRound operands, and
+  // projRounds is only ever populated alongside fixedPts) — skip the whole
+  // classification pass on ordinary sketches, incl. every drag frame.
+  if (fixedPts.size) {
     // mm (radians for angles) — comfortably above the residual floor left by the
     // sidecar's 6-decimal curve rounding (a p2p distance between rounded points
     // can be off by ~1.4e-6 even when nominally exact), and matching its 1e-4 mm

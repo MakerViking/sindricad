@@ -1569,6 +1569,29 @@ _FEATURE_HANDLERS = {
 }
 
 
+def _make_val(params):
+    """A value resolver over one document's parameter table: a parameter name
+    resolves to its value; a numeric literal passes through.
+
+    Any other string is a hard error: the frontend evaluates expressions and
+    ships plain numbers, so an unresolved string here would otherwise leak
+    into OCCT as garbage (crash or silent junk geometry). In rebuild() the
+    raise is caught by the per-feature error handler -> red chip, build
+    continues; project_geometry surfaces it as a per-source error entry."""
+
+    def val(x):
+        if isinstance(x, str):
+            if x in params:
+                return params[x]
+            raise ValueError(
+                f'unresolved parameter or expression "{x}" — expected a number '
+                f"(expressions are evaluated by the app before building)"
+            )
+        return x
+
+    return val
+
+
 def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist=None,
             projections=None):
     """Return (part, errors, bodies).
@@ -1611,21 +1634,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
         bid for bid, vis in (document.get("bodyVisibility") or {}).items() if not vis
     )
 
-    def val(x):
-        """Resolve a parameter name to its value, or pass a numeric literal through.
-
-        Any other string is a hard error: the frontend evaluates expressions and
-        ships plain numbers, so an unresolved string here would otherwise leak
-        into OCCT as garbage (crash or silent junk geometry). The raise is
-        caught by the per-feature error handler -> red chip, build continues."""
-        if isinstance(x, str):
-            if x in params:
-                return params[x]
-            raise ValueError(
-                f'unresolved parameter or expression "{x}" — expected a number '
-                f"(expressions are evaluated by the app before building)"
-            )
-        return x
+    val = _make_val(params)
 
     sketches = {}
     datums = {}  # datumPlane feature id -> PlaneSpec (resolved lazily by _plane_of)
@@ -3939,7 +3948,7 @@ def _entity_edges(e, val):
     by _build_sketch and projection sources, so a projected sketch curve is
     byte-for-byte the geometry the source sketch builds. Raises on degenerate
     input (per-feature error handling stays with the caller); returns [] for
-    entity kinds with no curve boundary (point/text/projected/unknown)."""
+    entity kinds with no curve boundary (point/text/unknown)."""
     t = e.get("type")
     if t == "line":
         return [Edge.make_line((val(e["x1"]), val(e["y1"]), 0), (val(e["x2"]), val(e["y2"]), 0))]
@@ -3988,6 +3997,38 @@ def _entity_edges(e, val):
             Edge.make_line((b2[0], b2[1], 0), (a2[0], a2[1], 0)),
             Edge.make_three_point_arc((a2[0], a2[1], 0), (a_tip[0], a_tip[1], 0), (a1[0], a1[1], 0)),
         ]
+    if t == "projected":
+        # Projected reference geometry: edges from the CACHED ProjectedCurve —
+        # plain numbers authored by the projection recompute, consumed verbatim
+        # and never val()'d or resolved here.
+        cv = e.get("curve") or {}
+        ck = cv.get("kind")
+        if ck == "line":
+            # Zero-length cached line (a view-aligned projection persisted by
+            # an older build): reference-only, like the point-like poly below
+            if math.hypot(cv["x2"] - cv["x1"], cv["y2"] - cv["y1"]) <= 1e-9:
+                return []
+            return [Edge.make_line((cv["x1"], cv["y1"], 0), (cv["x2"], cv["y2"], 0))]
+        if ck == "circle":
+            return [Pos(cv["x"], cv["y"]) * Edge.make_circle(cv["r"])]
+        if ck == "arc":
+            return [Edge.make_three_point_arc(
+                (cv["x1"], cv["y1"], 0),
+                (cv["mx"], cv["my"], 0),  # through-point
+                (cv["x2"], cv["y2"], 0))]
+        if ck == "poly":
+            pts = cv.get("pts") or []
+            # A view-aligned source edge projects to a POINT: the degenerate
+            # poly fallback ("never an error") arrives with coincident samples.
+            # Collapse consecutive duplicates and skip point-like remains —
+            # reference-only, like a sketch point — instead of feeding OCCT a
+            # zero-length line (StdFail → whole sketch red).
+            dedup = [p for i, p in enumerate(pts)
+                     if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-9]
+            if len(dedup) < 2:
+                return []
+            return list(Polyline(*[(p[0], p[1], 0) for p in dedup]).edges())
+        return []
     return []
 
 
@@ -4176,44 +4217,20 @@ def _build_sketch(f, val, datums=None):
         elif et == "point":
             continue  # a sketch point is reference/snap-only, never part of a profile
         elif et == "projected":
-            # Projected reference geometry: consume the CACHED curve verbatim —
-            # plain numbers authored by the projection recompute, never val()'d
-            # and never resolved here. _build_sketch stays geometry-free (the
-            # checkpoint sketch-replay invariant depends on it); refreshing the
-            # cache against live bodies is the rebuild handler's job.
-            cv = e.get("curve") or {}
-            ck = cv.get("kind")
-            if ck == "line":
-                # Zero-length cached line (a view-aligned projection persisted by
-                # an older build): reference-only, like the point-like poly below
-                if math.hypot(cv["x2"] - cv["x1"], cv["y2"] - cv["y1"]) > 1e-9:
-                    ed = Edge.make_line((cv["x1"], cv["y1"], 0), (cv["x2"], cv["y2"], 0))
+            # Projected reference geometry: edges come from the CACHED curve via
+            # _entity_edges (plain numbers, never resolved here — _build_sketch
+            # stays geometry-free; the checkpoint sketch-replay invariant
+            # depends on it). A cached circle also contributes its FACE,
+            # mirroring the native circle branch; degenerate curves (zero-length
+            # line, point-like poly) yield no edges: reference-only.
+            if (e.get("curve") or {}).get("kind") == "circle":
+                cv = e["curve"]
+                faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))
+                all_edges.extend(_entity_edges(e, val))
+            else:
+                for ed in _entity_edges(e, val):
                     edges.append(ed)
                     all_edges.append(ed)
-            elif ck == "circle":
-                faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))
-                all_edges.append(Pos(cv["x"], cv["y"]) * Edge.make_circle(cv["r"]))
-            elif ck == "arc":
-                ed = Edge.make_three_point_arc(
-                    (cv["x1"], cv["y1"], 0),
-                    (cv["mx"], cv["my"], 0),  # through-point
-                    (cv["x2"], cv["y2"], 0),
-                )
-                edges.append(ed)
-                all_edges.append(ed)
-            elif ck == "poly":
-                pts = cv.get("pts") or []
-                # A view-aligned source edge projects to a POINT: the degenerate
-                # poly fallback ("never an error") arrives with coincident
-                # samples. Collapse consecutive duplicates and skip point-like
-                # remains — reference-only, like a sketch point — instead of
-                # feeding OCCT a zero-length line (StdFail → whole sketch red).
-                dedup = [p for i, p in enumerate(pts)
-                         if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-9]
-                if len(dedup) >= 2:
-                    for ed in Polyline(*[(p[0], p[1], 0) for p in dedup]).edges():
-                        edges.append(ed)
-                        all_edges.append(ed)
         elif et == "text":
             ref = e.get("pathRef")
             path_edge = _entity_edge(by_id_all[ref], val) if ref and ref in by_id_all else None
@@ -4545,6 +4562,11 @@ def _curve_rep(c):
     return tuple(pts[0]), tuple(pts[-1]), tuple(pts[len(pts) // 2])
 
 
+def _pt_dist(p, q):
+    """Euclidean distance between two 2D points given as (x, y) pairs."""
+    return math.hypot(p[0] - q[0], p[1] - q[1])
+
+
 def _curve_dist(a, b):
     """Distance between two ProjectedCurves for silhouette nearest-matching:
     endpoint distances (orientation-insensitive) + midpoint distance. Different
@@ -4553,11 +4575,10 @@ def _curve_dist(a, b):
     if a.get("kind") != b.get("kind"):
         return float("inf")
     (a1, a2, am), (b1, b2, bm) = _curve_rep(a), _curve_rep(b)
-
-    def d(p, q):
-        return math.hypot(p[0] - q[0], p[1] - q[1])
-
-    return min(d(a1, b1) + d(a2, b2), d(a1, b2) + d(a2, b1)) + d(am, bm)
+    return min(
+        _pt_dist(a1, b1) + _pt_dist(a2, b2),
+        _pt_dist(a1, b2) + _pt_dist(a2, b1),
+    ) + _pt_dist(am, bm)
 
 
 def _curve_close_either(a, b):
@@ -4573,11 +4594,7 @@ def _curve_oriented(c, cached):
     (and trip the orientation-sensitive emission gate in
     _recompute_projections)."""
     (c1, c2, _cm), (q1, q2, _qm) = _curve_rep(c), _curve_rep(cached)
-
-    def d(p, q):
-        return math.hypot(p[0] - q[0], p[1] - q[1])
-
-    if d(c1, q2) + d(c2, q1) < d(c1, q1) + d(c2, q2):
+    if _pt_dist(c1, q2) + _pt_dist(c2, q1) < _pt_dist(c1, q1) + _pt_dist(c2, q2):
         return _curve_reversed(c)
     return c
 
@@ -4711,13 +4728,10 @@ def _recompute_projections(f, ctx):
     edges (rectangle/polygon/slot) was projected as N sibling entities sharing
     source.group. The pick site persists each sibling's edge index within
     _entity_edges' deterministic order as source.index — the authoritative
-    correspondence, stable across sibling deletions AND source moves. Legacy
-    entities without an index fall back to: cached-curve-within-tolerance match
-    first; otherwise the i-th SURVIVING sibling — siblings ordered by id,
-    shortlex (length then lexicographic, so "e9" < "e10"), their creation
-    order — maps to the i-th edge (misassigns once a sibling was deleted and
-    the source later moves; index-carrying entities don't). An index beyond
-    the fresh edge count means that edge is gone -> stale.
+    correspondence, stable across sibling deletions AND source moves. A
+    multi-edge sibling WITHOUT an index is unresolvable -> stale, like an
+    unknown source kind. An index beyond the fresh edge count means that
+    edge is gone -> stale.
 
     Silhouette correspondence: a silhouette source has NO per-curve selectors —
     the source is the whole body, and the fresh HLR curve LIST can change count
@@ -4743,14 +4757,10 @@ def _recompute_projections(f, ctx):
         if ft is f or ft.get("id") == f.get("id"):
             break
         prefix.append(ft)
-    # sketchCurve sibling groups for the index-correspondence rule above
-    sibs_of = {}
-    for e in ents:
-        s = e.get("source") or {}
-        if s.get("kind") == "sketchCurve":
-            sibs_of.setdefault((s.get("sketch"), s.get("entity")), []).append(e)
-    for group in sibs_of.values():
-        group.sort(key=lambda x: (len(x["id"]), x["id"]))
+    # per-(sketch, entity) fresh sketchCurve projection memo, filled lazily by
+    # _fresh_projection — siblings of one multi-edge source share the projected
+    # list instead of re-projecting the whole source per sibling
+    curve_fresh = {}
 
     # silhouette groups: one fresh HLR curve list per BODY (computed once), each
     # (body, group) sibling set assigned from its own copy of that list
@@ -4780,7 +4790,7 @@ def _recompute_projections(f, ctx):
             fresh = sil_assign.get(e["id"])
         else:
             try:
-                fresh = _fresh_projection(e, plane, prefix, sibs_of, ctx)
+                fresh = _fresh_projection(e, plane, prefix, curve_fresh, ctx)
             except Exception:
                 fresh = None  # any resolution/projection failure = lost source
         if fresh is None:
@@ -4794,11 +4804,13 @@ def _recompute_projections(f, ctx):
             )
 
 
-def _fresh_projection(e, plane, prefix, sibs_of, ctx):
+def _fresh_projection(e, plane, prefix, curve_fresh, ctx):
     """The freshly-projected curve for one projected entity, or None when its
     source no longer resolves against the prefix state (missing body / sketch /
-    entity, ambiguous match). Silhouette entities never reach here — their
-    group-level correspondence runs in _recompute_projections."""
+    entity, ambiguous match). `curve_fresh` memoizes the projected edge list
+    per sketchCurve source across one sketch's entities. Silhouette entities
+    never reach here — their group-level correspondence runs in
+    _recompute_projections."""
     src = e.get("source") or {}
     kind = src.get("kind")
     if kind in ("edge", "faceBoundary"):
@@ -4815,37 +4827,25 @@ def _fresh_projection(e, plane, prefix, sibs_of, ctx):
             return None  # the source edge is gone — keep last shape
         return _project_edge_to_plane(edges[0], plane)
     if kind == "sketchCurve":
-        sf = next(
-            (x for x in prefix
-             if x.get("type") == "sketch" and x.get("id") == src.get("sketch")),
-            None,
-        )
-        if sf is None:
+        key = (src.get("sketch"), src.get("entity"))
+        if key not in curve_fresh:
+            try:
+                src_plane, eds = _resolve_sketch_curve(prefix, src, ctx.datums, ctx.val)
+                curve_fresh[key] = [
+                    _project_edge_to_plane(src_plane * ed, plane) for ed in eds
+                ]
+            except Exception:
+                curve_fresh[key] = None  # lost source (lenient), memoized
+        fresh = curve_fresh[key]
+        if not fresh:
             return None
-        ent = next(
-            (x for x in sf.get("entities") or [] if x.get("id") == src.get("entity")),
-            None,
-        )
-        if ent is None:
-            return None
-        src_plane = _plane_of(sf["plane"], ctx.datums)
-        eds = _entity_edges(ent, ctx.val)
-        if not eds:
-            return None
-        fresh = [_project_edge_to_plane(src_plane * ed, plane) for ed in eds]
         if len(fresh) == 1:
             return fresh[0]
         idx = src.get("index")
         if isinstance(idx, int):
             # authoritative pick-time edge index (see the docstring above)
             return fresh[idx] if 0 <= idx < len(fresh) else None
-        cached = e.get("curve") or {}
-        for c in fresh:
-            if _curve_close(c, cached):
-                return c
-        sibs = sibs_of.get((src.get("sketch"), src.get("entity"))) or []
-        idx = next((i for i, s in enumerate(sibs) if s is e), 0)
-        return fresh[idx] if idx < len(fresh) else None
+        return None  # multi-edge sibling without an index: unresolvable
     return None  # unknown kind: unresolvable
 
 
@@ -4893,18 +4893,51 @@ def project_geometry(document, plane_spec, sources):
     return {"results": results}
 
 
+def _require_body(bodies, bid):
+    """The prefix body `bid` with live shape, or the strict pick-time refusal."""
+    body = next((b for b in bodies if b["id"] == bid), None)
+    if body is None or body.get("shape") is None:
+        raise ValueError(
+            f'source body "{bid}" is not available here — '
+            "it may have been created after this sketch"
+        )
+    return body
+
+
+def _resolve_sketch_curve(features, src, datums, val):
+    """Resolve a sketchCurve source against `features` to (source plane, local
+    boundary edges). Raises with the strict pick-time messages on a missing
+    sketch / entity or an entity with no curve; the lenient refresh path
+    (_fresh_projection) catches any raise and treats it as a lost source."""
+    sf = next(
+        (f for f in features
+         if f.get("type") == "sketch" and f.get("id") == src.get("sketch")),
+        None,
+    )
+    if sf is None:
+        raise ValueError(
+            f'source sketch "{src.get("sketch")}" is not available here — '
+            "it may have been created after this sketch"
+        )
+    ent = next(
+        (e for e in sf.get("entities") or [] if e.get("id") == src.get("entity")),
+        None,
+    )
+    if ent is None:
+        raise ValueError("the source curve no longer exists in its sketch")
+    eds = _entity_edges(ent, val)
+    if not eds:
+        raise ValueError(f'a "{ent.get("type")}" entity has no curve to project')
+    return _plane_of(sf["plane"], datums), eds
+
+
 def _project_source(src, plane, document, bodies, datums):
     """Resolve ONE projection source to its [{fp?, curve}] list, or raise with a
     user-facing message. Source kinds: edge / faceBoundary / sketchCurve /
     silhouette (whole-body HLR outline)."""
     kind = src.get("kind")
     if kind in ("edge", "faceBoundary"):
-        body = next((b for b in bodies if b["id"] == src.get("body")), None)
-        if body is None or body.get("shape") is None:
-            raise ValueError(
-                f'source body "{src.get("body")}" is not available here — '
-                "it may have been created after this sketch"
-            )
+        body = _require_body(bodies, src.get("body"))
         shape = body["shape"]
         diag = []
         if kind == "edge":
@@ -4927,42 +4960,13 @@ def _project_source(src, plane, document, bodies, datums):
             for e in edges
         ]
     if kind == "sketchCurve":
-        sf = next(
-            (f for f in document.get("features", [])
-             if f.get("id") == src.get("sketch") and f.get("type") == "sketch"),
-            None,
+        val = _make_val(document.get("parameters", {}))
+        src_plane, eds = _resolve_sketch_curve(
+            document.get("features", []), src, datums, val
         )
-        if sf is None:
-            raise ValueError(
-                f'source sketch "{src.get("sketch")}" is not available here — '
-                "it may have been created after this sketch"
-            )
-        ent = next(
-            (e for e in sf.get("entities", []) if e.get("id") == src.get("entity")), None
-        )
-        if ent is None:
-            raise ValueError("the source curve no longer exists in its sketch")
-        src_plane = _plane_of(sf["plane"], datums)
-        params = document.get("parameters", {})
-
-        def val(x):  # mirror of rebuild()'s val — names resolve, other strings are junk
-            if isinstance(x, str):
-                if x in params:
-                    return params[x]
-                raise ValueError(f'unresolved parameter or expression "{x}"')
-            return x
-
-        eds = _entity_edges(ent, val)
-        if not eds:
-            raise ValueError(f'a "{ent.get("type")}" entity has no curve to project')
         return [{"curve": _project_edge_to_plane(src_plane * ed, plane)} for ed in eds]
     if kind == "silhouette":
-        body = next((b for b in bodies if b["id"] == src.get("body")), None)
-        if body is None or body.get("shape") is None:
-            raise ValueError(
-                f'source body "{src.get("body")}" is not available here — '
-                "it may have been created after this sketch"
-            )
+        body = _require_body(bodies, src.get("body"))
         curves = _project_silhouette(body["shape"], plane)
         if not curves:
             raise ValueError("the body has no visible silhouette on this plane")

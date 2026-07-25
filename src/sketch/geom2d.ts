@@ -3,6 +3,7 @@
 import * as THREE from "three";
 
 type V = THREE.Vector2;
+type Pt = { x: number; y: number }; // structural: THREE.Vector2 or a plain point
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
 /** intersection of two INFINITE lines (through p1p2 and p3p4); null if parallel */
@@ -45,16 +46,16 @@ export function segCircleIntersect(p1: V, p2: V, c: V, r: number): V[] {
 }
 
 /** parameter t in [0,1] of the closest point on segment p1p2 to q */
-export function paramOnSeg(p1: V, p2: V, q: V): number {
+export function paramOnSeg(p1: Pt, p2: Pt, q: Pt): number {
   const dx = p2.x - p1.x, dy = p2.y - p1.y;
   const len2 = dx * dx + dy * dy || 1;
   return ((q.x - p1.x) * dx + (q.y - p1.y) * dy) / len2;
 }
 
 /** distance from point q to segment p1p2 */
-export function distToSeg(p1: V, p2: V, q: V): number {
+export function distToSeg(p1: Pt, p2: Pt, q: Pt): number {
   const t = Math.max(0, Math.min(1, paramOnSeg(p1, p2, q)));
-  return q.distanceTo(v(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t));
+  return Math.hypot(q.x - (p1.x + (p2.x - p1.x) * t), q.y - (p1.y + (p2.y - p1.y) * t));
 }
 
 /** Signed included angle (degrees, in (-180,180]) from line l1's direction to

@@ -86,6 +86,25 @@ export type ProjectionUpdate =
   | { sketch: string; entity: string; curve: ProjectedCurve; stale: false }
   | { sketch: string; entity: string; stale: true };
 
+/** Apply one ProjectionUpdate to a projected entity, returning the patched
+ *  copy: a stale entry sets the flag (last shape kept); a curve entry writes
+ *  the fresh curve and DELETES the flag (omit-when-false discipline, byte
+ *  stability). Shared by the store's doc commit and the open-sketch session
+ *  patch so the two write paths can't drift. */
+export function applyProjectionUpdate<E extends { curve: ProjectedCurve; stale?: true }>(
+  e: E,
+  u: ProjectionUpdate,
+): E {
+  const next = { ...e };
+  if (u.stale) {
+    next.stale = true;
+  } else {
+    next.curve = u.curve;
+    delete next.stale;
+  }
+  return next;
+}
+
 // construction geometry is referenceable but does NOT form profiles.
 // arc = 3 points: start (1), end (2), and a point it passes through (m).
 // `id` is the stable identity that constraints reference (assigned on creation).

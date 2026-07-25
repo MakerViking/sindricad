@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 import type { ProjectedCurve, ProjectedSource } from "../types";
-import { circumcenter } from "./arc";
+import { asRound } from "./entityDims";
 
 export type SnapKind =
   | "free"
@@ -106,22 +106,21 @@ export function candidatesFromEntities(
       add(e.x, e.y, "endpoint", 110); // a placed point is a strong snap target
     } else if (e.type === "projected") {
       // projected reference curves snap like their native counterparts — that's
-      // half the point of projecting. Poly interior vertices are SAMPLES, not
-      // real model points, so they snap weakly (60).
+      // half the point of projecting. Centers come from asRound (the one
+      // circumcenter-for-projected-arc rule). Poly interior vertices are
+      // SAMPLES, not real model points, so they snap weakly (60).
+      const round = asRound(e);
+      if (round) add(round.x, round.y, "center", 90);
       const cv = e.curve;
       if (cv.kind === "line") {
         add(cv.x1, cv.y1, "endpoint", 100);
         add(cv.x2, cv.y2, "endpoint", 100);
         add((cv.x1 + cv.x2) / 2, (cv.y1 + cv.y2) / 2, "midpoint", 80);
-      } else if (cv.kind === "circle") {
-        add(cv.x, cv.y, "center", 90);
       } else if (cv.kind === "arc") {
         add(cv.x1, cv.y1, "endpoint", 100);
         add(cv.x2, cv.y2, "endpoint", 100);
         add(cv.mx, cv.my, "midpoint", 80); // exact model point, same as native arcs
-        const cc = circumcenter({ x: cv.x1, y: cv.y1 }, { x: cv.x2, y: cv.y2 }, { x: cv.mx, y: cv.my });
-        if (cc) add(cc.x, cc.y, "center", 90);
-      } else {
+      } else if (cv.kind === "poly") {
         const pts = cv.pts;
         pts.forEach(([x, y], i) => {
           const isEnd = i === 0 || i === pts.length - 1;

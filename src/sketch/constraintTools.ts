@@ -10,7 +10,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { projEndSamples } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
-import { dimRefPoints } from "./entityDims";
+import { curveKind, dimRefPoints } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
 
 export const CONSTRAINT_TOOLS = new Set<SketchTool>([
@@ -28,18 +28,8 @@ export const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "fix",
 ]);
 
-/** Effective curve kind for constraint operands: native line/circle/arc, and
- *  projected reference curves by their cached shape (a projected line IS a line
- *  operand — that's the point of projecting). Projected polys are samples, not
- *  a curve, so they stay unaddressable as a curve operand. Exported: SketchMode's
- *  pruneConstraints keeps constraints alive by this same rule. */
-export const curveKind = (e: ResolvedEntity): "line" | "circle" | "arc" | undefined => {
-  if (e.type === "line" || e.type === "circle" || e.type === "arc") return e.type;
-  if (e.type === "projected" && e.curve.kind !== "poly") return e.curve.kind;
-  return undefined;
-};
-
-/** line/circle/arc are the tangency-capable curves; circle/arc carry a radius+center. */
+/** line/circle/arc are the tangency-capable curves (curveKind — see entityDims);
+ *  circle/arc carry a radius+center. */
 const isCurve = (e: ResolvedEntity) => curveKind(e) !== undefined;
 const isRound = (e: ResolvedEntity) => { const k = curveKind(e); return k === "circle" || k === "arc"; };
 

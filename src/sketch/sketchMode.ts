@@ -5,8 +5,8 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
-import type { EdgeFingerprint } from "../types";
+import type { EdgeFingerprint, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
+import { applyProjectionUpdate } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
@@ -17,7 +17,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, asLineSeg, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, asLineSeg, curveKind, setDimPixelScale, type DimField, type ConstraintDim } from "./entityDims";
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { isPlainNumber, parseField } from "../ui/units";
@@ -35,7 +35,7 @@ import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
-import { ConstraintTools, CONSTRAINT_TOOLS, curveKind, type ConstraintHost } from "./constraintTools";
+import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
 
@@ -815,18 +815,12 @@ export class SketchMode {
     if (!this.active) return;
     let touched = false;
     for (const u of updates) {
-      const e = this.entities.find((x) => x.type === "projected" && x.id === u.entity);
+      const i = this.entities.findIndex((x) => x.type === "projected" && x.id === u.entity);
+      const e = this.entities[i];
       if (!e || e.type !== "projected") continue;
-      if (u.stale) {
-        if (!e.stale) {
-          e.stale = true;
-          touched = true;
-        }
-      } else {
-        e.curve = u.curve;
-        if (e.stale) delete e.stale; // omit-when-false, like the persisted form
-        touched = true;
-      }
+      if (u.stale && e.stale) continue; // already flagged — nothing changes
+      this.entities[i] = applyProjectionUpdate(e, u);
+      touched = true;
     }
     if (touched) {
       this.requestSolve();
@@ -1338,11 +1332,7 @@ export class SketchMode {
     // entity patterns replicate the selection — drop projected reference
     // geometry from the sources BEFORE PatternFlow snapshots them
     if (ENTITY_PATTERNS.has(this.tool)) {
-      const projected = this.selectedProjectedIds();
-      if (projected.size) {
-        for (const id of projected) this.selected.delete(id);
-        toast(PROJECTED_FIXED_MSG);
-      }
+      for (const id of this.warnSelectedProjected()) this.selected.delete(id);
     }
     this.patternFlow.click(p);
   }
@@ -1506,8 +1496,9 @@ export class SketchMode {
     if (!axis || axis.type !== "line") return;
     const selectedSources = this.entities.filter((e) => this.selected.has(e.id) && e.id !== axis.id);
     // projected geometry is a fixed reference — mirror the rest of the selection
-    const chosen = selectedSources.filter((e) => e.type !== "projected");
-    if (chosen.length < selectedSources.length) toast(PROJECTED_FIXED_MSG);
+    // (it stays selected; the commit below clears the whole selection anyway)
+    const projected = this.warnSelectedProjected();
+    const chosen = selectedSources.filter((e) => !projected.has(e.id));
     if (!chosen.length) return; // nothing selected to mirror
     const a = new THREE.Vector2(axis.x1, axis.y1);
     const b = new THREE.Vector2(axis.x2, axis.y2);
@@ -1729,9 +1720,8 @@ export class SketchMode {
           if (dx * dx + dy * dy < 16) return; // <4px: still a click, not a move
           // projected geometry never body-drags (fixed reference); disarm so a
           // plain click still selects it in endDrag()
-          if (this.entities[md.idx]?.type === "projected") {
+          if (this.guardProjected(this.entities[md.idx])) {
             this.moveDrag = null;
-            toast(PROJECTED_FIXED_MSG);
             return;
           }
           md.started = true;
@@ -2204,26 +2194,32 @@ export class SketchMode {
     );
   }
 
+  /** The selected projected (linked reference) ids, toasting PROJECTED_FIXED_MSG
+   *  once when any exist — the shared seam for tools that transform the
+   *  selection. Each caller keeps its own retention semantics (deselect /
+   *  keep-selected / skip from copies). */
+  private warnSelectedProjected(): Set<string> {
+    const ids = this.selectedProjectedIds();
+    if (ids.size) toast(PROJECTED_FIXED_MSG);
+    return ids;
+  }
+
   /** replace each selected entity with map(e) (flattened); others unchanged. Owns
    *  the selection: it re-selects the transform's output, so a rotate that explodes
    *  a rectangle into fresh-id lines leaves those lines selected (not a stale id). */
   private transformSelection(map: (e: ResolvedEntity) => ResolvedEntity[]) {
     const next: ResolvedEntity[] = [];
     const sel = new Set<string>();
-    let skippedProjected = false;
+    // fixed reference geometry: keep it (and its selection) untouched
+    const projected = this.warnSelectedProjected();
     for (const e of this.entities) {
-      if (this.selected.has(e.id)) {
-        if (e.type === "projected") {
-          // fixed reference geometry: keep it (and its selection) untouched
-          skippedProjected = true;
-          next.push(e);
-          sel.add(e.id);
-          continue;
-        }
+      if (this.selected.has(e.id) && !projected.has(e.id)) {
         for (const m of map(e)) { next.push(m); sel.add(m.id); }
-      } else next.push(e);
+      } else {
+        next.push(e);
+        if (projected.has(e.id)) sel.add(e.id);
+      }
     }
-    if (skippedProjected) toast(PROJECTED_FIXED_MSG);
     this.entities = next;
     this.selected = sel;
     this.afterModify();
@@ -2245,15 +2241,13 @@ export class SketchMode {
     if (this.tool === "copy") {
       const copies: ResolvedEntity[] = [];
       const sel = new Set<string>();
-      let skippedProjected = false;
+      const projected = this.warnSelectedProjected(); // linked — can't clone the link
       for (const e of this.entities) {
-        if (!this.selected.has(e.id)) continue;
-        if (e.type === "projected") { skippedProjected = true; continue; } // linked — can't clone the link
+        if (!this.selected.has(e.id) || projected.has(e.id)) continue;
         const id = newEntityId();
         copies.push(translated(e, dx, dy, id));
         sel.add(id);
       }
-      if (skippedProjected) toast(PROJECTED_FIXED_MSG);
       this.entities = [...this.entities, ...copies];
       this.selected = sel; // leave the copies selected (Fusion-style)
       this.afterModify();
@@ -2328,13 +2322,17 @@ export class SketchMode {
     return f && f.type === "sketch" ? f : null;
   }
 
-  /** a committed sketch's REAL entity by id — derived pattern copies (ids carry
-   *  "#") resolve to null: they don't exist in the document, so the sidecar
-   *  could never re-find them. */
-  private committedSource(sketchId: string, entityId: string): ResolvedEntity | null {
+  /** a committed sketch's REAL entity by id, with its owning sketch feature —
+   *  derived pattern copies (ids carry "#") resolve to null: they don't exist
+   *  in the document, so the sidecar could never re-find them. */
+  private committedSource(
+    sketchId: string,
+    entityId: string,
+  ): { sketch: Extract<Feature, { type: "sketch" }>; entity: ResolvedEntity } | null {
     const sk = this.sourceSketch(sketchId);
     if (!sk || !this.store) return null;
-    return resolveRealEntities(sk, this.store.document.parameters).find((x) => x.id === entityId) ?? null;
+    const entity = resolveRealEntities(sk, this.store.document.parameters).find((x) => x.id === entityId);
+    return entity ? { sketch: sk, entity } : null;
   }
 
   /** hover feedback for the Project tool: model edge/face highlight in Edges &
@@ -2350,10 +2348,9 @@ export class SketchMode {
     }
     this.viewport.hoverEntity(null);
     const hit = this.overlay.committedCurveAt(e.clientX, e.clientY, (w) => this.viewport.projectToScreen(w));
-    const ent = hit ? this.committedSource(hit.sketchId, hit.entityId) : null;
-    const sk = hit ? this.sourceSketch(hit.sketchId) : null;
+    const src = hit ? this.committedSource(hit.sketchId, hit.entityId) : null;
     this.overlay.setPreview(
-      ent && sk ? curveObjects([ent], this.overlay.planeFor(sk.plane), 0x33aaff, true) : [],
+      src ? curveObjects([src.entity], this.overlay.planeFor(src.sketch.plane), 0x33aaff, true) : [],
     );
     this.viewport.requestRender();
   }

@@ -118,46 +118,35 @@ def test_upstream_change_moves_curve(src, true_curve):
     print(PASS, f"upstream width change refreshes the curve: {c}")
 
 
-def test_sketch_curve_multi_edge_correspondence():
-    """A rectangle source projected as 4 siblings: after the source moves, each
-    sibling gets the fresh curve of ITS OWN edge index (siblings ordered by id
-    = creation order; _entity_edges order is deterministic)."""
-    def sk_doc(rect_x, cached_by_id):
-        ents = [
-            {"id": f"e{i}", "type": "projected",
-             "source": {"kind": "sketchCurve", "sketch": "f1", "entity": "r1",
-                        "group": "e1"},
-             "curve": cached_by_id[f"e{i}"]}
-            for i in range(1, 5)
-        ]
+def test_sketch_curve_multi_edge_without_index_goes_stale():
+    """A multi-edge source sibling WITHOUT a persisted source.index is
+    unresolvable (the pick site has always written one): stale exactly once
+    on the transition, silent while stale — never a positional guess."""
+    def sk_doc(stale=False):
+        ents = []
+        for i in range(1, 5):
+            e = {"id": f"e{i}", "type": "projected",
+                 "source": {"kind": "sketchCurve", "sketch": "f1", "entity": "r1",
+                            "group": "e1"},
+                 "curve": dict(WRONG)}
+            if stale:
+                e["stale"] = True
+            ents.append(e)
         return {"parameters": {}, "features": [
             {"id": "f1", "type": "sketch", "plane": "XY",
              "entities": [{"id": "r1", "type": "rectangle", "width": 20, "height": 10,
-                           "x": rect_x, "y": 0}]},
+                           "x": 0, "y": 0}]},
             {"id": "f3", "type": "sketch", "plane": TOP, "entities": ents},
         ]}
 
-    # seed: garbage caches -> 4 updates give the true per-sibling curves
-    garbage = {k: dict(WRONG) for k in ("e1", "e2", "e3", "e4")}
     p = []
-    rebuild(sk_doc(0, garbage), projections=p)
-    assert len(p) == 4, p
-    seeded = {u["entity"]: u["curve"] for u in p}
-    # quiescence with the seeded caches
+    rebuild(sk_doc(), projections=p)
+    assert sorted((u["entity"], u["stale"]) for u in p) == \
+        [(f"e{i}", True) for i in range(1, 5)], p
     p2 = []
-    rebuild(sk_doc(0, seeded), projections=p2)
-    assert p2 == [], p2
-    # move the source rectangle by +5 in x: every sibling shifts by exactly +5
-    p3 = []
-    rebuild(sk_doc(5, seeded), projections=p3)
-    assert len(p3) == 4, p3
-    for u in p3:
-        old, new = seeded[u["entity"]], u["curve"]
-        assert new["kind"] == "line", new
-        for a, b in (("x1", "y1"), ("x2", "y2")):
-            assert abs(new[a] - old[a] - 5) < 1e-6 and abs(new[b] - old[b]) < 1e-6, \
-                f"{u['entity']}: {old} -> {new} (index correspondence broke)"
-    print(PASS, "multi-edge sketchCurve siblings keep per-index correspondence")
+    rebuild(sk_doc(stale=True), projections=p2)
+    assert p2 == [], f"already-stale must not re-emit, got {p2}"
+    print(PASS, "multi-edge sibling without an index goes stale (once)")
 
 
 def test_sketch_curve_index_survives_deletion():
@@ -197,6 +186,36 @@ def test_sketch_curve_index_survives_deletion():
             assert abs(new[a] - old[a] - 5) < 1e-6 and abs(new[b] - old[b]) < 1e-6, \
                 f"{u['entity']}: {old} -> {new} (index correspondence broke after deletion)"
     print(PASS, "source.index keeps edge identity after a sibling deletion + move")
+
+
+def test_chain_projection_of_projected_curve():
+    """Chain projection: a committed sketch's PROJECTED line is itself a valid
+    sketchCurve source — _entity_edges builds its cached curve like any native
+    entity. Pick time resolves it (TOP -> TOP returns the curve verbatim), and
+    the rebuild refresh tracks it instead of going permanently stale."""
+    src, true_curve = _edge_source()
+    doc = _doc(true_curve, src, tail=[
+        {"id": "f4", "type": "sketch", "plane": TOP, "entities": [
+            {"id": "q1", "type": "projected",
+             "source": {"kind": "sketchCurve", "sketch": "f3", "entity": "p1"},
+             "curve": dict(WRONG)}]},
+    ])
+    r = project_geometry(doc, TOP, [
+        {"kind": "sketchCurve", "sketch": "f3", "entity": "p1"}])["results"][0]
+    assert r["ok"], r
+    assert len(r["curves"]) == 1
+    assert _curve_close(r["curves"][0]["curve"], true_curve, 1e-6), \
+        (r["curves"][0]["curve"], true_curve)
+    # refresh: q1's wrong cache is corrected to p1's cached curve (f3 itself is
+    # steady, so this is the only update)
+    p = []
+    _part, err, _bodies = rebuild(doc, projections=p)
+    assert not err, err
+    assert len(p) == 1, p
+    u = p[0]
+    assert u["sketch"] == "f4" and u["entity"] == "q1" and u["stale"] is False, u
+    assert _curve_close(u["curve"], true_curve, 1e-6), (u["curve"], true_curve)
+    print(PASS, "chain projection: projected curve re-projects and refreshes")
 
 
 def test_resume_cap_ram_tier():
@@ -283,8 +302,9 @@ def main():
     test_stale_transition_once(src, true_curve)
     test_stale_clears_when_source_returns(src, true_curve)
     test_upstream_change_moves_curve(src, true_curve)
-    test_sketch_curve_multi_edge_correspondence()
+    test_sketch_curve_multi_edge_without_index_goes_stale()
     test_sketch_curve_index_survives_deletion()
+    test_chain_projection_of_projected_curve()
     test_resume_cap_ram_tier()
     test_resume_cap_disk_tier()
     test_quiet_proof_deep_resume()

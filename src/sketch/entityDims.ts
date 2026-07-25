@@ -167,13 +167,40 @@ export function dimensionSegments(ents: ResolvedEntity[]): [V, V][] {
 
 // --- constraint-based dimensions (p2pDistance / p2lDistance) -----------------
 
+/** Effective curve kind for constraint/dimension operands: native line/circle/
+ *  arc, and projected reference curves by their cached shape (a projected line
+ *  IS a line operand — that's the point of projecting). Projected polys are
+ *  samples, not a curve, so they stay unaddressable as a curve operand.
+ *  SketchMode's pruneConstraints and the constraint click flows share this rule. */
+export const curveKind = (e: ResolvedEntity): "line" | "circle" | "arc" | undefined => {
+  if (e.type === "line" || e.type === "circle" || e.type === "arc") return e.type;
+  if (e.type === "projected" && e.curve.kind !== "poly") return e.curve.kind;
+  return undefined;
+};
+
 /** The line segment an entity presents to line-based constraint/dimension
  *  flows: native lines, and projected lines (fixed reference operands). One
  *  predicate so the pickers, the solver seeds, and the label renderers agree. */
 export function asLineSeg(e: ResolvedEntity): { x1: number; y1: number; x2: number; y2: number } | null {
+  if (curveKind(e) !== "line") return null;
   if (e.type === "line") return e;
-  if (e.type === "projected" && e.curve.kind === "line") return e.curve;
-  return null;
+  return e.type === "projected" && e.curve.kind === "line" ? e.curve : null;
+}
+
+/** The center + radius a round entity presents to snap/marker/dimension flows:
+ *  native circles/arcs and projected circle/arc curves. THE one
+ *  circumcenter-for-projected-arc rule (arcCenterRadius reconstructs both arc
+ *  forms — they share field names); null for everything else (incl. a
+ *  degenerate collinear arc). */
+export function asRound(e: ResolvedEntity): { x: number; y: number; r: number } | null {
+  if (e.type === "circle") return { x: e.x, y: e.y, r: e.radius };
+  if (e.type === "projected" && e.curve.kind === "circle") {
+    return { x: e.curve.x, y: e.curve.y, r: e.curve.r };
+  }
+  const arc = e.type === "arc" ? e : e.type === "projected" && e.curve.kind === "arc" ? e.curve : null;
+  if (!arc) return null;
+  const cr = arcCenterRadius(arc);
+  return cr ? { x: cr.c.x, y: cr.c.y, r: cr.r } : null;
 }
 
 /** THE enumeration of an entity's dimensionable reference points, with each
@@ -209,7 +236,7 @@ export function dimRefPoints(e: ResolvedEntity): { p: number; pos: V }[] {
     if (cv.kind === "circle") return [{ p: 0, pos: v(cv.x, cv.y) }];
     if (cv.kind === "arc") {
       const out = [{ p: 0, pos: v(cv.x1, cv.y1) }, { p: 1, pos: v(cv.x2, cv.y2) }];
-      const cc = circumcenter({ x: cv.x1, y: cv.y1 }, { x: cv.x2, y: cv.y2 }, { x: cv.mx, y: cv.my });
+      const cc = asRound(e); // the one circumcenter-for-projected-arc rule
       if (cc) out.push({ p: 2, pos: v(cc.x, cc.y) });
       return out;
     }
