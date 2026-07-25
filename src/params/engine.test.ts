@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { CadDocument, ParamDef } from "../types";
 import {
-  boundParam, commitDeleteParam, commitFieldExpr, commitNamedFieldExpr, commitRenameParam,
+  boundParam, classifyExprInput, commitDeleteParam, commitFieldExpr, commitNamedFieldExpr, commitRenameParam,
   deleteBlockers, defsOf, isBound, nextDName, recompute, referencesTo, splitNameValue, validateExpr, validateName,
 } from "./engine";
 
@@ -161,6 +161,18 @@ describe("params engine", () => {
     expect(splitNameValue("30")).toBeNull();
     expect(splitNameValue("a + b")).toBeNull();
     expect(splitNameValue("9x=3")).toBeNull(); // invalid name shape
+  });
+
+  it("classifyExprInput: plain expr, new name, and no-op rename to the current name", () => {
+    const doc = fixture({ width: { expr: "40", value: 40, unit: "mm" } });
+    expect(classifyExprInput(doc, "width / 2", "length", null)).toEqual({ ok: true, value: 20, expr: "width / 2" });
+    expect(classifyExprInput(doc, "depth = width / 2", "length", null)).toEqual({ ok: true, value: 20, expr: "width / 2", name: "depth" });
+    // an existing OTHER name is rejected; the target's own bound/pending name
+    // is a no-op rename → treated as a plain re-expression (no `name`)
+    expect(classifyExprInput(doc, "width = 30", "length", null)).toMatchObject({ ok: false, error: expect.stringMatching(/already exists/) });
+    expect(classifyExprInput(doc, "width = 30", "length", "width")).toEqual({ ok: true, value: 30, expr: "30" });
+    expect(classifyExprInput(doc, "width = 30", "length", null, "width")).toEqual({ ok: true, value: 30, expr: "30" });
+    expect(classifyExprInput(doc, "1 +", "length", null)).toMatchObject({ ok: false });
   });
 
   it("commitNamedFieldExpr names a fresh binding or renames an existing dN", () => {

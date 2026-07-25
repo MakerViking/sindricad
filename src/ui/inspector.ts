@@ -9,6 +9,7 @@ import type { DocumentStore } from "../document/store";
 import type { Feature, Num, ParamTarget } from "../types";
 import { FEATURE_META } from "./featureMeta";
 import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, parseField, fromDisplay } from "./units";
+import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities, toSketchEntity } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
 import { FEATURE_NUM_FIELDS as NUM_FIELDS } from "../document/numFields";
@@ -27,7 +28,9 @@ export class Inspector {
 
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
-    store.onDocChange(() => this.render());
+    // async param commits can land mid-edit — same re-render guard as the
+    // params dialog (keystrokeGuard)
+    store.onDocChange(keystrokeGuard(container, () => this.render()));
     onUnitChange(() => this.render());
   }
 
@@ -106,14 +109,10 @@ export class Inspector {
         : typeof cur === "number"
           ? String(kind === "length" ? round(toDisplay(cur)) : cur)
           : (cur ?? "");
-      const row = textRow(`${label}${suffix}`, String(shown), (raw, input) => {
+      const row = textRow(`${label}${suffix}`, String(shown), (raw) => {
         const err = this.commitField(target, kind, raw);
-        if (err) {
-          input.classList.add("input-error");
-          input.title = err;
-        } else {
-          this.render(); // re-read: fx badge, computed value, canonical rounding
-        }
+        if (!err) this.render(); // re-read: fx badge, computed value, canonical rounding
+        return err;
       });
       if (bound && this.store.isParamBound(target)) {
         row.classList.add("fx-row");
@@ -163,19 +162,13 @@ function numberRow(label: string, value: number, onChange: (v: number) => void):
   return row;
 }
 
-function textRow(label: string, value: string, onChange: (raw: string, input: HTMLInputElement) => void): HTMLElement {
+function textRow(label: string, value: string, commit: (raw: string) => string | null): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row";
   const lab = document.createElement("label");
   lab.textContent = label;
-  const input = document.createElement("input");
-  input.type = "text"; // text so an expression / parameter name is allowed
-  input.value = value;
-  input.title = "number, parameter name, or expression (e.g. width/2 + 5)";
-  input.addEventListener("input", () => {
-    input.classList.remove("input-error");
-  });
-  input.addEventListener("change", () => onChange(input.value.trim(), input));
+  // text input so an expression / parameter name is allowed
+  const input = validatedInput(value, commit, "number, parameter name, or expression (e.g. width/2 + 5)");
   row.append(lab, input);
   return row;
 }

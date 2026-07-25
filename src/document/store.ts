@@ -331,15 +331,11 @@ export class DocumentStore {
     return this.setParamExpr(name, expr, unit);
   }
 
-  /** Validate raw expression input for a (possibly not-yet-committed) binding
-   *  without mutating anything — the sketch dim editor's pre-check. */
-  validateTargetExpr(boundName: string | null, raw: string, kind: FieldKind): { ok: true; value: number } | { ok: false; error: string } {
-    return params.validateExpr(this.doc, boundName, raw, kind);
-  }
-
-  /** Name check for a to-be-created parameter (sketch `name=expr` pre-check). */
-  validateParamName(name: string): string | null {
-    return params.validateName(params.defsOf(this.doc), name);
+  /** Classify raw dim expression input (incl. `name=expr`) for a (possibly
+   *  not-yet-committed) binding without mutating anything — the sketch dim
+   *  editor's pre-check. */
+  classifyTargetExpr(boundName: string | null, pendingName: string | null, raw: string, kind: FieldKind): params.ExprInput {
+    return params.classifyExprInput(this.doc, raw, kind, boundName, pendingName);
   }
 
   renameParam(from: string, to: string): string | null {
@@ -376,20 +372,12 @@ export class DocumentStore {
    *  error or null. */
   setTargetExpr(target: ParamTarget, raw: string, kind: FieldKind): string | null {
     const bound = params.boundParam(this.doc, target);
-    const nv = params.splitNameValue(raw);
-    if (nv) {
-      if (nv.name !== bound) {
-        const bad = params.validateName(params.defsOf(this.doc), nv.name);
-        if (bad) return bad;
-      }
-      const v = params.validateExpr(this.doc, bound, nv.expr, kind);
-      if (!v.ok) return v.error;
-      this.queueParamCommit((d) => params.commitNamedFieldExpr(d, target, nv.name, nv.expr, kind));
-      return null;
-    }
-    const v = params.validateExpr(this.doc, bound, raw, kind);
-    if (!v.ok) return v.error;
-    this.queueParamCommit((d) => params.commitFieldExpr(d, target, raw, kind));
+    const c = params.classifyExprInput(this.doc, raw, kind, bound);
+    if (!c.ok) return c.error;
+    this.queueParamCommit((d) => {
+      if (c.name) params.commitNamedFieldExpr(d, target, c.name, c.expr, kind);
+      else params.commitFieldExpr(d, target, c.expr, kind);
+    });
     return null;
   }
 

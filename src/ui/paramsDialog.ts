@@ -9,6 +9,7 @@ import type { CadDocument, ParamDef, ParamTarget, ParamUnit } from "../types";
 import { FloatingPanel } from "./panels";
 import { FEATURE_META } from "./featureMeta";
 import { getUnit, toDisplay, round } from "./units";
+import { validatedInput, keystrokeGuard } from "./liveInputs";
 
 const panel = new FloatingPanel();
 let unsubscribe: (() => void) | null = null;
@@ -24,15 +25,8 @@ export function openParamsDialog(store: DocumentStore): void {
   el.classList.add("params-dialog");
   render(store, el);
   // live refresh (async commits landing, undo, load) — but never clobber an
-  // edit in progress. Focus alone is the wrong guard (commits land async while
-  // the dialog keeps focus); track uncommitted KEYSTROKES instead: typing sets
-  // the flag, the change event (Enter/blur = commit or revert) clears it.
-  let editing = false;
-  el.addEventListener("input", () => (editing = true), true);
-  el.addEventListener("change", () => (editing = false), true);
-  unsubscribe = store.onDocChange(() => {
-    if (!editing) render(store, el);
-  });
+  // edit in progress (keystrokeGuard).
+  unsubscribe = store.onDocChange(keystrokeGuard(el, () => render(store, el)));
 }
 
 function render(store: DocumentStore, el: HTMLDivElement): void {
@@ -79,24 +73,6 @@ function headerRow(): HTMLElement {
   return row;
 }
 
-/** input helper: commits on change; a returned error marks the input red and
- *  keeps the rejected text so the user can fix it. */
-function cell(value: string, commit: (raw: string) => string | null, title = ""): HTMLInputElement {
-  const input = document.createElement("input");
-  input.type = "text";
-  input.value = value;
-  if (title) input.title = title;
-  input.addEventListener("input", () => input.classList.remove("input-error"));
-  input.addEventListener("change", () => {
-    const err = commit(input.value.trim());
-    if (err) {
-      input.classList.add("input-error");
-      input.title = err;
-    }
-  });
-  return input;
-}
-
 function paramRow(store: DocumentStore, doc: CadDocument, name: string, def: ParamDef): HTMLElement {
   const row = document.createElement("div");
   row.className = "params-row";
@@ -106,8 +82,8 @@ function paramRow(store: DocumentStore, doc: CadDocument, name: string, def: Par
     row.title = issue;
   }
 
-  row.appendChild(cell(name, (raw) => (raw === name ? null : store.renameParam(name, raw))));
-  row.appendChild(cell(def.expr, (raw) => store.setParamExpr(name, raw)));
+  row.appendChild(validatedInput(name, (raw) => (raw === name ? null : store.renameParam(name, raw))));
+  row.appendChild(validatedInput(def.expr, (raw) => store.setParamExpr(name, raw)));
 
   const value = document.createElement("span");
   value.className = "params-value";
@@ -122,7 +98,7 @@ function paramRow(store: DocumentStore, doc: CadDocument, name: string, def: Par
     row.appendChild(drives);
     row.appendChild(document.createElement("span")); // no delete: dN dies with its target
   } else {
-    row.appendChild(cell(def.comment ?? "", (raw) => (store.setParamComment(name, raw), null)));
+    row.appendChild(validatedInput(def.comment ?? "", (raw) => (store.setParamComment(name, raw), null)));
     const del = document.createElement("button");
     del.className = "params-del";
     del.textContent = "×";

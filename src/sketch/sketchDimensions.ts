@@ -43,18 +43,9 @@ interface DimLabel {
   commitExpr?: (raw: string) => string | null;
 }
 
-/** an extra, non-entity label (e.g. a distance constraint's value) */
-export interface ExtraDim {
-  anchor: THREE.Vector2;
-  valueMm: number; // degrees when kind==="angle"
-  commit: (mm: number) => void;
-  kind?: "length" | "angle";
-  driven?: boolean;
-  conflict?: boolean;
-  over?: boolean;
-  expr?: string;
-  commitExpr?: (raw: string) => string | null;
-}
+/** an extra, non-entity label (e.g. a distance constraint's value); valueMm
+ *  is degrees when kind === "angle" */
+export type ExtraDim = Omit<DimLabel, "el" | "suppressEdit">;
 
 export class SketchDimensions {
   private root: HTMLDivElement;
@@ -99,9 +90,7 @@ export class SketchDimensions {
         });
       }
     });
-    for (const x of extras) {
-      this.addLabel({ anchor: x.anchor, valueMm: x.valueMm, commit: x.commit, ...(x.kind ? { kind: x.kind } : {}), ...(x.driven ? { driven: true } : {}), ...(x.conflict ? { conflict: true } : {}), ...(x.over ? { over: true } : {}), ...(x.expr ? { expr: x.expr } : {}), ...(x.commitExpr ? { commitExpr: x.commitExpr } : {}) });
-    }
+    for (const x of extras) this.addLabel(x);
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
   }

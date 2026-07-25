@@ -20,7 +20,6 @@ import { entityDims, constraintDims, dimRefPoints, setDimPixelScale, type DimFie
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { isPlainNumber, parseField } from "../ui/units";
-import { splitNameValue } from "../params/engine";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { circumcenter, arcCenterRadius } from "./arc";
@@ -633,51 +632,47 @@ export class SketchMode {
     return this.pendingBindings.get(key)?.expr ?? this.docBinding(key)?.expr;
   }
 
-  /** Evaluate raw dim input (plain number in display units, or an expression in
-   *  canonical units) — the SINGLE home of the number/formula fork and the
-   *  positivity rule for sketch dims. `expr` is null for plain numbers. */
-  private evalDimInput(raw: string, kind: FieldKind, boundName: string | null): { value: number; expr: string | null } | { error: string } {
+  /** Evaluate raw dim input for the binding slot `key`: a plain number in
+   *  display units, or an expression in canonical units — including the
+   *  `name=expr` form (names the dim's model parameter). The number/formula
+   *  fork and the positivity rule for sketch dims live here (the label
+   *  editor's plain-number path on UNBOUND dims re-checks positivity in
+   *  sketchDimensions.beginEdit). `expr` is null for plain numbers; `name` is
+   *  set only when the input renames the binding. */
+  private evalDimInput(raw: string, kind: FieldKind, key: string | null): { value: number; expr: string | null; name?: string } | { error: string } {
     if (isPlainNumber(raw)) {
       const value = parseField(raw, kind);
       if (value == null || (kind !== "angle" && !(value > 0))) return { error: "invalid value" };
       return { value, expr: null };
     }
     if (!this.store) return { error: "no document" };
-    const v = this.store.validateTargetExpr(boundName, raw, kind);
-    if (!v.ok) return { error: v.error };
-    if (kind !== "angle" && !(v.value > 0)) return { error: "must evaluate to a positive value" };
-    return { value: v.value, expr: raw };
+    const bound = key ? (this.docBinding(key)?.name ?? null) : null;
+    const pending = key ? (this.pendingBindings.get(key)?.name ?? null) : null;
+    const c = this.store.classifyTargetExpr(bound, pending, raw, kind);
+    if (!c.ok) return { error: c.error };
+    if (kind !== "angle" && !(c.value > 0)) return { error: "must evaluate to a positive value" };
+    return { value: c.value, expr: c.expr, ...(c.name ? { name: c.name } : {}) };
   }
 
-  /** Record/refresh the pending binding for a dim edit: formulas always bind;
-   *  a plain number keeps an EXISTING binding as its literal. A name chosen
-   *  earlier via `name=expr` survives further edits. */
-  private recordBinding(key: string, expr: string | null, value: number, kind: FieldKind) {
+  /** Record/refresh the pending binding for a dim edit: formulas always bind
+   *  (a `name=expr` name overrides, else a previously chosen name survives);
+   *  a plain number keeps an EXISTING binding as its literal. */
+  private recordBinding(key: string, r: { value: number; expr: string | null; name?: string }, kind: FieldKind) {
+    if (r.name) {
+      this.pendingBindings.set(key, { expr: r.expr!, kind, name: r.name });
+      return;
+    }
     const prior = this.pendingBindings.get(key);
     const keepName = prior?.name ? { name: prior.name } : {};
-    if (expr) this.pendingBindings.set(key, { expr, kind, ...keepName });
-    else if (prior || this.docBinding(key)) this.pendingBindings.set(key, { expr: String(value), kind, ...keepName });
+    if (r.expr) this.pendingBindings.set(key, { expr: r.expr, kind, ...keepName });
+    else if (prior || this.docBinding(key)) this.pendingBindings.set(key, { expr: String(r.value), kind, ...keepName });
   }
 
-  /** Shared raw-input commit for a bindable dim slot with a known key.
-   *  Supports Fusion's `name=expr` form (names the dim's model parameter). */
+  /** Shared raw-input commit for a bindable dim slot with a known key. */
   private commitExprInput(key: string, kind: FieldKind, raw: string, apply: (value: number) => void): string | null {
-    const nv = splitNameValue(raw);
-    if (nv) {
-      if (!this.store) return "no document";
-      if (nv.name !== this.docBinding(key)?.name && nv.name !== this.pendingBindings.get(key)?.name) {
-        const bad = this.store.validateParamName(nv.name);
-        if (bad) return bad;
-      }
-      const r = this.evalDimInput(nv.expr, kind, this.docBinding(key)?.name ?? null);
-      if ("error" in r) return r.error;
-      this.pendingBindings.set(key, { expr: nv.expr, kind, name: nv.name });
-      apply(r.value);
-      return null;
-    }
-    const r = this.evalDimInput(raw, kind, this.docBinding(key)?.name ?? null);
+    const r = this.evalDimInput(raw, kind, key);
     if ("error" in r) return r.error;
-    this.recordBinding(key, r.expr, r.value, kind);
+    this.recordBinding(key, r, kind);
     apply(r.value);
     return null;
   }
@@ -703,30 +698,17 @@ export class SketchMode {
   }
 
   /** Entity length/⌀ input that must live on a driving constraint: evaluate
-   *  first, place the constraint (id carries over on replace), then bind.
-   *  Supports the `name=expr` form like every other dim surface. */
+   *  first, place the constraint (id carries over on replace), then bind. */
   private commitConvertedDim(base: Extract<SketchConstraint, { type: "distance" } | { type: "diameter" }>, raw: string): string | null {
     const prior =
       base.type === "distance"
         ? this.constraints.find((k): k is Extract<SketchConstraint, { type: "distance" }> => k.type === "distance" && k.line === base.line)
         : this.constraints.find((k): k is Extract<SketchConstraint, { type: "diameter" }> => k.type === "diameter" && k.circle === base.circle);
-    const priorKey = prior?.id ? `c:${prior.id}` : null;
-    const boundName = priorKey ? (this.docBinding(priorKey)?.name ?? null) : null;
-    const nv = splitNameValue(raw);
-    if (nv && this.store) {
-      const current = priorKey ? (this.pendingBindings.get(priorKey)?.name ?? boundName ?? undefined) : undefined;
-      if (nv.name !== current) {
-        const bad = this.store.validateParamName(nv.name);
-        if (bad) return bad;
-      }
-    }
-    const r = this.evalDimInput(nv ? nv.expr : raw, "length", boundName);
+    const r = this.evalDimInput(raw, "length", prior?.id ? `c:${prior.id}` : null);
     if ("error" in r) return r.error;
     const c = { ...base, value: r.value };
     this.setDrivingDimension(c); // stamps a fresh id or inherits the replaced dim's
-    const key = `c:${(c as { id?: string }).id!}`;
-    if (nv) this.pendingBindings.set(key, { expr: nv.expr, kind: "length", name: nv.name });
-    else this.recordBinding(key, r.expr, r.value, "length");
+    this.recordBinding(`c:${(c as { id?: string }).id!}`, r, "length");
     this.onState?.();
     return null;
   }
@@ -755,7 +737,7 @@ export class SketchMode {
     const valueFor = (key: string): number | null => {
       const pend = this.pendingBindings.get(key);
       if (pend) {
-        const v = this.store!.validateTargetExpr(null, pend.expr, pend.kind);
+        const v = this.store!.classifyTargetExpr(null, null, pend.expr, pend.kind);
         return v.ok ? v.value : null;
       }
       return this.docBinding(key)?.value ?? null;

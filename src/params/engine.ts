@@ -78,25 +78,31 @@ export function recompute(doc: CadDocument): RecomputeResult {
   const issues: Record<string, string> = {};
   const affectedSketches = new Set<string>();
   const nodes = parseDefs(defs);
+  // each def's in-table references, walked ONCE — serves both the GC set and
+  // the topo-sort deps (GC only deletes UNreferenced defs, so surviving
+  // entries stay accurate)
+  const refsByName = new Map<string, string[]>();
+  for (const [name, node] of nodes) refsByName.set(name, extractDefRefs(node, defs));
 
   // --- GC dangling model params (their dim/feature was deleted). Unreferenced
   // ones are dropped SILENTLY by design — an auto-minted dN is meaningless
   // without its target, and undo restores it via the doc snapshot anyway. ---
   const referenced = new Set<string>();
-  for (const name of nodes.keys()) for (const r of extractDefRefs(nodes.get(name)!, defs)) referenced.add(r);
+  for (const rs of refsByName.values()) for (const r of rs) referenced.add(r);
   for (const [name, def] of Object.entries(defs)) {
     if (def.target && !resolveTarget(doc, def.target)) {
       if (referenced.has(name)) issues[name] = "its dimension or feature no longer exists";
       else {
         delete defs[name];
         nodes.delete(name);
+        refsByName.delete(name);
       }
     }
   }
 
   // --- topological order (Kahn); cycle members keep their cached value ---
   const names = Object.keys(defs);
-  const deps = new Map(names.map((n) => [n, extractDefRefs(nodes.get(n)!, defs)]));
+  const deps = refsByName;
   const indeg = new Map(names.map((n) => [n, deps.get(n)!.length]));
   const dependents = new Map<string, string[]>(names.map((n) => [n, []]));
   for (const n of names) for (const d of deps.get(n)!) dependents.get(d)!.push(n);
@@ -293,13 +299,36 @@ export function splitNameValue(raw: string): { name: string; expr: string } | nu
   return m ? { name: m[1]!, expr: m[2]!.trim() } : null;
 }
 
-export interface ParamReference {
-  /** referencing param name, or a human label for a legacy bare-name field */
-  site: string;
+export type ExprInput =
+  | { ok: true; value: number; expr: string; name?: string }
+  | { ok: false; error: string };
+
+/** Classify raw EXPRESSION input for a bindable field/dim, including Fusion's
+ *  on-the-fly `name=expr` form: split, validate the name when it's genuinely
+ *  new, validate the expression. The single home of that sequence — the
+ *  store's doc commit and the sketch editor's pending bindings both route
+ *  through it. `name` is set only when the input renames the binding (a name
+ *  equal to the current bound/pending one is a no-op rename → plain
+ *  re-expression). The plain-number/display-unit fork stays caller-side (it
+ *  needs UI units). */
+export function classifyExprInput(doc: CadDocument, raw: string, kind: FieldKind | undefined, boundName: string | null, pendingName?: string | null): ExprInput {
+  const nv = splitNameValue(raw);
+  const renames = nv !== null && nv.name !== boundName && nv.name !== pendingName;
+  if (nv && renames) {
+    const bad = validateName(defsOf(doc), nv.name);
+    if (bad) return { ok: false, error: bad };
+  }
+  const expr = nv ? nv.expr : raw;
+  const v = validateExpr(doc, boundName, expr, kind);
+  if (!v.ok) return v;
+  return { ok: true, value: v.value, expr, ...(renames ? { name: nv.name } : {}) };
 }
 
 /** Walk every legacy bare-name string field (feature + sketch entity) whose
- *  value is exactly `name`, calling `hit` with a label and a setter. */
+ *  value is exactly `name`, calling `hit` with a label and a setter. Scans ALL
+ *  string fields minus a denylist (rather than the numFields allowlists) on
+ *  purpose: legacy pre-engine files could hold a bare param name on any
+ *  numeric field, so over-catching beats missing a reference. */
 function eachBareNameRef(doc: CadDocument, name: string, hit: (label: string, set: (v: string) => void) => void): void {
   for (const f of doc.features) {
     for (const [k, v] of Object.entries(f)) {
