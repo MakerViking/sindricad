@@ -50,6 +50,7 @@ import { TextureTool } from "./features/textureTool";
 import { createFeatureStarters } from "./features/featureStarters";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
+import { openParamsDialog } from "./ui/paramsDialog";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, type Unit } from "./ui/units";
 import type { Feature, PlaneDef } from "./types";
@@ -987,6 +988,9 @@ function handleAction(action: string) {
       break;
     case "properties":
       panels.showProperties();
+      break;
+    case "change-parameters":
+      openParamsDialog(store);
       break;
     case "section":
       if (section.active) {

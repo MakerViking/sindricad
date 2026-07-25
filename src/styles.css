@@ -1143,6 +1143,98 @@ button.active {
   box-shadow: 0 0 0 3px rgba(224, 160, 32, 0.15);
 }
 
+/* --- Change Parameters dialog (Modify → Parameters) --- */
+.params-dialog {
+  min-width: 560px;
+  max-width: 720px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.params-section {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 12px 0 4px;
+}
+.params-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 90px 1fr 24px;
+  gap: var(--s-3);
+  align-items: center;
+  margin-bottom: 4px;
+}
+.params-head span {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.params-row input,
+.params-row select {
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 4px 7px;
+  width: 100%;
+  font: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.params-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.params-row input.input-error {
+  border-color: #ff6b6b;
+  box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
+}
+.params-value,
+.params-drives {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.params-del {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 15px;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  line-height: 1;
+  padding: 2px 6px;
+}
+.params-del:hover {
+  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.12);
+}
+.params-add button {
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  border-radius: var(--r-sm);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.params-add button:hover {
+  border-color: var(--accent);
+}
+.params-add button.input-error {
+  border-color: #ff6b6b;
+}
+/* stale row inside the dialog: badge the whole row, not just inputs */
+.params-row.param-stale .params-value {
+  color: #e0a020;
+}
+
 /* empty-state for panels (added by component markup) */
 .empty-state {
   color: var(--text-mute);

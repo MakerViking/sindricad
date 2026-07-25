@@ -291,6 +291,17 @@ export class DocumentStore {
     return null;
   }
 
+  setParamComment(name: string, comment: string) {
+    const def = params.defsOf(this.doc)[name];
+    if (!def) return;
+    this.mutate((d) => {
+      const target = params.defsOf(d)[name];
+      if (!target) return;
+      if (comment) target.comment = comment;
+      else delete target.comment;
+    });
+  }
+
   /** Commit raw user input into a parameter-drivable field as an EXPRESSION
    *  (canonical units — mm/deg; the edit surface converts plain display-unit
    *  numbers itself and uses setTargetValue). Returns an error or null. */

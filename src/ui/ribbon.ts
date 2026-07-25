@@ -82,6 +82,7 @@ export const MODEL: Group[] = [
         ],
       },
       { action: "texture", label: "Texture", iconName: "texture" },
+      { action: "change-parameters", label: "Parameters", iconName: "parameters" },
     ],
   },
   {

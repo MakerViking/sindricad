@@ -26,6 +26,7 @@ const PATHS: Record<string, string> = {
   // inspect
   measure: `<rect x="3" y="9" width="18" height="6" rx="0.5"/><line x1="7" y1="9" x2="7" y2="12"/><line x1="11" y1="9" x2="11" y2="12.5"/><line x1="15" y1="9" x2="15" y2="12"/><line x1="19" y1="9" x2="19" y2="12.5"/>`,
   properties: `<rect x="4" y="3" width="16" height="18" rx="1"/><line x1="7" y1="7" x2="17" y2="7"/><line x1="7" y1="11" x2="17" y2="11"/><line x1="7" y1="15" x2="13" y2="15"/>`,
+  parameters: `<line x1="4" y1="7" x2="20" y2="7"/><circle cx="9" cy="7" r="2"/><line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="7" cy="17" r="2"/>`,
   section: `<path d="M4 8 L12 4 L20 8 L20 16 L12 20 L4 16 Z"/><line x1="4" y1="8" x2="20" y2="16" stroke-dasharray="2 2"/>`,
   componentColors: `<rect x="3" y="3" width="9" height="9" rx="1"/><rect x="12" y="12" width="9" height="9" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/>`,
   draftAnalysis: `<path d="M5 4 L5 20 L19 20"/><line x1="5" y1="20" x2="17" y2="6"/><polyline points="13,6 17,6 17,10"/>`,

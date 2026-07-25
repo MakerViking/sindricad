@@ -10,8 +10,9 @@ import { getUnit, toDisplay, round } from "./units";
 import { printerCameraStart, printerCameraStop, onPrinterCameraFrame, onPrinterCameraOffline } from "../print/printerClient";
 
 /** One floating "measure-panel" element with optional Esc-to-dismiss. Only one
- *  instance's content is ever shown at a time per panel — open() replaces it. */
-class FloatingPanel {
+ *  instance's content is ever shown at a time per panel — open() replaces it.
+ *  (Also used by paramsDialog.ts.) */
+export class FloatingPanel {
   private el: HTMLDivElement | null = null;
   private onEsc: ((e: KeyboardEvent) => void) | null = null;
   private onClose: (() => void) | null = null;
