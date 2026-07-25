@@ -100,6 +100,9 @@ const sketch = new SketchMode(viewport, overlay);
 store.headlessSolve = solveSketchFeature;
 store.openSketchId = () => sketch.openDocId;
 store.onParamsApplied = () => sketch.syncParamValues();
+// projection refresh entries for the OPEN sketch bypass the doc (the session
+// owns it) and patch the live entities instead
+store.onProjectionsApplied = (updates) => sketch.syncProjectedCurves(updates);
 store.onParamSolveIssue = (id) =>
   toast(`Sketch ${id}: dimensions could not be satisfied after the parameter change — geometry left unchanged`);
 // Sidecar owns fonts: glyph outlines arrive async via tessellateText; repaint the

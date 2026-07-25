@@ -983,6 +983,8 @@ class _RebuildCtx:
     active: object
     require_active: object
     find_body: object
+    features: object = None     # the document's feature list (timeline-prefix context for projection sources)
+    projections: object = None  # optional list; projection refresh entries append here (like diagnostics)
 
 
 # --- feature handlers ---------------------------------------------------------
@@ -994,6 +996,11 @@ class _RebuildCtx:
 
 def _handle_sketch(f, ctx):
     ctx.sketches[f["id"]] = _build_sketch(f, ctx.val, ctx.datums)
+    # Associative projection refresh (opt-in, like diagnostics): re-resolve
+    # projected entities against the timeline-prefix state we're sitting on
+    # right now (ctx.bodies holds exactly the bodies built BEFORE this sketch).
+    if ctx.projections is not None:
+        _recompute_projections(f, ctx)
 
 
 def _handle_datum_plane(f, ctx):
@@ -1562,7 +1569,8 @@ _FEATURE_HANDLERS = {
 }
 
 
-def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist=None):
+def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist=None,
+            projections=None):
     """Return (part, errors, bodies).
 
     part    : the merged build123d solid/compound of all bodies, or None.
@@ -1578,6 +1586,12 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
               resolutions append a ResolveDiag dict to it. Resolution is best-effort
               and never fails the build on a shaky match, so callers that don't pass a
               list are completely unaffected.
+
+    projections : optional list; when given, each sketch handler re-resolves its
+              projected entities against the prefix state and appends refresh
+              entries (see _recompute_projections). Steady state appends NOTHING —
+              that convergence contract is what terminates the frontend's
+              associative refresh loop.
 
     Incremental-rebuild hooks (both default off → identical to a plain full rebuild):
       resume        : (start_index, snapshot) — restore the build state captured
@@ -1705,7 +1719,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
         val=val, datums=datums, sketches=sketches, bodies=bodies,
         diagnostics=diagnostics, hidden_bodies=hidden_bodies,
         new_body=new_body, active=active, require_active=require_active,
-        find_body=find_body,
+        find_body=find_body, features=features, projections=projections,
     )
 
     for i in range(start, len(features)):
@@ -2156,7 +2170,7 @@ def _restore_from_disk(store, chain_keys):
 _RAM_SNAP_WINDOW = int(os.environ.get("SINDRI_RAM_SNAP_WINDOW", "300"))
 
 
-def rebuild_cached(document, diagnostics=None):
+def rebuild_cached(document, diagnostics=None, projections=None):
     """Incremental rebuild: reuse cached per-feature state for the unchanged document
     PREFIX and re-run only from the first changed feature. Resume sources, deepest
     wins: (1) in-RAM per-feature snapshots from the previous build in this worker,
@@ -2171,6 +2185,35 @@ def rebuild_cached(document, diagnostics=None):
     store = _disk_store()
     keys = _chain_keys_scoped(document, new_sigs) if store is not None else []
 
+    # RESUME CAP (projection soundness): when the caller collects projection
+    # refresh entries, never resume PAST the first sketch carrying projected
+    # entities. Emission is transient — an update from a previous build that the
+    # frontend never applied (preview active, redo, doc reopened mid-refresh) is
+    # not re-derivable from document state, so a deep resume would skip the
+    # sketch handler and let a stale cached curve stick silently. Applies to
+    # BOTH resume tiers. Callers without a projections list (aux ops, exports)
+    # keep full-depth resume.
+    #
+    # QUIET-PROOF exception (RAM tier only — the steady-state perf escape):
+    # when the PREVIOUS build in this worker ran a projection pass that emitted
+    # NOTHING, it proved fresh == cached for every projected sketch it built —
+    # and an unapplied pending diff is impossible after a quiet pass (pending
+    # diffs re-emit on every build until applied). If the sigs through the
+    # projected sketch are also unchanged (k > proj_cap covers indices
+    # 0..proj_cap, including the sketch itself, so its inputs AND cached curves
+    # are the proven ones), a deep resume is sound. Any emitting or
+    # accumulator-less build clears the proof; disk tier and worker restarts
+    # stay conservative (no proof survives them).
+    proj_cap = None
+    if projections is not None:
+        for pi, pf in enumerate(features):
+            if pf.get("type") == "sketch" and any(
+                isinstance(e, dict) and e.get("type") == "projected"
+                for e in pf.get("entities") or []
+            ):
+                proj_cap = pi
+                break
+
     resume = None
     from_disk = False
     disk_mod = {}
@@ -2179,6 +2222,8 @@ def rebuild_cached(document, diagnostics=None):
         k = 0
         while k < len(new_sigs) and k < len(old_sigs) and new_sigs[k] == old_sigs[k]:
             k += 1
+        if proj_cap is not None and not (_CACHE.get("proj_quiet") and k > proj_cap):
+            k = min(k, proj_cap)
         # snaps below the RAM retention window are None — fall through to disk
         if k > 0 and k - 1 < len(_CACHE["snaps"]) and _CACHE["snaps"][k - 1] is not None:
             resume = (k, _CACHE["snaps"][k - 1])  # restore state after feature k-1
@@ -2191,7 +2236,7 @@ def rebuild_cached(document, diagnostics=None):
                 on_feature_tick(-1)
             except Exception:
                 pass
-        hit = _restore_from_disk(store, keys)
+        hit = _restore_from_disk(store, keys if proj_cap is None else keys[:proj_cap])
         if on_feature_tick is not None:
             try:
                 on_feature_tick(-1)
@@ -2230,7 +2275,7 @@ def rebuild_cached(document, diagnostics=None):
         )
     part, errors, bodies = rebuild(
         document, diagnostics=diagnostics, resume=resume,
-        snapshots_out=snaps_out, persist=persist,
+        snapshots_out=snaps_out, persist=persist, projections=projections,
     )
     elapsed = time.monotonic() - t_build
 
@@ -2247,7 +2292,11 @@ def rebuild_cached(document, diagnostics=None):
     merged.extend(snap for (_i, snap) in snaps_out)  # freshly built tail
     for j in range(0, max(0, len(merged) - _RAM_SNAP_WINDOW)):
         merged[j] = None  # bound RAM; disk checkpoints cover the deep prefix
-    _CACHE = {"feature_sigs": new_sigs, "snaps": merged, "global_sig": gsig}
+    _CACHE = {"feature_sigs": new_sigs, "snaps": merged, "global_sig": gsig,
+              # quiet-proof for the next build's resume-cap decision (see above);
+              # missing key (worker restart, Compute All reset) reads falsy =
+              # conservative
+              "proj_quiet": projections is not None and not projections}
 
     # Tip checkpoint: make the just-built state instantly restorable by the next
     # process (app restart, worker respawn). The final snapshot carries exactly
@@ -4466,6 +4515,122 @@ def _curve_close(a, b, tol=1e-4):
             abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol for p, q in zip(pa, pb)
         )
     return all(abs(a[k] - b[k]) <= tol for k in a if k != "kind")
+
+
+def _recompute_projections(f, ctx):
+    """Associative refresh of one sketch's projected entities, run by
+    _handle_sketch right after the sketch is built: re-resolve every source
+    against the TIMELINE-PREFIX state (ctx.bodies = the bodies built before
+    this sketch; the features list before it for cross-sketch sources) and
+    append change entries to ctx.projections.
+
+    Convergence contract (what terminates the frontend's refresh loop): steady
+    state emits NOTHING. A fresh curve is emitted only when it differs from the
+    cached one beyond _curve_close's 1e-4 tolerance, or the entity was stale
+    and resolves again (stale:false clears the flag). {stale: true} is emitted
+    only on the not-stale -> stale TRANSITION. Resolution here is LENIENT
+    (keep-last-shape + stale flag); the strict refuse-at-pick path is
+    project_geometry's.
+
+    Multi-edge sketchCurve correspondence: a source entity yielding several
+    edges (rectangle/polygon/slot) was projected as N sibling entities sharing
+    source.group. The pick site persists each sibling's edge index within
+    _entity_edges' deterministic order as source.index — the authoritative
+    correspondence, stable across sibling deletions AND source moves. Legacy
+    entities without an index fall back to: cached-curve-within-tolerance match
+    first; otherwise the i-th SURVIVING sibling — siblings ordered by id,
+    shortlex (length then lexicographic, so "e9" < "e10"), their creation
+    order — maps to the i-th edge (misassigns once a sibling was deleted and
+    the source later moves; index-carrying entities don't). An index beyond
+    the fresh edge count means that edge is gone -> stale."""
+    ents = [e for e in f.get("entities") or []
+            if isinstance(e, dict) and e.get("type") == "projected" and e.get("id")]
+    if not ents:
+        return
+    plane = _plane_of(f["plane"], ctx.datums)
+    # features strictly BEFORE this sketch: the prefix a source may live in
+    prefix = []
+    for ft in ctx.features or []:
+        if ft is f or ft.get("id") == f.get("id"):
+            break
+        prefix.append(ft)
+    # sketchCurve sibling groups for the index-correspondence rule above
+    sibs_of = {}
+    for e in ents:
+        s = e.get("source") or {}
+        if s.get("kind") == "sketchCurve":
+            sibs_of.setdefault((s.get("sketch"), s.get("entity")), []).append(e)
+    for group in sibs_of.values():
+        group.sort(key=lambda x: (len(x["id"]), x["id"]))
+
+    for e in ents:
+        try:
+            fresh = _fresh_projection(e, plane, prefix, sibs_of, ctx)
+        except Exception:
+            fresh = None  # any resolution/projection failure = lost source
+        if fresh is None:
+            if not e.get("stale"):
+                ctx.projections.append(
+                    {"sketch": f["id"], "entity": e["id"], "stale": True}
+                )
+        elif e.get("stale") or not _curve_close(fresh, e.get("curve") or {}):
+            ctx.projections.append(
+                {"sketch": f["id"], "entity": e["id"], "curve": fresh, "stale": False}
+            )
+
+
+def _fresh_projection(e, plane, prefix, sibs_of, ctx):
+    """The freshly-projected curve for one projected entity, or None when its
+    source no longer resolves against the prefix state (missing body / sketch /
+    entity, ambiguous match, silhouette — step 7)."""
+    src = e.get("source") or {}
+    kind = src.get("kind")
+    if kind in ("edge", "faceBoundary"):
+        # faceBoundary persists PER-EDGE by:"match" sels too (see the pick site
+        # in sketchMode.ts) — both kinds resolve via resolve_edges. LENIENT on
+        # purpose: an upstream resize makes the fingerprint a "marginal match"
+        # (length changed), which is exactly the association we must follow —
+        # only a body/edge that no longer resolves AT ALL goes stale.
+        body = ctx.find_body(src.get("body"))
+        if body is None or body.get("shape") is None:
+            return None
+        edges = resolve_edges(body["shape"], src.get("sel"))
+        if not edges:
+            return None  # the source edge is gone — keep last shape
+        return _project_edge_to_plane(edges[0], plane)
+    if kind == "sketchCurve":
+        sf = next(
+            (x for x in prefix
+             if x.get("type") == "sketch" and x.get("id") == src.get("sketch")),
+            None,
+        )
+        if sf is None:
+            return None
+        ent = next(
+            (x for x in sf.get("entities") or [] if x.get("id") == src.get("entity")),
+            None,
+        )
+        if ent is None:
+            return None
+        src_plane = _plane_of(sf["plane"], ctx.datums)
+        eds = _entity_edges(ent, ctx.val)
+        if not eds:
+            return None
+        fresh = [_project_edge_to_plane(src_plane * ed, plane) for ed in eds]
+        if len(fresh) == 1:
+            return fresh[0]
+        idx = src.get("index")
+        if isinstance(idx, int):
+            # authoritative pick-time edge index (see the docstring above)
+            return fresh[idx] if 0 <= idx < len(fresh) else None
+        cached = e.get("curve") or {}
+        for c in fresh:
+            if _curve_close(c, cached):
+                return c
+        sibs = sibs_of.get((src.get("sketch"), src.get("entity"))) or []
+        idx = next((i for i, s in enumerate(sibs) if s is e), 0)
+        return fresh[idx] if idx < len(fresh) else None
+    return None  # silhouette (step 7) / unknown kind: unresolvable for now
 
 
 def _collect_datums(document):

@@ -158,6 +158,9 @@ interface WireRebuildResult {
   diagnostics?: RebuildResult["diagnostics"];
   featureError?: RebuildResult["featureError"];
   featureErrors?: RebuildResult["featureErrors"];
+  // projection refresh entries ride the top-level header as plain JSON (never
+  // inside per-body payloads, so "unchanged" stubs can't drop them)
+  projectionUpdates?: RebuildResult["projectionUpdates"];
   // legacy direct-mesh shape (only when `protocol` is absent)
   mesh?: RebuildResult["mesh"];
   edges?: RebuildResult["edges"];
@@ -529,6 +532,7 @@ export class Geometry implements GeometryBackend {
     if (r.diagnostics) out.diagnostics = r.diagnostics;
     if (r.featureError) out.featureError = r.featureError;
     if (r.featureErrors) out.featureErrors = r.featureErrors;
+    if (r.projectionUpdates) out.projectionUpdates = r.projectionUpdates;
     return out;
   }
 
@@ -548,6 +552,7 @@ export class Geometry implements GeometryBackend {
     if (r.diagnostics) out.diagnostics = r.diagnostics;
     if (r.featureError) out.featureError = r.featureError;
     if (r.featureErrors) out.featureErrors = r.featureErrors;
+    if (r.projectionUpdates) out.projectionUpdates = r.projectionUpdates;
     return out;
   }
 

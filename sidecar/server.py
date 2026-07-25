@@ -460,9 +460,10 @@ def _rebuild_job(document, tolerance, known=None):
     from builder import rebuild_cached
 
     diag = []
+    proj = []
     known = known or {}
     t0 = time.monotonic()
-    part, errors, bodies = rebuild_cached(document, diagnostics=diag)
+    part, errors, bodies = rebuild_cached(document, diagnostics=diag, projections=proj)
     t_rebuild = time.monotonic() - t0
     if errors and part is None and not bodies:
         # nothing built at all — the document is unusable, surface as fatal
@@ -470,8 +471,12 @@ def _rebuild_job(document, tolerance, known=None):
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
     if part is None:
         # no solid yet (e.g. only sketches exist) — not an error; the frontend
-        # still renders sketch overlays.
-        return {"protocol": 2, "bodies": [], "bbox": None}
+        # still renders sketch overlays. Projection refresh entries still ride
+        # along (a sketchCurve source needs no body at all).
+        result = {"protocol": 2, "bodies": [], "bbox": None}
+        if proj:
+            result["projectionUpdates"] = proj
+        return result
     from tessellate import bbox
 
     live_ids = set()
@@ -518,6 +523,8 @@ def _rebuild_job(document, tolerance, known=None):
     result = {"protocol": 2, "bodies": out, "bbox": doc_bbox}
     if diag:  # only attach when a selector resolved with low confidence
         result["diagnostics"] = diag
+    if proj:  # only attach when the projection refresh found real changes
+        result["projectionUpdates"] = proj
     if errors:
         # Failing features must NOT blank the whole document: rebuild() records
         # them as no-ops and continues, so return the geometry that DID build

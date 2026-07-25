@@ -59,8 +59,20 @@ export type ProjectedCurve =
 // act on the whole projection.
 export type ProjectedSource =
   | { kind: "edge" | "faceBoundary"; body: string; sel: Selector; group?: string }
-  | { kind: "sketchCurve"; sketch: string; entity: string; group?: string }
+  // `index`: this sibling's edge index within the source entity's deterministic
+  // edge list (multi-edge sources only) — the sidecar's authoritative refresh
+  // correspondence, stable across sibling deletions and source moves.
+  | { kind: "sketchCurve"; sketch: string; entity: string; group?: string; index?: number }
   | { kind: "silhouette"; body: string; group?: string };
+
+// One rebuild-time projection refresh entry (sidecar _recompute_projections):
+// either a recomputed curve that moved beyond tolerance (stale:false — also
+// clears a previous stale flag), or a source that stopped resolving
+// (stale:true, last shape kept). Steady state emits nothing — that convergence
+// contract is what terminates the store's associative refresh loop.
+export type ProjectionUpdate =
+  | { sketch: string; entity: string; curve: ProjectedCurve; stale: false }
+  | { sketch: string; entity: string; stale: true };
 
 // construction geometry is referenceable but does NOT form profiles.
 // arc = 3 points: start (1), end (2), and a point it passes through (m).
@@ -431,6 +443,10 @@ export interface RebuildResult {
   // still ok:true so the model renders alongside the error banner.
   featureError?: { feature_id?: string; message: string };
   featureErrors?: { feature_id?: string; message: string }[];
+  // projected-curve refresh entries from this rebuild (absent at steady state);
+  // the store lands them via a derived, no-undo commit — see
+  // DocumentStore.commitProjectionRefresh.
+  projectionUpdates?: ProjectionUpdate[];
 }
 
 export type RebuildReply =

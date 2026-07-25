@@ -3,7 +3,7 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, ParamTarget, PlaneSpec, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectionUpdate, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionResult, ProjectionSource } from "../geometry/client";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import * as params from "../params/engine";
@@ -216,6 +216,7 @@ export class DocumentStore {
     this.redoStack = [];
     this.doc = clone(EMPTY_DOCUMENT);
     this.rollback = null;
+    this.rearmProjectionValve(); // valve state must never cross documents
     this.suppressed.clear();
     this.sketchVis.clear();
     this.bodyVis.clear();
@@ -258,14 +259,9 @@ export class DocumentStore {
   mutate(fn: (doc: CadDocument) => void, immediate = false) {
     this.pushUndo();
     this.redoStack = [];
-    fn(this.doc);
-    // Keep the parameter invariant (bound field number == cached param value)
-    // across EVERY document edit — this also GCs model params whose dim or
-    // feature was just deleted, and refreshes the derived `parameters` cache.
-    if (this.doc.paramDefs) this.applyRecompute(params.recompute(this.doc));
-    this.markDirty();
-    this.emitDoc();
-    this.scheduleRebuild(immediate);
+    // a user edit is the "edit the model to retry" the valve toast promises
+    this.rearmProjectionValve();
+    this.applyDerived(fn, immediate);
   }
 
   // --- parameters (engine-backed; see src/params/engine.ts) ---
@@ -293,6 +289,10 @@ export class DocumentStore {
   /** A closed sketch could not satisfy its dims after a param edit (conflict);
    *  its coordinates were left unchanged. */
   onParamSolveIssue?: (sketchId: string) => void;
+  /** Injected (main.ts): deliver projection refresh entries for the OPEN sketch
+   *  to the live session (SketchMode.syncProjectedCurves) — the doc copy of an
+   *  open sketch is never written headlessly. */
+  onProjectionsApplied?: (updates: ProjectionUpdate[]) => void;
 
   /** Value-changing parameter commits are serialized: each one recomputes on a
    *  DRAFT, headlessly re-solves the affected closed sketches, then lands
@@ -312,17 +312,12 @@ export class DocumentStore {
     fn(draft);
     const r = params.recompute(draft);
     const open = this.openSketchId?.() ?? null;
-    if (this.headlessSolve) {
-      for (const sid of r.affectedSketches) {
-        if (sid === open) continue;
-        const f = draft.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sid);
-        // a sketch with no constraints has nothing to satisfy — the value
-        // write-back alone was the whole job (e.g. a bound polygon radius)
-        if (!f || !(f.constraints ?? []).length) continue;
-        const solved = await this.headlessSolve(f, draft.parameters);
-        if (solved) f.entities = solved.entities;
-        else this.onParamSolveIssue?.(sid);
-      }
+    for (const sid of r.affectedSketches) {
+      if (sid === open) continue;
+      const f = draft.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sid);
+      if (!f) continue;
+      const solved = await this.solveConstrainedSketch(f, draft.parameters);
+      if (solved) f.entities = solved;
     }
     this.mutate((d) => {
       d.parameters = draft.parameters;
@@ -331,6 +326,174 @@ export class DocumentStore {
       d.features = draft.features;
     });
     this.onParamsApplied?.();
+  }
+
+  // --- associative projection refresh (plan step 4) ---
+  // A rebuild whose result carries projectionUpdates means an upstream feature
+  // moved geometry that projected entities are linked to. The updates land in
+  // the document via a DERIVED commit (no undo entry — undo should revert the
+  // user edit that caused the refresh, never the refresh itself), which
+  // triggers one more rebuild; the sidecar only emits beyond-tolerance diffs,
+  // so the steady state after an upstream edit is exactly 2 rebuilds.
+
+  /** consecutive doc-changing refreshes we applied (incremented in
+   *  commitProjectionRefresh — open-sketch-only deliveries don't count, their
+   *  doc copy lags until finish() so the sidecar re-emits them every rebuild). */
+  private projStreak = 0;
+  private projValveOpen = true;
+
+  /** Re-arm the oscillation valve. Every explicit user gesture that changes the
+   *  model state (mutate/undo/redo/load/new/Compute All) earns a fresh refresh
+   *  budget — this is the "edit the model or Compute All to retry" the valve
+   *  toast promises; without it a tripped valve could never recover (withheld
+   *  updates keep the cached curves != fresh, so a quiet rebuild is unreachable). */
+  private rearmProjectionValve() {
+    this.projStreak = 0;
+    this.projValveOpen = true;
+  }
+
+  /** Refresh-loop entry (rebuildNow's ok-branch). Preview/edit-preview rebuilds
+   *  see transient timelines — never commit from those, and never touch the
+   *  streak either way (checked FIRST: an edit-preview truncated before the
+   *  projected sketch yields a quiet rebuild that must not re-arm a tripped
+   *  valve). The valve stops a float oscillation (a source flapping just past
+   *  the 1e-4 tolerance) from rebuilding forever: after 5 consecutive applied
+   *  refreshes, stop applying + warn once; a quiet rebuild or any user gesture
+   *  (rearmProjectionValve) re-arms it. */
+  private maybeQueueProjectionRefresh(updates: ProjectionUpdate[] | undefined) {
+    if (this.hasPreview) return;
+    if (!updates?.length) {
+      this.rearmProjectionValve();
+      return;
+    }
+    if (this.projStreak >= 5) {
+      if (this.projValveOpen) {
+        this.projValveOpen = false;
+        this.onWarning?.("Projected geometry keeps changing on every rebuild — paused automatic refresh (edit the model or Compute All to retry).");
+      }
+      return;
+    }
+    this.queueProjectionRefresh(updates);
+  }
+
+  /** Chained on paramChain so refreshes and param commits serialize (both
+   *  headless-solve sketches and land a whole-feature replacement). */
+  private queueProjectionRefresh(updates: ProjectionUpdate[]) {
+    this.paramChain = this.paramChain
+      .then(() => this.commitProjectionRefresh(updates))
+      .catch((e) => {
+        console.error("projection refresh failed:", e);
+        this.onWarning?.("Projected geometry failed to refresh — see the console for details.");
+      });
+  }
+
+  private async commitProjectionRefresh(updates: ProjectionUpdate[]) {
+    // Re-validate against the LIVE doc: the rebuild that produced these ran on
+    // an older snapshot, so a sketch/entity may have been deleted since — drop
+    // dangling entries rather than resurrecting them.
+    const sketchOf = new Map<string, Extract<Feature, { type: "sketch" }>>();
+    for (const f of this.doc.features) if (f.type === "sketch") sketchOf.set(f.id, f);
+    const valid = updates.filter((u) => {
+      const f = sketchOf.get(u.sketch);
+      return !!f && f.entities.some((e) => e.type === "projected" && e.id === u.entity);
+    });
+    if (!valid.length) return;
+
+    // stale transitions warn once per sketch (the sidecar only emits stale:true
+    // on the not-stale -> stale transition, so every entry here is news)
+    for (const sid of new Set(valid.filter((u) => u.stale).map((u) => u.sketch))) {
+      const f = sketchOf.get(sid)!;
+      this.onWarning?.(`Projected geometry in ${f.name ?? sid} lost its source — keeping last shape`);
+    }
+
+    const open = this.openSketchId?.() ?? null;
+    const openUpdates = valid.filter((u) => u.sketch === open);
+    const closedUpdates = valid.filter((u) => u.sketch !== open);
+    // the OPEN sketch's doc copy is never written — the live session owns it
+    // and persists the patched entities itself on finish()
+    if (openUpdates.length) this.onProjectionsApplied?.(openUpdates);
+    if (!closedUpdates.length) return;
+
+    const bySketch = new Map<string, ProjectionUpdate[]>();
+    for (const u of closedUpdates) {
+      let list = bySketch.get(u.sketch);
+      if (!list) bySketch.set(u.sketch, (list = []));
+      list.push(u);
+    }
+    // Build every replacement feature BEFORE the single applyDerived — the
+    // headless solve is async, and curves + solved coordinates must land
+    // together (constrained user geometry follows the moved projections).
+    const replacements = new Map<string, Extract<Feature, { type: "sketch" }>>();
+    for (const [sid, list] of bySketch) {
+      const f = sketchOf.get(sid)!;
+      const byEntity = new Map(list.map((u) => [u.entity, u]));
+      const entities = f.entities.map((e) => {
+        if (e.type !== "projected" || e.id === undefined) return e;
+        const u = byEntity.get(e.id);
+        if (!u) return e;
+        if (u.stale) return { ...e, stale: true as const };
+        const next = { ...e, curve: u.curve };
+        delete next.stale; // omit-when-false discipline (byte stability)
+        return next;
+      });
+      let nf: Extract<Feature, { type: "sketch" }> = { ...f, entities };
+      const solved = await this.solveConstrainedSketch(nf, this.doc.parameters);
+      if (solved) nf = { ...nf, entities: solved };
+      replacements.set(sid, nf);
+    }
+    // Drop sketches whose LIVE feature object changed while we awaited the
+    // solves (plain mutate() is not serialized on paramChain — e.g. an entity
+    // delete or SketchMode.finish() can land mid-solve): applying nf would
+    // resurrect the pre-edit entities. Nothing is lost — that edit's rebuild
+    // re-emits the diff against the new state.
+    for (const sid of [...replacements.keys()]) {
+      if (this.doc.features.find((x) => x.id === sid) !== sketchOf.get(sid)) replacements.delete(sid);
+    }
+    if (!replacements.size) return;
+    this.projStreak++; // only doc-changing refreshes count toward the valve
+    this.applyDerived((d) => {
+      for (const [sid, nf] of replacements) {
+        const i = d.features.findIndex((x) => x.id === sid);
+        // REPLACE the feature object — the delta wire protocol diffs features
+        // by reference, so an in-place patch would never ship to the sidecar.
+        if (i >= 0) d.features[i] = nf;
+      }
+    });
+  }
+
+  /** Headless re-solve of one CONSTRAINED closed sketch — the param cascade and
+   *  the projection refresh share these exact semantics (keep them in lockstep):
+   *  returns the solved entities, or null when there was nothing to solve (a
+   *  sketch with no constraints has nothing to satisfy — the value/curve
+   *  write-back alone was the whole job) or the solve failed (surfaced via
+   *  onParamSolveIssue; the caller keeps the coordinates unchanged). */
+  private async solveConstrainedSketch(
+    f: Extract<Feature, { type: "sketch" }>,
+    parameters: CadDocument["parameters"],
+  ): Promise<Extract<Feature, { type: "sketch" }>["entities"] | null> {
+    if (!(f.constraints ?? []).length || !this.headlessSolve) return null;
+    const solved = await this.headlessSolve(f, parameters);
+    if (!solved) {
+      this.onParamSolveIssue?.(f.id);
+      return null;
+    }
+    return solved.entities;
+  }
+
+  /** The shared commit tail: apply `fn`, keep the parameter invariant (bound
+   *  field number == cached param value) across EVERY document edit — this also
+   *  GCs model params whose dim or feature was just deleted and refreshes the
+   *  derived `parameters` cache — then dirty/emit/rebuild. mutate() prepends
+   *  the undo entry + redo clear + valve re-arm; a DERIVED commit (projection
+   *  refresh) calls this directly because machine-derived state must never
+   *  occupy an undo step, and its immediate rebuild is what closes the refresh
+   *  loop (steady state: a quiet rebuild). */
+  private applyDerived(fn: (doc: CadDocument) => void, immediate = true) {
+    fn(this.doc);
+    if (this.doc.paramDefs) this.applyRecompute(params.recompute(this.doc));
+    this.markDirty();
+    this.emitDoc();
+    this.scheduleRebuild(immediate);
   }
 
   setParam(name: string, value: number) {
@@ -575,6 +738,7 @@ export class DocumentStore {
     if (!prev) return;
     this.redoStack.push(clone(this.doc));
     this.doc = prev;
+    this.rearmProjectionValve();
     this.markDirty();
     this.emitDoc();
     this.scheduleRebuild(true);
@@ -584,6 +748,7 @@ export class DocumentStore {
     if (!next) return;
     this.pushUndo();
     this.doc = next;
+    this.rearmProjectionValve();
     this.markDirty();
     this.emitDoc();
     this.scheduleRebuild(true);
@@ -800,6 +965,7 @@ export class DocumentStore {
     for (const w of migrateDocument(parsed)) this.onWarning?.(w);
     this.pushUndo();
     this.redoStack = [];
+    this.rearmProjectionValve(); // valve state must never cross documents
     // split persisted project state back out of the document; keep `this.doc`
     // pure geometry (+ viewOverrides) so undo/rebuild stay unaffected by it.
     this.suppressed = new Set(parsed.suppressed ?? []);
@@ -912,6 +1078,11 @@ export class DocumentStore {
           };
         }
         this.emitBuild();
+        // associative projection refresh: decide AFTER the result is published
+        // (a queued commit lands via paramChain and triggers its own rebuild).
+        // A FAILED rebuild says nothing about projections — it must neither
+        // apply nor reset the streak, so only ok results reach the valve.
+        if (reply.ok) this.maybeQueueProjectionRefresh(reply.result.projectionUpdates);
       } while (this.rebuildQueued);
     } finally {
       this.rebuilding = false;
@@ -953,6 +1124,13 @@ export class DocumentStore {
         };
       }
       this.emitBuild();
+      // Compute All is the explicit retry gesture the valve toast promises:
+      // re-arm the valve and route the (freshly recomputed) projection updates
+      // through the normal refresh path instead of dropping them.
+      if (reply.ok) {
+        this.rearmProjectionValve();
+        this.maybeQueueProjectionRefresh(reply.result.projectionUpdates);
+      }
     } finally {
       this.rebuilding = false;
     }

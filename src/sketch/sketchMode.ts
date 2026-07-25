@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { Feature, ParamTarget, PlaneSpec, ProjectedSource, SketchConstraint, SketchPattern } from "../types";
+import type { Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
 import type { EdgeFingerprint } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
@@ -803,6 +803,34 @@ export class SketchMode {
       this.requestSolve();
       this.refreshActive();
       this.onState?.();
+    }
+  }
+
+  /** Projection refresh for the OPEN sketch (injected via
+   *  store.onProjectionsApplied — the mirror of syncParamValues): patch the
+   *  session copies of the updated projected entities, then re-solve so
+   *  constrained geometry follows and the overlay repaints. The doc copy is
+   *  NOT written while the sketch is open; finish() persists the session. */
+  syncProjectedCurves(updates: ProjectionUpdate[]) {
+    if (!this.active) return;
+    let touched = false;
+    for (const u of updates) {
+      const e = this.entities.find((x) => x.type === "projected" && x.id === u.entity);
+      if (!e || e.type !== "projected") continue;
+      if (u.stale) {
+        if (!e.stale) {
+          e.stale = true;
+          touched = true;
+        }
+      } else {
+        e.curve = u.curve;
+        if (e.stale) delete e.stale; // omit-when-false, like the persisted form
+        touched = true;
+      }
+    }
+    if (touched) {
+      this.requestSolve();
+      this.refreshActive();
     }
   }
 
@@ -2405,7 +2433,11 @@ export class SketchMode {
       // resolve_edges (not resolve_faces) when it lands.
       const src: ProjectedSource =
         source.kind === "sketchCurve"
-          ? { kind: "sketchCurve", sketch: source.sketch, entity: source.entity, ...group }
+          ? // `index: i` is sound because sketch-curve results carry no fps, so
+            // the dedup filter above never drops any — i IS the edge index in
+            // the sidecar's deterministic _entity_edges order (the refresh
+            // handler's authoritative sibling correspondence).
+            { kind: "sketchCurve", sketch: source.sketch, entity: source.entity, ...group, ...(fresh.length > 1 ? { index: i } : {}) }
           : { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group };
       this.entities.push({ type: "projected", id: ids[i]!, source: src, curve });
     });
