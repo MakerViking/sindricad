@@ -63,6 +63,23 @@ def test_projected_poly_extrude():
     print(f"  projected poly OK: vol {part.volume:.0f}")
 
 
+def test_projected_degenerate_poly_skipped():
+    """A point-degenerate poly (a view-aligned source edge — coincident samples)
+    is reference-only: it must never fail the sketch, and the square around it
+    still extrudes."""
+    ents = [_pline(0, 0, 0, 20, 0), _pline(1, 20, 0, 20, 20),
+            _pline(2, 20, 20, 0, 20), _pline(3, 0, 20, 0, 0),
+            {"id": "pp", "type": "projected", "source": SRC,
+             "curve": {"kind": "poly", "pts": [[10.0, 10.0], [10.0, 10.0]]}}]
+    doc = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY", "entities": ents},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"}]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    assert abs(part.volume - 4000) < 1, f"degenerate poly must be a no-op: got {part.volume:.1f}"
+    print(f"  projected degenerate poly OK: skipped, vol {part.volume:.0f}")
+
+
 def test_projected_construction_excluded():
     """A CONSTRUCTION projected circle inside a projected square is reference-only:
     it must not subdivide the profile, so a region pick at the circle's center
@@ -88,5 +105,6 @@ if __name__ == "__main__":
     test_projected_square_extrude()
     test_projected_circle_extrude()
     test_projected_poly_extrude()
+    test_projected_degenerate_poly_skipped()
     test_projected_construction_excluded()
     print("ALL PASS")

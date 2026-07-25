@@ -787,6 +787,19 @@ def _tessellate_text_job(entity, path_entity):
         return {"error": {"message": str(ex)}}
 
 
+def _project_geometry_job(document, plane, sources):
+    """Worker: resolve + project geometry sources onto a sketch plane (read-only;
+    per-source errors ride inside `results`, only a failed prefix rebuild or a
+    bad plane spec is a whole-call error). `document` is the frontend-truncated
+    timeline PREFIX — rebuild_cached gives its bodies from the warm cache."""
+    from builder import project_geometry
+
+    try:
+        return project_geometry(document, plane, sources)
+    except Exception as ex:
+        return {"error": {"message": str(ex)}}
+
+
 # --- server process ---------------------------------------------------------
 
 
@@ -1110,6 +1123,15 @@ async def handle(ws):
 
                 elif op == "tessellateText":
                     res = await _run(loop, _tessellate_text_job, req["entity"], req.get("pathEntity"), timeout=JOB_TIMEOUT)
+                    await ws.send(_reply_for(req_id, res))
+
+                elif op == "projectGeometry":
+                    # DOC_TIMEOUT: usually a warm prefix-cache hit, but a cold
+                    # start replays the whole prefix like export/interference do.
+                    res = await _run(
+                        loop, _project_geometry_job, req["document"], req["plane"],
+                        req.get("sources") or [], timeout=DOC_TIMEOUT,
+                    )
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "ping":

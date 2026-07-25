@@ -42,6 +42,7 @@ import time
 import traceback
 from collections import ChainMap
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from build123d import (
     Rectangle,
@@ -87,12 +88,14 @@ from build123d import (
 from geom_select import (
     resolve_edges,
     resolve_faces,
+    edge_fingerprint,
     _edge_mid,
     _edge_dir,
     _edge_curve,
     _edge_radius,
     _edge_center,
     _edge_cost,
+    _edge_dedup_key,
     _bbox_diag,
     POS_DRIFT,
     REL_DRIFT,
@@ -3881,25 +3884,74 @@ _TEXT_FONT_STYLE = {
 _TEXT_HALIGN = {"left": Align.MIN, "center": Align.CENTER, "right": Align.MAX}
 
 
+def _entity_edges(e, val):
+    """The boundary edge(s) of one sketch entity, LOCAL to the sketch's XY frame
+    (unlocated — the caller applies `plane *`). The ONE construction path shared
+    by _build_sketch and projection sources, so a projected sketch curve is
+    byte-for-byte the geometry the source sketch builds. Raises on degenerate
+    input (per-feature error handling stays with the caller); returns [] for
+    entity kinds with no curve boundary (point/text/projected/unknown)."""
+    t = e.get("type")
+    if t == "line":
+        return [Edge.make_line((val(e["x1"]), val(e["y1"]), 0), (val(e["x2"]), val(e["y2"]), 0))]
+    if t == "arc":
+        return [Edge.make_three_point_arc(
+            (val(e["x1"]), val(e["y1"]), 0),
+            (val(e["mx"]), val(e["my"]), 0),  # through-point
+            (val(e["x2"]), val(e["y2"]), 0))]
+    if t == "circle":
+        return [Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Edge.make_circle(val(e["radius"]))]
+    if t == "spline":
+        pts = [(val(p["x"]), val(p["y"]), 0) for p in e.get("points", [])]
+        return [Edge.make_spline(pts)] if len(pts) >= 2 else []
+    if t == "rectangle":
+        x, y = val(e.get("x", 0)), val(e.get("y", 0))
+        hw, hh = val(e["width"]) / 2, val(e["height"]) / 2
+        c = [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh)]
+        return [Edge.make_line((c[k][0], c[k][1], 0), (c[(k + 1) % 4][0], c[(k + 1) % 4][1], 0))
+                for k in range(4)]
+    if t == "polygon":
+        cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
+        r = val(e["radius"])
+        n = max(3, int(round(val(e["sides"]))))
+        ang = math.radians(val(e.get("angle", 0)))  # stored DEGREES (format v2)
+        pts = [
+            (cx + math.cos(ang + i / n * 2 * math.pi) * r, cy + math.sin(ang + i / n * 2 * math.pi) * r)
+            for i in range(n)
+        ]
+        return [Edge.make_line((pts[i][0], pts[i][1], 0), (pts[(i + 1) % n][0], pts[(i + 1) % n][1], 0))
+                for i in range(n)]
+    if t == "slot":
+        ax, ay = val(e["x1"]), val(e["y1"])
+        bx, by = val(e["x2"]), val(e["y2"])
+        w = val(e["width"]) / 2  # half-width = cap radius
+        dx, dy = bx - ax, by - ay
+        L = math.hypot(dx, dy) or 1.0
+        dx, dy = dx / L, dy / L
+        nx, ny = -dy * w, dx * w  # left perpendicular * radius
+        a1, a2 = (ax + nx, ay + ny), (ax - nx, ay - ny)
+        b1, b2 = (bx + nx, by + ny), (bx - nx, by - ny)
+        a_tip = (ax - dx * w, ay - dy * w)
+        b_tip = (bx + dx * w, by + dy * w)
+        return [
+            Edge.make_line((a1[0], a1[1], 0), (b1[0], b1[1], 0)),
+            Edge.make_three_point_arc((b1[0], b1[1], 0), (b_tip[0], b_tip[1], 0), (b2[0], b2[1], 0)),
+            Edge.make_line((b2[0], b2[1], 0), (a2[0], a2[1], 0)),
+            Edge.make_three_point_arc((a2[0], a2[1], 0), (a_tip[0], a_tip[1], 0), (a1[0], a1[1], 0)),
+        ]
+    return []
+
+
 def _entity_edge(e, val):
     """One build123d edge for a line/arc/circle/spline entity — used as a text path.
     Returns None for non-curve entities or on any construction failure."""
-    t = e.get("type")
+    if e.get("type") not in ("line", "arc", "circle", "spline"):
+        return None
     try:
-        if t == "line":
-            return Edge.make_line((val(e["x1"]), val(e["y1"]), 0), (val(e["x2"]), val(e["y2"]), 0))
-        if t == "arc":
-            return Edge.make_three_point_arc(
-                (val(e["x1"]), val(e["y1"]), 0), (val(e["mx"]), val(e["my"]), 0), (val(e["x2"]), val(e["y2"]), 0))
-        if t == "circle":
-            return Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Edge.make_circle(val(e["radius"]))
-        if t == "spline":
-            pts = [(val(p["x"]), val(p["y"]), 0) for p in e.get("points", [])]
-            if len(pts) >= 2:
-                return Edge.make_spline(pts)
+        eds = _entity_edges(e, val)
     except Exception:
         return None
-    return None
+    return eds[0] if eds else None
 
 
 def _measure_text_width(s, font_size, font_style, font):
@@ -4057,74 +4109,23 @@ def _build_sketch(f, val, datums=None):
             continue  # construction geometry is reference-only, not a profile
         et = e["type"]
         if et == "rectangle":
-            x, y = val(e.get("x", 0)), val(e.get("y", 0))
-            hw, hh = val(e["width"]) / 2, val(e["height"]) / 2
-            faces.append(Pos(x, y) * Rectangle(val(e["width"]), val(e["height"])))
-            c = [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh)]
-            for k in range(4):
-                a, b = c[k], c[(k + 1) % 4]
-                all_edges.append(Edge.make_line((a[0], a[1], 0), (b[0], b[1], 0)))
+            faces.append(
+                Pos(val(e.get("x", 0)), val(e.get("y", 0)))
+                * Rectangle(val(e["width"]), val(e["height"]))
+            )
+            all_edges.extend(_entity_edges(e, val))
         elif et == "circle":
-            x, y = val(e.get("x", 0)), val(e.get("y", 0))
-            faces.append(Pos(x, y) * Circle(val(e["radius"])))
-            all_edges.append(Pos(x, y) * Edge.make_circle(val(e["radius"])))
-        elif et == "line":
-            ed = Edge.make_line(
-                (val(e["x1"]), val(e["y1"]), 0),
-                (val(e["x2"]), val(e["y2"]), 0),
-            )
-            edges.append(ed)
-            all_edges.append(ed)
-        elif et == "arc":
-            ed = Edge.make_three_point_arc(
-                (val(e["x1"]), val(e["y1"]), 0),
-                (val(e["mx"]), val(e["my"]), 0),  # through-point
-                (val(e["x2"]), val(e["y2"]), 0),
-            )
-            edges.append(ed)
-            all_edges.append(ed)
-        elif et == "spline":
-            pts = [(val(p["x"]), val(p["y"]), 0) for p in e.get("points", [])]
-            if len(pts) >= 2:
-                ed = Edge.make_spline(pts)
+            faces.append(Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Circle(val(e["radius"])))
+            all_edges.extend(_entity_edges(e, val))
+        elif et in ("line", "arc", "spline", "polygon", "slot"):
+            # free-form curves + parametric outlines: boundary edges join the
+            # loop assembly AND the planar arrangement (one construction path —
+            # _entity_edges — shared with sketch-curve projection sources)
+            for ed in _entity_edges(e, val):
                 edges.append(ed)
                 all_edges.append(ed)
         elif et == "point":
             continue  # a sketch point is reference/snap-only, never part of a profile
-        elif et == "polygon":
-            cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
-            r = val(e["radius"])
-            n = max(3, int(round(val(e["sides"]))))
-            ang = math.radians(val(e.get("angle", 0)))  # stored DEGREES (format v2)
-            pts = [
-                (cx + math.cos(ang + i / n * 2 * math.pi) * r, cy + math.sin(ang + i / n * 2 * math.pi) * r)
-                for i in range(n)
-            ]
-            for i in range(n):
-                p, q = pts[i], pts[(i + 1) % n]
-                ed = Edge.make_line((p[0], p[1], 0), (q[0], q[1], 0))
-                edges.append(ed)
-                all_edges.append(ed)
-        elif et == "slot":
-            ax, ay = val(e["x1"]), val(e["y1"])
-            bx, by = val(e["x2"]), val(e["y2"])
-            w = val(e["width"]) / 2  # half-width = cap radius
-            dx, dy = bx - ax, by - ay
-            L = math.hypot(dx, dy) or 1.0
-            dx, dy = dx / L, dy / L
-            nx, ny = -dy * w, dx * w  # left perpendicular * radius
-            a1, a2 = (ax + nx, ay + ny), (ax - nx, ay - ny)
-            b1, b2 = (bx + nx, by + ny), (bx - nx, by - ny)
-            a_tip = (ax - dx * w, ay - dy * w)
-            b_tip = (bx + dx * w, by + dy * w)
-            for ed in (
-                Edge.make_line((a1[0], a1[1], 0), (b1[0], b1[1], 0)),
-                Edge.make_three_point_arc((b1[0], b1[1], 0), (b_tip[0], b_tip[1], 0), (b2[0], b2[1], 0)),
-                Edge.make_line((b2[0], b2[1], 0), (a2[0], a2[1], 0)),
-                Edge.make_three_point_arc((a2[0], a2[1], 0), (a_tip[0], a_tip[1], 0), (a1[0], a1[1], 0)),
-            ):
-                edges.append(ed)
-                all_edges.append(ed)
         elif et == "projected":
             # Projected reference geometry: consume the CACHED curve verbatim —
             # plain numbers authored by the projection recompute, never val()'d
@@ -4134,9 +4135,12 @@ def _build_sketch(f, val, datums=None):
             cv = e.get("curve") or {}
             ck = cv.get("kind")
             if ck == "line":
-                ed = Edge.make_line((cv["x1"], cv["y1"], 0), (cv["x2"], cv["y2"], 0))
-                edges.append(ed)
-                all_edges.append(ed)
+                # Zero-length cached line (a view-aligned projection persisted by
+                # an older build): reference-only, like the point-like poly below
+                if math.hypot(cv["x2"] - cv["x1"], cv["y2"] - cv["y1"]) > 1e-9:
+                    ed = Edge.make_line((cv["x1"], cv["y1"], 0), (cv["x2"], cv["y2"], 0))
+                    edges.append(ed)
+                    all_edges.append(ed)
             elif ck == "circle":
                 faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))
                 all_edges.append(Pos(cv["x"], cv["y"]) * Edge.make_circle(cv["r"]))
@@ -4150,8 +4154,15 @@ def _build_sketch(f, val, datums=None):
                 all_edges.append(ed)
             elif ck == "poly":
                 pts = cv.get("pts") or []
-                if len(pts) >= 2:
-                    for ed in Polyline(*[(p[0], p[1], 0) for p in pts]).edges():
+                # A view-aligned source edge projects to a POINT: the degenerate
+                # poly fallback ("never an error") arrives with coincident
+                # samples. Collapse consecutive duplicates and skip point-like
+                # remains — reference-only, like a sketch point — instead of
+                # feeding OCCT a zero-length line (StdFail → whole sketch red).
+                dedup = [p for i, p in enumerate(pts)
+                         if i == 0 or math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-9]
+                if len(dedup) >= 2:
+                    for ed in Polyline(*[(p[0], p[1], 0) for p in dedup]).edges():
                         edges.append(ed)
                         all_edges.append(ed)
         elif et == "text":
@@ -4358,3 +4369,212 @@ def _face_from_wire(w):
         return Face.make_from_wires(w)
     except Exception:
         return None
+
+
+# --- projection (Project/Include geometry) -----------------------------------
+# Math + the projectGeometry aux-op behind the Fusion-style Project command:
+# turn a 3D edge (a body edge, a face-boundary edge, a located sketch curve)
+# into a 2D ProjectedCurve on a target sketch plane. The REBUILD never calls
+# this from _build_sketch — projected entities carry a cached curve, and
+# refreshing that cache is a rebuild-handler concern (see the plan). Numbers
+# are rounded to 6 decimals HERE so the persisted document is byte-stable.
+
+# sampled-poly density: one sample per 0.5 mm of edge length, clamped
+_POLY_MIN_SEGS, _POLY_MAX_SEGS, _POLY_MM_PER_SEG = 16, 128, 0.5
+
+
+def _r6(v):
+    """Round for the wire/document: 6 decimals, -0.0 normalized to 0.0."""
+    return round(float(v), 6) + 0.0
+
+
+def _project_pt(plane, p):
+    """A world point projected into the plane's 2D frame (drop the local Z)."""
+    l = plane.to_local_coords(p)
+    return l.X, l.Y
+
+
+def _project_edge_to_plane(edge, plane):
+    """Project one located 3D edge onto `plane` → a ProjectedCurve dict.
+
+    Exact where exactness survives projection: a line stays a line (degenerate
+    view-aligned line → 2-point poly, never an error); a circle whose axis is
+    parallel to the plane normal stays a circle (closed) or a 3-point arc
+    (open). Everything else (tilted circle, ellipse, bspline) is sampled to a
+    poly — build123d's position_at is arc-length parametrized, so samples are
+    evenly spaced along the curve."""
+    ct = _edge_curve(edge)
+    if ct == "line":
+        ax, ay = _project_pt(plane, edge.position_at(0))
+        bx, by = _project_pt(plane, edge.position_at(1))
+        ax, ay, bx, by = _r6(ax), _r6(ay), _r6(bx), _r6(by)
+        # Degeneracy check on the ROUNDED endpoints: a ~1.4e-6 diagonal
+        # projection passes a raw-value check yet collapses to a zero-length
+        # line on the 1e-6 grid (StdFail in _build_sketch's line branch).
+        if math.hypot(bx - ax, by - ay) < 1e-6:
+            # edge parallel to the view direction: projects to a point
+            return {"kind": "poly", "pts": [[ax, ay], [bx, by]]}
+        return {"kind": "line", "x1": ax, "y1": ay, "x2": bx, "y2": by}
+    if ct == "circle":
+        from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+        circ = BRepAdaptor_Curve(edge.wrapped).Circle()
+        d = circ.Axis().Direction()
+        axis = Vector(d.X(), d.Y(), d.Z())
+        if abs(axis.dot(plane.z_dir)) > 1 - 1e-6:
+            if edge.is_closed:
+                cx, cy = _project_pt(plane, edge.arc_center)
+                return {"kind": "circle", "x": _r6(cx), "y": _r6(cy), "r": _r6(circ.Radius())}
+            (x1, y1), (mx, my), (x2, y2) = (
+                _project_pt(plane, edge.position_at(t)) for t in (0, 0.5, 1)
+            )
+            return {"kind": "arc", "x1": _r6(x1), "y1": _r6(y1), "x2": _r6(x2), "y2": _r6(y2),
+                    "mx": _r6(mx), "my": _r6(my)}
+    # tilted circle / ellipse / bspline / anything else: sampled fallback
+    try:
+        n = int(min(_POLY_MAX_SEGS, max(_POLY_MIN_SEGS, edge.length / _POLY_MM_PER_SEG)))
+        samples = [edge.position_at(i / n) for i in range(n + 1)]
+    except Exception:
+        # length/position_at both run GCPnts_AbscissaPoint, which raises
+        # Standard_ConstructionError on degenerate seam/pole edges (sphere seam
+        # meridian, revolve pole) — the hazard tessellate._sample_by_param
+        # hardens; walk the raw curve parameter instead
+        from tessellate import _sample_by_param
+
+        raw = _sample_by_param(edge, _POLY_MIN_SEGS)
+        if raw is None:
+            raise
+        samples = [Vector(*q) for q in raw]
+    pts = []
+    for p in samples:
+        x, y = _project_pt(plane, p)
+        pts.append([_r6(x), _r6(y)])
+    return {"kind": "poly", "pts": pts}
+
+
+def _curve_close(a, b, tol=1e-4):
+    """Structural compare of two ProjectedCurve dicts: same kind and every number
+    within `tol` (the projection-refresh change tolerance). Polys compare
+    pointwise; a length mismatch is a change."""
+    if a.get("kind") != b.get("kind"):
+        return False
+    if a.get("kind") == "poly":
+        pa, pb = a.get("pts") or [], b.get("pts") or []
+        if len(pa) != len(pb):
+            return False
+        return all(
+            abs(p[0] - q[0]) <= tol and abs(p[1] - q[1]) <= tol for p, q in zip(pa, pb)
+        )
+    return all(abs(a[k] - b[k]) <= tol for k in a if k != "kind")
+
+
+def _collect_datums(document):
+    """The datumPlane registry for a document WITHOUT running a rebuild — datum
+    planes are pure plane algebra over specs stored in the doc (no body
+    geometry), so replaying just them mirrors what rebuild() registers. A datum
+    that fails to resolve is skipped (its sketch already flags red at rebuild)."""
+    datums = {}
+    ctx = SimpleNamespace(datums=datums)
+    for f in document.get("features", []):
+        if f.get("type") == "datumPlane":
+            try:
+                _handle_datum_plane(f, ctx)
+            except Exception:
+                pass
+    return datums
+
+
+def project_geometry(document, plane_spec, sources):
+    """The projectGeometry aux-op: resolve each source against the PREFIX document
+    (the frontend truncates at the sketch's timeline position) and project the
+    resolved edges onto the target plane. Resolution is STRICT — a missing body/
+    sketch/entity, a zero-edge or low-confidence selector match all produce a
+    per-source error entry (pick time wants a clear refusal; the lenient
+    keep-last-shape path is the rebuild refresh handler's job). Read-only:
+    rebuild_cached gives warm prefix bodies without mutating anything.
+
+    Returns {"results": [{source_index, ok, curves: [{fp?, curve}], error?}]}
+    — `fp` (a sidecar-authored edge fingerprint for a by:"match" selector) only
+    for body-edge sources; sketch curves are tracked by stable ids."""
+    _part, _errors, bodies = rebuild_cached(document)
+    datums = _collect_datums(document)
+    plane = _plane_of(plane_spec, datums)
+    results = []
+    for i, src in enumerate(sources):
+        try:
+            curves = _project_source(src, plane, document, bodies, datums)
+            results.append({"source_index": i, "ok": True, "curves": curves})
+        except Exception as ex:
+            results.append({
+                "source_index": i, "ok": False, "curves": [],
+                "error": str(ex) or type(ex).__name__,
+            })
+    return {"results": results}
+
+
+def _project_source(src, plane, document, bodies, datums):
+    """Resolve ONE projection source to its [{fp?, curve}] list, or raise with a
+    user-facing message. Source kinds: edge / faceBoundary / sketchCurve now;
+    silhouette (HLR) is a later step and reports itself as unsupported."""
+    kind = src.get("kind")
+    if kind in ("edge", "faceBoundary"):
+        body = next((b for b in bodies if b["id"] == src.get("body")), None)
+        if body is None or body.get("shape") is None:
+            raise ValueError(
+                f'source body "{src.get("body")}" is not available here — '
+                "it may have been created after this sketch"
+            )
+        shape = body["shape"]
+        diag = []
+        if kind == "edge":
+            edges = resolve_edges(shape, src["sel"], diag=diag)
+        else:
+            seen = {}
+            for fc in resolve_faces(shape, src["sel"], diag=diag):
+                for e in fc.edges():
+                    seen.setdefault(_edge_dedup_key(e), e)
+            edges = list(seen.values())
+        if not edges:
+            raise ValueError("the source geometry no longer exists on the body")
+        if diag:  # geom_select only records low-confidence / lossy resolutions
+            raise ValueError(
+                "the source selection is ambiguous on this body — "
+                + (diag[0].get("reason") or "low-confidence match")
+            )
+        return [
+            {"fp": edge_fingerprint(e, shape), "curve": _project_edge_to_plane(e, plane)}
+            for e in edges
+        ]
+    if kind == "sketchCurve":
+        sf = next(
+            (f for f in document.get("features", [])
+             if f.get("id") == src.get("sketch") and f.get("type") == "sketch"),
+            None,
+        )
+        if sf is None:
+            raise ValueError(
+                f'source sketch "{src.get("sketch")}" is not available here — '
+                "it may have been created after this sketch"
+            )
+        ent = next(
+            (e for e in sf.get("entities", []) if e.get("id") == src.get("entity")), None
+        )
+        if ent is None:
+            raise ValueError("the source curve no longer exists in its sketch")
+        src_plane = _plane_of(sf["plane"], datums)
+        params = document.get("parameters", {})
+
+        def val(x):  # mirror of rebuild()'s val — names resolve, other strings are junk
+            if isinstance(x, str):
+                if x in params:
+                    return params[x]
+                raise ValueError(f'unresolved parameter or expression "{x}"')
+            return x
+
+        eds = _entity_edges(ent, val)
+        if not eds:
+            raise ValueError(f'a "{ent.get("type")}" entity has no curve to project')
+        return [{"curve": _project_edge_to_plane(src_plane * ed, plane)} for ed in eds]
+    if kind == "silhouette":
+        raise ValueError("silhouette projection is not supported yet")
+    raise ValueError(f"unknown projection source kind: {kind}")

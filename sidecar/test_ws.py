@@ -133,6 +133,34 @@ async def main():
             assert pong["ok"] and pong["result"]["pong"]
             print("  WS ping OK")
 
+            # projectGeometry: envelope over the real socket — one good
+            # faceBoundary source, one strict-resolution error entry.
+            box = {"parameters": {}, "features": [
+                {"id": "s1", "type": "sketch", "plane": "XY", "entities": [
+                    {"id": "r1", "type": "rectangle", "width": 20, "height": 20,
+                     "x": 0, "y": 0}]},
+                {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 10,
+                 "operation": "new"},
+            ]}
+            await ws.send(json.dumps({
+                "id": "pg", "op": "projectGeometry", "document": box, "plane": "XY",
+                "sources": [
+                    {"kind": "faceBoundary", "body": "body1",
+                     "sel": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}},
+                    {"kind": "edge", "body": "ghost",
+                     "sel": {"kind": "edge", "by": "nearest", "point": [0, 0, 0]}},
+                ],
+            }))
+            pg = await _recv_reply(ws)
+            assert pg["id"] == "pg" and pg["ok"], f"projectGeometry failed: {pg}"
+            results = pg["result"]["results"]
+            assert [r["source_index"] for r in results] == [0, 1]
+            assert results[0]["ok"] and len(results[0]["curves"]) == 4
+            assert all(c["curve"]["kind"] == "line" and "fp" in c
+                       for c in results[0]["curves"])
+            assert not results[1]["ok"] and "created after this sketch" in results[1]["error"]
+            print("  WS projectGeometry OK: 4 boundary lines + 1 error entry")
+
             # exportProject: the colored-3MF op, over the real socket (dispatch +
             # settings-size guard + threaded palette/bodyColors).
             import os

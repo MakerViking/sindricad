@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, ExportFormat, F32Wire, Feature, ImportFormat, ImportReply, RebuildReply, RebuildResult, U32Wire } from "../types";
+import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, ImportFormat, ImportReply, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
 
 // The sidecar's wire-level reply envelope (see sidecar/server.py's _ok/_err):
 // every call resolves to one of these two shapes; `result`'s type is per-op,
@@ -22,6 +22,24 @@ type StatusListener = (connected: boolean) => void;
  *  counters in o/a/e), each a closed 2D polyline in final sketch coordinates. */
 export type TextFace = { outer: [number, number][]; holes: [number, number][][] };
 
+/** A projectGeometry source on the wire: the persisted ProjectedSource shapes
+ *  minus silhouette (HLR — a later step; the sidecar's dispatch already rejects
+ *  it with a per-source error). Pick-time edge/face sources use a by:"nearest"
+ *  selector; refresh-time ones the stored by:"match" fingerprint selector. */
+export type ProjectionSource = Exclude<ProjectedSource, { kind: "silhouette" }>;
+
+/** Per-source outcome of a projectGeometry call. `curves` carries one entry per
+ *  resolved edge (a face boundary yields several); `fp` is the sidecar-authored
+ *  edge fingerprint for body-edge sources — the caller wraps it into a
+ *  by:"match" selector — and absent for sketch-curve sources (stable ids).
+ *  `ok: false` + `error` = strict resolution refused (missing/ambiguous source). */
+export interface ProjectionResult {
+  source_index: number;
+  ok: boolean;
+  curves: { fp?: EdgeFingerprint; curve: ProjectedCurve }[];
+  error?: string;
+}
+
 // One overlapping body pair from an interference check.
 export interface ClashPair {
   a: string;
@@ -40,6 +58,11 @@ export interface GeometryBackend {
   /** Per-glyph 2D outlines for a sketch text entity (the sidecar owns fonts, so
    *  preview outlines come from it and match the extruded solid exactly). */
   tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]>;
+  /** Project 3D sources (body edges / face boundaries / cross-sketch curves)
+   *  onto a sketch plane. `doc` is the timeline PREFIX for that sketch (the
+   *  caller truncates). Strict per-source resolution; whole-call transport
+   *  failure returns []. */
+  projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectionSource[]): Promise<ProjectionResult[]>;
   /** System font family names for the text tool's font picker. */
   listFonts(): Promise<string[]>;
   export(
@@ -603,6 +626,15 @@ export class Geometry implements GeometryBackend {
       ...(pathEntity ? { pathEntity } : {}),
     });
     return msg.ok ? (msg.result.faces ?? []) : [];
+  }
+
+  async projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectionSource[]): Promise<ProjectionResult[]> {
+    const msg = await this.call<{ results: ProjectionResult[] }>("projectGeometry", {
+      document: doc,
+      plane,
+      sources,
+    });
+    return msg.ok ? (msg.result.results ?? []) : [];
   }
 
   async listFonts(): Promise<string[]> {

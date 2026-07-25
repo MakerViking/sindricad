@@ -42,6 +42,12 @@ export class TauriGeometry implements GeometryBackend {
     return [];
   }
 
+  // Projection isn't ported to the Rust spike backend yet (needs OCCT selector
+  // resolution + plane math); return no results like the tessellateText stub.
+  async projectGeometry(): Promise<import("./client").ProjectionResult[]> {
+    return [];
+  }
+
   async listFonts(): Promise<string[]> {
     return [];
   }
