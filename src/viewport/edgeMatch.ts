@@ -6,10 +6,50 @@
 
 export type Vec3 = [number, number, number];
 
-/** The polyline point selectors are built from: the INDEX-middle sample, NOT
- *  the arc-length midpoint — must stay identical to picking.ts's pickEdge
- *  (`pts[floor(len/2)]`) or saved selectors won't re-match their own edge. */
+/** The point an edge selector is built from: the polyline's ARC-LENGTH midpoint.
+ *
+ *  This used to be the index-middle sample, `points[floor(len/2)]` — which is
+ *  the true middle only when the polyline has an odd number of samples. A
+ *  STRAIGHT edge is sampled as just its two endpoints (tessellate._line_endpoints),
+ *  so `floor(2/2)` returned the END POINT, and the sidecar's nearest-edge
+ *  resolution then measured from a CORNER: on a 20×20×35 box, clicking a 35mm
+ *  vertical edge stored its top corner and resolved to a 20mm TOP edge, whose
+ *  centre is nearer. Picking one edge and filleting another was the visible
+ *  symptom.
+ *
+ *  Every site that builds or matches a selector must use this one function, or
+ *  saved selectors won't re-match their own edge. */
 export function polylineMid(points: Vec3[]): Vec3 | undefined {
+  const first = points[0];
+  if (!first) return undefined;
+  if (points.length === 1) return first;
+  const seg: number[] = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const d = Math.sqrt(d2(points[i - 1]!, points[i]!));
+    seg.push(d);
+    total += d;
+  }
+  if (total <= 0) return first; // degenerate (all samples coincident)
+  let want = total / 2;
+  for (let i = 0; i < seg.length; i++) {
+    const s = seg[i]!;
+    if (want <= s || i === seg.length - 1) {
+      const t = s > 0 ? want / s : 0;
+      const a = points[i]!, b = points[i + 1]!;
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    }
+    want -= s;
+  }
+  return points[points.length - 1];
+}
+
+/** The pre-fix convention, kept ONLY so documents saved before it still re-match
+ *  their edges when a fillet/chamfer is reopened for editing. Selector points
+ *  live in the .sindri file, so old files carry old-convention points forever;
+ *  matching against both is what stops an existing fillet losing its ghosts.
+ *  Never build a NEW selector from this. */
+function legacyPolylineMid(points: Vec3[]): Vec3 | undefined {
   return points[Math.floor(points.length / 2)];
 }
 
@@ -19,7 +59,9 @@ const d2 = (a: Vec3, b: Vec3): number => {
 };
 
 /** Index of the edge whose polyline midpoint is nearest to `mid`, or null when
- *  none lands within `tol` (world units). Ties resolve to the first nearest. */
+ *  none lands within `tol` (world units). Ties resolve to the first nearest.
+ *  Accepts BOTH midpoint conventions so a fillet saved before the arc-length
+ *  fix still finds its edges on reopen (see legacyPolylineMid). */
 export function nearestEdgeByMid(
   edges: { points: Vec3[] }[],
   mid: Vec3,
@@ -30,10 +72,11 @@ export function nearestEdgeByMid(
   for (let i = 0; i < edges.length; i++) {
     const e = edges[i];
     if (!e) continue;
-    const m = polylineMid(e.points);
-    if (!m) continue;
-    const dd = d2(m, mid);
-    if (dd < bestD) { bestD = dd; best = i; }
+    for (const m of [polylineMid(e.points), legacyPolylineMid(e.points)]) {
+      if (!m) continue;
+      const dd = d2(m, mid);
+      if (dd < bestD) { bestD = dd; best = i; }
+    }
   }
   return best >= 0 ? best : null;
 }

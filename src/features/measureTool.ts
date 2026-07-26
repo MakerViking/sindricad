@@ -13,6 +13,7 @@ import type { Hit } from "../viewport/picking";
 import { setPrompt } from "../ui/prompt";
 import { getUnit, toDisplay, round } from "../ui/units";
 import { esc } from "../ui/escape";
+import { polylineMid } from "../viewport/edgeMatch";
 
 type Probe =
   | { kind: "face"; faceId: number; point: THREE.Vector3; dir: THREE.Vector3; area: number }
@@ -100,15 +101,17 @@ export class MeasureTool {
       const m = this.viewport.measureFace(hit.faceId);
       return { kind: "face", faceId: hit.faceId, point: m.centroid, dir: m.normal, area: m.area };
     }
-    const pts = (hit.line.userData.points as [number, number, number][]).map(
-      (p) => new THREE.Vector3(p[0], p[1], p[2]),
-    );
+    const raw = hit.line.userData.points as [number, number, number][];
+    const pts = raw.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
     let length = 0;
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i], b = pts[i - 1];
       if (a && b) length += a.distanceTo(b);
     }
-    const mid = pts[Math.floor(pts.length / 2)];
+    // the same arc-length midpoint edge selectors use, so the measure readout
+    // and a fillet pick report the same point on the edge
+    const m = polylineMid(raw);
+    const mid = m ? new THREE.Vector3(m[0], m[1], m[2]) : undefined;
     const first = pts[0], last = pts[pts.length - 1];
     if (!mid || !first || !last) return null;
     const dir = last.clone().sub(first).normalize();

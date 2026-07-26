@@ -13,7 +13,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
 import type { Feature, Selector } from "../types";
-import { midMatchTol } from "../viewport/edgeMatch";
+import { midMatchTol, polylineMid } from "../viewport/edgeMatch";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
@@ -202,7 +202,7 @@ export class EdgeFeatureTool {
   private chainCounter = 0; // one id per add gesture (chain toggles as a unit)
 
   private addGhost(sel: Selector, points: Vec3[], chain?: number) {
-    const mid = points[Math.floor(points.length / 2)];
+    const mid = polylineMid(points);
     if (!mid) return; // an edge always has points; nothing to ghost otherwise
     const geo = new LineGeometry();
     const flat: number[] = [];
@@ -310,7 +310,7 @@ export class EdgeFeatureTool {
     const chainId = ++this.chainCounter;
     for (const l of this.tangentChain(line)) {
       const pts = l.userData.points as Vec3[];
-      const mid = pts[Math.floor(pts.length / 2)];
+      const mid = polylineMid(pts);
       if (!mid) continue;
       if (this.ghosts.some((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 1e-6)) continue;
       this.addGhost({ kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] }, pts, chainId);
@@ -701,7 +701,7 @@ function midAndTangent(pts: [number, number, number][]): {
   mid: THREE.Vector3;
   tan: THREE.Vector3;
 } {
-  const m = pts[Math.floor(pts.length / 2)];
+  const m = polylineMid(pts);
   const a = pts[0];
   const b = pts[pts.length - 1];
   if (!a || !b || !m) return { mid: new THREE.Vector3(), tan: new THREE.Vector3(1, 0, 0) };

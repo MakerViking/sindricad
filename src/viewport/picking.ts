@@ -7,6 +7,7 @@ import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import type { Selector } from "../types";
 import type { ModelView } from "./render";
 import { faceIdOfHit, visibleBodyMeshes } from "./render";
+import { polylineMid } from "./edgeMatch";
 
 export interface EdgeHit {
   kind: "edge";
@@ -121,7 +122,7 @@ export class Picker {
 
     const line = best.object as Line2;
     const pts = line.userData.points as [number, number, number][];
-    const mid = pts[Math.floor(pts.length / 2)];
+    const mid = polylineMid(pts);
     if (!mid) return null;
     return {
       kind: "edge",
