@@ -20,6 +20,9 @@ import numpy as np
 
 TEXTURE_KINDS = {"knurl", "hex", "waves", "ribs", "voronoi", "noise", "image"}
 _DIRECTIONS = {"out", "in", "both"}
+# "facet" = hard-surface (planar facets, real creases — the default, because it
+# is what a printer can actually resolve); "round" = the original smooth fields.
+_PROFILES = {"facet", "round"}
 
 # Export-tier safety net even when the caller passes density_cap=None — a
 # pathologically fine scale/depth combo must not be able to allocate unbounded
@@ -30,7 +33,7 @@ _DEFAULT_DENSITY_CAP = 2_000_000
 # fields, normals, taper): it participates in the persistent mesh-cache key, so
 # a code update invalidates cached textured meshes instead of serving stale
 # geometry built by the previous version.
-CODE_VERSION = 3
+CODE_VERSION = 4
 
 
 def validate_texture_spec(f):
@@ -49,6 +52,12 @@ def validate_texture_spec(f):
     direction = f.get("direction", "out")
     if direction not in _DIRECTIONS:
         raise ValueError(f"unknown texture direction: {direction!r}")
+    profile = f.get("profile", "facet")
+    if profile not in _PROFILES:
+        raise ValueError(f"unknown texture profile: {profile!r} (expected facet or round)")
+    inset = f.get("boundaryInset", 0.0)
+    if not isinstance(inset, (int, float)) or inset < 0:
+        raise ValueError("texture edge blend must be zero or a positive number")
     image_path = f.get("imagePath")
     if kind == "image":
         if not image_path:
@@ -70,11 +79,12 @@ def validate_texture_spec(f):
         "angle": float(f.get("angle", 0.0)),
         "offset": float(f.get("offset", 0.0)),
         "sharpness": float(f.get("sharpness", 0.5)),
+        "profile": profile,
         "direction": direction,
         "seed": int(f.get("seed") or 0),
         "octaves": max(1, min(int(f.get("octaves") or 3), 6)),
         "invert": bool(f.get("invert", False)),
-        "boundaryInset": max(float(f.get("boundaryInset", 1.0)), 0.0),
+        "boundaryInset": max(float(inset), 0.0),
     }
     if kind == "image":
         spec["imagePath"] = image_path
@@ -139,39 +149,101 @@ def _tri_wave(x, period):
 
 def _sharpen(h, sharpness):
     # sharpness in [0,1]; higher = crisper peaks/valleys, via a power curve.
+    # ROUND profiles only: a power curve bends a piecewise-linear ramp into a
+    # cubic, so applying it to a faceted profile is the single biggest
+    # facet-destroyer in this file. Faceted kinds shape themselves instead.
     return h ** (1.0 + 4.0 * max(0.0, min(1.0, sharpness)))
 
 
-def _height_knurl(u, v, scale, angle, sharpness):
+def _is_facet(spec):
+    """Hard-surface (faceted) profile is the DEFAULT: planar facets and real
+    creases print far better than a sub-millimetre sinusoid, which a printer
+    just rounds off. `profile: "round"` restores the original smooth fields."""
+    return spec.get("profile", "facet") != "round"
+
+
+def _trapezoid(x, period, land):
+    """Triangle wave with a flat LAND of width `land` (0..1 of the half-period)
+    at both the crest and the trough — the profile an actual knurling wheel or
+    form tool leaves. land=0 is a pure V; land→1 is a square wave."""
+    t = (x % period) / period
+    tri = 1.0 - np.abs(2.0 * t - 1.0)  # 0..1..0
+    k = max(0.0, min(0.98, float(land)))
+    if k <= 1e-9:
+        return tri
+    # rescale the ramp so it saturates `k/2` in from each end, then clamp: the
+    # ramps stay straight (still planar facets) and the ends go flat.
+    return np.clip((tri - k * 0.5) / max(1.0 - k, 1e-9), 0.0, 1.0)
+
+
+def _terrace(h, steps):
+    """Quantise a continuous field into `steps` flat levels with vertical
+    risers between them — how a smooth field (noise, an image heightmap)
+    becomes hard-surface: plateaus a nozzle can actually lay down, instead of a
+    slope it rounds into mush.
+
+    The top bucket is clamped to steps-1 so h == 1.0 lands ON the top level
+    rather than one past it — without that the result exceeds 1.0 and breaks the
+    [0,1] contract every caller relies on."""
+    n = max(2, int(round(steps)))
+    q = np.minimum(np.floor(np.clip(h, 0.0, 1.0) * n), n - 1)
+    return q / (n - 1.0)
+
+
+def _steps_from(sharpness):
+    """The Sharp slider doubles as the terrace count for the quantised kinds:
+    0 → 2 coarse plateaus, 1 → 12 fine ones."""
+    s = max(0.0, min(1.0, float(sharpness)))
+    return int(round(2 + s * 10))
+
+
+def _height_knurl(u, v, scale, angle, sharpness, facet=True):
     # crossed triangle-wave ridges (angle, angle+90) — classic diamond knurl.
     _, v1 = _rotate(u, v, angle)
     _, v2 = _rotate(u, v, angle + 90.0)
+    if facet:
+        # MIN of the two groove profiles, not their product. A product of two
+        # linear ramps is a BILINEAR SADDLE — every cell curves, which is what
+        # made this read as soft bumps instead of knurling. min() is what two
+        # crossed V-grooves actually cut: planar facets, straight ridges.
+        return np.minimum(_trapezoid(v1, scale, sharpness), _trapezoid(v2, scale, sharpness))
     h = _tri_wave(v1, scale) * _tri_wave(v2, scale)
     return _sharpen(h, sharpness)
 
 
-def _height_hex(u, v, scale):
+def _height_hex(u, v, scale, sharpness=0.5, facet=True):
     # 3-direction cosine interference sum — a closed-form honeycomb pattern
     # (no lattice nearest-neighbor search needed), normalized to [0,1].
     root3 = math.sqrt(3.0)
     a = np.cos(2 * np.pi * u / scale)
     b = np.cos(2 * np.pi * (u * 0.5 - v * root3 * 0.5) / scale)
     c = np.cos(2 * np.pi * (u * 0.5 + v * root3 * 0.5) / scale)
-    return np.clip((a + b + c) / 3.0 * 0.5 + 0.5, 0.0, 1.0)
+    h = np.clip((a + b + c) / 3.0 * 0.5 + 0.5, 0.0, 1.0)
+    if not facet:
+        return h
+    # flat-topped mesas with straight walls: threshold the smooth field, then
+    # keep a short linear ramp so the wall is a real (steep) facet rather than a
+    # vertical cliff the sampler can't represent
+    k = 0.10 + 0.35 * (1.0 - max(0.0, min(1.0, sharpness)))  # wall width
+    return np.clip((h - 0.5 + k * 0.5) / k, 0.0, 1.0)
 
 
-def _height_waves(u, v, scale, angle, sharpness):
+def _height_waves(u, v, scale, angle, sharpness, facet=True):
     u1, _ = _rotate(u, v, angle)
+    if facet:
+        return _trapezoid(u1, scale, sharpness)
     h = 0.5 + 0.5 * np.sin(2 * np.pi * u1 / scale)
     return _sharpen(h, sharpness)
 
 
-def _height_ribs(u, v, scale, angle, sharpness):
+def _height_ribs(u, v, scale, angle, sharpness, facet=True):
     u1, _ = _rotate(u, v, angle)
+    if facet:
+        return _trapezoid(u1, scale, sharpness)
     return _sharpen(_tri_wave(u1, scale), sharpness)
 
 
-def _height_voronoi(u, v, scale, seed):
+def _height_voronoi(u, v, scale, seed, sharpness=0.5, facet=True):
     from scipy.spatial import cKDTree
 
     rng = np.random.default_rng(int(seed))
@@ -186,7 +258,14 @@ def _height_voronoi(u, v, scale, seed):
     pts = np.stack([gu.ravel(), gv.ravel()], axis=1)
     tree = cKDTree(pts)
     d, _ = tree.query(np.stack([u, v], axis=1), workers=-1)
-    return np.clip(d / (scale * 0.5), 0.0, 1.0)
+    h = np.clip(d / (scale * 0.5), 0.0, 1.0)
+    if not facet:
+        return h
+    # flat cell floors with steep walls: the raw distance field is a smooth cone
+    # per cell (a dome once displaced). Clamping the outer band flat leaves a
+    # planar floor and a straight wall at the cell boundary.
+    k = 0.15 + 0.45 * (1.0 - max(0.0, min(1.0, sharpness)))
+    return np.clip(h / max(k, 1e-9), 0.0, 1.0)
 
 
 def _lerp(a, b, t):
@@ -262,24 +341,34 @@ def _height_image(u, v, image_path, u_range, v_range):
 
 def height_field(kind, spec, u_mm, v_mm, u_range=None, v_range=None):
     """Return a [0,1] "raggedness" field (0=valley, 1=peak) for the given kind, as a
-    plain vectorized numpy computation over the u_mm/v_mm coordinate arrays."""
+    plain vectorized numpy computation over the u_mm/v_mm coordinate arrays.
+
+    `spec["profile"]` selects hard-surface (`"facet"`, the default — planar
+    facets and real creases, which is what survives a 3D print) or the original
+    smooth fields (`"round"`). `sharpness` is reused per profile rather than
+    adding a control: under facet it is the flat-LAND fraction for the periodic
+    kinds, the wall width for the cellular ones, and the terrace count for the
+    continuous ones."""
     scale = max(float(spec.get("scale", 2.0)), 0.05)
     angle = float(spec.get("angle", 0.0))
     sharpness = float(spec.get("sharpness", 0.5))
+    facet = _is_facet(spec)
     if kind == "knurl":
-        return _height_knurl(u_mm, v_mm, scale, angle, sharpness)
+        return _height_knurl(u_mm, v_mm, scale, angle, sharpness, facet)
     if kind == "hex":
-        return _height_hex(u_mm, v_mm, scale)
+        return _height_hex(u_mm, v_mm, scale, sharpness, facet)
     if kind == "waves":
-        return _height_waves(u_mm, v_mm, scale, angle, sharpness)
+        return _height_waves(u_mm, v_mm, scale, angle, sharpness, facet)
     if kind == "ribs":
-        return _height_ribs(u_mm, v_mm, scale, angle, sharpness)
+        return _height_ribs(u_mm, v_mm, scale, angle, sharpness, facet)
     if kind == "voronoi":
-        return _height_voronoi(u_mm, v_mm, scale, spec.get("seed", 0))
+        return _height_voronoi(u_mm, v_mm, scale, spec.get("seed", 0), sharpness, facet)
     if kind == "noise":
-        return _height_noise(u_mm, v_mm, scale, spec.get("seed", 0), spec.get("octaves", 3))
+        h = _height_noise(u_mm, v_mm, scale, spec.get("seed", 0), spec.get("octaves", 3))
+        return _terrace(h, _steps_from(sharpness)) if facet else h
     if kind == "image":
-        return _height_image(u_mm, v_mm, spec["imagePath"], u_range, v_range)
+        h = _height_image(u_mm, v_mm, spec["imagePath"], u_range, v_range)
+        return _terrace(h, _steps_from(sharpness)) if facet else h
     raise ValueError(f"unknown texture kind: {kind}")
 
 
@@ -343,7 +432,8 @@ def _points_in_polygon(pts, ring_a, ring_b, chunk=4096):
 
 
 def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
-                                angle_deg, target_edge_mm, max_tris):
+                                angle_deg, target_edge_mm, max_tris,
+                                pattern_period=0.0):
     """PLANAR faces: retessellate with a regular sample grid ROTATED to the
     pattern angle, instead of subdividing the axis-aligned base triangulation.
     A diagonal pattern sampled on an axis-aligned grid beats against it — the
@@ -374,6 +464,52 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     area = float(np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum() * 0.5)
     spacing = max(target_edge_mm, math.sqrt(2.2 * area / max(max_tris, 100)))
 
+    # Lock the spacing to a whole number of samples per pattern PERIOD. Without
+    # this the grid and the pattern beat against each other: a ridge lands at a
+    # drifting phase between two samples and gets sliced off flat at whatever
+    # height the samples happen to bracket, so crests come out uneven and
+    # rounded. Snapping puts every crest and trough exactly ON a grid line.
+    # Only when we can already afford >=2 samples per period — below that,
+    # snapping would multiply the triangle count, and displace_face's wavelength
+    # clamp already handles under-sampling by showing a coarser pattern.
+    period = float(pattern_period or 0.0)
+    if period > 0.0 and spacing <= period * 0.5:
+        spacing = period / max(2, round(period / spacing))
+
+    # DENSIFY THE BOUNDARY RING to the sample spacing. It used to be kept
+    # verbatim from the base triangulation, which on a real part means a handful
+    # of nodes: measured on a filleted body, 20 ring vertices with the longest
+    # edge 18mm against a 2mm pattern period. Along an edge like that the mesh
+    # has NO vertices to carry the pattern, so the strip between the rim and the
+    # first interior grid row comes out flat and smeared no matter how fine the
+    # interior is — the visible "band" around a textured face.
+    #
+    # The crack-free invariant is preserved: every new point is a linear
+    # interpolation along the EXISTING boundary polyline, so it lies exactly on
+    # the segment the neighbouring face spans (and this chart is affine — the
+    # fit_err check below enforces it — so lerping uv/xyz is exact, not an
+    # approximation). They are still boundary vertices, so the taper leaves them
+    # undisplaced and the seam stays flush.
+    base_uv0 = np.asarray(base_uv, dtype=np.float64)
+    base_xyz0 = np.asarray(base_pts, dtype=np.float64)
+    bnd_ids = np.unique(np.asarray(boundary, dtype=np.int64).ravel())
+    # originals first and verbatim (bit-identical, which the invariant needs)
+    r_mm = [P_mm[bnd_ids]]
+    r_uv = [base_uv0[bnd_ids]]
+    r_xyz = [base_xyz0[bnd_ids]]
+    for i0, i1 in boundary:
+        seg_len = float(np.hypot(*(P_mm[i1] - P_mm[i0])))
+        n_sub = int(math.ceil(seg_len / spacing))
+        if n_sub < 2:
+            continue  # already shorter than a sample step
+        t = np.arange(1, n_sub, dtype=np.float64)[:, None] / n_sub  # strictly interior
+        r_mm.append(P_mm[i0] + (P_mm[i1] - P_mm[i0]) * t)
+        r_uv.append(base_uv0[i0] + (base_uv0[i1] - base_uv0[i0]) * t)
+        r_xyz.append(base_xyz0[i0] + (base_xyz0[i1] - base_xyz0[i0]) * t)
+    ring_mm = np.concatenate(r_mm)
+    ring_uv = np.concatenate(r_uv)
+    ring_xyz = np.concatenate(r_xyz)
+
     # rotated regular grid over the face bbox, kept strictly interior.
     # Pattern chart convention MUST match _rotate() in the height fields:
     # u1 = u·cosθ − v·sinθ (crest lines of waves/ribs run along constant u1),
@@ -393,8 +529,7 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     gu, gv = GX.ravel(), GY.ravel()
     G_all = np.stack([gu * ca + gv * sa, -gu * sa + gv * ca], axis=1)  # inverse rotation
     inside = _points_in_polygon(G_all, ring_a, ring_b)
-    bnd_ids = np.unique(np.asarray(boundary, dtype=np.int64).ravel())
-    d_bnd, _ = cKDTree(P_mm[bnd_ids]).query(G_all, workers=-1)
+    d_bnd, _ = cKDTree(ring_mm).query(G_all, workers=-1)
     ni, nj = len(gx), len(gy)
     kept = (inside & (d_bnd > 0.6 * spacing)).reshape(ni, nj)
 
@@ -404,7 +539,7 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     # differently per cell: visible "roped" beading along otherwise-straight
     # crests. A fixed diagonal removes that entirely.) Delaunay is only used
     # for the irregular band stitching the grid region to the boundary ring.
-    n_ring = len(bnd_ids)
+    n_ring = len(ring_mm)
     gidx = np.full((ni, nj), -1, dtype=np.int64)
     gidx[kept] = n_ring + np.arange(int(kept.sum()))
     G = G_all.reshape(ni, nj, 2)[kept]
@@ -423,7 +558,7 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     band_mask = kept & ~surrounded
     band_ids = np.concatenate([np.arange(n_ring), gidx[band_mask]])
 
-    V_mm = np.concatenate([P_mm[bnd_ids], G])
+    V_mm = np.concatenate([ring_mm, G])
     if len(V_mm) < 4:
         raise ValueError("too few vertices")
     band_pts = V_mm[band_ids]
@@ -446,7 +581,8 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     if len(tris) == 0:
         raise ValueError("empty after filtering")
 
-    # map back: boundary verts keep their ORIGINAL uv/xyz verbatim; grid points
+    # map back: ring verts carry their exact on-edge uv/xyz (originals verbatim,
+    # densified ones lerped along the same segments); grid points
     # go through affine fits (exact on a plane — uv and xyz are both affine in
     # the mm chart), so no per-point OCCT evaluation is needed at all
     base_uv_arr = np.asarray(base_uv, dtype=np.float64)
@@ -458,8 +594,8 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     if fit_err > max(1e-4, spacing * 1e-3):
         raise ValueError("non-affine chart (not a plane?)")
     GM = np.column_stack([G, np.ones(len(G))])
-    uv_out = np.concatenate([base_uv_arr[bnd_ids], GM @ A_uv])
-    pts_out = np.concatenate([base_pts_arr[bnd_ids], GM @ A_xyz])
+    uv_out = np.concatenate([ring_uv, GM @ A_uv])
+    pts_out = np.concatenate([ring_xyz, GM @ A_xyz])
 
     # winding: match the base triangulation's outward orientation
     n_ref = np.cross(base_pts_arr[tri_idx[0, 1]] - base_pts_arr[tri_idx[0, 0]],
@@ -723,6 +859,7 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
             pts, uv, tris = _aligned_grid_triangulation(
                 base_pts, base_uv, base_tris, bu_mm, bv_mm,
                 float(spec.get("angle", 0.0)), target_edge_mm, cap,
+                pattern_period=scale,
             )
         except Exception:
             pts = None
@@ -738,7 +875,7 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
 
     u_mm, v_mm = _face_uv_to_mm(surf, uv_arr[:, 0], uv_arr[:, 1])
 
-    inset_mm = max(float(spec.get("boundaryInset", 1.0)), 0.0)
+    inset_mm = max(float(spec.get("boundaryInset", 0.0)), 0.0)
     taper, edge_count = _boundary_taper(pts_arr, tris, inset_mm)
     manifold_ok, manifold_bad = _manifold_check(edge_count)
 
@@ -758,11 +895,16 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
     }
 
 
-def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_id=None):
+def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_id=None,
+                  split_creases=False):
     """Return (positions, indices, normals) — a LOCAL (0-based) flat mesh for one
-    textured face plus analytic per-vertex displaced normals, ready for the
-    caller to offset and append into the global buffers (same convention
-    tessellate()'s own per-face loop already uses)."""
+    textured face plus per-vertex displaced normals, ready for the caller to
+    offset and append into the global buffers (same convention tessellate()'s
+    own per-face loop already uses).
+
+    `split_creases` (VIEWPORT ONLY — see the flat-shading note at the return)
+    emits the face non-indexed with per-triangle normals, so a faceted profile
+    reads as hard surface instead of being smoothed across its creases."""
     from OCP.TopAbs import TopAbs_Orientation
 
     flip = face.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED
@@ -770,7 +912,7 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
     scale = max(float(spec.get("scale", 2.0)), 0.05)
     target_edge_mm = max(scale / 4.0, 0.05)  # ~4 samples per pattern wavelength
     cap = density_cap if density_cap else _DEFAULT_DENSITY_CAP
-    inset_mm = max(float(spec.get("boundaryInset", 1.0)), 0.0)
+    inset_mm = max(float(spec.get("boundaryInset", 0.0)), 0.0)
 
     key = _geometry_key(face, tri, flip, scale, float(spec.get("angle", 0.0)), inset_mm, cap)
     geom = _GEOM_CACHE.pop(key, None)
@@ -846,5 +988,34 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
             "resolved": geom["tris"], "confidence": 0.0, "lossy": True,
             "reason": f"{geom['manifold_bad']} non-manifold edge(s) in textured region (mesh crack risk)",
         })
+
+    if split_creases and _is_facet(spec):
+        # HARD-SURFACE SHADING. A shared vertex can carry only ONE normal, so on
+        # a creased surface it is forced to average the two facets that meet
+        # there — which is exactly why sharp geometry still rendered soft. Emit
+        # the face non-indexed (3 vertices per triangle) with each triangle's own
+        # geometric normal.
+        #
+        # VIEWPORT ONLY, deliberately: positions/indices from here also feed
+        # STL/3MF export, and de-indexing a 3MF means shared edges no longer
+        # share a vertex index — geometrically watertight but flagged as
+        # non-manifold by some slicers. Printing correctness beats shading, so
+        # the export path keeps the indexed mesh (STL is non-indexed regardless).
+        idx = np.asarray(geom["flat_indices"], dtype=np.int64).reshape(-1, 3)
+        tri_pts = disp[idx]  # (T, 3, 3)
+        fn = np.cross(tri_pts[:, 1] - tri_pts[:, 0], tri_pts[:, 2] - tri_pts[:, 0])
+        ln = np.linalg.norm(fn, axis=1)
+        ln[ln < 1e-12] = 1.0
+        fn /= ln[:, None]
+        # keep the winding-derived normal pointing the same way the smooth
+        # normals did (a REVERSED face would otherwise light inside-out)
+        flipped = (fn * disp_normals[idx[:, 0]]).sum(axis=1) < 0.0
+        fn[flipped] *= -1.0
+        out_pts = tri_pts.reshape(-1, 3)
+        return (
+            out_pts.ravel().tolist(),
+            list(range(len(out_pts))),
+            np.repeat(fn, 3, axis=0).ravel().tolist(),
+        )
 
     return disp.ravel().tolist(), geom["flat_indices"], disp_normals.ravel().tolist()

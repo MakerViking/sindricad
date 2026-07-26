@@ -92,6 +92,10 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, densi
                     local_pos, local_idx, local_norm = displace_face(
                         face, tri, loc, loc.IsIdentity(), spec, density_cap,
                         diag=diag, feature_id=spec.get("feature_id"),
+                        # normals_out is the viewport payload's channel, so it is
+                        # also the signal that this is the DISPLAY tessellation —
+                        # the only place crease-splitting is safe (see displace_face)
+                        split_creases=normals_out is not None,
                     )
                     base = len(positions) // 3
                     positions.extend(local_pos)

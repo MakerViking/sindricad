@@ -17,6 +17,8 @@ export interface TextureValues {
   angle: number;
   offset: number;
   sharpness: number;
+  profile: "facet" | "round";
+  boundaryInset: number;
   direction: "out" | "in" | "both";
   seed: number;
   invert: boolean;
@@ -149,6 +151,16 @@ export class TexturePanel {
     kind.value = opts.initial.kind ?? "knurl";
     row(label("Kind"), kind);
 
+    // Hard surface is the default: planar facets and real creases are what a
+    // printer can actually reproduce. "Smooth" restores the original fields.
+    const profile = document.createElement("select");
+    inputStyle(profile);
+    Object.assign(profile.style, { flex: "1" });
+    profile.appendChild(new Option("Faceted (hard surface)", "facet"));
+    profile.appendChild(new Option("Smooth", "round"));
+    profile.value = opts.initial.profile ?? "facet";
+    row(label("Profile"), profile);
+
     const depth = numberInput(opts.initial.depth ?? 0.4, "0.01");
     inputStyle(depth);
     const scale = numberInput(opts.initial.scale ?? 2, "0.01");
@@ -162,7 +174,17 @@ export class TexturePanel {
     sharpness.min = "0";
     sharpness.max = "1";
     inputStyle(sharpness);
-    const angleRow = row(label("Angle°"), angle, label("Sharp"), sharpness);
+    // the same slider means different things per profile, so it says which
+    const sharpLabel = label("Sharp");
+    const syncSharpLabel = () => {
+      sharpLabel.textContent = profile.value === "facet" ? "Land" : "Sharp";
+      sharpLabel.title = profile.value === "facet"
+        ? "Flat land on the crests: 0 = pure V-groove peaks, 1 = wide flat tops"
+        : "Crispness of the smooth profile";
+    };
+    syncSharpLabel();
+    profile.addEventListener("change", syncSharpLabel);
+    const angleRow = row(label("Angle°"), angle, sharpLabel, sharpness);
     const direction = document.createElement("select");
     inputStyle(direction);
     Object.assign(direction.style, { flex: "1" });
@@ -244,7 +266,12 @@ export class TexturePanel {
     inputStyle(offset);
     const offsetRow = document.createElement("div");
     Object.assign(offsetRow.style, { display: "flex", gap: "6px", alignItems: "center" });
-    offsetRow.append(label("Offset"), offset);
+    const edgeBlend = numberInput(opts.initial.boundaryInset ?? 0, "0.05");
+    edgeBlend.min = "0";
+    inputStyle(edgeBlend);
+    offsetRow.append(label("Offset"), offset, label("Edge blend"), edgeBlend);
+    offsetRow.title =
+      "Edge blend: mm the pattern fades over at a face boundary. 0 = a clean machined cut-off.";
     details.appendChild(offsetRow);
 
     const note = document.createElement("div");
@@ -259,6 +286,8 @@ export class TexturePanel {
       angle: parseFloat(angle.value) || 0,
       offset: parseFloat(offset.value) || 0,
       sharpness: parseFloat(sharpness.value) || 0,
+      profile: profile.value as TextureValues["profile"],
+      boundaryInset: Math.max(0, parseFloat(edgeBlend.value) || 0),
       direction: direction.value as TextureValues["direction"],
       seed: parseFloat(seed.value) || 1,
       invert: invert.checked,
@@ -267,7 +296,7 @@ export class TexturePanel {
     });
 
     const emit = () => this.onChange?.(this.read!());
-    for (const el of [depth, scale, angle, sharpness, direction, seed, invert, offset, colorSlot]) {
+    for (const el of [depth, scale, angle, sharpness, profile, direction, seed, invert, offset, edgeBlend, colorSlot]) {
       el.addEventListener("input", emit);
       el.addEventListener("change", emit);
     }

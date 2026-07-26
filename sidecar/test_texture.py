@@ -301,6 +301,197 @@ def test_texture_targets_bound_body_not_active_in_multibody():
     print(PASS, "texture honors bound `body` over active-body fallback (multi-body)")
 
 
+def test_faceted_profile_is_piecewise_planar():
+    """The hard-surface claim, measured. A faceted profile puts ALL its curvature
+    at the creases and none in between (median 2nd difference exactly 0); the
+    round profile spreads curvature over the whole cell, which is what read as
+    soft bumps. knurl's old field was tri*tri — a product of two linear ramps is
+    a BILINEAR SADDLE, so every cell curved."""
+    x = np.linspace(0.0, 6.0, 301)
+    y = np.zeros_like(x)
+    for kind in ("knurl", "waves", "ribs", "hex", "noise"):
+        spec = {"scale": 2.0, "angle": 45.0, "sharpness": 0.3, "seed": 1, "octaves": 3}
+        facet = np.asarray(texture.height_field(kind, dict(spec, profile="facet"), x, y), dtype=float)
+        round_ = np.asarray(texture.height_field(kind, dict(spec, profile="round"), x, y), dtype=float)
+        med_f = float(np.median(np.abs(np.diff(facet, 2))))
+        med_r = float(np.median(np.abs(np.diff(round_, 2))))
+        assert med_f < 1e-12, f"{kind} facet should be flat between creases, median |2nd| = {med_f}"
+        assert med_r > 1e-9, f"{kind} round should be curved throughout, median |2nd| = {med_r}"
+        assert np.abs(np.diff(facet, 2)).max() > 1e-6, f"{kind} facet has no creases at all"
+    print(PASS, "faceted profiles are piecewise planar; round profiles are curved throughout")
+
+
+def test_knurl_facet_is_min_of_grooves_not_bilinear_product():
+    """Two crossed V-grooves cut a MIN, not a product. At the centre of a cell
+    both grooves are at full height, so min() is 1 while the product is also 1 —
+    the two disagree off-axis, where the product's saddle sags."""
+    s = 2.0
+    # A 2D grid, not a line: along v=0 both grooves collapse to the same value
+    # and min() == product trivially. The two only separate where BOTH grooves
+    # are partway down — e.g. (0.25s, 0.25s): min=0.5 but product=0.25.
+    g = np.linspace(0.05, 0.95, 11) * s
+    U, V = np.meshgrid(g, g)
+    u, v = U.ravel(), V.ravel()
+    facet = texture._height_knurl(u, v, s, 0.0, 0.0, facet=True)
+    product = texture._height_knurl(u, v, s, 0.0, 0.0, facet=False)
+    _, v1 = texture._rotate(u, v, 0.0)
+    _, v2 = texture._rotate(u, v, 90.0)
+    expect = np.minimum(texture._tri_wave(v1, s), texture._tri_wave(v2, s))
+    assert np.allclose(facet, expect), f"facet knurl should be min-of-grooves, got {facet}"
+    assert not np.allclose(facet, product), "facet and round knurl must differ"
+    # the product SAGS below the true groove surface everywhere they differ —
+    # that sag is the bilinear saddle that made this read as soft bumps
+    assert np.all(product <= facet + 1e-12), "the bilinear product should never exceed min-of-grooves"
+    assert (facet - product).max() > 0.2, "the saddle sag should be substantial"
+    print(PASS, "faceted knurl is min-of-two-grooves, not the bilinear product")
+
+
+def test_terrace_quantises_into_flat_levels():
+    h = np.linspace(0.0, 1.0, 500)
+    for steps in (2, 5, 12):
+        levels = np.unique(np.round(texture._terrace(h, steps), 9))
+        assert len(levels) == steps, f"{steps} steps should give {steps} levels, got {len(levels)}"
+    # the Sharp slider drives the count for the continuous kinds
+    assert texture._steps_from(0.0) == 2
+    assert texture._steps_from(1.0) == 12
+    print(PASS, "terracing quantises noise/image into exactly N flat levels")
+
+
+def test_trapezoid_land_widens_the_flat_top():
+    x = np.linspace(0.0, 2.0, 401)
+    pure_v = texture._trapezoid(x, 2.0, 0.0)
+    landed = texture._trapezoid(x, 2.0, 0.6)
+    at_top = lambda h: int(np.sum(h > 0.999))
+    assert at_top(pure_v) <= 2, "land=0 is a pure V: only the apex reaches full height"
+    assert at_top(landed) > 10, "land>0 must produce a real flat crest"
+    assert landed.max() <= 1.0 + 1e-12 and landed.min() >= -1e-12
+    print(PASS, "trapezoid land widens the crest without leaving [0,1]")
+
+
+def test_hard_edge_keeps_boundary_pinned_but_full_depth_inside():
+    """The crack-free invariant under the new inset=0 default. Boundary vertices
+    MUST stay at exactly zero displacement (a neighbouring untextured face meets
+    them, and any drift is a visible crack / broken export) while the first
+    interior sample already carries full depth — that is the machined cut-off
+    look, as opposed to the old 1mm fade."""
+    n = 5
+    pts_arr = np.array([(i, j, 0.0) for j in range(n) for i in range(n)], dtype=float)
+    vid = lambda i, j: j * n + i
+    tris = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a, b, c, d = vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1)
+            tris += [(a, b, c), (a, c, d)]
+    taper, _ = texture._boundary_taper(pts_arr, tris, inset_mm=0.0)
+    for idx in (vid(0, 0), vid(n - 1, 0), vid(0, n - 1), vid(2, 0)):
+        assert taper[idx] == 0.0, f"boundary vertex {idx} must be EXACTLY 0, got {taper[idx]}"
+    assert taper[vid(1, 1)] == 1.0, "the first interior sample should be at full depth, not faded"
+    print(PASS, "hard edge: boundary pinned at exactly zero, full depth one sample in")
+
+
+def test_faceted_display_splits_creases_but_export_stays_indexed():
+    """Hard shading needs unshared vertices (one vertex can carry one normal),
+    but de-indexing the EXPORT mesh would leave a 3MF whose shared edges no
+    longer share a vertex index — watertight, yet flagged non-manifold by some
+    slicers. Display splits; export must not."""
+    from tessellate import tessellate
+
+    doc = {"parameters": {}, "features": [
+        {"id": "b", "type": "box", "length": 30, "width": 30, "height": 10},
+        {"id": "t", "type": "texture", "kind": "knurl",
+         "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]},
+         "depth": 0.4, "scale": 2.0, "angle": 45, "profile": "facet"}]}
+    _p, errs, bodies = rebuild(doc)
+    assert not errs, errs
+    tex = texture.resolve_body_textures(bodies[0])
+
+    norms = []
+    d_pos, d_idx, _ = tessellate(bodies[0]["shape"], 0.05, textures=tex, normals_out=norms)
+    e_pos, e_idx, _ = tessellate(bodies[0]["shape"], 0.05, textures=tex, normals_out=None)
+
+    assert len(d_idx) == len(e_idx), "crease splitting must not change the TRIANGLE count"
+    assert len(d_pos) > len(e_pos), "display should un-share vertices for flat shading"
+    # export keeps vertices shared: far fewer than 3 per triangle
+    assert len(e_pos) // 3 < len(e_idx), "export mesh must stay indexed for 3MF"
+    print(PASS, f"display splits creases ({len(d_pos)//3} verts), export stays indexed ({len(e_pos)//3})")
+
+
+def test_every_kind_meshes_cleanly_at_the_faceted_default():
+    """No kind may crash, go non-manifold, or produce NaNs now that facet is the
+    default for all of them."""
+    from tessellate import tessellate
+
+    for kind in ("knurl", "hex", "waves", "ribs", "voronoi", "noise"):
+        doc = {"parameters": {}, "features": [
+            {"id": "b", "type": "box", "length": 20, "width": 20, "height": 10},
+            {"id": "t", "type": "texture", "kind": kind,
+             "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]},
+             "depth": 0.3, "scale": 2.0, "seed": 3}]}
+        _p, errs, bodies = rebuild(doc)
+        assert not errs, f"{kind}: {errs}"
+        tex = texture.resolve_body_textures(bodies[0])
+        assert tex, f"{kind}: texture did not resolve"
+        diag = []
+        pos, idx, _ = tessellate(bodies[0]["shape"], 0.05, textures=tex, diag=diag, normals_out=[])
+        assert np.all(np.isfinite(np.asarray(pos, dtype=float))), f"{kind}: non-finite positions"
+        assert len(idx) > 0, f"{kind}: no triangles"
+        bad = [d for d in diag if "non-manifold" in str(d.get("reason", ""))]
+        assert not bad, f"{kind}: {bad}"
+    print(PASS, "every kind meshes cleanly, finite and manifold, at the faceted default")
+
+
+def test_boundary_ring_is_dense_enough_to_carry_the_pattern():
+    """The edge-band bug. _aligned_grid_triangulation used to keep the boundary
+    ring VERBATIM from OCCT's base triangulation — on a real filleted part that
+    was 20 vertices with an 18mm longest edge against a 2mm pattern period, so
+    the strip along the rim had no vertices to undulate with and came out flat
+    and smeared however fine the interior got.
+
+    The ring is now subdivided to the sample spacing. The invariant that must
+    hold alongside it: every ring vertex still lies EXACTLY on the real face
+    (they are lerps along the existing boundary polyline), or the seam against
+    the neighbouring face opens a crack."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.TopLoc import TopLoc_Location
+    import OCP.gp as gp
+
+    # a face with a long straight boundary edge, which is where it went wrong
+    doc = {"parameters": {}, "features": [
+        {"id": "b", "type": "box", "length": 40, "width": 40, "height": 10},
+        {"id": "t", "type": "texture", "kind": "knurl",
+         "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]},
+         "depth": 0.4, "scale": 2.0, "angle": 30, "profile": "facet"}]}
+    _p, errs, bodies = rebuild(doc)
+    assert not errs, errs
+    shape = bodies[0]["shape"]
+    BRepMesh_IncrementalMesh(shape.wrapped, 0.05, False, 0.5, True)
+    spec, faces = texture.resolve_body_textures(bodies[0])[0]
+    face = faces[0]
+    scale = float(spec["scale"])
+    loc = TopLoc_Location()
+    tri = BRep_Tool.Triangulation_s(face.wrapped, loc)
+    geom = texture._displacement_geometry(
+        face, tri, loc, loc.IsIdentity(), spec, scale, max(scale / 4, 0.05),
+        texture._DEFAULT_DENSITY_CAP, False,
+    )
+    pts = geom["pts"]
+    idx = np.asarray(geom["flat_indices"]).reshape(-1, 3)
+    ec = texture._boundary_edges([tuple(t_) for t_ in idx])
+    bnd = [k for k, n in ec.items() if n == 1]
+    seg = [float(np.linalg.norm(pts[a] - pts[b])) for a, b in bnd]
+    too_long = [x for x in seg if x > scale / 2.0]
+    assert not too_long, (
+        f"{len(too_long)} boundary edges exceed half a period (longest {max(seg):.2f}mm "
+        f"vs period {scale}mm) — the rim cannot carry the pattern"
+    )
+    # crack-free: the densified ring must stay ON the face, not cut corners
+    ring = np.unique(np.asarray(bnd, dtype=np.int64).ravel())
+    worst = max(face.distance_to(gp.gp_Pnt(*pts[i])) for i in ring)
+    assert worst < 1e-9, f"ring vertex drifted {worst:.2e}mm off the face — that is a crack"
+    print(PASS, f"boundary ring subdivided to {max(seg):.2f}mm (period {scale}), still exactly on the face")
+
+
 def main():
     print("Surface-texture tests")
     test_validate_texture_spec_rejects_bad_input()
@@ -315,6 +506,14 @@ def main():
     test_texture_selector_survives_downstream_fillet()
     test_texture_targets_bound_body_not_active_in_multibody()
     test_missing_image_is_feature_error_not_crash()
+    test_faceted_profile_is_piecewise_planar()
+    test_knurl_facet_is_min_of_grooves_not_bilinear_product()
+    test_terrace_quantises_into_flat_levels()
+    test_trapezoid_land_widens_the_flat_top()
+    test_hard_edge_keeps_boundary_pinned_but_full_depth_inside()
+    test_faceted_display_splits_creases_but_export_stays_indexed()
+    test_every_kind_meshes_cleanly_at_the_faceted_default()
+    test_boundary_ring_is_dense_enough_to_carry_the_pattern()
     print("ALL PASS")
 
 

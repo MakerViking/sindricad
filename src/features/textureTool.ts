@@ -26,6 +26,8 @@ const defaultValues = (): TextureValues => ({
   angle: 0,
   offset: 0,
   sharpness: 0.5,
+  profile: "facet",
+  boundaryInset: 0,
   direction: "out",
   seed: 1,
   invert: false,
@@ -107,9 +109,9 @@ export class TextureTool {
     if (this.active) return false;
     const f = this.store.document.features.find((x) => x.id === featureId);
     if (!f || f.type !== "texture") return false;
-    const numeric = [f.depth, f.scale, f.angle, f.offset, f.sharpness, f.seed];
+    const numeric = [f.depth, f.scale, f.angle, f.offset, f.sharpness, f.boundaryInset, f.seed];
     if (numeric.some((v) => v !== undefined && typeof v !== "number")) return false; // parameter — inspector's job
-    const fields = ["depth", "scale", "angle", "offset", "sharpness", "seed"];
+    const fields = ["depth", "scale", "angle", "offset", "sharpness", "boundaryInset", "seed"];
     if (fields.some((field) => this.store.isParamBound({ kind: "feature", feature: f.id, field })))
       return false; // parameter-driven field — inspector's job
 
@@ -127,6 +129,8 @@ export class TextureTool {
       angle: (f.angle as number) ?? 0,
       offset: (f.offset as number) ?? 0,
       sharpness: (f.sharpness as number) ?? 0.5,
+      profile: f.profile ?? "facet",
+      boundaryInset: (f.boundaryInset as number) ?? 0,
       direction: f.direction ?? "out",
       seed: (f.seed as number) ?? 1,
       invert: f.invert ?? false,
@@ -304,10 +308,19 @@ export class TextureTool {
   private kindFields(v: TextureValues): Partial<Record<string, Num | boolean | string>> {
     const extra: Partial<Record<string, Num | boolean | string>> = {};
     if (v.offset) extra.offset = v.offset;
+    // profile applies to EVERY kind, and is written out explicitly rather than
+    // relying on the sidecar default so a saved document says what it is
+    extra.profile = v.profile;
+    if (v.boundaryInset) extra.boundaryInset = v.boundaryInset;
     if (ANGLE_KINDS.has(v.kind)) {
       if (v.angle) extra.angle = v.angle;
-      if (v.sharpness) extra.sharpness = v.sharpness;
       extra.direction = v.direction;
+    }
+    // sharpness shapes the lattice/wave kinds under either profile, and under
+    // FACET it also drives the cellular wall width and the terrace count — so
+    // voronoi/noise/image need it too, which they never used to get.
+    if (ANGLE_KINDS.has(v.kind) || v.profile === "facet") {
+      if (v.sharpness) extra.sharpness = v.sharpness;
     }
     if (SEED_KINDS.has(v.kind)) extra.seed = v.seed;
     if (v.kind === "image") {
