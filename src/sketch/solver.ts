@@ -46,7 +46,21 @@ export type SConstraint =
   | { id: string; type: "equalRadiusAA"; a1: string; a2: string }
   | { id: string; type: "pointOnLine"; p: PointId; line: string }
   | { id: string; type: "pointOnPerpBisector"; p: PointId; line: string }
-  | { id: string; type: "symmetric"; a: PointId; b: PointId; line: string };
+  | { id: string; type: "symmetric"; a: PointId; b: PointId; line: string }
+  // --- edge-to-edge (rim) distances -----------------------------------------
+  // `round1`/`round2`/`round` name a CIRCLE OR ARC primitive: planegcs's Arc
+  // derives from Circle, so the same three constraints take either (verified
+  // against the installed wasm). See entityDims.rimGap / lineRimPoints /
+  // pointRimPoints for the exact measures — they are not all signed, and
+  // sketchSolve's solve guard re-checks the branch each one was created in.
+  | { id: string; type: "rimGap"; round1: string; round2: string; value: number }
+  | { id: string; type: "rimLine"; round: string; line: string; value: number }
+  | { id: string; type: "rimPoint"; p: PointId; round: string; value: number }
+  // radiusDifference: `outer.radius - inner.radius = value`, SIGNED, touching
+  // only the two radius params (planegcs `difference` over ObjectParams). The
+  // concentric wall-thickness dim — c2cdistance's nested branch is unsigned and
+  // will happily converge to an inverted annulus, so it must NOT be used here.
+  | { id: string; type: "radiusDifference"; inner: string; outer: string; value: number };
 
 export interface SolveInput {
   points: SPoint[];
@@ -195,5 +209,19 @@ function toGcsConstraint(c: SConstraint): any {
       return { id: c.id, type: "point_on_perp_bisector_pl", p_id: c.p, l_id: c.line };
     case "symmetric":
       return { id: c.id, type: "p2p_symmetric_ppl", p1_id: c.a, p2_id: c.b, l_id: c.line };
+    case "rimGap":
+      return { id: c.id, type: "c2cdistance", c1_id: c.round1, c2_id: c.round2, dist: c.value };
+    case "rimLine":
+      return { id: c.id, type: "c2ldistance", c_id: c.round, l_id: c.line, dist: c.value };
+    case "rimPoint":
+      return { id: c.id, type: "p2cdistance", p_id: c.p, c_id: c.round, distance: c.value };
+    case "radiusDifference":
+      // param2 - param1 = difference (planegcs semantics)
+      return {
+        id: c.id, type: "difference",
+        param1: { o_id: c.inner, prop: "radius" },
+        param2: { o_id: c.outer, prop: "radius" },
+        difference: c.value,
+      };
   }
 }

@@ -2,6 +2,7 @@
 // names) into plain-number entities for rendering/snapping/region detection.
 
 import type { Feature, Num, Params, SketchEntity } from "../types";
+import { dimPlaceOf } from "../types";
 import type { ResolvedEntity } from "./snap";
 import { newEntityId, noteEntityId } from "./id";
 import { expandPattern } from "./pattern";
@@ -29,6 +30,10 @@ export function resolveRealEntities(
   const out: ResolvedEntity[] = [];
   for (const e of sketch.entities) {
     const c = e.construction ? { construction: true } : {};
+    // badge label placement: plain numbers already, so it rides along unresolved
+    // (omitted when absent — byte stability, like every persisted optional)
+    const place = dimPlaceOf(e);
+    const dp = place ? { dimPlace: place } : {};
     const id = e.id ?? newEntityId();
     if (e.type === "rectangle") {
       out.push({
@@ -37,7 +42,7 @@ export function resolveRealEntities(
         height: resolveNum(e.height, params),
         x: resolveNum(e.x ?? 0, params),
         y: resolveNum(e.y ?? 0, params),
-        ...c,
+        ...c, ...dp,
       });
     } else if (e.type === "circle") {
       out.push({
@@ -45,7 +50,7 @@ export function resolveRealEntities(
         radius: resolveNum(e.radius, params),
         x: resolveNum(e.x ?? 0, params),
         y: resolveNum(e.y ?? 0, params),
-        ...c,
+        ...c, ...dp,
       });
     } else if (e.type === "line") {
       out.push({
@@ -54,7 +59,7 @@ export function resolveRealEntities(
         y1: resolveNum(e.y1, params),
         x2: resolveNum(e.x2, params),
         y2: resolveNum(e.y2, params),
-        ...c,
+        ...c, ...dp,
       });
     } else if (e.type === "arc") {
       out.push({
@@ -97,9 +102,9 @@ export function resolveRealEntities(
         ...c,
       });
     } else if (e.type === "polygon") {
-      out.push({ type: "polygon", id, x: resolveNum(e.x, params), y: resolveNum(e.y, params), radius: resolveNum(e.radius, params), sides: resolveNum(e.sides, params), angle: resolveNum(e.angle, params), ...c });
+      out.push({ type: "polygon", id, x: resolveNum(e.x, params), y: resolveNum(e.y, params), radius: resolveNum(e.radius, params), sides: resolveNum(e.sides, params), angle: resolveNum(e.angle, params), ...c, ...dp });
     } else if (e.type === "slot") {
-      out.push({ type: "slot", id, x1: resolveNum(e.x1, params), y1: resolveNum(e.y1, params), x2: resolveNum(e.x2, params), y2: resolveNum(e.y2, params), width: resolveNum(e.width, params), ...c });
+      out.push({ type: "slot", id, x1: resolveNum(e.x1, params), y1: resolveNum(e.y1, params), x2: resolveNum(e.x2, params), y2: resolveNum(e.y2, params), width: resolveNum(e.width, params), ...c, ...dp });
     } else if (e.type === "projected") {
       // structural pass-through: the cached curve is plain numbers (no Num),
       // and source/stale never resolve — they identify, not measure
@@ -131,16 +136,18 @@ export function resolveEntities(
 /** serialize a resolved (numeric) entity back to a document SketchEntity */
 export function toSketchEntity(e: ResolvedEntity): SketchEntity {
   const c = e.construction ? { construction: true } : {};
+  const place = dimPlaceOf(e);
+  const dp = place ? { dimPlace: place } : {};
   if (e.type === "rectangle")
-    return { type: "rectangle", id: e.id, width: e.width, height: e.height, x: e.x, y: e.y, ...c };
-  if (e.type === "circle") return { type: "circle", id: e.id, radius: e.radius, x: e.x, y: e.y, ...c };
+    return { type: "rectangle", id: e.id, width: e.width, height: e.height, x: e.x, y: e.y, ...c, ...dp };
+  if (e.type === "circle") return { type: "circle", id: e.id, radius: e.radius, x: e.x, y: e.y, ...c, ...dp };
   if (e.type === "arc")
     return { type: "arc", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, mx: e.mx, my: e.my, ...c };
   if (e.type === "spline")
     return { type: "spline", id: e.id, points: e.points.map((p) => ({ x: p.x, y: p.y })), ...c };
   if (e.type === "point") return { type: "point", id: e.id, x: e.x, y: e.y, ...c };
-  if (e.type === "polygon") return { type: "polygon", id: e.id, x: e.x, y: e.y, radius: e.radius, sides: e.sides, angle: e.angle, ...c };
-  if (e.type === "slot") return { type: "slot", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, width: e.width, ...c };
+  if (e.type === "polygon") return { type: "polygon", id: e.id, x: e.x, y: e.y, radius: e.radius, sides: e.sides, angle: e.angle, ...c, ...dp };
+  if (e.type === "slot") return { type: "slot", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, width: e.width, ...c, ...dp };
   if (e.type === "projected")
     return { type: "projected", id: e.id, source: e.source, curve: e.curve, ...(e.stale ? { stale: true as const } : {}), ...c };
   if (e.type === "text")
@@ -154,5 +161,5 @@ export function toSketchEntity(e: ResolvedEntity): SketchEntity {
       ...(e.boxWidth !== undefined ? { boxWidth: e.boxWidth } : {}),
       ...c,
     };
-  return { type: "line", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, ...c };
+  return { type: "line", id: e.id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, ...c, ...dp };
 }

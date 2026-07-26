@@ -46,12 +46,22 @@ export class DimInput {
     return el instanceof Node && this.root.contains(el);
   }
 
+  /** While a tool is still deciding WHERE to drop something, the box is a
+   *  heads-up readout sitting over the canvas, not a widget — a click aimed at
+   *  the canvas underneath must reach it instead of hitting ✓. Typing is
+   *  unaffected: keystrokes go to the focused input regardless of pointer-events.
+   *  Turn it back off once the click-to-place is done, or ✓/✕ become unclickable. */
+  setClickThrough(on: boolean) {
+    this.root.style.pointerEvents = on ? "none" : "";
+  }
+
   show(
     defs: DimFieldDef[],
     onCommit: (values: Record<string, number>) => void,
     onCancel?: () => void,
   ) {
     this.hide();
+    this.setClickThrough(false); // every other tool wants a clickable box
     this.onCommit = onCommit;
     this.onCancel = onCancel ?? null;
     this.active = true;
@@ -104,12 +114,16 @@ export class DimInput {
     // a pointerdown handler (e.g. extrude's pick→drag), where the browser moves
     // focus to the click target AFTER this handler returns — so re-focus next frame
     // too, or the field silently never holds focus and typing/Tab do nothing.
-    const focusFirst = () => {
-      const f = this.fields[0];
-      if (f && this.active) { f.input.focus(); f.input.select(); }
-    };
-    focusFirst();
-    requestAnimationFrame(focusFirst);
+    this.focus();
+    requestAnimationFrame(() => this.focus());
+  }
+
+  /** Focus + select the first field. show() calls it; tools whose flow keeps
+   *  clicking the canvas while the box stays open must call it again after each
+   *  click (the click blurs the input, and typing would silently go nowhere). */
+  focus() {
+    const f = this.fields[0];
+    if (f && this.active) { f.input.focus(); f.input.select(); }
   }
 
   private onKey(e: KeyboardEvent, field: Field) {
@@ -163,6 +177,14 @@ export class DimInput {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return null;
     return parseField(f.input.value, f.def.kind);
+  }
+
+  /** the field's RAW text, untouched — for callers that route input through the
+   *  expression evaluator (`w/2`, `name=expr`) instead of a bare parseField, and
+   *  that must be able to tell "empty" from "unparseable". "" when there is no
+   *  such field. */
+  getRaw(name: string): string {
+    return this.fields.find((x) => x.def.name === name)?.input.value ?? "";
   }
 
   position(screenX: number, screenY: number) {

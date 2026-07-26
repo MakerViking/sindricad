@@ -556,13 +556,14 @@ export function dimensionLineObjects(
   ents: ReturnType<typeof resolveEntities>,
   plane: SketchPlane,
   extraSegs: [THREE.Vector2, THREE.Vector2][] = [],
+  color: number = DIM_COLOR,
 ): THREE.Object3D[] {
   const segs = [...dimensionSegments(ents), ...extraSegs];
   if (!segs.length) return [];
   const pts: THREE.Vector3[] = [];
   for (const [a, b] of segs) pts.push(plane.to3D(a.x, a.y), plane.to3D(b.x, b.y));
   const g = new THREE.BufferGeometry().setFromPoints(pts);
-  const line = new THREE.LineSegments(g, lineMat(DIM_COLOR));
+  const line = new THREE.LineSegments(g, lineMat(color));
   line.renderOrder = 11;
   return [line];
 }

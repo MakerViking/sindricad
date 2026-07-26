@@ -108,10 +108,15 @@ export function applyProjectionUpdate<E extends { curve: ProjectedCurve; stale?:
 // construction geometry is referenceable but does NOT form profiles.
 // arc = 3 points: start (1), end (2), and a point it passes through (m).
 // `id` is the stable identity that constraints reference (assigned on creation).
+//
+// `dimPlace` is where a BADGE dimension's user placement lives — see the LABEL
+// PLACEMENT note below. Only the badge-bearing types carry it (the ones
+// entityDims() returns a dimension for): rectangle W/H, circle diameter,
+// polygon radius, slot length/width, line length.
 export type SketchEntity =
-  | { type: "rectangle"; id?: string; width: Num; height: Num; x?: Num; y?: Num; construction?: boolean }
-  | { type: "circle"; id?: string; radius: Num; x?: Num; y?: Num; construction?: boolean }
-  | { type: "line"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; construction?: boolean }
+  | { type: "rectangle"; id?: string; width: Num; height: Num; x?: Num; y?: Num; construction?: boolean; dimPlace?: DimPlace }
+  | { type: "circle"; id?: string; radius: Num; x?: Num; y?: Num; construction?: boolean; dimPlace?: DimPlace }
+  | { type: "line"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; construction?: boolean; dimPlace?: DimPlace }
   | { type: "arc"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; mx: Num; my: Num; construction?: boolean }
   // fit-point spline: interpolates a smooth curve through its points (≥2)
   | { type: "spline"; id?: string; points: { x: Num; y: Num }[]; construction?: boolean }
@@ -122,8 +127,8 @@ export type SketchEntity =
   // and are migrated on load) and center-to-center slot (two arc centers +
   // width). The solver treats them as fixed; they're edited via their own
   // parameter dimensions.
-  | { type: "polygon"; id?: string; x: Num; y: Num; radius: Num; sides: Num; angle: Num; construction?: boolean }
-  | { type: "slot"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; width: Num; construction?: boolean }
+  | { type: "polygon"; id?: string; x: Num; y: Num; radius: Num; sides: Num; angle: Num; construction?: boolean; dimPlace?: DimPlace }
+  | { type: "slot"; id?: string; x1: Num; y1: Num; x2: Num; y2: Num; width: Num; construction?: boolean; dimPlace?: DimPlace }
   // Fusion-parity text: filled glyph faces from a system font; extrudes like any profile
   | { type: "text"; id?: string; text: string; x?: Num; y?: Num; height: Num;
       font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";
@@ -140,6 +145,69 @@ export type SketchEntity =
 // stable id (see sketch/id.ts) — never array index — so edit operations that
 // reorder/split entities can't repoint a constraint. distance/diameter carry a
 // driving value in mm.
+//
+// LINE OPERAND IDS: a field that names a *line* (`line`, `l1`, `l2`) accepts
+// either a plain entity id, or the compound form `"<rectangleId>~<k>"` naming
+// one edge of a rectangle — k = 0..3 in rectCorners CCW order (bl→br, br→tr,
+// tr→tl, tl→bl). The solver registers those 4 implicit edges already
+// (sketchSolve's rectangle branch), so a rect edge is a first-class line
+// operand for distance/angle/perpendicular-distance dims. Note the asymmetry:
+// the constraint that NAMES such an edge is still an ordinary user constraint
+// with the ordinary `k<i>` solver id — only the operand id contains `~`
+// (`constraintIndexOf` decodes any `~` id to null, which is why the implicit
+// ids can never be blamed for a conflict). Anything that validates a line
+// operand must decode the compound form; in the sketcher that is
+// entityDims.lineOperand and SketchMode.pruneConstraints.
+//
+// LABEL PLACEMENT: a dimension's label position is user-adjustable — dragging a
+// label in the sketch persists where it went. Placement is stored in sketch MM
+// as an offset from the dim's own natural anchor, and it lives in ONE of two
+// places depending on which renderer owns the label:
+//
+//   * constraint-rendered dims (p2pDistance/p2lDistance/radius/angle and the rim
+//     family radialGap/c2cDistance/c2lDistance/p2cDistance) carry `place` on the
+//     CONSTRAINT — set by the dimension tool's placement click or by a label
+//     drag, honoured by entityDims.constraintDims.
+//   * badge dims (rectangle W/H, circle diameter, polygon radius, slot L/W, line
+//     length) have no backing constraint in the general case — a circle shows a
+//     diameter badge whether or not a `diameter` constraint exists — so their
+//     placement lives on the ENTITY, in `dimPlace`, keyed by DimField, and is
+//     honoured by entityDims(). (That's why `distance`/`diameter` constraints
+//     still carry no `place`: their label is the entity's badge.)
+//
+// What the offset MEANS is per dimension kind, and each renderer documents its
+// own rule: free 2D for a circle diameter (the vector sets the diameter line's
+// angle AND the label's distance along it), perpendicular-only for the linear
+// dims, radial-only for a polygon radius.
+export type PlaceOffset = { ox: number; oy: number };
+
+/** the dimension a badge labels on its entity — the single definition;
+ *  sketch/entityDims re-exports it as the name the sketcher uses. */
+export type DimField = "width" | "height" | "diameter" | "length" | "radius";
+/** per-entity badge label placements, keyed by which dimension they place */
+export type DimPlace = Partial<Record<DimField, PlaceOffset>>;
+
+/** Read an entity's badge label placements — safe on any entity (the ones that
+ *  can't carry placements simply never have any).
+ *
+ *  Use this, NOT `"dimPlace" in e`: the field is OPTIONAL, so an entity whose
+ *  labels have never been dragged has no such key at all, and the `in` idiom
+ *  (which TypeScript happily accepts as narrowing) reports false for every
+ *  fresh entity — placements would never be read, written, or persisted. */
+export const dimPlaceOf = (e: { type: string }): DimPlace | undefined =>
+  (e as { dimPlace?: DimPlace }).dimPlace;
+
+/** The entity types that CARRY `dimPlace` — exactly the ones entityDims() gives
+ *  a badge. The write-side guard (reading is safe on anything, see dimPlaceOf). */
+export function isBadgeEntity<T extends { type: string }>(e: T): e is T & { dimPlace?: DimPlace } {
+  switch (e.type) {
+    case "rectangle": case "circle": case "line": case "polygon": case "slot":
+      return true;
+    default:
+      return false;
+  }
+}
+
 export type SketchConstraint =
   | { type: "horizontal"; line: string }
   | { type: "vertical"; line: string }
@@ -161,10 +229,33 @@ export type SketchConstraint =
   // point on each entity: 0/1 = start/end (lines, arcs, spline ends), 0..3 =
   // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
   // resolves to its center. Point entities ignore the index.
-  | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean }
+  | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
   // p2lDistance: driving perpendicular distance from a picked point to a line
-  // entity (same `p` semantics as p2pDistance)
-  | { type: "p2lDistance"; id?: string; e: string; p: number; line: string; value: number; driven?: boolean }
+  // operand (same `p` semantics as p2pDistance; `line` may be a rect edge)
+  | { type: "p2lDistance"; id?: string; e: string; p: number; line: string; value: number; driven?: boolean; place?: PlaceOffset }
+  // --- EDGE-TO-EDGE (rim / tangent) dims ------------------------------------
+  // Fusion's "Pick Circle/Arc Tangent" family: the distance to a circle/arc's
+  // RIM rather than to its centre. Each maps to exactly one planegcs constraint
+  // (no composite ids). Operands are circle/arc entity ids (native or projected).
+  //
+  // radialGap: wall thickness between two CONCENTRIC rounds — `outer.radius -
+  // inner.radius = value`, SIGNED (planegcs `difference`, which touches only the
+  // two radius params). The inner/outer roles are frozen at creation, which is
+  // what stops the annulus solving inside-out. It is the radial gap only while
+  // the two really are concentric, so the tool adds/expects a `concentric`
+  // constraint alongside it (mirroring how a parallel-lines distance implies
+  // `parallel`).
+  | { type: "radialGap"; id?: string; inner: string; outer: string; value: number; driven?: boolean; place?: PlaceOffset }
+  // c2cDistance: minimum edge-to-edge clearance between two non-concentric
+  // rounds (planegcs `c2cdistance`). See entityDims.rimGap for the exact
+  // (two-branch) measure and sketchSolve's solve guard for the branch invariant.
+  | { type: "c2cDistance"; id?: string; c1: string; c2: string; value: number; driven?: boolean; place?: PlaceOffset }
+  // c2lDistance: distance from a round's rim to a line operand (`line` may be a
+  // rect edge), planegcs `c2ldistance`.
+  | { type: "c2lDistance"; id?: string; circle: string; line: string; value: number; driven?: boolean; place?: PlaceOffset }
+  // p2cDistance: distance from a picked point (same `p` semantics as
+  // p2pDistance) to a round's rim, planegcs `p2cdistance`.
+  | { type: "p2cDistance"; id?: string; e: string; p: number; circle: string; value: number; driven?: boolean; place?: PlaceOffset }
   // tangent: a line and a circle/arc touch (line tangent to the circle)
   | { type: "tangent"; line: string; circle: string }
   // coincident: two entity endpoints share a position. `e1`/`e2` are entity ids;
@@ -177,9 +268,9 @@ export type SketchConstraint =
   // symmetric: two endpoints mirror across a line (the symmetry axis)
   | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string }
   // angle: driving included angle (DEGREES) between two lines (solver works in radians)
-  | { type: "angle"; id?: string; l1: string; l2: string; value: number; driven?: boolean }
+  | { type: "angle"; id?: string; l1: string; l2: string; value: number; driven?: boolean; place?: PlaceOffset }
   // radius: driving radius (mm) of a circle OR arc entity `e`
-  | { type: "radius"; id?: string; e: string; value: number; driven?: boolean }
+  | { type: "radius"; id?: string; e: string; value: number; driven?: boolean; place?: PlaceOffset }
   // fix/lock: pin an entity point in place. `p` uses the dimPoint semantics
   // (0..3 = rect corner, circle center regardless of index, 2 = arc center,
   // else line/arc/spline endpoint). Fully removes that point's 2 DOF.
@@ -194,9 +285,25 @@ export type SketchConstraint =
 
 /** A driven (reference) dimension is measurement-only: the solver skips it and it
  *  renders bracketed with the live measured value. The single place that names the
- *  concept — only the placed dims (p2pDistance/p2lDistance/radius/angle) can be driven. */
+ *  concept — only the placed dims (p2pDistance/p2lDistance/radius/angle and the
+ *  rim family) can be driven. */
 export function isDriven(c: SketchConstraint): boolean {
   return (c as { driven?: boolean }).driven === true;
+}
+
+/** THE list of dimension types that carry `driven` + `place` (the ones the
+ *  dimension tool places and constraintDims renders). One predicate so the
+ *  Reference toggle, the label editor and the renderer can't drift apart. */
+export function isPlacedDim(
+  c: SketchConstraint,
+): c is Extract<SketchConstraint, { driven?: boolean }> {
+  switch (c.type) {
+    case "p2pDistance": case "p2lDistance": case "radius": case "angle":
+    case "radialGap": case "c2cDistance": case "c2lDistance": case "p2cDistance":
+      return true;
+    default:
+      return false;
+  }
 }
 
 // A parametric pattern inside a sketch. Stored as a DEFINITION (sources + params)

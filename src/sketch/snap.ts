@@ -4,7 +4,7 @@
 // fallback.
 
 import * as THREE from "three";
-import type { ProjectedCurve, ProjectedSource } from "../types";
+import type { DimPlace, ProjectedCurve, ProjectedSource } from "../types";
 import { asRound } from "./entityDims";
 
 export type SnapKind =
@@ -133,16 +133,18 @@ export function candidatesFromEntities(
 }
 
 // `id` is the stable in-session identity constraints reference (see ./id.ts).
+// `dimPlace` mirrors SketchEntity's badge-label placement (see types.ts) — it's
+// plain numbers already, so it survives resolution as a structural copy.
 export type ResolvedEntity =
-  | { type: "line"; id: string; x1: number; y1: number; x2: number; y2: number; construction?: boolean }
-  | { type: "rectangle"; id: string; width: number; height: number; x: number; y: number; construction?: boolean }
-  | { type: "circle"; id: string; radius: number; x: number; y: number; construction?: boolean }
+  | { type: "line"; id: string; x1: number; y1: number; x2: number; y2: number; construction?: boolean; dimPlace?: DimPlace }
+  | { type: "rectangle"; id: string; width: number; height: number; x: number; y: number; construction?: boolean; dimPlace?: DimPlace }
+  | { type: "circle"; id: string; radius: number; x: number; y: number; construction?: boolean; dimPlace?: DimPlace }
   | { type: "arc"; id: string; x1: number; y1: number; x2: number; y2: number; mx: number; my: number; construction?: boolean }
   | { type: "spline"; id: string; points: { x: number; y: number }[]; construction?: boolean }
   | { type: "point"; id: string; x: number; y: number; construction?: boolean }
   // parametric shapes (rigid: the solver skips them; edited via their params)
-  | { type: "polygon"; id: string; x: number; y: number; radius: number; sides: number; angle: number; construction?: boolean }
-  | { type: "slot"; id: string; x1: number; y1: number; x2: number; y2: number; width: number; construction?: boolean }
+  | { type: "polygon"; id: string; x: number; y: number; radius: number; sides: number; angle: number; construction?: boolean; dimPlace?: DimPlace }
+  | { type: "slot"; id: string; x1: number; y1: number; x2: number; y2: number; width: number; construction?: boolean; dimPlace?: DimPlace }
   | { type: "text"; id: string; text: string; x: number; y: number; height: number;
       font?: string; style?: "regular" | "bold" | "italic" | "bolditalic";
       align?: "left" | "center" | "right"; angle: number;

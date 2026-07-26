@@ -4,6 +4,7 @@
 // "<pattern.id>#<n>" — render/build-only, never targeted by constraints.
 
 import type { Num, Params, SketchPattern } from "../types";
+import { dimPlaceOf } from "../types";
 import type { ResolvedEntity } from "./snap";
 import { resolveNum } from "./resolve";
 
@@ -11,13 +12,18 @@ import { resolveNum } from "./resolve";
  *  expansion (derived copies) and the select tool's whole-entity body drag */
 export function translated(e: ResolvedEntity, dx: number, dy: number, id: string): ResolvedEntity {
   const c = e.construction ? { construction: true as const } : {};
+  // badge label placement is an offset from the dim's own anchor, so a pure
+  // translation carries it unchanged (rotate/mirror/scale deliberately drop it —
+  // a stale vector reads worse than the default placement)
+  const place = dimPlaceOf(e);
+  const dp = place ? { dimPlace: place } : {};
   switch (e.type) {
     case "line":
-      return { type: "line", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, ...c };
+      return { type: "line", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, ...c, ...dp };
     case "rectangle":
-      return { type: "rectangle", id, width: e.width, height: e.height, x: e.x + dx, y: e.y + dy, ...c };
+      return { type: "rectangle", id, width: e.width, height: e.height, x: e.x + dx, y: e.y + dy, ...c, ...dp };
     case "circle":
-      return { type: "circle", id, radius: e.radius, x: e.x + dx, y: e.y + dy, ...c };
+      return { type: "circle", id, radius: e.radius, x: e.x + dx, y: e.y + dy, ...c, ...dp };
     case "arc":
       return { type: "arc", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, mx: e.mx + dx, my: e.my + dy, ...c };
     case "spline":
@@ -25,9 +31,9 @@ export function translated(e: ResolvedEntity, dx: number, dy: number, id: string
     case "point":
       return { type: "point", id, x: e.x + dx, y: e.y + dy, ...c };
     case "polygon":
-      return { type: "polygon", id, x: e.x + dx, y: e.y + dy, radius: e.radius, sides: e.sides, angle: e.angle, ...c };
+      return { type: "polygon", id, x: e.x + dx, y: e.y + dy, radius: e.radius, sides: e.sides, angle: e.angle, ...c, ...dp };
     case "slot":
-      return { type: "slot", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, width: e.width, ...c };
+      return { type: "slot", id, x1: e.x1 + dx, y1: e.y1 + dy, x2: e.x2 + dx, y2: e.y2 + dy, width: e.width, ...c, ...dp };
     case "text":
       return { ...e, id, x: e.x + dx, y: e.y + dy };
     case "projected":

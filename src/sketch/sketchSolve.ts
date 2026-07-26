@@ -19,6 +19,7 @@ import type { ResolvedEntity } from "./snap";
 import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc } from "./solver";
 import { circumcenter } from "./arc";
 import { rectCorners } from "./region";
+import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
 import type { SketchConstraint } from "../types";
 import { isDriven, projEndSamples } from "../types";
 
@@ -145,6 +146,14 @@ export async function compileAndSolve(
         const a = cp[k], b = cp[(k + 1) % 4];
         if (a === undefined || b === undefined) continue;
         lines.push({ id: `${e.id}~${k}`, p1: a, p2: b });
+        // A rectangle edge is a USER-REFERENCEABLE line operand
+        // ("<rectId>~<k>" — see types.ts): registering it here is what makes
+        // isLine()/ends.get() accept it, so the existing distance / p2lDistance
+        // / angle compile branches take a rect edge with no further change.
+        // Side effect worth knowing: endpointPoint() now resolves `rect~k` too,
+        // so a future coincident-on-a-rect-edge would silently resolve to that
+        // edge's corner points.
+        ends.set(`${e.id}~${k}`, [a, b]);
       }
       cons.push({ id: `${e.id}~h0`, type: "horizontal", line: `${e.id}~0` }); // bottom
       cons.push({ id: `${e.id}~h2`, type: "horizontal", line: `${e.id}~2` }); // top
@@ -232,6 +241,9 @@ export async function compileAndSolve(
     return endpointPoint(entId, idx);
   };
   const isCircle = (id: string) => centers.has(id);
+  // a circle OR arc primitive — planegcs's Arc derives from Circle, so the rim
+  // (edge-to-edge) constraints accept either
+  const isRound = (id: string) => centers.has(id) || arcMap.has(id);
   // entity kind by id (line/circle/arc) — one lookup for the tangent/equal ladders
   const kindOf = (id: string): "line" | "circle" | "arc" | undefined =>
     ends.has(id) ? "line" : centers.has(id) ? "circle" : arcMap.has(id) ? "arc" : undefined;
@@ -252,7 +264,32 @@ export async function compileAndSolve(
       const p = dimPoint(c.e, c.p);
       if (p && isLine(c.line)) cons.push({ id, type: "p2lDistance", p, line: c.line, value: c.value });
     }
-    else if (c.type === "diameter") { if (centers.has(c.circle)) cons.push({ id, type: "diameter", circle: c.circle, value: c.value }); }
+    else if (c.type === "diameter") {
+      if (centers.has(c.circle)) cons.push({ id, type: "diameter", circle: c.circle, value: c.value });
+      // an ARC can carry a diameter dim too (the right-click Radius/Diameter
+      // override) — planegcs has no arc_diameter, so halve it
+      else if (arcMap.has(c.circle)) cons.push({ id, type: "arcRadius", arc: c.circle, value: c.value / 2 });
+    }
+    // --- edge-to-edge (rim) dims: one planegcs constraint each ---------------
+    else if (c.type === "radialGap") {
+      if (isRound(c.inner) && isRound(c.outer) && c.inner !== c.outer) {
+        cons.push({ id, type: "radiusDifference", inner: c.inner, outer: c.outer, value: c.value });
+      }
+    }
+    else if (c.type === "c2cDistance") {
+      if (isRound(c.c1) && isRound(c.c2) && c.c1 !== c.c2) {
+        cons.push({ id, type: "rimGap", round1: c.c1, round2: c.c2, value: c.value });
+      }
+    }
+    else if (c.type === "c2lDistance") {
+      if (isRound(c.circle) && isLine(c.line)) {
+        cons.push({ id, type: "rimLine", round: c.circle, line: c.line, value: c.value });
+      }
+    }
+    else if (c.type === "p2cDistance") {
+      const p = dimPoint(c.e, c.p);
+      if (p && isRound(c.circle)) cons.push({ id, type: "rimPoint", p, round: c.circle, value: c.value });
+    }
     else if (c.type === "tangent") { if (isLine(c.line) && isCircle(c.circle)) cons.push({ id, type: "tangentLC", line: c.line, circle: c.circle }); }
     else if (c.type === "coincident") {
       const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
@@ -366,6 +403,7 @@ export async function compileAndSolve(
     const fx = (id: string) => fixedPts.has(id);
     const fxLine = (id: string) => { const l = lineEnds.get(id); return !!l && fx(l.p1) && fx(l.p2); };
     const fxRound = (id: string) => projRounds.has(id); // center fixed AND radius pinned
+    const roundAt = (id: string) => radiusOf.get(id)!;
     const P = (id: string) => pos.get(id)!;
     const dist = (aId: string, bId: string) => { const a = P(aId), b = P(bId); return Math.hypot(a.x - b.x, a.y - b.y); };
     const lineDir = (id: string) => {
@@ -415,6 +453,26 @@ export async function compileAndSolve(
         case "pointOnLine": return fx(c.p) && fxLine(c.line) ? perpDist(c.p, c.line) : null;
         case "pointOnPerpBisector": { if (!fx(c.p) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(dist(c.p, l.p1) - dist(c.p, l.p2)); }
         case "symmetric": { if (!fx(c.a) || !fx(c.b) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; const A = P(l.p1), d = lineDir(c.line), a = P(c.a), b = P(c.b); const t = (a.x - A.x) * d.x + (a.y - A.y) * d.y; const mx = 2 * (A.x + t * d.x) - a.x, my = 2 * (A.y + t * d.y) - a.y; return Math.hypot(mx - b.x, my - b.y); }
+        // rim dims: the same measures entityDims defines, over the pinned params
+        case "rimGap": {
+          if (!fxRound(c.round1) || !fxRound(c.round2)) return null;
+          const g1 = roundAt(c.round1), g2 = roundAt(c.round2);
+          const d = dist(centerOf.get(c.round1)!, centerOf.get(c.round2)!);
+          const rd = Math.abs(g1 - g2);
+          return Math.abs((d < rd ? rd - d : d - g1 - g2) - c.value);
+        }
+        case "rimLine": {
+          if (!fxRound(c.round) || !fxLine(c.line)) return null;
+          return Math.abs((perpDist(centerOf.get(c.round)!, c.line) - roundAt(c.round)) - c.value);
+        }
+        case "rimPoint": {
+          if (!fx(c.p) || !fxRound(c.round)) return null;
+          return Math.abs(Math.abs(dist(c.p, centerOf.get(c.round)!) - roundAt(c.round)) - c.value);
+        }
+        case "radiusDifference":
+          return fxRound(c.inner) && fxRound(c.outer)
+            ? Math.abs((roundAt(c.outer) - roundAt(c.inner)) - c.value)
+            : null;
       }
     };
     for (const c of cons) {
@@ -481,9 +539,107 @@ export async function compileAndSolve(
     return e;
   });
 
+  // THE solve guard. planegcs will happily report Success / dof 0 / no conflict
+  // for a solution that drives a radius through zero, or that satisfies an
+  // edge-to-edge distance by turning the configuration inside-out (its p2c/c2l
+  // measures are unsigned, and c2cdistance's nested branch is unsigned in
+  // |r1 - r2|). Neither may reach the document: blame the constraints involved
+  // and hand back the PRE-solve geometry, so the caller's existing
+  // "keep last good on conflict" path paints a red chip instead of a broken part.
+  const badGeom = new Set<string>();
+  for (const [eid, rad] of Object.entries(r.circles)) {
+    if (!(rad > 0) || !Number.isFinite(rad)) badGeom.add(eid);
+  }
+  for (const [eid, a] of Object.entries(r.arcs)) {
+    if (!(a.radius > 0) || !Number.isFinite(a.radius)) badGeom.add(eid);
+  }
+  const guardIds = new Set<string>();
+  if (badGeom.size) {
+    for (const c of cons) {
+      if (constraintIndexOf(c.id) === null) continue; // implicit pins aren't the user's fault
+      if (roundRefs(c).some((id) => badGeom.has(id))) guardIds.add(c.id);
+    }
+  }
+  // branch invariants: a rim dim must still describe the SAME configuration it
+  // was created in (see entityDims.rimGap for why the branches can't be trusted)
+  if (constraints.some(isRimDim)) {
+    const beforeById = new Map(entities.map((e) => [e.id, e]));
+    const afterById = new Map(out.map((e) => [e.id, e]));
+    constraints.forEach((c, i) => {
+      if (isDriven(c) || !isRimDim(c)) return;
+      const cls = rimBranch(c, beforeById);
+      if (cls !== null && cls !== rimBranch(c, afterById)) guardIds.add(constraintKey(i));
+    });
+  }
+  if (guardIds.size || badGeom.size) {
+    for (const id of guardIds) if (!conflicts.includes(id)) conflicts.push(id);
+    return {
+      entities, dof: r.dof, ok: false, conflicts,
+      overDefined: [...redundant, ...r.partiallyRedundant],
+      ...(dragRefused ? { dragRefused } : {}),
+    };
+  }
+
   return {
     entities: out, dof: r.dof, ok: r.ok && conflicts.length === r.conflicts.length,
     conflicts, overDefined: [...redundant, ...r.partiallyRedundant],
     ...(dragRefused ? { dragRefused } : {}),
   };
+}
+
+/** the round (circle/arc) entity ids a compiled constraint names — the blame
+ *  list when one of them solves to a non-positive radius */
+function roundRefs(c: SConstraint): string[] {
+  switch (c.type) {
+    case "diameter": case "circleRadius": return [c.circle];
+    case "arcRadius": return [c.arc];
+    case "rimGap": return [c.round1, c.round2];
+    case "rimLine": case "rimPoint": return [c.round];
+    case "radiusDifference": return [c.inner, c.outer];
+    case "tangentLC": return [c.circle];
+    case "tangentLA": return [c.arc];
+    case "tangentCC": case "equalRadiusCC": return [c.c1, c.c2];
+    case "tangentCA": case "equalRadiusCA": return [c.circle, c.arc];
+    case "tangentAA": case "equalRadiusAA": return [c.a1, c.a2];
+    default: return [];
+  }
+}
+
+/** the rim dims whose configuration `rimBranch` classifies. `radialGap` is
+ *  deliberately absent: `difference` is signed, so it cannot invert an annulus
+ *  on its own (the negative-radius half of the guard covers the rest). */
+const isRimDim = (c: SketchConstraint): boolean =>
+  c.type === "c2cDistance" || c.type === "p2cDistance" || c.type === "c2lDistance";
+
+/** The configuration class a rim dimension describes, for the geometry in
+ *  `byId` — null for anything that isn't a rim dim (or whose operands are gone,
+ *  where there is nothing to compare). Comparing it before and after a solve is
+ *  what stops an annulus inverting, a point crossing a rim, or a circle hopping
+ *  to the other side of a line while the typed number stays "satisfied". */
+function rimBranch(c: SketchConstraint, byId: Map<string, ResolvedEntity>): string | null {
+  const round = (id: string): Round | null => {
+    const e = byId.get(id);
+    return e ? asRound(e) : null;
+  };
+  if (c.type === "c2cDistance") {
+    const a = round(c.c1), b = round(c.c2);
+    return a && b ? `nest:${rimNesting(a, b)}` : null;
+  }
+  if (c.type === "p2cDistance") {
+    const e = byId.get(c.e);
+    const p = e ? refPoint(e, c.p) : null;
+    const cc = round(c.circle);
+    if (!p || !cc) return null;
+    return `side:${Math.hypot(p.x - cc.x, p.y - cc.y) >= cc.r ? "out" : "in"}`;
+  }
+  if (c.type === "c2lDistance") {
+    const cc = round(c.circle);
+    const seg = lineOperand(byId, c.line);
+    if (!cc || !seg) return null;
+    const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+    const cross = (cc.x - seg.x1) * dy - (cc.y - seg.y1) * dx; // which side of the line
+    const len = Math.hypot(dx, dy) || 1;
+    return `side:${cross >= 0 ? "+" : "-"}:${Math.abs(cross) / len >= cc.r ? "out" : "in"}`;
+  }
+  return null;
 }
