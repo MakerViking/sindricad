@@ -85,8 +85,16 @@ body {
 
 #app {
   display: grid;
+  /* An explicit minmax(0, 1fr) column, not the implicit auto one: an `auto`
+     grid track is sized to its items' MAX-CONTENT width, so one wide row (the
+     titlebar carrying a long sidecar error) used to stretch the whole app past
+     the window — the ribbon un-collapsed, the browser and inspector slid out of
+     bounds. The 0 minimum lets every row be narrower than its content instead. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 36px 76px 1fr 52px;
   height: 100vh;
+  width: 100%;
+  overflow: hidden;
 }
 
 /* --- shared focus ring (amber) --- */
@@ -132,6 +140,12 @@ body {
   padding: 0 var(--s-4);
   background: linear-gradient(180deg, #181a20 0%, var(--panel) 100%);
   border-bottom: 1px solid var(--line);
+  /* Let the row be narrower than its content (see #app). Deliberately NOT
+     `overflow: hidden`: .menu-popup is absolutely positioned at top:100%, i.e.
+     it hangs BELOW this 36px bar while still being a child of it, so clipping
+     here makes every File/Edit/View menu invisible. The shrinking is done by
+     .status giving up its width instead. */
+  min-width: 0;
 }
 
 /* brand lockup: the SindriCAD mark + wordmark (assets/brand, set in index.html) */
@@ -624,10 +638,12 @@ body {
 }
 
 /* ---- status pill ---- */
+/* inline-BLOCK, not inline-flex: a sidecar error can be a whole sentence, and
+   text-overflow only ellipses real inline text — inside a flex box the text is
+   an anonymous flex item and just gets clipped mid-glyph instead. The dot is
+   kept in line with vertical-align. */
 .status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: inline-block;
   font-size: 11.5px;
   font-weight: 500;
   color: var(--text-dim);
@@ -636,14 +652,23 @@ body {
   border-radius: var(--r-pill);
   padding: 3px 11px 3px 9px;
   white-space: nowrap;
+  /* shrink-to-fit rather than push the titlebar wide. `.spacer` is flex:1 1 0%
+     so it has nothing to give up — all the shrinkage lands here, which is what
+     we want: the message truncates, the layout holds. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .status::before {
   content: "";
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  margin-bottom: 1px;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--text-mute);
-  flex: 0 0 auto;
 }
 .status.connected {
   color: var(--ok);
