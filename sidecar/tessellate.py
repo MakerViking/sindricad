@@ -15,19 +15,38 @@ Python loop — single-threaded and GIL-bound. On a 6-sphere union @0.01mm that 
 from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
+from OCP.GCPnts import GCPnts_QuasiUniformDeflection
 from OCP.GeomAbs import GeomAbs_Line
 from OCP.TopAbs import TopAbs_Orientation
 from OCP.TopLoc import TopLoc_Location
 
+# Bumped whenever this module's output changes shape or quality for the SAME
+# inputs, so server.py can put it in the disk mesh-artifact key and a cache
+# written by an older algorithm is never served. (Same trick texture.py uses.)
+#   1 -> fixed 24-segment edge polylines, absolute-only surface deflection
+#   2 -> deviation-bounded edge polylines + optional relative surface deflection
+CODE_VERSION = 2
+
 
 def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, density_cap=None,
-                diag=None, normals_out=None):
+                diag=None, normals_out=None, relative=False):
     """Return (positions, indices, face_ids).
 
     positions : flat [x,y,z, ...] floats
     indices   : flat [i,j,k, ...] triangle index triples
     face_ids  : [f0, f1, ...] one B-rep face id per triangle (len = len(indices)//3)
 
+    tolerance   : chord deflection. ABSOLUTE millimetres by default; when
+                  `relative` is True it is a DIMENSIONLESS fraction of each
+                  edge/face's own size (see below).
+    relative    : OCCT's BRepMesh `isRelative` flag. False (absolute mm) is what
+                  EXPORT must use — a printed part needs a deterministic chord
+                  error in mm regardless of how big the part is. True is for the
+                  interactive viewport: OCCT then sizes the deflection per
+                  feature, so a 1mm fillet on a 60mm ring gets a proportionally
+                  finer mesh than the ring's big flat faces, which is exactly
+                  where faceting is visible. Callers must pass a tolerance in the
+                  matching UNITS — see server._effective_tolerance.
     textures    : optional [(spec, [Face,...]), ...] from
                   texture.resolve_body_textures() — targeted faces get
                   texture.displace_face()'s denser, displaced chunk instead of
@@ -43,7 +62,7 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, densi
     """
     # Mesh the entire solid at once, in parallel (isInParallel=True). This fills an
     # incremental triangulation onto every TopoDS_Face, which we read back below.
-    BRepMesh_IncrementalMesh(shape.wrapped, tolerance, False, angular_tolerance, True)
+    BRepMesh_IncrementalMesh(shape.wrapped, tolerance, relative, angular_tolerance, True)
 
     positions = []
     indices = []
@@ -177,20 +196,6 @@ def vertex_normals(positions, indices):
     return (N / ln[:, None]).ravel().tolist()
 
 
-def edge_polylines(shape, n=24):
-    """Sample each edge as a polyline of n+1 points spanning the WHOLE edge.
-
-    `e @ t` (position_at by normalized parameter, t in [0,1]) walks start->end.
-    NOTE: do NOT use position_mode=LENGTH with t in [0,1] — there the argument is
-    an absolute arc length in mm, so it only samples the first 1mm of each edge.
-    """
-    out = []
-    for i, e in enumerate(shape.edges()):
-        pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
-        out.append({"id": f"e{i}", "points": pts})
-    return out
-
-
 def _planar_face_normals(sh):
     """Map face-index -> analytic plane normal (cheap, exact) for PLANAR faces; None
     for curved faces. Plus the edge->faces ancestor map, so a single pass over edges
@@ -221,11 +226,57 @@ def _planar_face_normals(sh):
     return fmap, fnorm, em
 
 
-# Edge-polyline memo keyed by edge TShape (identity-location only — an
-# identity-located TShape fully determines the world-space curve). Booleans
-# preserve the TShapes of untouched edges, so even the CHANGED body's polyline
-# pass is mostly cache hits; only genuinely new edges get sampled.
+# Chord-deviation target for edge polylines, in MILLIMETRES, and the clamps
+# around it. Edges are what the user actually reads as "is this circle round?",
+# and they cost a few floats each in the JSON reply — far cheaper per unit of
+# perceived quality than triangles. The old fixed 24-segments-per-edge left a
+# 60mm circle 0.257mm off true, which is plainly visible zoomed in on a 1mm
+# fillet.
+#
+# GCPnts_QuasiUniformDeflection hits this target almost exactly — measured on
+# the parts in this repo's bench, requesting 0.01 achieved a worst-case 0.00995
+# — so this constant IS the worst-case deviation, not a knob that merely
+# correlates with it. 0.01mm holds a 60mm circle under a pixel at any zoom
+# someone would inspect a fillet at (~0.75px at 20mm-across / 1500px), and it
+# also makes SMALL parts cheaper rather than dearer: a 6mm cube's 0.5mm fillet
+# arcs go from 848 points to 240, because deviation-based sampling stops
+# subdividing once an arc is already sub-micron.
+#
+# The clamps are belt and braces, not quality knobs: a curved edge always gets
+# at least _EDGE_MIN_SEG segments (a tiny arc still reads as an arc), and never
+# more than _EDGE_MAX_SEG, so a pathological spline can't hand the frontend an
+# unbounded point list. 512 covers a ~1m-diameter circle at the deflection
+# above; the worst real edge measured here needed 122. Both must stay EVEN, so
+# every clamped polyline also has an odd point count (see _sample_by_deflection).
+_EDGE_DEFLECTION = 0.01
+_EDGE_MIN_SEG = 4
+_EDGE_MAX_SEG = 512
+# Only for the last-ditch path where the deflection sampler can't run at all
+# (no usable 3-D curve); matches the historical fixed count so that fallback
+# behaves exactly as it always did.
+_EDGE_FALLBACK_SEG = 24
+
+
+# Edge-polyline memo keyed by (edge TShape, sampling parameters). The TShape
+# alone (identity-location only) fully determines the world-space curve, and
+# booleans preserve the TShapes of untouched edges, so even the CHANGED body's
+# polyline pass is mostly cache hits. The sampling parameters MUST be part of
+# the key: memoising on the TShape alone meant whichever deflection was used
+# first won for the life of the process and silently pinned every later caller
+# to it.
 _EDGE_MEMO = {}
+
+
+def _uniform_param_points(ad, n):
+    """n+1 points walked along an adaptor's raw CURVE PARAMETER (u0..u1)."""
+    u0, u1 = ad.FirstParameter(), ad.LastParameter()
+    if not (u1 > u0):
+        return None
+    pts = []
+    for j in range(n + 1):
+        p = ad.Value(u0 + (u1 - u0) * (j / n))
+        pts.append([p.X(), p.Y(), p.Z()])
+    return pts
 
 
 def _sample_by_param(e, n):
@@ -234,8 +285,26 @@ def _sample_by_param(e, n):
     through GCPnts_AbscissaPoint and raises Standard_ConstructionError on degenerate
     curves — e.g. a sphere's seam meridian, or a cone/revolve pole edge). Parameter
     sampling never computes arc length, so it can't hit that failure. Returns None
-    when the edge has no usable 3-D curve (a true point-edge at a pole)."""
+    when the edge has no usable 3-D curve (a true point-edge at a pole).
+
+    Also used by builder.py's projected-curve fallback — keep the signature."""
     w = getattr(e, "wrapped", None)
+    if w is None:
+        return None
+    try:
+        return _uniform_param_points(BRepAdaptor_Curve(w), n)
+    except Exception:
+        return None
+
+
+def _sample_by_deflection(w, deflection, min_seg, max_seg):
+    """Deviation-bounded polyline for one edge: GCPnts_QuasiUniformDeflection over
+    a BRepAdaptor_Curve subdivides until the chord is within `deflection` mm of the
+    true curve, whatever the curve type — so a 60mm circle and a 1mm fillet arc
+    each get exactly the segment count they need instead of a shared fixed guess.
+
+    Returns None when the edge has no usable 3-D curve (a degenerate pole edge) or
+    the algorithm bails, so the caller can fall back."""
     if w is None:
         return None
     try:
@@ -243,20 +312,52 @@ def _sample_by_param(e, n):
         u0, u1 = ad.FirstParameter(), ad.LastParameter()
         if not (u1 > u0):
             return None
-        pts = []
-        for j in range(n + 1):
-            p = ad.Value(u0 + (u1 - u0) * (j / n))
-            pts.append([p.X(), p.Y(), p.Z()])
-        return pts
+        alg = GCPnts_QuasiUniformDeflection(ad, deflection, u0, u1)
+        if not alg.IsDone():
+            return None
+        n = alg.NbPoints()
+        if n < 2:
+            return None
+        if n - 1 < min_seg:
+            return _uniform_param_points(ad, min_seg)
+        if n - 1 > max_seg:
+            # decimate evenly over the computed points (both ends kept). The
+            # result is coarser than requested, which is the point of the cap.
+            # max_seg is even, so this stays an odd count — see below.
+            picks = [1 + round(i * (n - 1) / max_seg) for i in range(max_seg + 1)]
+        else:
+            picks = range(1, n + 1)
+        out = []
+        for i in picks:
+            p = alg.Value(i)
+            out.append([p.X(), p.Y(), p.Z()])
+        if len(out) % 2 == 0:
+            # Keep the point count ODD, by splitting the middle chord.
+            #
+            # The frontend identifies an edge by the INDEX-MIDDLE point of this
+            # polyline (viewport/edgeMatch.ts polylineMid = pts[floor(len/2)]),
+            # and that point is stored in saved documents as a `nearest` edge
+            # selector. With an odd point count the index-middle is the exact
+            # parametric midpoint — which is what the old fixed-25-point sampler
+            # always produced, so saved selectors keep matching. With an EVEN
+            # count it lands half a chord off (measured up to 0.77mm on a
+            # 30mm-radius arc, past the frontend's 0.5mm match tolerance).
+            # Adding the on-curve point midway between the two central samples
+            # restores it and can only make the polyline finer, never coarser.
+            j = len(out) // 2
+            umid = 0.5 * (alg.Parameter(picks[j - 1]) + alg.Parameter(picks[j]))
+            p = ad.Value(umid)
+            out.insert(j, [p.X(), p.Y(), p.Z()])
+        return out
     except Exception:
         return None
 
 
 def _line_endpoints(w):
     """The two endpoints of a straight edge, or None if it isn't a line. A line is
-    exactly its endpoints, so sampling n+1 arc-length points on it is pure waste —
-    and glyph strokes (text booleans) are overwhelmingly straight, so skipping them
-    roughly halves wireframe extraction on engraved/embossed text."""
+    exactly its endpoints, so sampling it any finer is pure waste — and glyph
+    strokes (text booleans) are overwhelmingly straight, so skipping them roughly
+    halves wireframe extraction on engraved/embossed text."""
     if w is None:
         return None
     try:
@@ -270,31 +371,29 @@ def _line_endpoints(w):
         return None
 
 
-def _edge_points(e, n):
+def _edge_points(e, deflection=_EDGE_DEFLECTION, min_seg=_EDGE_MIN_SEG,
+                  max_seg=_EDGE_MAX_SEG):
     w = getattr(e, "wrapped", None)
     key = None
     if w is not None:
         try:
             if w.Location().IsIdentity():
-                key = w.TShape()
+                key = (w.TShape(), deflection, min_seg, max_seg)
                 hit = _EDGE_MEMO.get(key)
                 if hit is not None:
                     return hit
         except Exception:
             key = None
-    line_pts = _line_endpoints(w)
-    if line_pts is not None:
-        pts = line_pts
-    else:
-        try:
-            pts = [[p.X, p.Y, p.Z] for p in (e @ (j / n) for j in range(n + 1))]
-        except Exception:
-            # arc-length parameterisation failed (degenerate seam/pole edge) — fall
-            # back to raw-parameter sampling so a valid body still renders its
-            # wireframe instead of the whole tessellation reply erroring out.
-            pts = _sample_by_param(e, n)
-            if pts is None:
-                return None
+    pts = _line_endpoints(w)
+    if pts is None:
+        pts = _sample_by_deflection(w, deflection, min_seg, max_seg)
+    if pts is None:
+        # no usable deviation-bounded sampling (degenerate seam/pole edge) — walk
+        # the raw parameter so a valid body still renders its wireframe instead
+        # of the whole tessellation reply erroring out.
+        pts = _sample_by_param(e, _EDGE_FALLBACK_SEG)
+        if pts is None:
+            return None
     if key is not None:
         if len(_EDGE_MEMO) > 200_000:
             _EDGE_MEMO.clear()
@@ -302,12 +401,27 @@ def _edge_points(e, n):
     return pts
 
 
-def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
+def edge_polylines(shape, deflection=_EDGE_DEFLECTION):
+    """Sample every edge of one shape as a deviation-bounded polyline (see
+    _edge_points). Untagged/unfiltered — `edge_polylines_by_body` is what the
+    viewport actually ships; this is the single-shape convenience form."""
+    out = []
+    for i, e in enumerate(shape.edges()):
+        pts = _edge_points(e, deflection)
+        if pts is None:
+            continue  # degenerate point-edge (pole) — nothing to draw
+        out.append({"id": f"e{i}", "points": pts})
+    return out
+
+
+def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_seams=True):
     """Sample each body's edges as polylines tagged with the body id (so the frontend
     can hide a hidden body's WIREFRAME). Edges between two COPLANAR planar faces are a
     boolean's leftover seam — not a real edge — so they're dropped (MCAD-style),
     making a merged part read as one continuous face. One pass over the edge->face map:
-    seam-test and sample together. Display-only; touches no geometry (can't hang)."""
+    seam-test and sample together. Display-only; touches no geometry (can't hang).
+
+    `deflection` is the chord-deviation target in mm (see _EDGE_DEFLECTION)."""
     import math
 
     cos_tol = math.cos(math.radians(1.0))
@@ -319,7 +433,7 @@ def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
             continue
         if not (hide_coplanar_seams and getattr(sh, "wrapped", None) is not None):
             for e in sh.edges():
-                pts = _edge_points(e, n)
+                pts = _edge_points(e, deflection)
                 if pts is None:
                     continue  # degenerate point-edge (pole) — nothing to draw
                 out.append({"id": f"e{k}", "points": pts, "body": b["id"]})
@@ -336,7 +450,7 @@ def edge_polylines_by_body(bodies, n=24, hide_coplanar_seams=True):
                 if n0 and n1 and abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) > cos_tol:
                     continue  # coplanar seam — don't draw it
             e = Edge(em.FindKey(i))
-            pts = _edge_points(e, n)
+            pts = _edge_points(e, deflection)
             if pts is None:
                 continue  # degenerate point-edge (pole) — nothing to draw
             out.append({"id": f"e{k}", "points": pts, "body": b["id"]})

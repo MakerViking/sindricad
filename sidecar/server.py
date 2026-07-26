@@ -252,23 +252,84 @@ def _prune_export_cache(live):
 # below) — the reference point our size-adaptive scaling is relative to.
 _DEFAULT_TOLERANCE = 0.1
 
+# The interactive viewport meshes with OCCT's RELATIVE deflection: the chord
+# tolerance is a fraction of each feature's own size rather than a fixed
+# millimetre figure, so a 1mm fillet gets a proportionally finer mesh than the
+# 60mm face it sits on — which is exactly where faceting is visible.
+#
+# EXPORTS DELIBERATELY STAY ABSOLUTE (_EXPORT_TOL above): a 3MF/STL for printing
+# needs a deterministic chord error in millimetres, not one that scales with the
+# part. That's why `relative` is a per-call argument on tessellate() and not a
+# module-level switch.
+#
+# 0.001 was picked by measuring the user's reported part (a 60mm ring, 5mm tall,
+# 1mm fillet) plus a 6mm cube, a 400mm plate and a sphere:
+#   * ring fillet surface deviation 0.152mm -> 0.080mm (-48%) for +22% triangles
+#     (6532 -> 7992) and +5ms. At MATCHED cost, absolute is worse: 0.03mm
+#     absolute gives 8472 triangles at 0.098mm — more triangles, coarser fillet.
+#   * 400mm plate: the 60mm hole goes 0.096mm -> 0.053mm while triangles go
+#     164 -> 216. Big parts get better AND stay cheap.
+#   * 6mm cube (0.5mm fillets): 628 -> 7428 triangles, 2.5 -> 12.0ms, fillet
+#     deviation 0.022mm -> 0.006mm. A 12x ratio, but a trivial absolute cost —
+#     and that convergence is the POINT of relative deflection: triangle count
+#     tracks feature complexity instead of part size.
+#   * bare sphere is the worst case (4002 -> 10108 triangles, 17 -> 55ms); a
+#     single all-curvature body is pathological and still well inside the
+#     stall supervisor's budget.
+_VIEWPORT_RELATIVE = True
+_DEFAULT_RELATIVE_DEFLECTION = 0.002
+# OCCT's ANGULAR deflection is what actually governs how faceted a fillet LOOKS:
+# it caps the turn between adjacent facets. The old 0.5 rad (28.6 degrees) let
+# the worst adjacent-facet angle on a 1mm fillet reach 47 degrees — visible
+# banding across the fillet band no matter how fine the linear term got (the
+# tessellation is anisotropic: plenty of divisions AROUND a ring, almost none
+# ACROSS the fillet, and only the angular term adds those).
+#
+# Measured on a 60mm ring with a 1mm fillet, worst adjacent-facet angle /
+# whole-shape triangles / mesh time:
+#     lin 0.001 ang 0.50   47.38deg    7992 tris    7.9ms   <- old
+#     lin 0.001 ang 0.20   45.96deg   20284 tris   22.8ms
+#     lin 0.002 ang 0.18    5.14deg   10640 tris   11.0ms   <- chosen
+#     lin 0.002 ang 0.15    4.29deg   14784 tris   16.7ms
+#     lin 0.001 ang 0.10    2.86deg   33264 tris   47.9ms
+# 0.18 sits just past a sharp quality cliff (0.20 -> 0.18 drops 46deg to 5deg)
+# and buys a 9x smoother fillet for +33% triangles. Note the linear term must
+# NOT be over-tightened: lin 0.001 + ang 0.18 measures 45.96deg, WORSE than
+# lin 0.002 at the same angle — finer linear subdivision changes which
+# criterion OCCT applies. Re-measure this table before touching either number.
+_VIEWPORT_ANG_TOL = 0.18
+
 
 def _effective_tolerance(shape, requested):
-    """Scale the requested (interactive-viewport) tolerance to this body's size,
-    so a 500mm frame doesn't pay for a triangle budget tuned for a 5mm part and a
-    5mm part isn't left visibly faceted by a tolerance tuned for the frame.
+    """Map the requested (interactive-viewport) wire tolerance to the value we
+    actually hand BRepMesh, in the units the viewport's meshing mode expects.
 
-    effective = clamp(diag / 2500, 0.05, 0.8) * (requested / DEFAULT_TOLERANCE)
+    RELATIVE mode (_VIEWPORT_RELATIVE, the default): OCCT sizes the deflection
+    per feature itself, so there is NO bbox term here — applying our own size
+    scaling on top would double-count the very adaptivity we just delegated.
+
+        effective = _DEFAULT_RELATIVE_DEFLECTION * (requested / DEFAULT_TOLERANCE)
+
+    ABSOLUTE mode: scale the requested tolerance to this body's size, so a 500mm
+    frame doesn't pay for a triangle budget tuned for a 5mm part and a 5mm part
+    isn't left visibly faceted by a tolerance tuned for the frame.
+
+        effective = clamp(diag / 2500, 0.05, 0.8) * (requested / DEFAULT_TOLERANCE)
 
     `diag` is the body's bounding-box diagonal (cheap OCCT bbox, no meshing).
     Dividing by 2500 makes a ~250mm-diagonal part (roughly the part the fixed
     0.1mm default was tuned for) land back on 0.1mm; the clamp keeps a 10mm
     bracket from going arbitrarily fine (0.05mm floor) and a multi-metre frame
-    from going arbitrarily coarse (0.8mm ceiling). The `requested / DEFAULT`
-    factor keeps the wire contract intact: a client that asks for a smaller
-    tolerance than the default still gets a proportionally finer mesh for every
-    body, not just a fixed absolute value. Deterministic — pure function of
-    (bbox, requested), so cache keys built from the result stay stable."""
+    from going arbitrarily coarse (0.8mm ceiling).
+
+    Either way the `requested / DEFAULT` factor keeps the wire contract intact: a
+    client that asks for a smaller tolerance than the default still gets a
+    proportionally finer mesh for every body. Deterministic — a pure function of
+    (bbox, requested) — so cache keys built from the result stay stable."""
+    scale = requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0
+    if _VIEWPORT_RELATIVE:
+        return _DEFAULT_RELATIVE_DEFLECTION * scale
+
     from tessellate import bbox
 
     bb = bbox(shape)
@@ -277,7 +338,6 @@ def _effective_tolerance(shape, requested):
     dz = bb["max"][2] - bb["min"][2]
     diag = (dx * dx + dy * dy + dz * dz) ** 0.5
     base = min(max(diag / 2500.0, 0.05), 0.8)
-    scale = requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0
     return base * scale
 
 
@@ -287,12 +347,12 @@ def _body_payload(b, tolerance):
     tiers: identity-cached in RAM -> disk mesh artifact (load path: never pays the
     Python readback loop) -> compute + persist.
 
-    `tolerance` is the RAW requested (wire) tolerance; it's immediately rescaled
-    to this body's size (see _effective_tolerance) and every cache key below —
-    RAM identity cache AND the disk mesh_key — is keyed on that EFFECTIVE value,
-    never the raw request. Two bodies of different sizes (or one body whose bbox
-    changed) must not share a cache slot keyed by a tolerance neither was actually
-    tessellated at.
+    `tolerance` is the RAW requested (wire) tolerance; it's immediately mapped
+    through _effective_tolerance to the value BRepMesh actually gets, and every
+    cache key below — RAM identity cache AND the disk mesh_key — is keyed on that
+    EFFECTIVE value, never the raw request. Two bodies of different sizes (or one
+    body whose bbox changed) must not share a cache slot keyed by a tolerance
+    neither was actually tessellated at.
 
     A body's mesh also depends on its "_textures" spec list, which the shape
     identity check CANNOT see (texture never mutates body["shape"] — see
@@ -316,11 +376,11 @@ def _body_payload(b, tolerance):
     else:
         texture_key = None
     ent = _MESH_CACHE.get(bid)
-    # RAM hit BEFORE the bbox: _effective_tolerance is a pure function of
-    # (shape, requested), so identical shape identity + identical request imply
-    # an identical effective tolerance — an unchanged body (the common case
-    # during an interactive drag of some OTHER body) skips the OCCT bbox walk
-    # entirely instead of paying it on every tick.
+    # RAM hit BEFORE _effective_tolerance: it's a pure function of (shape,
+    # requested), so identical shape identity + identical request imply an
+    # identical effective tolerance — an unchanged body (the common case during
+    # an interactive drag of some OTHER body) skips it (and, in absolute mode,
+    # the OCCT bbox walk it does) instead of paying it on every tick.
     if (
         ent is not None
         and ent["shape"] is sh
@@ -334,7 +394,15 @@ def _body_payload(b, tolerance):
     mesh_key = None
     mk = b.get("meshKey")
     if mk:
-        mesh_key = "%s-t%s" % (mk, tolerance)
+        # The mode marker ("r"/"a") and tessellate.CODE_VERSION both ride in the
+        # key: a relative deflection and an absolute one are different units that
+        # could otherwise collide on the same number, and a payload cached by an
+        # older edge/mesh algorithm must never be served after this module
+        # changes (the disk artifact carries the EDGE polylines too).
+        from tessellate import CODE_VERSION as _tess_ver
+        mesh_key = "%s-tv%d-%s%s-a%s" % (mk, _tess_ver,
+                                         "r" if _VIEWPORT_RELATIVE else "a", tolerance,
+                                         _VIEWPORT_ANG_TOL)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     payload = None
@@ -350,8 +418,11 @@ def _body_payload(b, tolerance):
         t0 = time.monotonic()
         textures = resolve_body_textures(b) if b.get("_textures") else None
         norm_chunks = [] if textures else None
-        pos, idx, fids = tessellate(sh, tolerance, textures=textures,
-                                    density_cap=VIEWPORT_DENSITY_CAP, normals_out=norm_chunks)
+        pos, idx, fids = tessellate(sh, tolerance, angular_tolerance=_VIEWPORT_ANG_TOL,
+                                    textures=textures,
+                                    density_cap=VIEWPORT_DENSITY_CAP,
+                                    normals_out=norm_chunks,
+                                    relative=_VIEWPORT_RELATIVE)
         owners_map = b.get("owners") or {}
         face_owners = [owners_map.get(_face_fp(face)) for face in sh.faces()]
         # Two-tone inlay preview: dense per-face palette-slot array, same
