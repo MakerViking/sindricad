@@ -477,11 +477,17 @@ export class Geometry implements GeometryBackend {
     // with .set() for the float arrays — accepts number[] AND typed-array
     // sources alike, so mixed cached-stub/JSON-fallback bodies need no branch.
     // Replaces the old per-element push loops (~1M elements on big documents).
+    // NOTE the two different arities: `indices` is 3 entries per triangle,
+    // `faceIds` is ONE. They must be sized and cursored separately — conflating
+    // them scatters body N>1's faceIds past the end of the triangle range,
+    // which renders every body after the first as edges with no surface.
     let totalVerts3 = 0;
-    let totalTris3 = 0;
+    let totalIdx = 0;
+    let totalTris = 0;
     for (const p of payloads) {
       totalVerts3 += p.positions.length;
-      totalTris3 += p.indices.length;
+      totalIdx += p.indices.length;
+      totalTris += p.faceIds.length;
     }
     // sidecar sends explicit normals only for textured bodies; bodies without
     // keep their zero-initialized slice, and render.ts falls back to
@@ -489,14 +495,15 @@ export class Geometry implements GeometryBackend {
     const anyNormals = payloads.some((p) => p.normals !== undefined);
     const positions = new Float32Array(totalVerts3);
     const normals = anyNormals ? new Float32Array(totalVerts3) : undefined;
-    const indices = new Uint32Array(totalTris3);
-    const faceIds = new Uint32Array(totalTris3);
+    const indices = new Uint32Array(totalIdx);
+    const faceIds = new Uint32Array(totalTris);
     const edges: RebuildEdge[] = [];
     const meta: RebuildBody[] = [];
     let faceBase = 0;
     let ek = 0;
     let vOff = 0;
     let iOff = 0;
+    let tOff = 0;
     for (const p of payloads) {
       const vbase = vOff / 3;
       positions.set(p.positions, vOff);
@@ -506,8 +513,9 @@ export class Geometry implements GeometryBackend {
       // union members, and writes into a preallocated Uint32Array are cheap
       const pi = p.indices, pf = p.faceIds;
       for (let k = 0; k < pi.length; k++) indices[iOff + k] = (pi[k] as number) + vbase;
-      for (let k = 0; k < pf.length; k++) faceIds[iOff + k] = (pf[k] as number) + faceBase;
+      for (let k = 0; k < pf.length; k++) faceIds[tOff + k] = (pf[k] as number) + faceBase;
       iOff += pi.length;
+      tOff += pf.length;
       for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, ...(e.body !== undefined ? { body: e.body } : {}) });
       meta.push({
         id: p.id, name: p.name, faceStart: faceBase,
