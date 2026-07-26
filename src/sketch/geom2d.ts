@@ -45,6 +45,41 @@ export function segCircleIntersect(p1: V, p2: V, c: V, r: number): V[] {
   return out;
 }
 
+/** intersection points of the INFINITE line through p1p2 with the circle
+ *  (c, r). The unclamped twin of segCircleIntersect: a corner miter lands beyond
+ *  the offset segment's ends more often than not, so clamping to [0,1] would
+ *  discard exactly the join we're looking for. */
+export function circleLineIntersect(p1: V, p2: V, c: V, r: number): V[] {
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  const fx = p1.x - c.x, fy = p1.y - c.y;
+  const a = dx * dx + dy * dy;
+  if (a < 1e-12) return [];
+  const b = 2 * (fx * dx + fy * dy);
+  const cc = fx * fx + fy * fy - r * r;
+  const disc = b * b - 4 * a * cc;
+  if (disc < 0) return [];
+  const sq = Math.sqrt(disc);
+  const ts = sq < 1e-9 ? [-b / (2 * a)] : [(-b - sq) / (2 * a), (-b + sq) / (2 * a)];
+  return ts.map((t) => v(p1.x + dx * t, p1.y + dy * t));
+}
+
+/** intersection points of the two full circles (c1,r1) and (c2,r2) — 0, 1 or 2.
+ *  Concentric or non-touching circles give none. The arc-to-arc companion to
+ *  lineIntersect (line-line) and segCircleIntersect (line-arc), used to miter a
+ *  corner where two offset arcs meet. */
+export function circleCircleIntersect(c1: V, r1: number, c2: V, r2: number): V[] {
+  const dx = c2.x - c1.x, dy = c2.y - c1.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 1e-9 || d > r1 + r2 + 1e-9 || d < Math.abs(r1 - r2) - 1e-9) return [];
+  const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+  const h2 = r1 * r1 - a * a;
+  const h = h2 > 0 ? Math.sqrt(h2) : 0;
+  const mx = c1.x + (a * dx) / d, my = c1.y + (a * dy) / d;
+  if (h <= 1e-9) return [v(mx, my)]; // tangent: one point
+  const ox = (-dy * h) / d, oy = (dx * h) / d;
+  return [v(mx + ox, my + oy), v(mx - ox, my - oy)];
+}
+
 /** parameter t in [0,1] of the closest point on segment p1p2 to q */
 export function paramOnSeg(p1: Pt, p2: Pt, q: Pt): number {
   const dx = p2.x - p1.x, dy = p2.y - p1.y;

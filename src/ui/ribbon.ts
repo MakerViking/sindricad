@@ -79,6 +79,8 @@ export const MODEL: Group[] = [
         children: [
           { action: "shell", label: "Shell", iconName: "shell" },
           { action: "draft", label: "Draft", iconName: "draft" },
+          { action: "offset-face", label: "Offset Face", iconName: "offsetFace" },
+          { action: "thicken", label: "Thicken", iconName: "thicken" },
         ],
       },
       { action: "texture", label: "Texture", iconName: "texture" },

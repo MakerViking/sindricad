@@ -346,6 +346,43 @@ export async function compileAndSolve(
       else if (ka === "circle" && kb === "arc") cons.push({ id, type: "tangentCA", circle: c.a, arc: c.b });
       else if (ka === "arc" && kb === "circle") cons.push({ id, type: "tangentCA", circle: c.b, arc: c.a });
     }
+    else if (c.type === "offset") {
+      // One composite over N source→copy pairs, all governed by c.value.
+      // Sub-ids append a LETTER before the pair number so constraintKey's
+      // leading-integer decode still resolves them back to this constraint
+      // ("k12p3" → 12) — that's what lets a planegcs conflict blame the offset
+      // dimension rather than nothing. A digit-first suffix would silently
+      // decode to a different constraint index ("k1" + "0" → index 10).
+      const mag = Math.abs(c.value); // p2l_distance is unsigned; rimBranch holds the side
+      c.pairs.forEach((pr, n) => {
+        // A rect-EDGE operand ("<rectId>~<k>") is already direction-locked by the
+        // rectangle's implicit horizontal/vertical constraints, so it needs ONE
+        // distance and no parallel — 4 edges × 1 equation is exactly a
+        // rectangle's 4 DOF. Adding the line treatment there would triple-count.
+        const rectEdge = pr.src.includes("~") && pr.cpy.includes("~");
+        if (isLine(pr.src) && isLine(pr.cpy)) {
+          const e = ends.get(pr.cpy);
+          if (!e) return;
+          if (rectEdge) {
+            cons.push({ id: `${id}a${n}`, type: "p2lDistance", p: e[0], line: pr.src, value: mag });
+            return;
+          }
+          cons.push({ id: `${id}p${n}`, type: "parallel", l1: pr.src, l2: pr.cpy });
+          // ONE endpoint distance, not two: once the copy is parallel to the
+          // source, pinning either endpoint at `mag` pins the whole line, so a
+          // second p2l_distance is always redundant — measured as 11 redundants
+          // on a 4-line square before this was cut back.
+          cons.push({ id: `${id}a${n}`, type: "p2lDistance", p: e[0], line: pr.src, value: mag });
+        } else if (isRound(pr.src) && isRound(pr.cpy) && pr.src !== pr.cpy) {
+          const a = centerPoint(pr.src), b = centerPoint(pr.cpy);
+          if (a && b) cons.push({ id: `${id}c${n}`, type: "coincident", a, b });
+          // `difference` is param2 − param1, i.e. cpy.r − src.r = value. SIGNED,
+          // so an inward offset shrinks the copy with no branch ambiguity — the
+          // same property that makes radialGap safe against an inside-out annulus.
+          cons.push({ id: `${id}r${n}`, type: "radiusDifference", inner: pr.src, outer: pr.cpy, value: c.value });
+        }
+      });
+    }
   });
 
   for (const p of points) if (fixedPts.has(p.id)) p.fixed = true;
@@ -609,7 +646,8 @@ function roundRefs(c: SConstraint): string[] {
  *  deliberately absent: `difference` is signed, so it cannot invert an annulus
  *  on its own (the negative-radius half of the guard covers the rest). */
 const isRimDim = (c: SketchConstraint): boolean =>
-  c.type === "c2cDistance" || c.type === "p2cDistance" || c.type === "c2lDistance";
+  c.type === "c2cDistance" || c.type === "p2cDistance" || c.type === "c2lDistance" ||
+  c.type === "offset";
 
 /** The configuration class a rim dimension describes, for the geometry in
  *  `byId` — null for anything that isn't a rim dim (or whose operands are gone,
@@ -640,6 +678,21 @@ function rimBranch(c: SketchConstraint, byId: Map<string, ResolvedEntity>): stri
     const cross = (cc.x - seg.x1) * dy - (cc.y - seg.y1) * dx; // which side of the line
     const len = Math.hypot(dx, dy) || 1;
     return `side:${cross >= 0 ? "+" : "-"}:${Math.abs(cross) / len >= cc.r ? "out" : "in"}`;
+  }
+  if (c.type === "offset") {
+    // Which side of each SOURCE line its copy sits on. Only line pairs can flip:
+    // their p2l_distance is unsigned, so a solve could satisfy the number with
+    // the copy on the far side. Round pairs use the signed `difference` and are
+    // excluded by construction — they contribute a constant "." so the string
+    // still compares equal across the solve.
+    const sides = c.pairs.map((pr) => {
+      const s = lineOperand(byId, pr.src), t = lineOperand(byId, pr.cpy);
+      if (!s || !t) return ".";
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+      const mx = (t.x1 + t.x2) / 2, my = (t.y1 + t.y2) / 2;
+      return (mx - s.x1) * dy - (my - s.y1) * dx >= 0 ? "+" : "-";
+    });
+    return sides.length ? `off:${sides.join("")}` : null;
   }
   return null;
 }

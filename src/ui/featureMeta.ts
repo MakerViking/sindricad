@@ -21,6 +21,8 @@ export const FEATURE_META: Record<FeatureType, { glyph: string; label: string }>
   cylinder: { glyph: "⬭", label: "Cylinder" },
   sphere: { glyph: "◯", label: "Sphere" },
   shell: { glyph: "⬚", label: "Shell" },
+  offsetFace: { glyph: "⇥", label: "Offset Face" },
+  thicken: { glyph: "▤", label: "Thicken" },
   draft: { glyph: "◹", label: "Draft" },
   patternRect: { glyph: "⁙", label: "Rect Pattern" },
   patternCircular: { glyph: "❋", label: "Circular Pattern" },

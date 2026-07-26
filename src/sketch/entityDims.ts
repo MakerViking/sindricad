@@ -602,6 +602,29 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       const pts = q && cr ? pointRimPoints(q, cr) : null;
       if (pts) ({ a, b } = pts);
       value = c.value;
+    } else if (c.type === "offset") {
+      // ONE dim for the whole operation, anchored on the FIRST pair: the chain
+      // shares a single value, so a label per member would be N copies of the
+      // same number (and Fusion shows one). Displayed as |value| — the stored
+      // value is signed because the sign IS the side; see writeDimValue for why
+      // the write-back has to put that sign back.
+      const pr = c.pairs[0];
+      const so = pr ? lineOperand(byId, pr.src) : null;
+      const co = pr ? lineOperand(byId, pr.cpy) : null;
+      if (so && co) {
+        // source midpoint → the foot of its perpendicular on the copy line
+        const m = v((so.x1 + so.x2) / 2, (so.y1 + so.y2) / 2);
+        const A = v(co.x1, co.y1), B = v(co.x2, co.y2);
+        const t = paramOnSeg(A, B, m);
+        a = m;
+        b = v(co.x1 + t * (co.x2 - co.x1), co.y1 + t * (co.y2 - co.y1));
+      } else if (pr) {
+        const s = round(pr.src), q = round(pr.cpy);
+        // radialGapPoints wants inner-then-outer; an inward offset makes the
+        // COPY the inner one, so order by radius rather than by pair role
+        if (s && q) ({ a, b } = radialGapPoints(s.r <= q.r ? s : q, s.r <= q.r ? q : s, placeDir));
+      }
+      value = Math.abs(c.value);
     } else return;
     if (!a || !b) return;
     const meas = a.distanceTo(b);

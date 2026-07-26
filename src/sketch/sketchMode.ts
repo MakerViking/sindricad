@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetLineChain, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG } from "./modify";
+import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { isPlainNumber, parseField } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
@@ -226,6 +226,10 @@ export class SketchMode {
   // and reused for the clickable labels (constraintDimExtras)
   private cdims: ConstraintDim[] = [];
   private editingId: string | null = null;
+  /** The datumPlane feature this sketch is placed ON, when it was created from
+   *  one. Round-tripped through finish() so re-editing a sketch never silently
+   *  downgrades it from a live datum link to a baked placement. */
+  private planeId: string | null = null;
   private store: DocumentStore | undefined;
   private grid: THREE.GridHelper | null = null;
   // Sketch Palette options
@@ -319,10 +323,16 @@ export class SketchMode {
   }
 
   // --- lifecycle ---------------------------------------------------------
-  enter(plane: PlaneSpec, store: DocumentStore, editId?: string) {
+  /** `planeId` links the sketch to a datumPlane FEATURE instead of freezing its
+   *  placement: `plane` is still stored (as the resolved cache every frontend
+   *  consumer reads), but the sidecar prefers the id, so editing the datum's
+   *  offset later moves this sketch. Without it an offset plane's distance is
+   *  baked into the origin and gone. */
+  enter(plane: PlaneSpec, store: DocumentStore, editId?: string, planeId?: string) {
     this.active = true;
     this.editingId = editId ?? null;
     this.plane = this.overlay.planeFor(plane);
+    this.planeId = planeId ?? null;
     this.store = store;
     if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
 
@@ -344,6 +354,9 @@ export class SketchMode {
         this.entities = resolveRealEntities(f, store.document.parameters);
         this.constraints = f.constraints ? f.constraints.map((c) => ({ ...c })) : [];
         this.patterns = f.patterns ? f.patterns.map((p) => ({ ...p })) : [];
+        // keep an existing datum link across a re-edit (the caller only passes
+        // planeId when it just created the datum)
+        if (f.planeId) this.planeId = f.planeId;
         for (const p of this.patterns) notePatternId(p.id); // reserve ids so new ones don't collide
       }
     }
@@ -376,6 +389,7 @@ export class SketchMode {
         id: this.editingId ?? store.nextId(),
         type: "sketch",
         plane: this.plane.serialize(),
+        ...(this.planeId ? { planeId: this.planeId } : {}),
         entities: this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID).map(toSketchEntity),
         ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
         ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
@@ -459,6 +473,7 @@ export class SketchMode {
     this.moveDrag = null;
     this.resetDimPicks();
     this.moveBase = null;
+    this.offsetPick = null; // an in-progress offset dies with its tool
     this.dim.hide();
     this.textPanel.hide();
     // Project tool: chips only while it's active; leaving it drops any 3D hover
@@ -692,24 +707,32 @@ export class SketchMode {
           : {}),
         commit: (val: number) => {
           const c = this.constraints[d.cIndex];
-          if (c && isPlacedDim(c)) {
-            c.value = val;
-            this.requestSolve();
-            this.onState?.();
-          }
+          if (c && isPlacedDim(c)) this.writeDimValue(c, val);
         },
         commitExpr: (raw: string) => {
           const c = this.constraints[d.cIndex];
           if (!c || !isDimConstraint(c)) return "not editable";
           if (!c.id) c.id = newConstraintId();
           return this.commitExprInput(`c:${c.id}`, d.kind === "angle" ? "angle" : "length", raw, (v) => {
-            c.value = v;
-            this.requestSolve();
-            this.onState?.();
+            this.writeDimValue(c, v);
           });
         },
       };
     });
+  }
+
+  /** Write a typed value onto a dimension's constraint, then re-solve.
+   *
+   *  The one seam BOTH edit paths (plain number and expression) go through,
+   *  because the offset dim needs special care: it DISPLAYS |value| while the
+   *  stored value is SIGNED, the sign being which side the copy sits on. Typing
+   *  "3" into an inward offset must keep it inward — a bare `c.value = val`
+   *  would silently flip it outward. Same abs-display trap as the drag path;
+   *  centralising the write is what stops the two sites drifting apart. */
+  private writeDimValue(c: SketchConstraint & { value: number }, val: number) {
+    c.value = c.type === "offset" && c.value < 0 ? -Math.abs(val) : val;
+    this.requestSolve();
+    this.onState?.();
   }
 
   /** Add/replace the driving dimension on an entity, then re-solve. A dim gets
@@ -743,6 +766,14 @@ export class SketchMode {
       }
       const pair = rimPair(c);
       if (pair !== null) return pair === rimPair(k);
+      // offset: one dim per OPERATION, identified by the set of copies it
+      // governs. Re-offsetting the same curves replaces the old dim (inheriting
+      // its id, so a parameter binding survives); a different offset elsewhere
+      // in the sketch is a different target and both survive.
+      if (c.type === "offset" && k.type === "offset") {
+        const key = (o: typeof c) => o.pairs.map((p) => p.cpy).sort().join("|");
+        return key(c) === key(k);
+      }
       if (c.type === "c2lDistance" && k.type === "c2lDistance") return k.circle === c.circle && k.line === c.line;
       if (c.type === "p2cDistance" && k.type === "p2cDistance") {
         return k.e === c.e && k.p === c.p && k.circle === c.circle;
@@ -2195,6 +2226,10 @@ export class SketchMode {
       this.patternMove(hit.p, e);
       return;
     }
+    if (this.offsetPick) {
+      this.offsetMove(hit.p, e);
+      return;
+    }
 
     if (this.textBoxStart) {
       this.textBoxEnd = hit.p.clone();
@@ -2248,6 +2283,7 @@ export class SketchMode {
     }
     if (e.key === "Escape") {
       e.preventDefault();
+      if (this.offsetPick) { this.cancelOffset(); return; }
       if (this.dragFrom || this.moveDrag) {
         // cancel an in-progress drag: revert geometry to its pre-drag positions
         if (this.dragSnapshot) this.entities = this.dragSnapshot;
@@ -2537,6 +2573,7 @@ export class SketchMode {
     this.rightDragged = false;
     if (dragged) return;
     if (this.tool === "dimension") { this.openDimensionMenu(e); return; }
+    if (this.tool === "offset") { this.openOffsetMenu(e); return; }
     if (this.tool !== "select") return;
     const raw = this.planePoint(e);
     const idx = raw ? pickEntity(this.entities, raw, this.pickTol()) : -1;
@@ -2598,6 +2635,32 @@ export class SketchMode {
       { label: "Cancel", onClick: () => this.cancelDim() },
     ];
     contextMenu(e.clientX, e.clientY, items);
+  }
+
+  /** Fusion's in-command marking menu for the Offset tool: the two things the
+   *  cursor alone can't say — whether to take the whole connected chain, and
+   *  which side to land on when the cursor is nowhere near the curve. */
+  private openOffsetMenu(e: MouseEvent) {
+    e.preventDefault();
+    const pick = this.offsetPick;
+    contextMenu(e.clientX, e.clientY, [
+      {
+        label: `${this.offsetChainMode ? "✓ " : "    "}Chain Selection`,
+        onClick: () => {
+          this.offsetChainMode = !this.offsetChainMode;
+          setPrompt(this.offsetChainMode
+            ? "Chain Selection on — the whole connected profile offsets as a unit"
+            : "Chain Selection off — only the clicked curve offsets");
+        },
+      },
+      {
+        label: "Flip", disabled: !pick,
+        onClick: () => { if (pick) pick.side = -pick.side; },
+      },
+      { separator: true, label: "" },
+      { label: "OK", disabled: !pick, onClick: () => { if (pick) this.commitOffset(); } },
+      { label: "Cancel", disabled: !pick, onClick: () => this.cancelOffset() },
+    ]);
   }
 
   private setDimRoundPref(pref: "radius" | "diameter") {
@@ -2771,17 +2834,100 @@ export class SketchMode {
     });
     toast("Scale: type a factor (e.g. 2 or 0.5)");
   }
+  /** Offset (Fusion parity), two-phase: click a curve, then move the cursor to
+   *  choose the SIDE and distance — or type one — and click again (or Enter) to
+   *  apply. `side` and `mag` are kept apart on purpose: the box displays the
+   *  magnitude, so folding them into one signed number is how typing a value
+   *  silently flips an inward offset outward (the abs-display trap). */
+  private offsetPick: { idx: number; side: number; mag: number } | null = null;
+  /** Fusion's in-command "Chain Selection" toggle, default ON: offset the whole
+   *  connected chain rather than only the clicked curve. */
+  private offsetChainMode = true;
+
   private offsetClick(p: THREE.Vector2) {
+    if (this.offsetPick) { this.commitOffset(); return; } // second click applies
     const idx = pickEntity(this.entities, p, this.pickTol());
-    if (idx < 0 || this.guardProjected(this.entities[idx])) return;
-    this.dim.show([{ name: "offset", label: "Offset", kind: "length" }], () => {
-      const d = this.dim.getValue("offset") ?? 1;
-      // a connected line chain offsets as a mitered unit; else a single entity
-      const res = offsetLineChain(this.entities, idx, d) ?? offsetEntity(this.entities, idx, d);
-      if (res) this.entities = res;
-      this.dim.hide();
-      this.afterModify();
-    });
+    if (idx < 0) return;
+    const e = this.entities[idx];
+    if (!e || this.guardProjected(e)) return;
+    // Nothing may end in silence here: the user is mid-gesture, and a tool that
+    // does nothing without saying why reads as broken.
+    if (e.type === "text") { toast("Offset doesn't apply to sketch text"); return; }
+    if (e.type === "point") { toast("Offset needs a curve, not a point"); return; }
+    this.offsetPick = { idx, side: 1, mag: 0 };
+    this.dim.show(
+      [{ name: "offset", label: "Offset", kind: "length" }],
+      () => this.commitOffset(),
+      () => this.cancelOffset(),
+    );
+    setPrompt("Offset: move to pick the side, or type a distance · click / Enter to apply · Esc to cancel");
+  }
+
+  /** The offset result for the current pick, honouring Chain Selection. Chain
+   *  first (a connected profile offsets as a unit), falling back to the single
+   *  curve — which is also what a lone curve or a junction lands on. */
+  private offsetResultFor(idx: number, dist: number): OffsetResult | null {
+    if (Math.abs(dist) < 1e-6) return null;
+    return (this.offsetChainMode ? offsetChain(this.entities, idx, dist) : null)
+      ?? offsetEntity(this.entities, idx, dist);
+  }
+
+  /** Live side/distance + preview while the offset is being placed. */
+  private offsetMove(p: THREE.Vector2, ev: MouseEvent) {
+    const pick = this.offsetPick;
+    const src = pick ? this.entities[pick.idx] : undefined;
+    if (!pick || !src) return;
+    // A typed value owns the magnitude; the cursor still owns the SIDE, so you
+    // can type 3 and then swing the mouse across the curve to flip it.
+    const signed = signedOffsetAt(src, p);
+    if (signed !== null && Math.abs(signed) > 1e-6) pick.side = signed < 0 ? -1 : 1;
+    if (this.dim.isUserDriven("offset")) {
+      const typed = this.dim.getValue("offset");
+      if (typed !== null) pick.mag = Math.abs(typed);
+    } else if (signed !== null) {
+      pick.mag = Math.abs(signed);
+      this.dim.updateFromCursor({ offset: pick.mag });
+    }
+    this.dim.position(ev.clientX, ev.clientY);
+    const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
+    const added = res ? res.entities.slice(this.entities.length) : [];
+    this.overlay.setPreview(added.length ? curveObjects(added, this.plane, PREVIEW_COLOR, true) : []);
+  }
+
+  private commitOffset() {
+    const pick = this.offsetPick;
+    if (!pick) return;
+    // An empty box CANCELS. It used to fall back to `?? 1`, so pressing Enter on
+    // an untouched field silently produced a 1 mm offset nobody asked for.
+    if (this.dim.isUserDriven("offset")) {
+      const typed = this.dim.getValue("offset");
+      if (typed === null) { toast("Offset: type a distance, or Esc to cancel"); return; }
+      pick.mag = Math.abs(typed);
+    }
+    if (pick.mag < 1e-6) { toast("Offset: type a distance, or Esc to cancel"); return; }
+    const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
+    this.offsetPick = null;
+    this.dim.hide();
+    if (!res) {
+      toast("Offset: that distance collapses the geometry");
+      this.overlay.setPreview([]);
+      return;
+    }
+    this.entities = res.entities;
+    if (res.linked && res.pairs.length) {
+      // the associative link + its single editable dimension
+      this.setDrivingDimension({ type: "offset", pairs: res.pairs, value: pick.side * pick.mag });
+    } else if (!res.linked) {
+      toast("Offset copy created — not linked to the source (this shape type is rigid)");
+    }
+    this.afterModify();
+  }
+
+  private cancelOffset() {
+    this.offsetPick = null;
+    this.dim.hide();
+    this.overlay.setPreview([]);
+    setPrompt("Offset: click a curve to offset");
   }
   private extendClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
@@ -3046,6 +3192,18 @@ export class SketchMode {
         case "c2lDistance": return roundIds.has(c.circle) && hasLineOperand(c.line);
         case "p2cDistance": return refIds.has(c.e) && roundIds.has(c.circle);
         case "fix": return refIds.has(c.e);
+        // offset: a composite over N source→copy pairs. Deleting ONE copy must
+        // break only that member's link (Fusion behavior) — so SHRINK the pair
+        // list the way prunePatterns shrinks sources, and drop the whole
+        // constraint (with its dimension) only when nothing is left to govern.
+        case "offset": {
+          c.pairs = c.pairs.filter(
+            (pr) =>
+              (hasLineOperand(pr.src) && hasLineOperand(pr.cpy)) ||
+              (roundIds.has(pr.src) && roundIds.has(pr.cpy)),
+          );
+          return c.pairs.length > 0;
+        }
         // unreachable while the switch is exhaustive; keeps (rather than drops)
         // a variant tsc failed to flag
         default: return c satisfies never;

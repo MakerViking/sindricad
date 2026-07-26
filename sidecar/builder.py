@@ -77,6 +77,7 @@ from build123d import (
     loft,
     sweep,
     offset,
+    thicken,
     scale,
     split,
     import_step,
@@ -105,6 +106,18 @@ import texture
 PLANES = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
 KEEP = {"top": Keep.TOP, "bottom": Keep.BOTTOM, "both": Keep.BOTH}
+
+
+def _sketch_plane_ref(f):
+    """A sketch's plane reference, preferring a by-id datum link over the baked
+    placement. Follows the `split` precedent: a datum id lives in its OWN
+    `planeId` field rather than being smuggled into `plane`, so `plane` stays a
+    valid PlaneSpec for every existing reader (and stays populated as a cache, so
+    the frontend can place the sketch without resolving the datum first).
+
+    This is what makes an offset plane stay editable: edit the datum's offset and
+    the sketch follows, instead of the distance being baked into `plane.origin`."""
+    return f.get("planeId") or f["plane"]
 
 
 def _plane_of(spec, datums=None):
@@ -1442,6 +1455,55 @@ def _handle_shell(f, ctx):
     act["shape"] = _shell(act["shape"], ctx.val(f["thickness"]), openings)
 
 
+def _handle_offset_face(f, ctx):
+    # Offset Face: move the selected faces along their own normals, keeping the
+    # body closed (the neighbouring faces stretch to follow). Targets the body
+    # that OWNS the picked faces, like press-pull — NOT require_active, which
+    # only ever sees bodies[-1] and would edit the wrong body on a multi-body model.
+    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Offset face")
+    if act is None:
+        raise ValueError("Offset face: the target body no longer exists")
+    faces = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not faces:
+        raise ValueError("no face found to offset")
+    _guard_offsetable(act["shape"], faces, "Offset face")
+    d = ctx.val(f["distance"])
+    # clamp per face by its own kind: a cylinder can't collapse past its radius,
+    # a planar face can't be pushed through the body
+    pairs = [
+        (fc, _clamp_cylinder(fc, d) if fc.geom_type == GeomType.CYLINDER else _clamp_planar(act["shape"], fc, d))
+        for fc in faces
+    ]
+    act["shape"] = _offset_faces(act["shape"], pairs)
+
+
+def _handle_thicken(f, ctx):
+    # Thicken: give surface geometry a wall. The input is either the faces of a
+    # solid or a whole SURFACE body (a non-watertight mesh import, which is
+    # read-only reference geometry until thickened).
+    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Thicken")
+    if act is None:
+        raise ValueError("Thicken: the target body no longer exists")
+    sel = f.get("faces")
+    faces = (
+        resolve_faces(act["shape"], sel, diag=ctx.diagnostics, feature_id=f.get("id"))
+        if sel
+        else list(_as_compound(act["shape"]).faces())
+    )
+    if not faces:
+        raise ValueError("no face found to thicken")
+    _guard_offsetable(act["shape"], faces, "Thicken")
+    t = ctx.val(f["thickness"])
+    if abs(t) < 1e-9:
+        raise ValueError("Thicken: the thickness is zero")
+    solid = thicken(faces, amount=t, both=bool(f.get("symmetric")))
+    # Default "new": a thickened surface body is its own body. "join" merges it
+    # into the solids it touches (thickening a face of an existing part).
+    _boolean_into_bodies(
+        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies
+    )
+
+
 def _handle_draft(f, ctx):
     act = ctx.require_active("Draft")
     faces = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id"))
@@ -1556,6 +1618,8 @@ _FEATURE_HANDLERS = {
     "cylinder": _handle_cylinder,
     "sphere": _handle_sphere,
     "shell": _handle_shell,
+    "offsetFace": _handle_offset_face,
+    "thicken": _handle_thicken,
     "draft": _handle_draft,
     "texture": _handle_texture,
     "patternRect": _handle_pattern_rect,
@@ -3767,15 +3831,58 @@ def _clamp_planar(part, face, d):
     return d
 
 
+def _guard_offsetable(part, faces, label):
+    """Shared precondition for the OCCT offset family (Offset Face, Thicken).
+    Raises ValueError — which the rebuild loop renders as user-facing prose —
+    rather than letting BRepOffset take the sidecar down.
+
+    Scope is deliberately the SAME two checks press/pull already trusts, no more.
+    An earlier, broader "refuse any faceted body" guard was tried and removed: a
+    cylinder STL imported through _refacet_clean reduces to 26 clean planar faces
+    and offsets correctly (measured: 2278 → 2502 mm³), so refusing it would have
+    blocked legitimate work. The import path already rejects meshes that DON'T
+    reduce (MAX_IMPORT_FACES), and server.py's out-of-process worker is the
+    backstop for whatever still manages to crash OCCT."""
+    for f in faces:
+        try:
+            gt = f.geom_type
+        except Exception:
+            gt = None
+        if gt not in (GeomType.PLANE, GeomType.CYLINDER):
+            raise ValueError(f"{label} supports flat and cylindrical faces only")
+        # a lone mesh facet on a dense body: reject rather than offset a sliver
+        try:
+            if len(part.faces()) > 300 and f.area < 1.0:
+                raise ValueError(
+                    f"can't {label.lower()} this region — it's a single mesh facet, "
+                    "not a clean face"
+                )
+        except ValueError:
+            raise
+        except Exception:
+            pass
+
+
 def _offset_face(part, face, d):
-    """Local single-face surface offset via OCCT (BRepOffset in Skin mode with a
-    per-face offset, global offset 0). Returns a fixed-up Solid. Used for curved
-    Press/Pull (e.g. resizing a cylindrical hole)."""
+    """Single-face convenience wrapper over _offset_faces (curved Press/Pull)."""
+    return _offset_faces(part, [(face, d)])
+
+
+def _offset_faces(part, pairs):
+    """Local surface offset via OCCT (BRepOffset in Skin mode with per-face
+    offsets, global offset 0). `pairs` is [(face, signed_distance_mm), ...];
+    every face is registered before ONE MakeOffsetShape() pass so adjacent
+    offsets close against each other instead of fighting over shared edges.
+    Returns a fixed-up Solid."""
     import OCP.BRepOffset as _bro
     from OCP.GeomAbs import GeomAbs_JoinType
     from OCP.TopAbs import TopAbs_ShapeEnum
     from OCP.TopoDS import TopoDS
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+
+    pairs = [(f, d) for f, d in pairs if abs(d) > 1e-9]
+    if not pairs:
+        return part
 
     mk = _bro.BRepOffset_MakeOffset()
     # GeomAbs_Intersection join is what makes a local single-face offset close up
@@ -3791,7 +3898,8 @@ def _offset_face(part, face, d):
         False,
         False,
     )
-    mk.SetOffsetOnFace(face.wrapped, d)
+    for face, d in pairs:
+        mk.SetOffsetOnFace(face.wrapped, d)
     mk.MakeOffsetShape()
     if not mk.IsDone():
         raise ValueError("can't offset this face by that amount")
@@ -4178,7 +4286,7 @@ def _build_sketch(f, val, datums=None):
     segments are assembled into closed wires and turned into faces, so an
     interactively-drawn polyline profile can be extruded like in mainstream MCAD.
     """
-    plane = _plane_of(f["plane"], datums)
+    plane = _plane_of(_sketch_plane_ref(f), datums)
     faces = []
     edges = []  # free-form line + arc edges, assembled into faces below
     all_edges = []  # EVERY entity's boundary as local edges, for planar subdivision
@@ -4750,7 +4858,7 @@ def _recompute_projections(f, ctx):
             if isinstance(e, dict) and e.get("type") == "projected" and e.get("id")]
     if not ents:
         return
-    plane = _plane_of(f["plane"], ctx.datums)
+    plane = _plane_of(_sketch_plane_ref(f), ctx.datums)
     # features strictly BEFORE this sketch: the prefix a source may live in
     prefix = []
     for ft in ctx.features or []:

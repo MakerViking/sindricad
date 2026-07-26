@@ -24,6 +24,8 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], [string, string
   cylinder: [["radius", "Radius", "length"], ["height", "Height", "length"]],
   sphere: [["radius", "Radius", "length"]],
   shell: [["thickness", "Thickness", "length"]],
+  offsetFace: [["distance", "Distance", "length"]],
+  thicken: [["thickness", "Thickness", "length"]],
   draft: [["angle", "Angle", "angle"]],
   patternRect: [["countX", "Count X", "count"], ["countY", "Count Y", "count"], ["spacingX", "Spacing X", "length"], ["spacingY", "Spacing Y", "length"]],
   patternCircular: [["count", "Count", "count"], ["angle", "Angle", "angle"]],
@@ -31,7 +33,7 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], [string, string
   cleanUp: [["tolerance", "Tolerance", "length"]],
   scale: [["factor", "Factor", "count"]],
   move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
-  texture: [["depth", "Depth", "length"], ["scale", "Scale", "length"], ["angle", "Angle", "angle"], ["offset", "Offset", "length"], ["sharpness", "Sharpness", "count"], ["seed", "Seed", "count"]],
+  texture: [["depth", "Depth", "length"], ["scale", "Scale", "length"], ["angle", "Angle", "angle"], ["offset", "Offset", "length"], ["sharpness", "Sharpness", "count"], ["boundaryInset", "Edge blend", "length"], ["seed", "Seed", "count"]],
 };
 
 /** Numeric fields on the solver-RIGID parametric shapes (the solver never writes

@@ -248,3 +248,109 @@ describe("Break Link — constraints survive the projected→native conversion",
     expect(Math.hypot(u.x1 - p0.x, u.y1 - p0.y)).toBeCloseTo(10, 5);
   });
 });
+
+// The associative payoff for Offset, against the REAL solver. The bug this
+// fixes: an offset copy carried no constraint at all, so it drifted off its
+// source on the next solve ("de-concentrified") and its distance wasn't editable.
+describe("offset constraint — the copy stays tied to its source", () => {
+  const circle = (id: string, x: number, y: number, r: number): ResolvedEntity =>
+    ({ type: "circle", id, x, y, radius: r });
+
+  it("pulls a drifted copy back to concentric at the right gap (the ring case)", async () => {
+    // the copy starts off-centre and at the wrong radius, as if it had drifted
+    const ents = [circle("c1", 0, 0, 5), circle("c2", 0.7, -0.4, 7.1)];
+    const cons: SketchConstraint[] = [
+      { type: "offset", pairs: [{ src: "c1", cpy: "c2" }], value: 3 },
+    ];
+    const r = await compileAndSolve(ents, cons);
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const a = r.entities.find((e) => e.id === "c1");
+    const b = r.entities.find((e) => e.id === "c2");
+    if (a?.type !== "circle" || b?.type !== "circle") throw new Error("circles lost");
+    expect(Math.hypot(b.x - a.x, b.y - a.y)).toBeCloseTo(0, 5); // concentric again
+    expect(b.radius - a.radius).toBeCloseTo(3, 5); // and the gap is the dim
+  });
+
+  it("makes the copy FOLLOW an upstream radius change", async () => {
+    const ents = [circle("c1", 0, 0, 5), circle("c2", 0, 0, 8)];
+    const cons: SketchConstraint[] = [
+      { type: "offset", pairs: [{ src: "c1", cpy: "c2" }], value: 3 },
+      { type: "radius", e: "c1", value: 9 }, // drive the SOURCE bigger
+    ];
+    const r = await compileAndSolve(ents, cons);
+    expect(r.ok).toBe(true);
+    const a = r.entities.find((e) => e.id === "c1");
+    const b = r.entities.find((e) => e.id === "c2");
+    if (a?.type !== "circle" || b?.type !== "circle") throw new Error("circles lost");
+    expect(a.radius).toBeCloseTo(9, 5);
+    expect(b.radius).toBeCloseTo(12, 5); // followed, keeping the 3mm wall
+  });
+
+  it("takes a NEGATIVE value as an inward offset (signed, no branch ambiguity)", async () => {
+    const ents = [circle("c1", 0, 0, 5), circle("c2", 0, 0, 3)];
+    const cons: SketchConstraint[] = [
+      { type: "offset", pairs: [{ src: "c1", cpy: "c2" }], value: -2 },
+      { type: "radius", e: "c1", value: 10 },
+    ];
+    const r = await compileAndSolve(ents, cons);
+    expect(r.ok).toBe(true);
+    const b = r.entities.find((e) => e.id === "c2");
+    if (b?.type !== "circle") throw new Error("circle lost");
+    expect(b.radius).toBeCloseTo(8, 5); // stayed INSIDE
+  });
+
+  it("governs a whole 4-line chain from ONE value (Fusion: not four dims)", async () => {
+    // a 10x10 square and its inward copy at 2mm, corners joined
+    const sq = (p: string, o: number): ResolvedEntity[] => [
+      line(`${p}0`, o, o, 10 - o, o),
+      line(`${p}1`, 10 - o, o, 10 - o, 10 - o),
+      line(`${p}2`, 10 - o, 10 - o, o, 10 - o),
+      line(`${p}3`, o, 10 - o, o, o),
+    ];
+    // the copy starts SLOPPY — 1.4mm on one side, 2.6 on another
+    const ents = [...sq("s", 0), ...sq("c", 0), ...[]];
+    const copy = [
+      line("c0", 1.4, 1.4, 8.7, 1.4), line("c1", 8.7, 1.4, 8.7, 8.6),
+      line("c2", 8.7, 8.6, 1.3, 8.6), line("c3", 1.3, 8.6, 1.4, 1.4),
+    ];
+    const all = [...ents.slice(0, 4), ...copy];
+    const cons: SketchConstraint[] = [
+      // the copy's corners are a chain
+      { type: "coincident", e1: "c0", p1: 1, e2: "c1", p2: 0 },
+      { type: "coincident", e1: "c1", p1: 1, e2: "c2", p2: 0 },
+      { type: "coincident", e1: "c2", p1: 1, e2: "c3", p2: 0 },
+      { type: "coincident", e1: "c3", p1: 1, e2: "c0", p2: 0 },
+      // ...and ONE offset dim governs every member
+      { type: "offset", value: 2, pairs: [0, 1, 2, 3].map((k) => ({ src: `s${k}`, cpy: `c${k}` })) },
+    ];
+    const r = await compileAndSolve(all, cons);
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    // every copy edge ends up exactly 2mm from its source edge
+    for (const k of [0, 1, 2, 3]) {
+      const s = r.entities.find((e) => e.id === `s${k}`);
+      const c = r.entities.find((e) => e.id === `c${k}`);
+      if (s?.type !== "line" || c?.type !== "line") throw new Error("chain lost");
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const perp = Math.abs((c.x1 - s.x1) * dy - (c.y1 - s.y1) * dx) / len;
+      expect(perp).toBeCloseTo(2, 4);
+      // and parallel to it
+      expect(Math.abs((c.x2 - c.x1) * dy - (c.y2 - c.y1) * dx) / (len * len)).toBeCloseTo(0, 4);
+    }
+  });
+
+  it("survives losing one copy: the pair list shrinks, the rest stay linked", async () => {
+    // pruneConstraints drops the dead pair; the solver must accept what's left
+    const ents = [circle("c1", 0, 0, 5), circle("c2", 0, 0, 8)];
+    const cons: SketchConstraint[] = [
+      { type: "offset", value: 3, pairs: [{ src: "c1", cpy: "c2" }, { src: "gone", cpy: "alsogone" }] },
+    ];
+    const r = await compileAndSolve(ents, cons);
+    expect(r.ok).toBe(true);
+    const b = r.entities.find((e) => e.id === "c2");
+    if (b?.type !== "circle") throw new Error("circle lost");
+    expect(b.radius).toBeCloseTo(8, 5); // the live pair still holds
+  });
+});

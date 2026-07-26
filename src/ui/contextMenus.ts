@@ -82,7 +82,9 @@ export function createContextMenus(deps: ContextMenusDeps) {
     selectFeature(datumId); // same as clicking it — the menu acts on a visible selection
     contextMenu(x, y, [
       { label: "Cut all bodies", onClick: unlessBusy(() => void startCutByPlane(datumId)) },
-      { label: "Sketch on plane", disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store); }) },
+      // enter BY ID: the def is only the cached placement, so passing the datum
+      // id too is what makes the sketch follow later edits to its offset
+      { label: "Sketch on plane", disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store, undefined, f.id); }) },
       { label: "Offset plane", disabled: !f, onClick: unlessBusy(() => { if (f) offsetPlaneFromFace(datumPlaneDef(f)); }) },
       { separator: true, label: "" },
       { label: "Hide plane", onClick: () => { store.setPlaneVisibility(datumId, false); syncDatumPlanes(); tree.refresh(); } },

@@ -15,6 +15,13 @@
 // ADDITION — no data rewrite, the stamp alone marks the format. Older builds
 // opening a v3 file hit the newer-version warning below and degrade gracefully
 // (unknown entity types are skipped, not crashed on).
+//
+// v3 → v4: the "offset" sketch constraint (the associative link the Offset tool
+// creates) and the sketch feature's `planeId` (a by-id datum-plane reference, so
+// an offset plane's distance stays editable instead of being baked into the
+// plane's origin). Both pure ADDITIONS — no data rewrite, the stamp alone marks
+// the format. `plane` is still written alongside `planeId` as a resolved cache,
+// so an older build opening a v4 file still places the sketch correctly.
 
 import type { CadDocument, ParamDef, ParamTarget } from "../types";
 import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFields";
@@ -22,7 +29,7 @@ import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id
 import { nextDName } from "../params/engine";
 
 /** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
-export const FORMAT_VERSION = 3;
+export const FORMAT_VERSION = 4;
 
 export function migrateDocument(parsed: CadDocument): string[] {
   const version = parsed.version ?? 1;

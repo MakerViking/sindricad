@@ -98,7 +98,7 @@ describe("migrateDocument", () => {
   });
 
   it("v3 (projected entities) is a no-op stamp: v3 docs pass through unchanged, twice", () => {
-    expect(FORMAT_VERSION).toBe(3);
+    expect(FORMAT_VERSION).toBe(4);
     const doc = v1({
       version: 3,
       features: [{ id: "f1", type: "sketch", plane: "XY", entities: [
@@ -107,6 +107,26 @@ describe("migrateDocument", () => {
             sel: { kind: "edge", by: "match", fp: { mid: [0, 0, 0], dir: [1, 0, 0] } } },
           curve: { kind: "line", x1: 0, y1: 0, x2: 20, y2: 0 } },
       ] }],
+    });
+    const before = JSON.stringify(doc);
+    expect(migrateDocument(doc)).toEqual([]); // in-format: no warnings
+    expect(JSON.stringify(doc)).toBe(before);
+    migrateDocument(doc); // idempotent
+    expect(JSON.stringify(doc)).toBe(before);
+  });
+
+  it("v4 (offset constraint + sketch planeId) is a no-op stamp too", () => {
+    const doc = v1({
+      version: 4,
+      features: [
+        { id: "dp", type: "datumPlane", plane: "XY", offset: 12 },
+        // planeId keeps the datum link; plane stays as the resolved cache
+        { id: "f1", type: "sketch", planeId: "dp",
+          plane: { origin: [0, 0, 12], normal: [0, 0, 1], xdir: [1, 0, 0] },
+          entities: [{ type: "circle", id: "c1", radius: 5, x: 0, y: 0 },
+                     { type: "circle", id: "c2", radius: 7, x: 0, y: 0 }],
+          constraints: [{ type: "offset", id: "k1", pairs: [{ src: "c1", cpy: "c2" }], value: 2 }] },
+      ],
     });
     const before = JSON.stringify(doc);
     expect(migrateDocument(doc)).toEqual([]); // in-format: no warnings

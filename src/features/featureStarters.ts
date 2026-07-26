@@ -137,12 +137,24 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     });
   }
 
-  // Offset Plane: pick a plane/face, then drag an arrow (or type) to set the offset,
-  // with a live ghost of the resulting plane; commit sketches on the offset plane.
+  // Offset Plane: pick a plane/face, then drag an arrow (or type) to set the
+  // offset, with a live ghost of the resulting plane; then sketch on it.
+  //
+  // It used to BAKE the distance into the resulting plane's origin — the scalar
+  // was discarded, the source plane identity was lost, and nothing landed in the
+  // timeline, so an offset plane could never be adjusted after the fact. It now
+  // creates the same parametric `datumPlane` that the Datum Plane button and the
+  // right-click "Offset plane from face" already created (source plane + an
+  // editable scalar offset), and enters the sketch BY ID, so changing the offset
+  // in the inspector moves the sketch with it.
   function offsetPlane() {
     pickPlaneInteractive("Select a plane or face to offset from", (spec) => {
-      planeOffset.start(new SketchPlane(spec), (def) => {
-        if (def) sketch.enter(def, store);
+      const src = new SketchPlane(spec);
+      planeOffset.start(src, (def) => {
+        if (!def) return;
+        const id = store.nextId();
+        store.addFeature({ id, type: "datumPlane", plane: spec, offset: offsetAlong(def, src) } as Feature);
+        sketch.enter(def, store, undefined, id);
       });
     });
   }

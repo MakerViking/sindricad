@@ -507,6 +507,72 @@ def test_modify_tools():
     print(f"  modify-tools OK: shell {shell_vol:.0f}, rect×3, circular×4, draft {p.volume:.0f}")
 
 
+def test_offset_face_and_thicken():
+    """Offset Face moves selected faces along their normals (single and multi-face,
+    the latter exercising resolve_faces' list branch); Thicken gives faces a wall.
+    Both must REFUSE non-prismatic faces and faceted mesh imports rather than
+    letting OCCT's BRepOffset segfault the sidecar."""
+    from build123d import Cylinder
+    _s, base = _box(1, 20, 20, 10)  # 20×20×10 = 4000
+    top = {"kind": "face", "by": "normal", "dir": [0, 0, 1]}
+    side = {"kind": "face", "by": "normal", "dir": [1, 0, 0]}
+
+    def build(*extra):
+        return rebuild({"parameters": {}, "features": base + list(extra)})
+
+    # single planar face, out and in
+    p, e, _ = build({"id": "of", "type": "offsetFace", "faces": top, "distance": 2})
+    assert not e, e
+    assert abs(p.volume - 4800) < 1, f"offset top +2 → 20×20×12, got {p.volume:.0f}"
+    p, e, _ = build({"id": "of", "type": "offsetFace", "faces": top, "distance": -3})
+    assert not e, e
+    assert abs(p.volume - 2800) < 1, f"offset top -3 → 20×20×7, got {p.volume:.0f}"
+
+    # two faces in ONE offset pass — a list selector (resolve_faces list branch)
+    p, e, _ = build({"id": "of", "type": "offsetFace", "faces": [top, side], "distance": 2})
+    assert not e, e
+    assert abs(p.volume - 5280) < 1, f"offset top+side +2 → 22×20×12, got {p.volume:.0f}"
+
+    # thicken: new body (default), symmetric doubles it, join merges
+    p, e, bodies = build({"id": "th", "type": "thicken", "faces": top, "thickness": 2})
+    assert not e, e
+    assert len(bodies) == 2, f"thicken defaults to a new body, got {len(bodies)}"
+    assert abs(bodies[1]["shape"].volume - 800) < 1, "thickened top face → 20×20×2"
+    _p, e, bodies = build({"id": "th", "type": "thicken", "faces": top, "thickness": 2, "symmetric": True})
+    assert not e, e
+    assert abs(bodies[1]["shape"].volume - 1600) < 1, "symmetric thicken spans both sides"
+    p, e, bodies = build({"id": "th", "type": "thicken", "faces": top, "thickness": 2, "operation": "join"})
+    assert not e, e
+    assert len(bodies) == 1 and abs(p.volume - 4800) < 1, "join merges into the source body"
+
+    # refusals must be clean ValueErrors (feature errors), never a crash
+    _p, e, _ = rebuild({"parameters": {}, "features": [
+        {"id": "sp", "type": "sphere", "radius": 10},
+        {"id": "of", "type": "offsetFace", "faces": {"kind": "face", "by": "all"}, "distance": 1}]})
+    assert e and "flat and cylindrical" in e[0]["message"], f"sphere must be refused, got {e}"
+    _p, e, _ = build({"id": "th", "type": "thicken", "faces": top, "thickness": 0})
+    assert e and "thickness is zero" in e[0]["message"], f"zero thicken must be refused, got {e}"
+
+    # An imported STL body: _refacet_clean reduces it to real BRep faces, so
+    # offsetting one is legitimate and MUST work — this pins the deliberate
+    # decision not to blanket-refuse "faceted" bodies. (Meshes that don't reduce
+    # are already rejected at import by MAX_IMPORT_FACES, and server.py's
+    # out-of-process worker is the backstop if OCCT still crashes.)
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "cyl.stl")
+    export(Cylinder(6, 20), "stl", path)
+    mesh = [{"id": "im", "type": "import", "format": "stl", "name": "cyl",
+             "brep": import_geometry(path, "stl")["brep"]}]
+    _p, e, bodies = rebuild({"parameters": {}, "features": mesh})
+    before = bodies[0]["shape"].volume
+    _p, e, bodies = rebuild({"parameters": {}, "features": mesh + [
+        {"id": "of", "type": "offsetFace", "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]},
+         "distance": 2}]})
+    assert not e, f"offsetting a cleaned mesh import should work, got {e}"
+    assert bodies[0]["shape"].volume > before + 100, "the offset should have added material"
+    print("  offset-face/thicken OK: 4800/2800/5280, thicken 800/1600/join, sphere refused, STL import offsets")
+
+
 def test_simplify_mesh():
     """Importing a dense cylinder mesh then Simplify Mesh cuts the facet count
     (near-coplanar walls merge) while the volume is preserved within tolerance."""
@@ -1514,6 +1580,7 @@ if __name__ == "__main__":
     test_extrude_noop_guards()
     test_primitives()
     test_modify_tools()
+    test_offset_face_and_thicken()
     test_simplify_mesh()
     test_sweep()
     test_revolve_loft_operation()

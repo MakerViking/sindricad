@@ -3,13 +3,15 @@
 
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
-import { entitySegments } from "./region";
+import { entitySegments, polygonPoints } from "./region";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
 import { coincKey } from "./sketchSolve";
 import {
   segIntersect,
   segCircleIntersect,
+  circleLineIntersect,
+  circleCircleIntersect,
   lineIntersect,
   paramOnSeg,
   distToSeg,
@@ -276,76 +278,237 @@ export function filletCorner(
   return out;
 }
 
-/** Offset: add a copy of the entity offset by `dist` (closed shapes grow with
- *  positive dist; lines shift to their left normal). Returns the new entities. */
+/** Signed offset of a cursor position from an entity, in exactly the terms
+ *  offsetEntity/offsetChain take as `dist`: magnitude = distance to the curve,
+ *  sign = which side. Positive means OUTWARD for a closed shape
+ *  (circle/arc/rectangle/polygon/slot) and to the LEFT of the stored direction
+ *  (x1,y1)→(x2,y2) for a line or spline.
+ *
+ *  This is what lets the offset tool put the preview under the cursor: the tool
+ *  measures with this, and both offset functions consume the same convention
+ *  (offsetChain normalizes its arbitrary walk direction to match). Null for
+ *  entities that can't be offset. */
+export function signedOffsetAt(e: ResolvedEntity, p: THREE.Vector2): number | null {
+  const leftOf = (a: THREE.Vector2, b: THREE.Vector2) => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9) return 0;
+    return ((p.x - a.x) * -dy + (p.y - a.y) * dx) / len;
+  };
+  if (e.type === "line") return leftOf(v(e.x1, e.y1), v(e.x2, e.y2));
+  if (e.type === "circle") return v(e.x, e.y).distanceTo(p) - e.radius;
+  if (e.type === "arc") {
+    const g = arcGeom(e);
+    return g ? g.C.distanceTo(p) - g.R : null;
+  }
+  if (e.type === "rectangle") {
+    // exact signed distance to an axis-aligned box: outside = the corner/edge
+    // distance, inside = the (negative) distance to the nearest edge
+    const dx = Math.abs(p.x - e.x) - e.width / 2;
+    const dy = Math.abs(p.y - e.y) - e.height / 2;
+    return dx > 0 || dy > 0 ? Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) : Math.max(dx, dy);
+  }
+  if (e.type === "polygon") {
+    // convex polygon: the largest signed distance to any edge's outward line is
+    // the exact SDF (negative inside)
+    const pts = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
+    let best = -Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i]!, b = pts[(i + 1) % pts.length]!;
+      // polygonPoints runs CCW, so the OUTWARD normal is the right normal
+      best = Math.max(best, -leftOf(a, b));
+    }
+    return Number.isFinite(best) ? best : null;
+  }
+  if (e.type === "slot") return distToSeg(v(e.x1, e.y1), v(e.x2, e.y2), p) - e.width / 2;
+  if (e.type === "spline") {
+    // nearest segment decides both distance and side (same left-normal
+    // convention offsetEntity pushes the points along)
+    let best: number | null = null;
+    for (let i = 0; i + 1 < e.points.length; i++) {
+      const a = v(e.points[i]!.x, e.points[i]!.y), b = v(e.points[i + 1]!.x, e.points[i + 1]!.y);
+      const d = distToSeg(a, b, p);
+      if (best === null || d < Math.abs(best)) best = Math.sign(leftOf(a, b) || 1) * d;
+    }
+    return best;
+  }
+  return null;
+}
+
+/** What an offset produced.
+ *
+ *  `pairs` are the source→copy operands the associative `offset` constraint will
+ *  govern (rect operands are EDGES, "<rectId>~<k>" — see types.ts). `linked:
+ *  false` means the geometry is correct but free-floating: the solver models
+ *  polygon / slot / spline as RIGID, so there is no constraint that could tie
+ *  the copy to its source, and the caller says so once rather than implying a
+ *  link that doesn't exist. */
+export type OffsetResult = {
+  entities: ResolvedEntity[];
+  pairs: { src: string; cpy: string }[];
+  linked: boolean;
+};
+
+/** Offset a SINGLE entity by `dist` (closed shapes grow with positive dist;
+ *  lines shift to their left normal). Returns null only for entity types that
+ *  cannot be offset at all (text, point) — the caller toasts a refusal, because
+ *  a silent no-op after the user has typed a distance reads as a broken tool. */
 export function offsetEntity(
   ents: ResolvedEntity[],
   index: number,
   dist: number,
-): ResolvedEntity[] | null {
+): OffsetResult | null {
   const e = ents[index];
   if (!e) return null;
   let copy: ResolvedEntity | null = null;
+  let pairs: { src: string; cpy: string }[] = [];
+  let linked = true;
   const id = newEntityId();
   if (e.type === "rectangle") {
     const w = e.width + 2 * dist, h = e.height + 2 * dist;
-    if (w > 1e-3 && h > 1e-3) copy = { type: "rectangle", id, width: w, height: h, x: e.x, y: e.y };
+    if (w > 1e-3 && h > 1e-3) {
+      copy = { type: "rectangle", id, width: w, height: h, x: e.x, y: e.y, ...constr(e) };
+      // Both rectangles are axis-aligned about a shared centre, so edge k of the
+      // copy IS edge k of the source (rectCorners' CCW order) — the pairing is
+      // positional. Four edge pairs, one distance each, is exactly a
+      // rectangle's 4 DOF.
+      pairs = [0, 1, 2, 3].map((k) => ({ src: `${e.id}~${k}`, cpy: `${id}~${k}` }));
+    }
   } else if (e.type === "circle") {
     const r = e.radius + dist;
-    if (r > 1e-3) copy = { type: "circle", id, radius: r, x: e.x, y: e.y };
+    if (r > 1e-3) {
+      copy = { type: "circle", id, radius: r, x: e.x, y: e.y, ...constr(e) };
+      pairs = [{ src: e.id, cpy: id }];
+    }
   } else if (e.type === "line") {
     const dir = v(e.x2 - e.x1, e.y2 - e.y1).normalize();
     const n = v(-dir.y, dir.x).multiplyScalar(dist); // left normal
-    copy = { type: "line", id, x1: e.x1 + n.x, y1: e.y1 + n.y, x2: e.x2 + n.x, y2: e.y2 + n.y };
+    copy = { type: "line", id, x1: e.x1 + n.x, y1: e.y1 + n.y, x2: e.x2 + n.x, y2: e.y2 + n.y, ...constr(e) };
+    pairs = [{ src: e.id, cpy: id }];
   } else if (e.type === "arc") {
     // concentric offset: positive dist grows the radius (away from the center)
     const g = arcGeom(e);
-    if (g && g.R + dist > 1e-3) copy = arcFromSpan(g.C, g.R + dist, g.aStart, g.delta, {});
+    if (g && g.R + dist > 1e-3) {
+      copy = arcFromSpan(g.C, g.R + dist, g.aStart, g.delta, e);
+      pairs = [{ src: e.id, cpy: copy.id }];
+    }
+  } else if (e.type === "spline") {
+    // push each point along its local normal — the perpendicular to the chord
+    // through its neighbours, so an interior corner offsets to the miter
+    // direction and the ends use their own single segment.
+    const pts = e.points;
+    if (pts.length >= 2) {
+      copy = {
+        type: "spline", id, ...constr(e),
+        points: pts.map((p, i) => {
+          const prev = pts[i - 1] ?? p, next = pts[i + 1] ?? p;
+          const dx = next.x - prev.x, dy = next.y - prev.y;
+          const len = Math.hypot(dx, dy) || 1;
+          return { x: p.x + (-dy / len) * dist, y: p.y + (dx / len) * dist };
+        }),
+      };
+      linked = false;
+    }
+  } else if (e.type === "polygon") {
+    // Fusion keeps a polygon a polygon. `radius` is the CIRCUMradius while the
+    // EDGES lie on the inscribed circle (r·cos(π/n)), so moving the edges out by
+    // `dist` moves the circumradius by dist / cos(π/n).
+    const n = Math.max(3, Math.round(e.sides));
+    const r = e.radius + dist / Math.cos(Math.PI / n);
+    if (r > 1e-3) {
+      copy = { type: "polygon", id, x: e.x, y: e.y, radius: r, sides: e.sides, angle: e.angle, ...constr(e) };
+      linked = false;
+    }
+  } else if (e.type === "slot") {
+    // `width` is the OVERALL width (the caps have radius w/2), so pushing the
+    // boundary out by `dist` widens it by 2·dist; the axis is unchanged.
+    const w = e.width + 2 * dist;
+    if (w > 1e-3) {
+      copy = { type: "slot", id, x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, width: w, ...constr(e) };
+      linked = false;
+    }
   }
   if (!copy) return null;
-  return [...ents, copy];
+  return { entities: [...ents, copy], pairs, linked };
 }
 
 type LineE = Extract<ResolvedEntity, { type: "line" }>;
+type ArcE = Extract<ResolvedEntity, { type: "arc" }>;
+type ChainE = LineE | ArcE;
+
+/** A member of the chain being offset, in traversal order. `ccw` is meaningful
+ *  for arcs only: whether this traversal runs along the arc's CCW sweep. */
+type Member = { i: number; e: ChainE; from: THREE.Vector2; to: THREE.Vector2; ccw: boolean };
+
+/** An offset member. Lines carry their two endpoints; arcs carry the (unchanged)
+ *  centre plus the offset radius, and their endpoints ride on that circle. */
+type Off =
+  | { kind: "line"; src: string; a: THREE.Vector2; b: THREE.Vector2; dir: THREE.Vector2 }
+  | { kind: "arc"; src: string; a: THREE.Vector2; b: THREE.Vector2; C: THREE.Vector2; R: number; ccw: boolean };
+
+/** How far a miter may travel from the original corner, as a multiple of |dist|.
+ *  Two nearly-collinear offset lines intersect arbitrarily far away, which used
+ *  to fling a spike across the sketch; past this limit the corner is left butted
+ *  instead. 4 is the common CAD/stroke default (~29° between segments). */
+const MITER_LIMIT = 4;
+
+/** Build an arc entity from its centre, radius, two endpoints and sweep
+ *  direction. A CW sweep is emitted as the equivalent CCW arc from the other
+ *  end — an arc entity is three points, so it carries no direction of its own. */
+function arcFromEnds(
+  C: THREE.Vector2, R: number, a: THREE.Vector2, b: THREE.Vector2, ccw: boolean,
+  src: { construction?: boolean },
+): ResolvedEntity | null {
+  const aS = Math.atan2(a.y - C.y, a.x - C.x);
+  const aE = Math.atan2(b.y - C.y, b.x - C.x);
+  const delta = ccw ? ccwDelta(aS, aE) : ccwDelta(aE, aS);
+  if (delta < 1e-9) return null; // collapsed to nothing
+  return ccw ? arcFromSpan(C, R, aS, delta, src) : arcFromSpan(C, R, aE, delta, src);
+}
 
 /**
- * Offset a connected chain of LINE entities as a unit, mitering the corners —
- * the common "offset this profile in/out" case (polygon outlines, polylines,
- * a rectangle drawn as 4 lines). Returns the entities with the offset chain
- * ADDED (originals kept), or null when the clicked entity isn't part of a
- * simple line chain (a lone line or a junction) — the caller then falls back to
- * single-entity offset. `dist` sign picks the side.
+ * Offset a connected chain of LINE and ARC entities as a unit, joining the
+ * corners — the common "offset this profile in/out" case (polylines, a
+ * rectangle drawn as 4 lines, and now filleted profiles, which are the shape
+ * most real parts actually have).
  *
- * Considers ONLY line entities; arcs in a profile are ignored (not joined) — a
- * line-line corner with a coincident arc endpoint miters the two lines and skips
- * the arc. defer: mixed line+arc chain joins; revisit when arc offset is added.
+ * Returns null when the clicked entity isn't part of a simple chain (a lone
+ * curve or a junction); the caller then falls back to single-entity offset.
+ * `dist` sign picks the side: every member shifts to its LEFT relative to the
+ * traversal direction, so on a CCW loop a positive dist moves inward.
+ *
+ * Arcs used to be skipped entirely here (only `line` entities entered the
+ * adjacency map), so a filleted profile offset as loose, unjoined pieces.
  */
-export function offsetLineChain(
+export function offsetChain(
   ents: ResolvedEntity[],
   index: number,
   dist: number,
-): ResolvedEntity[] | null {
-  if (ents[index]?.type !== "line") return null;
-  // endpoint key -> line-entity indices touching it. coincKey is the solver's
+): OffsetResult | null {
+  const isChain = (e: ResolvedEntity | undefined): e is ChainE =>
+    e?.type === "line" || e?.type === "arc";
+  if (!isChain(ents[index])) return null;
+
+  // endpoint key -> chain-entity indices touching it. coincKey is the solver's
   // canonical coincidence key, so "connected" here matches what the solver merges.
   const touch = new Map<string, number[]>();
   ents.forEach((e, i) => {
-    if (e.type !== "line") return;
+    if (!isChain(e)) return;
     for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
       const arr = touch.get(k);
       if (arr) arr.push(i); else touch.set(k, [i]);
     }
   });
 
-  // connected component of lines containing `index`; bail on any junction (a
-  // shared vertex touched by >2 lines) — not a simple chain
+  // connected component containing `index`; bail on any junction (a shared
+  // vertex touched by >2 curves) — not a simple chain
   const comp = new Set<number>();
   const stack = [index];
   while (stack.length) {
     const i = stack.pop();
     if (i === undefined || comp.has(i)) continue;
     const e = ents[i];
-    if (!e || e.type !== "line") continue;
+    if (!isChain(e)) continue;
     comp.add(i);
     for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
       const arr = touch.get(k);
@@ -354,59 +517,147 @@ export function offsetLineChain(
       for (const j of arr) if (j !== i) stack.push(j);
     }
   }
-  if (comp.size < 2) return null; // a lone line — caller handles it
+  if (comp.size < 2) return null; // a lone curve — caller handles it
 
-  // order the chain into a directed path. Start at a free end (a vertex touched
-  // by only one line) for an open chain; any line for a closed loop. Within a
-  // junction-free component, touch[k].length IS that vertex's chain degree.
+  // pick a start: a free end for an open chain, else any member (closed loop)
   let start = -1, startKey = "";
   for (const i of comp) {
-    const e = ents[i] as LineE;
+    const e = ents[i] as ChainE;
     if (touch.get(coincKey(e.x1, e.y1))?.length === 1) { start = i; startKey = coincKey(e.x1, e.y1); break; }
     if (touch.get(coincKey(e.x2, e.y2))?.length === 1) { start = i; startKey = coincKey(e.x2, e.y2); break; }
   }
   const closed = start === -1;
-  if (closed) { start = comp.values().next().value as number; const s = ents[start] as LineE; startKey = coincKey(s.x1, s.y1); }
+  if (closed) { start = comp.values().next().value as number; const s = ents[start] as ChainE; startKey = coincKey(s.x1, s.y1); }
 
-  // walk: each step yields the line's [from, to] in path order
-  const path: { from: THREE.Vector2; to: THREE.Vector2 }[] = [];
+  // walk the chain into an ordered, directed path
+  const path: Member[] = [];
   const used = new Set<number>();
   let cur = start, curKey = startKey;
   while (cur !== -1 && !used.has(cur)) {
     used.add(cur);
-    const e = ents[cur] as LineE;
-    const a = v(e.x1, e.y1), b = v(e.x2, e.y2);
-    const fromA = coincKey(a.x, a.y) === curKey;
-    const from = fromA ? a : b, to = fromA ? b : a;
-    path.push({ from, to });
+    const e = ents[cur] as ChainE;
+    const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
+    const fromP1 = coincKey(p1.x, p1.y) === curKey;
+    const from = fromP1 ? p1 : p2, to = fromP1 ? p2 : p1;
+    // for an arc, does this traversal run along its CCW sweep? arcGeom's
+    // aStart is the CCW start, so travelling from that endpoint is CCW.
+    let ccw = true;
+    if (e.type === "arc") {
+      const g = arcGeom(e);
+      if (!g) return null;
+      const s = v(g.C.x + Math.cos(g.aStart) * g.R, g.C.y + Math.sin(g.aStart) * g.R);
+      ccw = from.distanceTo(s) <= to.distanceTo(s);
+    }
+    path.push({ i: cur, e, from, to, ccw });
     const toKey = coincKey(to.x, to.y);
-    const arr = touch.get(toKey) ?? [];
-    const nxt = arr.find((j) => j !== cur && !used.has(j)); // touch⊆comp here
+    const nxt = (touch.get(toKey) ?? []).find((j) => j !== cur && !used.has(j));
     cur = nxt ?? -1;
     curKey = toKey;
   }
   if (path.length < 2) return null;
 
-  // offset each segment to its left normal by dist
-  const seg = path.map(({ from, to }) => {
-    const dir = to.clone().sub(from).normalize();
-    const n = v(-dir.y, dir.x).multiplyScalar(dist);
-    return { a: from.clone().add(n), b: to.clone().add(n) };
-  });
-  // miter join adjacent offset segments (and the wrap corner when closed)
-  const joinAt = (i: number, j: number) => {
-    const s0 = seg[i], s1 = seg[j];
-    if (!s0 || !s1) return;
-    const m = lineIntersect(s0.a, s0.b, s1.a, s1.b);
-    if (m) { s0.b = m; s1.a = m; } // shared corner → the miter point
-  };
-  for (let i = 0; i < seg.length - 1; i++) joinAt(i, i + 1);
-  if (closed) joinAt(seg.length - 1, 0);
+  // Normalize the sign so that for the CHAIN it means exactly what it means for
+  // the PICKED entity alone (offsetEntity's convention: left of a line's stored
+  // direction, outward for an arc). The walk direction is arbitrary — it starts
+  // from whichever free end it found — so without this the same cursor position
+  // could offset the chain to either side depending on how the walk happened to
+  // run. signedOffsetAt measures the cursor in offsetEntity's terms, and this is
+  // what keeps the preview under the cursor.
+  const picked = path.find((m) => m.i === index);
+  if (picked) {
+    const backwards = picked.from.distanceTo(v(picked.e.x1, picked.e.y1)) > 1e-9;
+    if (picked.e.type === "line" ? backwards : picked.ccw) dist = -dist;
+  }
 
-  const offsetLines: ResolvedEntity[] = seg.map((s) => ({
-    type: "line", id: newEntityId(), x1: s.a.x, y1: s.a.y, x2: s.b.x, y2: s.b.y,
-  }));
-  return [...ents, ...offsetLines];
+  /** Offset one member to its left by `dist`. For an arc the left normal points
+   *  at the centre when travelling CCW, so a CCW arc SHRINKS by dist and a CW
+   *  arc grows — that is what keeps an arc coherent with the lines beside it.
+   *  Null when the arc's radius would collapse. */
+  const offsetOne = (m: Member): Off | null => {
+    if (m.e.type === "line") {
+      const dir = m.to.clone().sub(m.from).normalize();
+      const n = v(-dir.y, dir.x).multiplyScalar(dist);
+      return { kind: "line", src: m.e.id, a: m.from.clone().add(n), b: m.to.clone().add(n), dir };
+    }
+    const g = arcGeom(m.e);
+    if (!g) return null;
+    const R = g.R + (m.ccw ? -dist : dist);
+    if (R < 1e-3) return null;
+    const at = (p: THREE.Vector2) => {
+      const a = Math.atan2(p.y - g.C.y, p.x - g.C.x);
+      return v(g.C.x + Math.cos(a) * R, g.C.y + Math.sin(a) * R);
+    };
+    return { kind: "arc", src: m.e.id, a: at(m.from), b: at(m.to), C: g.C, R, ccw: m.ccw };
+  };
+
+  /** Move the shared corner of two adjacent offset members onto their
+   *  intersection. Picks the root nearest the ORIGINAL corner, which is what
+   *  keeps a line-arc join on the right branch. Returns false when there is no
+   *  usable intersection (parallel lines, separated circles) or the miter would
+   *  travel further than MITER_LIMIT — the corner is then left butted. */
+  const joinAt = (s0: Off, s1: Off, corner: THREE.Vector2): boolean => {
+    let cands: THREE.Vector2[] = [];
+    if (s0.kind === "line" && s1.kind === "line") {
+      const m = lineIntersect(s0.a, s0.b, s1.a, s1.b);
+      cands = m ? [m] : [];
+    } else if (s0.kind === "line" && s1.kind === "arc") {
+      cands = circleLineIntersect(s0.a, s0.b, s1.C, s1.R);
+    } else if (s0.kind === "arc" && s1.kind === "line") {
+      cands = circleLineIntersect(s1.a, s1.b, s0.C, s0.R);
+    } else if (s0.kind === "arc" && s1.kind === "arc") {
+      cands = circleCircleIntersect(s0.C, s0.R, s1.C, s1.R);
+    }
+    if (!cands.length) return false;
+    const best = cands.reduce((p, q) => (q.distanceTo(corner) < p.distanceTo(corner) ? q : p));
+    if (best.distanceTo(corner) > MITER_LIMIT * Math.abs(dist) + 1e-9) return false;
+    s0.b = best;
+    s1.a = best;
+    return true;
+  };
+
+  // Offset, join, and prune anything that collapsed. An inward offset larger
+  // than the smallest feature makes a member run BACKWARDS relative to its
+  // source; keeping it produces the classic self-intersecting bow-tie. Drop the
+  // reversed members and re-join across the gap, repeating because removing one
+  // can expose the next. Bounded by the member count, so it always terminates.
+  let live = path;
+  let offs: Off[] = [];
+  for (let pass = 0; pass <= path.length; pass++) {
+    const built = live.map(offsetOne);
+    offs = built.filter((o): o is Off => o !== null);
+    const survivors = live.filter((_m, k) => built[k] !== null);
+    live = survivors;
+    if (!offs.length) return null;
+    const last = offs.length - 1;
+    for (let k = 0; k < last; k++) joinAt(offs[k]!, offs[k + 1]!, live[k]!.to);
+    if (closed && offs.length > 1) joinAt(offs[last]!, offs[0]!, live[last]!.to);
+    // a LINE that now points the other way has been swallowed by the offset
+    const reversed = offs
+      .map((o, k) => (o.kind === "line" && o.b.clone().sub(o.a).dot(o.dir) < 0 ? k : -1))
+      .filter((k) => k >= 0);
+    if (!reversed.length) break;
+    const drop = new Set(reversed);
+    live = live.filter((_m, k) => !drop.has(k));
+    if (live.length < 1) return null;
+  }
+
+  const pairs: { src: string; cpy: string }[] = [];
+  const copies: ResolvedEntity[] = [];
+  for (const o of offs) {
+    const srcEnt = ents.find((x) => x.id === o.src) ?? {};
+    if (o.kind === "line") {
+      const id = newEntityId();
+      copies.push({ type: "line", id, x1: o.a.x, y1: o.a.y, x2: o.b.x, y2: o.b.y, ...constr(srcEnt) });
+      pairs.push({ src: o.src, cpy: id });
+    } else {
+      const arc = arcFromEnds(o.C, o.R, o.a, o.b, o.ccw, srcEnt);
+      if (!arc) continue; // swept to nothing
+      copies.push(arc);
+      pairs.push({ src: o.src, cpy: arc.id });
+    }
+  }
+  if (!copies.length) return null;
+  return { entities: [...ents, ...copies], pairs, linked: true };
 }
 
 /** Break: split the clicked curve at the click point. A line/arc splits into two

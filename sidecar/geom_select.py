@@ -498,9 +498,21 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
 
 
 def resolve_faces(part, sel, diag=None, feature_id=None):
-    """Resolve a face selector to a list of build123d faces."""
+    """Resolve a face selector — or a LIST of selectors — to build123d faces."""
     if part is None:
         raise ValueError("no part to select faces from")
+
+    # a list of selectors (multi-face offset/thicken/shell/draft): union,
+    # de-duplicated — mirrors resolve_edges. Without this branch a list reaches
+    # sel.get("by") and dies with a bare AttributeError, which the rebuild loop
+    # renders as an unhelpful "Shell failed (AttributeError)".
+    if isinstance(sel, list):
+        seen = {}
+        for s in sel:
+            for f in resolve_faces(part, s, diag, feature_id):
+                seen.setdefault(_face_dedup_key(f), f)
+        return list(seen.values())
+
     by = sel.get("by")
     if by == "normal":
         d = _unit(_v(sel["dir"]))
@@ -537,6 +549,18 @@ def _edge_dedup_key(e):
     except Exception:
         ln = 0.0
     return (round(p.X, 4), round(p.Y, 4), round(p.Z, 4), ln)
+
+
+def _face_dedup_key(f):
+    """De-dup key for a union of face selectors. Centroid AND area, so two
+    coplanar concentric faces (same centroid, different size) stay distinct —
+    the face-side twin of _edge_dedup_key."""
+    p = _face_centroid(f)
+    try:
+        ar = round(f.area, 4)
+    except Exception:
+        ar = 0.0
+    return (round(p.X, 4), round(p.Y, 4), round(p.Z, 4), ar)
 
 
 def _tangent_chain(part, seed):

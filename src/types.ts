@@ -281,7 +281,34 @@ export type SketchConstraint =
   | { type: "equalRadius"; a: string; b: string }
   // tangent2: general tangency between two curves (line/circle/arc, not line+line).
   // The older { type:"tangent"; line; circle } form is still accepted (old files).
-  | { type: "tangent2"; a: string; b: string };
+  | { type: "tangent2"; a: string; b: string }
+  // --- OFFSET ----------------------------------------------------------------
+  // The associative link the Offset tool creates: ONE constraint for the whole
+  // operation, holding every source→copy pair it produced, governed by a SINGLE
+  // editable distance. That's the Fusion behaviour — offsetting a 4-line
+  // rectangle gives you one dimension, not four — and it's why this is a
+  // composite rather than N independent dims the user would have to keep in sync.
+  //
+  // It needs no new planegcs primitive. Each pair expands (with the `k<i>a`
+  // sub-id suffix convention that midpoint/collinear already use) into:
+  //   line ↔ line   → parallel + ONE p2l_distance from a copy endpoint to the
+  //                   source line (parallel makes the second endpoint's
+  //                   distance follow, so pinning it too is pure redundancy)
+  //   rect edge     → ONE p2l_distance, no parallel: the rectangle's implicit
+  //                   horizontal/vertical constraints already lock direction
+  //   round ↔ round → centre coincident + radiusDifference (the signed
+  //                   `difference` primitive radialGap uses)
+  //
+  // `value` is SIGNED: the sign is the side the copy sits on. planegcs's
+  // p2l_distance is unsigned, so the side is held by rimBranch's pre/post-solve
+  // comparison in sketchSolve, exactly as it holds an annulus from inverting.
+  //
+  // DOF note: a closed chain is exactly determined (its corner coincidences take
+  // up the slack — a 4-line square lands on zero remaining DOF), but a LONE
+  // offset line keeps 2 DOF (both endpoints still slide along it) and a lone
+  // offset arc keeps its sweep free. That is real under-constraint and the
+  // sketch reports it as such — not a silent failure.
+  | { type: "offset"; id?: string; pairs: { src: string; cpy: string }[]; value: number; driven?: boolean; place?: PlaceOffset };
 
 /** A driven (reference) dimension is measurement-only: the solver skips it and it
  *  renders bracketed with the live measured value. The single place that names the
@@ -300,6 +327,7 @@ export function isPlacedDim(
   switch (c.type) {
     case "p2pDistance": case "p2lDistance": case "radius": case "angle":
     case "radialGap": case "c2cDistance": case "c2lDistance": case "p2cDistance":
+    case "offset":
       return true;
     default:
       return false;
@@ -336,7 +364,15 @@ export type PlaneDef = {
 export type PlaneSpec = Plane3 | PlaneDef;
 
 export type Feature =
-  | { id: string; type: "sketch"; plane: PlaneSpec; entities: SketchEntity[]; constraints?: SketchConstraint[]; patterns?: SketchPattern[]; name?: string }
+  // `planeId` (optional) is a by-id reference to a datumPlane feature, and takes
+  // precedence over `plane` on rebuild. It follows the `split` precedent rather
+  // than overloading `plane` with ids, because SketchPlane's string branch has
+  // no default: an unrecognised id there would silently render as XY at the
+  // world origin. `plane` stays populated with the RESOLVED placement as a
+  // cache, so every frontend consumer keeps working without resolving datums —
+  // and an older build opening the file still places the sketch correctly.
+  // This is what makes an offset plane's distance stay editable after creation.
+  | { id: string; type: "sketch"; plane: PlaneSpec; planeId?: string; entities: SketchEntity[]; constraints?: SketchConstraint[]; patterns?: SketchPattern[]; name?: string }
   | {
       id: string;
       type: "extrude";
@@ -417,6 +453,15 @@ export type Feature =
   // Hollow the active body to a wall thickness, removing the selected faces
   // (none = a fully closed hollow).
   | { id: string; type: "shell"; thickness: Num; faces?: Selector | Selector[] }
+  // Offset Face: move the selected faces along their own normals, the body
+  // staying closed (neighbouring faces stretch to follow). Unlike Press/Pull's
+  // planar path this is a true surface offset, so it is restricted to flat and
+  // cylindrical faces — OCCT's BRepOffset is not safe on anything else.
+  | { id: string; type: "offsetFace"; faces: Selector | Selector[]; distance: Num; body?: string }
+  // Thicken: give surface geometry a wall. `faces` absent = the whole body,
+  // which is how a non-watertight mesh import (a surface body, `solid: false`)
+  // becomes real material. `symmetric` grows it both ways about the surface.
+  | { id: string; type: "thicken"; faces?: Selector | Selector[]; thickness: Num; symmetric?: boolean; operation?: "join" | "new"; body?: string }
   // Taper the selected faces by an angle about a neutral plane (pull axis).
   | { id: string; type: "draft"; faces: Selector | Selector[]; angle: Num; axis: Axis3 }
   // Replicate the active body on a grid / around an axis (copies are unioned).
@@ -454,7 +499,20 @@ export type Feature =
       scale: Num; // mm, pattern period / cell size
       angle?: Num; // degrees — orientation (waves/ribs vertical vs diagonal; knurl/hex lattice rotation)
       offset?: Num; // mm, phase shift (advanced)
-      sharpness?: Num; // 0..1, edge crispness (knurl/hex/waves/ribs)
+      // 0..1, reused per profile: under "facet" it is the flat-LAND fraction for
+      // the periodic kinds, the wall width for the cellular ones, and the
+      // terrace count for noise/image; under "round" it is the old power-curve
+      // crispness.
+      sharpness?: Num;
+      // Surface profile. "facet" (DEFAULT) = hard surface: planar facets and
+      // real creases, which is what actually survives a 3D print — a printer
+      // rounds a sub-millimetre sinusoid into mush. "round" = the original
+      // smooth fields.
+      profile?: "facet" | "round";
+      // mm the pattern fades to nothing over at a face boundary. 0 (default) =
+      // a clean machined cut-off. The boundary ring itself stays undisplaced
+      // either way, which is what keeps the mesh crack-free at the seam.
+      boundaryInset?: Num;
       direction?: "out" | "in" | "both"; // procedural kinds: emboss/deboss/symmetric (default "out")
       seed?: Num; // voronoi/noise
       invert?: boolean; // image kind: emboss vs deboss sample reading

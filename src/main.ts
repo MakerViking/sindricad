@@ -41,6 +41,7 @@ import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
 import { PressPullTool } from "./features/pressPullTool";
+import { FaceOffsetTool } from "./features/faceOffsetTool";
 import { LoftTool } from "./features/loftTool";
 import { MoveTool } from "./features/moveTool";
 import { MeasureTool } from "./features/measureTool";
@@ -114,6 +115,7 @@ setTextBackend(geometry, () => {
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
 const pressPull = new PressPullTool(viewport, store);
+const faceOffset = new FaceOffsetTool(viewport, store);
 const loftTool = new LoftTool(viewport, overlay, store);
 const moveTool = new MoveTool(viewport, store);
 const measure = new MeasureTool(viewport);
@@ -360,10 +362,22 @@ function deleteSelectedFace(): boolean {
   return true;
 }
 
+// Offset Face / Thicken: one interactive tool for both (pick face → scrub along
+// its normal → commit), with a real sidecar preview since neither can be faked
+// client-side.
+function startFaceOffset(mode: "offsetFace" | "thicken") {
+  if (toolBusy()) return;
+  if (!hasBody()) {
+    setStatus("Create or import a body first", "");
+    return;
+  }
+  faceOffset.start(mode, (id) => { if (id) selectFeature(id); });
+}
+
 // Guard predicates checked at the top of every start* tool + interactive helper:
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || loftTool.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || planePick || isChoiceOpen();
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || planePick || isChoiceOpen();
 }
 // True when the current rebuild produced a solid body (something to modify).
 function hasBody(): boolean {
@@ -968,6 +982,12 @@ function handleAction(action: string) {
       break;
     case "shell":
       starters.startShell();
+      break;
+    case "offset-face":
+      startFaceOffset("offsetFace");
+      break;
+    case "thicken":
+      startFaceOffset("thicken");
       break;
     case "draft":
       starters.startDraft();

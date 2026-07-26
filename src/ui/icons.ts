@@ -59,6 +59,8 @@ const PATHS: Record<string, string> = {
   combine: `<circle cx="9.5" cy="12" r="6"/><circle cx="14.5" cy="12" r="6"/>`,
   shell: `<rect x="4" y="4" width="16" height="16" rx="1"/><rect x="8" y="8" width="8" height="8" rx="0.5" stroke-dasharray="2 2"/>`,
   draft: `<path d="M7 20l4-16h2l4 16z" fill="none"/><line x1="5" y1="20" x2="19" y2="20"/>`,
+  offsetFace: `<rect x="4" y="8" width="12" height="12" rx="1"/><path d="M8 4h12v12" stroke-dasharray="2 2"/><line x1="16" y1="8" x2="20" y2="4"/>`,
+  thicken: `<path d="M4 14c4-6 12-6 16 0" fill="none"/><path d="M4 18c4-6 12-6 16 0" fill="none"/><line x1="4" y1="14" x2="4" y2="18"/><line x1="20" y1="14" x2="20" y2="18"/>`,
   texture: `<rect x="4" y="4" width="16" height="16" rx="1"/><line x1="4" y1="9.3" x2="20" y2="9.3"/><line x1="4" y1="14.7" x2="20" y2="14.7"/><line x1="9.3" y1="4" x2="9.3" y2="20"/><line x1="14.7" y1="4" x2="14.7" y2="20"/>`,
   pattern: `<rect x="4" y="4" width="5" height="5"/><rect x="15" y="4" width="5" height="5"/><rect x="4" y="15" width="5" height="5"/><rect x="15" y="15" width="5" height="5"/>`,
   simplifyMesh: `<polygon points="12,3 21,8 21,16 12,21 3,16 3,8"/><path d="M3 8l9 5 9-5M12 13v8"/>`,
