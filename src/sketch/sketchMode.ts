@@ -25,6 +25,7 @@ import {
 } from "./dimensionTool";
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
+import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
@@ -170,6 +171,13 @@ export class SketchMode {
   private dragMoved = false;
   private dragShift = false;
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
+
+  // --- in-sketch undo -------------------------------------------------------
+  // Ctrl+Z used to reach store.undo(), which pops whole-DOCUMENT snapshots — and
+  // an open sketch isn't in the document until finish(), so the newest entry IS
+  // the sketch. Ten lines drawn, one Ctrl+Z, all ten gone. These stacks live for
+  // the editing session only; leaving and re-entering a sketch starts fresh.
+  private history = new SketchHistory();
   private dragRefusedToast = false; // one fixed-point toast per refused drag gesture
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
@@ -334,6 +342,7 @@ export class SketchMode {
     this.plane = this.overlay.planeFor(plane);
     this.planeId = planeId ?? null;
     this.store = store;
+    this.history.reset(); // fresh history per session (armed once entities load)
     if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
 
     // load existing entities if editing
@@ -374,6 +383,7 @@ export class SketchMode {
 
     this.overlay.update(store.document, this.editingId ?? "__active__");
     this.refreshActive();
+    this.armPreEdit(); // the session's baseline: the first edit undoes back to here
     this.setTool("rectangle");
     this.setViewLocked(this.viewLocked); // apply lock-to-plane preference
     if (this.constraints.length > 0) this.requestSolve(); // restore DOF state
@@ -966,6 +976,7 @@ export class SketchMode {
       }
     }
     if (touched) {
+      this.armPreEdit(); // parameter sync is DERIVED — never an undo step
       this.requestSolve();
       this.refreshActive();
       this.onState?.();
@@ -989,6 +1000,7 @@ export class SketchMode {
       touched = true;
     }
     if (touched) {
+      this.armPreEdit(); // projection refresh is DERIVED — never an undo step
       this.requestSolve();
       this.refreshActive();
     }
@@ -2226,10 +2238,6 @@ export class SketchMode {
       this.patternMove(hit.p, e);
       return;
     }
-    if (this.offsetPick) {
-      this.offsetMove(hit.p, e);
-      return;
-    }
 
     if (this.textBoxStart) {
       this.textBoxEnd = hit.p.clone();
@@ -2541,6 +2549,10 @@ export class SketchMode {
   }
   /** hover-highlight the entity under the cursor in red */
   private modifyHover(e: PointerEvent) {
+    // An offset being placed owns the preview: this is the MODIFY_TOOLS hover
+    // branch and it runs on every move, so without this it would overwrite the
+    // offset's live preview with a plain hover highlight one frame later.
+    if (this.offsetPick) { this.offsetMove(e); return; }
     const p = this.planePoint(e);
     if (!p) return;
     const idx = pickEntity(this.entities, p, this.pickTol());
@@ -2873,25 +2885,32 @@ export class SketchMode {
   }
 
   /** Live side/distance + preview while the offset is being placed. */
-  private offsetMove(p: THREE.Vector2, ev: MouseEvent) {
+  private offsetMove(ev: PointerEvent) {
     const pick = this.offsetPick;
+    const p = this.planePoint(ev);
     const src = pick ? this.entities[pick.idx] : undefined;
-    if (!pick || !src) return;
-    // A typed value owns the magnitude; the cursor still owns the SIDE, so you
-    // can type 3 and then swing the mouse across the curve to flip it.
+    if (!pick || !src || !p) return;
     const signed = signedOffsetAt(src, p);
-    if (signed !== null && Math.abs(signed) > 1e-6) pick.side = signed < 0 ? -1 : 1;
-    if (this.dim.isUserDriven("offset")) {
-      const typed = this.dim.getValue("offset");
-      if (typed !== null) pick.mag = Math.abs(typed);
+    const typed = this.dim.isUserDriven("offset") ? this.dim.getValue("offset") : null;
+    if (typed !== null) {
+      // Once a value is typed, the SIGN the user wrote owns the side — that is
+      // what the minus is FOR, and the old tool worked that way. Previously the
+      // cursor always won, so typing -1 silently offset outward and the minus
+      // looked ignored. Clear the field to hand the side back to the cursor.
+      pick.mag = Math.abs(typed);
+      if (typed !== 0) pick.side = typed < 0 ? -1 : 1;
     } else if (signed !== null) {
+      if (Math.abs(signed) > 1e-6) pick.side = signed < 0 ? -1 : 1;
       pick.mag = Math.abs(signed);
       this.dim.updateFromCursor({ offset: pick.mag });
     }
     this.dim.position(ev.clientX, ev.clientY);
     const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
     const added = res ? res.entities.slice(this.entities.length) : [];
-    this.overlay.setPreview(added.length ? curveObjects(added, this.plane, PREVIEW_COLOR, true) : []);
+    // keep the source highlighted so it stays obvious what is being offset
+    const preview = [...curveObjects([src], this.plane, 0x33aaff, true)];
+    if (added.length) preview.push(...curveObjects(added, this.plane, PREVIEW_COLOR, true));
+    this.overlay.setPreview(preview);
   }
 
   private commitOffset() {
@@ -2902,7 +2921,9 @@ export class SketchMode {
     if (this.dim.isUserDriven("offset")) {
       const typed = this.dim.getValue("offset");
       if (typed === null) { toast("Offset: type a distance, or Esc to cancel"); return; }
+      // same rule as the live preview: a typed sign is the side (see offsetMove)
       pick.mag = Math.abs(typed);
+      if (typed !== 0) pick.side = typed < 0 ? -1 : 1;
     }
     if (pick.mag < 1e-6) { toast("Offset: type a distance, or Esc to cancel"); return; }
     const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
@@ -3244,10 +3265,111 @@ export class SketchMode {
     this.requestSolve();
   }
 
+  // --- in-sketch undo -------------------------------------------------------
+
+  private snapshot(): SketchSnapshot {
+    return cloneSnapshot({
+      entities: this.entities,
+      constraints: this.constraints,
+      patterns: this.patterns,
+    });
+  }
+
+  private restore(s: SketchSnapshot) {
+    const c = cloneSnapshot(s);
+    this.entities = c.entities;
+    this.constraints = c.constraints;
+    this.patterns = c.patterns;
+  }
+
+  /** Re-arm the history baseline. Called when the state SETTLES after a solve,
+   *  and by the derived paths to make their own changes invisible to
+   *  bankIfChanged. */
+  private armPreEdit() {
+    if (this.active) this.history.arm(this.snapshot());
+  }
+
+  /** Bank one undo step if the sketch changed since the last settled snapshot.
+   *
+   *  Called from requestSolve() ON PURPOSE. Every user mutation ends there —
+   *  draw, trim, fillet, offset, delete, dimension, constraint, text, pattern,
+   *  15+ call sites — and hand-listing them is exactly how an undo feature ends
+   *  up silently missing one. The three things that must NOT be undoable are
+   *  excluded structurally rather than by a denylist:
+   *
+   *   - The SOLVER's write-back assigns inside pump() and loops; it never calls
+   *     requestSolve. So "the solver moved my geometry to satisfy a constraint"
+   *     can never consume an undo step.
+   *   - DERIVED updates (parameter sync, projection refresh) re-arm the baseline
+   *     before calling requestSolve, so they compare equal.
+   *   - DRAGS never reach here at all: queueDrag pumps directly, and endDrag
+   *     banks the pre-drag snapshot as ONE step. */
+  private bankIfChanged() {
+    if (this.active) this.history.bankIfChanged(this.snapshot());
+  }
+
+  /** Commit a finished drag as a single undo step. The pre-drag entities were
+   *  already deep-cloned into dragSnapshot for Esc-revert, so that same clone is
+   *  the undo entry — a drag never touches constraints or patterns, so the
+   *  current ones complete the snapshot. */
+  private bankDrag() {
+    const before = this.dragSnapshot;
+    this.dragSnapshot = null; // committed — drop the revert buffer
+    if (!before || !this.active) return;
+    this.history.bankBefore(
+      { entities: before, constraints: this.constraints, patterns: this.patterns },
+      this.snapshot(),
+    );
+  }
+
+  get canUndoSketch(): boolean { return this.history.canUndo; }
+  get canRedoSketch(): boolean { return this.history.canRedo; }
+
+  /** Undo the last edit INSIDE the sketch. Returns true when it handled the
+   *  request — which is whenever a sketch is open, even with an empty stack:
+   *  falling through to the document undo is precisely the old behaviour that
+   *  vaporised the whole sketch. */
+  undoEdit(): boolean {
+    if (!this.active) return false;
+    const prev = this.history.undo(this.snapshot());
+    if (!prev) { setPrompt("Nothing left to undo in this sketch"); return true; }
+    this.applyHistory(prev);
+    return true;
+  }
+
+  redoEdit(): boolean {
+    if (!this.active) return false;
+    const next = this.history.redo(this.snapshot());
+    if (!next) { setPrompt("Nothing to redo in this sketch"); return true; }
+    this.applyHistory(next);
+    return true;
+  }
+
+  /** Restore a history state and settle. Any half-finished tool gesture is
+   *  dropped: its indices refer to the geometry we just replaced. */
+  private applyHistory(s: SketchSnapshot) {
+    this.restore(s);
+    this.selected.clear();
+    this.base = null;
+    this.chainStart = null;
+    this.arcStart = null;
+    this.arcEnd = null;
+    this.filletFirst = null;
+    this.splinePts = [];
+    this.clickPts = [];
+    this.offsetPick = null;
+    this.dim.hide();
+    this.overlay.setPreview([]);
+    this.refreshActive();
+    this.requestSolve();
+    this.onState?.();
+  }
+
   /** Mark the sketch dirty and kick the solve pump. Coalesces many requests
    *  into one in-flight solve so the (single, shared) WASM wrapper is never
    *  re-entered, and stale results never clobber newer geometry. */
   private requestSolve() {
+    this.bankIfChanged();
     this.solveDirty = true;
     void this.pump();
   }
@@ -3303,6 +3425,10 @@ export class SketchMode {
     } finally {
       this.solveBusy = false;
     }
+    // Settled: re-arm the pre-mutation snapshot so the NEXT edit is diffed
+    // against post-solve geometry. Without this, a later no-op requestSolve
+    // would see the solver's own movement and bank a phantom undo step.
+    if (!this.dragFrom && !this.moveDrag) this.armPreEdit();
     this.onState?.();
   }
 
@@ -3432,7 +3558,7 @@ export class SketchMode {
         }
         return;
       }
-      this.dragSnapshot = null; // committed — drop the revert buffer
+      this.bankDrag(); // the whole move is ONE undo step, not one per frame
       this.refreshActive();
       this.requestSolve(); // re-satisfy constraints at the new position
       this.onState?.(); // undo checkpoint
@@ -3462,7 +3588,7 @@ export class SketchMode {
       return;
     }
     this.dragEntIdx = -1;
-    this.dragSnapshot = null; // committed — drop the revert buffer
+    this.bankDrag(); // the whole drag is ONE undo step, not one per frame
     this.refreshActive(); // restore snap candidates + dimension labels at final positions
     this.onState?.();
   }

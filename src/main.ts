@@ -237,8 +237,8 @@ new Menubar(document.getElementById("menubar")!, [
   {
     label: "Edit",
     items: [
-      { label: "Undo", shortcut: "Ctrl+Z", disabled: () => !store.canUndo, onClick: () => store.undo() },
-      { label: "Redo", shortcut: "Ctrl+Y", disabled: () => !store.canRedo, onClick: () => store.redo() },
+      { label: "Undo", shortcut: "Ctrl+Z", disabled: () => !(sketch.active ? sketch.canUndoSketch : store.canUndo), onClick: () => doUndo() },
+      { label: "Redo", shortcut: "Ctrl+Y", disabled: () => !(sketch.active ? sketch.canRedoSketch : store.canRedo), onClick: () => doRedo() },
       { separator: true, label: "" },
       {
         label: "Delete",
@@ -298,10 +298,18 @@ scheduleStartupUpdateCheck();
 
 const docnameEl = document.getElementById("docname")!;
 // mouse-visible undo/redo (Ctrl+Z was the ONLY way before — invisible affordance)
+// Undo/redo routing: while a sketch is OPEN its geometry lives in SketchMode and
+// is not in the document yet, so store.undo() can only reach the whole sketch —
+// which is why Ctrl+Z used to vaporise it. Hand the request to the sketch, which
+// swallows it whenever it is active (an empty sketch history says so rather than
+// falling through and eating the sketch).
+function doUndo() { if (!sketch.undoEdit()) store.undo(); }
+function doRedo() { if (!sketch.redoEdit()) store.redo(); }
+
 const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
 const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement;
-undoBtn.addEventListener("click", () => store.undo());
-redoBtn.addEventListener("click", () => store.redo());
+undoBtn.addEventListener("click", () => doUndo());
+redoBtn.addEventListener("click", () => doRedo());
 store.onDocChange(() => {
   undoBtn.disabled = !store.canUndo;
   redoBtn.disabled = !store.canRedo;
@@ -907,6 +915,12 @@ function handleAction(action: string) {
   }
   if (action === "finish") return void sketch.finish(true);
   if (action === "palette") return void palette.setVisible(true);
+  // Undo/redo must be handled BEFORE the finish-the-sketch line below. They are
+  // not 3D modeling commands: letting Ctrl+Z fall through would commit the sketch
+  // and THEN undo it as a whole — which is the exact bug in-sketch undo exists to
+  // fix, so routing it any later is silently a no-op.
+  if (action === "undo") return void doUndo();
+  if (action === "redo") return void doRedo();
   // a 3D modeling command finishes the active sketch first (mainstream MCAD behavior)
   if (sketch.active) sketch.finish(true);
 
@@ -1134,12 +1148,6 @@ function handleAction(action: string) {
       store.setBodiesVisibility(
         new Map((store.buildState.result?.bodies ?? []).map((b) => [b.id, true])),
       );
-      break;
-    case "undo":
-      store.undo();
-      break;
-    case "redo":
-      store.redo();
       break;
     case "shortcut-help":
       toggleShortcutHUD();
