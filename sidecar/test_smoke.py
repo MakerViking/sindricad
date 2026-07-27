@@ -11,6 +11,7 @@ import tempfile
 from builder import rebuild, import_geometry
 from tessellate import tessellate, tessellate_bodies, edge_polylines, bbox
 from exporters import export
+from geom_select import resolve_faces
 
 # The §2 example: a bracket with two holes and a filleted vertical edge.
 EXAMPLE = {
@@ -1540,6 +1541,43 @@ def test_export_project_3mf():
           "filament_type, shared centering transform, sanitize")
 
 
+def test_face_selector_on_concentric_cylinders():
+    """Selecting a ring's OUTER wall must not resolve to its INNER wall.
+
+    The frontend used to build a by:"nearest" face selector from the mean of the
+    face's mesh VERTICES, which for a full cylinder is a point on the AXIS. Both
+    concentric walls then sat near that point and resolve_faces picked the closer
+    one — the inner — so texture / press-pull / delete-face on a ring's outside
+    landed inside. Measured on a real ring: the point sent was (0.54, 0, 8.5) and
+    it resolved to r=25 instead of r=30.
+
+    This pins the contract the fix relies on: a point ON a face resolves to that
+    face, and an axis point is genuinely ambiguous and biased inward."""
+    from build123d import Cylinder, GeomType
+
+    ring = Cylinder(30, 20) - Cylinder(25, 20)
+    cyls = [f for f in ring.faces() if f.geom_type == GeomType.CYLINDER]
+    assert len(cyls) == 2, f"expected 2 cylindrical walls, got {len(cyls)}"
+    outer = max(cyls, key=lambda f: f.radius)
+    inner = min(cyls, key=lambda f: f.radius)
+
+    for want, label in ((outer, "outer"), (inner, "inner")):
+        p = want.center()
+        got = resolve_faces(ring, {"kind": "face", "by": "nearest",
+                                   "point": [p.X, p.Y, p.Z]})[0]
+        assert abs(got.radius - want.radius) < 1e-6, (
+            f"on-surface {label} point resolved to r={got.radius:.2f}, wanted r={want.radius:.2f}"
+        )
+
+    # the axis point (what the old frontend sent) is inward-biased — asserted so
+    # nobody reintroduces a vertex-mean centroid for face selectors
+    axis = resolve_faces(ring, {"kind": "face", "by": "nearest", "point": [0.0, 0.0, 0.0]})[0]
+    assert abs(axis.radius - inner.radius) < 1e-6, (
+        "an axis point resolves to the INNER wall — never build a face selector from one"
+    )
+    print("  face-selector OK: on-surface points resolve correctly; an axis point is inward-biased")
+
+
 if __name__ == "__main__":
     print("SindriCAD sidecar smoke test")
     test_rebuild()
@@ -1581,6 +1619,7 @@ if __name__ == "__main__":
     test_primitives()
     test_modify_tools()
     test_offset_face_and_thicken()
+    test_face_selector_on_concentric_cylinders()
     test_simplify_mesh()
     test_sweep()
     test_revolve_loft_operation()

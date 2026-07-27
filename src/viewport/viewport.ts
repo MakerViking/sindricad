@@ -1291,6 +1291,20 @@ export class Viewport {
     this.requestRender();
   }
 
+  /** A representative point ON a B-rep face (world space).
+   *
+   *  The plain average of the face's vertices is NOT on the face: for a full
+   *  cylinder it lands on the AXIS. That was a real, deterministic bug — a
+   *  by:"nearest" selector built from it resolved to whichever concentric face
+   *  was nearest the axis, so selecting a ring's OUTER wall (r=30) textured the
+   *  INNER wall (r=25). Measured: the point sent was (0.54, 0, 8.5).
+   *
+   *  So: take the vertex mean as a seed, then snap to the nearest TRIANGLE
+   *  centroid, which is on the surface by construction and still near the middle
+   *  of the face. No more tessellation-dependent than the mean it replaces.
+   *
+   *  This is also the drag anchor for press/pull and Offset Face, whose arrow
+   *  used to sprout from the axis of a cylindrical face rather than from it. */
   private faceCentroidWorld(faceId: number): THREE.Vector3 {
     const acc = new THREE.Vector3();
     const body = this.model && bodyOfFace(this.model, faceId);
@@ -1309,6 +1323,19 @@ export class Viewport {
       }
     }
     if (seen.size) acc.divideScalar(seen.size);
+
+    // snap the seed onto the surface: the nearest triangle's centroid
+    const cent = new THREE.Vector3();
+    const best = new THREE.Vector3();
+    let bestD = Infinity;
+    for (const t of tris) {
+      cent.set(0, 0, 0);
+      for (let k = 0; k < 3; k++) cent.add(tmp.fromBufferAttribute(pos, index.getX(t * 3 + k)));
+      cent.divideScalar(3);
+      const d = cent.distanceToSquared(acc);
+      if (d < bestD) { bestD = d; best.copy(cent); }
+    }
+    if (bestD < Infinity) acc.copy(best);
     return acc.applyMatrix4(body.mesh.matrixWorld);
   }
 
