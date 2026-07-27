@@ -46,24 +46,60 @@ struct Buttons {
 /// Spawn a background thread that connects to the first 3Dconnexion device and
 /// streams events. Reconnects (every 3s) if the device is missing/unplugged.
 pub fn start(app: AppHandle) {
-    thread::spawn(move || loop {
-        if let Err(e) = stream(&app) {
-            eprintln!("[spacemouse] {e}");
+    thread::spawn(move || {
+        // Emit the "plugged in but unreadable" warning at most ONCE per run. The
+        // loop below retries every 3s forever, and this used to be an eprintln!
+        // nobody sees — so a user could plug in a SpaceMouse, get silence, and
+        // have no way to learn that a udev rule is all that was missing.
+        let mut warned = false;
+        loop {
+            match stream(&app) {
+                Ok(()) => warned = false, // clean disconnect: a later failure is news again
+                Err(Blocked::NoDevice) => {} // nothing plugged in — normal, stay quiet
+                Err(Blocked::Unreadable { name, detail }) => {
+                    eprintln!("[spacemouse] found \"{name}\" but could not open it: {detail}");
+                    if !warned {
+                        warned = true;
+                        let _ = app.emit("spacemouse:blocked", DeviceBlocked { name, detail });
+                    }
+                }
+                Err(Blocked::Other(e)) => eprintln!("[spacemouse] {e}"),
+            }
+            thread::sleep(Duration::from_secs(3));
         }
-        thread::sleep(Duration::from_secs(3));
     });
 }
 
-fn stream(app: &AppHandle) -> Result<(), String> {
+/// Why the reader isn't running. Only `Unreadable` is worth telling the user
+/// about: the device IS there and the fix is theirs to apply.
+enum Blocked {
+    NoDevice,
+    Unreadable { name: String, detail: String },
+    Other(String),
+}
+
+#[derive(Clone, Serialize)]
+struct DeviceBlocked {
+    name: String,
+    detail: String,
+}
+
+fn stream(app: &AppHandle) -> Result<(), Blocked> {
     let debug = std::env::var("SINDRICAD_SPACEMOUSE_DEBUG").is_ok();
-    let api = HidApi::new().map_err(|e| e.to_string())?;
+    let api = HidApi::new().map_err(|e| Blocked::Other(e.to_string()))?;
     let info = api
         .device_list()
         .find(|d| VENDORS.contains(&d.vendor_id()))
-        .ok_or("no 3Dconnexion device found")?;
+        .ok_or(Blocked::NoDevice)?;
     let (vid, pid) = (info.vendor_id(), info.product_id());
     let name = info.product_string().unwrap_or("SpaceMouse").to_string();
-    let dev = api.open_path(info.path()).map_err(|e| e.to_string())?;
+    // Enumeration only needs the USB node; OPENING needs the hidraw node, which
+    // is root-only until the udev rule lands. So "listed but won't open" is the
+    // signature of the missing rule (or of spacenavd holding the device).
+    let dev = api.open_path(info.path()).map_err(|e| Blocked::Unreadable {
+        name: name.clone(),
+        detail: e.to_string(),
+    })?;
     eprintln!("[spacemouse] connected {vid:04x}:{pid:04x} \"{name}\"");
 
     // keep the latest translation + rotation so a report carrying only one of
@@ -73,7 +109,11 @@ fn stream(app: &AppHandle) -> Result<(), String> {
     let mut r = [0f32; 3];
     let mut buf = [0u8; 64];
     loop {
-        let n = dev.read_timeout(&mut buf, 1000).map_err(|e| e.to_string())?;
+        // A read failure after a successful open is an unplug or a transport
+        // hiccup, not a permissions problem — reconnect quietly.
+        let n = dev
+            .read_timeout(&mut buf, 1000)
+            .map_err(|e| Blocked::Other(e.to_string()))?;
         if n == 0 {
             continue; // timeout, device idle — loop and read again
         }

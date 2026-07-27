@@ -151,6 +151,31 @@ manager workflow, not in-app).
 The `.dmg` is unsigned: right-click the app, choose Open, then confirm. Apple code
 signing is planned.
 
+### 3Dconnexion SpaceMouse
+
+SindriCAD reads a SpaceMouse natively for 6DOF camera navigation, with the two
+buttons mapped to Fit and Home/ISO. Plug it in — no driver or configuration
+needed. Sensitivity and axis inversion live in Settings.
+
+On **Linux** the device node (`/dev/hidrawN`) is root-only until a udev rule
+grants the logged-in user access. The `.deb` and `.rpm` packages install that
+rule for you and reload udev, so a packaged install just works.
+
+The **AppImage cannot** install system files, so it needs the rule once, by hand:
+
+```sh
+sudo curl -fsSL https://raw.githubusercontent.com/MakerViking/sindricad/main/packaging/99-spacemouse.rules -o /usr/lib/udev/rules.d/99-sindricad-spacemouse.rules
+sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=hidraw
+```
+
+Building from a clone? Run `sudo sh packaging/setup-spacemouse.sh` instead — it
+installs the same rule and applies it to an already-connected device.
+
+If SindriCAD can see the device but can't open it, it says so in a notification
+rather than failing silently. Two usual causes: the rule above is missing, or
+`spacenavd` / the official 3Dconnexion driver is already holding the device —
+stop that service to let SindriCAD read it directly.
+
 ## Build and run
 
 Prerequisites: Node, a Rust toolchain, Python 3.12, [uv](https://docs.astral.sh/uv/),

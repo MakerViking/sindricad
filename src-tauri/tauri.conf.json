@@ -36,7 +36,21 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/udev/rules.d/99-sindricad-spacemouse.rules": "../packaging/99-spacemouse.rules"
+        },
+        "postInstallScript": "scripts/postinstall.sh"
+      },
+      "rpm": {
+        "files": {
+          "/usr/lib/udev/rules.d/99-sindricad-spacemouse.rules": "../packaging/99-spacemouse.rules"
+        },
+        "postInstallScript": "scripts/postinstall.sh"
+      }
+    }
   },
   "plugins": {
     "updater": {

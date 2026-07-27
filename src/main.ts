@@ -147,6 +147,20 @@ void initSpaceMouse(viewport, (pressed) => {
   if (pressed & 1) viewport.fitView(); // button 1 → Fit
   else if (pressed & 2) viewport.setStandardView("iso"); // button 2 → Home/ISO
 });
+// The device is PRESENT but the OS won't let us open it — on Linux that means the
+// hidraw udev rule is missing (packaged installs ship it; AppImage can't), or
+// spacenavd/the 3Dconnexion driver is holding it. Without this the reader failed
+// into stderr and retried forever, so a plugged-in SpaceMouse just did nothing
+// with no way to find out why. Guarded to Tauri: plain `vite` has no emitter.
+if ("__TAURI_INTERNALS__" in window) {
+  void listen<{ name: string; detail: string }>("spacemouse:blocked", (e) => {
+    console.warn("SpaceMouse blocked:", e.payload.detail);
+    toast(
+      `Found "${e.payload.name}" but can't read it — see the SpaceMouse section of the README (Linux needs a one-time udev rule; a running spacenavd/3Dconnexion driver also holds the device)`,
+      { kind: "error", timeout: 15000 },
+    );
+  });
+}
 
 // --- UI ---
 const ribbon = new Ribbon(document.getElementById("ribbon")!);
