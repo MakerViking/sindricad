@@ -37,7 +37,7 @@ const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
 const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
 import { Highlighter } from "./highlight";
 import type { Line2 } from "three/examples/jsm/lines/Line2.js";
-import { nearestEdgeByMid, midMatchTol, polylineMid } from "./edgeMatch";
+import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
 
@@ -637,10 +637,11 @@ export class Viewport {
   selectedEdgeSelectors(): Selector[] {
     if (!this.highlighter) return [];
     return this.highlighter.getSelectedEdges().flatMap((line): Selector[] => {
-      const pts = line.userData.points as [number, number, number][];
-      const mid = polylineMid(pts);
-      if (!mid) return [];
-      return [{ kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] }];
+      const sel = edgeSelectorFrom({
+        points: line.userData.points as [number, number, number][],
+        body: line.userData.body as string | undefined,
+      });
+      return sel ? [sel] : [];
     });
   }
 

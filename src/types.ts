@@ -27,7 +27,18 @@ export interface FaceFingerprint {
   radius?: number; // cylinder/sphere/cone radius, mm
 }
 
-export type Selector =
+/** Which body a selector resolves against. The tools stamp this from the edge
+ *  or face the user actually clicked; the sidecar groups a feature's selectors
+ *  by it (`_group_sels_by_body`) so a fillet/chamfer/shell/draft only ever
+ *  reshapes bodies the selection touched — one feature may span several.
+ *
+ *  ABSENT = the active (last-created) body. That is the pre-binding behaviour
+ *  and is kept purely so documents saved before the tools stamped bodies still
+ *  build; it is exactly the fallback that let a `by:"nearest"` pick silently
+ *  edit the wrong body on a multi-body model. Never omit it on a fresh pick. */
+type SelectorBody = { body?: string };
+
+export type Selector = (
   | { kind: "edge"; by: "axis"; axis: "X" | "Y" | "Z" }
   | { kind: "edge"; by: "nearest"; point: [number, number, number] }
   | { kind: "edge"; by: "all" }
@@ -40,7 +51,9 @@ export type Selector =
   | { kind: "face"; by: "match"; fp: FaceFingerprint; nth?: number }
   // structural forms — encode intent instead of N independent point-picks:
   | { kind: "edge"; by: "tangentChain"; seed: EdgeFingerprint } // an edge + its tangent-continuous chain
-  | { kind: "edge"; by: "ofFace"; face: FaceFingerprint }; // all edges bounding a face
+  | { kind: "edge"; by: "ofFace"; face: FaceFingerprint } // all edges bounding a face
+) &
+  SelectorBody;
 
 // The cached 2D shape of a "projected" entity (Fusion-style Project): plain
 // numbers only (no Num) — the SIDECAR authors these, rounded to 6 decimals, and

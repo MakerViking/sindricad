@@ -7,7 +7,7 @@ import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import type { Selector } from "../types";
 import type { ModelView } from "./render";
 import { faceIdOfHit, visibleBodyMeshes } from "./render";
-import { polylineMid } from "./edgeMatch";
+import { edgeSelectorFrom } from "./edgeMatch";
 
 export interface EdgeHit {
   kind: "edge";
@@ -121,14 +121,12 @@ export class Picker {
     this.edgeScreenDist = bestD; // used by pick() to decide edge vs face
 
     const line = best.object as Line2;
-    const pts = line.userData.points as [number, number, number][];
-    const mid = polylineMid(pts);
-    if (!mid) return null;
-    return {
-      kind: "edge",
-      line,
-      selector: { kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] },
-    };
+    const selector = edgeSelectorFrom({
+      points: line.userData.points as [number, number, number][],
+      body: line.userData.body as string | undefined,
+    });
+    if (!selector) return null;
+    return { kind: "edge", line, selector };
   }
 }
 

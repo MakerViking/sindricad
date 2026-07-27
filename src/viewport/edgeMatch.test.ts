@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { polylineMid, nearestEdgeByMid, toggleSelectorByMid, midMatchTol, type Vec3 } from "./edgeMatch";
+import { polylineMid, nearestEdgeByMid, toggleSelectorByMid, midMatchTol, edgeSelectorFrom, type Vec3 } from "./edgeMatch";
 
 const line = (a: Vec3, b: Vec3, n = 5): { points: Vec3[] } => {
   const points: Vec3[] = [];
@@ -97,5 +97,37 @@ describe("nearestEdgeByMid — legacy selector compatibility", () => {
 
   it("still misses when the point belongs to neither", () => {
     expect(nearestEdgeByMid([vertical, top], [9, 9, 9], 0.5)).toBe(null);
+  });
+});
+
+describe("edgeSelectorFrom — the body stamp", () => {
+  // Regression for the silent wrong-body bug: a fillet/chamfer selector that
+  // does not name its body lets the sidecar fall back to the last-created body,
+  // and `by:"nearest"` then blends an edge of a body the user never clicked.
+  const vertical = { points: [[0, 0, 0], [0, 0, 35]] as Vec3[] };
+
+  it("stamps the body that owns the picked edge", () => {
+    expect(edgeSelectorFrom({ ...vertical, body: "body2" })).toEqual({
+      kind: "edge",
+      by: "nearest",
+      point: [0, 0, 17.5],
+      body: "body2",
+    });
+  });
+
+  it("OMITS the key entirely when the edge has no body (save byte-stability)", () => {
+    const sel = edgeSelectorFrom(vertical)!;
+    expect(sel).toEqual({ kind: "edge", by: "nearest", point: [0, 0, 17.5] });
+    expect("body" in sel).toBe(false);
+  });
+
+  it("uses the arc-length midpoint, not the index middle", () => {
+    // three samples, unevenly spaced: index-middle would give [0,0,1]
+    const uneven = { points: [[0, 0, 0], [0, 0, 1], [0, 0, 10]] as Vec3[] };
+    expect(edgeSelectorFrom(uneven)!.point).toEqual([0, 0, 5]);
+  });
+
+  it("returns undefined for an empty polyline instead of a bogus selector", () => {
+    expect(edgeSelectorFrom({ points: [] })).toBeUndefined();
   });
 });

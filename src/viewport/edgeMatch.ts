@@ -104,3 +104,21 @@ export function toggleSelectorByMid<S extends { point?: number[] }>(
 export function midMatchTol(bboxDiag: number): number {
   return Math.max(0.5, 0.005 * bboxDiag);
 }
+
+/** Build the selector for a picked edge, stamped with the body that owns it.
+ *
+ *  EVERY site that mints an edge selector from a rendered edge must go through
+ *  here. Without the body, the sidecar falls back to the active (last-created)
+ *  body, and because `by:"nearest"` always returns SOME winner it then blends an
+ *  edge of the wrong body with no error at all — the ring/hexagon bug.
+ *
+ *  `body` is omitted rather than set to undefined when the edge has none, so a
+ *  saved document gains no `"body": null` noise and stays byte-stable. */
+export function edgeSelectorFrom(edge: { points: Vec3[]; body?: string | undefined }):
+  | { kind: "edge"; by: "nearest"; point: Vec3; body?: string }
+  | undefined {
+  const mid = polylineMid(edge.points);
+  if (!mid) return undefined;
+  const sel = { kind: "edge" as const, by: "nearest" as const, point: mid };
+  return edge.body ? { ...sel, body: edge.body } : sel;
+}

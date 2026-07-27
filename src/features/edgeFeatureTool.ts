@@ -13,7 +13,7 @@ import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
 import type { Feature, Selector } from "../types";
-import { midMatchTol, polylineMid } from "../viewport/edgeMatch";
+import { midMatchTol, polylineMid, edgeSelectorFrom } from "../viewport/edgeMatch";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
@@ -310,10 +310,11 @@ export class EdgeFeatureTool {
     const chainId = ++this.chainCounter;
     for (const l of this.tangentChain(line)) {
       const pts = l.userData.points as Vec3[];
-      const mid = polylineMid(pts);
-      if (!mid) continue;
+      const sel = edgeSelectorFrom({ points: pts, body: l.userData.body as string | undefined });
+      if (!sel) continue;
+      const mid = sel.point;
       if (this.ghosts.some((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 1e-6)) continue;
-      this.addGhost({ kind: "edge", by: "nearest", point: [mid[0], mid[1], mid[2]] }, pts, chainId);
+      this.addGhost(sel, pts, chainId);
     }
   }
 

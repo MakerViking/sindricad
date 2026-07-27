@@ -1212,47 +1212,76 @@ def _sequential_blend(shape, edges, apply_one, blend_size, diag_part):
     return current, [orig for orig, _ in pending]
 
 
+def _group_sels_by_body(sel, ctx, label):
+    """Split a selector (or list of them) into [(body, [selectors])] groups, in
+    first-seen order.
+
+    A selector's OWN `body` decides which shape it resolves against — the tools
+    stamp it from the edge/face the user actually clicked. Without this a
+    multi-body model resolves every selector against require_active() =
+    bodies[-1], and because `by:"nearest"` always returns SOME winner it edits
+    whichever body happened to be created last, silently (the ring/hexagon bug).
+
+    A selector with no `body` falls back to the active body: that is exactly the
+    old behaviour, so documents saved before the tools stamped bodies keep
+    building unchanged.
+    """
+    sels = sel if isinstance(sel, list) else [sel]
+    groups = {}  # body id -> (body, [selectors]); dicts keep insertion order
+    for s in sels:
+        bid = s.get("body") if isinstance(s, dict) else None
+        if bid:
+            body = ctx.find_body(bid)
+            if body is None:
+                raise ValueError(f"{label}: the target body no longer exists")
+        else:
+            body = ctx.require_active(label)
+        groups.setdefault(body["id"], (body, []))[1].append(s)
+    return list(groups.values())
+
+
+def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
+    """Shared fillet/chamfer body: blend every selected edge, per owning body.
+
+    `combined(edges) -> shape` runs the kernel op on a whole group at once;
+    `one_edge(edge) -> shape` does a single edge (the fallback + failure probe).
+
+    ALL-OR-NOTHING across bodies: every group's new shape is computed first and
+    only assigned once they ALL succeed. Otherwise a two-body fillet whose
+    second body raises would leave the first one blended while the timeline
+    paints the feature red — a solid the user never asked for.
+    """
+    staged = []
+    for body, sels in _group_sels_by_body(f["edges"], ctx, label):
+        edges = resolve_edges(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
+        if not edges:
+            raise ValueError(f"no edge found to {label.lower()} on {body['name']}")
+        try:
+            new_shape = combined(edges)
+        except Exception as combined_err:
+            # Combined call failed: fall back to per-edge blending on the evolving body.
+            new_shape, unresolved = _sequential_blend(
+                body["shape"], edges, lambda s, e: one_edge(e), blend_size, body["shape"]
+            )
+            if unresolved:
+                # Hard no-silent-degradation rule: any edge we could not blend means
+                # the feature FAILS — never a partial solid, never a smaller radius.
+                # Paint exactly the offenders red, then re-raise the original error.
+                _report_edge_failures(f, ctx, unresolved, one_edge)
+                raise ValueError(f"{label} failed on {body['name']}: {combined_err}") from combined_err
+        staged.append((body, new_shape))
+    for body, shape in staged:
+        body["shape"] = shape
+
+
 def _handle_fillet(f, ctx):
-    act = ctx.require_active("Fillet")
-    edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
-    if not edges:
-        raise ValueError("no edge found to fillet")
     r = ctx.val(f["radius"])
-    try:
-        act["shape"] = fillet(edges, radius=r)
-        return
-    except Exception as combined_err:
-        # Combined call failed: fall back to per-edge blending on the evolving body.
-        result, unresolved = _sequential_blend(
-            act["shape"], edges, lambda s, e: fillet([e], radius=r), r, act["shape"]
-        )
-        if unresolved:
-            # Hard no-silent-degradation rule: any edge we could not blend means
-            # the feature FAILS — never a partial solid, never a smaller radius.
-            # Paint exactly the offenders red, then re-raise the original error.
-            _report_edge_failures(f, ctx, unresolved, lambda e: fillet([e], radius=r))
-            raise combined_err
-        act["shape"] = result
+    _blend_edges(f, ctx, "Fillet", lambda es: fillet(es, radius=r), lambda e: fillet([e], radius=r), r)
 
 
 def _handle_chamfer(f, ctx):
-    act = ctx.require_active("Chamfer")
-    edges = resolve_edges(act["shape"], f["edges"], diag=ctx.diagnostics, feature_id=f.get("id"))
-    if not edges:
-        raise ValueError("no edge found to chamfer")
     d = ctx.val(f["distance"])
-    try:
-        act["shape"] = chamfer(edges, length=d)
-        return
-    except Exception as combined_err:
-        # Combined call failed: fall back to per-edge blending on the evolving body.
-        result, unresolved = _sequential_blend(
-            act["shape"], edges, lambda s, e: chamfer([e], length=d), d, act["shape"]
-        )
-        if unresolved:
-            _report_edge_failures(f, ctx, unresolved, lambda e: chamfer([e], length=d))
-            raise combined_err
-        act["shape"] = result
+    _blend_edges(f, ctx, "Chamfer", lambda es: chamfer(es, length=d), lambda e: chamfer([e], length=d), d)
 
 
 def _handle_press_pull(f, ctx):
@@ -1450,9 +1479,21 @@ def _handle_sphere(f, ctx):
 
 
 def _handle_shell(f, ctx):
-    act = ctx.require_active("Shell")
-    openings = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id")) if f.get("faces") else []
-    act["shape"] = _shell(act["shape"], ctx.val(f["thickness"]), openings)
+    # Hollow each body that owns a selected opening face — the selectors carry
+    # their own body (see _group_sels_by_body), so a multi-body model shells the
+    # body clicked, not bodies[-1]. No faces at all = hollow the active body
+    # closed, which is the ribbon's "shell with no opening" path.
+    t = ctx.val(f["thickness"])
+    if not f.get("faces"):
+        act = ctx.require_active("Shell")
+        act["shape"] = _shell(act["shape"], t, [])
+        return
+    staged = []
+    for body, sels in _group_sels_by_body(f["faces"], ctx, "Shell"):
+        openings = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
+        staged.append((body, _shell(body["shape"], t, openings)))
+    for body, shape in staged:
+        body["shape"] = shape
 
 
 def _handle_offset_face(f, ctx):
@@ -1505,11 +1546,18 @@ def _handle_thicken(f, ctx):
 
 
 def _handle_draft(f, ctx):
-    act = ctx.require_active("Draft")
-    faces = resolve_faces(act["shape"], f["faces"], diag=ctx.diagnostics, feature_id=f.get("id"))
-    if not faces:
-        raise ValueError("no face found to draft")
-    act["shape"] = _draft(act["shape"], faces, ctx.val(f["angle"]), f.get("axis", "Z"))
+    # Taper each body that owns a selected face. Staged like fillet/chamfer so a
+    # failure on one body can't leave another already drafted.
+    angle = ctx.val(f["angle"])
+    axis = f.get("axis", "Z")
+    staged = []
+    for body, sels in _group_sels_by_body(f["faces"], ctx, "Draft"):
+        faces = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
+        if not faces:
+            raise ValueError(f"no face found to draft on {body['name']}")
+        staged.append((body, _draft(body["shape"], faces, angle, axis)))
+    for body, shape in staged:
+        body["shape"] = shape
 
 
 def _handle_texture(f, ctx):

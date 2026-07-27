@@ -500,7 +500,12 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       e.preventDefault();
       e.stopImmediatePropagation();
       cleanup();
-      requestAnimationFrame(() => onPick(hit.selector));
+      // Stamp the body that owns the clicked face. Without it the sidecar falls
+      // back to the active (last-created) body and the face selector resolves
+      // against the wrong shape — so on a multi-body model the shell/draft would
+      // land on a body the user never touched (same fault as the texture bug).
+      const sel: Selector = hit.bodyId ? { ...hit.selector, body: hit.bodyId } : hit.selector;
+      requestAnimationFrame(() => onPick(sel));
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") cleanup();
