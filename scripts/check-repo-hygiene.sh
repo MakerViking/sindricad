@@ -29,6 +29,7 @@ AGENTS.md
 .idea/
 .DS_Store
 evals/
+norn/
 '
 
 echo "checking tracked paths…"
@@ -56,8 +57,12 @@ if [ -n "$homes" ]; then
 fi
 
 # --- the project's former name ------------------------------------------------
+# This script is excluded from its own scan: it necessarily contains the string
+# it looks for, and git grep only sees TRACKED files — so the self-match appeared
+# the moment the script was first committed, not while it was being written.
 echo "checking for the former project name…"
-old=$(git grep -In 'Verxa' -- . ':(exclude)third_party/**' 2>/dev/null || true)
+old=$(git grep -In 'Verxa' -- . ':(exclude)third_party/**' \
+  ':(exclude)scripts/check-repo-hygiene.sh' 2>/dev/null || true)
 if [ -n "$old" ]; then
   note "former project name 'Verxa' (renamed to SindriCAD):"
   printf '%s\n' "$old" | sed 's/^/    /'
