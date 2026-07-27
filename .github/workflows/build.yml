@@ -29,6 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cheapest gate first: refuse agent/editor session artifacts and hardcoded
+      # developer paths before spending 18 minutes on installers. This is a public
+      # repo — .claude/settings.json and a home-directory layout both reached it
+      # once already, and .gitignore can't catch an already-tracked path.
+      - name: Repo hygiene
+        run: sh scripts/check-repo-hygiene.sh
+
       # Same system deps as the build job's Linux leg: `cargo test --lib` links the
       # tauri crate, which needs the webkit2gtk stack + libudev (Rust device APIs).
       - name: Install Linux system dependencies

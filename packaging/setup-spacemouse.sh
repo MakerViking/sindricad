@@ -1,10 +1,14 @@
 #!/bin/sh
 # Install the SindriCAD SpaceMouse hidraw udev rule and apply it to the currently
 # connected 3Dconnexion device — no replug/reboot needed. Run with sudo:
-#   sudo sh /home/thomash/Koding/projects/Verxa/packaging/setup-spacemouse.sh
+#   sudo sh packaging/setup-spacemouse.sh
 set -e
 
-RULE=/home/thomash/Koding/projects/Verxa/packaging/99-spacemouse.rules
+# Resolve the rule next to THIS script rather than hardcoding a path. It used to
+# point at one developer's home directory (and at the project's former name), so
+# the script failed for everyone who ran it as documented.
+RULE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/99-spacemouse.rules"
+[ -f "$RULE" ] || { echo "can't find 99-spacemouse.rules next to $0" >&2; exit 1; }
 install -m644 "$RULE" /etc/udev/rules.d/
 udevadm control --reload
 udevadm trigger --subsystem-match=hidraw
