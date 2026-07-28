@@ -365,10 +365,10 @@ async def check_datum_split(ws):
     # is what makes this a real check of the datum and not just of split.
     #
     # These two ops were previously credited ONLY by the golden corpus, via a
-    # document importing /home/thomash/Downloads/ddr.3mf. That file is not in the
-    # repo, so coverage read 23 on that one machine and 21 everywhere else, and CI
-    # could never reach its own floor. Do not re-derive coverage from documents
-    # that reach outside the repo.
+    # document whose import source lives in the developer's home directory,
+    # outside the repo. So coverage read 23 on that one machine and 21 on every
+    # other checkout, and CI could never reach its own floor. Do not re-derive
+    # coverage from documents that reach outside the repo.
     datum = [_box("b", 20, 20, 20),
              {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 5}]
     both = await _rebuild(ws, datum + [
