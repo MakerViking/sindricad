@@ -37,8 +37,13 @@ Get-ChildItem -Path (Join-Path $out "site-packages") -Filter "vtk*" -ErrorAction
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 # 4. sidecar sources + precompile (read-only bundle: no .pyc writes at import time).
+#    Ship only what the app RUNS — mirrors the filter in build-sidecar-runtime.sh.
+#    A blanket *.py put 14 test suites and a spike script into every installer.
+#    Keep these two scripts in step: they are the same step for different OSes, and
+#    a filter applied to only one silently ships a fatter bundle on the other.
 New-Item -ItemType Directory -Force -Path (Join-Path $out "app") | Out-Null
-Copy-Item (Join-Path $side "*.py") (Join-Path $out "app")
+Get-ChildItem -Path (Join-Path $side "*.py") -Exclude "test_*.py", "spike_*.py" |
+  Copy-Item -Destination (Join-Path $out "app")
 & $py -m compileall -q (Join-Path $out "app")
 
 Write-Host "[runtime] done: $out"
