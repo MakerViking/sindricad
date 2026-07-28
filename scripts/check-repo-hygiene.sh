@@ -41,6 +41,23 @@ for pat in $forbidden; do
   fi
 done
 
+# --- CAD models: the developer's own parts must never be published ------------
+# A .sindri/.3mf/.stl/.step is a real part — geometry, dimensions, sometimes a
+# customer's job. .gitignore covers new files in the paths it names, but says
+# nothing about `git add -f` or a model that predates the rule, which is exactly
+# why this checks what git ACTUALLY tracks.
+#
+# Allowed: the synthetic bench fixture the perf harness needs, and third_party
+# sample models that ship with vendored code. Add to this list only for files
+# that are genuinely synthetic or already public.
+echo "checking for tracked CAD models…"
+models=$(git ls-files -- '*.sindri' '*.3mf' '*.stl' '*.step' '*.stp' 2>/dev/null \
+  | grep -vE '^(sidecar/tools/bench/textured_box\.sindri$|third_party/)' || true)
+if [ -n "$models" ]; then
+  note "tracked CAD model — is this a real part in a public repo?:"
+  printf '%s\n' "$models" | sed 's/^/    /'
+fi
+
 # --- developer-machine paths inside tracked files ----------------------------
 # A hardcoded /home/<user>/... is either a privacy leak or a script that only
 # works on one machine — packaging/setup-spacemouse.sh was both.

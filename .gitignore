@@ -23,11 +23,19 @@ green-select.png
 # os
 .DS_Store
 
-# scratch CAD artifacts: dev test parts, not shipped
-src-tauri/*.sindri
-src-tauri/*.step
-src-tauri/*.stl
-src-tauri/*.3mf
+# scratch CAD artifacts: dev test parts, not shipped.
+# Repo-WIDE, not just src-tauri/ — this is a public repo, and a stray part file
+# anywhere in the tree publishes real geometry and dimensions. Two fixtures are
+# deliberate exceptions: one synthetic bench part, and third_party sample models.
+# scripts/check-repo-hygiene.sh backstops this by failing CI if a model is ever
+# actually tracked (gitignore says nothing about `git add -f`, or a path already
+# tracked before the rule existed).
+*.sindri
+*.step
+*.stl
+*.3mf
+!sidecar/tools/bench/textured_box.sindri
+!third_party/opencascade-rs/crates/viewer/models/*.step
 
 # research / experiment shelf: kept out of the repo
 proving-ground/
