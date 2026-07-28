@@ -66,17 +66,24 @@ def test_chamfer_bound_to_body_leaves_the_other_untouched():
     print(PASS, "chamfer bound to body1 leaves body2 bit-identical")
 
 
-def test_unbound_chamfer_would_have_hit_the_wrong_body():
-    """Pins the old behaviour that made the bug silent: the SAME point with no
-    `body` resolves against the active body and edits body2 — a wrong edit with
-    no error. This is why the tools must stamp the body at pick time; it is kept
-    as the back-compat path only so pre-existing documents still build."""
+def test_unbound_cross_body_selector_is_refused():
+    """The SAME point with no `body` used to resolve against the active body and
+    silently chamfer body2 — a wrong edit with no error, which is what made the
+    bug invisible. It is now caught twice over: the point is nowhere near the
+    active body's edges, and the two nearest candidates there are effectively
+    tied, so the ambiguity gate refuses rather than guessing.
+
+    Legacy documents are NOT broken by this: an unbound selector that really does
+    point at the active body still has a clear winner and still resolves (see
+    test_shell_without_faces_still_uses_the_active_body). Only an unbound
+    selector aimed at ANOTHER body's geometry now fails, and failing is the
+    point."""
     vols, errors = build({"id": "c1", "type": "chamfer", "distance": 1.0,
                           "edges": edge_sel(B1_CORNER)})
-    assert errors == [], errors
-    assert vols["body1"] == BASE["body1"]
-    assert vols["body2"] < BASE["body2"], "legacy path stopped resolving against the active body"
-    print(PASS, "unbound selector still targets the active body (back-compat)")
+    assert errors, "an unbound cross-body selector silently succeeded again"
+    assert "ambiguous edge reference" in errors[0]["message"], errors
+    assert vols == BASE, "a refused selector still edited something"
+    print(PASS, "unbound cross-body selector is refused, not silently applied")
 
 
 def test_fillet_spans_two_bodies_in_one_feature():
@@ -152,7 +159,7 @@ def test_draft_targets_the_bound_body():
 
 def main():
     test_chamfer_bound_to_body_leaves_the_other_untouched()
-    test_unbound_chamfer_would_have_hit_the_wrong_body()
+    test_unbound_cross_body_selector_is_refused()
     test_fillet_spans_two_bodies_in_one_feature()
     test_partial_failure_leaves_every_body_untouched()
     test_missing_body_is_a_clear_error_not_a_wrong_edit()

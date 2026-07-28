@@ -70,6 +70,14 @@ AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
 #   LEN_REL_TOL  2% on length / radius
 #   AREA_REL_TOL 5% on area
 #   TIE_BAND     runner-up within 15% of best => a genuine tie (need nth)
+#   NEAREST_TIE_BAND  the same idea for by:"nearest", but on RAW DISTANCE rather
+#                than the weighted match cost — so it is far tighter. 15% apart
+#                in millimetres is a clear winner; what we must refuse is the
+#                degenerate case where two entities are indistinguishable by this
+#                metric at all (a point on a shared edge, or on a circle's axis
+#                where every point of the rim is equidistant). Measured on the
+#                real corpus: the references that silently flipped were EXACT
+#                ties (margin 0.0000), while legitimate picks cleared 2% easily.
 #   ACCEPT_MAX   best cost above this => resolvable but marginal (lossy)
 #   W_*          scoring weights, per normalized error term
 #   W_RANK       penalty per rank step for concentric rims (scale-invariant)
@@ -80,6 +88,7 @@ _DEFAULTS = {
     "LEN_REL_TOL": 0.02,
     "AREA_REL_TOL": 0.05,
     "TIE_BAND": 0.15,
+    "NEAREST_TIE_BAND": 0.02,
     "ACCEPT_MAX": 2.5,
     "W_POS": 3.0,
     "W_DIR": 2.0,
@@ -430,6 +439,72 @@ def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason):
 # --- public API --------------------------------------------------------------
 
 
+def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
+    """Resolve a `by:"nearest"` selector — or REFUSE, when the pick is ambiguous.
+
+    A bare `min()` over the candidates cannot fail. It returns the closest entity
+    however far away and, the case that actually bit us, however close the
+    RUNNER-UP is. On a real document (1.sindri, feature f73) two faces sat ~2mm
+    from the stored point; which one won flipped when an unrelated commit
+    perturbed topology, so a press/pull silently pushed a wall instead of the
+    face the user clicked. Nothing errored, because nothing could.
+
+    So: score exactly as before (nearest wins, byte-for-byte for a clear winner)
+    but also measure the margin to the runner-up, the same way _resolve_one does
+    for v2 `match`. Below TIE_BAND the pick is not determined by the data and we
+    raise, naming both candidates, so the timeline red-chips and the user can
+    re-pick. `nth` overrides — a selector that deliberately means "the second of
+    the tied pair" can still say so.
+
+    NOTE the discriminator is AMBIGUITY, not absolute distance. A gate on "how
+    far is the point from the winner" would break ordinary parametric motion:
+    raise a box's height and its top face moves far from the stored point, yet
+    it is still the unique nearest by a wide margin and must keep resolving.
+    """
+    cands = list(cands)
+    if not cands:
+        raise ValueError(f"no {kind} to select from")
+    scored = sorted(((dist_of(c), c) for c in cands), key=lambda t: t[0])
+    best_d, best = scored[0]
+    runner = scored[1][0] if len(scored) > 1 else math.inf
+    margin = (runner - best_d) / (runner + 1e-9) if math.isfinite(runner) else 1.0
+
+    if margin >= NEAREST_TIE_BAND:
+        _push_diag(diag, feature_id, kind, 1, margin, False, None)
+        return best
+
+    tied = [c for d, c in scored if (d - best_d) / (runner + 1e-9) < NEAREST_TIE_BAND]
+    tied.sort(key=key_fn)
+    nth = sel.get("nth")
+    if isinstance(nth, int) and 0 <= nth < len(tied):
+        _push_diag(diag, feature_id, kind, 1, margin, True, "tie broken by nth")
+        return tied[nth]
+
+    pt = sel.get("point") or []
+    where = ", ".join(f"{float(v):.2f}" for v in pt)
+    _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick")
+    raise ValueError(
+        f"ambiguous {kind} reference at ({where}): "
+        + " and ".join(describe(c) for c in tied[:3])
+        + f" are equally close ({best_d:.3f}mm vs {runner:.3f}mm) — re-pick the {kind}, "
+        f"the saved reference no longer identifies one"
+    )
+
+
+def _describe_face(f):
+    c = f.center()
+    return f"a face at ({c.X:.2f},{c.Y:.2f},{c.Z:.2f}) area {f.area:.1f}"
+
+
+def _describe_edge(e):
+    c = e.center()
+    try:
+        n = f" length {e.length:.1f}"
+    except Exception:
+        n = ""
+    return f"an edge at ({c.X:.2f},{c.Y:.2f},{c.Z:.2f}){n}"
+
+
 def resolve_edges(part, sel, diag=None, feature_id=None):
     """Resolve an edge selector — or a LIST of selectors — to build123d edges.
 
@@ -454,7 +529,8 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         return list(part.edges())
     if by == "nearest":
         p = _v(sel["point"])
-        return [min(part.edges(), key=lambda e: _dist(e.center(), p))]
+        return [_nearest_one(part.edges(), lambda e: _dist(e.center(), p),
+                             _canonical_key_edge, _describe_edge, "edge", sel, diag, feature_id)]
     if by == "match":
         fp = sel["fp"]
         edges = list(part.edges())
@@ -519,10 +595,19 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
         return list(part.faces().filter_by(lambda f: _face_normal(f).dot(d) > 0.99))
     if by == "nearest":
         p = _v(sel["point"])
+        faces = list(part.faces())
+        # distance_to is the true point-to-surface distance; it can throw on a
+        # degenerate/faceted face, in which case fall back to centre distance for
+        # ALL of them so the comparison stays like-for-like (a mixed metric would
+        # make the runner-up margin meaningless).
         try:
-            return [min(part.faces(), key=lambda f: f.distance_to(p))]
+            for f in faces:
+                f.distance_to(p)
+            dist_of = lambda f: f.distance_to(p)
         except Exception:
-            return [min(part.faces(), key=lambda f: _dist(f.center(), p))]
+            dist_of = lambda f: _dist(f.center(), p)
+        return [_nearest_one(faces, dist_of, _canonical_key_face, _describe_face,
+                             "face", sel, diag, feature_id)]
     if by == "all":
         return list(part.faces())
     if by == "match":

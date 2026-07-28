@@ -72,6 +72,8 @@ jobs:
       # The sidecar test files are `__main__` scripts, NOT pytest-discoverable
       # (`pytest sidecar/` silently collects 0 tests — see docs/IMPROVEMENT-AUDIT.md
       # §5.1) — so run each directly with the synced venv's interpreter.
+      # Keep this list complete: five of these (texture, checkpoint, projected,
+      # val_guard, body_binding) existed for weeks without ever running in CI.
       - name: Sidecar tests (direct __main__ invocation, not pytest)
         working-directory: sidecar
         run: |
@@ -79,6 +81,19 @@ jobs:
           uv run python test_geomstore.py
           uv run python test_selector_v2.py
           uv run python test_ws.py
+          uv run python test_texture.py
+          uv run python test_checkpoint.py
+          uv run python test_projected.py
+          uv run python test_val_guard.py
+          uv run python test_body_binding.py
+          uv run python test_selector_ambiguity.py
+
+      # Geometry eval harnesses (fillet corpus, selector survival, real-server op
+      # coverage). They are measurement oracles that always exit 0, so the script
+      # supplies the thresholds. ~1 minute. Nothing ran these before, which is how
+      # op coverage decayed 28/34 -> 23/34 unnoticed.
+      - name: Geometry evals (thresholded)
+        run: sh scripts/check-geometry-evals.sh
 
       - name: Rust unit tests
         working-directory: src-tauri

@@ -280,13 +280,16 @@ def test_texture_targets_bound_body_not_active_in_multibody():
     feats = _box(1, 20, 20, 5, x=0)[1] + _box(2, 20, 20, 5, x=100)[1]
     sel = {"kind": "face", "by": "nearest", "point": [0, 0, 5]}  # aimed at body1's top
 
-    # no body → require_active fallback lands on body2 (the last one built)
+    # no body → require_active fallback aims at body2 (the last one built), where
+    # the point is 90mm away and several faces are exactly tied. That used to
+    # texture a random face of the wrong body silently; the selector ambiguity
+    # gate now refuses, so the feature red-chips and NOTHING is textured.
     part, errors, bodies = rebuild({"parameters": {}, "features": feats + [
         {"id": "tex", "type": "texture", "kind": "knurl", "depth": 0.4, "scale": 2.0, "faces": sel}]})
-    assert not errors, errors
+    assert errors and "ambiguous face reference" in errors[0]["message"], errors
     by_id = {b["id"]: b for b in bodies}
-    assert by_id["body2"].get("_textures") and not by_id["body1"].get("_textures"), \
-        "sanity: without `body`, the texture wrongly lands on the active (last) body"
+    assert not by_id["body1"].get("_textures") and not by_id["body2"].get("_textures"), \
+        "a refused selector must not texture ANY body"
 
     # body=body1 → honored, texture lands on the intended body
     part, errors, bodies = rebuild({"parameters": {}, "features": feats + [
