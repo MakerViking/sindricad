@@ -357,12 +357,35 @@ async def check_simplify_mesh(ws):
         register("simplifyMesh", "bodies_eq", 1, _nbodies(r))
 
 
+async def check_datum_split(ws):
+    # datumPlane + split, together on purpose: a datum registers a plane and
+    # produces NO geometry, so its only observable effect is that a consumer
+    # honours it. A centred 20-cube cut at an XY datum offset +5 keeps 2000 above
+    # the plane (z 5..10); an IGNORED offset would cut at z=0 and read 4000. That
+    # is what makes this a real check of the datum and not just of split.
+    #
+    # These two ops were previously credited ONLY by the golden corpus, via a
+    # document importing /home/thomash/Downloads/ddr.3mf. That file is not in the
+    # repo, so coverage read 23 on that one machine and 21 everywhere else, and CI
+    # could never reach its own floor. Do not re-derive coverage from documents
+    # that reach outside the repo.
+    datum = [_box("b", 20, 20, 20),
+             {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 5}]
+    both = await _rebuild(ws, datum + [
+        {"id": "sp", "type": "split", "planeId": "dp", "keep": "both"}])
+    register("split", "bodies_eq", 2, _nbodies(both))
+    top = await _rebuild(ws, datum + [
+        {"id": "sp", "type": "split", "planeId": "dp", "keep": "top"}])
+    register("datumPlane", "volume", 2000.0, _total_volume(top))
+
+
 EXPLICIT_CHECKS = [
     check_box, check_cylinder, check_sphere, check_extrude, check_revolve,
     check_loft, check_shell, check_mirror, check_pattern_rect,
     check_pattern_circular, check_scale, check_move, check_remove_body,
     check_compute_all, check_interference, check_export,
     check_fillet, check_chamfer, check_draft, check_sweep, check_simplify_mesh,
+    check_datum_split,
 ]
 
 
