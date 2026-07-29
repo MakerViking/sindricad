@@ -1076,8 +1076,53 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                     "restarted; progress up to the last checkpoint is kept"
                 ) % int(stall)}}
         except BrokenProcessPool:
+            # Read the heartbeat BEFORE recycling: it holds the index of the
+            # feature the worker was building when it died, which is the only
+            # clue that survives a segfault (the worker leaves no traceback).
+            # Without it the app showed a bare ": the geometry kernel crashed",
+            # naming nothing — see _crash_feature().
+            idx = int(_HB_IDX.value) if _HB_IDX is not None else -1
             _pool = _new_pool()
-            return {"error": {"message": "the geometry kernel crashed on this operation"}}
+            return {"error": {
+                "message": "the geometry kernel crashed on this operation",
+                "feature_index": idx,
+            }}
+
+
+def _crash_feature(res, document):
+    """Name the feature a crashed/stalled worker died on.
+
+    OCCT segfaults inside native code, so there is no exception and no
+    traceback to attribute — only the heartbeat index the worker last published.
+    Map it back to a real feature id so the error names the culprit and the
+    timeline can chip it, instead of reporting a nameless kernel crash.
+    """
+    err = (res or {}).get("error")
+    if not isinstance(err, dict):
+        return res
+    idx = err.pop("feature_index", -1)
+    feats = ((document or {}).get("features") or [])
+    if not (isinstance(idx, int) and 0 <= idx < len(feats)):
+        return res
+    f = feats[idx] or {}
+    fid, ftype = f.get("id"), (f.get("name") or f.get("type") or "feature")
+    if fid:
+        err["feature_id"] = fid
+    err["message"] = (
+        f"{ftype} crashed the geometry kernel — this shape is degenerate for OCCT "
+        "(often a cut that runs exactly tangent to a fillet); try a slightly "
+        "different value"
+    )
+    # ALSO write it to stderr, which is mirrored into <app_data>/sidecar.log —
+    # the file the bug reporter uploads. A segfaulted worker leaves no traceback,
+    # so without this line a field report contains no evidence the kernel died at
+    # all; the only record was a toast the user has probably dismissed.
+    print(
+        f"[crash] worker died building feature {fid} ({ftype}) at index {idx}: "
+        f"{json.dumps(f, default=str)[:800]}",
+        file=sys.stderr, flush=True,
+    )
+    return res
 
 
 def _authorized(request) -> bool:
@@ -1152,6 +1197,7 @@ async def handle(ws):
                         loop, _rebuild_delta_job, payload, tol, req.get("known"),
                         on_progress=_building,
                     )
+                    res = _crash_feature(res, req.get("document"))
                     await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
                 elif op == "computeAll":
@@ -1165,6 +1211,7 @@ async def handle(ws):
 
                     res = await _run_stall(loop, _compute_all_job, payload, tol,
                                            on_progress=_building2)
+                    res = _crash_feature(res, req.get("document"))
                     await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
                 elif op == "export":

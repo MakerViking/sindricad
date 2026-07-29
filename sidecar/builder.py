@@ -1032,10 +1032,26 @@ def _handle_datum_plane(f, ctx):
 
 
 def _handle_extrude(f, ctx):
-    entry = ctx.sketches[f["sketch"]]
+    # A missing sketch is almost always an UPSTREAM failure, not a broken
+    # reference: the sketch feature raised (bad profile, non-planar wires) and so
+    # never registered. Indexing ctx.sketches raw turned that into `KeyError:
+    # 'f1'`, which the generic handler surfaced as "extrude failed (KeyError)" —
+    # burying the real cause behind an internal error and making the user chase
+    # the wrong feature. Name the sketch instead and say it didn't build.
+    sid = f.get("sketch")
+    entry = ctx.sketches.get(sid)
+    if entry is None:
+        raise ValueError(
+            f"the sketch this extrude depends on ({sid}) did not build — "
+            "fix that sketch first"
+        )
     sk = entry["sketch"]
     if sk is None:
         raise ValueError("sketch has no closed profile to extrude")
+    # A zero-distance extrude sweeps nothing; OCCT reports it as
+    # Standard_ConstructionError. Negative IS meaningful (extrude the other way).
+    if ctx.val(f["distance"]) == 0:
+        raise ValueError("Extrude: distance must not be 0")
     # region points (one per selected area) pick + combine specific
     # profiles; a ring (annulus) keeps its hole, several areas union.
     pts = f.get("regions")
@@ -1252,6 +1268,12 @@ def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
     paints the feature red — a solid the user never asked for.
     """
     staged = []
+    # A zero or negative blend is not a small blend, it is no blend. OCCT's own
+    # message ("try a smaller value") is actively misleading for radius 0 or -3.
+    if blend_size is not None and not (blend_size > 0):
+        raise ValueError(
+            f"{label}: size must be greater than 0 (got {blend_size:g})"
+        )
     for body, sels in _group_sels_by_body(f["edges"], ctx, label):
         edges = resolve_edges(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
         if not edges:
@@ -1396,12 +1418,30 @@ def _handle_mirror(f, ctx):
 
 
 def _handle_revolve(f, ctx):
-    sk = ctx.sketches[f["sketch"]]["sketch"]
-    solid = revolve(
-        sk,
-        axis=AXES[f.get("axis", "Z")],
-        revolution_arc=ctx.val(f.get("angle", 360)),
-    )
+    entry = ctx.sketches.get(f.get("sketch"))
+    if entry is None:
+        raise ValueError(
+            f"the sketch this revolve depends on ({f.get('sketch')}) did not build — "
+            "fix that sketch first"
+        )
+    sk = entry["sketch"]
+    angle = ctx.val(f.get("angle", 360))
+    # A zero-degree revolve swept nothing yet still produced a body, so the
+    # timeline showed a healthy feature that had done nothing at all.
+    if angle == 0:
+        raise ValueError("Revolve: angle must not be 0 — nothing would be swept")
+    try:
+        solid = revolve(sk, axis=AXES[f.get("axis", "Z")], revolution_arc=angle)
+    except Exception as ex:
+        # OCCT reports a profile that straddles the axis as a bare
+        # `StdFail_NotDone` ("BRep_API: command not done"), which tells the user
+        # nothing. Name the overwhelmingly likely cause instead; a profile may
+        # TOUCH the axis, but it may not cross it.
+        raise ValueError(
+            "Revolve failed — the profile probably crosses the axis of "
+            f"revolution ({f.get('axis', 'Z')}). Move it fully to one side "
+            f"(it may touch the axis, but not cross it). [{type(ex).__name__}]"
+        )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
 
 
@@ -1466,16 +1506,38 @@ def _handle_import(f, ctx):
             ctx.new_body(p, f"{base} {part_no}")
 
 
+def _require_positive(op, **dims):
+    """Reject a non-positive dimension BY NAME, before OCCT ever sees it.
+
+    OCCT answers a zero-height box with `Standard_DomainError` and a zero-factor
+    scale with `Standard_ConstructionError`. Those class names reach the user as
+    the WHOLE explanation and say nothing about what to change — measured across
+    seven operations in docs/EDGE-CASES.md. Every one of them is a predictable
+    degenerate input, so name the field and the value the user actually typed.
+    """
+    for name, v in dims.items():
+        if v is None:
+            continue
+        if not (v > 0):
+            raise ValueError(f"{op}: {name} must be greater than 0 (got {v:g})")
+
+
 def _handle_box(f, ctx):
-    ctx.new_body(Box(ctx.val(f["length"]), ctx.val(f["width"]), ctx.val(f["height"])), "Box")
+    l, w, h = ctx.val(f["length"]), ctx.val(f["width"]), ctx.val(f["height"])
+    _require_positive("Box", length=l, width=w, height=h)
+    ctx.new_body(Box(l, w, h), "Box")
 
 
 def _handle_cylinder(f, ctx):
-    ctx.new_body(Cylinder(ctx.val(f["radius"]), ctx.val(f["height"])), "Cylinder")
+    r, h = ctx.val(f["radius"]), ctx.val(f["height"])
+    _require_positive("Cylinder", radius=r, height=h)
+    ctx.new_body(Cylinder(r, h), "Cylinder")
 
 
 def _handle_sphere(f, ctx):
-    ctx.new_body(Sphere(ctx.val(f["radius"])), "Sphere")
+    r = ctx.val(f["radius"])
+    _require_positive("Sphere", radius=r)
+    ctx.new_body(Sphere(r), "Sphere")
 
 
 def _handle_shell(f, ctx):
@@ -1484,6 +1546,10 @@ def _handle_shell(f, ctx):
     # body clicked, not bodies[-1]. No faces at all = hollow the active body
     # closed, which is the ribbon's "shell with no opening" path.
     t = ctx.val(f["thickness"])
+    # A zero wall is not a shell; OCCT reports it as a bare RuntimeError. A
+    # NEGATIVE thickness is legitimate (it shells outward) and is left alone.
+    if t == 0:
+        raise ValueError("Shell: thickness must not be 0")
     if not f.get("faces"):
         act = ctx.require_active("Shell")
         act["shape"] = _shell(act["shape"], t, [])
@@ -1550,6 +1616,12 @@ def _handle_draft(f, ctx):
     # failure on one body can't leave another already drafted.
     angle = ctx.val(f["angle"])
     axis = f.get("axis", "Z")
+    # A 90-degree taper folds the face flat onto itself; OCCT reports it as
+    # Standard_ConstructionError. Anything at or beyond vertical is degenerate.
+    if not (-90 < angle < 90):
+        raise ValueError(
+            f"Draft: angle must be between -90 and 90 degrees (got {angle:g})"
+        )
     staged = []
     for body, sels in _group_sels_by_body(f["faces"], ctx, "Draft"):
         faces = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
@@ -1584,15 +1656,21 @@ def _handle_texture(f, ctx):
 
 def _handle_pattern_rect(f, ctx):
     act = ctx.require_active("Pattern")
+    cx, cy = ctx.val(f["countX"]), ctx.val(f["countY"])
+    # A count of 0 used to return the original body with no error at all, so the
+    # pattern silently did nothing and the timeline showed a healthy feature.
+    _require_positive("Pattern", countX=cx, countY=cy)
     act["shape"] = _pattern_rect(
-        act["shape"], ctx.val(f["countX"]), ctx.val(f["countY"]), ctx.val(f["spacingX"]), ctx.val(f["spacingY"])
+        act["shape"], cx, cy, ctx.val(f["spacingX"]), ctx.val(f["spacingY"])
     )
 
 
 def _handle_pattern_circular(f, ctx):
     act = ctx.require_active("Pattern")
+    n = ctx.val(f["count"])
+    _require_positive("Pattern", count=n)
     act["shape"] = _pattern_circular(
-        act["shape"], ctx.val(f["count"]), ctx.val(f.get("angle", 360)), f.get("axis", "Z")
+        act["shape"], n, ctx.val(f.get("angle", 360)), f.get("axis", "Z")
     )
 
 
@@ -1603,7 +1681,13 @@ def _handle_simplify_mesh(f, ctx):
 
 def _handle_scale(f, ctx):
     act = ctx.require_active("Scale")
-    act["shape"] = scale(act["shape"], by=ctx.val(f.get("factor", 1)))
+    factor = ctx.val(f.get("factor", 1))
+    # A factor of 0 collapses the solid to a point; OCCT reports that as
+    # Standard_ConstructionError. Negative factors DO work (mirror through the
+    # origin) and are left alone.
+    if factor == 0:
+        raise ValueError("Scale: factor must not be 0 — it would collapse the body to a point")
+    act["shape"] = scale(act["shape"], by=factor)
 
 
 def _handle_move(f, ctx):
@@ -3653,6 +3737,17 @@ def _do_combine(f, bodies, find_body, diag=None):
             raise ValueError(
                 "Combine (Cut) removed nothing — no tool body overlaps the target."
             )
+        # ...and the mirror-image silent failure: a Cut that removes EVERYTHING.
+        # Cutting a body with an identical coincident one left a body of volume
+        # 0.0 and no error at all, so the browser tree gained a phantom body that
+        # cannot be seen, selected meaningfully, or printed (docs/EDGE-CASES.md
+        # §3). Same class as the no-op above — the user loses their body and is
+        # told nothing.
+        if op == "cut" and after_vol < guard_eps:
+            raise ValueError(
+                "Combine (Cut) would remove the whole target body — the tools "
+                "cover all of it."
+            )
         if op == "intersect" and after_vol < guard_eps:
             raise ValueError(
                 "Combine (Intersect) would leave the target empty — the tools "
@@ -3711,9 +3806,19 @@ def _shell(shape, thickness, openings):
     """Hollow a solid to a wall `thickness`, removing `openings` faces (empty =
     a fully closed hollow). Sharp corners use the Intersection join."""
     amt = -abs(thickness)  # negative = hollow inward
-    if openings:
-        return offset(shape, amount=amt, openings=list(openings), kind=Kind.INTERSECTION)
-    return offset(shape, amount=amt, kind=Kind.INTERSECTION)
+    try:
+        if openings:
+            return offset(shape, amount=amt, openings=list(openings), kind=Kind.INTERSECTION)
+        return offset(shape, amount=amt, kind=Kind.INTERSECTION)
+    except Exception as ex:
+        # A wall thicker than the solid's own narrowest span has nowhere to go;
+        # OCCT surfaces that as a bare RuntimeError, which told the user nothing
+        # about the one number they need to change.
+        raise ValueError(
+            f"Shell failed with a wall of {abs(thickness):g}mm — this is usually "
+            "thicker than the body's narrowest span; try a smaller thickness. "
+            f"[{type(ex).__name__}]"
+        )
 
 
 def _rot_for(axis, deg):
@@ -4354,6 +4459,22 @@ def _build_sketch(f, val, datums=None):
         if e.get("construction"):
             continue  # construction geometry is reference-only, not a profile
         et = e["type"]
+        # Degenerate primitives must be caught HERE, by name. A zero-radius circle
+        # is a point, not a wire, so build123d's make_face fails its coplanarity
+        # probe and reports "Cannot build face(s): wires not planar" — a message
+        # that sends the user hunting for a tilted sketch that does not exist.
+        # This was a real field bug (docs/EDGE-CASES.md §1): a ring whose inner
+        # circle had collapsed to r=0.
+        if et == "circle" and not (val(e["radius"]) > 0):
+            raise ValueError(
+                f"a circle in this sketch has a radius of {val(e['radius']):g} — "
+                "give it a radius greater than 0, or delete it"
+            )
+        if et == "rectangle" and not (val(e["width"]) > 0 and val(e["height"]) > 0):
+            raise ValueError(
+                "a rectangle in this sketch has a zero width or height — "
+                "give it a size, or delete it"
+            )
         if et == "rectangle":
             faces.append(
                 Pos(val(e.get("x", 0)), val(e.get("y", 0)))

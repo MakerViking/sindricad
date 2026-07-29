@@ -11,6 +11,11 @@ const buf: string[] = [];
 // inventory is the case this exists for — would otherwise be evicted by twenty
 // ordinary toasts, i.e. by the user doing anything at all before opening the bug
 // reporter. Which is precisely when they'd open it.
+//
+// CONTRACT with src-tauri/src/tinkeratlas.rs: a sticky fact carries NO "HH:MM:SS "
+// prefix, and an ordinary crumb always does. Rust uses that timestamp to tell them
+// apart when it trims the report, keeping every sticky fact and only the last 20
+// ordinary ones. Do not add a timestamp here — it would make these droppable again.
 const STICKY_MAX = 24;
 const sticky: string[] = [];
 

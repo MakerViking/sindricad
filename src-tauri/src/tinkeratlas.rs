@@ -603,6 +603,49 @@ pub struct BugReportResult {
     pub deduplicated: bool,
 }
 
+const MAX_TAIL_CRUMBS: usize = 20;
+const MAX_STICKY_CRUMBS: usize = 24;
+
+/// True iff a crumb carries `crumb()`'s "HH:MM:SS " prefix.
+fn is_timestamped(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 9
+        && b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && b[2] == b':'
+        && b[3].is_ascii_digit()
+        && b[4].is_ascii_digit()
+        && b[5] == b':'
+        && b[6].is_ascii_digit()
+        && b[7].is_ascii_digit()
+        && b[8] == b' '
+}
+
+/// Trim the trail for upload: keep the LAST 20 ordinary crumbs, but never at the
+/// cost of the leading "sticky" facts.
+///
+/// This used to be a plain `.rev().take(20).rev()`. The frontend deliberately
+/// holds one-off startup captures (the HID device inventory) OUTSIDE its 20-slot
+/// ring and PREPENDS them, so that dropped exactly those the moment the user did
+/// anything — i.e. in every session busy enough to be worth reporting. It cost
+/// the privacy exposure of collecting the inventory while delivering none of its
+/// diagnostic value.
+///
+/// CONTRACT with `src/diagnostics/breadcrumbs.ts`: `crumb()` always prefixes
+/// "HH:MM:SS ", `stickyFact()` never does. That timestamp is the discriminator —
+/// keep the two in step, since a sticky fact that gained a timestamp would
+/// silently become droppable again.
+fn trim_breadcrumbs(crumbs: &[String]) -> Vec<String> {
+    let (rest, sticky): (Vec<&String>, Vec<&String>) =
+        crumbs.iter().partition(|b| is_timestamped(b));
+    sticky
+        .into_iter()
+        .take(MAX_STICKY_CRUMBS)
+        .chain(rest.into_iter().rev().take(MAX_TAIL_CRUMBS).rev())
+        .cloned()
+        .collect()
+}
+
 #[tauri::command]
 pub async fn ta_bug_report(
     app: AppHandle,
@@ -630,12 +673,9 @@ pub async fn ta_bug_report(
     } else {
         None
     };
-    let breadcrumbs: Vec<String> = breadcrumbs
-        .iter()
-        .rev()
-        .take(20)
-        .rev()
-        .map(|b| redact_user_paths(b))
+    let breadcrumbs: Vec<String> = trim_breadcrumbs(&breadcrumbs)
+        .into_iter()
+        .map(|b| redact_user_paths(&b))
         .collect();
 
     let document_value: Option<serde_json::Value> = match document_json {
@@ -701,6 +741,40 @@ pub async fn ta_bug_report(
 
 #[cfg(test)]
 mod tests {
+
+    // The HID inventory is captured once at startup and PREPENDED as a sticky
+    // fact; a plain tail-truncation dropped it in exactly the busy sessions
+    // worth reporting. Pin that it survives.
+    #[test]
+    fn sticky_breadcrumbs_survive_a_busy_session() {
+        let mut crumbs = vec![
+            "[spacemouse] picked nothing - of 26 HID interfaces:".to_string(),
+            "[spacemouse]   046d:c626 usage 1/8".to_string(),
+        ];
+        for i in 0..60 {
+            crumbs.push(format!("12:34:56 [info] noise {i}"));
+        }
+        let out = trim_breadcrumbs(&crumbs);
+        assert!(out.iter().any(|c| c.contains("26 HID interfaces")),
+                "sticky fact was dropped: {out:?}");
+        assert!(out[0].starts_with("[spacemouse]"), "sticky facts must lead");
+        // ...and the ordinary tail is still the most RECENT 20, not the oldest.
+        assert!(out.iter().any(|c| c.contains("noise 59")));
+        assert!(!out.iter().any(|c| c.contains("noise 0")));
+        assert_eq!(out.len(), 2 + 20);
+    }
+
+    #[test]
+    fn trim_keeps_plain_trails_unchanged_when_short() {
+        let crumbs: Vec<String> = (0..5).map(|i| format!("00:00:0{i} [info] x")).collect();
+        assert_eq!(trim_breadcrumbs(&crumbs), crumbs);
+    }
+
+    #[test]
+    fn sticky_facts_are_themselves_bounded() {
+        let crumbs: Vec<String> = (0..100).map(|i| format!("[sticky] fact {i}")).collect();
+        assert_eq!(trim_breadcrumbs(&crumbs).len(), MAX_STICKY_CRUMBS);
+    }
     use super::*;
 
     #[test]
