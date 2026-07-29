@@ -7,6 +7,18 @@
 const MAX = 20;
 const buf: string[] = [];
 
+// Sticky facts sit OUTSIDE the ring. A one-off captured at startup — the HID
+// inventory is the case this exists for — would otherwise be evicted by twenty
+// ordinary toasts, i.e. by the user doing anything at all before opening the bug
+// reporter. Which is precisely when they'd open it.
+const STICKY_MAX = 24;
+const sticky: string[] = [];
+
+export function stickyFact(message: string) {
+  if (sticky.length >= STICKY_MAX) return;
+  sticky.push(message.slice(0, 300));
+}
+
 export function crumb(message: string) {
   const ts = new Date().toISOString().slice(11, 19); // HH:MM:SS
   buf.push(`${ts} ${message}`.slice(0, 300));
@@ -14,14 +26,18 @@ export function crumb(message: string) {
 }
 
 export function breadcrumbs(): string[] {
-  return [...buf];
+  return [...sticky, ...buf];
 }
 
-// self-installing listeners (imported once from main.ts)
-window.addEventListener("error", (e) => {
-  crumb(`[error] ${e.message} (${e.filename ?? "?"}:${e.lineno ?? "?"})`);
-});
-window.addEventListener("unhandledrejection", (e) => {
-  const r = e.reason;
-  crumb(`[unhandledrejection] ${r instanceof Error ? r.message : String(r)}`);
-});
+// Self-installing listeners (imported once from main.ts). Guarded so the module
+// stays importable without a DOM — the rest of this codebase keeps its logic
+// DOM-free for exactly this reason, and there is no jsdom in the test setup.
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (e) => {
+    crumb(`[error] ${e.message} (${e.filename ?? "?"}:${e.lineno ?? "?"})`);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    crumb(`[unhandledrejection] ${r instanceof Error ? r.message : String(r)}`);
+  });
+}

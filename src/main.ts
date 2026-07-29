@@ -24,6 +24,7 @@ import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
 import { createBugReporter } from "./ui/bugReporter";
 import "./diagnostics/breadcrumbs"; // installs window error listeners (bug-report trail)
+import { stickyFact } from "./diagnostics/breadcrumbs";
 import { installAutosave, checkRecovery } from "./io/recovery";
 import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
 import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
@@ -159,6 +160,24 @@ if ("__TAURI_INTERNALS__" in window) {
       `Found "${e.payload.name}" but can't read it — see the SpaceMouse section of the README (Linux needs a one-time udev rule; a running spacenavd/3Dconnexion driver also holds the device)`,
       { kind: "error", timeout: 15000 },
     );
+  });
+
+  // The HID inventory, recorded SILENTLY — never a toast. Most users own no 3D
+  // mouse, so "no device" must stay quiet; but that silence is exactly why a
+  // tester whose hardware differs from ours filed a bug report with no trace of
+  // the SpaceMouse in it. Now the enumerated list rides along automatically.
+  // Chunked because a crumb is capped at 300 chars, and sticky so twenty later
+  // toasts can't evict it.
+  void listen<{ picked: string | null; seen: string[] }>("spacemouse:devices", (e) => {
+    const { picked, seen } = e.payload;
+    stickyFact(`[spacemouse] picked ${picked ?? "nothing"} — of ${seen.length} HID interfaces:`);
+    const PER_LINE = 3;
+    const MAX_LINES = 8;
+    const shown = Math.min(seen.length, PER_LINE * MAX_LINES);
+    for (let i = 0; i < shown; i += PER_LINE) {
+      stickyFact(`[spacemouse]   ${seen.slice(i, i + PER_LINE).join(" | ")}`);
+    }
+    if (seen.length > shown) stickyFact(`[spacemouse]   +${seen.length - shown} more`);
   });
 }
 
