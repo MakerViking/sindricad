@@ -297,6 +297,117 @@ def _(): return doc(box(l=20, w=20, h=20),
                      "faces": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}})
 
 
+
+
+# --- round 2: families the first sweep never touched -------------------------
+
+
+@case("loft-single-profile", "loft through only ONE profile — nothing to blend to")
+def _(): return doc(sk_rect("s1", 20, 20),
+                    {"id": "lf", "type": "loft", "sketches": ["s1"]})
+
+
+@case("loft-identical-profiles", "loft between two coincident identical profiles")
+def _(): return doc(sk_rect("s1", 20, 20), sk_rect("s2", 20, 20),
+                    {"id": "lf", "type": "loft", "sketches": ["s1", "s2"]})
+
+
+@case("loft-missing-sketch", "loft naming a sketch that never built")
+def _(): return doc(sk_rect("s1", 20, 20),
+                    {"id": "lf", "type": "loft", "sketches": ["s1", "ghost"]})
+
+
+@case("sweep-missing-path", "sweep with no path sketch")
+def _(): return doc(sk_circle("s", 3),
+                    {"id": "sw", "type": "sweep", "sketch": "s", "path": "ghost"})
+
+
+@case("texture-on-tiny-face", "texture whose period exceeds the face it sits on")
+def _(): return doc(box("b", 2, 2, 2),
+                    {"id": "tx", "type": "texture", "kind": "knurl", "depth": 0.5,
+                     "scale": 50, "faces": {"kind": "face", "by": "nearest", "point": [0, 0, 1]}})
+
+
+@case("texture-depth-exceeds-body", "texture displacement deeper than the solid")
+def _(): return doc(box("b", 20, 20, 2),
+                    {"id": "tx", "type": "texture", "kind": "knurl", "depth": 20,
+                     "scale": 2, "faces": {"kind": "face", "by": "nearest", "point": [0, 0, 1]}})
+
+
+@case("texture-zero-scale", "texture with a zero pattern period")
+def _(): return doc(box(),
+                    {"id": "tx", "type": "texture", "kind": "knurl", "depth": 0.5,
+                     "scale": 0, "faces": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}})
+
+
+@case("deleteface-all-faces", "deleting every face of a solid")
+def _(): return doc(box(),
+                    {"id": "df", "type": "deleteFace", "face": {"kind": "face", "by": "all"}})
+
+
+@case("deleteface-missing-body", "deleteFace naming a body that does not exist")
+def _(): return doc(box(),
+                    {"id": "df", "type": "deleteFace", "body": "body99",
+                     "face": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}})
+
+
+@case("selector-nearest-far-away", "a nearest-selector point 500mm from any face")
+def _(): return doc(box(),
+                    {"id": "p", "type": "press-pull", "distance": -2, "operation": "cut",
+                     "face": {"kind": "face", "by": "nearest", "point": [500, 500, 500]}})
+
+
+@case("selector-on-symmetry-axis", "a nearest-selector on a cylinder's axis — every rim point ties")
+def _(): return doc(cyl("c", 10, 20),
+                    {"id": "f", "type": "fillet", "radius": 1,
+                     "edges": {"kind": "edge", "by": "nearest", "point": [0, 0, 10]}})
+
+
+@case("removebody-last-body", "removing the only body in the document")
+def _(): return doc(box(), {"id": "rm", "type": "removeBody", "bodies": ["body1"]})
+
+
+@case("removebody-missing", "removing a body id that does not exist")
+def _(): return doc(box(), {"id": "rm", "type": "removeBody", "bodies": ["body99"]})
+
+
+@case("mirror-then-combine-self", "mirror a body onto itself then union the pair")
+def _(): return doc(box("b", 20, 20, 20),
+                    {"id": "m", "type": "mirror", "plane": "XY", "keepOriginal": True},
+                    {"id": "cb", "type": "combine", "operation": "join",
+                     "bodies": ["body1", "body2"]})
+
+
+@case("move-nan-guard", "a move with a huge translation then a fillet on the moved body")
+def _(): return doc(box(),
+                    {"id": "mv", "type": "move", "dx": 1e9},
+                    {"id": "f", "type": "fillet", "radius": 1,
+                     "edges": {"kind": "edge", "by": "all"}})
+
+
+@case("thicken-zero", "thicken with zero thickness")
+def _(): return doc(box(), {"id": "t", "type": "thicken", "thickness": 0})
+
+
+@case("offsetface-zero", "offset a face by zero")
+def _(): return doc(box(),
+                    {"id": "o", "type": "offsetFace", "distance": 0,
+                     "faces": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}})
+
+
+@case("chamfer-zero", "zero-distance chamfer")
+def _(): return doc(box(), {"id": "c", "type": "chamfer", "distance": 0,
+                            "edges": {"kind": "edge", "by": "all"}})
+
+
+@case("split-keep-top-then-cut", "split keep=top then cut the survivor entirely")
+def _(): return doc(box(l=20, w=20, h=20),
+                    {"id": "d", "type": "datumPlane", "plane": "XY", "offset": 0},
+                    {"id": "sp", "type": "split", "planeId": "d", "keep": "top"},
+                    {"id": "p", "type": "press-pull", "distance": -50, "operation": "cut",
+                     "face": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}})
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--list":
         for name, (_fn, note) in CASES.items():

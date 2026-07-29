@@ -1038,13 +1038,7 @@ def _handle_extrude(f, ctx):
     # 'f1'`, which the generic handler surfaced as "extrude failed (KeyError)" —
     # burying the real cause behind an internal error and making the user chase
     # the wrong feature. Name the sketch instead and say it didn't build.
-    sid = f.get("sketch")
-    entry = ctx.sketches.get(sid)
-    if entry is None:
-        raise ValueError(
-            f"the sketch this extrude depends on ({sid}) did not build — "
-            "fix that sketch first"
-        )
+    entry = _require_sketch(ctx, f.get("sketch"), "extrude")
     sk = entry["sketch"]
     if sk is None:
         raise ValueError("sketch has no closed profile to extrude")
@@ -1418,12 +1412,7 @@ def _handle_mirror(f, ctx):
 
 
 def _handle_revolve(f, ctx):
-    entry = ctx.sketches.get(f.get("sketch"))
-    if entry is None:
-        raise ValueError(
-            f"the sketch this revolve depends on ({f.get('sketch')}) did not build — "
-            "fix that sketch first"
-        )
+    entry = _require_sketch(ctx, f.get("sketch"), "revolve")
     sk = entry["sketch"]
     angle = ctx.val(f.get("angle", 360))
     # A zero-degree revolve swept nothing yet still produced a body, so the
@@ -1464,19 +1453,28 @@ def _handle_loft(f, ctx):
                 raise ValueError("no profile found under a selected loft area")
             sections.append(rf)
     else:
-        sections = [ctx.sketches[s]["sketch"] for s in f.get("sketches", [])]
+        sections = [_require_sketch(ctx, s, "loft")["sketch"] for s in f.get("sketches", [])]
         sections = [s for s in sections if s is not None]
     if len(sections) < 2:
         raise ValueError("loft needs at least two profiles")
-    solid = loft(sections)
+    try:
+        solid = loft(sections)
+    except Exception as ex:
+        # OCCT reports "blend these two profiles" failures as a bare
+        # StdFail_NotDone. The usual causes are profiles that are identical and
+        # coincident (nothing to sweep between) or wildly mismatched.
+        raise ValueError(
+            "Loft failed to blend these profiles — they may be coincident, "
+            f"identical, or too dissimilar to connect. [{type(ex).__name__}]"
+        )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
 
 
 def _handle_sweep(f, ctx):
-    prof = ctx.sketches[f["profile"]]["sketch"]
+    prof = _require_sketch(ctx, f.get("profile"), "sweep")["sketch"]
     if prof is None:
         raise ValueError("sweep profile has no closed section")
-    path = ctx.sketches[f["path"]].get("wire")
+    path = _require_sketch(ctx, f.get("path"), "sweep").get("wire")
     if path is None:
         raise ValueError("sweep path sketch has no curve to follow")
     solid = sweep(sections=prof, path=path)
@@ -1520,6 +1518,28 @@ def _require_positive(op, **dims):
             continue
         if not (v > 0):
             raise ValueError(f"{op}: {name} must be greater than 0 (got {v:g})")
+
+
+def _require_sketch(ctx, sid, op):
+    """Fetch a sketch entry, or explain WHICH upstream sketch failed.
+
+    A missing sketch is almost always an UPSTREAM failure, not a broken
+    reference: the sketch feature raised (bad profile, zero-radius circle,
+    non-planar wires) and so never registered. Indexing `ctx.sketches` raw turned
+    that into `KeyError: 'f1'`, which the generic handler surfaced as
+    "<op> failed (KeyError)" — burying the real cause behind an internal error
+    and pointing the user at the wrong feature.
+
+    Extracted after finding the same fault in FOUR handlers (extrude, revolve,
+    loft, sweep); each had its own raw lookup. Route every sketch fetch here.
+    """
+    entry = ctx.sketches.get(sid)
+    if entry is None:
+        raise ValueError(
+            f"the sketch this {op} depends on ({sid}) did not build — "
+            "fix that sketch first"
+        )
+    return entry
 
 
 def _handle_box(f, ctx):
@@ -1575,6 +1595,10 @@ def _handle_offset_face(f, ctx):
         raise ValueError("no face found to offset")
     _guard_offsetable(act["shape"], faces, "Offset face")
     d = ctx.val(f["distance"])
+    # Offsetting by zero moves nothing, but used to report success — the same
+    # silent no-op class as revolve angle:0 and pattern count:0.
+    if d == 0:
+        raise ValueError("Offset face: distance must not be 0")
     # clamp per face by its own kind: a cylinder can't collapse past its radius,
     # a planar face can't be pushed through the body
     pairs = [
@@ -1724,8 +1748,18 @@ def _handle_combine(f, ctx):
 
 def _handle_remove_body(f, ctx):
     # delete bodies by id (mainstream MCAD "Remove"); drop them from the list so
-    # they're not tessellated/exported. Unknown ids are silently ignored.
+    # they're not tessellated/exported.
     ids = set(f.get("bodies") or [])
+    # An id that matches nothing used to be ignored in silence, so a Remove whose
+    # target had been renumbered by an upstream edit reported success having
+    # deleted nothing — the timeline showed a healthy feature over a stale
+    # reference. Name the ids instead.
+    missing = sorted(ids - {b["id"] for b in ctx.bodies})
+    if missing:
+        raise ValueError(
+            f"Remove: no such body {', '.join(missing)} — it may have been "
+            "renumbered or consumed by an earlier feature"
+        )
     ctx.bodies[:] = [b for b in ctx.bodies if b["id"] not in ids]
 
 

@@ -14,8 +14,9 @@ recorded as a result, not an accident.
 cd sidecar && python3 tools/sweep_run.py . 90      # results -> /tmp/sweep-results.json
 ```
 
-44 cases. Before: 22 built / 22 errored. After: 19 built / 25 errored — the three
-that moved were **silent failures that now speak up**. No segfaults, no timeouts.
+**63 cases** across two rounds. Round 1 (44 cases): 22 built / 22 errored → 19 / 25.
+Round 2 (+19, covering loft, sweep, texture, deleteFace, removeBody and selector
+survival): 26 built / 37 errored. No segfaults, no timeouts in either round.
 
 Scope caveat: this drives the sidecar directly. It does not exercise the
 frontend, so sketch solving (planegcs), region detection, selector minting and
@@ -165,3 +166,51 @@ identifiable via `coredumpctl` on the developer's machine (`SIGSEGV`,
 report will carry that. The `[crash]` line above now records the feature and its
 parameters, which is the actionable half; the native stack is not recoverable
 without shipping a crash handler.
+
+---
+
+## Round 2 — families the first sweep missed
+
+Nineteen more cases over loft, sweep, texture, deleteFace, removeBody, mirror and
+selector survival. Four more defects, all the same two shapes as round 1.
+
+**The upstream-sketch cascade had FOUR copies — FIXED by extraction.** `loft` and
+`sweep` indexed `ctx.sketches[...]` raw, exactly as `extrude` and `revolve` had,
+so a failed upstream sketch surfaced as `loft failed (KeyError)` /
+`sweep failed (KeyError)`. All four now route through one `_require_sketch()`,
+which names the sketch. Finding the same fault a third and fourth time is what
+turned a local guard into a shared helper — route every sketch fetch through it.
+
+**`loft` leaked `StdFail_NotDone`** when asked to blend coincident/identical
+profiles. Now: *"Loft failed to blend these profiles — they may be coincident,
+identical, or too dissimilar to connect."*
+
+**`removeBody` ignored unknown ids in silence.** A Remove whose target had been
+renumbered by an upstream edit reported success having deleted nothing. Now names
+the missing ids and says why they might be gone.
+
+**`offsetFace` with distance 0** reported success having moved nothing — the same
+silent no-op class as `revolve angle:0` and `pattern count:0`.
+
+### Round 2 behaviours confirmed CORRECT (do not "fix")
+
+- **`deleteFace` on a body id that does not exist** re-targets globally and then
+  fails at healing. That is by design: body ids are POSITIONAL, so an upstream
+  split/combine renumbers them, and a saved deleteFace must survive that. The
+  heal message is accurate for what actually failed (deleting a box's face is
+  genuinely unhealable) — it is not a misleading error.
+- **A nearest-selector 500mm from any face** correctly raises the ambiguity
+  error rather than silently picking a far-away face. The gate working.
+- **A nearest-selector on a cylinder's AXIS** resolves cleanly (every rim point
+  is equidistant by construction, which is why `NEAREST_TIE_BAND` is separate
+  from `TIE_BAND` — see the 2026-07-28 round in handoff.md).
+- **`removeBody` of the last body** leaves an empty document. Legitimate.
+
+### Still OPEN after round 2
+
+- **Texture displacement deeper than the solid** (`depth: 20` on a 2mm plate)
+  builds a body with no complaint. Likely self-intersecting; not investigated.
+- **Texture whose pattern period exceeds the face** builds silently too.
+- Families still untouched: import/export round trips, projected geometry, text
+  entities, multi-body selector survival under patterns, `cleanUp`,
+  `projectGeometry`.
