@@ -19,6 +19,9 @@ export class Timeline {
   private errBadge: HTMLElement;
   onSelect: ((id: string) => void) | null = null;
   onEdit: ((id: string) => void) | null = null;
+  /** offer "Re-pick face…" for this feature? (an ambiguous reference was reported) */
+  canRepick: ((id: string) => boolean) | null = null;
+  onRepick: ((id: string) => void) | null = null;
   private selectedId: string | null = null;
   private dragId: string | null = null; // node being reordered
   private lastCount = -1; // feature count at last render (append → follow)
@@ -265,7 +268,14 @@ export class Timeline {
 
   // --- right-click context menu (shared engine in ui/menu.ts) ---
   private openMenu(e: MouseEvent, id: string, i: number, suppressed: boolean) {
+    // "Re-pick" only appears when THIS feature's last build reported an ambiguous
+    // saved reference — offering it on a healthy feature would invite users to
+    // overwrite references that are working.
+    const repick = this.canRepick?.(id)
+      ? [{ label: "Re-pick face…", onClick: () => this.onRepick?.(id) }]
+      : [];
     contextMenu(e.clientX, e.clientY, [
+      ...repick,
       { label: "Edit", onClick: () => this.onEdit?.(id) },
       { label: suppressed ? "Unsuppress" : "Suppress", onClick: () => this.store.toggleSuppress(id) },
       { label: "Roll to here", onClick: () => this.store.setRollback(i) },

@@ -50,6 +50,7 @@ import { SectionTool } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { createFeatureStarters } from "./features/featureStarters";
+import { ambiguousDiagFor } from "./features/repickReference";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
@@ -362,6 +363,14 @@ function selectFeature(id: string | null) {
 }
 timeline.onSelect = selectFeature;
 timeline.onEdit = (id) => editFeature(id);
+// Read the diagnostics off the LATEST build each time rather than caching: the
+// menu opens long after the build, and a feature repaired in between must stop
+// offering the repair.
+timeline.canRepick = (id) => !!ambiguousDiagFor(store.buildState.result?.diagnostics, id);
+timeline.onRepick = (id) => {
+  const amb = ambiguousDiagFor(store.buildState.result?.diagnostics, id);
+  if (amb?.at) starters.repickReference(id, amb.at);
+};
 tree.onSelect = selectFeature;
 // clicking a construction plane in the viewport selects it (so it can be cut by)
 viewport.onPickDatum = (id) => selectFeature(id);
@@ -727,10 +736,15 @@ store.onBuild((s) => {
         const f = store.document.features.find((x) => x.id === e.feature_id);
         const label = f ? (FEATURE_META[f.type as keyof typeof FEATURE_META]?.label ?? f.type) : e.feature_id;
         const id = e.feature_id;
-        toast(`⚠ ${label} failed: ${e.message}`, {
-          kind: "error",
-          action: { label: "Show", onClick: () => selectFeature(id) },
-        });
+        // An ambiguous saved reference is the one failure the user can actually
+        // fix from here, so offer the repair instead of a bare "Show". These are
+        // old files whose stored point identifies no single face — without this
+        // the toast is a dead end.
+        const amb = ambiguousDiagFor(s.result?.diagnostics, id);
+        const action = amb?.at
+          ? { label: "Re-pick face", onClick: () => starters.repickReference(id, amb.at!) }
+          : { label: "Show", onClick: () => selectFeature(id) };
+        toast(`⚠ ${label} failed: ${e.message}`, { kind: "error", action });
         if (id === lastCommittedId) selectFeature(id);
       }
       prevErrorIds = ids;

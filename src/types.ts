@@ -625,6 +625,12 @@ export interface ResolveDiag {
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
   reason?: string;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
+  // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the
+  // SELECTOR's own stored point — not the geometry that was found — which is what
+  // identifies WHICH selector of a multi-selector feature to re-pick. `candidates`
+  // are the tied entities, already human-readable, for the message shown to the user.
+  at?: [number, number, number];
+  candidates?: string[];
 }
 
 // Mesh wire arrays arrive either as plain JSON number arrays (text replies,

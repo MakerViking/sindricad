@@ -421,19 +421,26 @@ def _resolve_one(cands, cost_fn, key_fn, nth):
     return best, margin, lossy, ("marginal match" if lossy else None)
 
 
-def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason):
+def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=None, candidates=None):
     if diag is None or not (lossy or confidence < 0.5):
         return
-    diag.append(
-        {
-            "feature_id": feature_id,
-            "kind": kind,
-            "resolved": resolved,
-            "confidence": round(float(confidence), 3),
-            "lossy": bool(lossy),
-            "reason": reason,
-        }
-    )
+    entry = {
+        "feature_id": feature_id,
+        "kind": kind,
+        "resolved": resolved,
+        "confidence": round(float(confidence), 3),
+        "lossy": bool(lossy),
+        "reason": reason,
+    }
+    # `at` is the selector's OWN stored point, not the geometry we found. It is
+    # what lets the UI identify WHICH selector of a multi-selector feature went
+    # ambiguous, so it can offer to re-pick that one. Without it the frontend
+    # knows a feature failed but not which of its five faces to ask about.
+    if at is not None:
+        entry["at"] = [round(float(v), 6) for v in at]
+    if candidates:
+        entry["candidates"] = list(candidates)
+    diag.append(entry)
 
 
 # --- public API --------------------------------------------------------------
@@ -482,10 +489,12 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
 
     pt = sel.get("point") or []
     where = ", ".join(f"{float(v):.2f}" for v in pt)
-    _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick")
+    described = [describe(c) for c in tied[:3]]
+    _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick",
+               at=pt, candidates=described)
     raise ValueError(
         f"ambiguous {kind} reference at ({where}): "
-        + " and ".join(describe(c) for c in tied[:3])
+        + " and ".join(described)
         + f" are equally close ({best_d:.3f}mm vs {runner:.3f}mm) — re-pick the {kind}, "
         f"the saved reference no longer identifies one"
     )

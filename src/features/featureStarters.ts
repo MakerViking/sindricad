@@ -18,6 +18,7 @@ import type { TextureTool } from "./textureTool";
 import { choose } from "../ui/choice";
 import { setPrompt } from "../ui/prompt";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
+import { findSelectorAt, replaceSelectorAt } from "./repickReference";
 
 export interface FeatureStartersDeps {
   store: DocumentStore;
@@ -524,6 +525,36 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     window.addEventListener("keydown", onEsc, true);
   }
 
+  // Repair an ambiguous saved reference: the rebuild refused to guess between two
+  // equally-close faces, so ask the user which one they meant and swap that ONE
+  // selector. Everything else about the feature is left alone.
+  //
+  // Only the selector the sidecar named is touched — located by its stored point,
+  // not by index (see repickReference.ts). If it can't be found the feature has
+  // moved on since the failed build (already re-picked, or edited), which is not
+  // an error: say so and do nothing rather than "repairing" the wrong reference.
+  function repickReference(featureId: string, at: readonly number[]) {
+    const feature = store.document.features.find((f) => f.id === featureId);
+    if (!feature) return;
+    const site = findSelectorAt(feature, at);
+    if (!site) {
+      setStatus("That reference has already changed — nothing to re-pick", "");
+      return;
+    }
+    pickFaceInteractive("Pick the face this feature should use · Esc to cancel", (sel) => {
+      // Re-read the feature: the pick is async, and the doc may have moved under
+      // us (undo, another edit). Re-locating also re-validates the site.
+      const cur = store.document.features.find((f) => f.id === featureId);
+      if (!cur) return;
+      const site2 = findSelectorAt(cur, at);
+      if (!site2) {
+        setStatus("That reference has already changed — nothing to re-pick", "");
+        return;
+      }
+      store.updateFeature(featureId, replaceSelectorAt(cur, site2, sel));
+    });
+  }
+
   // Shell: pick a face to open, hollow the body to a 2mm wall (edit thickness in
   // the inspector).
   function startShell() {
@@ -629,6 +660,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     startTexture,
     startPattern,
     startExtrude,
+    repickReference,
   };
 }
 
