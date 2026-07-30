@@ -1898,10 +1898,11 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     def _snapshot():
         """Capture the build state after a feature. Body dicts are copied (so later
         in-place mutation `b["shape"]=…` can't corrupt the snapshot) but SHARE the
-        OCCT shape refs — no geometry is copied. sketches/errors are APPEND-ONLY
-        write-once registries within a run, so a snapshot stores a REFERENCE to the
-        run's registry plus a high-water mark; _restore copies the prefix below the
-        mark once. Copying whole registries per snapshot was O(N²) over a rebuild."""
+        OCCT shape refs — no geometry is copied. sketches/errors/diagnostics are
+        APPEND-ONLY write-once registries within a run, so a snapshot stores a
+        REFERENCE to the run's registry plus a high-water mark; _restore copies the
+        prefix below the mark once. Copying whole registries per snapshot was O(N²)
+        over a rebuild."""
         return {
             "bodies": [dict(b) for b in bodies],
             "sketches_ref": sketches, "n_sketches": len(sketches),
@@ -1911,6 +1912,13 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             # feature must still re-report its error (else the banner would clear
             # while the feature is still broken)
             "errors_ref": errors, "n_errors": len(errors),
+            # diagnostics travel for the SAME reason, and it is not cosmetic: the
+            # frontend offers "Re-pick face" only when the build carries an
+            # `ambiguous nearest pick` diagnostic, so a resume that replayed the
+            # error without it left the user a dead-end toast on every reopened
+            # document. `diagnostics` is None for callers that don't collect them
+            # (exports, interference) — those still resume, so guard it.
+            "diags_ref": diagnostics, "n_diags": len(diagnostics or ()),
         }
 
     def _restore(snap):
@@ -1932,6 +1940,16 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             errors[:] = [dict(e) for e in err_src[: snap["n_errors"]]]
         else:
             del errors[snap["n_errors"]:]
+        # same two branches as errors: a snapshot from a PREVIOUS run (RAM cache)
+        # or from disk holds a foreign list, so copy its prefix in; a same-run
+        # snapshot already shares the list, so just truncate to the mark. A
+        # snapshot taken before diagnostics were collected has none to restore.
+        dg_src = snap.get("diags_ref")
+        if diagnostics is not None and dg_src is not None:
+            if dg_src is not diagnostics:
+                diagnostics[:] = [dict(d) for d in dg_src[: snap["n_diags"]]]
+            else:
+                del diagnostics[snap["n_diags"]:]
 
     features = document.get("features", [])
     start = 0
@@ -2014,7 +2032,8 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             snapshots_out.append((i, _snapshot()))
         if persist is not None:
             _persist_tick(
-                persist, i, time.monotonic() - t_feat, bodies, datums, errors, counter
+                persist, i, time.monotonic() - t_feat, bodies, datums, errors, counter,
+                diagnostics,
             )
         if on_feature_tick is not None:
             try:
@@ -2305,7 +2324,7 @@ def _blob_key(chain_key, body_id):
     ).hexdigest()
 
 
-def _persist_tick(persist, i, dt_s, bodies, datums, errors, counter):
+def _persist_tick(persist, i, dt_s, bodies, datums, errors, counter, diagnostics=None):
     """Per-feature bookkeeping for the durable cache: track each body's
     last-modifying chain key (shape-identity comparison, O(bodies)), and drop a
     budget-spaced checkpoint when accumulated replay cost since the last one
@@ -2321,14 +2340,15 @@ def _persist_tick(persist, i, dt_s, bodies, datums, errors, counter):
     persist["acc_ms"] += dt_s * 1000.0
     if persist["acc_ms"] < persist.get("budget_ms", 1000.0):
         return
-    _save_checkpoint(persist, i, bodies, datums, errors, counter["n"])
+    _save_checkpoint(persist, i, bodies, datums, errors, counter["n"], diagnostics)
 
 
-def _save_checkpoint(persist, i, bodies, datums, errors, counter_n):
+def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=None):
     """Best-effort: a cache write failure must never break a rebuild."""
     try:
         store, keys, mod = persist["store"], persist["keys"], persist["mod"]
         manifest, fps, owners = [], [], {}
+        textures = {}
         for b in bodies:
             sh = b.get("shape")
             if sh is None or _wrapped_or_none(sh) is None:
@@ -2340,11 +2360,25 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n):
             manifest.append({"body_id": b["id"], "name": b["name"], "blob_key": blob_key})
             fps.append(_body_fingerprint(sh))
             owners[b["id"]] = [[list(k), v] for k, v in (b.get("_owners") or {}).items()]
+            # `_textures` is body state that is NOT in the shape: _handle_texture
+            # stores the raw spec and displacement happens lazily at tessellation.
+            # Without persisting it, a disk resume past the texture feature returned
+            # an untextured body with no error — the mesh AND the export silently
+            # lost the texture. Same class of state as `_owners` above.
+            if b.get("_textures"):
+                textures[b["id"]] = b["_textures"]
         state = json.dumps({
             "datums": datums,
             "errors": errors,
+            # diagnostics ride along with errors so a disk resume can re-report
+            # BOTH (see _snapshot). Every producer emits plain JSON scalars; if
+            # one ever emits something json can't encode, this whole write fails
+            # into the `except` below and SILENTLY disables the disk cache — hence
+            # test_checkpoint's serializability guard.
+            "diagnostics": diagnostics or [],
             "n": counter_n,
             "owners": owners,
+            "textures": textures,
             "fps": fps,
         })
         store.save_checkpoint(keys[i], i, manifest, state, persist["acc_ms"])
@@ -2388,6 +2422,11 @@ def _restore_from_disk(store, chain_keys):
                     for k, v in state.get("owners", {}).get(ent["body_id"], [])
                 },
             }
+            # only set the key when the body really is textured, so a plain body's
+            # dict stays exactly as it was before textures were persisted
+            tex = state.get("textures", {}).get(ent["body_id"])
+            if tex:
+                body["_textures"] = tex
             bodies.append(body)
             mod[ent["body_id"]] = (shape, ent["blob_key"])
         snap = {
@@ -2396,6 +2435,12 @@ def _restore_from_disk(store, chain_keys):
             "datums": state["datums"],
             "n": state["n"],
             "errors_ref": state["errors"], "n_errors": len(state["errors"]),
+            # .get: checkpoints written before diagnostics were persisted have no
+            # such key. In practice _env_sig hashes builder.py into every chain
+            # key, so those rows can no longer be matched at all — this is purely
+            # so a stale row degrades to the old behaviour instead of raising.
+            "diags_ref": state.get("diagnostics", []),
+            "n_diags": len(state.get("diagnostics", [])),
             "replay_sketches": True,
         }
         return cp["feat_index"] + 1, snap, mod
@@ -2548,6 +2593,7 @@ def rebuild_cached(document, diagnostics=None, projections=None):
         _save_checkpoint(
             persist, len(features) - 1, tip["bodies"], tip["datums"],
             tip["errors_ref"][: tip["n_errors"]], tip["n"],
+            (tip.get("diags_ref") or [])[: tip["n_diags"]],
         )
     if persist is not None:
         # annotate returned bodies with their content key so the server can key
@@ -5261,10 +5307,16 @@ def _project_source(src, plane, document, bodies, datums):
             edges = list(seen.values())
         if not edges:
             raise ValueError("the source geometry no longer exists on the body")
-        if diag:  # geom_select only records low-confidence / lossy resolutions
+        # LOSSY is the flag that means "this resolution took a best-effort or
+        # marginal path" — every diagnostic assertion in the suite keys on it.
+        # Refusing on a merely non-empty `diag` was equivalent once, but it also
+        # swept up advisory entries and turned a perfectly good pick into a hard
+        # failure (see the note in geom_select._nearest_one).
+        lossy = next((d for d in diag if d.get("lossy")), None)
+        if lossy is not None:
             raise ValueError(
                 "the source selection is ambiguous on this body — "
-                + (diag[0].get("reason") or "low-confidence match")
+                + (lossy.get("reason") or "low-confidence match")
             )
         return [
             {"fp": edge_fingerprint(e, shape), "curve": _project_edge_to_plane(e, plane)}

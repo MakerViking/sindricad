@@ -84,7 +84,7 @@ Reply `result` is one of:
     "protocol": 2,
     "bodies": [ /* one entry per live body, full payload or "unchanged" stub */ ],
     "bbox": { "min": [x,y,z], "max": [x,y,z] },
-    "diagnostics": [ /* optional: low-confidence selector resolutions */ ],
+    "diagnostics": [ /* selector resolutions worth reporting; see below */ ],
     "featureError": { "message": "...", "feature_id": "..." },   // optional
     "featureErrors": [ { "message": "...", "feature_id": "..." }, ... ]  // optional
   }
@@ -93,6 +93,14 @@ Reply `result` is one of:
   were recorded as no-ops; the geometry that *did* build is still returned (a failing
   feature never blanks the whole model). `featureError` is the most-downstream failure,
   for a single-line banner; `featureErrors` carries all of them.
+
+  `diagnostics` is omitted when empty, but when present it is **complete for the whole
+  document** — an incrementally-resumed rebuild replays the diagnostics of its cached
+  prefix rather than reporting only the features it re-ran. Clients may rely on that:
+  the "Re-pick face" repair is offered only when the build carries an `ambiguous
+  nearest pick` entry, so a partial array would silently withdraw a repair path on
+  exactly the documents that need it. (Before 0.1.70 the array *was* partial — a
+  resumed build re-reported every error with zero diagnostics.)
 - **Fatal** - nothing built at all: `{ "error": { "message": "...", "feature_id": "..." } }`.
 - **Stalled worker** - one operation ran past the stall timeout (60 s of no build
   progress): the sidecar kills and respawns the geometry worker and returns

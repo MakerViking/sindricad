@@ -127,6 +127,29 @@ def test_ambiguity_is_reported_as_a_diagnostic_too():
     print(PASS, "an ambiguous pick also emits a ResolveDiag entry")
 
 
+def test_a_confident_pick_records_no_diagnostic():
+    """An unambiguous pick must leave `diag` EMPTY, however slim its margin.
+
+    Regression for a projection failure: the success path used to log an advisory
+    entry carrying the distance margin in `confidence`, and `_push_diag` admits
+    anything under 0.5 — so a clear winner (cylinder rim, margin 0.109) was
+    recorded as low confidence. builder._project_source refused any non-empty
+    `diag`, so projecting that rim reported "the source selection is ambiguous on
+    this body" for a pick the gate had already ruled unambiguous. `diag` means
+    "resolutions worth acting on"; consumers rely on that."""
+    diag = []
+    got = resolve_faces(BOX, face_sel([0.0, 0.0, 30.0]), diag=diag, feature_id="fY")
+    assert len(got) == 1, got
+    assert diag == [], f"a confident face pick must record nothing, got {diag}"
+
+    # and an edge pick whose margin clears the tie band but is well under 0.5 —
+    # the shape of the cylinder-rim case that actually broke.
+    diag2 = []
+    resolve_edges(BOX, edge_sel([10.0, 10.0, 3.0]), diag=diag2, feature_id="fZ")
+    assert diag2 == [], f"a confident edge pick must record nothing, got {diag2}"
+    print(PASS, "a confident pick records no diagnostic (advisory entries stay out)")
+
+
 def main():
     test_equidistant_faces_raise_instead_of_guessing()
     test_point_on_a_shared_edge_raises()
@@ -136,6 +159,7 @@ def main():
     test_equidistant_edges_raise()
     test_clear_edge_winner_still_resolves()
     test_ambiguity_is_reported_as_a_diagnostic_too()
+    test_a_confident_pick_records_no_diagnostic()
     print("ALL PASS")
 
 

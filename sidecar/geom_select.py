@@ -477,7 +477,16 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
     margin = (runner - best_d) / (runner + 1e-9) if math.isfinite(runner) else 1.0
 
     if margin >= NEAREST_TIE_BAND:
-        _push_diag(diag, feature_id, kind, 1, margin, False, None)
+        # Record NOTHING: this pick is unambiguous by the gate's own rule two lines
+        # up, so there is nothing for a consumer to act on. It used to push an
+        # informational entry carrying `margin` as `confidence`, which broke two
+        # ways: `confidence` means a distance MARGIN here but a fingerprint
+        # match-QUALITY on the by:"match" path, and `_push_diag` admits anything
+        # under 0.5 — so a clear winner at margin 0.11 was logged as low
+        # confidence. `_project_source` (builder.py) then refused the projection
+        # outright, which is how a cylinder-rim projection started reporting
+        # "the source selection is ambiguous on this body". Keep `diag` meaning
+        # "resolutions worth acting on"; every consumer already assumes that.
         return best
 
     tied = [c for d, c in scored if (d - best_d) / (runner + 1e-9) < NEAREST_TIE_BAND]
