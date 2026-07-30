@@ -1,0 +1,49 @@
+# gitleaks config — extends the default ruleset, does not replace it.
+#
+# The 8.30 default config was verified (2026-07-29) to miss two shapes:
+#   1. AWS access key IDs — no default rule fires on AKIA + 16 chars, in any file type.
+#   2. `Bearer <token>` outside a curl invocation. The default `curl-auth-header` rule
+#      only fires inside a curl command, so a bearer token in a .py, .ts, .md or a
+#      systemd unit passes clean. A live secret leaked in exactly this shape.
+#
+# Verify after editing (expect "no leaks found"):
+#   gitleaks git --redact --no-banner
+#   gitleaks dir . --redact --no-banner
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "bearer-token-outside-curl"
+description = "Authorization bearer token outside a curl command"
+regex = '''(?i)bearer\s+([A-Za-z0-9._\-+/=]{20,})'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["bearer"]
+
+  # Not secrets: env-var indirection, templates, placeholders, already-redacted text.
+  [[rules.allowlists]]
+  regexTarget = "match"
+  regexes = [
+    '''bearer\s+\$''',
+    '''bearer\s+\{''',
+    '''bearer\s+<''',
+    '''(?i)bearer\s+(process\.env|import\.meta\.env|os\.environ|Deno\.env|getenv)''',
+    '''(?i)bearer\s+(your[_-]?|my[_-]?|the[_-]?|some[_-]?|test[_-]?|fake[_-]?|dummy[_-]?|example[_-]?|placeholder|xxx+|\.\.\.)''',
+    '''\[REDACTED''',
+  ]
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS access key ID (default ruleset does not flag these)"
+regex = '''\b((?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16})\b'''
+secretGroup = 1
+keywords = ["akia", "asia", "abia", "acca"]
+
+  [[rules.allowlists]]
+  regexTarget = "match"
+  regexes = [
+    # AWS's own published documentation example key — not a credential.
+    '''AKIAIOSFODNN7EXAMPLE''',
+    '''\[REDACTED''',
+  ]
