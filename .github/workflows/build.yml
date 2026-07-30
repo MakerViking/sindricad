@@ -176,6 +176,32 @@ jobs:
           node -e "const fs=require('fs');const f='src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(f));j.version='$v';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
           echo "stamped $v"
 
+      # Dependabot-triggered runs get NO repository secrets, by GitHub's design -- so
+      # TAURI_SIGNING_PRIVATE_KEY arrives empty and `tauri build` aborts with "failed
+      # to decode secret key: Missing comment in secret key". That failed the build leg
+      # on all three OSes for every dependency PR while the `test` gate passed, which
+      # reads as "the bump broke the build" when nothing was wrong with the bump.
+      #
+      # Bundle WITHOUT updater artifacts in that case. The point of building a
+      # dependency PR is to prove the bundle still assembles on all three OSes, not to
+      # ship it. Deliberately NOT solved by giving Dependabot the signing key: that key
+      # authorises pushing an update to every tester's machine, and a Dependabot run
+      # executes the install scripts of the very package it just bumped.
+      #
+      # On a normal push the key is present, this is a no-op, and updater artifacts stay
+      # signed -- the in-app updater and the `release` job's latest.json depend on that.
+      - name: Disable updater artifacts when there is no signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "signing key present -- updater artifacts stay enabled"
+            exit 0
+          fi
+          echo "::warning::No updater signing key (expected on Dependabot PRs) -- bundling WITHOUT updater artifacts; this build is not shippable."
+          node -e "const fs=require('fs');const f='src-tauri/tauri.bundle.conf.json';const j=JSON.parse(fs.readFileSync(f));j.bundle.createUpdaterArtifacts=false;fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+
       # --- build + bundle. The bundle-only config ships sidecar-runtime/ as a resource
       #     and (on macOS) turns on hardened runtime + entitlements. ---
       - name: Build + bundle Tauri app
