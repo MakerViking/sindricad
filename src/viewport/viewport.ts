@@ -673,24 +673,54 @@ export class Viewport {
     this.requestRender();
   }
 
-  /** Find the faceId whose centroid is nearest `point` (world units, model-scaled
-   *  tolerance) — the rebuild-stable way to re-locate a face a saved `by:"nearest"`
-   *  selector refers to (mirrors edgeLineByMid for faces instead of edges), so a
-   *  texture feature's saved member faces can be re-highlighted on edit-reopen. */
-  faceIdNear(point: [number, number, number]): number | null {
+  /** Find the face whose SURFACE is nearest `point` (world units, model-scaled
+   *  tolerance) — the rebuild-stable way to re-locate a face a saved
+   *  `by:"nearest"` selector refers to, so a texture feature's saved member faces
+   *  can be re-highlighted on edit-reopen. Mirrors the sidecar's own
+   *  by:"nearest" resolution, which also measures to the face, not to a
+   *  representative point.
+   *
+   *  It must NOT compare against faceCentroidWorld(): that snaps to the nearest
+   *  TRIANGLE centroid, which moves with tessellation density. A texture's point
+   *  is minted from the DISPLACED preview mesh (dense — lands near the middle of
+   *  the face) but re-anchored against the rolled-back one (a planar face is 2
+   *  triangles — a third of the way to a corner). Measured on a 40 mm box top
+   *  face: 9.4 mm apart, ~19x the 0.5 mm tolerance, so EVERY face texture
+   *  re-opened with an empty selection.
+   *
+   *  `extraTol` is for callers whose point sits off the rolled-back surface by a
+   *  known amount — a texture's displacement depth. */
+  faceIdNear(point: [number, number, number], extraTol = 0): number | null {
     if (!this.model) return null;
     const target = new THREE.Vector3(point[0], point[1], point[2]);
+    const local = new THREE.Vector3();
+    const inv = new THREE.Matrix4();
+    const tri = new THREE.Triangle();
+    const closest = new THREE.Vector3();
     let best: number | null = null;
     let bestDist = Infinity;
     for (const body of this.model.bodies) {
-      for (const faceId of body.faceTriangles.keys()) {
-        const d = this.faceCentroidWorld(faceId).distanceTo(target);
-        if (d < bestDist) { bestDist = d; best = faceId; }
+      // compare in the body's local space: one matrix inverse per body instead
+      // of three vector transforms per triangle.
+      inv.copy(body.mesh.matrixWorld).invert();
+      local.copy(target).applyMatrix4(inv);
+      const pos = body.mesh.geometry.getAttribute("position");
+      const index = body.mesh.geometry.getIndex()!;
+      for (const [faceId, tris] of body.faceTriangles) {
+        for (const t of tris) {
+          tri.a.fromBufferAttribute(pos, index.getX(t * 3));
+          tri.b.fromBufferAttribute(pos, index.getX(t * 3 + 1));
+          tri.c.fromBufferAttribute(pos, index.getX(t * 3 + 2));
+          tri.closestPointToPoint(local, closest);
+          const d = closest.distanceTo(local);
+          if (d < bestDist) { bestDist = d; best = faceId; }
+        }
       }
     }
-    const tol = midMatchTol(this.model.box.getSize(this.projScratch).length());
+    const tol = midMatchTol(this.model.box.getSize(this.projScratch).length()) + Math.abs(extraTol);
     return best != null && bestDist <= tol ? best : null;
   }
+
 
   /** Paint the edges nearest these midpoints red (fillet/chamfer failures).
    *  Replaces the previous error set; pass [] to clear. Re-apply after each

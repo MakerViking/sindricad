@@ -58,13 +58,10 @@ export class TexturePanel {
   private read: (() => TextureValues) | null = null;
   private summaryEl: HTMLDivElement | null = null;
   private modeBtns: { faces: HTMLButtonElement; body: HTMLButtonElement } | null = null;
-  private escHandler = (e: KeyboardEvent) => {
-    if (this.active && e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      this.cancel();
-    }
-  };
+  // Esc is NOT handled here. TextureTool owns it for its whole active lifetime,
+  // which starts before this panel exists (the edit path rolls the model back
+  // first) and must outlast a refused commit. A panel-scoped handler left those
+  // windows with no way out.
 
   constructor() {
     this.root = document.createElement("div");
@@ -192,7 +189,7 @@ export class TexturePanel {
     direction.appendChild(new Option("In (deboss)", "in"));
     direction.appendChild(new Option("Both", "both"));
     direction.value = opts.initial.direction ?? "out";
-    const directionRow = row(label("Direction"), direction);
+    row(label("Direction"), direction);
 
     // --- conditional: seed + randomize (voronoi/noise) ---
     const seed = numberInput(opts.initial.seed ?? 1, "1");
@@ -236,7 +233,11 @@ export class TexturePanel {
     const updateVisibility = () => {
       const k = kind.value as TextureKind;
       angleRow.style.display = ANGLE_KINDS.has(k) ? "flex" : "none";
-      directionRow.style.display = ANGLE_KINDS.has(k) ? "flex" : "none";
+      // Direction is NOT an angle-kind thing: the sidecar applies it to the
+      // height field itself (out = h, in = h-1, both = centred), so every kind
+      // honours it. Gating it behind ANGLE_KINDS left noise/voronoi/image able
+      // only to GROW the part — changing its dimensions instead of texturing
+      // the surface it sits on.
       seedRow.style.display = SEED_KINDS.has(k) ? "flex" : "none";
       imageRow.style.display = k === "image" ? "flex" : "none";
       invertRow.style.display = k === "image" ? "flex" : "none";
@@ -308,8 +309,6 @@ export class TexturePanel {
     const btns = row(ok, no);
     btns.style.marginBottom = "0";
     btns.style.justifyContent = "flex-end";
-
-    document.addEventListener("keydown", this.escHandler, true);
   }
 
   /** Live selection-summary line (rewritten every rAF tick as the ambient
@@ -331,10 +330,12 @@ export class TexturePanel {
 
   private commit() {
     if (!this.active || !this.read) return;
-    const v = this.read();
-    const cb = this.onCommit;
-    this.hide();
-    cb?.(v);
+    // Do NOT hide here. The tool REFUSES a commit with no target (nothing
+    // selected) and leaves itself active — hiding first stranded the user in an
+    // invisible modal: the panel was gone, the tool still owned face-picking,
+    // and toolBusy() blocked every other Esc handler. The tool's own cleanup()
+    // hides the panel once the commit is actually accepted.
+    this.onCommit?.(this.read());
   }
 
   private cancel() {
@@ -350,7 +351,6 @@ export class TexturePanel {
     this.onCommit = this.onCancel = this.onChange = this.onModeChange = this.read = null;
     this.summaryEl = null;
     this.modeBtns = null;
-    document.removeEventListener("keydown", this.escHandler, true);
   }
 }
 

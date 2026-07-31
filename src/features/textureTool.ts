@@ -33,6 +33,8 @@ const defaultValues = (): TextureValues => ({
   invert: false,
 });
 
+const PICK_PROMPT = "Select faces (or switch to Whole Body) for the texture · Esc to cancel";
+
 function sameSet<T>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
   const s = new Set(b);
@@ -69,11 +71,27 @@ export class TextureTool {
 
   private panel = new TexturePanel();
 
+  // Esc lives on the TOOL, not the panel: the tool is active from the moment the
+  // edit path starts rolling the model back (before any panel exists) until
+  // cleanup, and a commit the tool refuses leaves it active with the panel still
+  // up. Anything narrower leaves a window where main.ts's Esc handlers are all
+  // gated off by toolBusy() and the user has no way out at all.
+  private escHandler = (e: KeyboardEvent) => {
+    if (!this.active || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.cancel();
+  };
+
   constructor(
     private viewport: Viewport,
     private store: DocumentStore,
   ) {
     this.boundTick = () => this.tick();
+  }
+
+  private listenForEscape() {
+    document.addEventListener("keydown", this.escHandler, true);
   }
 
   start(onDone: (id: string | null) => void) {
@@ -94,7 +112,8 @@ export class TextureTool {
       if (!s.building && s.result) this.rebuildLanded = true;
     });
     this.openPanel(false);
-    setPrompt("Select faces (or switch to Whole Body) for the texture · Esc to cancel");
+    setPrompt(PICK_PROMPT);
+    this.listenForEscape();
     this.raf = requestAnimationFrame(this.boundTick);
   }
 
@@ -144,12 +163,14 @@ export class TextureTool {
     setPrompt("Rolling back to edit… (later features are hidden while editing)");
 
     this.store.beginEditPreview(featureId);
+    this.listenForEscape();
     this.unsubBuild = this.store.onBuild((s) => {
       if (s.building || !s.result) return;
       if (this.awaitingRollback) {
         this.awaitingRollback = false;
         this.seedSelectionFromSaved();
         this.openPanel(true);
+        setPrompt(PICK_PROMPT);
         this.pushPreview();
         this.raf = requestAnimationFrame(this.boundTick);
       } else {
@@ -169,9 +190,13 @@ export class TextureTool {
       if (this.savedBodyId) this.viewport.setSelectedBodies([this.savedBodyId]);
     } else {
       const ids: number[] = [];
+      // the saved point was minted from the DISPLACED preview mesh, so on the
+      // rolled-back (undisplaced) model it floats up to depth+offset off the
+      // surface — tell the matcher to expect that.
+      const off = Math.abs(this.values.depth) + Math.abs(this.values.offset);
       for (const sel of this.savedFaceSelectors) {
         if (!("point" in sel)) continue;
-        const fid = this.viewport.faceIdNear(sel.point as [number, number, number]);
+        const fid = this.viewport.faceIdNear(sel.point as [number, number, number], off);
         if (fid != null) ids.push(fid);
       }
       this.viewport.selectFaces(ids);
@@ -312,10 +337,12 @@ export class TextureTool {
     // relying on the sidecar default so a saved document says what it is
     extra.profile = v.profile;
     if (v.boundaryInset) extra.boundaryInset = v.boundaryInset;
-    if (ANGLE_KINDS.has(v.kind)) {
-      if (v.angle) extra.angle = v.angle;
-      extra.direction = v.direction;
-    }
+    if (ANGLE_KINDS.has(v.kind) && v.angle) extra.angle = v.angle;
+    // direction is generic in the sidecar — it transforms the height field
+    // (out = h, in = h-1, both = centred) rather than the pattern, so EVERY
+    // kind honours it. It used to ride along with the angle, which left
+    // noise/voronoi/image permanently embossing outward.
+    extra.direction = v.direction;
     // sharpness shapes the lattice/wave kinds under either profile, and under
     // FACET it also drives the cellular wall width and the terrace count — so
     // voronoi/noise/image need it too, which they never used to get.
@@ -395,6 +422,7 @@ export class TextureTool {
   }
 
   private cleanup() {
+    document.removeEventListener("keydown", this.escHandler, true);
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     if (this.previewDebounce) clearTimeout(this.previewDebounce);
