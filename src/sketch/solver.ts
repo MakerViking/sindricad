@@ -87,14 +87,52 @@ function getWrapper(): Promise<GcsWrapper> {
     wrapperPromise = (async () => {
       const mod = await init_planegcs_module({ locateFile: () => wasmUrl });
       return new GcsWrapper(new mod.GcsSystem());
-    })();
+    })().catch((err) => {
+      // Do NOT keep a rejected promise in the cache. It would poison every
+      // later solve with the same stale failure and never retry — and the one
+      // failure we have seen in the field is environmental (a WebView2 that
+      // refuses to instantiate the WASM), so a retry can legitimately succeed
+      // after the runtime is updated, without restarting the app.
+      wrapperPromise = null;
+      throw new SolverUnavailable(err);
+    });
   }
   return wrapperPromise;
 }
 
-/** Warm up the WASM module ahead of first use (call at startup). */
-export function initSolver(): Promise<unknown> {
-  return getWrapper();
+/** The constraint solver's WASM could not be instantiated. Carries the
+ *  underlying cause, and a message worth showing a user: the only occurrence in
+ *  the field was a Windows WebView2 whose CSP refused to compile the module
+ *  (reported as a code-generation-from-strings violation, because V8 checks
+ *  WASM compilation through the same hook as `eval`). */
+export class SolverUnavailable extends Error {
+  constructor(readonly cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      /content security policy|unsafe-eval|code generation/i.test(detail)
+        ? "The 2D constraint solver could not start: this WebView2 runtime refuses to compile WebAssembly. Updating the Microsoft Edge WebView2 Runtime should fix it. Sketching still works without constraints."
+        : `The 2D constraint solver could not start: ${detail}`,
+    );
+    this.name = "SolverUnavailable";
+  }
+}
+
+/** Warm up the WASM module ahead of first use (call at startup).
+ *
+ *  A warm-up is OPTIONAL by definition: the caller must not let a failure here
+ *  reach the user as an app-level error. It used to be called as a bare
+ *  `void initSolver()`, so on a WebView2 that blocks WASM the rejection hit the
+ *  global unhandledrejection net and greeted the user with "Something went
+ *  wrong — check the console for details" at every startup, naming nothing.
+ *  Resolves to false instead of rejecting; the real error is raised at the
+ *  point of USE, where it can say what is actually unavailable. */
+export async function initSolver(): Promise<boolean> {
+  try {
+    await getWrapper();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function solveSketch(input: SolveInput): Promise<SolveResult> {

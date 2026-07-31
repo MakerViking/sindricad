@@ -31,6 +31,7 @@ import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../docu
 import type { SketchBinding } from "../document/store";
 import { circumcenter } from "./arc";
 import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
+import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
@@ -194,6 +195,10 @@ export class SketchMode {
     stretch: ((dx: number, dy: number) => void)[]; // filled when the move starts
   } | null = null;
   private solveBusy = false; // a solve is in flight (drag or constraint)
+  // the solver WASM failed to come up: stop pumping and say so ONCE, rather
+  // than letting every stroke raise the same unhandled rejection
+  private solverDead = false;
+  private solverDeadToast = false;
   private solveDirty = false; // a constraint/dimension solve is pending
   private entityVersion = 0; // bumped on every entity change; guards stale solves
   private conflict = false; // last solve reported conflicting (over-)constraints
@@ -3377,7 +3382,7 @@ export class SketchMode {
   /** The one and only path that touches the solver. Serializes drag solves and
    *  constraint/dimension solves through a single in-flight lock. */
   private async pump() {
-    if (this.solveBusy) return;
+    if (this.solveBusy || this.solverDead) return;
     this.solveBusy = true;
     try {
       while (this.active && (this.pendingDrag || this.solveDirty)) {
@@ -3422,6 +3427,26 @@ export class SketchMode {
           this.refreshActive();
         }
       }
+    } catch (err) {
+      // The solver's WASM never came up (seen in the field on a WebView2 that
+      // refuses to compile it). Without this, the rejection escapes `void
+      // this.pump()` into the global net and toasts a nameless "Something went
+      // wrong" on EVERY stroke. Say what is actually unavailable, once, and
+      // stop asking — the geometry is still perfectly usable unconstrained.
+      console.error("sketch solve failed:", err);
+      this.solverDead = true;
+      this.lastDof = -1;
+      this.conflict = false;
+      if (!this.solverDeadToast) {
+        this.solverDeadToast = true;
+        toast(
+          err instanceof SolverUnavailable
+            ? err.message
+            : "The 2D constraint solver stopped responding — sketching continues without constraints",
+          { kind: "error", timeout: 12000 },
+        );
+      }
+      this.refreshActive();
     } finally {
       this.solveBusy = false;
     }

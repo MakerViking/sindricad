@@ -24,7 +24,7 @@ import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
 import { createBugReporter } from "./ui/bugReporter";
 import "./diagnostics/breadcrumbs"; // installs window error listeners (bug-report trail)
-import { stickyFact } from "./diagnostics/breadcrumbs";
+import { stickyFact, crumb } from "./diagnostics/breadcrumbs";
 import { installAutosave, checkRecovery } from "./io/recovery";
 import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
 import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
@@ -141,7 +141,14 @@ if (import.meta.env.DEV) {
   (window as any).textureTool = textureTool;
   (window as any).solveSketch = solveSketch;
 }
-void initSolver(); // warm up the constraint solver WASM
+// Warm up the constraint solver WASM. Deliberately ignores failure: initSolver
+// resolves false rather than rejecting, so a runtime that cannot compile the
+// module no longer greets the user with a nameless "Something went wrong" at
+// startup (field report, 0.1.73 on Windows). The real, specific error is raised
+// if and when a sketch actually needs to solve.
+void initSolver().then((ok) => {
+  if (!ok) crumb("[solver] constraint solver unavailable — sketching without constraints");
+});
 
 // --- 3D mouse (SpaceMouse): navigate the camera + map buttons (desktop app) ---
 (window as any).spaceMouseConfig = setSpaceMouseConfig; // live-tune from devtools
