@@ -433,18 +433,24 @@ export type Feature =
   // `plane` is the source reference and `offset` shifts along its normal (mm), so
   // the offset stays editable after creation; absent offset = coincident.
   | { id: string; type: "datumPlane"; plane: PlaneSpec; offset?: number; name?: string }
-  // An imported body (STL/3MF/STEP/OBJ). The sewn/native solid is embedded as a
-  // base64 BREP string so the document is self-contained and rebuilds
+  // An imported body (STL/3MF/STEP/OBJ/GLB). The sewn/native solid is embedded as
+  // a base64 BREP string so the document is self-contained and rebuilds
   // deterministically without the original file. `solid` is false for a
   // non-watertight mesh (a surface body — reference / section / sketch-over only).
   | {
       id: string;
       type: "import";
-      format: "stl" | "3mf" | "step" | "obj" | "brep";
+      format: "stl" | "3mf" | "step" | "obj" | "brep" | "glb";
       name: string;
       brep: string;
       source?: string;
       solid?: boolean;
+      // The dominant material colour the source file carried ('#RRGGBB'), when it
+      // had one — glTF only today. Provenance, not the live body colour: the body
+      // is coloured by its palette SLOT (bodyColors), which this seeds via a
+      // nearest-slot match at import. Kept so the match can be redone if the
+      // palette changes. Omitted, never null, when the file carried no colour.
+      color?: string;
       // explode:false keeps a multi-solid payload as ONE body (large imported
       // assemblies: divides body count by solids-per-import). Absent/true =
       // historical one-body-per-solid behavior.
@@ -668,11 +674,11 @@ export type RebuildReply =
   | { ok: true; result: RebuildResult }
   | { ok: false; error: { feature_id?: string; message: string } };
 
-export type ExportFormat = "step" | "stl" | "3mf";
+export type ExportFormat = "step" | "stl" | "3mf" | "glb";
 
 // Import: the format the user picks, and the sidecar's reply for an `import` op —
 // the embeddable BREP payload plus a little metadata for the new `import` feature.
-export type ImportFormat = "stl" | "3mf" | "step" | "obj" | "brep";
+export type ImportFormat = "stl" | "3mf" | "step" | "obj" | "brep" | "glb";
 export type ImportReply =
-  | { ok: true; brep: string; name: string; solid: boolean; faces: number }
+  | { ok: true; brep: string; name: string; solid: boolean; faces: number; color?: string }
   | { ok: false; message: string };

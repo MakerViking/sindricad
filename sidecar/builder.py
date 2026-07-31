@@ -912,6 +912,118 @@ def _canonicalize(shape, tol=1e-3):
         return shape
 
 
+def _sew_mesh_file(path):
+    """Read a triangle-mesh file (STL/3MF/OBJ) into a sewn, editable B-rep body.
+
+    Shared by the mesh formats and by the glTF path, which round-trips its
+    triangles through a temporary STL to get here — the sew + unify + refacet
+    sequence is what turns 12 triangles back into a 6-faced box, and duplicating
+    it for glTF would mean maintaining two versions of the same recovery."""
+    shapes = Mesher().read(path)
+    if not shapes:
+        raise ValueError("no geometry found in the mesh file")
+    shape = shapes[0] if len(shapes) == 1 else Compound(list(shapes))
+    shape = _maybe_unify(shape)
+    # collapse facet debris (slivers + near-coplanar staircases) so the
+    # import is genuinely editable — crisp faces, crisp edges (best-effort;
+    # returns the input unchanged on any doubt)
+    shape = _refacet_clean(shape)
+    nf = len(shape.faces())
+    if nf > MAX_IMPORT_FACES:
+        raise ValueError(
+            f"This mesh didn't reduce to a clean editable model ({nf:,} faces — a "
+            f"curved/organic surface stays faceted). SindriCAD edits prismatic CAD "
+            f"models; import a STEP or a flat-faced part."
+        )
+    return shape
+
+
+def _glb_dominant_color(path):
+    """The base colour of the glTF's most-used material, as '#RRGGBB', or None.
+
+    Read straight from the GLB's JSON chunk rather than through XCAF: OCCT's
+    RWGltf_CafReader does not populate the colour tool for these files (measured:
+    ColorTool reports zero colours after a successful Perform), and the JSON is
+    unambiguous.
+
+    "Dominant" = the material covering the most triangles, not materials[0]. A
+    file whose first material is a tiny detail would otherwise dictate the colour
+    of the whole import. Returns None when the file carries no materials, which
+    the caller must treat as "leave the body's colour alone".
+    """
+    import struct
+
+    from mesh_writers import _linear_to_srgb_hex
+
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(20)
+            if len(head) < 20 or struct.unpack("<I", head[:4])[0] != 0x46546C67:
+                return None
+            jlen = struct.unpack("<I", head[12:16])[0]
+            doc = json.loads(fh.read(jlen))
+    except Exception:
+        return None  # advisory only: never fail an import over a colour
+
+    materials = doc.get("materials") or []
+    if not materials:
+        return None
+    accessors = doc.get("accessors") or []
+    weight = {}
+    for mesh in doc.get("meshes") or []:
+        for prim in mesh.get("primitives") or []:
+            mat = prim.get("material")
+            if mat is None:
+                continue
+            acc = prim.get("indices")
+            n = accessors[acc].get("count", 0) if isinstance(acc, int) and acc < len(accessors) else 0
+            weight[mat] = weight.get(mat, 0) + n
+    best = max(weight, key=weight.get) if weight else 0
+    if not isinstance(best, int) or best >= len(materials):
+        return None
+    factor = (materials[best].get("pbrMetallicRoughness") or {}).get("baseColorFactor")
+    if not factor or len(factor) < 3:
+        return None
+    return _linear_to_srgb_hex(factor)
+
+
+def _read_glb(path):
+    """Read a binary glTF (.glb) into a single shape via OCCT's own reader.
+
+    glTF is Y-up and carries its own unit scale; RWGltf_CafReader does both
+    conversions itself (SetSystemCoordinateSystem / SetSystemLengthUnit), which is
+    why this does not hand-roll a rotation — getting that wrong lands every import
+    on its side, and the file still loads, so it is easy to miss.
+
+    The result is a faceted mesh body with the same limits as the STL/OBJ path:
+    glTF carries triangles, not B-rep, so there is nothing prismatic to recover.
+    """
+    from OCP.Message import Message_ProgressRange
+    from OCP.RWGltf import RWGltf_CafReader
+    from OCP.RWMesh import RWMesh_CoordinateSystem
+    from OCP.TCollection import TCollection_AsciiString, TCollection_ExtendedString
+    from OCP.TDocStd import TDocStd_Document
+
+    doc = TDocStd_Document(TCollection_ExtendedString("glb"))
+    reader = RWGltf_CafReader()
+    reader.SetDocument(doc)
+    reader.SetParallel(True)
+    reader.SetSystemLengthUnit(0.001)  # our documents are millimetres
+    reader.SetSystemCoordinateSystem(RWMesh_CoordinateSystem.RWMesh_CoordinateSystem_Zup)
+    reader.SetFileCoordinateSystem(RWMesh_CoordinateSystem.RWMesh_CoordinateSystem_Yup)
+    if not reader.Perform(TCollection_AsciiString(path), Message_ProgressRange()):
+        raise ValueError("couldn't read this glTF file — it may be corrupt or not a .glb")
+    shape = reader.SingleShape()
+    if shape is None or shape.IsNull():
+        raise ValueError("no geometry found in the glTF file")
+    # _wrap_topods, not Shape.cast: the reader hands back a raw TopoDS_COMPOUND,
+    # which Shape.cast() turns into None (see its docstring).
+    wrapped = _wrap_topods(shape)
+    if wrapped is None:
+        raise ValueError("couldn't interpret the geometry in this glTF file")
+    return wrapped
+
+
 def import_geometry(path, fmt):
     """Read an external geometry file and return the document payload for an
     `import` feature: {brep, solid, faces, name}. STL/3MF/OBJ are read as a
@@ -940,33 +1052,54 @@ def import_geometry(path, fmt):
                 f"model (limit ~{MAX_IMPORT_TRIANGLES:,}). It's almost certainly an organic/"
                 f"scanned model; reduce it first, or import a STEP / clean CAD mesh."
             )
-        shapes = Mesher().read(path)
-        if not shapes:
-            raise ValueError("no geometry found in the mesh file")
-        shape = shapes[0] if len(shapes) == 1 else Compound(list(shapes))
-        shape = _maybe_unify(shape)
-        # collapse facet debris (slivers + near-coplanar staircases) so the
-        # import is genuinely editable — crisp faces, crisp edges (best-effort;
-        # returns the input unchanged on any doubt)
-        shape = _refacet_clean(shape)
-        nf = len(shape.faces())
-        if nf > MAX_IMPORT_FACES:
+        shape = _sew_mesh_file(path)
+    elif fmt == "glb":
+        # OCCT's glTF reader returns ONE triangulated FACE per mesh — geometrically
+        # correct but a surface body, so a GLB box arrived as 1 face / 0 solids
+        # where the identical STL imports as 6 faces and a real solid. Round-trip
+        # the triangles through the shared mesh path rather than duplicating (or
+        # skipping) its sew + unify + refacet work.
+        import tempfile
+
+        import mesh_writers
+        from tessellate import tessellate
+
+        pos, idx, _fids = tessellate(_read_glb(path), tolerance=0.01)
+        ntri = len(idx) // 3
+        if ntri > MAX_IMPORT_TRIANGLES:
             raise ValueError(
-                f"This mesh didn't reduce to a clean editable model ({nf:,} faces — a "
-                f"curved/organic surface stays faceted). SindriCAD edits prismatic CAD "
-                f"models; import a STEP or a flat-faced part."
+                f"This glTF has ~{ntri:,} triangles — too dense to import as an editable "
+                f"model (limit ~{MAX_IMPORT_TRIANGLES:,}). Reduce it first, or import a "
+                f"STEP / clean CAD mesh."
             )
+        fd, tmp = tempfile.mkstemp(suffix=".stl")
+        os.close(fd)
+        try:
+            mesh_writers.write_stl(pos, idx, tmp)
+            shape = _sew_mesh_file(tmp)
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     else:
         raise ValueError(f"unsupported import format: {fmt}")
 
     is_solid = len(shape.solids()) > 0
     name = os.path.splitext(os.path.basename(path))[0] or "Imported"
-    return {
+    out = {
         "brep": _shape_to_brep_b64(shape),
         "solid": is_solid,
         "faces": len(shape.faces()),
         "name": name,
     }
+    # Only glTF carries a material colour worth honouring. Omitted (not null) when
+    # there is none, so the frontend can tell "no colour in the file" from black.
+    if fmt == "glb":
+        colour = _glb_dominant_color(path)
+        if colour:
+            out["color"] = colour
+    return out
 
 
 # --- rebuild -----------------------------------------------------------------

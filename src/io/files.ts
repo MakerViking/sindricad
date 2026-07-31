@@ -65,9 +65,9 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
       // MCAD-style: Open takes our document AND mesh/CAD files (imported as a
       // body), routed by extension below — so users can just "open" an STL.
       filters: [
-        { name: "All supported", extensions: ["sindri", "json", "stl", "3mf", "step", "stp", "obj"] },
+        { name: "All supported", extensions: ["sindri", "json", "stl", "3mf", "step", "stp", "obj", "glb"] },
         { name: "SindriCAD Document", extensions: ["sindri", "json"] },
-        { name: "Mesh / CAD", extensions: ["stl", "3mf", "step", "stp", "obj"] },
+        { name: "Mesh / CAD", extensions: ["stl", "3mf", "step", "stp", "obj", "glb"] },
       ],
     });
     if (typeof path !== "string") return;
@@ -139,13 +139,20 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
       { name: "STEP", extensions: ["step", "stp"] },
       { name: "STL", extensions: ["stl"] },
       { name: "3MF", extensions: ["3mf"] },
+      { name: "GLB (glTF)", extensions: ["glb"] },
     ],
     // "separate" derives one file per body as "<base>-<body>.<ext>", so name the base.
     defaultPath: opts.separate ? "parts.step" : "part.step",
   });
   if (!path) return;
   const fmt = extToFormat(path);
-  const res = await geometry.export(store.document, fmt, path, opts);
+  // GLB carries one material per body, so it needs the palette and each body's
+  // slot; the other formats ignore both.
+  const res = await geometry.export(store.document, fmt, path, {
+    ...opts,
+    palette: store.colorPalette,
+    bodyColors: store.bodyColorsMap(),
+  });
   if (!res.ok) {
     await reportError(`Export failed: ${res.message ?? "unknown error"}`);
     return;
@@ -167,10 +174,14 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
   }
 }
 
-function extToFormat(path: string): ExportFormat {
+export function extToFormat(path: string): ExportFormat {
   const ext = path.split(".").pop()?.toLowerCase();
   if (ext === "stl") return "stl";
   if (ext === "3mf") return "3mf";
+  // NOTE: this function is TOTAL — an unrecognised extension falls through to
+  // STEP rather than erroring. Miss a format here and the user gets a STEP file
+  // wearing the extension they asked for, with no error anywhere.
+  if (ext === "glb") return "glb";
   return "step";
 }
 
@@ -293,15 +304,48 @@ export async function importModel(store: DocumentStore, geometry: GeometryBacken
   const path = await open({
     multiple: false,
     filters: [
-      { name: "All supported", extensions: ["stl", "3mf", "step", "stp", "obj"] },
+      { name: "All supported", extensions: ["stl", "3mf", "step", "stp", "obj", "glb"] },
       { name: "STL", extensions: ["stl"] },
       { name: "3MF", extensions: ["3mf"] },
       { name: "STEP", extensions: ["step", "stp"] },
       { name: "OBJ", extensions: ["obj"] },
+      { name: "GLB (glTF)", extensions: ["glb"] },
     ],
   });
   if (typeof path !== "string") return;
   await importPath(store, geometry, path);
+}
+
+/** Nearest palette slot to a '#RRGGBB' colour, by squared RGB distance, or null
+ *  when the palette is empty or the colour is unparseable.
+ *
+ *  Deliberately MATCHES rather than extends. The palette is the U1's filament
+ *  list — four physical slots — not a display palette, so a slot means "print
+ *  this in filament N". Auto-adding an imported model's colour would claim a
+ *  filament the printer doesn't have loaded. */
+export function nearestPaletteSlot(
+  hex: string,
+  palette: { name: string; color: string }[],
+): number | null {
+  const rgb = (s: string): [number, number, number] | null => {
+    const t = s.trim().replace(/^#/, "");
+    if (!/^[0-9a-f]{6}$/i.test(t)) return null;
+    return [parseInt(t.slice(0, 2), 16), parseInt(t.slice(2, 4), 16), parseInt(t.slice(4, 6), 16)];
+  };
+  const want = rgb(hex);
+  if (!want || !palette.length) return null;
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (let i = 0; i < palette.length; i++) {
+    const got = rgb(palette[i]?.color ?? "");
+    if (!got) continue;
+    const d = (want[0] - got[0]) ** 2 + (want[1] - got[1]) ** 2 + (want[2] - got[2]) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
 }
 
 /** Import a specific mesh / CAD file path as a new body. Shared by the Import
@@ -313,15 +357,29 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     await reportError(`Couldn't import ${path.split(/[\\/]/).pop()}: ${res.message ?? "unreadable file"}`);
     return;
   }
+  const id = store.nextId();
   store.addFeature({
-    id: store.nextId(),
+    id,
     type: "import",
     format: fmt,
     name: res.name,
     brep: res.brep,
     source: path,
     solid: res.solid,
+    ...(res.color !== undefined ? { color: res.color } : {}),
   });
+
+  // Carry the file's own colour onto the body it produced. The body doesn't
+  // exist until the rebuild runs, and its id is positional, so wait for the
+  // build and find the bodies this feature owns via faceOwners. setBodyColorSlot
+  // is a display-only overlay write, so this adds no second undo step.
+  if (res.color === undefined) return;
+  const slot = nearestPaletteSlot(res.color, store.colorPalette);
+  if (slot === null) return;
+  await store.rebuildNow();
+  for (const b of store.buildState.result?.bodies ?? []) {
+    if (b.faceOwners?.some((owner) => owner === id)) store.setBodyColorSlot(b.id, slot);
+  }
 }
 
 /** Surface an error to the user — a native dialog in the app, console otherwise.
@@ -335,13 +393,14 @@ async function reportError(msg: string) {
   }
 }
 
-function extToImportFormat(path: string): ImportFormat {
+export function extToImportFormat(path: string): ImportFormat {
   const ext = path.split(".").pop()?.toLowerCase();
   if (ext === "stl") return "stl";
   if (ext === "3mf") return "3mf";
   if (ext === "obj") return "obj";
   if (ext === "brep") return "brep";
-  return "step";
+  if (ext === "glb") return "glb";
+  return "step";  // TOTAL, like extToFormat above — see the note there
 }
 
 // --- browser fallbacks ---

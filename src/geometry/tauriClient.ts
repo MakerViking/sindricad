@@ -56,7 +56,12 @@ export class TauriGeometry implements GeometryBackend {
     doc: CadDocument,
     format: ExportFormat,
     path: string,
-    _opts: { body?: string; separate?: boolean } = {},
+    _opts: {
+      body?: string;
+      separate?: boolean;
+      palette?: { name: string; color: string; material?: string }[];
+      bodyColors?: Record<string, number>;
+    } = {},
   ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string }> {
     // Per-body / separate export isn't wired into the Rust kernel yet — it exports
     // the merged part. Use the default Python sidecar for per-body export.

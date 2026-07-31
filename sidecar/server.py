@@ -645,7 +645,8 @@ def _compute_all_job(payload, tolerance):
     return _rebuild_job(document, tolerance)
 
 
-def _export_job(document, fmt, path, body=None, separate=False):
+def _export_job(document, fmt, path, body=None, separate=False,
+                palette=None, body_colors=None):
     """Worker: rebuild + export. Default exports the merged part to `path`; `body`
     (a body id) exports just that body; `separate` writes EACH body to its own
     '<base>-<name>.<ext>'. Returns {"path"} (+ {"paths"} for separate) or {"error"}.
@@ -717,6 +718,39 @@ def _export_job(document, fmt, path, body=None, separate=False):
             raise ValueError(f"texture is not supported for {fmt} export")
         return p
 
+    def _glb_export(target_bodies, p):
+        """GLB sibling of _mesh_export: same export-grade meshes, but bodies are
+        kept SEPARATE (one glTF node/mesh/material each) instead of merged, so
+        every body keeps its name and its palette colour in a viewer.
+
+        Routed here for textured AND untextured bodies alike. Deliberately never
+        goes through exporters.export(): that path serialises body["shape"], and
+        texture displacement lives only in the mesh, so a textured body would
+        export silently untextured."""
+        from project3mf import _norm_color
+
+        pal = palette or []
+        slots = body_colors or {}
+        entries, ntri = [], 0
+        for b in target_bodies:
+            pos, idx = _export_mesh(b)
+            ntri += len(idx) // 3
+            slot = slots.get(b["id"], 0)  # unassigned -> slot 0, as the 3MF path does
+            entry = pal[slot] if isinstance(slot, int) and 0 <= slot < len(pal) else None
+            entries.append({
+                "name": b.get("name") or b["id"],
+                "positions": pos,
+                "indices": idx,
+                "color": _norm_color(entry.get("color")) if entry else None,
+            })
+        if ntri > EXPORT_TRIANGLE_HARD_CAP:
+            raise ValueError(
+                f"textured export too dense ({ntri:,} triangles) — reduce texture scale or depth"
+            )
+        if ntri > EXPORT_TRIANGLE_WARN:
+            warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
+        return mesh_writers.write_glb(entries, p)
+
     if separate:
         if not live:
             return {"error": {"message": "nothing to export — no bodies"}}
@@ -736,7 +770,9 @@ def _export_job(document, fmt, path, body=None, separate=False):
                 cand, i = f"{name}_{i}", i + 1
             used.add(cand)
             p = f"{base}-{cand}{ext}"
-            if b.get("_textures") and fmt in ("stl", "3mf"):
+            if fmt == "glb":
+                _glb_export([b], p)
+            elif b.get("_textures") and fmt in ("stl", "3mf"):
                 _mesh_export([b], p)
             else:
                 export(b["shape"], fmt, p)
@@ -747,10 +783,16 @@ def _export_job(document, fmt, path, body=None, separate=False):
         tgt = next((b for b in live if b["id"] == body), None)
         if tgt is None:
             return {"error": {"message": f"body '{body}' not found to export"}}
+        if fmt == "glb":
+            return _done({"path": _glb_export([tgt], path)})
         if tgt.get("_textures") and fmt in ("stl", "3mf"):
             return _done({"path": _mesh_export([tgt], path)})
         return _done({"path": export(tgt["shape"], fmt, path)})
 
+    # GLB always goes per-body: it carries per-body colour, and routing it through
+    # export() would drop texture displacement (see _glb_export).
+    if fmt == "glb":
+        return _done({"path": _glb_export(live, path)})
     if any_textured and fmt in ("stl", "3mf"):
         return _done({"path": _mesh_export(live, path)})
     return _done({"path": export(part, fmt, path)})
@@ -1215,7 +1257,7 @@ async def handle(ws):
                     await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
                 elif op == "export":
-                    res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), timeout=DOC_TIMEOUT)
+                    res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {}, timeout=DOC_TIMEOUT)
                     await ws.send(_reply_for(req_id, res))
 
                 elif op == "exportProject":

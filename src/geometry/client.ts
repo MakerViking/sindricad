@@ -66,7 +66,14 @@ export interface GeometryBackend {
     doc: CadDocument,
     format: ExportFormat,
     path: string,
-    opts?: { body?: string; separate?: boolean },
+    // palette/bodyColors are only read by formats that can carry colour (GLB);
+    // the others ignore them.
+    opts?: {
+      body?: string;
+      separate?: boolean;
+      palette?: { name: string; color: string; material?: string }[];
+      bodyColors?: Record<string, number>;
+    },
   ): Promise<{
     ok: boolean;
     path?: string;
@@ -565,11 +572,21 @@ export class Geometry implements GeometryBackend {
     doc: CadDocument,
     format: ExportFormat,
     path: string,
-    opts: { body?: string; separate?: boolean } = {},
+    opts: {
+      body?: string;
+      separate?: boolean;
+      palette?: { name: string; color: string; material?: string }[];
+      bodyColors?: Record<string, number>;
+    } = {},
   ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
     const msg = await this.call<{ path?: string; paths?: string[]; warnings?: { message: string; feature_id?: string }[] }>(
       "export",
-      { document: doc, format, path, body: opts.body, separate: opts.separate },
+      {
+        document: doc, format, path, body: opts.body, separate: opts.separate,
+        // GLB writes one material per body from these; the sidecar defaults both
+        // to empty, so other formats are unaffected by sending them.
+        palette: opts.palette, bodyColors: opts.bodyColors,
+      },
     );
     if (msg.ok) {
       const r = msg.result;
@@ -613,10 +630,13 @@ export class Geometry implements GeometryBackend {
   }
 
   async importGeometry(path: string, format: ImportFormat): Promise<ImportReply> {
-    const msg = await this.call<{ brep: string; name: string; solid: boolean; faces: number }>("import", { path, format });
+    const msg = await this.call<{ brep: string; name: string; solid: boolean; faces: number; color?: string }>("import", { path, format });
     if (msg.ok) {
       const r = msg.result;
-      return { ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces };
+      return {
+        ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces,
+        ...(r.color !== undefined ? { color: r.color } : {}),
+      };
     }
     return { ok: false, message: msg.error?.message ?? "import failed" };
   }
