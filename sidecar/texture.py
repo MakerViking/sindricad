@@ -33,7 +33,9 @@ _DEFAULT_DENSITY_CAP = 2_000_000
 # fields, normals, taper): it participates in the persistent mesh-cache key, so
 # a code update invalidates cached textured meshes instead of serving stale
 # geometry built by the previous version.
-CODE_VERSION = 4
+# 5: crease-aligned lattices — vertices land ON the pattern's gradient
+#    breakpoints instead of a uniform grid, so faceted kinds are exact.
+CODE_VERSION = 5
 
 
 def validate_texture_spec(f):
@@ -211,21 +213,84 @@ def _height_knurl(u, v, scale, angle, sharpness, facet=True):
     return _sharpen(h, sharpness)
 
 
-def _height_hex(u, v, scale, sharpness=0.5, facet=True):
-    # 3-direction cosine interference sum — a closed-form honeycomb pattern
-    # (no lattice nearest-neighbor search needed), normalized to [0,1].
+# The honeycomb is the Voronoi diagram of a TRIANGULAR lattice, so a cell's six
+# neighbour directions are its six half-plane constraints, and its six corners
+# sit half a step round from them.
+_HEX_DIRS = np.array([[math.cos(math.radians(60 * k)), math.sin(math.radians(60 * k))]
+                      for k in range(6)])
+_HEX_CORNERS = np.array([[math.cos(math.radians(30 + 60 * k)), math.sin(math.radians(30 + 60 * k))]
+                         for k in range(6)])
+
+
+def _hex_wall_width(scale, sharpness):
+    """Wall width in mm, from the shared `sharpness` slider — crisper means a
+    narrower wall and a broader flat top, matching what the slider does for every
+    other kind. Expressed against the cell's inradius so it scales with `scale`.
+
+    The floor is 0.14 of the inradius, not 0.10. Below roughly an eighth of the
+    cell the wall stops being meshable exactly: two neighbouring flat tops end up
+    closer to each other than to the groove between them, and an unconstrained
+    Delaunay takes the short edge and bridges the crease (measured 0.24mm on a
+    0.4mm texture at 0.10). It is not a real loss — a wall that narrow is a
+    near-vertical cliff no nozzle resolves anyway."""
+    s = max(0.0, min(1.0, float(sharpness)))
+    return (0.14 + 0.31 * (1.0 - s)) * (scale * 0.5)
+
+
+def _hex_nearest_site(u, v, a):
+    """Nearest site of the triangular lattice site(i,j) = (i·a + j·a/2, j·a·√3/2),
+    whose Voronoi cells ARE the honeycomb.
+
+    The lattice's fundamental domain is a rhombus, so the nearest site to any
+    point is one of that rhombus's four corners — checking those four is exact,
+    not an approximation (the tests assert it by requiring every point to fall
+    inside its own cell)."""
     root3 = math.sqrt(3.0)
-    a = np.cos(2 * np.pi * u / scale)
-    b = np.cos(2 * np.pi * (u * 0.5 - v * root3 * 0.5) / scale)
-    c = np.cos(2 * np.pi * (u * 0.5 + v * root3 * 0.5) / scale)
-    h = np.clip((a + b + c) / 3.0 * 0.5 + 0.5, 0.0, 1.0)
+    jf = v / (a * root3 * 0.5)
+    i_f = u / a - jf * 0.5
+    i0, j0 = np.floor(i_f), np.floor(jf)
+    best_x = best_y = best_d = None
+    for di in (0.0, 1.0):
+        for dj in (0.0, 1.0):
+            sx = (i0 + di) * a + (j0 + dj) * a * 0.5
+            sy = (j0 + dj) * a * root3 * 0.5
+            d2 = (u - sx) ** 2 + (v - sy) ** 2
+            if best_d is None:
+                best_x, best_y, best_d = sx, sy, d2
+            else:
+                m = d2 < best_d
+                best_x = np.where(m, sx, best_x)
+                best_y = np.where(m, sy, best_y)
+                best_d = np.where(m, d2, best_d)
+    return best_x, best_y
+
+
+def _height_hex(u, v, scale, sharpness=0.5, facet=True):
     if not facet:
-        return h
-    # flat-topped mesas with straight walls: threshold the smooth field, then
-    # keep a short linear ramp so the wall is a real (steep) facet rather than a
-    # vertical cliff the sampler can't represent
-    k = 0.10 + 0.35 * (1.0 - max(0.0, min(1.0, sharpness)))  # wall width
-    return np.clip((h - 0.5 + k * 0.5) / k, 0.0, 1.0)
+        # 3-direction cosine interference sum — a closed-form honeycomb pattern
+        # (no lattice nearest-neighbor search needed), normalized to [0,1].
+        root3 = math.sqrt(3.0)
+        a = np.cos(2 * np.pi * u / scale)
+        b = np.cos(2 * np.pi * (u * 0.5 - v * root3 * 0.5) / scale)
+        c = np.cos(2 * np.pi * (u * 0.5 + v * root3 * 0.5) / scale)
+        return np.clip((a + b + c) / 3.0 * 0.5 + 0.5, 0.0, 1.0)
+
+    # FACETED: a real hexagonal mesa — flat top, six planar walls, creases along
+    # the cell edges and along the six spokes where two walls meet.
+    #
+    # This replaces a clipped cosine sum. That version's walls followed a
+    # COSINE level set, so they were curved: no arrangement of sample points can
+    # reproduce them, and the mesh was measured 41% of the texture's own depth
+    # off. Distance to the cell boundary is piecewise linear instead, which is
+    # both exactly meshable and what the code always claimed to draw ("flat
+    # topped mesas with straight walls").
+    sx, sy = _hex_nearest_site(u, v, scale)
+    du, dv = u - sx, v - sy
+    # distance to each of the six bounding half-planes; the cell's inradius is
+    # half the centre-to-centre step
+    d_edge = (scale * 0.5
+              - (du[..., None] * _HEX_DIRS[:, 0] + dv[..., None] * _HEX_DIRS[:, 1])).min(axis=-1)
+    return np.clip(d_edge / max(_hex_wall_width(scale, sharpness), 1e-9), 0.0, 1.0)
 
 
 def _height_waves(u, v, scale, angle, sharpness, facet=True):
@@ -243,27 +308,61 @@ def _height_ribs(u, v, scale, angle, sharpness, facet=True):
     return _sharpen(_tri_wave(u1, scale), sharpness)
 
 
+def _hash01(i, j, seed, salt):
+    """Deterministic [0,1) value from a CELL INDEX, not from an array position.
+
+    The sites used to be jittered with a single `default_rng(seed)` stream walked
+    across a grid sized from the QUERY's own bounding box, which quietly made the
+    pattern depend on which points you asked about: displace_face evaluates the
+    field four extra times at +/-eps to get its shading gradient, and each of
+    those has a slightly different extent, so it was differentiating a DIFFERENT
+    pattern from the one it displaced. Hashing the cell index pins each site to
+    its place on the plane instead."""
+    h = ((i.astype(np.int64) * 73856093)
+         ^ (j.astype(np.int64) * 19349663)
+         ^ (np.int64(seed) * 83492791)
+         ^ (np.int64(salt) * 2971215073))
+    h = (h ^ (h >> 13)) * np.int64(1274126177)
+    h = h ^ (h >> 16)
+    return (h & 0xFFFFFF) / float(0x1000000)
+
+
+def _voronoi_sites(scale, seed, lo_u, hi_u, lo_v, hi_v):
+    """One jittered site per `scale`-sized cell covering the box, anchored to the
+    plane so the same region always yields the same sites."""
+    i0, i1 = int(math.floor(lo_u / scale)) - 1, int(math.ceil(hi_u / scale)) + 1
+    j0, j1 = int(math.floor(lo_v / scale)) - 1, int(math.ceil(hi_v / scale)) + 1
+    ii, jj = np.meshgrid(np.arange(i0, i1 + 1), np.arange(j0, j1 + 1), indexing="ij")
+    ii, jj = ii.ravel(), jj.ravel()
+    ju = 0.2 + 0.6 * _hash01(ii, jj, seed, 1)
+    jv = 0.2 + 0.6 * _hash01(ii, jj, seed, 2)
+    return np.stack([(ii + ju) * scale, (jj + jv) * scale], axis=1)
+
+
 def _height_voronoi(u, v, scale, seed, sharpness=0.5, facet=True):
+    """Clipped distance to the nearest SITE: a flat plate with a conical dimple
+    punched into each cell.
+
+    NOT exactly meshable, and knowingly so. The cone is curved, so no arrangement
+    of vertices reproduces it — measured 95% of the texture's own depth off, the
+    worst of any kind. The fix is the same one hex got (distance to the cell
+    BOUNDARY, which is a min of half-planes and therefore piecewise linear), but
+    a Voronoi cell is irregular, and insetting an irregular convex polygon is not
+    just "move every edge inward": edges vanish at different widths, and the
+    straight skeleton grows nodes a naive inset puts in the wrong place. That
+    needs a real straight-skeleton pass, so it is left for its own change rather
+    than shipped half-done — a redefinition that changed every existing voronoi
+    model without delivering exactness would be the worst of both."""
     from scipy.spatial import cKDTree
 
-    rng = np.random.default_rng(int(seed))
-    umin, umax, vmin, vmax = u.min(), u.max(), v.min(), v.max()
-    pad = scale
-    nu = max(2, int((umax - umin + 2 * pad) / scale) + 2)
-    nv = max(2, int((vmax - vmin + 2 * pad) / scale) + 2)
-    iu, iv = np.meshgrid(np.arange(nu), np.arange(nv), indexing="ij")
-    jitter = rng.uniform(0.2, 0.8, (nu, nv, 2))
-    gu = umin - pad + scale * (iu + jitter[:, :, 0])
-    gv = vmin - pad + scale * (iv + jitter[:, :, 1])
-    pts = np.stack([gu.ravel(), gv.ravel()], axis=1)
-    tree = cKDTree(pts)
-    d, _ = tree.query(np.stack([u, v], axis=1), workers=-1)
-    h = np.clip(d / (scale * 0.5), 0.0, 1.0)
+    sites = _voronoi_sites(scale, int(seed),
+                           float(np.min(u)) - 3 * scale, float(np.max(u)) + 3 * scale,
+                           float(np.min(v)) - 3 * scale, float(np.max(v)) + 3 * scale)
+    P = np.stack([np.asarray(u).ravel(), np.asarray(v).ravel()], axis=1)
+    d, _i = cKDTree(sites).query(P, workers=-1)
+    h = np.clip(d / (scale * 0.5), 0.0, 1.0).reshape(np.shape(u))
     if not facet:
         return h
-    # flat cell floors with steep walls: the raw distance field is a smooth cone
-    # per cell (a dome once displaced). Clamping the outer band flat leaves a
-    # planar floor and a straight wall at the cell boundary.
     k = 0.15 + 0.45 * (1.0 - max(0.0, min(1.0, sharpness)))
     return np.clip(h / max(k, 1e-9), 0.0, 1.0)
 
@@ -375,7 +474,70 @@ def height_field(kind, spec, u_mm, v_mm, u_range=None, v_range=None):
 # --- UV -> mm (first fundamental form) ---------------------------------------
 
 
-def _face_uv_to_mm(surf, u, v):
+def _u_period(spec, scale):
+    """The pattern's translation period ALONG U — what a full turn has to be a
+    whole number of, for the pattern to meet itself at the seam.
+
+    Rotating changes it. A rib pattern at angle θ repeats every `scale` across
+    its crests, but travelling along u you cross a crest every `scale/cos θ`, so
+    snapping the turn to whole `scale` units closes it only at θ = 0. Returns 0
+    for "no constraint": at θ = 90° the crests run along u and the pattern is
+    already invariant, so any turn closes.
+
+    knurl and hex are 2D lattices and get `scale` regardless, which is exact only
+    at multiples of 90°. Closing a rotated 2D lattice on a cylinder needs the
+    turn to be a lattice vector in BOTH directions at once — possible only when
+    tan θ is rational — so at a general angle they cannot close, and the seam
+    carries a phase joint. That is geometry, not a defect to fix here."""
+    if spec["kind"] not in ("ribs", "waves"):
+        return scale
+    c = abs(math.cos(math.radians(float(spec.get("angle", 0.0)))))
+    return scale / c if c > 1e-6 else 0.0
+
+
+def _revolved_reference_radius(surf):
+    """The radius the pattern is sized at, taken from the FACE's own parameter
+    bounds so it cannot drift between calls (the two callers pass different point
+    sets, and a reference derived from those would give two different charts)."""
+    from OCP.GeomAbs import GeomAbs_Cone
+
+    if surf.GetType() == GeomAbs_Cone:
+        cone = surf.Cone()
+        v_mid = 0.5 * (surf.FirstVParameter() + surf.LastVParameter())
+        return max(abs(cone.RefRadius() + v_mid * math.sin(cone.SemiAngle())), 1e-9)
+    return max(surf.Cylinder().Radius(), 1e-9)
+
+
+def _turn_mm(surf, period):
+    """Arc length assigned to ONE FULL TURN of a cylinder or cone.
+
+    Two fixes in one number, because they are the same change.
+
+    ANCHORED to a fixed reference radius, not the local `r(v)`. The old chart
+    used `u_mm = u * r(v)`, so a crest at constant u_mm sat at angle u_mm/r(v) —
+    and r varies with height on a cone, so the crest SPIRALLED. The shear grew
+    with distance from u=0: measured on a 30->20mm frustum, +1.9 degrees at the
+    first crest and +57.3 by the thirtieth. Zero at the seam, worst at the far
+    side, which is exactly the "starts nice, distorts as you go round" report.
+    Anchoring makes a crest a true generator: dead vertical, everywhere.
+
+    ROUNDED to a whole number of periods, so the pattern meets itself at the UV
+    seam instead of colliding with a different phase. That also makes the seam
+    weldable (see _weld_coincident): the columns at u=0 and u=2pi then carry
+    IDENTICAL field values, so merging them cannot move the surface.
+
+    The cost, which is geometry and not a bug: on a taper the cell width scales
+    with radius. You cannot hold both constant width in mm and constant
+    orientation on a cone — its circumference changes. Cells are `period` wide at
+    the reference radius and vary from there. On a cylinder there is no cost at
+    all: constant size, generator-aligned and seamless together."""
+    circ = 2.0 * math.pi * _revolved_reference_radius(surf)
+    if not period or period <= 0.0:
+        return circ
+    return max(1, int(round(circ / period))) * period
+
+
+def _face_uv_to_mm(surf, u, v, period=None):
     """Convert native (u,v) surface parameters to a locally mm-consistent
     coordinate pair, so a periodic pattern (period = `scale` mm) looks the same
     size whether it's on a flat face or wrapped around a cylinder. Exact closed
@@ -391,13 +553,10 @@ def _face_uv_to_mm(surf, u, v):
     t = surf.GetType()
     if t == GeomAbs_Plane:
         return u.copy(), v.copy()  # gp_Pln U,V params ARE mm distances
-    if t == GeomAbs_Cylinder:
-        r = surf.Cylinder().Radius()
-        return u * r, v.copy()  # U is angle (rad); V is already axial mm
-    if t == GeomAbs_Cone:
-        cone = surf.Cone()
-        r_at_v = cone.RefRadius() + v * math.sin(cone.SemiAngle())
-        return u * r_at_v, v.copy()  # V is already slant-arc-length mm
+    if t in (GeomAbs_Cylinder, GeomAbs_Cone):
+        # U is an angle; one full turn is _turn_mm of arc. V is already axial mm
+        # on a cylinder and slant-arc-length mm on a cone.
+        return u * (_turn_mm(surf, period) / (2.0 * math.pi)), v.copy()
 
     u0 = float(np.mean(u))
     v0 = float(np.mean(v))
@@ -431,9 +590,291 @@ def _points_in_polygon(pts, ring_a, ring_b, chunk=4096):
     return inside
 
 
+def _cell_lattice_points(kind, spec, scale, lo_u, hi_u, lo_v, hi_v, wrap_u=None):
+    """Explicit vertex set for the CELLULAR kinds, whose creases do not lie on
+    families of parallel lines and so cannot be expressed as a line grid.
+
+    Returned in mm-chart coordinates (the offset shift already applied by the
+    caller's bbox), because hex and voronoi ignore `angle` — their lattice has
+    its own orientation and `height_field` never rotates their input."""
+    if kind != "hex":
+        return None
+    a = scale
+    root3 = math.sqrt(3.0)
+    w = _hex_wall_width(a, spec.get("sharpness", 0.5))
+    r_out = a / root3                      # circumradius of the cell
+    r_in = max(a * 0.5 - w, 1e-6) * 2.0 / root3   # circumradius of the flat top
+    # sites covering the bbox with a ring of margin, in lattice coordinates
+    pad = a
+    j0 = int(math.floor((lo_v - pad) / (a * root3 * 0.5)))
+    j1 = int(math.ceil((hi_v + pad) / (a * root3 * 0.5)))
+    rows = []
+    for j in range(j0, j1 + 1):
+        sy = j * a * root3 * 0.5
+        i0 = int(math.floor((lo_u - pad) / a - j * 0.5))
+        i1 = int(math.ceil((hi_u + pad) / a - j * 0.5))
+        if i1 < i0:
+            continue
+        i = np.arange(i0, i1 + 1, dtype=np.float64)
+        rows.append(np.column_stack([i * a + j * a * 0.5, np.full(len(i), sy)]))
+    if not rows:
+        return None
+    sites = np.concatenate(rows)
+    # cell corners (h = 0, the groove) and flat-top corners (h = 1); the wall
+    # between a matching pair is one planar facet, and the spoke joining them is
+    # the crease where two walls meet
+    outer = sites[:, None, :] + r_out * _HEX_CORNERS[None, :, :]
+    inner = sites[:, None, :] + r_in * _HEX_CORNERS[None, :, :]
+    outer_next = np.roll(outer, -1, axis=1)
+    # POINTS ALONG EVERY CELL EDGE. The groove along a shared edge is the
+    # sharpest crease in the pattern (h drops to 0 and rises again), and with
+    # only its two endpoints present Delaunay joins one cell's flat top straight
+    # to its neighbour's, bridging the groove and interpolating h=1 where the
+    # truth is 0 — measured 0.36mm on a 0.4mm texture.
+    #
+    # A midpoint alone is not enough. The bridge forms near the CORNERS, where
+    # three cells meet and two neighbouring flat-top corners sit only ~2w apart
+    # while the groove between them is a thin wedge; Delaunay takes the short
+    # edge. So also plant a groove vertex a wall-width in from each end, which
+    # puts a competing point at the same scale as the bridge it has to beat.
+    edge_len = r_out                       # a regular hexagon's edge == its circumradius
+    frac = min(0.4, max(0.5 * w / max(edge_len, 1e-9), 0.015))
+    step = outer_next - outer
+    along = [outer + step * f for f in (frac, 0.5, 1.0 - frac)]
+    pts = np.concatenate([outer.reshape(-1, 2), inner.reshape(-1, 2)]
+                         + [p.reshape(-1, 2) for p in along])
+    if wrap_u:
+        # PERIODIC IN U — a closed cylinder or cone. The two sides of the UV seam
+        # must carry an IDENTICAL vertex set, or they cannot weld and the seam
+        # stays a mesh boundary that the taper pins flat. Clipping a padded box
+        # does not give that: a cell corner just outside u=0 is culled while its
+        # twin just inside u=turn survives (measured 56 vertices on one side of a
+        # cone's seam against 64 on the other). Folding into [0, turn) and then
+        # re-emitting both copies makes the set symmetric by construction.
+        folded = pts.copy()
+        folded[:, 0] = np.mod(folded[:, 0], wrap_u)
+        folded = np.unique(np.round(folded, 9), axis=0)
+        # BOTH neighbouring copies, then clip: emitting only [0, turn) and
+        # [turn, 2*turn) leaves the padding below u=0 empty while the padding
+        # above turn is populated, which is the same asymmetry by another route.
+        pts = np.concatenate([folded - np.array([wrap_u, 0.0]), folded,
+                              folded + np.array([wrap_u, 0.0])])
+        pts = pts[(pts[:, 0] >= lo_u) & (pts[:, 0] <= hi_u)]
+    return np.unique(np.round(pts, 9), axis=0)
+
+
+def _crease_phases(land):
+    """Gradient breakpoints of _trapezoid inside one period, as fractions of it.
+
+    `tri = 1-|2t-1|` is clipped at BOTH ends. The lower clip flattens the trough,
+    so the ramp only starts at t = k/4 and ends at t = 1-k/4; the upper clip
+    flattens the crest into a real LAND spanning t = 0.5 -/+ k/4. That is FOUR
+    corners per period, not two. Sampling that misses the upper pair rounds the
+    crest off, which is most of why a "faceted" texture still read as soft — a
+    uniform 4-samples-per-wavelength grid can only ever hit two of the four.
+
+    Degenerates to the pure V (trough, crest) when there is no land."""
+    k = max(0.0, min(0.98, float(land)))
+    if k <= 1e-9:
+        return (0.0, 0.5)
+    return (k / 4.0, 0.5 - k / 4.0, 0.5 + k / 4.0, 1.0 - k / 4.0)
+
+
+def _pattern_axes(kind, spec):
+    """Sample-line phases per pattern axis: (pu_phases, pv_phases), or None when
+    the kind has no lattice and must keep the uniformly sampled grid.
+
+    An axis mapped to None carries no crease — the field does not vary along it,
+    so any spacing there is exact and the caller picks one for mesh quality
+    alone.
+
+    Pattern-frame convention, verified against the height fields themselves:
+    ribs/waves vary along pu (`u1` in _rotate terms), and knurl is a min() of two
+    trapezoids along pv and pu, because `_rotate(u, v, angle+90)` maps its second
+    groove direction (`v2`) back onto pu.
+
+    Excluded on purpose: `round` profiles are smooth by design; hex and voronoi
+    are curved fields today (a clipped cosine sum and a conical distance field),
+    so no set of lines can make them exact; noise and image are not periodic."""
+    if not _is_facet(spec):
+        return None
+    land = float(spec.get("sharpness", 0.5))
+    if kind in ("ribs", "waves"):
+        return (_crease_phases(land), None)
+    if kind == "knurl":
+        # both grooves, so both axes carry the same breakpoints. The min() of the
+        # two ALSO creases along a line inside each ramp-by-ramp cell; that one
+        # is not a lattice line and is handled by choosing the cell's diagonal.
+        return (_crease_phases(land), _crease_phases(land))
+    if kind == "hex":
+        # CELLULAR: creases run round hexagons and out along spokes, not along
+        # parallel lines, so there are no axis phases — the vertex set comes
+        # from _cell_lattice_points instead.
+        return "cells"
+    return None
+
+
+def _axis_lines(phases, period, lo, hi):
+    """Sample lines covering [lo, hi] along one pattern axis.
+
+    With phases, one line per crease per period, so every facet corner is a mesh
+    vertex and the linear interpolation between them IS the true surface. Without
+    them (a crease-free axis), one line per period: the spacing is free
+    geometrically, but not for the rim, where the taper ramps to zero and a
+    triangle spanning the whole face would interpolate that ramp across it."""
+    if phases is None:
+        phases = (0.0,)
+    n0 = int(math.floor(lo / period)) - 1
+    n1 = int(math.ceil(hi / period)) + 1
+    vals = np.array([(n + t) * period for n in range(n0, n1 + 1) for t in phases])
+    vals = np.unique(np.round(vals, 9))
+    return vals[(vals >= lo) & (vals <= hi)]
+
+
+def _segment_crossings(a, b, phases, period):
+    """Parameters t in (0,1) at which the pattern's crease lines cross a segment
+    whose pattern coordinate runs affinely from `a` to `b`.
+
+    Used to plant a ring vertex on every crease that reaches the face boundary,
+    so the rim band is triangulated with the creases as edges instead of across
+    them."""
+    if phases is None or period <= 0.0:
+        return []
+    span = b - a
+    if abs(span) < 1e-12:
+        return []
+    lo, hi = (a, b) if a < b else (b, a)
+    out = []
+    for n in range(int(math.floor(lo / period)) - 1, int(math.ceil(hi / period)) + 2):
+        for ph in phases:
+            c = (n + ph) * period
+            if lo < c < hi:
+                out.append((c - a) / span)
+    return out
+
+
+# Points strictly inside a triangle, in barycentric coordinates — the probe set
+# used to decide whether a triangle reproduces the height field. Corner-ish and
+# edge-ish samples as well as the centroid, because the failure being looked for
+# is a facet cut off between the vertices, which the centroid can straddle.
+_FLIP_BARY = np.array([
+    [1 / 3, 1 / 3, 1 / 3],
+    [0.60, 0.20, 0.20], [0.20, 0.60, 0.20], [0.20, 0.20, 0.60],
+    [0.45, 0.45, 0.10], [0.10, 0.45, 0.45], [0.45, 0.10, 0.45],
+])
+
+
+def _force_cell_diagonals(tris, V_mm, quads, want_main):
+    """Impose the KNOWN diagonal on each complete lattice cell.
+
+    A square cell with no point inside it is triangulated by Delaunay with one of
+    its two diagonals, chosen arbitrarily because the four corners are
+    co-circular. Which one is right is not arbitrary: knurl is min() of two
+    crossed trapezoids, and where both are on their ramps the min switches along
+    exactly one of them. So flip the wrong ones deterministically instead of
+    hoping an error-descent pass finds them — from a Delaunay start descent
+    stalls in a local minimum (measured: 620 inexact triangles down to 40, and
+    the rest unreachable by any single flip)."""
+    tris = np.asarray(tris, dtype=np.int64).copy()
+    where = {}
+    for ti, (a, b, c) in enumerate(tris):
+        for i, j in ((a, b), (b, c), (c, a)):
+            where.setdefault((i, j) if i < j else (j, i), []).append(ti)
+    for (a, b, c, d), main in zip(quads, want_main):
+        have, want = ((b, d), (a, c)) if main else ((a, c), (b, d))
+        if len(where.get((min(want), max(want)), ())) == 2:
+            continue  # the diagonal we want is already there
+        share = where.get((min(have), max(have)), ())
+        if len(share) != 2:
+            continue  # cell is not a clean two-triangle quad; leave it alone
+        t0, t1 = share
+        if sorted(set(tris[t0]) | set(tris[t1])) != sorted((a, b, c, d)):
+            continue  # something else meets here
+        tris[t0] = (want[0], want[1], have[0])
+        tris[t1] = (want[0], want[1], have[1])
+    return tris
+
+
+def _segments_cross(P, p, q, r, s):
+    """True when segment p-q properly crosses segment r-s, i.e. the quad p-r-q-s
+    is convex and swapping its diagonal is a legal flip."""
+    def side(a, b, c):
+        return ((P[b][0] - P[a][0]) * (P[c][1] - P[a][1])
+                - (P[b][1] - P[a][1]) * (P[c][0] - P[a][0]))
+    return (side(p, q, r) * side(p, q, s) < 0) and (side(r, s, p) * side(r, s, q) < 0)
+
+
+def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8):
+    """Repair triangles that cut ACROSS a crease instead of running along it.
+
+    Complete lattice cells get their diagonal imposed directly, but the band
+    stitching the lattice to the boundary ring is an unconstrained Delaunay: it
+    maximises the minimum angle and knows nothing about the field, so where a
+    crease crosses the band it can bridge straight over. scipy has no constrained
+    Delaunay, so repair instead of prevent — score each triangle against the true
+    field and flip a shared edge wherever that strictly reduces the error.
+
+    Triangles touching a RING vertex are excluded from scoring. Their outer
+    corners are pinned at zero displacement by the boundary taper, so they can
+    never match the raw field however they are triangulated; scoring them makes
+    the pass chase an unreachable target and, worse, spend its one-flip-per-pair
+    budget on pairs that cannot improve, blocking neighbours that could."""
+    tris = np.asarray(tris, dtype=np.int64).copy()
+    hv = field(V_mm)
+
+    def err_of(t):
+        """Worst deviation at points strictly INSIDE each triangle. The centroid
+        alone is not enough to score a flip by: a triangle bridging a crease can
+        match exactly at its centre and be wrong either side of it, so a
+        centroid-scored pass both misses real breaks and flips already-correct
+        triangles into worse ones (measured: it broke ribs at 17 degrees, which
+        the lattice had got right)."""
+        pts = np.einsum("sb,tbc->tsc", _FLIP_BARY, V_mm[t]).reshape(-1, 2)
+        interp = hv[t] @ _FLIP_BARY.T
+        return np.abs(interp - field(pts).reshape(len(t), -1)).max(axis=1)
+
+    for _ in range(max_passes):
+        scored = err_of(tris)
+        scored[(tris < n_ring).any(axis=1)] = 0.0  # pinned by the taper, not fixable
+        bad = np.nonzero(scored > tol)[0]
+        if not len(bad):
+            break
+        edges = {}
+        for ti, (a, b, c) in enumerate(tris):
+            for i, j in ((a, b), (b, c), (c, a)):
+                edges.setdefault((i, j) if i < j else (j, i), []).append(ti)
+        settled = set()
+        flipped = False
+        for ti in bad:
+            if ti in settled:
+                continue
+            a, b, c = tris[ti]
+            for i, j, opp in ((a, b, c), (b, c, a), (c, a, b)):
+                share = edges.get((i, j) if i < j else (j, i), ())
+                if len(share) != 2:
+                    continue  # a boundary edge has nothing to flip against
+                tj = share[0] if share[1] == ti else share[1]
+                if tj in settled:
+                    continue
+                rest = [v for v in tris[tj] if v not in (i, j)]
+                if len(rest) != 1 or not _segments_cross(V_mm, i, j, opp, rest[0]):
+                    continue
+                cand = np.array([[opp, rest[0], i], [rest[0], opp, j]], dtype=np.int64)
+                if err_of(cand).sum() < err_of(tris[[ti, tj]]).sum() - 1e-15:
+                    tris[ti], tris[tj] = cand[0], cand[1]
+                    settled.add(ti)
+                    settled.add(tj)
+                    flipped = True
+                    break
+        if not flipped:
+            break
+    return tris
+
+
 def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
                                 angle_deg, target_edge_mm, max_tris,
-                                pattern_period=0.0):
+                                pattern_period=0.0, phases=None, offset=0.0, field=None,
+                                unchart=None, cell_points=None, wrap_u=None):
     """PLANAR faces: retessellate with a regular sample grid ROTATED to the
     pattern angle, instead of subdividing the axis-aligned base triangulation.
     A diagonal pattern sampled on an axis-aligned grid beats against it — the
@@ -476,6 +917,19 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     if period > 0.0 and spacing <= period * 0.5:
         spacing = period / max(2, round(period / spacing))
 
+    # Pattern chart convention MUST match _rotate() in the height fields:
+    # u1 = u·cosθ − v·sinθ (crest lines of waves/ribs run along constant u1), so
+    # pattern coords are ((u+offset)·c − v·s, (u+offset)·s + v·c).
+    #
+    # `offset` rides in the chart rather than being added afterwards, because it
+    # is what phase-locks the lines to the pattern: displace_face evaluates the
+    # field at u_mm + offset, so lines placed without it sit at a drifting phase
+    # and slice the crests off exactly like an unaligned grid does.
+    ang = math.radians(angle_deg)
+    ca, sa = math.cos(ang), math.sin(ang)
+    rp_u = (P_mm[:, 0] + offset) * ca - P_mm[:, 1] * sa
+    rp_v = (P_mm[:, 0] + offset) * sa + P_mm[:, 1] * ca
+
     # DENSIFY THE BOUNDARY RING to the sample spacing. It used to be kept
     # verbatim from the base triangulation, which on a real part means a handful
     # of nodes: measured on a filleted body, 20 ring vertices with the longest
@@ -484,12 +938,17 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     # first interior grid row comes out flat and smeared no matter how fine the
     # interior is — the visible "band" around a textured face.
     #
-    # The crack-free invariant is preserved: every new point is a linear
-    # interpolation along the EXISTING boundary polyline, so it lies exactly on
-    # the segment the neighbouring face spans (and this chart is affine — the
-    # fit_err check below enforces it — so lerping uv/xyz is exact, not an
-    # approximation). They are still boundary vertices, so the taper leaves them
-    # undisplaced and the seam stays flush.
+    # With a lattice the ring additionally gets a vertex wherever a crease line
+    # CROSSES the boundary. Without those the rim band is the one place the mesh
+    # still cuts corners off the pattern, because the band is stitched by a
+    # Delaunay pass that has no reason to respect a crease it has no vertex on.
+    #
+    # The crack-free invariant is preserved either way: every new point is a
+    # linear interpolation along the EXISTING boundary polyline, so it lies
+    # exactly on the segment the neighbouring face spans (and this chart is
+    # affine — the fit_err check below enforces it — so lerping uv/xyz is exact,
+    # not an approximation). They are still boundary vertices, so the taper
+    # leaves them undisplaced and the seam stays flush.
     base_uv0 = np.asarray(base_uv, dtype=np.float64)
     base_xyz0 = np.asarray(base_pts, dtype=np.float64)
     bnd_ids = np.unique(np.asarray(boundary, dtype=np.int64).ravel())
@@ -497,12 +956,21 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     r_mm = [P_mm[bnd_ids]]
     r_uv = [base_uv0[bnd_ids]]
     r_xyz = [base_xyz0[bnd_ids]]
+    cells_mode = cell_points is not None and len(cell_points) >= 4
+    lattice = (phases is not None or cells_mode) and period > 0.0
     for i0, i1 in boundary:
         seg_len = float(np.hypot(*(P_mm[i1] - P_mm[i0])))
         n_sub = int(math.ceil(seg_len / spacing))
-        if n_sub < 2:
-            continue  # already shorter than a sample step
-        t = np.arange(1, n_sub, dtype=np.float64)[:, None] / n_sub  # strictly interior
+        ts = list(np.arange(1, n_sub, dtype=np.float64) / n_sub) if n_sub >= 2 else []
+        if lattice and phases is not None:
+            ts += _segment_crossings(rp_u[i0], rp_u[i1], phases[0], period)
+            ts += _segment_crossings(rp_v[i0], rp_v[i1], phases[1], period)
+        if not ts:
+            continue  # already shorter than a sample step, and no crease crosses
+        t = np.unique(np.round(np.asarray(ts, dtype=np.float64), 12))
+        t = t[(t > 1e-12) & (t < 1.0 - 1e-12)][:, None]  # strictly interior
+        if not len(t):
+            continue
         r_mm.append(P_mm[i0] + (P_mm[i1] - P_mm[i0]) * t)
         r_uv.append(base_uv0[i0] + (base_uv0[i1] - base_uv0[i0]) * t)
         r_xyz.append(base_xyz0[i0] + (base_xyz0[i1] - base_xyz0[i0]) * t)
@@ -510,92 +978,170 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     ring_uv = np.concatenate(r_uv)
     ring_xyz = np.concatenate(r_xyz)
 
-    # rotated regular grid over the face bbox, kept strictly interior.
-    # Pattern chart convention MUST match _rotate() in the height fields:
-    # u1 = u·cosθ − v·sinθ (crest lines of waves/ribs run along constant u1),
-    # so pattern coords = (u·c − v·s, u·s + v·c) and the grid is generated
-    # regular in THAT frame, then mapped back with the inverse rotation.
-    ang = math.radians(angle_deg)
-    ca, sa = math.cos(ang), math.sin(ang)
-    rp_u = P_mm[:, 0] * ca - P_mm[:, 1] * sa
-    rp_v = P_mm[:, 0] * sa + P_mm[:, 1] * ca
+    # Sample lines over the face bbox, kept strictly interior.
     lo_u, hi_u = rp_u.min() - spacing, rp_u.max() + spacing
     lo_v, hi_v = rp_v.min() - spacing, rp_v.max() + spacing
-    gx = np.arange(lo_u, hi_u, spacing)
-    gy = np.arange(lo_v, hi_v, spacing)
-    if len(gx) * len(gy) > 4 * max(max_tris, 100):
-        raise ValueError("grid overshoots budget")
-    GX, GY = np.meshgrid(gx, gy, indexing="ij")
-    gu, gv = GX.ravel(), GY.ravel()
-    G_all = np.stack([gu * ca + gv * sa, -gu * sa + gv * ca], axis=1)  # inverse rotation
+    if cells_mode:
+        # CELLULAR kinds bring their own vertex set, already in mm coordinates
+        # (they ignore `angle`, so there is no pattern frame to map back from).
+        G_all = np.asarray(cell_points, dtype=np.float64)
+        if len(G_all) > 4 * max(max_tris, 100):
+            raise ValueError("cell lattice overshoots budget")
+        gx = gy = None
+        ni = nj = 0
+    else:
+        if lattice:
+            gx = _axis_lines(phases[0], period, lo_u, hi_u)
+            gy = _axis_lines(phases[1], period, lo_v, hi_v)
+        else:
+            gx = np.arange(lo_u, hi_u, spacing)
+            gy = np.arange(lo_v, hi_v, spacing)
+        if len(gx) < 2 or len(gy) < 2:
+            raise ValueError("too few sample lines")
+        if len(gx) * len(gy) > 4 * max(max_tris, 100):
+            raise ValueError("grid overshoots budget")
+        GX, GY = np.meshgrid(gx, gy, indexing="ij")
+        gu, gv = GX.ravel(), GY.ravel()
+        # inverse rotation, undoing the offset shift applied above
+        G_all = np.stack([gu * ca + gv * sa - offset, -gu * sa + gv * ca], axis=1)
+        ni, nj = len(gx), len(gy)
     inside = _points_in_polygon(G_all, ring_a, ring_b)
+    if wrap_u:
+        # Points sitting exactly ON the UV seam are INSIDE — the seam is an
+        # artificial cut, not an edge. Even-odd ray casting cannot tell: it fires
+        # along +u, so a point on the u=0 edge crosses the far side and counts as
+        # inside while its twin on the u=turn edge crosses nothing and counts as
+        # outside. That drops one of the two columns, leaving the survivors on
+        # the chart's hull with nothing to weld to, and the taper then pins them
+        # flat — the seam stripe again, by a subtler route.
+        v_lo, v_hi = ring_mm[:, 1].min(), ring_mm[:, 1].max()
+        on_seam = ((np.abs(G_all[:, 0]) < 1e-6) | (np.abs(G_all[:, 0] - wrap_u) < 1e-6))
+        inside |= on_seam & (G_all[:, 1] > v_lo - 1e-9) & (G_all[:, 1] < v_hi + 1e-9)
     d_bnd, _ = cKDTree(ring_mm).query(G_all, workers=-1)
-    ni, nj = len(gx), len(gy)
-    kept = (inside & (d_bnd > 0.6 * spacing)).reshape(ni, nj)
-
-    # STRUCTURED interior triangulation with one consistent diagonal per cell.
-    # (Delaunay on a regular grid is co-circular — its arbitrary tie-break
-    # flips diagonals cell to cell, and the between-row surface tents
-    # differently per cell: visible "roped" beading along otherwise-straight
-    # crests. A fixed diagonal removes that entirely.) Delaunay is only used
-    # for the irregular band stitching the grid region to the boundary ring.
+    # Cull grid points sitting essentially on the ring, which would make Delaunay
+    # slivers. The lattice needs a far smaller margin than the sampled grid: its
+    # points are not interchangeable samples but the pattern's own corners, and
+    # dropping one costs a facet outright. Measured at 0.6: a knurl cell 0.277mm
+    # from the rim lost the corner its crease needed, and NO edge flip could
+    # recover it, because the vertex was simply not in the mesh.
+    cull = 0.15 if lattice else 0.6
+    keep_pt = inside & (d_bnd > cull * spacing)
     n_ring = len(ring_mm)
-    gidx = np.full((ni, nj), -1, dtype=np.int64)
-    gidx[kept] = n_ring + np.arange(int(kept.sum()))
-    G = G_all.reshape(ni, nj, 2)[kept]
-
-    full = kept[:-1, :-1] & kept[1:, :-1] & kept[1:, 1:] & kept[:-1, 1:]
-    ii, jj = np.nonzero(full)
-    a = gidx[ii, jj]; b_ = gidx[ii + 1, jj]; c = gidx[ii + 1, jj + 1]; d = gidx[ii, jj + 1]
-    interior_tris = np.concatenate([np.stack([a, b_, c], axis=1), np.stack([a, c, d], axis=1)])
-
-    # band = ring verts + kept grid points NOT fully surrounded by full cells
-    # (a point with all 4 adjacent cells full is interior-only; everything else
-    # participates in the stitching band)
-    surrounded = np.zeros((ni, nj), dtype=bool)
-    core = full[:-1, :-1] & full[1:, :-1] & full[1:, 1:] & full[:-1, 1:]
-    surrounded[1:-1, 1:-1] = core
-    band_mask = kept & ~surrounded
-    band_ids = np.concatenate([np.arange(n_ring), gidx[band_mask]])
-
+    if cells_mode:
+        # an explicit cell vertex set has no (i, j) structure to index
+        kept = gidx = None
+        G = G_all[keep_pt]
+    else:
+        kept = keep_pt.reshape(ni, nj)
+        gidx = np.full((ni, nj), -1, dtype=np.int64)
+        gidx[kept] = n_ring + np.arange(int(kept.sum()))
+        G = G_all.reshape(ni, nj, 2)[kept]
     V_mm = np.concatenate([ring_mm, G])
     if len(V_mm) < 4:
         raise ValueError("too few vertices")
-    band_pts = V_mm[band_ids]
-    band_tris_local = Delaunay(band_pts).simplices
-    band_tris = band_ids[band_tris_local]
-    cent = V_mm[band_tris].mean(axis=1)
-    f1 = V_mm[band_tris[:, 1]] - V_mm[band_tris[:, 0]]
-    f2 = V_mm[band_tris[:, 2]] - V_mm[band_tris[:, 0]]
-    tri_area = f1[:, 0] * f2[:, 1] - f1[:, 1] * f2[:, 0]
-    # drop band triangles outside the face, degenerate, or overlapping a FULL
-    # grid cell (already triangulated above) — cell test in rotated grid coords
-    cu = cent[:, 0] * ca - cent[:, 1] * sa
-    cv = cent[:, 0] * sa + cent[:, 1] * ca
-    ci = np.clip(((cu - lo_u) / spacing).astype(np.int64), 0, ni - 2)
-    cj = np.clip(((cv - lo_v) / spacing).astype(np.int64), 0, nj - 2)
-    keep = (_points_in_polygon(cent, ring_a, ring_b)
-            & (np.abs(tri_area) > spacing * spacing * 1e-4)
-            & ~full[ci, cj])
-    tris = np.concatenate([interior_tris, band_tris[keep]])
+
+    def _drop_outside(t, cells=None):
+        """Keep triangles inside the face and non-degenerate (and, when the
+        structured interior already tiled them, outside the full cells)."""
+        c = V_mm[t].mean(axis=1)
+        f1 = V_mm[t[:, 1]] - V_mm[t[:, 0]]
+        f2 = V_mm[t[:, 2]] - V_mm[t[:, 0]]
+        ok = (_points_in_polygon(c, ring_a, ring_b)
+              & (np.abs(f1[:, 0] * f2[:, 1] - f1[:, 1] * f2[:, 0]) > spacing * spacing * 1e-4))
+        if cells is not None:
+            # cell test in pattern coords. searchsorted, not a division: the
+            # lattice's lines are NOT evenly spaced, so the arithmetic index a
+            # uniform grid allows would land in the wrong column.
+            pu = (c[:, 0] + offset) * ca - c[:, 1] * sa
+            pv = (c[:, 0] + offset) * sa + c[:, 1] * ca
+            pi = np.clip(np.searchsorted(gx, pu) - 1, 0, ni - 2)
+            pj = np.clip(np.searchsorted(gy, pv) - 1, 0, nj - 2)
+            ok &= ~cells[pi, pj]
+        return t[ok]
+
+    if lattice:
+        # ONE Delaunay over every vertex, for all lattice kinds. Tiling then
+        # holds by construction — Delaunay covers its hull exactly once, so
+        # neither overlap nor holes are possible. The structured interior +
+        # stitched band it replaces cannot promise that: the band is an
+        # unconstrained Delaunay that bridges concave notches in the full-cell
+        # region, and the centroid test meant to catch that both over- and
+        # under-fires. Measured 2mm^2 of double coverage on a 400mm^2 face one
+        # way, and 0.65mm^2 of holes the other.
+        #
+        # What the structured path bought was a deliberate diagonal per cell.
+        # That is imposed afterwards where it matters, which is strictly better:
+        # the right diagonal is a property of the pattern, not of the grid.
+        tris = _drop_outside(Delaunay(V_mm).simplices)
+        if not cells_mode and phases[1] is not None:
+            # both axes carry creases, so cells are square and min()'s switch
+            # line IS a diagonal — see _force_cell_diagonals
+            full = kept[:-1, :-1] & kept[1:, :-1] & kept[1:, 1:] & kept[:-1, 1:]
+            ii, jj = np.nonzero(full)
+            if len(ii):
+                quads = np.stack([gidx[ii, jj], gidx[ii + 1, jj],
+                                  gidx[ii + 1, jj + 1], gidx[ii, jj + 1]], axis=1)
+                h = field(V_mm[quads.ravel()]).reshape(-1, 4)
+                centre = field(V_mm[quads].mean(axis=1))
+                # the cell centre lies on BOTH candidate diagonals, so the height
+                # a diagonal implies there is the mean of its two endpoints
+                want_main = np.abs((h[:, 0] + h[:, 2]) * 0.5 - centre) <= \
+                    np.abs((h[:, 1] + h[:, 3]) * 0.5 - centre)
+                tris = _force_cell_diagonals(tris, V_mm, quads, want_main)
+        # mop up the rim band, where the stitching can still bridge a crease
+        tris = _flip_to_creases(tris, V_mm, field, n_ring=n_ring)
+    else:
+        # STRUCTURED interior triangulation with one consistent diagonal per
+        # cell. (Delaunay on a regular grid is co-circular — its arbitrary
+        # tie-break flips diagonals cell to cell, and the between-row surface
+        # tents differently per cell: visible "roped" beading along
+        # otherwise-straight crests. A fixed diagonal removes that entirely.)
+        # Delaunay is only used for the irregular band stitching the grid region
+        # to the boundary ring. Cells here are near-square, which is the regime
+        # the centroid-only overlap test is sound in.
+        full = kept[:-1, :-1] & kept[1:, :-1] & kept[1:, 1:] & kept[:-1, 1:]
+        ii, jj = np.nonzero(full)
+        a = gidx[ii, jj]; b_ = gidx[ii + 1, jj]; c = gidx[ii + 1, jj + 1]; d = gidx[ii, jj + 1]
+        interior_tris = np.concatenate([np.stack([a, b_, c], axis=1),
+                                        np.stack([a, c, d], axis=1)])
+
+        # band = ring verts + kept grid points NOT fully surrounded by full cells
+        # (a point with all 4 adjacent cells full is interior-only; everything
+        # else participates in the stitching band)
+        surrounded = np.zeros((ni, nj), dtype=bool)
+        core = full[:-1, :-1] & full[1:, :-1] & full[1:, 1:] & full[:-1, 1:]
+        surrounded[1:-1, 1:-1] = core
+        band_ids = np.concatenate([np.arange(n_ring), gidx[kept & ~surrounded]])
+        band_tris = band_ids[Delaunay(V_mm[band_ids]).simplices]
+        tris = np.concatenate([interior_tris, _drop_outside(band_tris, cells=full)])
     if len(tris) == 0:
         raise ValueError("empty after filtering")
 
-    # map back: ring verts carry their exact on-edge uv/xyz (originals verbatim,
-    # densified ones lerped along the same segments); grid points
-    # go through affine fits (exact on a plane — uv and xyz are both affine in
-    # the mm chart), so no per-point OCCT evaluation is needed at all
+    # Map back. Ring verts carry their exact on-edge uv/xyz either way (originals
+    # verbatim, densified ones lerped along the same segments, which is what
+    # keeps the seam flush).
     base_uv_arr = np.asarray(base_uv, dtype=np.float64)
     base_pts_arr = np.asarray(base_pts, dtype=np.float64)
-    M = np.column_stack([P_mm, np.ones(len(P_mm))])
-    A_uv, res_uv, _rk, _sv = np.linalg.lstsq(M, base_uv_arr, rcond=None)
-    A_xyz, res_xyz, _rk2, _sv2 = np.linalg.lstsq(M, base_pts_arr, rcond=None)
-    fit_err = np.abs(M @ A_xyz - base_pts_arr).max()
-    if fit_err > max(1e-4, spacing * 1e-3):
-        raise ValueError("non-affine chart (not a plane?)")
-    GM = np.column_stack([G, np.ones(len(G))])
-    uv_out = np.concatenate([ring_uv, GM @ A_uv])
-    pts_out = np.concatenate([ring_xyz, GM @ A_xyz])
+    if unchart is None:
+        # PLANE: uv and xyz are both affine in the mm chart, so one least-squares
+        # fit places every grid point with no per-point OCCT evaluation at all.
+        # The residual doubles as the planarity assertion.
+        M = np.column_stack([P_mm, np.ones(len(P_mm))])
+        A_uv, res_uv, _rk, _sv = np.linalg.lstsq(M, base_uv_arr, rcond=None)
+        A_xyz, res_xyz, _rk2, _sv2 = np.linalg.lstsq(M, base_pts_arr, rcond=None)
+        fit_err = np.abs(M @ A_xyz - base_pts_arr).max()
+        if fit_err > max(1e-4, spacing * 1e-3):
+            raise ValueError("non-affine chart (not a plane?)")
+        GM = np.column_stack([G, np.ones(len(G))])
+        grid_uv, grid_xyz = GM @ A_uv, GM @ A_xyz
+    else:
+        # CYLINDER / CONE: the chart is exact but curved, so invert it in closed
+        # form and evaluate the surface directly. Only interior grid points go
+        # through this — the ring deliberately does NOT, because its points must
+        # stay on the neighbouring face's chords rather than on the true surface.
+        grid_uv, grid_xyz = unchart(G)
+    uv_out = np.concatenate([ring_uv, grid_uv])
+    pts_out = np.concatenate([ring_xyz, grid_xyz])
 
     # winding: match the base triangulation's outward orientation
     n_ref = np.cross(base_pts_arr[tri_idx[0, 1]] - base_pts_arr[tri_idx[0, 0]],
@@ -607,6 +1153,69 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
 
     return ([tuple(p) for p in pts_out], [tuple(p) for p in uv_out],
             [tuple(int(i) for i in t) for t in tris])
+
+
+LATTICE_SURFACES = ("plane", "cylinder", "cone")
+
+
+def _surface_kind(surf):
+    """plane / cylinder / cone — the surfaces `_face_uv_to_mm` charts EXACTLY,
+    and therefore the ones a lattice can be placed on. Everything else gets a
+    single-Jacobian approximation of the chart, which is fine for sampling a
+    field but not for claiming a vertex sits on a crease."""
+    from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane
+
+    t = surf.GetType()
+    if t == GeomAbs_Plane:
+        return "plane"
+    if t == GeomAbs_Cylinder:
+        return "cylinder"
+    if t == GeomAbs_Cone:
+        return "cone"
+    return None
+
+
+def _uncharter(surf, period=None):
+    """Return `unchart(mm) -> (uv, xyz)`, the inverse of `_face_uv_to_mm` plus
+    the surface evaluation, for the exactly-chartable surfaces.
+
+    Closed form and vectorised rather than a per-point `surf.Value` call: a
+    knurled cylinder places tens of thousands of lattice points, and OCCT
+    evaluates one at a time. Both parametrisations are OCCT's own —
+    P(u,v) = Loc + (R + v·sinA)·(cos u·X + sin u·Y) + v·cosA·Z, with A = 0 for a
+    cylinder."""
+    kind = _surface_kind(surf)
+    if kind == "plane":
+        return None  # affine in the mm chart; the caller's lstsq fit is exact
+
+    if kind == "cylinder":
+        cyl = surf.Cylinder()
+        ax, radius, half = cyl.Position(), cyl.Radius(), 0.0
+    else:
+        cone = surf.Cone()
+        ax, radius, half = cone.Position(), cone.RefRadius(), cone.SemiAngle()
+
+    loc = np.array([ax.Location().X(), ax.Location().Y(), ax.Location().Z()])
+    xd = np.array([ax.XDirection().X(), ax.XDirection().Y(), ax.XDirection().Z()])
+    yd = np.array([ax.YDirection().X(), ax.YDirection().Y(), ax.YDirection().Z()])
+    zd = np.array([ax.Direction().X(), ax.Direction().Y(), ax.Direction().Z()])
+    sin_a, cos_a = math.sin(half), math.cos(half)
+    per_turn = _turn_mm(surf, period)
+
+    def unchart(mm):
+        v = mm[:, 1]
+        # invert the ANCHORED chart: u_mm is arc measured at the reference
+        # radius, so the angle is a plain proportion of one full turn
+        u = mm[:, 0] * (2.0 * math.pi) / per_turn
+        # the POINT still sits at the surface's true local radius
+        r = radius + v * sin_a
+        xyz = (loc[None, :]
+               + (r[:, None] * np.cos(u)[:, None]) * xd[None, :]
+               + (r[:, None] * np.sin(u)[:, None]) * yd[None, :]
+               + (v * cos_a)[:, None] * zd[None, :])
+        return np.column_stack([u, v]), xyz
+
+    return unchart
 
 
 def _dist3(a, b):
@@ -637,6 +1246,10 @@ def _refine_face_triangulation(surf, pts, uv, tris, target_edge_mm, max_tris):
         if max_edge <= target_edge_mm:
             break
         mid = {}
+        # Which edges bound the face — recomputed each pass, since splitting a
+        # boundary edge yields two more of them.
+        counts = _boundary_edges(tris)
+        on_boundary = {k for k, n in counts.items() if n == 1}
 
         def midpoint(i, j):
             key = (i, j) if i < j else (j, i)
@@ -645,9 +1258,24 @@ def _refine_face_triangulation(surf, pts, uv, tris, target_edge_mm, max_tris):
                 return hit
             um = (uv[i][0] + uv[j][0]) * 0.5
             vm = (uv[i][1] + uv[j][1]) * 0.5
-            p = surf.Value(um, vm)
+            if key in on_boundary:
+                # CHORD, not the true surface. The neighbouring untextured face
+                # still spans this edge as a straight segment, so putting the new
+                # vertex on the real surface bulges this face off that segment by
+                # up to the chord's sagitta and opens a seam. Measured on a
+                # knurled r=10 cylinder: 4,032 of 4,224 boundary vertices adrift,
+                # by up to 0.048mm, against a polyline the two faces otherwise
+                # share bit-identically. Splitting the edge is still required —
+                # leaving it unsplit while its neighbours divide would create a
+                # T-junction, which cracks the mesh from the inside instead.
+                p = ((pts[i][0] + pts[j][0]) * 0.5,
+                     (pts[i][1] + pts[j][1]) * 0.5,
+                     (pts[i][2] + pts[j][2]) * 0.5)
+            else:
+                pp = surf.Value(um, vm)
+                p = (pp.X(), pp.Y(), pp.Z())
             idx = len(pts)
-            pts.append((p.X(), p.Y(), p.Z()))
+            pts.append(p)
             uv.append((um, vm))
             mid[key] = idx
             return idx
@@ -678,7 +1306,7 @@ def _boundary_edges(tris):
     return edge_count
 
 
-def _boundary_taper(pts_arr, tris, inset_mm):
+def _boundary_taper(pts_arr, tris, inset_mm, exempt=None):
     """0 at the face boundary, smoothstepping to 1 over `inset_mm` — this is what
     keeps boundary vertices bit-identical to the untextured mesh (zero
     displacement) so a neighboring untextured face needs no special handling and
@@ -692,6 +1320,16 @@ def _boundary_taper(pts_arr, tris, inset_mm):
     point-to-segment pass this replaces was >90% of textured-tessellation time.)"""
     edge_count = _boundary_edges(tris)
     boundary = [k for k, n in edge_count.items() if n == 1]
+    if exempt is not None:
+        # A closed surface's UV SEAM is an artificial cut, not an edge, and
+        # pinning it leaves a flat stripe running the height of every textured
+        # cylinder and cone (measured: 78 vertices in one line, all undisplaced).
+        # Nothing is welded to achieve this — now that a full turn is a whole
+        # number of pattern periods, the two sides evaluate the SAME field and
+        # displace identically, so they stay coincident on their own. Leaving the
+        # triangulation alone is what keeps the crease-exactness intact; welding
+        # after the flip repair instead broke 1-5% of the triangles near the seam.
+        boundary = [k for k in boundary if not (exempt[k[0]] and exempt[k[1]])]
     if not boundary:
         return np.ones(len(pts_arr)), edge_count
     from scipy.spatial import cKDTree
@@ -806,12 +1444,22 @@ _GEOM_CACHE = {}
 _GEOM_CACHE_MAX = 8
 
 
-def _geometry_key(face, tri, flip, scale, angle, inset_mm, cap):
+def _geometry_key(face, tri, flip, spec, scale, angle, inset_mm, cap):
+    """Cache key for the height-INDEPENDENT skeleton.
+
+    It must carry every spec field the SAMPLING geometry depends on. Before
+    crease-aligned lattices the skeleton was genuinely kind-independent (a
+    uniform grid at scale/angle), so kind/sharpness/profile/offset were
+    correctly absent. A lattice derives its vertex placement from the pattern
+    itself, so all four now move vertices — leaving them out serves a knurl
+    skeleton for a hex texture at the same scale and angle."""
     node1 = tri.Node(1)
     return (
         face.wrapped.TShape(), tri.NbNodes(), tri.NbTriangles(),
         round(node1.X(), 9), round(node1.Y(), 9), round(node1.Z(), 9),
         flip, round(scale, 6), round(angle, 6), round(inset_mm, 6), cap,
+        spec["kind"], round(float(spec.get("sharpness", 0.5)), 6),
+        spec.get("profile", "facet"), round(float(spec.get("offset", 0.0)), 6),
     )
 
 
@@ -847,23 +1495,74 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
 
     surf = BRepAdaptor_Surface(face.wrapped)
 
-    # planar faces get a pattern-ALIGNED regular grid — an axis-aligned grid
-    # beats against a diagonal pattern (roped/beaded ridges); alignment gives
-    # straight crests at the same triangle budget. Anything unexpected falls
-    # back to the general subdivision path.
+    # Three tiers, most exact first:
+    #   1. CREASE-ALIGNED LATTICE — sample lines on the pattern's own gradient
+    #      breakpoints, so the mesh reproduces the faceted profile exactly.
+    #   2. uniform pattern-aligned grid — the sampled approximation. An
+    #      axis-aligned grid beats against a diagonal pattern (roped/beaded
+    #      ridges); alignment gives straight crests at the same triangle budget.
+    #   3. general subdivision — anything the mm chart cannot place a line on.
+    # Tier 2 is a real fallback, not a failure: a fine pattern on a large face
+    # has a line count fixed by the pattern rather than the budget, and dropping
+    # straight to tier 3 there would be far worse than a coarser grid.
+    #
+    # Tiers 1-2 now cover CYLINDERS and CONES as well as planes, which is where
+    # the win is largest — a knurled knob is a cylinder, and the subdivision path
+    # spent 834 triangles per pattern cell on one (against ~10 for a plane)
+    # because it refines uniformly from a coarse base mesh with no idea where the
+    # pattern is.
     pts = None
-    if surf.GetType() == GeomAbs_Plane:
-        try:
-            base_uv_arr = np.asarray(base_uv, dtype=np.float64)
-            bu_mm, bv_mm = _face_uv_to_mm(surf, base_uv_arr[:, 0], base_uv_arr[:, 1])
-            pts, uv, tris = _aligned_grid_triangulation(
-                base_pts, base_uv, base_tris, bu_mm, bv_mm,
-                float(spec.get("angle", 0.0)), target_edge_mm, cap,
-                pattern_period=scale,
-            )
-        except Exception:
-            pts = None
+    lattice_used = False
+    if _surface_kind(surf) is not None:
+        base_uv_arr = np.asarray(base_uv, dtype=np.float64)
+        u_period = _u_period(spec, scale)
+        bu_mm, bv_mm = _face_uv_to_mm(surf, base_uv_arr[:, 0], base_uv_arr[:, 1], u_period)
+        phases = _pattern_axes(spec["kind"], spec)
+        tex_offset = float(spec.get("offset", 0.0))
+        cell_points = None
+        if phases == "cells":
+            # cellular kinds place their own vertices, in mm coordinates; the
+            # offset shifts u exactly as it does for the field
+            phases = None
+            pad = max(scale, target_edge_mm)
+            # a closed cylinder/cone is periodic in u; the cell lattice has to be
+            # too, or its two seam sides differ and cannot weld
+            wrap_u = None
+            if _surface_kind(surf) in ("cylinder", "cone"):
+                span = float(surf.LastUParameter() - surf.FirstUParameter())
+                if abs(span - 2.0 * math.pi) < 1e-6:
+                    wrap_u = _turn_mm(surf, u_period)
+            cell_points = _cell_lattice_points(
+                spec["kind"], spec, scale,
+                float(bu_mm.min()) + tex_offset - pad, float(bu_mm.max()) + tex_offset + pad,
+                float(bv_mm.min()) - pad, float(bv_mm.max()) + pad, wrap_u=wrap_u)
+            if cell_points is not None:
+                cell_points = cell_points - np.array([tex_offset, 0.0])
+
+        def _field(pts_mm):
+            # the same field displace_face will evaluate, offset included, so a
+            # diagonal chosen here is the one the displaced mesh actually needs
+            return height_field(spec["kind"], spec,
+                                pts_mm[:, 0] + tex_offset, pts_mm[:, 1])
+
+        attempts = ((phases, cell_points, True), (None, None, False)) \
+            if (phases or cell_points is not None) else ((None, None, False),)
+        for want_phases, want_cells, is_lattice in attempts:
+            try:
+                pts, uv, tris = _aligned_grid_triangulation(
+                    base_pts, base_uv, base_tris, bu_mm, bv_mm,
+                    float(spec.get("angle", 0.0)), target_edge_mm, cap,
+                    pattern_period=scale, phases=want_phases,
+                    offset=tex_offset, field=_field if is_lattice else None,
+                    unchart=_uncharter(surf, u_period), cell_points=want_cells,
+                    wrap_u=wrap_u if want_cells is not None else None,
+                )
+                lattice_used = is_lattice
+                break
+            except Exception:
+                pts = None
     if pts is None:
+        lattice_used = False
         pts, uv, tris = _refine_face_triangulation(surf, base_pts, base_uv, base_tris, target_edge_mm, cap)
 
     pts_arr = np.asarray(pts, dtype=np.float64)
@@ -873,10 +1572,18 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
     # with a few long edges that would skew a mean and false-trigger the clamp
     mean_edge = float(np.median(np.linalg.norm(pts_arr[tris_arr[:, 0]] - pts_arr[tris_arr[:, 1]], axis=1)))
 
-    u_mm, v_mm = _face_uv_to_mm(surf, uv_arr[:, 0], uv_arr[:, 1])
+    u_mm, v_mm = _face_uv_to_mm(surf, uv_arr[:, 0], uv_arr[:, 1], _u_period(spec, scale))
 
     inset_mm = max(float(spec.get("boundaryInset", 0.0)), 0.0)
-    taper, edge_count = _boundary_taper(pts_arr, tris, inset_mm)
+    # vertices sitting on a closed face's UV seam — an artificial cut, so they
+    # must not be pinned like a real face boundary (see _boundary_taper)
+    seam = None
+    if _surface_kind(surf) in ("cylinder", "cone"):
+        span = float(surf.LastUParameter() - surf.FirstUParameter())
+        if abs(span - 2.0 * math.pi) < 1e-6:
+            turn = _turn_mm(surf, _u_period(spec, scale))
+            seam = (np.abs(u_mm) < 1e-6) | (np.abs(u_mm - turn) < 1e-6)
+    taper, edge_count = _boundary_taper(pts_arr, tris, inset_mm, exempt=seam)
     manifold_ok, manifold_bad = _manifold_check(edge_count)
 
     normals, t_u, t_v = _face_frame(surf, uv_arr, flip)
@@ -890,6 +1597,7 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
     return {
         "pts": pts_arr, "tris": len(tris), "flat_indices": flat_indices,
         "mean_edge": mean_edge, "u_mm": u_mm, "v_mm": v_mm,
+        "lattice": lattice_used,
         "taper": taper, "manifold_ok": manifold_ok, "manifold_bad": manifold_bad,
         "normals": normals, "t_u": t_u, "t_v": t_v,
     }
@@ -914,7 +1622,7 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
     cap = density_cap if density_cap else _DEFAULT_DENSITY_CAP
     inset_mm = max(float(spec.get("boundaryInset", 0.0)), 0.0)
 
-    key = _geometry_key(face, tri, flip, scale, float(spec.get("angle", 0.0)), inset_mm, cap)
+    key = _geometry_key(face, tri, flip, spec, scale, float(spec.get("angle", 0.0)), inset_mm, cap)
     geom = _GEOM_CACHE.pop(key, None)
     if geom is None:
         geom = _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, cap, flip)
@@ -928,11 +1636,16 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
     mean_edge = geom["mean_edge"]
 
     spec_h = spec
-    if kind != "image" and mean_edge > target_edge_mm * 1.25:
+    if kind != "image" and not geom.get("lattice") and mean_edge > target_edge_mm * 1.25:
         # the density cap stopped refinement short of the target sampling —
         # evaluating the pattern at its true frequency would alias into noise.
         # Clamp the wavelength to what this mesh can carry so an under-sampled
         # face shows a clean, coarser pattern; exports use a far larger cap.
+        #
+        # A crease-aligned lattice is exempt: its edge length is set by the
+        # PATTERN (a rib cell is one period long however coarse the budget), not
+        # by a sampling rate, and it reproduces the profile exactly at any size.
+        # Clamping it would coarsen a pattern that was never under-sampled.
         spec_h = dict(spec, scale=4.0 * mean_edge)
         if diag is not None:
             diag.append({
