@@ -24,11 +24,11 @@ from builder import rebuild
 from OCP.BRep import BRep_Tool
 from OCP.BRepAdaptor import BRepAdaptor_Surface
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-from OCP.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
+from OCP.GeomAbs import GeomAbs_Cone, GeomAbs_Cylinder, GeomAbs_Plane
 from OCP.TopAbs import TopAbs_FACE, TopAbs_Orientation
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
-from build123d import Face
+from build123d import Cone as BdCone, Face
 
 PASS = "  ok"
 
@@ -378,6 +378,131 @@ def test_curved_faces_keep_the_boundary_on_the_shared_polyline():
     print(PASS, "curved-face boundaries stay on the shared polyline (chord fix holds)")
 
 
+def test_the_seam_strip_is_exact():
+    """The staggered crushed hex cells of 0.1.75, and their whole bug class.
+
+    Every other exactness check here excludes triangles touching the boundary,
+    and on a closed face the UV seam columns ARE boundary — so the strip between
+    them and the first lattice column was never scored, and three defects shipped
+    unseen: (1) uniform ring densification put seam ring points at non-crease
+    heights, (2) the near-ring cull then ate the lattice's own on-seam corners
+    (a lost corner is a crushed cell — up to 46% of depth, staggered by row),
+    and (3) _flip_to_creases refused to repair any triangle touching a ring
+    vertex, though seam ring vertices displace with the field (that one also
+    broke ribs/waves at angle 0: a 33%-of-depth notch on every row).
+
+    So score EVERYTHING except the real rims, on a cylinder whose circumference
+    is NOT a whole number of periods (the snapped turn is where the seam
+    machinery earns its keep) and on a cone. Exact in the assembly's own chart,
+    to fp noise."""
+    solids = [("cylinder", _cylinder_lateral_face(20.0))]
+    cone = BdCone(bottom_radius=15, top_radius=10, height=30)
+    BRepMesh_IncrementalMesh(cone.wrapped, 0.1, False, 0.5, True)
+    ex = TopExp_Explorer(cone.wrapped, TopAbs_FACE)
+    while ex.More():
+        f = Face(ex.Current())
+        if BRepAdaptor_Surface(f.wrapped).GetType() == GeomAbs_Cone:
+            solids.append(("cone", f))
+            break
+        ex.Next()
+    assert len(solids) == 2, "no cone face"
+    worst = 0.0
+    for name, face in solids:
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(face.wrapped, loc)
+        flip = face.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED
+        surf = BRepAdaptor_Surface(face.wrapped)
+        for kind in LATTICE_KINDS:
+            spec = _spec(kind)
+            g = texture._displacement_geometry(
+                face, tri, loc, loc.IsIdentity(), spec, SCALE, SCALE / 4.0, BIG_CAP, flip)
+            u, v = g["u_mm"], g["v_mm"]
+            I = np.asarray(g["flat_indices"], dtype=np.int64).reshape(-1, 3)
+            h = texture.height_field(kind, spec, u, v)
+            turn = texture._turn_mm(surf, texture._u_period(spec, SCALE))
+            cu = u[I]
+            # unwrap each triangle across the seam; the turn is a whole number
+            # of periods, so the shift cannot move the pattern
+            cu = cu - np.round((cu - cu[:, :1]) / turn) * turn
+            sv = np.einsum("sb,tb->ts", _BARY, v[I])
+            su = np.einsum("sb,tb->ts", _BARY, cu)
+            sh = np.einsum("sb,tb->ts", _BARY, h[I])
+            true = texture.height_field(kind, spec, su.ravel(), sv.ravel()).reshape(su.shape)
+            terr = np.abs(sh - true).max(axis=1) * DEPTH
+            # everything except the rim taper zone: one pattern cell + the
+            # boundaryInset ramp is the deliberate flat-at-the-rim region
+            mid = ((sv > v.min() + 2 * SCALE).all(axis=1)
+                   & (sv < v.max() - 2 * SCALE).all(axis=1))
+            assert mid.sum() > 500, (name, kind, int(mid.sum()))
+            err = float(terr[mid].max())
+            assert err < EXACT_MM, f"{kind} on {name}: seam strip {err:.3e}mm off"
+            worst = max(worst, err)
+    print(PASS, f"the seam strip is exact, rims aside (worst {worst:.2e}mm)")
+
+
+def test_triangle_winding_agrees_with_the_normals():
+    """The two-halves bug: scipy Delaunay simplex orientation is arbitrary, and
+    a double-sided renderer negates the shading normal on back-wound triangles
+    — so a tube's REVERSED outer face rendered half lit, half inside-out, with
+    a hard model-fixed boundary no lighting change could touch (2026-08-02).
+    Inconsistent winding also rides into STL/3MF. Height oracles cannot see
+    orientation, which is how it survived every exactness test.
+
+    Assert every triangle's geometric winding agrees with its vertices'
+    analytic normals, on the case that actually failed: the reversed outer
+    face of a tube. Also self-checks the oracle by disabling the fix."""
+    _part, errors, bodies = rebuild({"features": [
+        {"id": "s1", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "circle", "radius": 25, "x": 0, "y": 0},
+                      {"type": "circle", "radius": 20, "x": 0, "y": 0}]},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 30,
+         "operation": "new", "regions": [[22.5, 0, 0]]},
+    ]})
+    assert not errors, errors
+    BRepMesh_IncrementalMesh(bodies[0]["shape"].wrapped, 0.1, False, 0.5, True)
+    outer = None
+    ex = TopExp_Explorer(bodies[0]["shape"].wrapped, TopAbs_FACE)
+    while ex.More():
+        f = Face(ex.Current())
+        ad = BRepAdaptor_Surface(f.wrapped)
+        if ad.GetType() == GeomAbs_Cylinder and abs(ad.Cylinder().Radius() - 25) < 1e-6:
+            outer = f
+            break
+        ex.Next()
+    assert outer is not None, "no outer tube face"
+    assert outer.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED, \
+        "fixture no longer reversed — find another reversed-face case"
+
+    loc = TopLoc_Location()
+    tri = BRep_Tool.Triangulation_s(outer.wrapped, loc)
+
+    def disagreements(spec):
+        texture._GEOM_CACHE.clear()
+        pos, idx, nrm = texture.displace_face(
+            outer, tri, loc, loc.IsIdentity(), spec, BIG_CAP)
+        P = np.asarray(pos, dtype=np.float64).reshape(-1, 3)
+        I = np.asarray(idx, dtype=np.int64).reshape(-1, 3)
+        N = np.asarray(nrm, dtype=np.float64).reshape(-1, 3)
+        gn = np.cross(P[I[:, 1]] - P[I[:, 0]], P[I[:, 2]] - P[I[:, 0]])
+        ref = N[I[:, 0]] + N[I[:, 1]] + N[I[:, 2]]
+        return int(((gn * ref).sum(axis=1) < 0.0).sum()), len(I)
+
+    for kind in LATTICE_KINDS:
+        bad, total = disagreements(_spec(kind))
+        assert bad == 0, f"{kind}: {bad} of {total} triangles wound against their normals"
+
+    # the oracle must actually bite: with the orientation pass disabled, the
+    # raw Delaunay winding disagrees en masse
+    orig = texture._orient_windings
+    texture._orient_windings = lambda P, I, n: I
+    try:
+        bad, total = disagreements(_spec("hex"))
+    finally:
+        texture._orient_windings = orig
+    assert bad > total // 10, f"oracle is toothless (only {bad} of {total} without the fix)"
+    print(PASS, "triangle winding agrees with the analytic normals (reversed tube face)")
+
+
 def test_the_uv_seam_is_textured_like_any_other_line():
     """The seam stripe, and the misdiagnosis that outlived it.
 
@@ -463,6 +588,8 @@ def main():
     test_lattice_costs_no_more_than_the_pattern_demands()
     test_lattice_meshes_stay_manifold()
     test_lattice_is_exact_on_a_cylinder()
+    test_the_seam_strip_is_exact()
+    test_triangle_winding_agrees_with_the_normals()
     test_curved_faces_keep_the_boundary_on_the_shared_polyline()
     test_the_uv_seam_is_textured_like_any_other_line()
     test_geometry_cache_key_separates_lattices()

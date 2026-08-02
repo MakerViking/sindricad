@@ -35,7 +35,17 @@ _DEFAULT_DENSITY_CAP = 2_000_000
 # geometry built by the previous version.
 # 5: crease-aligned lattices — vertices land ON the pattern's gradient
 #    breakpoints instead of a uniform grid, so faceted kinds are exact.
-CODE_VERSION = 5
+# 6: seam-aware ring on closed faces — the UV-seam columns are densified with
+#    the lattice's own on-seam points (not uniform steps), and the lattice is
+#    no longer culled against them, so hex cells straddling the seam keep the
+#    corners their creases need (was: ~half the seam cells crushed by up to
+#    46% of depth, staggered by row).
+# 7: consistent triangle winding — lattice Delaunay orientation is arbitrary
+#    (measured: half a tube face wound inward), and a double-sided renderer
+#    negates the shading normal on back-wound triangles, lighting half the
+#    model inside-out; inconsistent winding also rides into STL/3MF exports.
+#    Windings now oriented to agree with the analytic normals.
+CODE_VERSION = 7
 
 
 def validate_texture_spec(f):
@@ -804,7 +814,8 @@ def _segments_cross(P, p, q, r, s):
     return (side(p, q, r) * side(p, q, s) < 0) and (side(r, s, p) * side(r, s, q) < 0)
 
 
-def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8):
+def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8,
+                     ring_fixable=None):
     """Repair triangles that cut ACROSS a crease instead of running along it.
 
     Complete lattice cells get their diagonal imposed directly, but the band
@@ -818,9 +829,20 @@ def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8):
     corners are pinned at zero displacement by the boundary taper, so they can
     never match the raw field however they are triangulated; scoring them makes
     the pass chase an unreachable target and, worse, spend its one-flip-per-pair
-    budget on pairs that cannot improve, blocking neighbours that could."""
+    budget on pairs that cannot improve, blocking neighbours that could.
+
+    `ring_fixable` (bool mask over the first n_ring vertices) marks ring
+    vertices that DO displace with the field — the UV-seam columns, which the
+    taper exempts. Triangles touching only those are scored and repaired like
+    interior ones: the seam strip is where a spoke crease crosses the band with
+    both flanks on the ring, and skipping it leaves the crease bridged (a
+    0.195-of-depth notch on every hex row along the seam)."""
     tris = np.asarray(tris, dtype=np.int64).copy()
     hv = field(V_mm)
+    fixable_full = None
+    if ring_fixable is not None and n_ring:
+        fixable_full = np.zeros(len(V_mm), dtype=bool)
+        fixable_full[:n_ring] = ring_fixable
 
     def err_of(t):
         """Worst deviation at points strictly INSIDE each triangle. The centroid
@@ -835,7 +857,10 @@ def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8):
 
     for _ in range(max_passes):
         scored = err_of(tris)
-        scored[(tris < n_ring).any(axis=1)] = 0.0  # pinned by the taper, not fixable
+        excluded = tris < n_ring  # pinned by the taper, not fixable
+        if fixable_full is not None:
+            excluded &= ~fixable_full[tris]
+        scored[excluded.any(axis=1)] = 0.0
         bad = np.nonzero(scored > tol)[0]
         if not len(bad):
             break
@@ -958,13 +983,39 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
     r_xyz = [base_xyz0[bnd_ids]]
     cells_mode = cell_points is not None and len(cell_points) >= 4
     lattice = (phases is not None or cells_mode) and period > 0.0
+    # On a closed face the seam columns are boundary only as an artifact of the
+    # chart cut. Densifying them UNIFORMLY plants ring points at non-crease
+    # heights, and the near-ring cull below then eats the lattice's own on-seam
+    # corners — and a lost corner is a crushed cell no edge flip can rebuild
+    # (the staggered half-broken seam cells the viewport showed on a hex
+    # cylinder: whether a cell survived depended on the accidental alignment of
+    # uniform ring steps with lattice heights). Densify seam segments with the
+    # lattice's own on-seam points instead: those ARE the crease geometry, and
+    # periodicity hands both columns an identical v-set so the two sides stay
+    # coincident under displacement.
+    seam_vs = None
+    if cells_mode and wrap_u:
+        cp = np.asarray(cell_points, dtype=np.float64)
+        on_cut = (np.abs(cp[:, 0]) < 1e-9) | (np.abs(cp[:, 0] - wrap_u) < 1e-9)
+        if on_cut.any():
+            seam_vs = np.unique(cp[on_cut][:, 1])
     for i0, i1 in boundary:
-        seg_len = float(np.hypot(*(P_mm[i1] - P_mm[i0])))
-        n_sub = int(math.ceil(seg_len / spacing))
-        ts = list(np.arange(1, n_sub, dtype=np.float64) / n_sub) if n_sub >= 2 else []
-        if lattice and phases is not None:
-            ts += _segment_crossings(rp_u[i0], rp_u[i1], phases[0], period)
-            ts += _segment_crossings(rp_v[i0], rp_v[i1], phases[1], period)
+        u0p, u1p = P_mm[i0, 0], P_mm[i1, 0]
+        seam_seg = (seam_vs is not None
+                    and ((abs(u0p) < 1e-6 and abs(u1p) < 1e-6)
+                         or (abs(u0p - wrap_u) < 1e-6 and abs(u1p - wrap_u) < 1e-6)))
+        if seam_seg:
+            va, vb = P_mm[i0, 1], P_mm[i1, 1]
+            lo_s, hi_s = (va, vb) if va <= vb else (vb, va)
+            vs = seam_vs[(seam_vs > lo_s + 1e-9) & (seam_vs < hi_s - 1e-9)]
+            ts = list((vs - va) / (vb - va))
+        else:
+            seg_len = float(np.hypot(*(P_mm[i1] - P_mm[i0])))
+            n_sub = int(math.ceil(seg_len / spacing))
+            ts = list(np.arange(1, n_sub, dtype=np.float64) / n_sub) if n_sub >= 2 else []
+            if lattice and phases is not None:
+                ts += _segment_crossings(rp_u[i0], rp_u[i1], phases[0], period)
+                ts += _segment_crossings(rp_v[i0], rp_v[i1], phases[1], period)
         if not ts:
             continue  # already shorter than a sample step, and no crease crosses
         t = np.unique(np.round(np.asarray(ts, dtype=np.float64), 12))
@@ -1016,8 +1067,22 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
         # flat — the seam stripe again, by a subtler route.
         v_lo, v_hi = ring_mm[:, 1].min(), ring_mm[:, 1].max()
         on_seam = ((np.abs(G_all[:, 0]) < 1e-6) | (np.abs(G_all[:, 0] - wrap_u) < 1e-6))
-        inside |= on_seam & (G_all[:, 1] > v_lo - 1e-9) & (G_all[:, 1] < v_hi + 1e-9)
-    d_bnd, _ = cKDTree(ring_mm).query(G_all, workers=-1)
+        if seam_vs is not None:
+            # the on-seam lattice points ride in the RING now (seam-aware
+            # densification above); keeping interior copies as well would hand
+            # Delaunay duplicate points
+            inside &= ~on_seam
+        elif cells_mode:
+            inside |= on_seam & (G_all[:, 1] > v_lo - 1e-9) & (G_all[:, 1] < v_hi + 1e-9)
+    ring_cull_ref = ring_mm
+    if seam_vs is not None:
+        # the seam ring IS lattice geometry now; culling lattice points for
+        # sitting near it would eat the very corners the seam strip needs.
+        # Cull only against the real rims.
+        ring_on_cut = (np.abs(ring_mm[:, 0]) < 1e-6) | (np.abs(ring_mm[:, 0] - wrap_u) < 1e-6)
+        if (~ring_on_cut).any():
+            ring_cull_ref = ring_mm[~ring_on_cut]
+    d_bnd, _ = cKDTree(ring_cull_ref).query(G_all, workers=-1)
     # Cull grid points sitting essentially on the ring, which would make Delaunay
     # slivers. The lattice needs a far smaller margin than the sampled grid: its
     # points are not interchangeable samples but the pattern's own corners, and
@@ -1088,8 +1153,14 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
                 want_main = np.abs((h[:, 0] + h[:, 2]) * 0.5 - centre) <= \
                     np.abs((h[:, 1] + h[:, 3]) * 0.5 - centre)
                 tris = _force_cell_diagonals(tris, V_mm, quads, want_main)
-        # mop up the rim band, where the stitching can still bridge a crease
-        tris = _flip_to_creases(tris, V_mm, field, n_ring=n_ring)
+        # mop up the rim band, where the stitching can still bridge a crease.
+        # Seam ring vertices displace with the field (taper-exempt), so the
+        # seam strip is scored and repaired too — see _flip_to_creases.
+        tris = _flip_to_creases(
+            tris, V_mm, field, n_ring=n_ring,
+            ring_fixable=((np.abs(ring_mm[:, 0]) < 1e-6)
+                          | (np.abs(ring_mm[:, 0] - wrap_u) < 1e-6))
+            if wrap_u else None)
     else:
         # STRUCTURED interior triangulation with one consistent diagonal per
         # cell. (Delaunay on a regular grid is co-circular — its arbitrary
@@ -1519,19 +1590,22 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
         bu_mm, bv_mm = _face_uv_to_mm(surf, base_uv_arr[:, 0], base_uv_arr[:, 1], u_period)
         phases = _pattern_axes(spec["kind"], spec)
         tex_offset = float(spec.get("offset", 0.0))
+        # a closed cylinder/cone is periodic in u: the seam is an artificial
+        # cut. Every kind's assembly needs to know where it is — cellular kinds
+        # to keep the lattice periodic, and ALL kinds so the crease-repair pass
+        # may fix seam-strip triangles (their ring vertices displace with the
+        # field, unlike a real rim's).
+        wrap_u = None
+        if _surface_kind(surf) in ("cylinder", "cone"):
+            span = float(surf.LastUParameter() - surf.FirstUParameter())
+            if abs(span - 2.0 * math.pi) < 1e-6:
+                wrap_u = _turn_mm(surf, u_period)
         cell_points = None
         if phases == "cells":
             # cellular kinds place their own vertices, in mm coordinates; the
             # offset shifts u exactly as it does for the field
             phases = None
             pad = max(scale, target_edge_mm)
-            # a closed cylinder/cone is periodic in u; the cell lattice has to be
-            # too, or its two seam sides differ and cannot weld
-            wrap_u = None
-            if _surface_kind(surf) in ("cylinder", "cone"):
-                span = float(surf.LastUParameter() - surf.FirstUParameter())
-                if abs(span - 2.0 * math.pi) < 1e-6:
-                    wrap_u = _turn_mm(surf, u_period)
             cell_points = _cell_lattice_points(
                 spec["kind"], spec, scale,
                 float(bu_mm.min()) + tex_offset - pad, float(bu_mm.max()) + tex_offset + pad,
@@ -1555,7 +1629,7 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
                     pattern_period=scale, phases=want_phases,
                     offset=tex_offset, field=_field if is_lattice else None,
                     unchart=_uncharter(surf, u_period), cell_points=want_cells,
-                    wrap_u=wrap_u if want_cells is not None else None,
+                    wrap_u=wrap_u,
                 )
                 lattice_used = is_lattice
                 break
@@ -1601,6 +1675,33 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
         "taper": taper, "manifold_ok": manifold_ok, "manifold_bad": manifold_bad,
         "normals": normals, "t_u": t_u, "t_v": t_v,
     }
+
+
+def _orient_windings(P, I, normals):
+    """Return I with every triangle wound to AGREE with its vertices' normals.
+
+    The lattice assembly triangulates in the 2D chart with scipy's Delaunay,
+    whose simplex orientation is NOT guaranteed consistent — measured on a
+    reversed tube face: 40,062 triangles wound outward, 40,064 inward, split
+    cleanly down two halves of the cylinder. The analytic normals were right,
+    but a double-sided renderer decides front/back per PIXEL from the winding
+    and NEGATES the shading normal on back faces, so the inward-wound half lit
+    inside-out — a hard model-fixed light/dark split no lighting rig could
+    remove (2026-08-02, the whole evening's "hard line"). Winding also rides
+    into STL/3MF, where inconsistent orientation is a printability defect.
+
+    An earlier patch flipped the emitted NORMAL to match the winding — exactly
+    backwards under gl_FrontFacing negation. Orient the WINDING; normals are
+    already correct."""
+    e1 = P[I[:, 1]] - P[I[:, 0]]
+    e2 = P[I[:, 2]] - P[I[:, 0]]
+    gn = np.cross(e1, e2)
+    ref = normals[I[:, 0]] + normals[I[:, 1]] + normals[I[:, 2]]
+    flip = (gn * ref).sum(axis=1) < 0.0
+    if flip.any():
+        I = I.copy()
+        I[flip, 1], I[flip, 2] = I[flip, 2], I[flip, 1].copy()
+    return I
 
 
 def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_id=None,
@@ -1714,16 +1815,13 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
         # share a vertex index — geometrically watertight but flagged as
         # non-manifold by some slicers. Printing correctness beats shading, so
         # the export path keeps the indexed mesh (STL is non-indexed regardless).
-        idx = np.asarray(geom["flat_indices"], dtype=np.int64).reshape(-1, 3)
+        idx = _orient_windings(disp, np.asarray(geom["flat_indices"], dtype=np.int64).reshape(-1, 3),
+                               disp_normals)
         tri_pts = disp[idx]  # (T, 3, 3)
         fn = np.cross(tri_pts[:, 1] - tri_pts[:, 0], tri_pts[:, 2] - tri_pts[:, 0])
         ln = np.linalg.norm(fn, axis=1)
         ln[ln < 1e-12] = 1.0
         fn /= ln[:, None]
-        # keep the winding-derived normal pointing the same way the smooth
-        # normals did (a REVERSED face would otherwise light inside-out)
-        flipped = (fn * disp_normals[idx[:, 0]]).sum(axis=1) < 0.0
-        fn[flipped] *= -1.0
         out_pts = tri_pts.reshape(-1, 3)
         return (
             out_pts.ravel().tolist(),
@@ -1731,4 +1829,6 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
             np.repeat(fn, 3, axis=0).ravel().tolist(),
         )
 
-    return disp.ravel().tolist(), geom["flat_indices"], disp_normals.ravel().tolist()
+    idx = _orient_windings(disp, np.asarray(geom["flat_indices"], dtype=np.int64).reshape(-1, 3),
+                           disp_normals)
+    return disp.ravel().tolist(), idx.ravel().tolist(), disp_normals.ravel().tolist()
