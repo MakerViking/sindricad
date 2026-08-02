@@ -59,6 +59,19 @@ Press `?` in the app for the full keyboard shortcut list.
   <em>A part is its history: sketch, extrude, fillet, cut, texture — and every step stays editable.</em>
 </p>
 
+## Sketching
+
+<p align="center">
+  <img src="assets/readme/sketching.png" alt="The SindriCAD sketcher: a dimensioned rectangle and two constrained circles, with the entity toolbar and sketch palette" width="820">
+</p>
+
+Sketches are constraint-driven. Dimensions are entered on the canvas — type a value,
+Tab to lock it, Enter to commit — and a PlaneGCS solver keeps the rest of the profile
+consistent as you edit. Equal, parallel, perpendicular, concentric and the usual family
+of constraints render as glyphs you can click, and a reference dimension measures
+without driving. Conflicting and over-defined constraints are called out rather than
+silently ignored.
+
 ## Surface textures
 
 <p align="center">
@@ -83,6 +96,36 @@ different palette color than the rest of the body.
   <img src="assets/readme/texture-orbit.gif" alt="Orbiting a cylinder wrapped in a hexagon relief texture" width="640"><br>
   <em>Patterns wrap a full turn and meet themselves at the seam.</em>
 </p>
+
+## Inspect and measure
+
+<p align="center">
+  <img src="assets/readme/section-cut.png" alt="A section plane cutting a shelled box, revealing the interior walls" width="780">
+</p>
+
+A section plane cuts the model live, so a shelled or hollow part can be checked from the
+inside before it prints. Drag the arrow along the axis, or type an exact offset.
+
+<p align="center">
+  <img src="assets/readme/measure.png" alt="Measuring between two edges of a plate: the readout shows distance, axis deltas, centre distance and angle" width="780">
+</p>
+
+Measure reports the true shortest distance between two faces or edges — not just their
+centres — along with the per-axis deltas, the centre-to-centre distance, and the angle
+between them.
+
+## Import and round-trip
+
+<p align="center">
+  <img src="assets/readme/step-roundtrip.png" alt="A STEP file imported back into SindriCAD, with its top face and four bores selected" width="820">
+</p>
+
+STEP, STL, 3MF, OBJ, and GLB come in; STEP, STL, 3MF, and GLB go out. A STEP import
+arrives as real B-rep geometry — the faces above are ordinary selections on a body that
+was exported to STEP and read straight back in — so imported parts can be measured,
+sectioned, textured, and used as sketch planes instead of arriving as a triangle soup.
+Mesh formats are cleaned up on the way in, and STEP is canonicalized so its faces come
+back in a form the selectors can address.
 
 ## Snapmaker U1 print pipeline
 
