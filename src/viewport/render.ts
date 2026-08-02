@@ -9,6 +9,7 @@ import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { RebuildResult } from "../types";
 import { disposeObject } from "./dispose";
+import { buildRaycastIndex } from "./raycastIndex";
 
 /** One body's own isolated Mesh + edges. `faceStart`/`faceCount` are the body's
  *  B-rep faceId sub-range (global, per the wire protocol) — `faceIds` below are
@@ -158,18 +159,60 @@ export function buildBodyMesh(
     localFaceIds.push(fid);
   }
 
+  // A textured face arrives fully de-indexed — 3 unique vertices per triangle,
+  // no sharing at all (measured 2.99 verts/tri on a hex texture: 149,950
+  // vertices for 50,074 triangles). That is how the sidecar delivers
+  // per-triangle normals for faceted shading. Weld the duplicates back
+  // together: same position, same normal, same face => same vertex.
+  //
+  // The key MUST include the faceId. Welding on position+normal alone would let
+  // two coplanar neighbouring faces share a vertex, and then hover-painting one
+  // face bleeds colour into the other — face colour is per-VERTEX here.
+  //
+  // Triangle ORDER is untouched, so `localFaceIds` and the `faceTriangles` map
+  // built below stay valid; only vertex numbering changes. Only runs when the
+  // sidecar shipped normals (i.e. a textured body) — everything else already
+  // arrives well-shared at ~1.02 verts/tri, and welding it would change what
+  // computeVertexNormals averages over.
+  let posOut = localPositions;
+  let nrmOut = localNormals;
+  if (anyNormal && localIndices.length) {
+    const q = 1e4; // 0.1µm position buckets, 1e-3 on the unit normal
+    const seen = new Map<string, number>();
+    const wp: number[] = [];
+    const wn: number[] = [];
+    for (let t = 0; t < localIndices.length; t++) {
+      const v = localIndices[t]!;
+      const fid = localFaceIds[(t / 3) | 0]!;
+      const b = v * 3;
+      const key = `${Math.round(localPositions[b]! * q)},${Math.round(localPositions[b + 1]! * q)},`
+        + `${Math.round(localPositions[b + 2]! * q)}|${Math.round(localNormals[b]! * 1e3)},`
+        + `${Math.round(localNormals[b + 1]! * 1e3)},${Math.round(localNormals[b + 2]! * 1e3)}|${fid}`;
+      let nv = seen.get(key);
+      if (nv === undefined) {
+        nv = wp.length / 3;
+        seen.set(key, nv);
+        wp.push(localPositions[b]!, localPositions[b + 1]!, localPositions[b + 2]!);
+        wn.push(localNormals[b]!, localNormals[b + 1]!, localNormals[b + 2]!);
+      }
+      localIndices[t] = nv;
+    }
+    posOut = wp;
+    nrmOut = wn;
+  }
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(localPositions, 3));
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(posOut, 3));
   geo.setIndex(localIndices);
   // a textured body ships sidecar-computed normals (analytic on displaced
   // faces — smooth shading at coarse displacement density); everything else
   // keeps the usual client-side accumulation.
-  if (anyNormal) geo.setAttribute("normal", new THREE.Float32BufferAttribute(localNormals, 3));
+  if (anyNormal) geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrmOut, 3));
   else geo.computeVertexNormals();
 
   // per-vertex color baked to the base albedo; highlight recolors a face's
   // vertices without disturbing lighting (material.color is white).
-  const vcount = localPositions.length / 3;
+  const vcount = posOut.length / 3;
   const colors = new Float32Array(vcount * 3);
   for (let i = 0; i < vcount; i++) {
     colors[i * 3] = BASE_COLOR.r;
@@ -193,6 +236,9 @@ export function buildBodyMesh(
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = "model";
+  // Hover picking raycasts this mesh on every pointermove; without a BVH that
+  // is a full triangle scan (2.60ms median on a 50k-triangle textured body).
+  buildRaycastIndex(geo);
 
   const edges = buildEdgeLines(bodyEdges, resolution);
 

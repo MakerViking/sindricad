@@ -6,7 +6,12 @@ import * as THREE from "three";
 
 export function disposeObject(root: THREE.Object3D) {
   root.traverse((o: any) => {
+    // A BVH is a separate pair of typed arrays hanging off the geometry, and
+    // geometry.dispose() does NOT free it. A rebuild happens on every document
+    // change, so missing this leaks a tree per rebuild.
+    if (o.geometry?.boundsTree) o.geometry.disposeBoundsTree?.();
     o.geometry?.dispose?.();
+
     const mats = Array.isArray(o.material)
       ? o.material
       : o.material
