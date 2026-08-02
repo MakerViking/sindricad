@@ -420,13 +420,26 @@ def edge_polylines(shape, deflection=_EDGE_DEFLECTION):
 
 def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_seams=True):
     """Sample each body's edges as polylines tagged with the body id (so the frontend
-    can hide a hidden body's WIREFRAME). Edges between two COPLANAR planar faces are a
-    boolean's leftover seam — not a real edge — so they're dropped (MCAD-style),
-    making a merged part read as one continuous face. One pass over the edge->face map:
-    seam-test and sample together. Display-only; touches no geometry (can't hang).
+    can hide a hidden body's WIREFRAME). Two classes of edge are NOT real and are
+    dropped (MCAD-style), so a part reads the way it would in any other CAD:
+
+      * edges between two COPLANAR planar faces — a boolean's leftover seam, which
+        would otherwise draw a line across a merged face;
+      * the UV SEAM of a closed periodic face. A cylinder/cone/sphere/torus wraps
+        onto itself, and OCCT records that closure as a real topological edge at
+        u = 0 = 2pi. It is pure parametrisation bookkeeping: no tangent break, no
+        crease, nothing a printer reproduces. Drawn, it put a vertical line down
+        the side of every plain cylinder. The coplanar test above cannot catch it,
+        because a seam has ONE face listed twice rather than two faces.
+
+    One pass over the edge->face map: both tests and sampling together.
+    Display-only; touches no geometry (can't hang).
 
     `deflection` is the chord-deviation target in mm (see _EDGE_DEFLECTION)."""
     import math
+
+    from OCP.BRep import BRep_Tool
+    from OCP.TopoDS import TopoDS
 
     cos_tol = math.cos(math.radians(1.0))
     out = []
@@ -436,6 +449,8 @@ def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_se
         if sh is None:
             continue
         if not (hide_coplanar_seams and getattr(sh, "wrapped", None) is not None):
+            # No ancestor map here, so neither filter can run. Unreachable for a
+            # build123d body (they always carry .wrapped); kept as a raw fallback.
             for e in sh.edges():
                 pts = _edge_points(e, deflection)
                 if pts is None:
@@ -453,7 +468,25 @@ def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_se
                 n0, n1 = fnorm.get(fmap.FindIndex(fl[0])), fnorm.get(fmap.FindIndex(fl[1]))
                 if n0 and n1 and abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) > cos_tol:
                     continue  # coplanar seam — don't draw it
-            e = Edge(em.FindKey(i))
+            ek = em.FindKey(i)
+            # IsClosed(edge, face) is OCCT's own seam test: true only when the edge
+            # carries TWO pcurves on that one face, which is what a wrap-around
+            # seam is. An edge shared by two distinct faces is never closed on
+            # either, so a fillet's cylindrical face (not closed) keeps all of its
+            # edges — measured: 0 dropped on a box with every edge filleted.
+            # Both arguments need the concrete TopoDS types; the map hands back
+            # TopoDS_Shape, and the bare shape overload of IsClosed means
+            # something else entirely.
+            ke = TopoDS.Edge_s(ek)
+            # A DEGENERATE edge collapses to a point (a sphere's poles, a cone's
+            # apex). OCCT flags it outright; _edge_points does not catch them —
+            # it happily returns 5 coincident points, which draw as zero-length
+            # segments. Harmless on screen but pure waste in the payload.
+            if BRep_Tool.Degenerated_s(ke):
+                continue
+            if any(BRep_Tool.IsClosed_s(ke, TopoDS.Face_s(f)) for f in faces):
+                continue
+            e = Edge(ek)
             pts = _edge_points(e, deflection)
             if pts is None:
                 continue  # degenerate point-edge (pole) — nothing to draw
