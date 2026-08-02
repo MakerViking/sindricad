@@ -54,6 +54,11 @@ releases, report what breaks, and keep backups of documents you care about.
 
 Press `?` in the app for the full keyboard shortcut list.
 
+<p align="center">
+  <img src="assets/readme/parametric-morph.gif" alt="Changing width and boss radius parameters while the part rebuilds live" width="640"><br>
+  <em>Change a parameter, the whole part follows.</em>
+</p>
+
 ## Surface textures
 
 <p align="center">
@@ -71,8 +76,13 @@ pattern's own crease lines, so a knurl prints as crisp diamonds and a hexagon
 pattern as flat-topped cells with sharp walls, instead of the rounded mush a
 sampled height field gives. Patterns wrap cleanly around cylinders and cones,
 closing on themselves at the seam. Textures can also cut inward instead of
-embossing outward, and a two-tone mode colors the pattern's raised cells
-differently from the base for multi-material printing.
+embossing outward, and a two-tone mode prints the textured faces in a
+different palette color than the rest of the body.
+
+<p align="center">
+  <img src="assets/readme/texture-orbit.gif" alt="Orbiting a cylinder wrapped in a hexagon relief texture" width="640"><br>
+  <em>Patterns wrap a full turn and meet themselves at the seam.</em>
+</p>
 
 ## Snapmaker U1 print pipeline
 
