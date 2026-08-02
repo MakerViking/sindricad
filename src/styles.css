@@ -746,8 +746,28 @@ body {
   box-shadow: var(--shadow-pill);
   z-index: 15;
 }
+/* Frame-rate readout, viewport bottom-right. Deliberately quiet: it is a
+   diagnostic you glance at, not a control. It DOES take pointer events, because
+   a `title` tooltip never fires on a pointer-events:none element — that is the
+   whole reason the readout can explain itself on hover. It sits in the corner
+   and is ~90px wide, so the picking area it costs is negligible. */
+.fps {
+  position: absolute;
+  right: var(--s-4);
+  bottom: var(--s-4);
+  padding: 2px 7px;
+  font: 11px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums; /* digits stop twitching as the value changes */
+  color: var(--text-mute);
+  background: rgba(22, 24, 29, 0.55);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 4px);
+  cursor: default;
+  user-select: none;
+  z-index: 15;
+}
+
 #viewcontrols button {
-  background: transparent;
   border: 1px solid transparent;
   color: var(--text-dim);
   border-radius: var(--r-pill);

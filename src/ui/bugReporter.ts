@@ -14,11 +14,12 @@ import { pushModal, popModal } from "./choice";
 import { appVersion } from "./updates";
 import { breadcrumbs } from "../diagnostics/breadcrumbs";
 import { taBugReport, asTaError } from "../tinkeratlas/client";
+import type { Viewport } from "../viewport/viewport";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
-export function createBugReporter(deps: { store: DocumentStore; geometry: GeometryBackend }) {
-  const { store, geometry } = deps;
+export function createBugReporter(deps: { store: DocumentStore; geometry: GeometryBackend; viewport: Viewport }) {
+  const { store, geometry, viewport } = deps;
 
   const btn = document.createElement("button");
   btn.className = "bug-report-btn";
@@ -32,7 +33,10 @@ export function createBugReporter(deps: { store: DocumentStore; geometry: Geomet
     if (document.querySelector(".bug-report-card")) return; // one at a time
     const version = await appVersion();
     const connected = geometry.connected;
-    const crumbs = breadcrumbs();
+    // Scene stats FIRST: they answer the questions a performance report always
+    // raises (how many triangles, how big the canvas, what frame rate), and
+    // leading the list keeps them inside the server's breadcrumb cap.
+    const crumbs = [...viewport.sceneStats(), ...breadcrumbs()];
 
     pushModal();
     const backdrop = document.createElement("div");

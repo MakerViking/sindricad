@@ -3,6 +3,7 @@
 // in the XY plane and cameras use up = +Z.
 
 import * as THREE from "three";
+import { stickyFact } from "../diagnostics/breadcrumbs";
 import { niceStep } from "../ui/units";
 
 export interface SceneBundle {
@@ -69,10 +70,40 @@ export class AdaptiveGrid {
   }
 }
 
+/** Which renderer the webview reports, recorded once at startup.
+ *
+ *  TRUST THIS ONLY ON WINDOWS/macOS. WebKitGTK — the engine a Linux Tauri build
+ *  runs on — deliberately SPOOFS WEBGL_debug_renderer_info for fingerprinting
+ *  resistance and reports "Apple GPU / Apple Inc." on any hardware, so neither
+ *  the name nor a software-rasteriser guess means anything there. Verified on
+ *  this machine: the string said "Apple GPU" while the web process actually had
+ *  /dev/dri/renderD128 open with libdrm_amdgpu + libgallium mapped, i.e. a real
+ *  Radeon. The reliable Linux check is the process's open DRI fds, not WebGL.
+ *
+ *  Still worth recording: it is real on the other two platforms, and knowing it
+ *  is spoofed is itself the answer when a Linux report blames the GPU. */
+function recordGpu(renderer: THREE.WebGLRenderer) {
+  let desc = "unknown";
+  try {
+    const gl = renderer.getContext();
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    const v = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+    desc = `${r} (${v})`;
+  } catch {
+    /* querying the renderer must never break startup */
+  }
+  const spoofed = /apple/i.test(desc) && !/mac/i.test(navigator.platform ?? "");
+  const note = spoofed ? " — reported by WebKitGTK, which spoofs this; not the real GPU" : "";
+  (window as { __gpu?: string }).__gpu = desc + note;
+  stickyFact(`[gpu] ${desc}${note}`);
+}
+
 export function createScene(canvas: HTMLCanvasElement): SceneBundle {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setClearColor(0x1a1d21, 1);
+  recordGpu(renderer);
 
   const scene = new THREE.Scene();
 
