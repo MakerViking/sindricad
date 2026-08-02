@@ -26,6 +26,8 @@ import {
   type ModelView,
 } from "./render";
 import { disposeObject } from "./dispose";
+import { FpsMeter } from "./fpsMeter";
+import { sceneStats } from "../diagnostics/sceneStats";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
@@ -171,9 +173,13 @@ export class Viewport {
       // hover-in/out needs a render even when handleHover early-returns (no
       // model, suspended picking, bodies-selection mode, etc).
       this.requestRender();
-      this.handleHover(e);
+      this.queueHover(e);
     });
     c.addEventListener("pointerup", (e) => {
+      // The drag suppressed hover (see queueHover); re-establish it for wherever
+      // the cursor actually ended up, so the face under it lights straight away
+      // instead of waiting for the next mouse twitch.
+      if (e.buttons === 0) this.queueHover(e);
       if (e.button !== 0 || this.dragMoved) return;
       // 1) a click landing on the ViewCube corner orients the view (and never
       //    falls through to model picking).
@@ -260,6 +266,38 @@ export class Viewport {
     const target = this.rig.controls.getTarget(new THREE.Vector3());
     const dist = cam.distanceTo(target);
     return rc.ray.origin.clone().add(rc.ray.direction.clone().multiplyScalar(dist));
+  }
+
+  // Hover picking is a raycast, and a pointer device can deliver several moves
+  // per displayed frame — doing the pick on each one is wasted work, since only
+  // the last position is ever shown. Keep the newest event and pick ONCE per
+  // animation frame. Independent of the BVH: that makes each pick cheap, this
+  // makes the number of picks match the number of frames.
+  private hoverPending: PointerEvent | null = null;
+  private hoverRaf = 0;
+
+  private queueHover(e: PointerEvent) {
+    // A held button means the user is orbiting/panning or dragging a tool, not
+    // shopping for a face — and hover-highlighting through it is expensive:
+    // repainting a hovered face rewrites its vertex colours and re-uploads the
+    // buffer. Measured while orbiting a hex-textured cylinder: 2.02ms PER FRAME,
+    // 6.5x the cost of submitting the draw itself, and the hovered face changed
+    // on 181 of 184 frames because the model is sweeping under a moving cursor.
+    // Dropping the hover for the duration of the drag removes all of it.
+    if (e.buttons !== 0) {
+      // clear once so a stale highlight doesn't ride along through the orbit;
+      // hoverFace(null) early-returns after the first call, so this is free.
+      this.highlighter?.clearHover();
+      return;
+    }
+    this.hoverPending = e;
+    if (this.hoverRaf) return;
+    this.hoverRaf = requestAnimationFrame(() => {
+      this.hoverRaf = 0;
+      const ev = this.hoverPending;
+      this.hoverPending = null;
+      if (ev) this.handleHover(ev);
+    });
   }
 
   private handleHover(e: PointerEvent) {
@@ -1772,12 +1810,27 @@ export class Viewport {
    *  only valid in the same task as a render call — render synchronously right
    *  before reading. Skips the ViewCube overlay for a clean shot; the next
    *  loop frame repaints it. */
+  /** Snapshot of what the viewport is drawing, for a bug report's breadcrumbs.
+   *  See diagnostics/sceneStats — collected at report time, counters only. */
+  sceneStats(): string[] {
+    return sceneStats({
+      model: this.model,
+      canvas: this.canvas,
+      pixelRatio: this.scene.renderer.getPixelRatio(),
+      frameMs: this.fps.lastFrameMs(),
+    });
+  }
+
   screenshotPNG(): string {
     this.scene.renderer.render(this.scene.scene, this.rig.active);
     const url = this.canvas.toDataURL("image/png");
     this.requestRender(); // repaint with the ViewCube overlay
     return url;
   }
+
+  // Counts frames the loop ACTUALLY draws. Render-on-demand means most rAF
+  // ticks draw nothing, so this is incremented at the draw, not at the tick.
+  private fps = new FpsMeter();
 
   private scratchTarget = new THREE.Vector3();
   private loop = () => {
@@ -1801,6 +1854,7 @@ export class Viewport {
         this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t), this.targetGridZ);
         this.scene.renderer.render(this.scene.scene, this.rig.active);
         this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
+        this.fps.frame();
         this.needsRender = false;
         if (this.lingerFrames > 0) this.lingerFrames--;
       }
