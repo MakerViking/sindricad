@@ -55,14 +55,14 @@ releases, report what breaks, and keep backups of documents you care about.
 Press `?` in the app for the full keyboard shortcut list.
 
 <p align="center">
-  <img src="assets/readme/parametric-morph.gif" alt="Changing width and boss radius parameters while the part rebuilds live" width="640"><br>
-  <em>Change a parameter, the whole part follows.</em>
+  <img src="assets/readme/history-buildup.gif" alt="A part built up feature by feature: sketch, extrude, fillet, two cuts, then a surface texture" width="640"><br>
+  <em>A part is its history: sketch, extrude, fillet, cut, texture — and every step stays editable.</em>
 </p>
 
 ## Surface textures
 
 <p align="center">
-  <img src="assets/readme/hex-texture-vase.jpg" alt="A cylinder wrapped in a hexagon relief texture in the SindriCAD viewport" width="700">
+  <img src="assets/readme/texture-kinds.png" alt="Four cylinders with knurl, hexagon, rib, and Voronoi textures side by side" width="760">
 </p>
 
 Textures turn a plain face into a tactile printed surface: knurling for grip, hexagon
@@ -88,6 +88,11 @@ different palette color than the rest of the body.
 
 SindriCAD carries print prep for the Snapmaker U1 multi-material printer from model to
 machine, so a colored parametric part reaches a print without a manual export dance.
+
+<p align="center">
+  <img src="assets/readme/nameplate-two-color.png" alt="A white nameplate with red extruded sketch text reading SINDRI" width="640"><br>
+  <em>Sketch text, extruded and mapped to its own filament slot.</em>
+</p>
 
 - **Multi-material and multi-color 3MF**: assign palette colors to bodies and export an
   OrcaSlicer project 3MF with per-object extruder (tool) mapping for the U1's tool
@@ -159,6 +164,11 @@ A `.sindri` file is JSON: a parameter table and an ordered list of features.
 ```
 
 Any numeric field is either a literal (`5`) or the name of a parameter (`"width"`).
+
+<p align="center">
+  <img src="assets/readme/parametric-morph.gif" alt="Changing width and boss radius parameters while the part rebuilds live" width="640"><br>
+  <em>Change a parameter, the whole part follows — and the corner fillets stay on their edges.</em>
+</p>
 
 ## Install
 
