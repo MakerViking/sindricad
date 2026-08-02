@@ -45,7 +45,11 @@ _DEFAULT_DENSITY_CAP = 2_000_000
 #    negates the shading normal on back-wound triangles, lighting half the
 #    model inside-out; inconsistent winding also rides into STL/3MF exports.
 #    Windings now oriented to agree with the analytic normals.
-CODE_VERSION = 7
+# 8: waves got its own faceted profile (a sine polyline). Under `facet` it had
+#    returned the same _trapezoid as ribs, so the two kinds were byte-identical
+#    for every user on the default profile; `sharpness` now picks its facet
+#    count instead of a land width. Existing waves documents change shape.
+CODE_VERSION = 8
 
 
 def validate_texture_spec(f):
@@ -303,10 +307,74 @@ def _height_hex(u, v, scale, sharpness=0.5, facet=True):
     return np.clip(d_edge / max(_hex_wall_width(scale, sharpness), 1e-9), 0.0, 1.0)
 
 
+# Joins per period in the faceted wave. Fixed, and 8 is not a taste call: the
+# lattice plants a sample line per crease, so the facet count sets the grid's
+# ASPECT against the free axis (one line per period). At 8 the cells are 1:8 and
+# the assembly is exact everywhere; at 12 and 16 the seam strip on a cylinder
+# starts handing Delaunay cells so slivered it bridges two crease columns at
+# once (measured: 5 and 37 interior triangles off by up to 0.026mm, all within
+# 1.2mm of the seam). Finer is also pointless for the printer — 16 facets on a
+# 2mm wave is 0.125mm each, under any nozzle. So the slider shapes the profile
+# BETWEEN these joins instead of adding more of them.
+_WAVE_JOINS = 8
+
+
+def _wave_levels():
+    """The faceted wave's height at each of its `_WAVE_JOINS` joins.
+
+    There is deliberately NO shape parameter. Every way of flattening or peaking
+    a one-dimensional profile on this few joins lands back on the trapezoid /
+    triangle family — which IS ribs, only phase-shifted — so a "roundness"
+    slider would spend its travel walking waves back into the kind it exists to
+    differ from. Tried and rejected: a gain about mid-height clipped the crest
+    flat by slider position 0.21 and then did nothing for the remaining 80%. The
+    sine is the distinction, and it has no free parameter; the panel hides the
+    control for this kind rather than showing a dead one."""
+    i = np.arange(_WAVE_JOINS)
+    return 0.5 + 0.5 * np.sin(2 * np.pi * i / _WAVE_JOINS)
+
+
+def _wave_phases():
+    """Gradient breakpoints of the faceted wave, as fractions of one period.
+
+    NOT every join: the sine is antisymmetric about its two INFLECTIONS, and the
+    joins are symmetric about them too, so the chords either side share a slope
+    and the polyline runs dead straight through. Those two turn no corner, and a
+    line there would buy nothing but triangles — a quarter of them. Read off the
+    levels rather than hardcoded, by comparing the slope arriving with the one
+    leaving."""
+    lv = _wave_levels()
+    d = np.roll(lv, -1) - lv  # slope of the segment starting at join i
+    return tuple(i / _WAVE_JOINS for i in range(_WAVE_JOINS)
+                 if abs(float(d[i - 1] - d[i])) > 1e-12)
+
+
+def _facet_wave(x, period):
+    """The faceted wave: linear interpolation between `_wave_levels`.
+
+    Faceted kinds must be piecewise linear to be MESHABLE EXACTLY — a curved
+    level set cannot be reproduced by any arrangement of sample points, which is
+    what left the old cosine-walled hex measured 41% of its own depth off. So
+    the rounded look is built from real planar facets and real creases rather
+    than approximated by sampling a curve."""
+    lv = _wave_levels()
+    n = len(lv)
+    t = (x % period) / period * n
+    i = np.floor(t)
+    f = t - i
+    i = i.astype(np.int64) % n
+    lo = lv[i]
+    return lo + (lv[(i + 1) % n] - lo) * f
+
+
 def _height_waves(u, v, scale, angle, sharpness, facet=True):
     u1, _ = _rotate(u, v, angle)
     if facet:
-        return _trapezoid(u1, scale, sharpness)
+        # a faceted SINE, not a trapezoid: rounded undulation against ribs' flat
+        # -topped prisms. Both kinds used to return _trapezoid here, which made
+        # them byte-identical under the default profile (measured max|w-r| = 0).
+        # `sharpness` is deliberately unused — see _wave_levels.
+        return _facet_wave(u1, scale)
     h = 0.5 + 0.5 * np.sin(2 * np.pi * u1 / scale)
     return _sharpen(h, sharpness)
 
@@ -456,8 +524,8 @@ def height_field(kind, spec, u_mm, v_mm, u_range=None, v_range=None):
     facets and real creases, which is what survives a 3D print) or the original
     smooth fields (`"round"`). `sharpness` is reused per profile rather than
     adding a control: under facet it is the flat-LAND fraction for the periodic
-    kinds, the wall width for the cellular ones, and the terrace count for the
-    continuous ones."""
+    kinds, the FACET COUNT for waves, the wall width for the cellular ones, and
+    the terrace count for the continuous ones."""
     scale = max(float(spec.get("scale", 2.0)), 0.05)
     angle = float(spec.get("angle", 0.0))
     sharpness = float(spec.get("sharpness", 0.5))
@@ -709,8 +777,13 @@ def _pattern_axes(kind, spec):
     if not _is_facet(spec):
         return None
     land = float(spec.get("sharpness", 0.5))
-    if kind in ("ribs", "waves"):
+    if kind == "ribs":
         return (_crease_phases(land), None)
+    if kind == "waves":
+        # a faceted sine turns a corner at every join, not at four breakpoints —
+        # so it needs its own, denser phase set. Sharing ribs' would chord across
+        # the curve and lose the roundness it exists for. Land-independent.
+        return (_wave_phases(), None)
     if kind == "knurl":
         # both grooves, so both axes carry the same breakpoints. The min() of the
         # two ALSO creases along a line inside each ramp-by-ramp cell; that one

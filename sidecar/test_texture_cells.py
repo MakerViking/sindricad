@@ -127,6 +127,62 @@ def test_trapezoid_has_four_breakpoints_per_period():
     print(PASS, "trapezoid turns four corners per period; _crease_phases names all four")
 
 
+def test_faceted_waves_are_a_sine_polyline_not_a_trapezoid():
+    """`waves` and `ribs` shipped BYTE-IDENTICAL under the default profile: both
+    height functions returned the same `_trapezoid`, so a kind the UI offers
+    separately, names separately and stores separately drew exactly the other
+    one (measured max|w-r| = 0.000000 at every land and angle). They differed
+    only under `round`, which is not the default, so almost nobody could see it.
+
+    Waves is now a sine POLYLINE — piecewise linear, because a curved level set
+    cannot be meshed exactly (that is what left the old cosine-walled hex 41% of
+    its own depth off), but rounded where ribs is flat-topped.
+
+    Three claims, each read off the field rather than off the derivation: it
+    differs from ribs by a real fraction of depth at every slider position, it
+    still spans [0,1] exactly (so `depth` keeps meaning what it says), and the
+    creases it turns are EXACTLY the ones `_wave_phases` declares — the lattice
+    plants one sample line per phase, so an undeclared crease is a chord cutting
+    the curve and a phase that turns no corner is triangles bought for nothing.
+
+    Faceted waves takes no shape parameter (see `_wave_levels`), so `sharpness`
+    is swept here to pin that down rather than to vary anything."""
+    u, v = np.meshgrid(np.linspace(0.0, 6.0, 601), np.linspace(0.0, 6.0, 601))
+    for sharp in (0.0, 0.5, 1.0):
+        for angle in (0.0, 30.0):
+            w = texture._height_waves(u, v, SCALE, angle, sharp, facet=True)
+            r = texture._height_ribs(u, v, SCALE, angle, sharp, facet=True)
+            assert float(np.abs(w - r).max()) > 0.25, \
+                f"waves collapsed onto ribs at sharp={sharp} angle={angle}"
+            assert abs(float(w.min())) < 1e-12 and abs(float(w.max()) - 1.0) < 1e-12, \
+                f"waves must span [0,1]: got [{w.min()}, {w.max()}]"
+
+    x = np.linspace(0.0, SCALE, 200001)
+    h = texture._facet_wave(x, SCALE)
+    slope = np.round(np.diff(h) / np.diff(x), 6)
+    hits = np.sort(x[1:-1][np.abs(np.diff(slope)) > 1e-9] / SCALE)
+    got = []
+    for t in hits:  # cluster the numerically-adjacent hits
+        if not got or float(t) - got[-1] > 1e-3:
+            got.append(float(t))
+    want = sorted(texture._wave_phases())
+    assert len(got) == len(want), (got, want)
+    assert max(abs(a - b) for a, b in zip(got, want)) < 1e-3, (got, want)
+
+    # the oracle must actually bite: put the shipped bug back and the collapse
+    # has to be what the first assertion catches
+    orig = texture._facet_wave
+    texture._facet_wave = lambda x, period: texture._trapezoid(x, period, 0.5)
+    try:
+        w = texture._height_waves(u, v, SCALE, 0.0, 0.5, facet=True)
+        r = texture._height_ribs(u, v, SCALE, 0.0, 0.5, facet=True)
+        collapsed = float(np.abs(w - r).max())
+    finally:
+        texture._facet_wave = orig
+    assert collapsed < 1e-12, f"mutation failed to reproduce the bug ({collapsed})"
+    print(PASS, "faceted waves is a sine polyline, distinct from ribs, creases as declared")
+
+
 def test_lattice_reproduces_the_height_field_exactly():
     """THE oracle. Interior triangles must reproduce the true field at points
     strictly inside them, not merely at their vertices — that is the difference
@@ -198,7 +254,10 @@ def test_lattice_costs_no_more_than_the_pattern_demands():
     right, so only a budget assertion catches it.
 
     The ceilings are not all the same, and that is the honest result rather than
-    a headline: ribs/waves need lines across one axis only. A knurl with a LAND
+    a headline: ribs needs lines across one axis only. WAVES is on that same one
+    axis but is a sine POLYLINE, so it pays per facet — 6 creases per period
+    against ribs' 2 or 4 — and costs about a third more. Its count is fixed, so
+    unlike ribs its ceiling does not move with the slider. A knurl with a LAND
     needs four breakpoints on both axes, so its tensor product is 4x4 cells = 32
     triangles — no cheaper than sampling, but exact where sampling was wrong by
     a third to a half of the texture's depth. Merging the coplanar trough and
@@ -582,6 +641,7 @@ def _max_distance_to_segments(Q, base):
 def main():
     print("Texture lattice tests")
     test_trapezoid_has_four_breakpoints_per_period()
+    test_faceted_waves_are_a_sine_polyline_not_a_trapezoid()
     test_lattice_reproduces_the_height_field_exactly()
     test_lattice_tiles_the_face_exactly_once()
     test_lattice_keeps_the_boundary_on_the_shared_polyline()

@@ -171,11 +171,19 @@ export class TexturePanel {
     sharpness.min = "0";
     sharpness.max = "1";
     inputStyle(sharpness);
-    // the same slider means different things per profile, so it says which
+    // the same slider means different things per profile, so it says which —
+    // and for one combination it means nothing at all, so it goes away rather
+    // than sitting there dead: a FACETED wave is a fixed 8-join sine polyline
+    // with no shape parameter (sidecar `_wave_levels` explains why). Under
+    // `round` waves is a real sine and `sharpness` still crisps it.
     const sharpLabel = label("Sharp");
     const syncSharpLabel = () => {
-      sharpLabel.textContent = profile.value === "facet" ? "Land" : "Sharp";
-      sharpLabel.title = profile.value === "facet"
+      const facet = profile.value === "facet";
+      const dead = facet && (kind.value as TextureKind) === "waves";
+      sharpLabel.style.display = dead ? "none" : "";
+      sharpness.style.display = dead ? "none" : "";
+      sharpLabel.textContent = facet ? "Land" : "Sharp";
+      sharpLabel.title = facet
         ? "Flat land on the crests: 0 = pure V-groove peaks, 1 = wide flat tops"
         : "Crispness of the smooth profile";
     };
@@ -233,6 +241,7 @@ export class TexturePanel {
     const updateVisibility = () => {
       const k = kind.value as TextureKind;
       angleRow.style.display = ANGLE_KINDS.has(k) ? "flex" : "none";
+      syncSharpLabel();  // whether the slider means anything is kind-dependent too
       // Direction is NOT an angle-kind thing: the sidecar applies it to the
       // height field itself (out = h, in = h-1, both = centred), so every kind
       // honours it. Gating it behind ANGLE_KINDS left noise/voronoi/image able
