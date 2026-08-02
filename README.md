@@ -20,29 +20,59 @@ G-code to the printer over the LAN.
 
 > Named for Sindri, the dwarven smith of Norse myth.
 
+<p align="center">
+  <img src="assets/readme/two-tone-part.png" alt="A two-color part in SindriCAD: feature tree and palette on the left, a chamfered body with a knurled face in the viewport" width="800">
+</p>
+
 **Status: beta, in ongoing development.** SindriCAD already builds real printed parts,
 but the feature set is still filling out and rough edges remain. Expect frequent
 releases, report what breaks, and keep backups of documents you care about.
 
 ## What it does
 
-- **Sketching** with lines, arcs, circles, splines, rectangles, slots, and polygons,
-  plus associative patterns (bolt circles, grids, honeycomb) and a PlaneGCS constraint
-  solver. Dimensions are entered on the canvas: type a value, press Tab to lock it,
-  Enter to commit.
+- **Sketching** with lines, arcs, circles, splines, rectangles, slots, polygons, and
+  text in system fonts, plus associative patterns (bolt circles, grids, honeycomb) and
+  a PlaneGCS constraint solver. Dimensions are entered on the canvas: type a value,
+  press Tab to lock it, Enter to commit.
+- **Parameters and expressions**: name a value once, use it anywhere a number goes,
+  and write arithmetic between parameters. Change one number and the whole part
+  follows.
 - **Features**: Extrude (new body, join, cut, intersect, per region), Revolve, Loft,
   Sweep, Press/Pull (multi-face, and extrude up to a target surface), Fillet, Chamfer,
   Shell, Draft, Scale, Mirror, and patterns.
+- **Surface textures** (see below).
 - **Direct editing**: Move with a live ghost preview, Split, Combine, Delete Face with
   automatic healing, and a cleanup pass for messy imported geometry.
-- **Import** STEP, STL, 3MF, and OBJ, with facet cleanup and STEP canonicalization, so
-  imported parts come back as editable faces instead of a triangle soup.
+- **Import** STEP, STL, 3MF, OBJ, and GLB, with facet cleanup and STEP
+  canonicalization, so imported parts come back as editable faces instead of a
+  triangle soup. Export STEP, STL, 3MF, and GLB.
 - **References that survive edits**: geometry is picked by queryable descriptors (an
   axis, a face normal, the nearest point), never by a topology index. Change an
   upstream parameter and a downstream fillet still lands on the right edge.
+- **Measure and section tools** for checking a part before it prints.
 - **A print pipeline** for the Snapmaker U1 (see below).
 
 Press `?` in the app for the full keyboard shortcut list.
+
+## Surface textures
+
+<p align="center">
+  <img src="assets/readme/hex-texture-vase.jpg" alt="A cylinder wrapped in a hexagon relief texture in the SindriCAD viewport" width="700">
+</p>
+
+Textures turn a plain face into a tactile printed surface: knurling for grip, hexagon
+or rib relief for looks, Voronoi and noise for organic breakup, or any grayscale
+image as a height map. Pick faces (or a whole body), set depth, scale, and angle, and
+the pattern is applied as real displaced geometry, not a shader trick: what you see
+is what the slicer gets.
+
+The faceted patterns are built as exact lattices. Mesh vertices land on the
+pattern's own crease lines, so a knurl prints as crisp diamonds and a hexagon
+pattern as flat-topped cells with sharp walls, instead of the rounded mush a
+sampled height field gives. Patterns wrap cleanly around cylinders and cones,
+closing on themselves at the seam. Textures can also cut inward instead of
+embossing outward, and a two-tone mode colors the pattern's raised cells
+differently from the base for multi-material printing.
 
 ## Snapmaker U1 print pipeline
 
@@ -204,9 +234,10 @@ cd sidecar && uv run python server.py     # ws://127.0.0.1:8765
 npm run dev                               # http://localhost:5173
 ```
 
-> Note: a standalone `python server.py` started in the background does **not** auto-die
-> when its shell exits (only the Tauri-managed sidecar does). Kill it by hand or it will
-> hold port 8765.
+> Note: on Linux a standalone `python server.py` arms PR_SET_PDEATHSIG and dies with
+> the shell that started it. To keep one alive across shells (or on other platforms),
+> run it in a terminal you keep open, and kill it by hand when done or it will hold
+> port 8765.
 
 ## Project layout
 
