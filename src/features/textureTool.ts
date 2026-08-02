@@ -238,7 +238,7 @@ export class TextureTool {
       return;
     }
     if (this.mode === "faces") {
-      const cur = this.viewport.selectedFacesForPressPull()?.faceIds ?? [];
+      const cur = this.viewport.getSelectedFaceIds();
       // a rebuild (our own preview landing, usually) wiped the selection — the
       // members are still the tool's; restore them instead of treating the
       // wipe as a user deselect. Face ids are stable here: displacement never
@@ -284,7 +284,7 @@ export class TextureTool {
       const name = this.store.bodyName(id) ?? b?.name ?? id;
       return ids.length > 1 ? `Whole body: ${name} (using first of ${ids.length} selected)` : `Whole body: ${name}`;
     }
-    const n = this.viewport.selectedFacesForPressPull()?.faceIds.length ?? 0;
+    const n = this.viewport.getSelectedFaceIds().length;
     return n ? `${n} face${n === 1 ? "" : "s"} selected` : "No faces selected — click one or more faces";
   }
 
@@ -314,7 +314,7 @@ export class TextureTool {
 
   private hasTarget(): boolean {
     if (this.mode === "body") return this.viewport.getSelectedBodies().length > 0;
-    return (this.viewport.selectedFacesForPressPull()?.faceIds.length ?? 0) > 0;
+    return this.viewport.getSelectedFaceIds().length > 0;
   }
 
   private schedulePreview() {

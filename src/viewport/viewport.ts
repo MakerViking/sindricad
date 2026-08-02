@@ -581,6 +581,16 @@ export class Viewport {
     return this.highlighter?.getSelectedBodies() ?? [];
   }
 
+  /** Selected face ids only — O(selection). selectedFacesForPressPull() builds
+   *  full selectors via faceCentroidWorld, which walks EVERY triangle of every
+   *  selected face twice; on a textured face (~50k triangles) that costs
+   *  milliseconds. Per-frame callers (the texture tool's rAF tick diffs the
+   *  selection every tick) must use this — the full call dragged preview mode
+   *  to 41fps on a hex cylinder whose committed mesh renders at 60. */
+  getSelectedFaceIds(): number[] {
+    return this.highlighter?.getSelectedFaces() ?? [];
+  }
+
   /** set the body selection from outside (e.g. the browser tree). */
   setSelectedBodies(ids: string[]) {
     if (!this.highlighter) return;
