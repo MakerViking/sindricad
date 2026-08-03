@@ -17,12 +17,78 @@ pub struct AppSettings {
     pub orca_datadir: String,
 }
 
+/// Where OrcaSlicer usually installs, most likely first. `default_settings` takes
+/// the first that actually exists, so a user who installed it in any of the usual
+/// places gets a working handoff without ever touching a settings file — which
+/// matters because nothing in the UI writes one yet.
+///
+/// `os` and `env` are parameters rather than `cfg!` so the Windows and macOS
+/// branches are exercisable from the Linux CI runner: `cargo test --lib` only
+/// ever runs on ubuntu, and "nobody exercised the non-Linux path" is precisely
+/// how a home-relative AppImage shipped as the Windows default.
+fn slicer_candidates_for(
+    os: &str,
+    home: Option<&PathBuf>,
+    env: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let under_home = |rel: &str| home.map(|h| h.join(rel));
+    let under_env = |key: &str, rel: &str| env(key).map(|v| v.join(rel));
+    let candidates = match os {
+        "windows" => vec![
+            under_env("ProgramFiles", "OrcaSlicer/orca-slicer.exe"),
+            under_env("LOCALAPPDATA", "Programs/OrcaSlicer/orca-slicer.exe"),
+            under_env("ProgramFiles(x86)", "OrcaSlicer/orca-slicer.exe"),
+        ],
+        "macos" => vec![
+            Some(PathBuf::from("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")),
+            under_home("Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer"),
+        ],
+        _ => vec![
+            under_home("Applications/OrcaSlicer_V2.4.0-alpha.AppImage"),
+            under_home("Applications/OrcaSlicer.AppImage"),
+            Some(PathBuf::from("/usr/bin/orca-slicer")),
+            Some(PathBuf::from("/usr/local/bin/orca-slicer")),
+            Some(PathBuf::from("/var/lib/flatpak/exports/bin/io.github.softfever.OrcaSlicer")),
+        ],
+    };
+    candidates.into_iter().flatten().collect()
+}
+
+/// OrcaSlicer's own data directory (where its presets live), per platform.
+fn orca_datadir_for(
+    os: &str,
+    home: Option<&PathBuf>,
+    env: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match os {
+        "windows" => env("APPDATA").map(|v| v.join("OrcaSlicer")),
+        "macos" => home.map(|h| h.join("Library/Application Support/OrcaSlicer")),
+        _ => home.map(|h| h.join(".config/OrcaSlicer")),
+    }
+}
+
+fn real_env(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key).map(PathBuf::from)
+}
+
 fn default_settings(app: &AppHandle) -> AppSettings {
     let home = app.path().home_dir().ok();
-    let join = |rel: &str| home.as_ref().map(|h| h.join(rel).to_string_lossy().into_owned()).unwrap_or_default();
+    let os = std::env::consts::OS;
+    let candidates = slicer_candidates_for(os, home.as_ref(), &real_env);
+    // The first that exists; failing that the most likely one, so `slicer_open`'s
+    // "slicer not found at ..." names a real install path instead of an empty
+    // string or a path from the wrong operating system.
+    let slicer_path = candidates
+        .iter()
+        .find(|p| p.is_file())
+        .or_else(|| candidates.first())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     AppSettings {
-        slicer_path: join("Applications/OrcaSlicer_V2.4.0-alpha.AppImage"),
-        orca_datadir: join(".config/OrcaSlicer"),
+        slicer_path,
+        orca_datadir: orca_datadir_for(os, home.as_ref(), &real_env)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
     }
 }
 
@@ -195,6 +261,15 @@ fn is_compatible(idx: &HashMap<String, PathBuf>, name: &str, chain: &HashSet<Str
         .unwrap_or(false)
 }
 
+/// True when a preset file sits under the datadir's `user/` tree.
+///
+/// Matches a path COMPONENT, not a `"/user/"` substring: on Windows the separator
+/// is `\`, so the substring never matched, every user preset was filed as a system
+/// one, and the "prefer the user's own presets" rule silently inverted there.
+fn is_user_preset(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "user")
+}
+
 /// Best preset of a kind for the machine: compatible with it, preferring the
 /// user's own presets, then a name hint (e.g. "0.20"), then alphabetical.
 fn pick_preset(idx: &HashMap<String, PathBuf>, chain: &HashSet<String>, hints: &[&str]) -> Option<String> {
@@ -202,7 +277,7 @@ fn pick_preset(idx: &HashMap<String, PathBuf>, chain: &HashSet<String>, hints: &
     let mut sys: Vec<String> = Vec::new();
     for (name, path) in idx {
         if is_compatible(idx, name, chain) {
-            if path.to_string_lossy().contains("/user/") {
+            if is_user_preset(path) {
                 user.push(name.clone());
             } else {
                 sys.push(name.clone());
@@ -288,6 +363,70 @@ pub fn slicer_project_settings(app: AppHandle, filament_count: usize) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reported 2026-08-02 from a Windows build: "open in orca links to appimage
+    /// in windows". The defaults had no per-OS branching at all, so every
+    /// platform got a home-relative Linux AppImage that cannot exist off Linux.
+    /// All three branches are asserted here regardless of the host, because CI
+    /// only ever runs `cargo test --lib` on ubuntu.
+    #[test]
+    fn slicer_candidates_match_the_platform() {
+        let home = PathBuf::from("/home/tester");
+        let env = |k: &str| match k {
+            "ProgramFiles" => Some(PathBuf::from("C:\\Program Files")),
+            "ProgramFiles(x86)" => Some(PathBuf::from("C:\\Program Files (x86)")),
+            "LOCALAPPDATA" => Some(PathBuf::from("C:\\Users\\tester\\AppData\\Local")),
+            "APPDATA" => Some(PathBuf::from("C:\\Users\\tester\\AppData\\Roaming")),
+            _ => None,
+        };
+        let names = |os: &str| -> Vec<String> {
+            slicer_candidates_for(os, Some(&home), &env)
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        };
+
+        let win = names("windows");
+        assert!(!win.is_empty(), "windows must have candidates");
+        assert!(win.iter().all(|n| n.ends_with(".exe")), "windows wants .exe: {win:?}");
+        assert!(!win.iter().any(|n| n.contains("AppImage")), "the reported bug: {win:?}");
+        assert!(win.iter().any(|n| n.contains("Program Files")), "expected a Program Files install: {win:?}");
+
+        let mac = names("macos");
+        assert!(mac.iter().all(|n| n.contains(".app/")), "macos wants a bundle: {mac:?}");
+        assert!(!mac.iter().any(|n| n.contains("AppImage")), "no AppImage on macos: {mac:?}");
+
+        let lin = names("linux");
+        assert!(lin.iter().any(|n| n.contains("AppImage")), "linux wants an AppImage: {lin:?}");
+        assert!(!lin.iter().any(|n| n.ends_with(".exe")), "no .exe on linux: {lin:?}");
+    }
+
+    /// The datadir was `~/.config/OrcaSlicer` everywhere, which is only right on
+    /// Linux. Orca keeps presets in %APPDATA% on Windows and under
+    /// ~/Library/Application Support on macOS.
+    #[test]
+    fn orca_datadir_matches_the_platform() {
+        let home = PathBuf::from("/home/tester");
+        let env = |k: &str| (k == "APPDATA").then(|| PathBuf::from("C:\\Users\\tester\\AppData\\Roaming"));
+        let dir = |os: &str| orca_datadir_for(os, Some(&home), &env).unwrap().to_string_lossy().into_owned();
+
+        assert!(dir("windows").contains("AppData"), "got {}", dir("windows"));
+        assert!(!dir("windows").contains(".config"), "got {}", dir("windows"));
+        assert!(dir("macos").contains("Library/Application Support"), "got {}", dir("macos"));
+        assert!(dir("linux").ends_with(".config/OrcaSlicer"), "got {}", dir("linux"));
+    }
+
+    /// The old test was `path.contains("/user/")`, which is false for every
+    /// Windows path, so user presets lost their preference there.
+    #[test]
+    fn user_presets_are_found_by_component_not_separator() {
+        let datadir = PathBuf::from("datadir");
+        assert!(is_user_preset(&datadir.join("user/default/process/mine.json")));
+        assert!(is_user_preset(&datadir.join("user").join("default").join("process").join("mine.json")));
+        assert!(!is_user_preset(&datadir.join("system/Snapmaker/process/U1.json")));
+        // "user" has to be a whole component, not a prefix of one.
+        assert!(!is_user_preset(&datadir.join("system/user-contributed/process/x.json")));
+    }
 
     // Integration check against the user's real Orca datadir (skips cleanly on a
     // machine without it). Confirms the flatten binds the U1: printer_model set

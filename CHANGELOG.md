@@ -33,6 +33,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **"Open in OrcaSlicer" now works on Windows and macOS.** The default slicer
+  path had no per-platform branching, so every install pointed at a Linux
+  AppImage under the user's home directory. On Windows and macOS that file
+  cannot exist, and since nothing in the UI writes a settings file, the default
+  was the only value and the handoff was dead. SindriCAD now looks in the usual
+  install locations per platform and picks the first that exists. Orca's preset
+  directory was wrong in the same way and follows the same rule.
+- User presets are recognised on Windows again. The check for "is this the
+  user's own preset" matched the substring `/user/`, which no Windows path
+  contains, so user presets were treated as system ones and lost their
+  preference during preset selection.
 - The texture documentation claimed every pattern closes on itself at any angle.
   Ribs and waves do; the 2D lattices (knurl, hexagon) close only at multiples of
   90 degrees, which is a property of the geometry rather than a bug.
