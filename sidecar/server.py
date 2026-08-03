@@ -38,6 +38,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 import urllib.parse
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -108,42 +109,127 @@ _mp_ctx = None  # the 'spawn' context, kept so we can rebuild the pool after a c
 _HB = None  # shared heartbeat counter (multiprocessing.Value), set in main()
 _HB_IDX = None  # feature index the worker last started (Value 'q'; -1 = meshing/none)
 
+# --- pool bring-up health --------------------------------------------------
+# A worker that dies DURING startup is a different failure from one that
+# segfaults on a user's shape: the first is deterministic (a broken install),
+# the second is specific to one operation. Both raise BrokenProcessPool with the
+# same private `_broken` string, so they are told apart by the warm-up future —
+# see _worker_came_up. Without this split we recycled a pool that could never
+# start, forever, while telling the user their model crashed the kernel.
+MAX_INIT_ATTEMPTS = 2  # the original bring-up plus one retry for a real transient
+
+_INIT_ERR = None  # shared buffer; the worker writes its startup traceback here
+_WORKER_ERR_BUF = None  # worker-side handle on that buffer (set in _worker_init)
+_pool_gen = -1  # bumped per pool; the idempotency key for one bring-up attempt
+_warm = None  # (generation, Future) for the CURRENT pool's warm-up
+_failed_gens: set = set()  # generations whose worker never finished _worker_init
+_reaped_gens: set = set()  # generations WE killed (timeout/stall) — not init failures
+_ever_came_up = False  # a worker started successfully at least once this session
+_env_broken = False  # latched: the worker cannot start on this machine
+
+_INIT_FAIL_MSG = (
+    "the geometry engine could not start on this computer — this is an "
+    "installation or environment problem, not a problem with your model. "
+    'Please use "Report a bug" with the engine log included: the log now '
+    "carries the exact error."
+)
+
 
 # --- worker process (separate interpreter) ---------------------------------
 
 
-def _worker_init(hb=None, hb_idx=None):
+def _worker_init(hb=None, hb_idx=None, err_buf=None):
     """Runs once when a worker process starts: die with the server (anti-orphan),
     pin OCCT to all cores, and warm the heavy imports so the first real rebuild
     isn't paying build123d's import cost. `hb` is the shared heartbeat counter;
     the rebuild loop bumps it per feature so the supervisor can distinguish a
     long build (fine) from a wedged one (reap). `hb_idx` carries WHICH feature
     is being built (-1 = tessellation), so the supervisor can stream progress
-    frames to the frontend during a long build."""
-    _die_with_parent()  # SIGTERM the worker if the server process dies
-    occt_smp.configure()
-    import builder  # noqa: F401  (warm the import)
-    import tessellate  # noqa: F401
+    frames to the frontend during a long build.
 
-    # Warm the OCCT font subsystem (~1.6 s cold on the first glyph build) at startup so
-    # the user's first sketch-text/tessellateText isn't laggy.
+    `err_buf` is shared memory used to hand a STARTUP traceback back to the
+    server. It is needed because CPython catches an initializer's exception in
+    the CHILD, logs it to the child's stderr and returns — and on Windows the
+    spawned worker does not inherit the Rust-owned stderr pipe, so that log goes
+    nowhere. That is why field bug 8aa9ded7 arrived with no evidence at all.
+    Shared memory crosses the boundary on every platform."""
     try:
-        builder._text_faces({"text": "A", "height": 1}, lambda x: x)
+        _die_with_parent()  # SIGTERM the worker if the server process dies
+        # Publish the handles we were given as worker-side globals: _warmup and
+        # anything else running in this process needs the error buffer, and the
+        # parent's _HB/_HB_IDX are set in main(), which never runs in a spawned
+        # worker (so these are None here without this).
+        global _WORKER_ERR_BUF, _HB, _HB_IDX
+        _WORKER_ERR_BUF, _HB, _HB_IDX = err_buf, hb, hb_idx
+        occt_smp.configure()
+        import builder  # noqa: F401  (warm the import)
+        import tessellate  # noqa: F401
+
+        # Warm the OCCT font subsystem (~1.6 s cold on the first glyph build) at startup so
+        # the user's first sketch-text/tessellateText isn't laggy.
+        try:
+            builder._text_faces({"text": "A", "height": 1}, lambda x: x)
+        except Exception:
+            pass
+
+        if hb is not None:
+            def _tick(i):
+                hb.value += 1  # single writer (this worker); no lock needed
+                if hb_idx is not None:
+                    hb_idx.value = i
+
+            builder.on_feature_tick = _tick
+    except BaseException:
+        _publish_init_error(err_buf)
+        # MUST re-raise: this is what breaks the pool. Swallowing it would leave
+        # a worker with no `builder` accepting jobs, which fails per-operation
+        # and looks exactly like the bug this whole path exists to end.
+        raise
+
+
+def _publish_init_error(err_buf):
+    """Write the current exception into the shared buffer, EXCEPTION LINE FIRST.
+
+    Both this buffer and the log tail a bug report carries keep the HEAD of what
+    they are given, while a traceback's actual error is its LAST line — so the
+    one line worth having is written first and the frames follow."""
+    if err_buf is None:
+        return
+    try:
+        summary = "".join(traceback.format_exception_only(*sys.exc_info()[:2])).strip()
+        text = f"{summary}\n{traceback.format_exc()}"
+        # Array('c') raises at exactly len(), so stop one short.
+        err_buf.value = text.encode("utf-8", "replace")[: len(err_buf) - 1]
     except Exception:
         pass
 
-    if hb is not None:
-        def _tick(i):
-            hb.value += 1  # single writer (this worker); no lock needed
-            if hb_idx is not None:
-                hb_idx.value = i
-
-        builder.on_feature_tick = _tick
-
 
 def _warmup():
-    """Trivial task submitted at startup to force the (lazy) worker to spawn and
-    run _worker_init now, rather than on the user's first rebuild."""
+    """Submitted at pool creation to force the (lazy) worker to spawn and run
+    _worker_init now, rather than on the user's first rebuild.
+
+    It builds real geometry rather than returning a constant, because importing
+    OCP is NOT the same test as OCP working: a wheel built for a newer
+    instruction set, or a mismatched/delay-loaded TBB or TKernel, imports fine
+    and then faults on the first kernel call. Classified as an op-crash, that
+    told the user their sketch was degenerate and to try a different value —
+    on an install where nothing would ever build. A box and one boolean cost a
+    few ms on an already-cold path and put that failure in the init bucket,
+    where it gets the environment diagnosis and the retry bound."""
+    try:
+        import builder  # noqa: F401
+        from build123d import Box, Location
+
+        solid = Box(1, 1, 1)
+        cut = Box(0.5, 0.5, 2).moved(Location((0.25, 0.25, 0)))
+        result = solid - cut
+        if result.volume <= 0:
+            raise RuntimeError("geometry self-test produced an empty solid")
+    except BaseException:
+        # Same channel as an initializer failure: this IS a bring-up failure,
+        # it just happens one step later than the import.
+        _publish_init_error(_WORKER_ERR_BUF)
+        raise
     return True
 
 
@@ -1037,20 +1123,174 @@ def _reply_bytes(req_id, res, binary):
 
 
 def _new_pool():
-    """Create a fresh single-worker pool and kick off its warm-up."""
+    """Create a fresh single-worker pool and kick off its warm-up.
+
+    Returns None once _env_broken has latched — see _pool_available(), which is
+    what turns that back into a live pool if the failure was transient."""
+    global _pool_gen, _warm
+    if _env_broken:
+        return None
+    _pool_gen += 1
+    gen = _pool_gen
+    _warm = None
+    if _INIT_ERR is not None:
+        try:
+            _INIT_ERR.value = b""  # drop the previous generation's traceback
+        except Exception:
+            pass
     pool = ProcessPoolExecutor(
-        max_workers=1, mp_context=_mp_ctx, initializer=_worker_init, initargs=(_HB, _HB_IDX)
+        max_workers=1, mp_context=_mp_ctx,
+        initializer=_worker_init, initargs=(_HB, _HB_IDX, _INIT_ERR),
     )
     try:
-        pool.submit(_warmup)  # spawn + warm the worker now
+        # Submitted at creation to force the lazy spawn — and KEPT, because this
+        # future is the only public signal separating an init failure from a
+        # mid-op crash (see _worker_came_up).
+        fut = pool.submit(_warmup)
     except Exception:
-        pass
+        # Was `except Exception: pass`, so pool creation could never report a
+        # problem. Do NOT return None here: a spawn that failed on a momentary
+        # ENOMEM is exactly the transient the retry budget is for, and the
+        # executor will try again lazily on the next submit.
+        _note_init_failure(gen)
+        return pool
+    _warm = (gen, fut)
+    _watch_warmup(fut, gen)
     return pool
+
+
+def _worker_came_up(gen=None) -> bool:
+    """Did the pool's worker finish _worker_init and execute a task?
+
+    concurrent.futures gives us nothing else to go on: an initializer exception
+    and a mid-op segfault raise the SAME BrokenProcessPool carrying the SAME
+    private `_broken` string, and CPython swallows the initializer's exception
+    inside the child. But the warm-up is submitted at pool creation and the
+    single worker runs FIFO, so it always completes BEFORE any user job:
+
+        resolved            -> the worker initialised and ran a task
+        raised / not done   -> it never got that far  => environment failure
+
+    `gen` is required for correctness, not hygiene: up to MAX_CONNS_PER_IP
+    connections can have work in flight, and one worker death breaks EVERY
+    in-flight future. Without keying on the generation, the second op to notice
+    would read the REPLACEMENT pool's still-pending warm-up, conclude the
+    environment is broken, and latch a healthy install."""
+    w = _warm
+    if w is None:
+        return False
+    wgen, fut = w
+    if gen is not None and gen != wgen:
+        return False
+    if not fut.done() or fut.cancelled():
+        return False
+    return fut.exception() is None
+
+
+def _init_traceback() -> str:
+    if _INIT_ERR is None:
+        return ""
+    try:
+        return _INIT_ERR.value.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _note_init_failure(gen):
+    """Record ONE failed bring-up (idempotent per generation) and print the
+    worker's real traceback to stderr, which the Rust shell mirrors into
+    sidecar.log — the file a bug report uploads."""
+    global _env_broken
+    if gen in _failed_gens or gen in _reaped_gens:
+        return
+    _failed_gens.add(gen)
+    tb = _init_traceback()
+    print(
+        "[init] geometry worker failed to start (attempt %d/%d): %s"
+        % (len(_failed_gens), MAX_INIT_ATTEMPTS,
+           tb or "<no Python traceback — the worker died before it could report "
+                 "one; a native library failed to load>"),
+        file=sys.stderr, flush=True,
+    )
+    # An install that demonstrably worked earlier in this session is not an
+    # environment failure, whatever just happened — so a post-reap respawn that
+    # fails to come up must never brick the session.
+    if len(_failed_gens) >= MAX_INIT_ATTEMPTS and not _ever_came_up:
+        _env_broken = True
+        print("[init] giving up: the geometry worker will not be restarted "
+              "again this session.", file=sys.stderr, flush=True)
+
+
+def _watch_warmup(fut, gen):
+    """Report a bring-up outcome as soon as it is known — at LAUNCH, not on the
+    user's first rebuild. `gen` is captured so a late watcher cannot attribute
+    its failure to a pool that has since been replaced."""
+    global _ever_came_up
+
+    async def _w():
+        global _ever_came_up
+        try:
+            await asyncio.wrap_future(fut)
+        except Exception:
+            # A pool WE killed (job timeout / stall reap) also resolves its
+            # pending warm-up with BrokenProcessPool, which is indistinguishable
+            # from a failed bring-up. Counting those would let a slow cold start
+            # on a healthy machine latch "your install is broken" — and would
+            # stop the disk-checkpoint ratchet converging. _note_init_failure
+            # skips reaped generations.
+            _note_init_failure(gen)
+        else:
+            _ever_came_up = True
+            _failed_gens.clear()  # only CONSECUTIVE failures count
+
+    try:
+        asyncio.get_running_loop().create_task(_w())
+    except RuntimeError:
+        pass  # no loop yet (pool built before serve starts); the op path re-checks
+
+
+def _pool_available():
+    """Ensure there is a pool to submit to, rebuilding if a previous attempt
+    left us without one. Returns an error dict when geometry is unavailable.
+
+    `_pool is None` must stay RECOVERABLE: today's code kept the executor object
+    on a failed spawn, so the next operation simply retried. Making None
+    terminal would let one transient failure disable geometry for the whole
+    session with the retry budget unspent."""
+    global _pool
+    if _env_broken:
+        return {"error": {"message": _INIT_FAIL_MSG}}
+    if _pool is None:
+        _pool = _new_pool()
+    if _pool is None:
+        return {"error": {"message": _INIT_FAIL_MSG}}
+    return None
+
+
+def _on_broken(gen):
+    """Turn a BrokenProcessPool into the right reply, and rebuild the pool.
+
+    This is the split the whole change exists for: a worker that never started
+    is a broken installation and must say so, while a worker that died mid-op is
+    the pre-existing per-operation crash and keeps its message (and its feature
+    naming, via _crash_feature)."""
+    global _pool
+    if _worker_came_up(gen):
+        _pool = _new_pool()
+        return {"error": {"message": "the geometry kernel crashed on this operation"}}
+    if gen != _pool_gen:
+        # A peer already handled this generation and rebuilt; don't count it
+        # twice or report an environment failure we haven't established.
+        return {"error": {"message": "the geometry kernel crashed on this operation"}}
+    _note_init_failure(gen)
+    _pool = _new_pool()
+    return {"error": {"message": _INIT_FAIL_MSG}}
 
 
 def _kill_pool(pool):
     """Forcibly terminate a pool's worker process(es) — used to stop a worker that's
     spinning on a runaway OCCT call, since shutdown() alone would wait for it."""
+    _reaped_gens.add(_pool_gen)  # a deliberate kill is not a failed bring-up
     try:
         for p in list(getattr(pool, "_processes", {}).values()):
             try:
@@ -1069,6 +1309,10 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
     OCCT) or a worker crash (segfault), recycle the pool and return a clean error
     dict so the socket stays alive and the app keeps working."""
     global _pool
+    err = _pool_available()
+    if err is not None:
+        return err
+    gen = _pool_gen  # captured BEFORE submit: a peer may recycle while we wait
     try:
         fut = loop.run_in_executor(_pool, fn, *args)
         return await asyncio.wait_for(fut, timeout=timeout)
@@ -1077,8 +1321,7 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
         _pool = _new_pool()
         return {"error": {"message": "operation timed out — geometry too complex or degenerate"}}
     except BrokenProcessPool:
-        _pool = _new_pool()
-        return {"error": {"message": "the geometry kernel crashed on this operation"}}
+        return _on_broken(gen)
 
 
 async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
@@ -1092,7 +1335,17 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     the current feature index) is fired roughly once a second while the job
     runs — the rebuild path streams it to the frontend as building frames."""
     global _pool
-    fut = loop.run_in_executor(_pool, fn, *args)
+    err = _pool_available()
+    if err is not None:
+        return err
+    # Submit is INSIDE the try below via gen capture: a pool that is already
+    # broken raised BrokenProcessPool straight out of run_in_executor, past
+    # _crash_feature and into handle()'s catch-all, shipping raw CPython text.
+    gen = _pool_gen
+    try:
+        fut = loop.run_in_executor(_pool, fn, *args)
+    except BrokenProcessPool:
+        return _on_broken(gen)
     last = _HB.value if _HB is not None else 0
     last_t = loop.time()
     while True:
@@ -1124,11 +1377,14 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
             # Without it the app showed a bare ": the geometry kernel crashed",
             # naming nothing — see _crash_feature().
             idx = int(_HB_IDX.value) if _HB_IDX is not None else -1
-            _pool = _new_pool()
-            return {"error": {
-                "message": "the geometry kernel crashed on this operation",
-                "feature_index": idx,
-            }}
+            res = _on_broken(gen)
+            # feature_index only means anything for a real op crash; on an
+            # environment failure there is no culprit feature to name, and
+            # _crash_feature would rewrite the message into "your shape is
+            # degenerate" — the exact misattribution this change removes.
+            if res.get("error", {}).get("message") != _INIT_FAIL_MSG:
+                res["error"]["feature_index"] = idx
+            return res
 
 
 def _crash_feature(res, document):
@@ -1317,12 +1573,17 @@ async def handle(ws):
 
 
 async def main():
-    global _pool, _mp_ctx, _TOKEN, _HB, _HB_IDX
+    global _pool, _mp_ctx, _TOKEN, _HB, _HB_IDX, _INIT_ERR
     _die_with_parent()
     _TOKEN = os.environ.get("SINDRI_SIDECAR_TOKEN") or _mint_token()
     _mp_ctx = mp.get_context("spawn")
     _HB = _mp_ctx.Value("Q", 0)  # heartbeat: bumped by the worker per feature
     _HB_IDX = _mp_ctx.Value("q", -1)  # which feature is building (-1 = meshing)
+    # lock=False deliberately: a locked Array could deadlock the parent's read if
+    # _kill_pool SIGKILLs a worker mid-write. One writer (the dying worker), one
+    # reader (us, after it is dead) — the same reasoning as _HB's single-writer
+    # comment. A raw c_char array still supports .value.
+    _INIT_ERR = _mp_ctx.Array("c", 16384, lock=False)
     _pool = _new_pool()
     try:
         # Raise the per-message cap well above the 1 MiB default: a rebuild ships
