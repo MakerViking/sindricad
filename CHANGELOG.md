@@ -33,6 +33,16 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A sketch made on a face now shares the model's grid.** The sketch plane was
+  anchored on the face's own centroid, which is derived from the mesh and snaps
+  to the nearest triangle centre, so it sat an arbitrary fraction of a millimetre
+  off. Grid snapping rounds in plane-local coordinates, which gave every
+  sketch-on-face a lattice of its own: draw one sketch snapped to the grid,
+  extrude it, sketch on the new face, and the first sketch's centre was no longer
+  on grid. The origin is now the global origin projected onto the face's plane,
+  the same rule offset and datum planes already used, so every plane parallel to
+  a base plane shares one grid. Existing documents are unaffected, since a
+  sketch's plane is stored explicitly and never recomputed.
 - **"Open in OrcaSlicer" now works on Windows and macOS.** The default slicer
   path had no per-platform branching, so every install pointed at a Linux
   AppImage under the user's home directory. On Windows and macOS that file

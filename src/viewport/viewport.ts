@@ -1071,8 +1071,23 @@ export class Viewport {
 
   /**
    * Raycast the solid; if a face is hit, derive a sketch plane from it
-   * (origin = face centroid, normal = face normal, xdir = a tangent). Lets you
-   * sketch on a face of an existing body.
+   * (origin = the global origin projected onto the face's plane, normal = face
+   * normal, xdir = a tangent). Lets you sketch on a face of an existing body.
+   *
+   * The origin is NOT the face's own centroid. Grid snapping rounds in
+   * plane-LOCAL coordinates (see snap.ts), so the plane origin decides where the
+   * lattice falls in world space; anchoring on the face gave every sketch-on-face
+   * its own grid, offset from the model's by a tessellation-dependent fraction of
+   * a millimetre. Reported 2026-08-02: "sketch #1 was snapped to grid, went to
+   * draw #2 and the center of 1 was not on grid anymore" — that document has a
+   * sketch on the top face of a cylinder centred on the origin anchored at
+   * (3.4797, 1.0501, 10) instead of (0, 0, 10).
+   *
+   * Projecting the global origin is what datumPlaneDef (main.ts) and
+   * planeOffsetTool already do, so this makes face-picking consistent with every
+   * other way of getting a sketch plane, and every plane parallel to a base plane
+   * shares one lattice. For a plane through `p` with unit normal `n`, that
+   * projection is `n * (n · p)`.
    */
   pickFacePlane(clientX: number, clientY: number): PlaneDef | null {
     if (!this.model) return null;
@@ -1086,8 +1101,9 @@ export class Viewport {
     const b = new THREE.Vector3().fromBufferAttribute(pos, hit.face.b);
     const c = new THREE.Vector3().fromBufferAttribute(pos, hit.face.c);
     const normal = b.sub(a).cross(c.sub(a)).normalize().transformDirection(mesh.matrixWorld).normalize();
-    const faceId = faceIdOfHit(hit);
-    const origin = this.faceCentroidWorld(faceId);
+    // `hit.point` is world-space and lies on the picked surface, so it fixes the
+    // plane without walking every triangle of the face the way a centroid does.
+    const origin = normal.clone().multiplyScalar(normal.dot(hit.point));
     const ref =
       Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
     const xdir = ref.sub(normal.clone().multiplyScalar(ref.dot(normal))).normalize();
