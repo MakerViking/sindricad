@@ -84,9 +84,18 @@ void geometry.init(); // fetch the per-launch sidecar auth token + open the sock
 // auth token would need to rotate live), so tell the user before they keep
 // working on top of a dead backend. Guarded to Tauri only — plain `vite` dev
 // (no Tauri host) has nothing to emit this and listen() would just reject.
+//
+// The payload names HOW it died ("killed by SIGKILL (9) — out of memory?"), and
+// it is shown rather than swallowed: field reports of this arrive as screenshots
+// of the toast, so the message itself has to carry enough to triage from. The
+// same line is in sidecar.log, which a bug report attaches.
 if ("__TAURI_INTERNALS__" in window) {
-  void listen("sidecar:died", () => {
-    toast("The geometry engine crashed. Save your work, then restart SindriCAD.", { kind: "error", timeout: 60000 });
+  void listen<string>("sidecar:died", (e) => {
+    const cause = typeof e.payload === "string" && e.payload ? ` (${e.payload})` : "";
+    toast(`The geometry engine crashed${cause}. Save your work, then restart SindriCAD.`, {
+      kind: "error",
+      timeout: 60000,
+    });
   });
 }
 const store = new DocumentStore(geometry, EXAMPLE_BRACKET);

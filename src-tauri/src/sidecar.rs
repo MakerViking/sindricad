@@ -116,6 +116,45 @@ fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
     pick_runtime(resource_dir, &manifest_dir)
 }
 
+/// How the sidecar died, in a form a human can act on.
+///
+/// A crash reaches us as an `ExitStatus`, and on Unix `status.code()` is `None`
+/// for ANY signal death — which is every interesting case: SIGSEGV from OCCT,
+/// SIGKILL from the OOM killer. Reporting just the code therefore threw away the
+/// only thing that distinguishes "the geometry kernel faulted" from "the machine
+/// ran out of memory", and a field report of an engine crash arrived with no way
+/// to tell them apart (an Arch report on 2026-08-03 that came in as a screenshot
+/// with no log at all).
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            let name = match sig {
+                4 => "SIGILL",
+                6 => "SIGABRT",
+                7 => "SIGBUS",
+                9 => "SIGKILL",
+                11 => "SIGSEGV",
+                15 => "SIGTERM",
+                _ => "signal",
+            };
+            // the hint is the single most useful word for triage, and it is the
+            // one a screenshot of the toast can carry
+            let hint = match sig {
+                9 => " — out of memory?",
+                11 | 7 => " — geometry kernel fault",
+                _ => "",
+            };
+            return format!("killed by {name} ({sig}){hint}");
+        }
+    }
+    match status.code() {
+        Some(c) => format!("exit code {c}"),
+        None => "unknown cause".to_string(),
+    }
+}
+
 /// Poll the child every ~2s so a sidecar death is noticed instead of silently
 /// leaving the frontend spinning against a closed socket. `kill()` takes the
 /// `Child` out of the `Mutex` before terminating it, so an empty slot here means
@@ -124,7 +163,12 @@ fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
 /// per-launch `SINDRI_SIDECAR_TOKEN` the frontend must re-fetch and re-dial with)
 /// makes a live respawn non-trivial; revisit once the frontend can rotate tokens
 /// without a full reload.
-fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>) {
+///
+/// `log` is the same handle the output mirroring uses. Without it the crash line
+/// went to stderr ONLY, which a packaged build discards — so `sidecar.log`, the
+/// very file the bug reporter attaches, ended at the last thing Python said and
+/// never recorded that the process had died, let alone how.
+fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>, log: Option<Arc<Mutex<std::fs::File>>>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
         let died = match child.lock() {
@@ -142,8 +186,15 @@ fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>) {
             Err(_) => break, // Mutex poisoned; nothing productive left to do
         };
         if let Some(status) = died {
-            eprintln!("[sidecar] CRASHED: exited unexpectedly ({status})");
-            let _ = app.emit("sidecar:died", status.code());
+            let cause = describe_exit(&status);
+            let line = format!("[sidecar] CRASHED: exited unexpectedly ({cause})");
+            eprintln!("{line}");
+            if let Some(l) = &log {
+                if let Ok(mut f) = l.lock() {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+            let _ = app.emit("sidecar:died", cause);
             break;
         }
     });
@@ -243,6 +294,7 @@ impl Sidecar {
         }
         {
             let ready = ready.clone();
+            let log = log.clone(); // the supervisor below needs the original
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(20));
                 if !ready.load(Ordering::SeqCst) {
@@ -265,7 +317,7 @@ impl Sidecar {
 
         println!("[sidecar] spawned pid {}", child.id());
         let child = Arc::new(Mutex::new(Some(child)));
-        spawn_supervisor(app.clone(), child.clone());
+        spawn_supervisor(app.clone(), child.clone(), log.clone());
         Ok(Sidecar {
             child,
             token,
@@ -344,6 +396,31 @@ impl Drop for Sidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A crash arrives as an ExitStatus whose `code()` is None for every signal
+    /// death, so reporting the code alone could not tell a geometry-kernel fault
+    /// from an OOM kill. Both must be named.
+    #[cfg(unix)]
+    #[test]
+    fn describe_exit_names_the_signal_not_just_the_code() {
+        use std::os::unix::process::ExitStatusExt;
+        let segv = std::process::ExitStatus::from_raw(11); // killed by SIGSEGV
+        assert_eq!(segv.code(), None, "precondition: a signal death has no exit code");
+        let s = describe_exit(&segv);
+        assert!(s.contains("SIGSEGV"), "got {s}");
+        assert!(s.contains("11"), "got {s}");
+        assert!(s.contains("kernel fault"), "a segfault should hint at the cause: {s}");
+
+        let killed = std::process::ExitStatus::from_raw(9); // SIGKILL, e.g. the OOM killer
+        let k = describe_exit(&killed);
+        assert!(k.contains("SIGKILL"), "got {k}");
+        assert!(k.contains("out of memory"), "SIGKILL should hint at OOM: {k}");
+
+        // a clean non-zero exit still reports its code
+        let code2 = std::process::ExitStatus::from_raw(2 << 8);
+        assert_eq!(code2.signal(), None, "precondition: this one is a plain exit");
+        assert!(describe_exit(&code2).contains("exit code 2"), "got {}", describe_exit(&code2));
+    }
 
     /// Fresh, empty scratch dir under the OS temp dir, wiped on both entry and Drop
     /// so repeated runs (and a prior crashed run) never see stale fixture files.

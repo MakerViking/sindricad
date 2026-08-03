@@ -20,6 +20,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **An engine crash now says how it died.** The message read only "The geometry
+  engine crashed", and the exit status went to standard error, which a packaged
+  build discards. So it never reached `sidecar.log`, the file a bug report
+  attaches, and a report of a crash could not distinguish a fault in the geometry
+  kernel from the system killing the process for using too much memory. On Linux
+  and macOS the status is `None` for every signal death, which is precisely those
+  two cases. The crash and its signal are now written to `sidecar.log`, and the
+  message names the cause ("killed by SIGSEGV (11) — geometry kernel fault"), so
+  even a screenshot of it is enough to triage from.
 - **A bug reported from inside the sketcher now carries the sketch.** An open
   sketch lives in the sketch session, not in the document, until you finish it,
   and the report attached the document. So a report filed while sketching
