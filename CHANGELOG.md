@@ -8,12 +8,17 @@ generated from that section.
 Builds are versioned `0.1.<build number>` and every green `main` produces one, so
 most entries land under Unreleased and stay there until a milestone is worth
 naming. To draw that line, rename the heading to `## 0.1.NN (YYYY-MM-DD)` and
-open a fresh `## Unreleased` above it.
+open a fresh `## Unreleased` above it. Cutting in the same commit as the last
+change is tidiest, but not required: when Unreleased is empty the release job
+falls back to the newest named section, so the build carrying a cut still
+publishes real notes.
 
 This file starts on 2026-08-03. For anything before that, see the
 [commit history](https://github.com/MakerViking/sindricad/commits/main).
 
 ## Unreleased
+
+## 0.1.81 (2026-08-03)
 
 ### Changed
 

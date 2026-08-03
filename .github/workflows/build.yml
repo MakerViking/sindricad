@@ -314,14 +314,26 @@ jobs:
             -o -name '*.app.tar.gz' -o -name '*.sig' \))
           gh release delete beta --repo ${{ github.repository }} --cleanup-tag --yes || true
 
-          # Release notes: boilerplate, plus the top section of CHANGELOG.md (every
-          # line after the first "## " heading, up to the next one). "### " subheads
-          # survive because the pattern requires a space in the third column. A
-          # missing or empty section just drops the "Changes in this build" block.
+          # Release notes: boilerplate, plus a section of CHANGELOG.md (every line
+          # after a "## " heading, up to the next one). "### " subheads survive
+          # because the pattern requires a space in the third column.
+          #
+          # Normally that is section 1, the open "## Unreleased". When it is EMPTY
+          # we fall back to section 2, the newest named version. That case is a
+          # release that was just cut: the cut is its own commit, so the build
+          # carrying it would otherwise find nothing to say and replace a release
+          # that HAD notes with one that has none, on a tag that is deleted and
+          # recreated every build. The heading below stays generic either way, so
+          # the notes never claim a version number the binary does not carry.
           printf 'Rolling beta 0.1.%s, rebuilt automatically from the latest `main` (commit %s).\n' \
             '${{ github.run_number }}' '${{ github.sha }}' > notes.md
           if [ -f CHANGELOG.md ]; then
-            awk '/^## /{n++} n==1 && !/^## /' CHANGELOG.md | sed -e '/./,$!d' > changes.md
+            section() { awk -v want="$1" '/^## /{n++} n==want && !/^## /' CHANGELOG.md | sed -e '/./,$!d'; }
+            section 1 > changes.md
+            if [ ! -s changes.md ]; then
+              echo "NOTE: Unreleased is empty (a release was just cut) — using the newest named section"
+              section 2 > changes.md
+            fi
             if [ -s changes.md ]; then
               printf '\n## Changes in this build\n\n' >> notes.md
               cat changes.md >> notes.md
