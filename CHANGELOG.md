@@ -18,6 +18,18 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Fixed
+
+- **A bug reported from inside the sketcher now carries the sketch.** An open
+  sketch lives in the sketch session, not in the document, until you finish it,
+  and the report attached the document. So a report filed while sketching
+  carried a stale sketch, or an entirely empty document when the sketch was the
+  first thing in the file, which is what happened to a dimension report on
+  2026-08-02. Reports now include the sketch as it stands, and say that one was
+  open, how much was in it, and whether it was new or an edit. That last part is
+  recorded even when the document is not attached, since it tells you the repro
+  starts by opening a sketch.
+
 ## 0.1.81 (2026-08-03)
 
 ### Changed

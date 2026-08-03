@@ -876,7 +876,7 @@ const projBtn = document.getElementById("proj") as HTMLButtonElement;
 projBtn.addEventListener("click", () => handleAction("persp"));
 
 const panels = createPanels({ store, viewport, geometry, hasBody, setStatus, selBtn });
-createBugReporter({ store, geometry, viewport }); // floating bug icon, bottom-right
+createBugReporter({ store, geometry, viewport, sketch }); // floating bug icon, bottom-right
 // clicking the live print-progress pill opens the camera on the active printer.
 setPrinterPillClick(() => void panels.showCameraPanel(activePrinterId()));
 

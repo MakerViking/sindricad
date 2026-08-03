@@ -15,11 +15,43 @@ import { appVersion } from "./updates";
 import { breadcrumbs } from "../diagnostics/breadcrumbs";
 import { taBugReport, asTaError } from "../tinkeratlas/client";
 import type { Viewport } from "../viewport/viewport";
+import type { SketchMode } from "../sketch/sketchMode";
+import type { Feature } from "../types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
-export function createBugReporter(deps: { store: DocumentStore; geometry: GeometryBackend; viewport: Viewport }) {
-  const { store, geometry, viewport } = deps;
+export function createBugReporter(deps: {
+  store: DocumentStore;
+  geometry: GeometryBackend;
+  viewport: Viewport;
+  sketch: SketchMode;
+}) {
+  const { store, geometry, viewport, sketch } = deps;
+
+  /** The document as the user sees it, including a sketch still being drawn.
+   *  `store.toJSON()` alone is the COMMITTED document: an open sketch has not
+   *  reached it yet, so a report filed from inside the sketcher carried a stale
+   *  sketch, or none at all when it was the first. */
+  function documentWithOpenSketch(live: Feature | null): string {
+    if (!live) return store.toJSON();
+    const doc = JSON.parse(store.toJSON());
+    const i = doc.features.findIndex((f: Feature) => f.id === live.id);
+    if (i >= 0) doc.features[i] = live;
+    else doc.features.push(live);
+    return JSON.stringify(doc);
+  }
+
+  /** Says the report came from inside the sketcher. Worth recording even when
+   *  the document is NOT attached: it tells the triager the repro starts by
+   *  opening a sketch, which no other field carries. */
+  function openSketchCrumb(live: Feature | null): string | null {
+    if (!live) return null;
+    const isEdit = JSON.parse(store.toJSON()).features.some((f: Feature) => f.id === live.id);
+    const ents = live.type === "sketch" ? live.entities.length : 0;
+    const cons = live.type === "sketch" ? (live.constraints?.length ?? 0) : 0;
+    return `sketch OPEN when reported (${isEdit ? `editing ${live.id}` : "new, uncommitted"}): ` +
+      `${ents} entities, ${cons} constraints`;
+  }
 
   const btn = document.createElement("button");
   btn.className = "bug-report-btn";
@@ -92,16 +124,22 @@ export function createBugReporter(deps: { store: DocumentStore; geometry: Geomet
         desc.focus();
         return;
       }
+      const live = sketch.snapshotFeature();
+      const sketchCrumb = openSketchCrumb(live);
+      // prepended, not appended: the server caps the breadcrumb list, and the
+      // same reasoning that puts scene stats first applies here. Used by the
+      // clipboard fallback too, so an offline report keeps the context.
+      const crumbList = sketchCrumb ? [sketchCrumb, ...crumbs] : crumbs;
       const payload = {
         description,
         appVersion: version,
         sidecarConnected: connected,
         includeLog: logCb.checked,
-        breadcrumbs: crumbs,
-        ...(docCb.checked ? { documentJson: store.toJSON() } : {}),
+        breadcrumbs: crumbList,
+        ...(docCb.checked ? { documentJson: documentWithOpenSketch(live) } : {}),
       };
       if (!isTauri()) {
-        await copyFallback(description, version, connected, crumbs);
+        await copyFallback(description, version, connected, crumbList);
         close();
         return;
       }
@@ -118,7 +156,7 @@ export function createBugReporter(deps: { store: DocumentStore; geometry: Geomet
         // ANY failure (unreachable, rejected, endpoint missing): never lose
         // the report — offer the clipboard path.
         const te = asTaError(e);
-        const copied = await copyFallback(description, version, connected, crumbs);
+        const copied = await copyFallback(description, version, connected, crumbList);
         toast(
           `Couldn't send the report${te ? `: ${te.message}` : ""}.` +
             (copied ? " A copy is on your clipboard — paste it in the SindriCAD Discord." : ""),

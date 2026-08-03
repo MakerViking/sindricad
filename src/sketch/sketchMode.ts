@@ -404,20 +404,37 @@ export class SketchMode {
     this.onState?.();
   }
 
+  /** The feature this session WOULD commit, built without committing it.
+   *
+   *  An open sketch lives entirely in this class — `entities`, `constraints` and
+   *  `patterns` are a working copy, and nothing reaches the store until finish()
+   *  runs. So anything that serialises the document mid-session sees a sketch
+   *  that is stale (when editing) or absent altogether (when new). That is why a
+   *  bug filed from inside the sketcher used to arrive with an empty document,
+   *  which cost a repro on the 2026-08-02 dimension report; the bug reporter now
+   *  splices this in. Shared with finish() so the two can never disagree.
+   *
+   *  Null when no sketch is open, or when nothing has been drawn yet. */
+  snapshotFeature(): Feature | null {
+    if (!this.active || !this.store) return null;
+    if (this.entities.length === 0 && this.patterns.length === 0) return null;
+    return {
+      id: this.editingId ?? this.store.nextId(),
+      type: "sketch",
+      plane: this.plane.serialize(),
+      ...(this.planeId ? { planeId: this.planeId } : {}),
+      entities: this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID).map(toSketchEntity),
+      ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
+      ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
+    };
+  }
+
   finish(commit = true) {
     if (!this.active) return;
     const store = this.store!;
-    this.patternFlow.flushOnFinish();
-    if (commit && (this.entities.length > 0 || this.patterns.length > 0)) {
-      const sketch: Feature = {
-        id: this.editingId ?? store.nextId(),
-        type: "sketch",
-        plane: this.plane.serialize(),
-        ...(this.planeId ? { planeId: this.planeId } : {}),
-        entities: this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID).map(toSketchEntity),
-        ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
-        ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
-      };
+    this.patternFlow.flushOnFinish(); // may add patterns — must precede the snapshot
+    const sketch = commit ? this.snapshotFeature() : null;
+    if (sketch) {
       if (this.editingId) {
         store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id));
       } else {
