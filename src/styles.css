@@ -1657,6 +1657,8 @@ button.finish:hover {
 /* solver-flagged dimensions: red = conflicting, amber = redundant/over-defined */
 .sketch-dim.conflict { border-color: #ff4444; color: #ff4444; }
 .sketch-dim.over { border-color: #e0a020; color: #e0a020; }
+/* the dimension the Delete key will remove (set by a click or a right-click) */
+.sketch-dim.is-selected { outline: 2px solid var(--accent, #4a9eff); outline-offset: 1px; }
 /* non-select tools: labels visible but click-through (a label floating over a
    circle center must not swallow the dimension/draw pick underneath) */
 .sketch-dims.dims-passive .sketch-dim {

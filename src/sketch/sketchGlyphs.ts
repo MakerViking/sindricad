@@ -22,6 +22,13 @@ export class SketchGlyphs {
   private lastCamHash = "";
   /** delete the constraint at this index (wired by SketchMode) */
   onDelete: ((cIndex: number) => void) | null = null;
+  /** Geometry-beats-glyph, mirroring SketchDimensions.onOverlapPick. A glyph is
+   *  a DOM badge above the canvas, so in the dimension tool it would swallow the
+   *  click that names an operand. Return true = "the click belonged to the tool
+   *  underneath" and the glyph skips its delete for that click. */
+  onOverlapPick: ((e: PointerEvent) => boolean) | null = null;
+  /** set by the pointerdown hook above; consumed by the click that follows */
+  private suppressDelete = false;
 
   constructor(private viewport: Viewport) {
     this.root = document.createElement("div");
@@ -40,9 +47,16 @@ export class SketchGlyphs {
       el.title = st === "conflict" ? "Conflicting constraint — click to delete"
         : st === "over" ? "Redundant (over-defined) constraint — click to delete"
         : "Click to delete this constraint";
-      el.addEventListener("pointerdown", (e) => e.stopPropagation());
+      el.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        this.suppressDelete = this.onOverlapPick?.(e) ?? false;
+      });
       el.addEventListener("click", (e) => {
         e.stopPropagation();
+        if (this.suppressDelete) {
+          this.suppressDelete = false;
+          return;
+        }
         this.onDelete?.(g.cIndex);
       });
       this.root.appendChild(el);
@@ -59,7 +73,9 @@ export class SketchGlyphs {
     this.clear();
   }
 
-  /** glyphs accept clicks only in the select tool; otherwise stay click-through */
+  /** glyphs accept clicks in the select and dimension tools; under a drawing tool
+   *  they stay click-through. In the dimension tool onOverlapPick above arbitrates,
+   *  so a click that names a dimension operand still reaches the tool. */
   setInteractive(on: boolean) {
     this.root.classList.toggle("glyphs-passive", !on);
   }

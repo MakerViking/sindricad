@@ -297,8 +297,17 @@ export class SketchMode {
     this.dims.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.dims.onPlanePoint = (cx, cy) => this.planePointAt(cx, cy);
     this.dims.onEntityPlace = (i, f, ox, oy, done) => this.commitEntityPlace(i, f, ox, oy, done);
+    this.dims.onLabelMenu = (e, del) => {
+      // Disabled rather than absent on an entity dim: a circle's diameter is a
+      // property of the circle, so there is no constraint to remove, and saying
+      // so beats a right-click that appears to do nothing.
+      contextMenu(e.clientX, e.clientY, [
+        { label: "Delete dimension", danger: true, disabled: !del, shortcut: "Del", onClick: () => del?.() },
+      ]);
+    };
     this.glyphs = new SketchGlyphs(viewport);
     this.glyphs.onDelete = (i) => this.deleteConstraint(i);
+    this.glyphs.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.boundDown = (e) => this.onPointerDown(e);
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
@@ -504,8 +513,16 @@ export class SketchMode {
     if (!keepSelection && this.selected.size) { this.selected.clear(); this.refreshActive(); }
     if (preselected.length) this.seedDimPicks(preselected);
     this.patternFlow.flushPending(); // don't lose an in-progress pattern
-    this.dims.setInteractive(t === "select");
-    this.glyphs.setInteractive(t === "select");
+    // Labels and glyphs take clicks in `select` and, since 2026-08-03, in
+    // `dimension`. Two field reports (0.1.76 and 0.1.77) said dimensions could
+    // not be edited or deleted "after the fact": the dimension tool re-arms
+    // after every commit (it is a batch activity, see dimensionClick), so a user
+    // who had just dimensioned a sketch was still in that tool, where every
+    // label and glyph was pointer-transparent with no cursor change to say so.
+    // labelOverlapDimension keeps dimensioning's own clicks working.
+    const annotationsLive = t === "select" || t === "dimension";
+    this.dims.setInteractive(annotationsLive);
+    this.glyphs.setInteractive(annotationsLive);
     this.onState?.();
   }
 
@@ -724,6 +741,7 @@ export class SketchMode {
           const c = this.constraints[d.cIndex];
           if (c && isPlacedDim(c)) this.writeDimValue(c, val);
         },
+        onDelete: () => this.deleteConstraint(d.cIndex),
         commitExpr: (raw: string) => {
           const c = this.constraints[d.cIndex];
           if (!c || !isDimConstraint(c)) return "not editable";
@@ -1017,6 +1035,7 @@ export class SketchMode {
    *  entity under the cursor and return true; the badge then skips its
    *  value-edit. False = nothing underneath, the badge behaves normally. */
   private labelOverlapSelect(e: PointerEvent): boolean {
+    if (this.tool === "dimension") return this.labelOverlapDimension(e);
     if (this.tool !== "select") return false;
     const raw = this.planePoint(e);
     if (!raw) return false;
@@ -1032,7 +1051,28 @@ export class SketchMode {
     return true;
   }
 
+  /** Arbitrate a click that landed on a label or glyph while the dimension tool
+   *  is active. Dimensioning keeps every click it needs: one with picks already
+   *  taken is mid-dimension (the second operand, or the placement), and one that
+   *  lands on geometry names the next operand. Only a click on an idle
+   *  annotation over empty space belongs to the annotation itself. A
+   *  double-click always reaches the label regardless (SketchDimensions). */
+  private labelOverlapDimension(e: PointerEvent): boolean {
+    const raw = this.planePoint(e);
+    if (!raw) return false;
+    const midDimension = this.dimPicks.length > 0;
+    if (!midDimension && !pickDimTarget(this.entities, raw, this.pickTol())) {
+      return false; // the annotation owns this click
+    }
+    this.dimensionClick(raw, e);
+    return true;
+  }
+
   private onPointerDown(e: PointerEvent) {
+    // A label stops propagation on its own pointerdown, so reaching here means
+    // the click landed away from every dimension: drop the label selection so a
+    // later Delete can't remove a dimension the user is no longer pointing at.
+    this.dims.clearSelection();
     if (e.button === 2) { this.rightDownAt = { x: e.clientX, y: e.clientY }; this.rightDragged = false; }
     if (e.button !== 0) return; // left only; middle/right still navigate
     // Project picks 3D model geometry / committed sketch curves — it needs the
@@ -2288,6 +2328,14 @@ export class SketchMode {
       }
     }
     if (e.key === "Delete" || e.key === "Backspace") {
+      // A selected dimension goes first: it is a more specific target than the
+      // entity selection, and isEditableTarget above already returned if the
+      // label's inline editor has focus, so this only fires once the editor is
+      // closed (Esc) or was never opened (right-click).
+      if (this.dims.deleteSelected()) {
+        e.preventDefault();
+        return;
+      }
       if (this.tool === "select" && this.selected.size) {
         e.preventDefault();
         this.deleteSelected();

@@ -51,6 +51,11 @@ interface DimLabel {
    *  not the raw cursor, so a dim that only moves perpendicular (or radially)
    *  never jumps on release. */
   placeCommit?: (ox: number, oy: number, done: boolean) => THREE.Vector2 | null;
+  /** Remove the constraint this label drives. Present ONLY on constraint-backed
+   *  dims: an entity dim (a circle's diameter, a rectangle's width) is an
+   *  intrinsic property of the entity with no constraint to delete, so its
+   *  label offers the action disabled rather than not at all. */
+  onDelete?: () => void;
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value); valueMm
@@ -83,6 +88,15 @@ export class SketchDimensions {
   onEntityPlace:
     | ((index: number, field: DimField, ox: number, oy: number, done: boolean) => THREE.Vector2 | null)
     | null = null;
+  /** Right-click on a label. The owner renders the menu (this class owns no menu
+   *  UI); `del` is the label's delete action, or null when the label is an entity
+   *  dim and there is nothing to delete. */
+  onLabelMenu: ((e: MouseEvent, del: (() => void) | null) => void) | null = null;
+
+  /** The label the Delete key acts on. Set by a click or a right-click, dropped
+   *  on the next rebuild — a selection whose element no longer exists must not
+   *  keep a stale delete armed. */
+  private selectedLabel: DimLabel | null = null;
 
   /** in-flight label drag; `moved` flips once the cursor passes the click
    *  threshold, and only then does a release count as a placement */
@@ -147,14 +161,19 @@ export class SketchDimensions {
     this.clear();
   }
 
-  /** Labels accept clicks only in the select tool. While a drawing or dimension
-   *  tool is active they stay visible but pointer-transparent — a label floating
-   *  over a circle's center must not swallow the pick underneath it. */
+  /** Labels accept clicks in the select AND dimension tools. While a DRAWING tool
+   *  is active they stay visible but pointer-transparent — a label floating over a
+   *  circle's center must not swallow the pick underneath it. The dimension tool
+   *  is live despite that same risk because it re-arms after every commit, so
+   *  labels were unreachable for as long as anyone was dimensioning; SketchMode's
+   *  labelOverlapDimension arbitrates, giving the tool any click that lands on
+   *  geometry or that belongs to a part-placed dimension. */
   setInteractive(on: boolean) {
     this.root.classList.toggle("dims-passive", !on);
   }
 
   private clear() {
+    this.selectedLabel = null;
     // a rebuild destroys the element a drag is riding on — drop the drag so its
     // (now orphaned) move/up handlers can't write a placement afterwards
     this.drag = null;
@@ -179,7 +198,20 @@ export class SketchDimensions {
       label.suppressEdit = this.onOverlapPick?.(e) ?? false;
       // onOverlapPick rebuilds every label when geometry claims the pick, so
       // `el` may already be detached — never start a drag on top of that.
-      if (!label.suppressEdit) this.beginDrag(label, e);
+      if (label.suppressEdit) return;
+      this.selectLabel(label);
+      this.beginDrag(label, e);
+    });
+    // Right-click is the discoverable half of deleting a dimension; the Delete
+    // key below is the shortcut. A dimensional constraint has no constraint
+    // glyph (glyphs.ts deliberately skips them, since they already draw as
+    // dimension badges), so without these two there is no way to remove one
+    // short of deleting the geometry under it. Reported 2026-08-02.
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.selectLabel(label);
+      this.onLabelMenu?.(e, label.onDelete ? () => label.onDelete!() : null);
     });
     if (d.driven) {
       el.title = "Reference dimension (measured, not driving)";
@@ -192,6 +224,17 @@ export class SketchDimensions {
           this.suppressClick = false;
           return;
         }
+        this.beginEdit(label);
+      });
+      // Escape hatch. A label that floats over its own geometry loses every
+      // single click to the pick underneath (onOverlapPick), which would leave
+      // it permanently uneditable — and in the dimension tool an in-progress
+      // dimension claims clicks too. A double-click is unambiguous, so it edits
+      // regardless of who won the singles.
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        label.suppressEdit = false;
+        this.suppressClick = false;
         this.beginEdit(label);
       });
     }
@@ -272,7 +315,33 @@ export class SketchDimensions {
     if (label.el.hasPointerCapture(pointerId)) label.el.releasePointerCapture(pointerId);
   }
 
+  /** Mark the label the Delete key will remove, and show it as selected. */
+  private selectLabel(label: DimLabel) {
+    if (this.selectedLabel === label) return;
+    this.selectedLabel?.el.classList.remove("is-selected");
+    this.selectedLabel = label;
+    label.el.classList.add("is-selected");
+  }
+
+  /** Drop the selection (the owner calls this when the click landed elsewhere). */
+  clearSelection() {
+    this.selectedLabel?.el.classList.remove("is-selected");
+    this.selectedLabel = null;
+  }
+
+  /** Delete the selected dimension. Returns false when nothing is selected, or
+   *  when the selected label is an entity dim with no constraint behind it, so
+   *  the caller can fall through to its own Delete handling. */
+  deleteSelected(): boolean {
+    const del = this.selectedLabel?.onDelete;
+    if (!del) return false;
+    this.clearSelection();
+    del();
+    return true;
+  }
+
   private beginEdit(label: DimLabel) {
+    if (label.el.querySelector("input")) return; // already editing — a dblclick
     const input = document.createElement("input");
     input.type = "text";
     // a param-driven dim reopens its EXPRESSION (Fusion behavior); a plain dim

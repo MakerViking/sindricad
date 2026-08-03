@@ -31,6 +31,16 @@ This file starts on 2026-08-03. For anything before that, see the
   material. Offset Face, Thicken and BREP import were missing from the feature
   list and have been added.
 
+### Added
+
+- **Dimensions can be deleted.** Right-click a dimension for "Delete dimension",
+  or select one and press Delete. Dimensional constraints draw as value badges
+  rather than constraint glyphs, and the glyph click was the only delete path, so
+  an unwanted or duplicated dimension used to be permanent unless you deleted the
+  geometry under it. A circle's diameter badge is a property of the circle rather
+  than a constraint, so it offers the action disabled instead of silently doing
+  nothing.
+
 ### Fixed
 
 - **A sketch made on a face now shares the model's grid.** The sketch plane was
@@ -43,6 +53,17 @@ This file starts on 2026-08-03. For anything before that, see the
   the same rule offset and datum planes already used, so every plane parallel to
   a base plane shares one grid. Existing documents are unaffected, since a
   sketch's plane is stored explicitly and never recomputed.
+- **Dimensions can be edited without leaving the dimension tool.** The tool
+  re-arms after every commit so you can dimension a whole sketch in one go, but
+  labels and constraint glyphs only accepted clicks in the select tool. Anyone
+  who finished dimensioning and tried to correct a value found every label inert,
+  with no cursor change to explain why. Labels and glyphs are now live in the
+  dimension tool as well, and dimensioning still wins the clicks it needs: a
+  click that lands on geometry, or one made while a dimension is part-placed,
+  goes to the tool rather than the label.
+- **Double-clicking a dimension always opens its editor.** A label that sits on
+  top of the geometry it measures used to lose every click to the pick
+  underneath, which could leave it permanently uneditable.
 - **"Open in OrcaSlicer" now works on Windows and macOS.** The default slicer
   path had no per-platform branching, so every install pointed at a Linux
   AppImage under the user's home directory. On Windows and macOS that file
