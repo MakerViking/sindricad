@@ -20,6 +20,16 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The geometry engine starts on NixOS, and anywhere else PYTHONHOME is set.**
+  Running the AppImage through `appimage-run` exports `PYTHONHOME` pointing at
+  the AppDir, and the bundled interpreter inherited it, went looking for its
+  standard library in the wrong place and died with "No module named 'encodings'"
+  before running a line. The app then opened with a dead engine
+  ([#3](https://github.com/MakerViking/sindricad/issues/3)). The sidecar is now
+  started with `PYTHONHOME` cleared, since the bundled runtime works out its own
+  location. Packages installed with `pip install --user` are also kept off its
+  path now, so a mismatched numpy in a home directory can no longer shadow the
+  bundled one.
 - **An engine crash now says how it died.** The message read only "The geometry
   engine crashed", and the exit status went to standard error, which a packaged
   build discards. So it never reached `sidecar.log`, the file a bug report

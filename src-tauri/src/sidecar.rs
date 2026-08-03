@@ -200,6 +200,33 @@ fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>, log: Optio
     });
 }
 
+/// Environment for the sidecar process.
+///
+/// Split out from `spawn` so a test can assert it: this is packaging behaviour
+/// that only misfires on machines nobody here builds on, which is exactly how
+/// the NixOS failure below shipped unnoticed.
+fn configure_env(cmd: &mut Command, rt: &Runtime, token: &str) {
+    cmd.env("SINDRI_SIDECAR_TOKEN", token) // hand the secret to the sidecar
+        .env("PYTHONDONTWRITEBYTECODE", "1") // read-only bundle: never write .pyc
+        // NixOS, issue #3: `appimage-run` exports PYTHONHOME=<AppDir>/usr, and an
+        // INHERITED PYTHONHOME sends the bundled interpreter looking for its
+        // stdlib under that prefix instead of under sidecar-runtime/python. It
+        // then dies with "No module named 'encodings'" before executing a single
+        // line, so the app opened with a dead engine. Our runtime is an ordinary
+        // prefix layout and works its own home out from the executable path, so
+        // it must never be told a different one. Reproduced verbatim against the
+        // shipped 0.1.82 bundle by setting PYTHONHOME.
+        .env_remove("PYTHONHOME")
+        // And never let a user's own packages shadow the bundled numpy/OCP:
+        // ~/.local/lib/pythonX.Y/site-packages joins sys.path for anyone who has
+        // run `pip install --user`, where a mismatched numpy would break the
+        // engine in a way that looks like our bug. Confirmed with a scratch HOME.
+        .env("PYTHONNOUSERSITE", "1");
+    if let Some(pp) = &rt.pythonpath {
+        cmd.env("PYTHONPATH", pp); // bundled site-packages (dir install, no venv)
+    }
+}
+
 impl Sidecar {
     pub fn spawn(app: &AppHandle) -> std::io::Result<Self> {
         let token = random_token();
@@ -207,14 +234,10 @@ impl Sidecar {
 
         let mut cmd = Command::new(&rt.python);
         cmd.arg(&rt.script)
-            .env("SINDRI_SIDECAR_TOKEN", &token) // hand the secret to the sidecar
-            .env("PYTHONDONTWRITEBYTECODE", "1") // read-only bundle: never write .pyc
             .current_dir(&rt.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(pp) = &rt.pythonpath {
-            cmd.env("PYTHONPATH", pp); // bundled site-packages (dir install, no venv)
-        }
+        configure_env(&mut cmd, &rt, &token);
 
         // own process group so we can SIGTERM the whole tree at once (Unix)
         #[cfg(unix)]
@@ -396,6 +419,37 @@ impl Drop for Sidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// NixOS issue #3: an inherited PYTHONHOME (appimage-run sets it to the
+    /// AppDir prefix) makes the bundled interpreter hunt for its stdlib in the
+    /// wrong place and abort with "No module named 'encodings'". It must be
+    /// REMOVED, which is distinct from setting it to anything.
+    #[test]
+    fn sidecar_env_clears_pythonhome_and_user_site() {
+        let rt = Runtime {
+            python: PathBuf::from("/opt/app/sidecar-runtime/python/bin/python3.12"),
+            script: PathBuf::from("server.py"),
+            cwd: PathBuf::from("/opt/app/sidecar-runtime/app"),
+            pythonpath: Some(PathBuf::from("/opt/app/sidecar-runtime/site-packages")),
+        };
+        let mut cmd = Command::new(&rt.python);
+        configure_env(&mut cmd, &rt, "tok");
+
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let find = |k: &str| envs.iter().find(|(n, _)| *n == std::ffi::OsStr::new(k));
+
+        // `Some((_, None))` is the removal; a missing entry would mean it is
+        // merely inherited, which is the bug.
+        let home = find("PYTHONHOME").expect("PYTHONHOME must be handled explicitly");
+        assert!(home.1.is_none(), "PYTHONHOME must be REMOVED, got {:?}", home.1);
+
+        let nous = find("PYTHONNOUSERSITE").expect("PYTHONNOUSERSITE must be set");
+        assert_eq!(nous.1, Some(std::ffi::OsStr::new("1")));
+
+        // the bundled site-packages must still be handed over
+        let pp = find("PYTHONPATH").expect("PYTHONPATH must be set for a bundle");
+        assert_eq!(pp.1, Some(std::ffi::OsStr::new("/opt/app/sidecar-runtime/site-packages")));
+    }
 
     /// A crash arrives as an ExitStatus whose `code()` is None for every signal
     /// death, so reporting the code alone could not tell a geometry-kernel fault
