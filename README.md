@@ -49,7 +49,8 @@ releases, report what breaks, and keep backups of documents you care about.
   <a href="#architecture">Architecture</a> ·
   <a href="#project-layout">Project layout</a> ·
   <a href="#license">License</a> ·
-  <a href="#support">Support</a>
+  <a href="#support">Support</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ## Get it
@@ -62,6 +63,9 @@ unsigned, so each platform asks you to confirm the first launch once:
 [see Install](#install) for the exact steps, and note that macOS is the awkward one.
 
 If SindriCAD looks useful, starring the repo helps other people find it.
+
+What changed in each build is in [CHANGELOG.md](CHANGELOG.md), and the same notes
+appear on the release itself.
 
 ## What it does
 

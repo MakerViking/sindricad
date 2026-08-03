@@ -272,6 +272,14 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      # Must come BEFORE download-artifact: actions/checkout cleans the workspace
+      # by default and would delete dist/. Sparse, because the only thing this job
+      # needs out of the repo is the changelog it builds release notes from.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -305,10 +313,30 @@ jobs:
             -o -name '*.dmg' -o -name '*.msi' -o -name '*setup.exe' \
             -o -name '*.app.tar.gz' -o -name '*.sig' \))
           gh release delete beta --repo ${{ github.repository }} --cleanup-tag --yes || true
+
+          # Release notes: boilerplate, plus the top section of CHANGELOG.md (every
+          # line after the first "## " heading, up to the next one). "### " subheads
+          # survive because the pattern requires a space in the third column. A
+          # missing or empty section just drops the "Changes in this build" block.
+          printf 'Rolling beta 0.1.%s, rebuilt automatically from the latest `main` (commit %s).\n' \
+            '${{ github.run_number }}' '${{ github.sha }}' > notes.md
+          if [ -f CHANGELOG.md ]; then
+            awk '/^## /{n++} n==1 && !/^## /' CHANGELOG.md | sed -e '/./,$!d' > changes.md
+            if [ -s changes.md ]; then
+              printf '\n## Changes in this build\n\n' >> notes.md
+              cat changes.md >> notes.md
+            fi
+          else
+            echo "WARNING: no CHANGELOG.md, publishing boilerplate notes only"
+          fi
+          printf '\n---\n\nThe builds are unsigned for now: Windows shows a SmartScreen warning ("More info", then "Run anyway"); on macOS right-click the app and choose Open. Install notes are in the [README](https://github.com/%s#install). Installed apps update themselves from this release.\n' \
+            '${{ github.repository }}' >> notes.md
+          cat notes.md
+
           gh release create beta --repo ${{ github.repository }} \
             --prerelease --target ${{ github.sha }} \
             --title "SindriCAD beta (rolling)" \
-            --notes "Rolling beta 0.1.${{ github.run_number }}, rebuilt automatically from the latest \`main\` (commit ${{ github.sha }}). The builds are unsigned for now: Windows shows a SmartScreen warning (\"More info\", then \"Run anyway\"); on macOS right-click the app and choose Open. Install notes are in the [README](https://github.com/${{ github.repository }}#install). Installed apps update themselves from this release." \
+            --notes-file notes.md \
             $files latest.json
 
   # docs/IMPROVEMENT-AUDIT.md §5.4: the opt-in `rust-geom` feature (src-tauri/src/geom.rs,
