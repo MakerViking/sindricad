@@ -19,6 +19,15 @@ export interface SceneStatsSource {
   pixelRatio: number;
   /** Most recent frame time in ms, or null when the viewport is idle. */
   frameMs: number | null;
+  /** Cost of the last flush-seam pass, and whether it was skipped for size.
+   *  A skipped pass leaves every seam visible, which looks like a bug unless
+   *  the report says it was deliberate. */
+  seam?: { ms: number; skipped: boolean };
+  /** `renderer.info.render` — what the LAST frame actually cost the GPU.
+   *  `calls` is the one that matters on a many-body document: the scene can be
+   *  cheap in triangles and still be draw-call bound, which reads as "slow with
+   *  a small model" and is otherwise invisible in a report. */
+  render?: { calls: number; triangles: number };
 }
 
 /** One line per fact, short enough to survive the 300-char breadcrumb cap. */
@@ -38,7 +47,7 @@ export function sceneStats(s: SceneStatsSource): string[] {
       const pos = g.getAttribute("position");
       verts += pos ? pos.count : 0;
       tris += (g.getIndex()?.count ?? (pos?.count ?? 0)) / 3;
-      edges += b.edges.length;
+      edges += b.edges.refs.length;
     }
     // verts/tri near 3 means the mesh carries no vertex sharing at all, which is
     // what a faceted texture produces — worth seeing next to a slow frame rate.
@@ -52,5 +61,11 @@ export function sceneStats(s: SceneStatsSource): string[] {
   out.push(s.frameMs != null
     ? `[frame] ${s.frameMs.toFixed(1)}ms (${Math.round(1000 / s.frameMs)} fps) at report time`
     : "[frame] viewport idle at report time");
+  if (s.render) out.push(`[draw] ${s.render.calls} calls · ${s.render.triangles} tris last frame`);
+  if (s.seam) {
+    out.push(s.seam.skipped
+      ? "[seams] flush-seam hiding SKIPPED (model too large) — seams left visible"
+      : `[seams] ${s.seam.ms.toFixed(1)}ms`);
+  }
   return out;
 }

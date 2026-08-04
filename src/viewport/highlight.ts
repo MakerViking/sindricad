@@ -1,11 +1,14 @@
-// Highlighting without post-processing: edges recolor their LineMaterial; faces
-// recolor their own vertex-color range (per-face tessellation keeps each face's
-// vertices distinct, so this only tints the one face).
+// Highlighting without post-processing: edges recolor their own span of their
+// body's shared instance-color buffer; faces recolor their own vertex-color
+// range (per-face tessellation keeps each face's vertices distinct, so this
+// only tints the one face).
+//
+// Edges are held by EdgeRef, not by a THREE object — a ref is stable for the
+// life of its body, so Set membership works exactly as it did with Line2.
 
 import * as THREE from "three";
-import type { Line2 } from "three/examples/jsm/lines/Line2.js";
-import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
-import { bodyOfFace, type ModelView } from "./render";
+import { bodyOfFace, edgeObjects, type ModelView } from "./render";
+import type { EdgeRef } from "./edgeLines";
 
 const EDGE_BASE = new THREE.Color(0x1b1f24);
 const HOVER = new THREE.Color(0xffd089); // pale hot amber (under cursor)
@@ -17,13 +20,18 @@ const SELECT = new THREE.Color(0xff7a3c);
 // disappears the moment the user mouses over it.
 const ERROR = new THREE.Color(0xe23b3b);
 
+/** Recolor one edge through the merged object that draws it. */
+function paint(e: EdgeRef, color: THREE.Color) {
+  e.draw.setColor(e.slot, color);
+}
+
 export class Highlighter {
-  private hoveredEdge: Line2 | null = null;
+  private hoveredEdge: EdgeRef | null = null;
   private hoveredFace: number | null = null;
-  private selectedEdges = new Set<Line2>();
+  private selectedEdges = new Set<EdgeRef>();
   private selectedFaces = new Set<number>();
   private selectedBodies = new Set<string>();
-  private errorEdges = new Set<Line2>();
+  private errorEdges = new Set<EdgeRef>();
   // idle (un-hovered, un-selected) edge color. Raised to a visible "selectable"
   // tint while the fillet/chamfer edge tool is active so you can SEE every edge.
   private edgeBase = EDGE_BASE.clone();
@@ -33,40 +41,41 @@ export class Highlighter {
   /** Set the idle edge color and repaint every idle edge to it. */
   setEdgeBase(color: THREE.Color) {
     this.edgeBase.copy(color);
-    for (const e of this.view.edges) {
-      if (e === this.hoveredEdge || this.selectedEdges.has(e) || this.errorEdges.has(e)) continue;
-      (e.material as LineMaterial).color.copy(this.edgeBase);
-    }
+    // one whole-buffer write per body rather than one upload per edge — this
+    // fires on every fillet/chamfer tool activation, over every edge in the model
+    const skip = (e: EdgeRef) =>
+      e === this.hoveredEdge || this.selectedEdges.has(e) || this.errorEdges.has(e);
+    for (const draw of edgeObjects(this.view)) draw.setColorAll(this.edgeBase, skip);
   }
 
   /** Paint these edges as ERRORS (red), replacing any previous error set.
    *  Precedence: error > select > hover — the error tint survives hover and
    *  selection toggles until the set is replaced (each rebuild re-derives it
    *  from the latest diagnostics, so it clears naturally when fixed). */
-  setErrorEdges(lines: Line2[]) {
+  setErrorEdges(lines: EdgeRef[]) {
     const next = new Set(lines);
     for (const e of this.errorEdges) {
       if (next.has(e)) continue;
       // no longer failing — restore whatever tier it belongs to now
       const c = this.selectedEdges.has(e) ? SELECT : e === this.hoveredEdge ? HOVER : this.edgeBase;
-      (e.material as LineMaterial).color.copy(c);
+      paint(e, c);
     }
     this.errorEdges = next;
-    for (const e of this.errorEdges) (e.material as LineMaterial).color.copy(ERROR);
+    for (const e of this.errorEdges) paint(e, ERROR);
   }
 
-  hoverEdge(line: Line2 | null) {
+  hoverEdge(line: EdgeRef | null) {
     if (this.hoveredEdge === line) return;
     if (
       this.hoveredEdge &&
       !this.selectedEdges.has(this.hoveredEdge) &&
       !this.errorEdges.has(this.hoveredEdge)
     ) {
-      (this.hoveredEdge.material as LineMaterial).color.copy(this.edgeBase);
+      paint(this.hoveredEdge, this.edgeBase);
     }
     this.hoveredEdge = line;
     if (line && !this.selectedEdges.has(line) && !this.errorEdges.has(line)) {
-      (line.material as LineMaterial).color.copy(HOVER);
+      paint(line, HOVER);
     }
   }
 
@@ -86,15 +95,15 @@ export class Highlighter {
     this.hoverFace(null);
   }
 
-  toggleSelectEdge(line: Line2) {
+  toggleSelectEdge(line: EdgeRef) {
     // membership always updates; the visible tint only changes when the edge
     // isn't in the error set (error paint has top precedence).
     if (this.selectedEdges.has(line)) {
       this.selectedEdges.delete(line);
-      if (!this.errorEdges.has(line)) (line.material as LineMaterial).color.copy(this.edgeBase);
+      if (!this.errorEdges.has(line)) paint(line, this.edgeBase);
     } else {
       this.selectedEdges.add(line);
-      if (!this.errorEdges.has(line)) (line.material as LineMaterial).color.copy(SELECT);
+      if (!this.errorEdges.has(line)) paint(line, SELECT);
     }
   }
 
@@ -109,7 +118,7 @@ export class Highlighter {
   }
 
   /** the currently selected edge lines (for pre-selected fillet/chamfer). */
-  getSelectedEdges(): Line2[] {
+  getSelectedEdges(): EdgeRef[] {
     return [...this.selectedEdges];
   }
 
@@ -120,7 +129,7 @@ export class Highlighter {
 
   clearSelection() {
     for (const e of this.selectedEdges) {
-      if (!this.errorEdges.has(e)) (e.material as LineMaterial).color.copy(this.edgeBase);
+      if (!this.errorEdges.has(e)) paint(e, this.edgeBase);
     }
     for (const f of this.selectedFaces) this.restoreFace(f);
     this.selectedEdges.clear();

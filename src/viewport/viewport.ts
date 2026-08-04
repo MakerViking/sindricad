@@ -17,15 +17,18 @@ import {
   disposeBody,
   disposeModel,
   faceIdOfHit,
+  edgeObjects,
   groupEdgesByBody,
+  partitionMesh,
   resetBodyAppearance,
   setEdgeResolution,
   visibleBodyMeshes,
   BASE_COLOR,
   type BodyMesh,
   type ModelView,
+  type BodyEdges,
+  type EdgeRef,
 } from "./render";
-import { disposeObject } from "./dispose";
 import { FpsMeter } from "./fpsMeter";
 import { sceneStats } from "../diagnostics/sceneStats";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
@@ -37,8 +40,23 @@ import type { ViewCubeSide } from "../types";
 
 const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
 const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
+
+// Flush-seam hiding is SUPERLINEAR in edge count — it builds a per-face map over
+// every triangle in the model and then scans candidate faces per edge. Measured
+// (Chromium, synthetic coplanar bodies, evals/harness/seam_cost.cjs):
+//
+//    edges    seamMs   µs/edge          edges    seamMs   µs/edge
+//    2,000       1.7       0.8         10,000      55.2       5.5
+//    5,000      12.5       2.5         20,000     134.6       6.7
+//                                      40,000     687.9      17.2
+//
+// Per-edge cost rises ~20x over that range, so the tail is what hurts: past
+// 20,000 edges the pass is already >60% of setModel and climbing quadratically.
+// A normally-modelled part is nowhere near this; an imported assembly is far
+// past it — and there, hiding contact lines between separate parts is arguably
+// wrong anyway, since part boundaries are what you want to see.
+const FLUSH_SEAM_MAX_EDGES = 20_000;
 import { Highlighter } from "./highlight";
-import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
@@ -320,7 +338,7 @@ export class Viewport {
     );
     this.highlighter.clearHover();
     this.requestRender();
-    if (hit?.kind === "edge") { this.highlighter.hoverEdge(hit.line); this.regionHoverAt?.(-1, -1); return; }
+    if (hit?.kind === "edge") { this.highlighter.hoverEdge(hit.edge); this.regionHoverAt?.(-1, -1); return; }
     // Sketch has PRIORITY over the body: hover a visible sketch's region if one is
     // under the cursor; only fall back to the solid face when no region is there.
     if (this.regionHoverAt?.(e.clientX, e.clientY)) return;
@@ -367,7 +385,7 @@ export class Viewport {
     const add = e.ctrlKey || e.metaKey;
     if (this.highlighter) {
       if (!add) this.highlighter.clearSelection();
-      if (hit?.kind === "edge") this.highlighter.toggleSelectEdge(hit.line);
+      if (hit?.kind === "edge") this.highlighter.toggleSelectEdge(hit.edge);
       else if (hit?.kind === "face") this.highlighter.toggleSelectFace(hit.faceId);
       this.requestRender();
     }
@@ -685,10 +703,7 @@ export class Viewport {
   selectedEdgeSelectors(): Selector[] {
     if (!this.highlighter) return [];
     return this.highlighter.getSelectedEdges().flatMap((line): Selector[] => {
-      const sel = edgeSelectorFrom({
-        points: line.userData.points as [number, number, number][],
-        body: line.userData.body as string | undefined,
-      });
+      const sel = edgeSelectorFrom({ points: line.points, body: line.body });
       return sel ? [sel] : [];
     });
   }
@@ -696,16 +711,16 @@ export class Viewport {
   /** Find the rendered edge whose polyline midpoint is nearest `mid` (world
    *  units, model-scaled tolerance) — the rebuild-stable way to re-locate an
    *  edge a saved selector or a sidecar diagnostic refers to. */
-  edgeLineByMid(mid: [number, number, number]): Line2 | null {
+  edgeLineByMid(mid: [number, number, number]): EdgeRef | null {
     if (!this.model) return null;
-    const edges = this.model.edges.map((e) => ({ points: e.userData.points as [number, number, number][] }));
+    const edges = this.model.edges.map((e) => ({ points: e.points }));
     const i = nearestEdgeByMid(edges, mid, midMatchTol(this.model.box.getSize(this.projScratch).length()));
     return i == null ? null : (this.model.edges[i] ?? null);
   }
 
   /** Paint these edges as selected (used to pre-highlight a feature's saved
    *  member edges when re-opening it for editing). */
-  selectEdgeLines(lines: Line2[]) {
+  selectEdgeLines(lines: EdgeRef[]) {
     if (!this.highlighter) return;
     const already = new Set(this.highlighter.getSelectedEdges());
     for (const l of lines) if (!already.has(l)) this.highlighter.toggleSelectEdge(l);
@@ -775,7 +790,7 @@ export class Viewport {
    *  rebuild (setModel rebuilds the highlighter, wiping paint by design). */
   setErrorEdgeMids(mids: [number, number, number][]) {
     if (!this.highlighter) return;
-    const lines: Line2[] = [];
+    const lines: EdgeRef[] = [];
     for (const mid of mids) {
       const l = this.edgeLineByMid(mid);
       if (l) lines.push(l);
@@ -815,6 +830,22 @@ export class Viewport {
     // bodies from the PREVIOUS model, keyed by id — consumed as we go; whatever
     // is left at the end no longer exists in this reply and gets disposed.
     const prevBodies = new Map<string, BodyMesh>(this.model?.bodies.map((b) => [b.id, b]) ?? []);
+
+    // Which bodies actually need rebuilding — an unchanged etag reuses its GPU
+    // objects untouched. Settled BEFORE the build loop (which consumes
+    // prevBodies) so the triangle partition covers exactly those bodies:
+    // bucketing a reused body's triangles would be pure waste.
+    const rebuilding = new Set<string>();
+    for (const meta of bodyMeta) {
+      const prev = prevBodies.get(meta.id);
+      if (!(prev && meta.etag !== undefined && prev.etag === meta.etag)) rebuilding.add(meta.id);
+    }
+    // One shared partition of the reply's triangles, so the build below is O(model)
+    // instead of O(bodies x model) — the difference between 2s and 38s on an
+    // imported assembly. Not worth it for a single body (the live-preview drag
+    // path): buildBodyMesh's own scan costs the same there.
+    const partition = rebuilding.size > 1 ? partitionMesh(result, rebuilding) : undefined;
+
     const bodies: BodyMesh[] = [];
     for (const meta of bodyMeta) {
       const prev = prevBodies.get(meta.id);
@@ -826,37 +857,46 @@ export class Viewport {
         body = prev;
         resetBodyAppearance(body);
       } else {
-        body = buildBodyMesh(result, meta, byBody.get(meta.id) ?? [], this.resolution, meta.etag);
+        body = buildBodyMesh(result, meta, byBody.get(meta.id) ?? [], this.resolution, meta.etag, partition);
         if (prev) {
           this.scene.modelGroup.remove(prev.mesh);
-          for (const e of prev.edges) this.scene.modelGroup.remove(e);
+          this.scene.modelGroup.remove(prev.edges.object);
           disposeBody(prev);
         }
         this.scene.modelGroup.add(body.mesh);
-        for (const e of body.edges) this.scene.modelGroup.add(e);
+        this.scene.modelGroup.add(body.edges.object);
       }
       body.mesh.visible = !hidden.has(meta.id);
-      for (const e of body.edges) e.visible = body.mesh.visible;
+      body.edges.setBodyVisible(body.mesh.visible);
       bodies.push(body);
     }
     // any body left in prevBodies is gone from this reply — dispose it
     for (const stale of prevBodies.values()) {
       this.scene.modelGroup.remove(stale.mesh);
-      for (const e of stale.edges) this.scene.modelGroup.remove(e);
+      this.scene.modelGroup.remove(stale.edges.object);
       disposeBody(stale);
     }
 
     // orphan edges (no owning body — see ModelView.orphanEdges) are rebuilt
     // fresh every call; there's no per-body cache key to reuse them by.
-    if (this.model) for (const e of this.model.orphanEdges) { this.scene.modelGroup.remove(e); disposeObject(e); }
-    const orphanEdges = buildEdgeLines(orphans, this.resolution);
-    for (const e of orphanEdges) this.scene.modelGroup.add(e);
+    if (this.model?.orphanEdges) {
+      this.scene.modelGroup.remove(this.model.orphanEdges.object);
+      this.model.orphanEdges.dispose();
+    }
+    const orphanEdges = orphans.length ? buildEdgeLines(orphans, this.resolution) : null;
+    if (orphanEdges) this.scene.modelGroup.add(orphanEdges.object);
 
     const box = new THREE.Box3(new THREE.Vector3(...result.bbox.min), new THREE.Vector3(...result.bbox.max));
-    const edges = bodies.flatMap((b) => b.edges).concat(orphanEdges);
+    const edges = bodies.flatMap((b) => b.edges.refs).concat(orphanEdges?.refs ?? []);
     this.model = { bodies, edges, orphanEdges, box };
 
     this.hideFlushSeams();
+    // hideFlushSeams flushes what it hid, but it early-returns on an edgeless
+    // model — and a reused body may have just been un-hidden by
+    // resetBodyAppearance. flush() is a no-op when nothing changed, so this is
+    // free and closes that gap.
+    for (const d of edgeObjects(this.model)) d.flush();
+    this.picker.invalidate(); // edge geometry just changed — drop cached targets
     this.highlighter = new Highlighter(this.model);
     this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
     this.applyAnalysis(); // paints the analysis overlay, or assigned body colors when "none"
@@ -864,6 +904,12 @@ export class Viewport {
     if (this.combs) this.applyCombs();
     if (fit) this.rig.fit(this.model.box, true);
   }
+
+  /** Wall-clock cost of the last hideFlushSeams() pass, ms — surfaced in
+   *  sceneStats so a slow open reports what it actually spent the time on. */
+  seamMs = 0;
+  /** Set when the pass was skipped for being too big (see FLUSH_SEAM_MAX_EDGES). */
+  seamSkipped = false;
 
   /** Flush-seam hiding (display-only). A contact line between ALIGNED pieces —
    *  two mating bodies, or glued solids inside one body — reads as a scar
@@ -873,6 +919,25 @@ export class Viewport {
    *  hole rim, whose far side is empty space, can never be swallowed). A real
    *  step keeps its line: a visible seam now MEANS misalignment. */
   private hideFlushSeams() {
+    const t0 = performance.now();
+    this.seamMs = 0;
+    this.seamSkipped = false;
+    try {
+      const edges = this.model?.edges.length ?? 0;
+      if (edges > FLUSH_SEAM_MAX_EDGES) {
+        // Not silent: sceneStats reports the skip, so a bug report from an
+        // assembly shows seams were left visible ON PURPOSE rather than
+        // looking like the feature is broken.
+        this.seamSkipped = true;
+        return;
+      }
+      this.hideFlushSeamsInner();
+    } finally {
+      this.seamMs = performance.now() - t0;
+    }
+  }
+
+  private hideFlushSeamsInner() {
     const model = this.model;
     if (!model || !model.edges.length) return;
 
@@ -954,7 +1019,7 @@ export class Viewport {
     const m = new THREE.Vector3(), d = new THREE.Vector3(), s = new THREE.Vector3();
     const qPlus = new THREE.Vector3(), qMinus = new THREE.Vector3();
     for (const line of model.edges) {
-      const pts = line.userData.points as [number, number, number][];
+      const pts = line.points;
       if (!pts || pts.length < 2) continue;
       lo.set(Infinity, Infinity, Infinity);
       hi.set(-Infinity, -Infinity, -Infinity);
@@ -1009,15 +1074,18 @@ export class Viewport {
       for (const f of cands) if (contains(f, qPlus)) { gPlus = f; break; }
       for (const f of cands) if (contains(f, qMinus)) { gMinus = f; break; }
       if (gPlus && gMinus && gPlus !== gMinus && gPlus.n.dot(gMinus.n) > 0.999) {
-        line.visible = false;
+        line.draw.setHidden(line.slot, true);
       }
     }
+    // hiding is a geometry rebuild, so batch it: one flush per body, not one
+    // per hidden edge (this loop hides thousands on an imported assembly).
+    for (const draw of edgeObjects(model)) draw.flush();
   }
 
   clearModel() {
     if (!this.model) return;
     for (const b of this.model.bodies) this.scene.modelGroup.remove(b.mesh);
-    for (const e of this.model.edges) this.scene.modelGroup.remove(e);
+    for (const d of edgeObjects(this.model)) this.scene.modelGroup.remove(d.object);
     disposeModel(this.model);
     this.model = null;
     this.highlighter = null;
@@ -1122,7 +1190,7 @@ export class Viewport {
   }
 
   /** All visible edge lines of the current model — for tangent-chain expansion. */
-  visibleEdgeLines(): Line2[] {
+  visibleEdgeLines(): EdgeRef[] {
     return this.model ? this.picker.visibleEdges(this.model) : [];
   }
 
@@ -1190,7 +1258,7 @@ export class Viewport {
   hoverEntity(hit: import("./picking").Hit | null) {
     this.highlighter?.clearHover();
     if (!hit) { this.requestRender(); return; }
-    if (hit.kind === "edge") this.highlighter?.hoverEdge(hit.line);
+    if (hit.kind === "edge") this.highlighter?.hoverEdge(hit.edge);
     else this.highlighter?.hoverFace(hit.faceId);
     this.requestRender();
   }
@@ -1222,7 +1290,7 @@ export class Viewport {
   /** Highlight exactly these faces + edges (used by the Measure tool). */
   measureHighlight(
     faceIds: number[],
-    lines: import("three/examples/jsm/lines/Line2.js").Line2[],
+    lines: EdgeRef[],
   ) {
     this.highlighter?.clearSelection();
     for (const f of faceIds) this.highlighter?.toggleSelectFace(f);
@@ -1265,8 +1333,7 @@ export class Viewport {
     const planes = plane ? [plane] : null;
     if (this.model) {
       for (const b of this.model.bodies) (b.mesh.material as THREE.Material).clippingPlanes = planes;
-      for (const e of this.model.edges)
-        (e.material as unknown as { clippingPlanes: THREE.Plane[] | null }).clippingPlanes = planes;
+      for (const d of edgeObjects(this.model)) d.material.clippingPlanes = planes;
     }
     this.requestRender();
   }
@@ -1349,7 +1416,7 @@ export class Viewport {
   }
 
   /** Hover-highlight a specific edge line (or clear with null). */
-  hoverEdge(line: import("three/examples/jsm/lines/Line2.js").Line2 | null) {
+  hoverEdge(line: EdgeRef | null) {
     this.highlighter?.clearHover();
     if (line) this.highlighter?.hoverEdge(line);
     this.requestRender();
@@ -1361,7 +1428,7 @@ export class Viewport {
   emphasizeEdges(on: boolean) {
     this.highlighter?.setEdgeBase(on ? EDGE_PICKABLE : EDGE_IDLE);
     if (this.model) {
-      for (const e of this.model.edges) (e.material as { linewidth: number }).linewidth = on ? 2.8 : 1.6;
+      for (const d of edgeObjects(this.model)) d.material.linewidth = on ? 2.8 : 1.6;
     }
     this.requestRender();
   }
@@ -1571,7 +1638,7 @@ export class Viewport {
 
   /** Select exactly the given edge line (clears any prior selection). Used by the
    *  right-click Fillet/Chamfer menu — the edge tools consume the pre-selection. */
-  selectOnlyEdge(line: import("three/examples/jsm/lines/Line2.js").Line2) {
+  selectOnlyEdge(line: EdgeRef) {
     this.highlighter?.clearSelection();
     this.highlighter?.toggleSelectEdge(line);
     this.onSelectionChange?.();
@@ -1673,7 +1740,7 @@ export class Viewport {
   // lingering offset on the reuse path as a belt-and-braces guard.
   private moveGhost: {
     bodies: BodyMesh[];
-    edges: import("three/examples/jsm/lines/Line2.js").Line2[];
+    edges: BodyEdges[];
   } | null = null;
   beginBodyMoveGhost(bodyIds: string[]) {
     this.endBodyMoveGhost(true);
@@ -1681,7 +1748,7 @@ export class Viewport {
     const sel = new Set(bodyIds);
     const bodies = this.model.bodies.filter((b) => sel.has(b.id));
     if (!bodies.length) return;
-    const edges = this.model.edges.filter((e) => sel.has(e.userData.body as string));
+    const edges = bodies.map((b) => b.edges);
     this.moveGhost = { bodies, edges };
   }
   setBodyMoveOffset(offset: THREE.Vector3) {
@@ -1690,7 +1757,7 @@ export class Viewport {
       b.mesh.position.copy(offset);
       b.mesh.updateMatrixWorld();
     }
-    for (const e of this.moveGhost.edges) e.position.copy(offset);
+    for (const e of this.moveGhost.edges) e.object.position.copy(offset);
     this.requestRender();
   }
   endBodyMoveGhost(restore: boolean) {
@@ -1703,7 +1770,7 @@ export class Viewport {
         b.mesh.position.set(0, 0, 0);
         b.mesh.updateMatrixWorld();
       }
-      for (const e of this.moveGhost.edges) e.position.set(0, 0, 0);
+      for (const e of this.moveGhost.edges) e.object.position.set(0, 0, 0);
       this.requestRender();
     }
     this.moveGhost = null;
@@ -1783,9 +1850,9 @@ export class Viewport {
       mat.opacity = on ? 0.25 : 1;
       mat.depthWrite = !on;
     }
-    for (const e of this.model.edges) {
-      (e.material as any).opacity = on ? 0.3 : 1;
-      (e.material as any).transparent = true;
+    for (const d of edgeObjects(this.model)) {
+      d.material.opacity = on ? 0.3 : 1;
+      d.material.transparent = true;
     }
     this.requestRender();
   }
@@ -1844,6 +1911,8 @@ export class Viewport {
       canvas: this.canvas,
       pixelRatio: this.scene.renderer.getPixelRatio(),
       frameMs: this.fps.lastFrameMs(),
+      render: this.scene.renderer.info.render,
+      seam: { ms: this.seamMs, skipped: this.seamSkipped },
     });
   }
 

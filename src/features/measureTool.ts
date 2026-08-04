@@ -7,7 +7,7 @@
 // Computed from the tessellated model: instant, no rebuild round-trip.
 
 import * as THREE from "three";
-import type { Line2 } from "three/examples/jsm/lines/Line2.js";
+import type { EdgeRef } from "../viewport/edgeLines";
 import type { Viewport } from "../viewport/viewport";
 import type { Hit } from "../viewport/picking";
 import { setPrompt } from "../ui/prompt";
@@ -17,7 +17,7 @@ import { polylineMid } from "../viewport/edgeMatch";
 
 type Probe =
   | { kind: "face"; faceId: number; point: THREE.Vector3; dir: THREE.Vector3; area: number }
-  | { kind: "edge"; line: Line2; point: THREE.Vector3; dir: THREE.Vector3; length: number };
+  | { kind: "edge"; line: EdgeRef; point: THREE.Vector3; dir: THREE.Vector3; length: number };
 
 /** Geometry soup for shortest-distance: triangles (faces only), segments, points. */
 interface Soup {
@@ -101,7 +101,7 @@ export class MeasureTool {
       const m = this.viewport.measureFace(hit.faceId);
       return { kind: "face", faceId: hit.faceId, point: m.centroid, dir: m.normal, area: m.area };
     }
-    const raw = hit.line.userData.points as [number, number, number][];
+    const raw = hit.edge.points;
     const pts = raw.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
     let length = 0;
     for (let i = 1; i < pts.length; i++) {
@@ -115,7 +115,7 @@ export class MeasureTool {
     const first = pts[0], last = pts[pts.length - 1];
     if (!mid || !first || !last) return null;
     const dir = last.clone().sub(first).normalize();
-    return { kind: "edge", line: hit.line, point: mid, dir, length };
+    return { kind: "edge", line: hit.edge, point: mid, dir, length };
   }
 
   private soupOf(p: Probe): Soup {
@@ -129,7 +129,7 @@ export class MeasureTool {
       }
       return { tris, segs, pts };
     }
-    const pts = (p.line.userData.points as [number, number, number][]).map(
+    const pts = p.line.points.map(
       (q) => new THREE.Vector3(q[0], q[1], q[2]),
     );
     const segs: [THREE.Vector3, THREE.Vector3][] = [];
@@ -177,7 +177,7 @@ export class MeasureTool {
 
   private highlight() {
     const faceIds = this.probes.filter((p) => p.kind === "face").map((p) => (p as { faceId: number }).faceId);
-    const lines = this.probes.filter((p) => p.kind === "edge").map((p) => (p as { line: Line2 }).line);
+    const lines = this.probes.filter((p) => p.kind === "edge").map((p) => (p as { line: EdgeRef }).line);
     this.viewport.measureHighlight(faceIds, lines);
   }
 

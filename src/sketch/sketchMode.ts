@@ -3133,7 +3133,7 @@ export class SketchMode {
       if (!hit) return;
       const body =
         hit.kind === "edge"
-          ? (hit.line.userData.body as string | undefined)
+          ? hit.edge.body
           : this.viewport.faceIdToBodyId(hit.faceId);
       if (!body) return;
       if (this.projectPanel.filter === "silhouette") {
@@ -3152,7 +3152,7 @@ export class SketchMode {
         // three edges that "nearest" (center-distance) then resolves to the
         // wrong one. The middle segment's midpoint is on (or near) the curve
         // and never a corner.
-        const pts = hit.line.userData.points as [number, number, number][];
+        const pts = hit.edge.points;
         const k = Math.max(0, Math.ceil(pts.length / 2) - 1);
         const a = pts[k]!, b = pts[Math.min(pts.length - 1, k + 1)]!;
         source = {

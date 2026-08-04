@@ -4,7 +4,6 @@
 // Both are toggled from the viewport; neither touches the document or the kernel.
 
 import * as THREE from "three";
-import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import type { ModelView } from "./render";
 
 /** A reflective zebra material: black/white bands follow the reflected view
@@ -58,7 +57,7 @@ export function buildCurvatureCombs(view: ModelView, box: THREE.Box3): THREE.Lin
   const e2 = new THREE.Vector3();
 
   for (const line of view.edges) {
-    const pts = (line as Line2).userData.points as [number, number, number][] | undefined;
+    const pts = line.points as [number, number, number][] | undefined;
     if (!pts || pts.length < 3) continue;
     const hairs: Hair[] = [];
     for (let i = 1; i < pts.length - 1; i++) {

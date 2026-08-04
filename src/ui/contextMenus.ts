@@ -95,8 +95,8 @@ export function createContextMenus(deps: ContextMenusDeps) {
   function openEdgeMenu(x: number, y: number, hit: EdgeHit) {
     contextMenu(x, y, [
       // routed through handleAction so "Repeat <command>" records them
-      { label: "Fillet", shortcut: keyHint("fillet"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.line); handleAction("fillet"); }) },
-      { label: "Chamfer", shortcut: keyHint("chamfer"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.line); handleAction("chamfer"); }) },
+      { label: "Fillet", shortcut: keyHint("fillet"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("fillet"); }) },
+      { label: "Chamfer", shortcut: keyHint("chamfer"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("chamfer"); }) },
       { separator: true, label: "" },
       { label: "Measure from here", shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
     ]);

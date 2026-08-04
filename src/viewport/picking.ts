@@ -3,15 +3,16 @@
 // becomes a robust axis/normal selector; otherwise a nearest-to-point selector.
 
 import * as THREE from "three";
-import type { Line2 } from "three/examples/jsm/lines/Line2.js";
 import type { Selector } from "../types";
 import type { ModelView } from "./render";
-import { faceIdOfHit, visibleBodyMeshes } from "./render";
+import { edgeObjects, faceIdOfHit, visibleBodyMeshes } from "./render";
+import type { BodyEdges, EdgeRef } from "./edgeLines";
 import { edgeSelectorFrom } from "./edgeMatch";
 
 export interface EdgeHit {
   kind: "edge";
-  line: Line2;
+  /** the edge itself — a stable reference, not the object that draws it */
+  edge: EdgeRef;
   selector: Selector;
 }
 
@@ -33,17 +34,28 @@ export class Picker {
   // screen-space distance (px) of the best edge hit from the last pickEdge() —
   // lets pick() prefer a face over an edge unless the cursor is on the edge line.
   private edgeScreenDist = Infinity;
-  // visible-edges filter, cached per ModelView so a pointermove doesn't re-scan
-  // every edge each time — invalidated by identity when a new model comes in.
-  // (Edge visibility is only ever toggled once, by hideFlushSeams() right after
-  // a model is built, so caching by view reference is safe.)
-  private visibleEdgesCache: { view: ModelView; edges: Line2[] } | null = null;
-  /** All pickable (visible) edge lines — also used for tangent-chain expansion. */
-  visibleEdges(view: ModelView): Line2[] {
-    if (this.visibleEdgesCache?.view !== view) {
-      this.visibleEdgesCache = { view, edges: view.edges.filter((e) => e.visible) };
+  // Raycast targets: ONE merged object per body now, so this list is ~3k long
+  // instead of ~348k and the per-move filter is cheap. Hidden edges are not in
+  // the geometry at all (BodyEdges rebuilds without them), so there is nothing
+  // per-edge left to filter here — only whole-body visibility.
+  private targetCache: { view: ModelView; targets: THREE.Object3D[] } | null = null;
+  private edgeTargets(view: ModelView): THREE.Object3D[] {
+    if (this.targetCache?.view !== view) {
+      const targets = edgeObjects(view).filter((d) => d.pickable).map((d) => d.object);
+      this.targetCache = { view, targets };
     }
-    return this.visibleEdgesCache.edges;
+    return this.targetCache.targets;
+  }
+
+  /** Drop the cached raycast targets — call after anything that changes which
+   *  bodies or edges are drawn (hideFlushSeams, body show/hide). */
+  invalidate() {
+    this.targetCache = null;
+  }
+
+  /** All pickable (visible) edges — also used for tangent-chain expansion. */
+  visibleEdges(view: ModelView): EdgeRef[] {
+    return edgeObjects(view).flatMap((d) => d.visibleRefs());
   }
 
   /** General selection: a face wins over an edge unless the cursor is right on
@@ -104,7 +116,7 @@ export class Picker {
     // (render.ts) — no per-move sync needed here.
     // skip hidden lines (flush-seam-hidden contact rims, hidden bodies) — the
     // raycaster tests invisible objects too, which would give ghost edge picks
-    const eHits = this.raycaster.intersectObjects(this.visibleEdges(view), false);
+    const eHits = this.raycaster.intersectObjects(this.edgeTargets(view), false);
     if (!eHits.length) return null;
 
     let best = eHits[0];
@@ -120,13 +132,14 @@ export class Picker {
     }
     this.edgeScreenDist = bestD; // used by pick() to decide edge vs face
 
-    const line = best.object as Line2;
-    const selector = edgeSelectorFrom({
-      points: line.userData.points as [number, number, number][],
-      body: line.userData.body as string | undefined,
-    });
+    // three reports the instance (segment) index as `faceIndex` on a
+    // LineSegments2 hit; the owning BodyEdges maps it back to the edge.
+    const draw = best.object.userData.edges as BodyEdges | undefined;
+    const edge = draw?.refAtSegment(best.faceIndex ?? -1);
+    if (!edge) return null;
+    const selector = edgeSelectorFrom({ points: edge.points, body: edge.body });
     if (!selector) return null;
-    return { kind: "edge", line, selector };
+    return { kind: "edge", edge, selector };
   }
 }
 

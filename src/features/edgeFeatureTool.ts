@@ -8,6 +8,7 @@
 
 import * as THREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import type { EdgeRef } from "../viewport/edgeLines";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { Viewport } from "../viewport/viewport";
@@ -194,7 +195,7 @@ export class EdgeFeatureTool {
       }
       const mid = sel.point as Vec3;
       const line = this.viewport.edgeLineByMid(mid);
-      if (line) this.addGhost(sel, line.userData.points as Vec3[]);
+      if (line) this.addGhost(sel, line.points as Vec3[]);
       else this.unmatchedSels.push(sel);
     }
   }
@@ -218,7 +219,6 @@ export class EdgeFeatureTool {
     });
     mat.resolution.set(el.clientWidth, el.clientHeight);
     const line = new Line2(geo, mat);
-    line.computeLineDistances();
     line.renderOrder = 998;
     this.viewport.addToScene(line);
     this.ghosts.push({ sel, mid, points, line, chain: chain ?? ++this.chainCounter });
@@ -258,7 +258,7 @@ export class EdgeFeatureTool {
 
   /** All model edges tangent-connected to `start` (including `start`), walked
    *  breadth-first across shared endpoints whose end-tangents are colinear. */
-  private tangentChain(start: Line2): Line2[] {
+  private tangentChain(start: EdgeRef): EdgeRef[] {
     const all = this.viewport.visibleEdgeLines();
     const bb = this.store.buildState.result?.bbox;
     const diag = bb
@@ -268,8 +268,8 @@ export class EdgeFeatureTool {
     const G1_COS = Math.cos((10 * Math.PI) / 180); // tangents within 10°
 
     type End = { p: Vec3; t: THREE.Vector3 }; // endpoint + unit tangent there
-    const endsOf = (l: Line2): End[] => {
-      const pts = l.userData.points as Vec3[];
+    const endsOf = (l: EdgeRef): End[] => {
+      const pts = l.points as Vec3[];
       const first = pts[0];
       const second = pts[1];
       const last = pts[pts.length - 1];
@@ -282,8 +282,8 @@ export class EdgeFeatureTool {
       return [{ p: first, t: tHead }, { p: last, t: tTail }];
     };
 
-    const chain = new Set<Line2>([start]);
-    const queue: Line2[] = [start];
+    const chain = new Set<EdgeRef>([start]);
+    const queue: EdgeRef[] = [start];
     while (queue.length) {
       const cur = queue.pop();
       if (!cur) break;
@@ -306,11 +306,11 @@ export class EdgeFeatureTool {
 
   /** Add an edge AND its tangent chain as ghosts (skipping already-ghosted).
    *  The whole gesture shares one chain id, so it deselects as one unit. */
-  private addWithChain(line: Line2) {
+  private addWithChain(line: EdgeRef) {
     const chainId = ++this.chainCounter;
     for (const l of this.tangentChain(line)) {
-      const pts = l.userData.points as Vec3[];
-      const sel = edgeSelectorFrom({ points: pts, body: l.userData.body as string | undefined });
+      const pts = l.points as Vec3[];
+      const sel = edgeSelectorFrom({ points: pts, body: l.body });
       if (!sel) continue;
       const mid = sel.point;
       if (this.ghosts.some((g) => Math.hypot(g.mid[0] - mid[0], g.mid[1] - mid[1], g.mid[2] - mid[2]) < 1e-6)) continue;
@@ -382,7 +382,7 @@ export class EdgeFeatureTool {
   private onMove(e: PointerEvent) {
     if (this.phase === "pick") {
       const hit = this.viewport.pickEdgeAt(e.clientX, e.clientY);
-      this.viewport.hoverEdge(hit?.line ?? null);
+      this.viewport.hoverEdge(hit?.edge ?? null);
       this.viewport.domElement.style.cursor = hit ? "pointer" : "default";
       return;
     }
@@ -405,7 +405,7 @@ export class EdgeFeatureTool {
       // ghosts and bare edges are toggle targets in BOTH modes — show it
       const g = this.ghostAt(e.clientX, e.clientY);
       const hit = g ? null : this.viewport.pickEdgeAt(e.clientX, e.clientY);
-      this.viewport.hoverEdge(hit?.line ?? null);
+      this.viewport.hoverEdge(hit?.edge ?? null);
       this.viewport.domElement.style.cursor = g || hit ? "pointer" : "default";
       return;
     }
@@ -419,9 +419,9 @@ export class EdgeFeatureTool {
       if (!hit) return; // missed an edge — let the click orbit
       e.preventDefault();
       e.stopImmediatePropagation();
-      const pts = hit.line.userData.points as [number, number, number][];
+      const pts = hit.edge.points;
       const { mid, tan } = midAndTangent(pts);
-      this.beginDrag([hit.selector], mid, tan, hit.line);
+      this.beginDrag([hit.selector], mid, tan, hit.edge);
       return;
     }
     // drag phase: grabbing the handle scrubs; a clean click elsewhere commits
@@ -453,7 +453,7 @@ export class EdgeFeatureTool {
       e.preventDefault();
       e.stopImmediatePropagation();
       this.viewport.clearHover();
-      this.addWithChain(hit.line);
+      this.addWithChain(hit.edge);
       this.afterMembershipChange();
       this.downOnGizmo = true;
       return;
@@ -482,7 +482,7 @@ export class EdgeFeatureTool {
     edges: Selector[],
     anchor: THREE.Vector3,
     tangent: THREE.Vector3 | null,
-    chainSource?: Line2,
+    chainSource?: EdgeRef,
   ) {
     // Every member gets a ghost line (visible through the model) and stays
     // click-toggleable. A direct pick expands across its tangent chain; a
