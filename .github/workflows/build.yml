@@ -220,9 +220,13 @@ jobs:
           # NO_STRIP is linuxdeploy's own escape hatch; harmless on the other OSes.
           NO_STRIP: true
           # UNSIGNED builds for now (Apple Developer Program deferred — no budget).
-          # macOS ships unsigned (open via right-click -> Open); Windows unsigned runs
-          # with a SmartScreen warning. To SIGN later: add the APPLE_* / Windows
-          # signing secrets back here AND append the signing config, i.e.
+          # macOS ships unsigned, which current Gatekeeper reports as "the app is
+          # damaged and can't be opened" — right-click -> Open is NOT enough for an
+          # app with no signature at all, and saying so in the README and release
+          # notes is what sent the reporter of #5 to the issue tracker. The command
+          # that works is `xattr -dr com.apple.quarantine /Applications/SindriCAD.app`.
+          # Windows unsigned runs with a SmartScreen warning. To SIGN later: add the
+          # APPLE_* / Windows signing secrets back here AND append the signing config:
           #   args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.macos-sign.conf.json
         with:
           # bundle-only config ships sidecar-runtime/ as a resource. (No macOS signing
