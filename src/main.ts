@@ -221,6 +221,9 @@ window.addEventListener("keydown", (e) => {
 const palette = new SketchPalette(document.getElementById("palette")!);
 const timeline = new Timeline(document.getElementById("timeline")!, store);
 const tree = new BrowserTree(document.getElementById("browser")!, store);
+// same DEV-only debug handle as the block above (declared later than those, so
+// exposed here): lets a perf harness time a tree render directly.
+if (import.meta.env.DEV) (window as any).tree = tree;
 const inspector = new Inspector(document.getElementById("inspector")!, store);
 
 // WebKitGTK quirk: wheel events over overflow panels don't reliably reach the

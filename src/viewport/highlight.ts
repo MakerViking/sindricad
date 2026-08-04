@@ -7,7 +7,7 @@
 // life of its body, so Set membership works exactly as it did with Line2.
 
 import * as THREE from "three";
-import { bodyOfFace, edgeObjects, type ModelView } from "./render";
+import { bodyOfFace, edgeObjects, type BodyMesh, type ModelView } from "./render";
 import type { EdgeRef } from "./edgeLines";
 
 const EDGE_BASE = new THREE.Color(0x1b1f24);
@@ -37,6 +37,23 @@ export class Highlighter {
   private edgeBase = EDGE_BASE.clone();
 
   constructor(private view: ModelView) {}
+
+  /** body id -> BodyMesh, built once on first use.
+   *
+   *  Both paint paths used a linear `this.view.bodies.find(...)` per call, which
+   *  on an imported assembly's few thousand bodies is a scan per painted body —
+   *  and selection paints in loops. Safe to cache with no invalidation because
+   *  viewport.setModel() builds a fresh ModelView AND a fresh Highlighter
+   *  together, so `view` never changes under an instance. */
+  private byId: Map<string, BodyMesh> | null = null;
+
+  private bodyById(bodyId: string): BodyMesh | undefined {
+    if (!this.byId) {
+      this.byId = new Map();
+      for (const b of this.view.bodies) this.byId.set(b.id, b);
+    }
+    return this.byId.get(bodyId);
+  }
 
   /** Set the idle edge color and repaint every idle edge to it. */
   setEdgeBase(color: THREE.Color) {
@@ -168,7 +185,7 @@ export class Highlighter {
    *  whole buffer — no faceId-range scan needed (unlike paintFace below, this
    *  never needs to scope to a sub-range within a shared buffer). */
   private paintBody(bodyId: string, color: THREE.Color) {
-    const body = this.view.bodies.find((b) => b.id === bodyId);
+    const body = this.bodyById(bodyId);
     if (!body) return;
     const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     if (!colorAttr) return;
@@ -209,7 +226,7 @@ export class Highlighter {
   /** Restore every face of a body to its base color (the whole buffer — see
    *  paintBody's note on why no range scan is needed here). */
   private restoreBody(bodyId: string) {
-    const body = this.view.bodies.find((b) => b.id === bodyId);
+    const body = this.bodyById(bodyId);
     if (!body) return;
     const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     if (!colorAttr) return;
