@@ -348,15 +348,41 @@ export function nearestPaletteSlot(
   return best;
 }
 
+/** The path of the most recently CANCELLED import, so a retry is one click.
+ *  Session state on purpose — it never touches the document, so nothing about a
+ *  cancelled import can be saved, shared, or opened on another machine. */
+let lastCancelledImport: string | null = null;
+
+/** The path a cancelled import used, or null. */
+export function cancelledImportPath(): string | null {
+  return lastCancelledImport;
+}
+
 /** Import a specific mesh / CAD file path as a new body. Shared by the Import
  *  Mesh command and by Open (when the chosen file isn't a .sindri document). */
 async function importPath(store: DocumentStore, geometry: GeometryBackend, path: string) {
   const fmt = extToImportFormat(path);
-  const res = await geometry.importGeometry(path, fmt);
+  // runBusy is what makes the operation VISIBLE and stoppable: an import used to
+  // run with no busy state at all, so the timeline showed nothing and there was
+  // nothing for a Cancel button to attach to. onStarted hands back the request
+  // id so a cancel targets this import specifically.
+  const res = await store.runBusy(
+    `Importing ${path.split(/[\\/]/).pop() ?? "file"}`,
+    (onStarted) => geometry.importGeometry(path, fmt, onStarted),
+  );
   if (!res.ok) {
+    if (res.cancelled) {
+      // The user stopped it: say nothing (they know) and add NOTHING to the
+      // document. The path is remembered in SESSION state only — a placeholder
+      // feature would persist into the saved .sindri and reference a path that
+      // may not exist on another machine.
+      lastCancelledImport = path;
+      return;
+    }
     await reportError(`Couldn't import ${path.split(/[\\/]/).pop()}: ${res.message ?? "unreadable file"}`);
     return;
   }
+  lastCancelledImport = null;
   const id = store.nextId();
   store.addFeature({
     id,

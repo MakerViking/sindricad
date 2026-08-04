@@ -1040,8 +1040,15 @@ def import_geometry(path, fmt):
         )
     if fmt in ("step", "stp"):
         # snap near-analytic spline faces to true planes/cylinders/… ONCE at
-        # import, so the canonical form is baked into the embedded BREP
-        shape = _canonicalize(import_step(path))
+        # import, so the canonical form is baked into the embedded BREP.
+        # Phase-marked because these are the two multi-minute stages on a large
+        # assembly: measured 90.6 s for import_step and 93.9 s for _canonicalize
+        # on a 356 MiB file. _canonicalize being the LARGER of the two is why a
+        # bar covering only the read would sit at 100% for a minute and a half.
+        _import_phase(IMPORT_PHASE_READ)
+        _shape = import_step(path)
+        _import_phase(IMPORT_PHASE_CANONICALIZE)
+        shape = _canonicalize(_shape)
     elif fmt == "brep":
         shape = import_brep(path)
     elif fmt in ("stl", "3mf", "obj"):
@@ -1087,6 +1094,7 @@ def import_geometry(path, fmt):
 
     is_solid = len(shape.solids()) > 0
     name = os.path.splitext(os.path.basename(path))[0] or "Imported"
+    _import_phase(IMPORT_PHASE_ENCODE)
     out = {
         "brep": _shape_to_brep_b64(shape),
         "solid": is_solid,
@@ -1109,6 +1117,33 @@ def import_geometry(path, fmt):
 # feature so the supervisor can kill on STALL rather than wall clock. Must
 # never be able to break a rebuild.
 on_feature_tick = None
+
+
+# Import phase codes, published through the SAME channel rebuild progress uses
+# (on_feature_tick -> the parent's _HB_IDX). Display only: OCP holds the GIL for
+# the whole of ReadFile+Transfer, so nothing can be observed INSIDE a phase and
+# these must never be mistaken for a liveness signal.
+#
+# Determinate progress is not available: Message_ProgressIndicator cannot be
+# constructed or subclassed in this OCP build (forcing one via __new__ and
+# calling Start() segfaults), every Message_ProgressRange reports IsActive()
+# False, and a watchdog thread gets zero wakeups because of the GIL. Phase
+# codes are what is left.
+IMPORT_PHASE_READ = 0        # reading + converting the file (build123d import_step)
+IMPORT_PHASE_CANONICALIZE = 1  # _canonicalize: the LARGEST phase on a big assembly
+IMPORT_PHASE_ENCODE = 2      # serialising the B-rep for the wire
+
+
+def _import_phase(code):
+    """Publish an import phase. Looked up through globals() every call because
+    the worker rebinds `on_feature_tick` at startup — a module-scope
+    `from builder import on_feature_tick` would capture None forever."""
+    cb = globals().get("on_feature_tick")
+    if cb is not None:
+        try:
+            cb(code)
+        except Exception:
+            pass  # a dropped progress frame must never fail an import
 
 
 @dataclass

@@ -11,12 +11,23 @@ import { FEATURE_META } from "./featureMeta";
 import { contextMenu } from "./menu";
 import { esc } from "./escape";
 
+// A fast op must not flash a Cancel button; a slow one must offer it early.
+const CANCEL_DELAY_MS = 700;
+
 export class Timeline {
   private el: HTMLElement;
   private scroller: HTMLElement;
   private track: HTMLElement;
   private transport: HTMLElement;
   private errBadge: HTMLElement;
+  // Cancel lives OUTSIDE this.track on purpose. render() does
+  // `track.innerHTML = ""` roughly once a second while an op runs, and a button
+  // detached between mousedown and mouseup fires NO click event at all — not
+  // even on an ancestor — so a button inside the track silently swallows
+  // roughly one press in eight. As a persistent sibling it also keeps focus.
+  private cancelBtn: HTMLButtonElement;
+  private busyLabel: HTMLElement;
+  private busySince = 0; // ms timestamp the current busy op started, 0 = idle
   onSelect: ((id: string) => void) | null = null;
   onEdit: ((id: string) => void) | null = null;
   /** offer "Re-pick face…" for this feature? (an ambiguous reference was reported) */
@@ -41,6 +52,17 @@ export class Timeline {
     this.track.className = "timeline-track";
     this.scroller.appendChild(this.track);
     this.el.appendChild(this.scroller);
+
+    this.busyLabel = document.createElement("div");
+    this.busyLabel.className = "timeline-busy hidden";
+    this.el.appendChild(this.busyLabel);
+
+    this.cancelBtn = document.createElement("button");
+    this.cancelBtn.className = "timeline-cancel hidden";
+    this.cancelBtn.textContent = "Cancel";
+    this.cancelBtn.title = "Stop the running operation";
+    this.cancelBtn.addEventListener("click", () => void this.cancelBusy());
+    this.el.appendChild(this.cancelBtn);
 
     this.errBadge = document.createElement("button");
     this.errBadge.className = "timeline-errbadge hidden";
@@ -68,6 +90,26 @@ export class Timeline {
 
     store.onDocChange(() => this.render());
     store.onBuild(() => this.render());
+    store.onBusy((b) => {
+      // Timestamp the TRANSITION, not each emission: an op emits busy frames
+      // throughout, and re-arming a delay timer on every one means it never
+      // fires. Delay exists so a fast op doesn't flash a button at the user.
+      this.busySince = b.active ? (this.busySince || Date.now()) : 0;
+      this.render();
+      if (b.active) setTimeout(() => this.render(), CANCEL_DELAY_MS + 20);
+    });
+  }
+
+  /** Stop the running op. Disabled while in flight — cancelling is not instant
+   *  (the sidecar kills the worker and spawns a fresh one), and a second press
+   *  would target an op that is already gone. */
+  private async cancelBusy() {
+    this.cancelBtn.disabled = true;
+    try {
+      await this.store.cancelBusy();
+    } finally {
+      this.cancelBtn.disabled = false;
+    }
   }
 
   select(id: string | null) {
@@ -99,7 +141,20 @@ export class Timeline {
     this.renderTransport(rollback, features.length);
     this.track.innerHTML = "";
 
-    if (features.length === 0 && !build.building) {
+    const busy = this.store.busyState;
+    const showCancel = busy.active && this.busySince > 0
+      && Date.now() - this.busySince >= CANCEL_DELAY_MS;
+    this.cancelBtn.classList.toggle("hidden", !showCancel);
+    this.cancelBtn.title = busy.label || "Stop the running operation";
+    this.busyLabel.classList.toggle("hidden", !showCancel);
+    this.busyLabel.textContent = busy.pct === null
+      ? busy.label
+      : `${busy.label} ${busy.pct}%`;
+
+    // `busy.active` joins this guard: importing into an EMPTY document is the
+    // most common long operation there is, and without it the timeline would
+    // render "start with a Sketch" for the whole 90+ seconds.
+    if (features.length === 0 && !build.building && !busy.active) {
       const empty = document.createElement("div");
       empty.className = "timeline-empty";
       empty.textContent = "Your modeling history will appear here. Start with a Sketch.";

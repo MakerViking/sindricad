@@ -13,7 +13,11 @@ interface WireError {
 }
 type RawReply<T> =
   | { id: string; ok: true; result: T }
-  | { id: string; ok: false; error: WireError };
+  // `cancelled` marks a failure the USER caused by pressing Cancel. It stays
+  // ok:false so nothing that only checks `ok` can mistake it for a result, but
+  // callers can tell "you stopped it" apart from "it broke" — the difference
+  // between a quiet dismissal and an error banner.
+  | { id: string; ok: false; cancelled?: boolean; error: WireError };
 
 type Pending = (msg: RawReply<unknown>) => void;
 type StatusListener = (connected: boolean) => void;
@@ -85,7 +89,9 @@ export interface GeometryBackend {
   }>;
   // Read an external geometry file into an embeddable BREP payload (for an
   // `import` feature). Path-based: the sidecar reads the file directly.
-  importGeometry(path: string, format: ImportFormat): Promise<ImportReply>;
+  // `onStarted` receives the request id, so a caller that may later cancel
+  // can target THIS op rather than whatever ran most recently.
+  importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply>;
   // Pairwise interference (clash) check among the document's bodies.
   interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }>;
   /** Colored multi-material 3MF PROJECT export (Orca format: one object per body,
@@ -118,6 +124,12 @@ export interface GeometryBackend {
   onProgress?(fn: (feature: number) => void): () => void;
   /** MCAD-style "Compute All": rebuild bypassing every cache layer. Optional. */
   computeAll?(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
+  /** Stop an op in flight. `target` is the request id to cancel — pass the id
+   *  the busy state owns, NOT the most recent one. Optional (the in-process
+   *  backend has nothing to cancel). Resolves to whether anything stopped. */
+  cancel?(target?: string): Promise<boolean>;
+  /** Coarse phase progress for a long op (import). Optional. */
+  onOpProgress?(fn: (pct: number, label: string) => void): () => void;
   readonly connected: boolean;
 }
 
@@ -218,8 +230,13 @@ export class Geometry implements GeometryBackend {
   private readonly url: string;
   private token = ""; // per-launch shared secret fetched from the Rust shell
   private pending = new Map<string, Pending>();
+  // The heavy op most recently sent, for cancel() to target. The sidecar
+  // serializes heavy ops, so at most one is actually running; targeting by id
+  // keeps a late Cancel click from killing the NEXT op instead.
+  private lastHeavyId: string | null = null;
   private outbox: string[] = [];
   private statusListeners = new Set<StatusListener>();
+  private opProgressListeners = new Set<(pct: number, label: string) => void>();
   private progressListeners = new Set<(feature: number) => void>();
   private reconnectTimer: number | null = null;
   private reconnectDelay = 500; // ms; doubles on each failed attempt, capped, reset on open
@@ -262,6 +279,13 @@ export class Geometry implements GeometryBackend {
     return () => this.statusListeners.delete(fn);
   }
 
+  /** Coarse progress for a long non-rebuild op (today: import). Phase-level
+   *  only — OCCT exposes no usable sub-operation progress in this OCP build. */
+  onOpProgress(fn: (pct: number, label: string) => void): () => void {
+    this.opProgressListeners.add(fn);
+    return () => this.opProgressListeners.delete(fn);
+  }
+
   onProgress(fn: (feature: number) => void): () => void {
     this.progressListeners.add(fn);
     return () => this.progressListeners.delete(fn);
@@ -299,11 +323,21 @@ export class Geometry implements GeometryBackend {
         console.error("[geometry] bad JSON from sidecar:", err, "payload:", String(e.data).slice(0, 200));
         return;
       }
-      if (msg && msg.status === "building") {
-        // interim progress frame from a long rebuild — informational only,
-        // must NEVER resolve the pending call (the real reply follows)
-        const f = typeof msg.feature === "number" ? msg.feature : -1;
-        for (const fn of this.progressListeners) fn(f);
+      if (msg && typeof msg.status === "string") {
+        // ANY interim status frame is informational and must NEVER resolve the
+        // pending call — the real reply follows. Guarding on "building" alone
+        // was a trap for the next frame type: an unrecognised status fell
+        // through to the pending map and resolved the caller's promise with a
+        // frame carrying no `ok`, so the caller reported failure while the
+        // sidecar happily kept working for another minute.
+        if (msg.status === "building") {
+          const f = typeof msg.feature === "number" ? msg.feature : -1;
+          for (const fn of this.progressListeners) fn(f);
+        } else if (msg.status === "importing") {
+          const pct = typeof msg.pct === "number" ? msg.pct : 0;
+          const label = typeof msg.label === "string" ? msg.label : "";
+          for (const fn of this.opProgressListeners) fn(pct, label);
+        }
         return;
       }
       const resolve = this.pending.get(msg.id);
@@ -400,7 +434,7 @@ export class Geometry implements GeometryBackend {
     }
   }
 
-  private call<T>(op: string, extra: object): Promise<RawReply<T>> {
+  private call<T>(op: string, extra: object, onId?: (id: string) => void): Promise<RawReply<T>> {
     const id = crypto.randomUUID();
     const raw = JSON.stringify({ id, op, ...extra });
     return new Promise((resolve) => {
@@ -418,6 +452,11 @@ export class Geometry implements GeometryBackend {
       // the pending map is heterogeneous across calls with different T, so
       // storing this call's typed resolver erases to Pending here — the one
       // type-erasing cast the generic requires.
+      // Recorded only once the call is actually going out: an id set before
+      // the refusal above would name a request the sidecar never saw, and
+      // cancelling it would silently no-op.
+      if (op !== "cancel" && op !== "ping") this.lastHeavyId = id;
+      onId?.(id);
       this.pending.set(id, resolve as Pending);
       if (this.connected) {
         this.ws!.send(raw);
@@ -671,8 +710,8 @@ export class Geometry implements GeometryBackend {
     return { ok: false, message: msg.error?.message };
   }
 
-  async importGeometry(path: string, format: ImportFormat): Promise<ImportReply> {
-    const msg = await this.call<{ brep: string; name: string; solid: boolean; faces: number; color?: string }>("import", { path, format });
+  async importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply> {
+    const msg = await this.call<{ brep: string; name: string; solid: boolean; faces: number; color?: string }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
       return {
@@ -680,7 +719,28 @@ export class Geometry implements GeometryBackend {
         ...(r.color !== undefined ? { color: r.color } : {}),
       };
     }
+    if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: "import cancelled" };
     return { ok: false, message: msg.error?.message ?? "import failed" };
+  }
+
+  /** Stop the geometry op in flight. Answered on the sidecar's READ path, so it
+   *  is heard DURING a long job rather than queued behind it — that is the whole
+   *  reason it exists. Resolves to whether anything was actually stopped; the
+   *  cancelled op settles separately, with `cancelled: true` on its own reply.
+   *
+   *  A pool job cannot be interrupted, so the sidecar kills the worker and
+   *  brings up a fresh one. Geometry keeps working; the next call pays a pool
+   *  respawn. */
+  async cancel(target?: string): Promise<boolean> {
+    // ALWAYS prefer an explicit target. The document stays editable during a
+    // long import, so any rebuild the user triggers meanwhile overwrites
+    // lastHeavyId — and the sidecar, which matches the running id against the
+    // target, would then refuse to cancel the very import the user is waiting
+    // on. lastHeavyId is only a fallback for callers that never learned an id.
+    const id = target ?? this.lastHeavyId;
+    if (!id) return false;
+    const msg = await this.call<{ cancelled: boolean }>("cancel", { target: id });
+    return msg.ok ? msg.result.cancelled : false;
   }
 
   async interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }> {

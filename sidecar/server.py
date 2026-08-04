@@ -26,6 +26,7 @@ on stdout once bound, which the Rust shell waits for before opening the webview.
 """
 
 import asyncio
+import contextvars
 import ctypes
 import hashlib
 import hmac
@@ -101,6 +102,27 @@ JOB_TIMEOUT = 25.0
 # timeout there is self-perpetuating — it recycles the worker, which clears the
 # incremental cache, so every retry is cold again. 120s still catches runaways.
 DOC_TIMEOUT = 120.0
+
+# Import phase labels and their share of the wall clock, measured on the 356 MiB
+# reference STEP: read+convert 90.6 s, canonicalize 93.9 s, encode 7.3 s.
+# Mirrors builder.IMPORT_PHASE_* codes.
+_IMPORT_PHASES = (
+    ("Reading file", 0.47),
+    ("Simplifying faces", 0.49),
+    ("Packaging", 0.04),
+)
+
+# Per-request cancel token, bound to the dispatch task's context (see
+# _serialized). _run/_run_stall consult it so a killed worker is reported as a
+# cancellation rather than a crash.
+_CANCEL: contextvars.ContextVar = contextvars.ContextVar("sindri_cancel", default=None)
+
+
+def _cancelled_result():
+    """The result shape for a cancelled op. `ok:false` keeps older clients
+    treating it as a (harmless) failure; the `cancelled` flag lets a current one
+    tell 'you stopped it' apart from 'it broke'."""
+    return {"cancelled": True, "error": {"message": "cancelled"}}
 # Rebuilds are supervised by PROGRESS, not wall clock: the worker bumps a shared
 # heartbeat once per feature (and per tessellated body), and the supervisor kills
 # only when no progress is made for STALL_TIMEOUT — a legitimately long resumed
@@ -1058,6 +1080,11 @@ def _err(req_id, message, feature_id=None):
 
 def _reply_for(req_id, res):
     """Turn a worker result dict into the wire reply (error vs ok)."""
+    if res.get("cancelled"):
+        return json.dumps({
+            "id": req_id, "ok": False, "cancelled": True,
+            "error": {"message": "cancelled"},
+        })
     if "error" in res:
         return _err(req_id, res["error"]["message"], res["error"].get("feature_id"))
     return _ok(req_id, res)
@@ -1318,14 +1345,23 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
     if err is not None:
         return err
     gen = _pool_gen  # captured BEFORE submit: a peer may recycle while we wait
+    token = _CANCEL.get()
+    cancelled = lambda: bool(token and token["cancelled"])
     try:
         fut = loop.run_in_executor(_pool, fn, *args)
-        return await asyncio.wait_for(fut, timeout=timeout)
+        res = await asyncio.wait_for(fut, timeout=timeout)
+        # a cancel that lands in the last moments still reports cancelled: the
+        # caller has already moved on and must not be handed a surprise result
+        return _cancelled_result() if cancelled() else res
     except asyncio.TimeoutError:
+        if cancelled():
+            return _cancelled_result()  # the pool was killed BY the cancel
         _kill_pool(_pool)
         _pool = _new_pool()
         return {"error": {"message": "operation timed out — geometry too complex or degenerate"}}
     except BrokenProcessPool:
+        if cancelled():
+            return _cancelled_result()
         return _on_broken(gen)
 
 
@@ -1347,16 +1383,26 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     # broken raised BrokenProcessPool straight out of run_in_executor, past
     # _crash_feature and into handle()'s catch-all, shipping raw CPython text.
     gen = _pool_gen
+    token = _CANCEL.get()
+    cancelled = lambda: bool(token and token["cancelled"])
     try:
         fut = loop.run_in_executor(_pool, fn, *args)
     except BrokenProcessPool:
+        if cancelled():
+            return _cancelled_result()
         return _on_broken(gen)
     last = _HB.value if _HB is not None else 0
     last_t = loop.time()
     while True:
         try:
-            return await asyncio.wait_for(asyncio.shield(fut), timeout=1.0)
+            res = await asyncio.wait_for(asyncio.shield(fut), timeout=1.0)
+            return _cancelled_result() if cancelled() else res
         except asyncio.TimeoutError:
+            # cancel kills the pool, which usually surfaces as BrokenProcessPool
+            # below — but the 1s poll can land first, so check here too
+            if cancelled():
+                fut.cancel()
+                return _cancelled_result()
             if on_progress is not None:
                 try:
                     await on_progress(int(_HB_IDX.value) if _HB_IDX is not None else -1)
@@ -1376,6 +1422,8 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                     "restarted; progress up to the last checkpoint is kept"
                 ) % int(stall)}}
         except BrokenProcessPool:
+            if cancelled():
+                return _cancelled_result()  # the pool was killed BY the cancel
             # Read the heartbeat BEFORE recycling: it holds the index of the
             # feature the worker was building when it died, which is the only
             # clue that survives a segfault (the worker leaves no traceback).
@@ -1400,6 +1448,8 @@ def _crash_feature(res, document):
     Map it back to a real feature id so the error names the culprit and the
     timeline can chip it, instead of reporting a nameless kernel crash.
     """
+    if (res or {}).get("cancelled"):
+        return res  # a cancel is not a crash; don't attribute it to a feature
     err = (res or {}).get("error")
     if not isinstance(err, dict):
         return res
@@ -1458,6 +1508,186 @@ def _mint_token() -> str:
     return t
 
 
+async def _dispatch(ws, loop, req, req_id, op):
+    """Run one request and send its reply. Split out of handle() so the read
+    loop can stay responsive while this is running — see handle()."""
+    if op == "rebuild":
+        tol = req.get("tolerance", 0.1)
+        payload = {
+            k: req[k]
+            for k in ("document", "baseRevision", "revision", "ops")
+            if k in req
+        }
+
+        async def _building(idx, _rid=req_id):
+            # interim progress frame — the client routes status
+            # frames to its progress listeners and never resolves
+            # the pending call with one
+            await ws.send(json.dumps(
+                {"id": _rid, "status": "building", "feature": idx}
+            ))
+
+        res = await _run_stall(
+            loop, _rebuild_delta_job, payload, tol, req.get("known"),
+            on_progress=_building,
+        )
+        res = _crash_feature(res, req.get("document"))
+        await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
+
+    elif op == "computeAll":
+        tol = req.get("tolerance", 0.1)
+        payload = {"document": req["document"], "revision": req.get("revision")}
+
+        async def _building2(idx, _rid=req_id):
+            await ws.send(json.dumps(
+                {"id": _rid, "status": "building", "feature": idx}
+            ))
+
+        res = await _run_stall(loop, _compute_all_job, payload, tol,
+                               on_progress=_building2)
+        res = _crash_feature(res, req.get("document"))
+        await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
+
+    elif op == "export":
+        res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {}, timeout=DOC_TIMEOUT)
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "exportProject":
+        # settings is written into the 3MF verbatim (project config for
+        # the slicer); cap its size like any untrusted request field.
+        settings = req.get("settings") or {}
+        if not isinstance(settings, dict) or len(json.dumps(settings)) > 262144:
+            await ws.send(_err(req_id, "exportProject: bad settings"))
+            return
+        res = await _run(
+            loop, _export_project_job, req["document"], req["path"],
+            req.get("palette") or [], req.get("bodyColors") or {},
+            req.get("bodyNames") or {}, settings, timeout=DOC_TIMEOUT,
+        )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "interference":
+        res = await _run(loop, _interference_job, req["document"], timeout=DOC_TIMEOUT)
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "import":
+        # A one-time import (file read + B-rep build) runs far longer than a
+        # rebuild. Two things matter here:
+        #
+        # 1. The budget is SIZE-DERIVED, never a constant. A 356 MiB STEP
+        #    measured 193 s end to end (90.6 s read, 93.9 s canonicalize), so a
+        #    flat 90 s reaps a legitimate import. max() keeps it from ever being
+        #    SHORTER than the old deadline for the files that already worked.
+        # 2. It goes through _run_stall for on_progress, but with an EXPLICIT
+        #    stall=. The default STALL_TIMEOUT is 60 s and OCP holds the GIL for
+        #    the whole read, so nothing can bump the heartbeat — left at the
+        #    default this would reap a working import 30 s EARLIER than the old
+        #    flat 90 s. The stall reaper cannot observe liveness through an
+        #    atomic OCCT call, so here `stall` is simply the wall clock.
+        try:
+            _sz = os.path.getsize(req["path"]) / (1024 * 1024)
+        except OSError:
+            _sz = 0.0
+        budget = max(90.0, 60.0 + 1.5 * _sz)
+        # The REAPER budget above is deliberately generous, so it is the wrong
+        # denominator for a progress bar — using it made a 15.7 s import crawl to
+        # 6% and then jump to done. `eta` is a separate, deliberately tighter
+        # ESTIMATE: ~0.5 s/MiB, measured at 0.41 s/MiB on a 38 MiB file and
+        # 0.54 s/MiB on the 356 MiB reference. Under-estimating is the safe
+        # direction — the bar reaches its phase cap and waits, which reads as
+        # "nearly there" rather than "stuck at 6%".
+        eta = max(3.0, 0.5 * _sz)
+
+        async def _importing(code, _rid=req_id, _t0=loop.time(), _b=eta):
+            i = code if 0 <= code < len(_IMPORT_PHASES) else 0
+            base = sum(w for _, w in _IMPORT_PHASES[:i])
+            label, w = _IMPORT_PHASES[i]
+            # Nothing is observable INSIDE a phase (the GIL is held), so creep
+            # on elapsed time within that phase's share and never let it reach
+            # the next phase's floor.
+            frac = min(0.95, max(0.0, (loop.time() - _t0) / _b))
+            await ws.send(json.dumps({
+                "id": _rid, "status": "importing",
+                "phase": i, "label": label,
+                "pct": int(100 * min(0.99, base + w * frac)),
+            }))
+
+        res = await _run_stall(
+            loop, _import_job, req["path"], req["format"],
+            stall=budget, on_progress=_importing,
+        )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "listFonts":
+        res = await _run(loop, _list_fonts_job, timeout=JOB_TIMEOUT)
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "tessellateText":
+        res = await _run(loop, _tessellate_text_job, req["entity"], req.get("pathEntity"), timeout=JOB_TIMEOUT)
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "projectGeometry":
+        # DOC_TIMEOUT: usually a warm prefix-cache hit, but a cold
+        # start replays the whole prefix like export/interference do.
+        res = await _run(
+            loop, _project_geometry_job, req["document"], req["plane"],
+            req.get("sources") or [], timeout=DOC_TIMEOUT,
+        )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "ping":
+        await ws.send(_ok(req_id, {"pong": True}))
+
+    else:
+        await ws.send(_err(req_id, f"unknown op: {op}"))
+
+
+async def _serialized(ws, loop, req, req_id, op, lock, running):
+    """One heavy op, serialized against its peers, with a cancel token bound to
+    this task's context so _run/_run_stall can see it."""
+    try:
+        async with lock:
+            token = {"cancelled": False}
+            _CANCEL.set(token)
+            running["id"] = req_id
+            running["token"] = token
+            try:
+                await _dispatch(ws, loop, req, req_id, op)
+            finally:
+                running["id"] = None
+                running["token"] = None
+    except asyncio.CancelledError:
+        raise
+    except Exception as ex:
+        try:
+            await ws.send(_err(req_id, str(ex) or type(ex).__name__))
+        except Exception:
+            pass
+
+
+def _cancel_running(running, target=None):
+    """Stop the job in flight. A ProcessPoolExecutor job cannot be interrupted
+    any other way, so this kills the worker exactly as the timeout path does and
+    hands back a fresh pool. The token tells _run/_run_stall that the resulting
+    BrokenProcessPool is a CANCEL, not a crash — otherwise a user pressing
+    Cancel would be told the geometry kernel crashed.
+
+    `target` (a request id) cancels only that request; None cancels whatever is
+    running. Returns whether anything was actually stopped."""
+    global _pool
+    token = running.get("token")
+    if token is None:
+        return False
+    if target is not None and running.get("id") != target:
+        return False
+    token["cancelled"] = True
+    pool = _pool
+    if pool is not None:
+        _kill_pool(pool)
+        _pool = _new_pool()
+    return True
+
+
 async def handle(ws):
     peer = ws.remote_address[0] if ws.remote_address else None
     if peer is not None:
@@ -1470,6 +1700,12 @@ async def handle(ws):
             await ws.close(code=1008, reason="unauthorized")
             return
         loop = asyncio.get_running_loop()
+        # Heavy ops stay STRICTLY serialized (the shared heartbeat counter and
+        # the rebuild cache both assume one job at a time) — the lock preserves
+        # that, while dispatching as tasks keeps the read loop free.
+        lock = asyncio.Lock()
+        running: dict = {"id": None, "token": None}
+        tasks: set = set()
         async for raw in ws:
             try:
                 req = json.loads(raw)
@@ -1479,98 +1715,24 @@ async def handle(ws):
 
             req_id = req.get("id")
             op = req.get("op")
-            try:
-                if op == "rebuild":
-                    tol = req.get("tolerance", 0.1)
-                    payload = {
-                        k: req[k]
-                        for k in ("document", "baseRevision", "revision", "ops")
-                        if k in req
-                    }
+            if True:
+                # Control ops answer on the READ path so they are never queued
+                # behind a running job. That is the whole point: an import can
+                # hold the worker for 100+ seconds, and cancel has to be heard
+                # DURING it, not after.
+                if op == "cancel":
+                    hit = _cancel_running(running, req.get("target"))
+                    await ws.send(_ok(req_id, {"cancelled": hit}))
+                    continue
 
-                    async def _building(idx, _rid=req_id):
-                        # interim progress frame — the client routes status
-                        # frames to its progress listeners and never resolves
-                        # the pending call with one
-                        await ws.send(json.dumps(
-                            {"id": _rid, "status": "building", "feature": idx}
-                        ))
-
-                    res = await _run_stall(
-                        loop, _rebuild_delta_job, payload, tol, req.get("known"),
-                        on_progress=_building,
-                    )
-                    res = _crash_feature(res, req.get("document"))
-                    await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
-
-                elif op == "computeAll":
-                    tol = req.get("tolerance", 0.1)
-                    payload = {"document": req["document"], "revision": req.get("revision")}
-
-                    async def _building2(idx, _rid=req_id):
-                        await ws.send(json.dumps(
-                            {"id": _rid, "status": "building", "feature": idx}
-                        ))
-
-                    res = await _run_stall(loop, _compute_all_job, payload, tol,
-                                           on_progress=_building2)
-                    res = _crash_feature(res, req.get("document"))
-                    await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
-
-                elif op == "export":
-                    res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {}, timeout=DOC_TIMEOUT)
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "exportProject":
-                    # settings is written into the 3MF verbatim (project config for
-                    # the slicer); cap its size like any untrusted request field.
-                    settings = req.get("settings") or {}
-                    if not isinstance(settings, dict) or len(json.dumps(settings)) > 262144:
-                        await ws.send(_err(req_id, "exportProject: bad settings"))
-                        continue
-                    res = await _run(
-                        loop, _export_project_job, req["document"], req["path"],
-                        req.get("palette") or [], req.get("bodyColors") or {},
-                        req.get("bodyNames") or {}, settings, timeout=DOC_TIMEOUT,
-                    )
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "interference":
-                    res = await _run(loop, _interference_job, req["document"], timeout=DOC_TIMEOUT)
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "import":
-                    # a one-time import (mesh read + B-rep build) can run longer than a
-                    # rebuild; give it a roomier budget than JOB_TIMEOUT.
-                    res = await _run(loop, _import_job, req["path"], req["format"], timeout=90.0)
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "listFonts":
-                    res = await _run(loop, _list_fonts_job, timeout=JOB_TIMEOUT)
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "tessellateText":
-                    res = await _run(loop, _tessellate_text_job, req["entity"], req.get("pathEntity"), timeout=JOB_TIMEOUT)
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "projectGeometry":
-                    # DOC_TIMEOUT: usually a warm prefix-cache hit, but a cold
-                    # start replays the whole prefix like export/interference do.
-                    res = await _run(
-                        loop, _project_geometry_job, req["document"], req["plane"],
-                        req.get("sources") or [], timeout=DOC_TIMEOUT,
-                    )
-                    await ws.send(_reply_for(req_id, res))
-
-                elif op == "ping":
-                    await ws.send(_ok(req_id, {"pong": True}))
-
-                else:
-                    await ws.send(_err(req_id, f"unknown op: {op}"))
-
-            except Exception as ex:
-                await ws.send(_err(req_id, str(ex) or type(ex).__name__))
+                task = asyncio.create_task(
+                    _serialized(ws, loop, req, req_id, op, lock, running)
+                )
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
     finally:
+        for t in list(tasks):
+            t.cancel()
         if peer is not None:
             _ip_conns[peer] = _ip_conns.get(peer, 0) - 1
             if _ip_conns[peer] <= 0:

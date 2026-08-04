@@ -681,4 +681,6 @@ export type ExportFormat = "step" | "stl" | "3mf" | "glb";
 export type ImportFormat = "stl" | "3mf" | "step" | "obj" | "brep" | "glb";
 export type ImportReply =
   | { ok: true; brep: string; name: string; solid: boolean; faces: number; color?: string }
-  | { ok: false; message: string };
+  // `cancelled` = the user stopped it. Distinct from a failure so the UI can
+  // dismiss quietly instead of showing an error the user already knows about.
+  | { ok: false; cancelled?: boolean; message: string };

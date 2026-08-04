@@ -32,8 +32,24 @@ export interface RebuildState {
   progress: number | null;
 }
 
+/** A long non-rebuild operation the user can watch and stop (today: import).
+ *  Deliberately NOT folded into RebuildState — an import is not a rebuild, and
+ *  everything keyed on `building` (the timeline chip, the rebuild scheduler)
+ *  would misread it. `id` is the sidecar request id, so a cancel targets THIS
+ *  op rather than whatever ran most recently. */
+export interface BusyState {
+  active: boolean;
+  label: string;
+  id: string | null;
+  /** 0-100 phase progress, or null when the backend reports none. Coarse by
+   *  necessity: OCCT gives no sub-operation progress, so this advances a few
+   *  times and creeps on elapsed time in between. */
+  pct: number | null;
+}
+
 type DocListener = (doc: CadDocument) => void;
 type BuildListener = (state: RebuildState) => void;
+type BusyListener = (state: BusyState) => void;
 type MetaListener = () => void;
 
 // structuredClone beats the old JSON.parse(JSON.stringify()) round-trip on the
@@ -117,6 +133,7 @@ export class DocumentStore {
   private redoStack: CadDocument[] = [];
   private docListeners = new Set<DocListener>();
   private buildListeners = new Set<BuildListener>();
+  private busyListeners = new Set<BusyListener>();
   private metaListeners = new Set<MetaListener>();
   private path: string | null = null; // current file path (null = unsaved)
   private isDirty = false; // unsaved changes since last save/open/new
@@ -149,6 +166,8 @@ export class DocumentStore {
     progress: null,
   };
 
+  private busy: BusyState = { active: false, label: "", id: null, pct: null };
+
   /** surfaced when the store hits something worth telling the user without
    *  failing (newer-version file on load, a dropped sketch binding, a param
    *  commit that failed mid-cascade). Wired to a toast in main.ts. */
@@ -166,6 +185,12 @@ export class DocumentStore {
       this.build = { ...this.build, progress: feature };
       this.emitBuild();
     });
+    // coarse phase progress for a long non-rebuild op (import) -> the busy chip
+    geometry.onOpProgress?.((pct, label) => {
+      if (!this.busy.active) return;
+      this.busy = { ...this.busy, pct, ...(label ? { label } : {}) };
+      this.emitBusy();
+    });
   }
 
   // --- access ---
@@ -181,6 +206,43 @@ export class DocumentStore {
     fn(this.doc);
     return () => this.docListeners.delete(fn);
   }
+  get busyState(): BusyState {
+    return this.busy;
+  }
+
+  onBusy(fn: BusyListener): () => void {
+    this.busyListeners.add(fn);
+    fn(this.busy);
+    return () => this.busyListeners.delete(fn);
+  }
+
+  /** Run a long cancellable backend op with busy state around it. `fn` receives
+   *  an `onStarted` callback to hand back the request id — without it a cancel
+   *  cannot name the right op, because the document stays editable during the
+   *  op and any rebuild the user triggers meanwhile would claim to be "most
+   *  recent". Busy state is always cleared, including on throw. */
+  async runBusy<T>(label: string, fn: (onStarted: (id: string) => void) => Promise<T>): Promise<T> {
+    this.busy = { active: true, label, id: null, pct: null };
+    this.emitBusy();
+    try {
+      return await fn((id) => {
+        this.busy = { ...this.busy, id };
+        this.emitBusy();
+      });
+    } finally {
+      this.busy = { active: false, label: "", id: null, pct: null };
+      this.emitBusy();
+    }
+  }
+
+  /** Stop the busy op, if any. Resolves to whether anything was stopped — false
+   *  covers both "nothing running" and "the sidecar had already finished". */
+  async cancelBusy(): Promise<boolean> {
+    const id = this.busy.id;
+    if (!this.busy.active || !id) return false;
+    return (await this.geometry.cancel?.(id)) ?? false;
+  }
+
   onBuild(fn: BuildListener): () => void {
     this.buildListeners.add(fn);
     fn(this.build);
@@ -237,6 +299,9 @@ export class DocumentStore {
   }
   private emitBuild() {
     for (const fn of this.buildListeners) fn(this.build);
+  }
+  private emitBusy() {
+    for (const fn of this.busyListeners) fn(this.busy);
   }
   private emitMeta() {
     for (const fn of this.metaListeners) fn();
