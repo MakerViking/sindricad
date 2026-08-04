@@ -116,6 +116,39 @@ fn resolve_runtime(app: &AppHandle) -> std::io::Result<Runtime> {
     pick_runtime(resource_dir, &manifest_dir)
 }
 
+/// Exit status the sidecar uses for "could not bind the port" (see
+/// `EXIT_PORT_IN_USE` in sidecar/server.py). Anything else is an ordinary crash.
+const EXIT_PORT_IN_USE: i32 = 3;
+
+/// Payload of the `sidecar:died` event.
+///
+/// This used to be a bare cause string, which forced the frontend toast to open
+/// with "The geometry engine crashed" no matter what had happened — including the
+/// case where nothing crashed and the port was simply taken. `kind` lets the
+/// frontend pick the sentence; `cause` still carries the detail a screenshot of
+/// the toast has to be triageable from.
+#[derive(Clone, serde::Serialize)]
+pub struct SidecarDeath {
+    /// "port_in_use" or "crash"
+    pub kind: &'static str,
+    pub cause: String,
+}
+
+/// Turn an exit status into something the frontend can phrase.
+///
+/// `fatal` is the last `FATAL:` line the sidecar wrote to stderr, if any. Using it
+/// verbatim keeps the real port in the message (it is env-overridable via
+/// `SINDRI_SIDECAR_PORT`) instead of hardcoding 8765 into Rust as a fourth copy.
+fn classify_exit(status: &std::process::ExitStatus, fatal: Option<String>) -> SidecarDeath {
+    if status.code() == Some(EXIT_PORT_IN_USE) {
+        return SidecarDeath {
+            kind: "port_in_use",
+            cause: fatal.unwrap_or_else(|| "the geometry engine could not open its port".into()),
+        };
+    }
+    SidecarDeath { kind: "crash", cause: describe_exit(status) }
+}
+
 /// How the sidecar died, in a form a human can act on.
 ///
 /// A crash reaches us as an `ExitStatus`, and on Unix `status.code()` is `None`
@@ -168,7 +201,12 @@ fn describe_exit(status: &std::process::ExitStatus) -> String {
 /// went to stderr ONLY, which a packaged build discards — so `sidecar.log`, the
 /// very file the bug reporter attaches, ended at the last thing Python said and
 /// never recorded that the process had died, let alone how.
-fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>, log: Option<Arc<Mutex<std::fs::File>>>) {
+fn spawn_supervisor(
+    app: AppHandle,
+    child: Arc<Mutex<Option<Child>>>,
+    log: Option<Arc<Mutex<std::fs::File>>>,
+    fatal: Arc<Mutex<Option<String>>>,
+) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
         let died = match child.lock() {
@@ -186,15 +224,19 @@ fn spawn_supervisor(app: AppHandle, child: Arc<Mutex<Option<Child>>>, log: Optio
             Err(_) => break, // Mutex poisoned; nothing productive left to do
         };
         if let Some(status) = died {
-            let cause = describe_exit(&status);
-            let line = format!("[sidecar] CRASHED: exited unexpectedly ({cause})");
+            let death = classify_exit(&status, fatal.lock().ok().and_then(|g| g.clone()));
+            let line = if death.kind == "port_in_use" {
+                format!("[sidecar] DID NOT START: {}", death.cause)
+            } else {
+                format!("[sidecar] CRASHED: exited unexpectedly ({})", death.cause)
+            };
             eprintln!("{line}");
             if let Some(l) = &log {
                 if let Ok(mut f) = l.lock() {
                     let _ = writeln!(f, "{line}");
                 }
             }
-            let _ = app.emit("sidecar:died", cause);
+            let _ = app.emit("sidecar:died", death);
             break;
         }
     });
@@ -280,6 +322,21 @@ impl Sidecar {
         // Windows: put the child (and its future pool workers) in a kill-on-close job.
         #[cfg(windows)]
         let job = assign_kill_job(&child);
+        // A failed assignment used to be silent, which left the two ways a sidecar
+        // can lose the port ("a second instance is running" vs "a previous sidecar
+        // was orphaned because the job never attached") indistinguishable in a field
+        // log. Say so, in the file the bug reporter uploads.
+        #[cfg(windows)]
+        if job.is_none() {
+            let line = "[sidecar] WARNING: Job Object not attached — this sidecar can \
+                        outlive the app and hold its port";
+            eprintln!("{line}");
+            if let Some(l) = &log {
+                if let Ok(mut f) = l.lock() {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+        }
 
         // Readiness: the sidecar prints `LISTENING <port>` once the WS is bound. Flip a
         // flag on that line, and warn loudly if it never comes (a broken bundled
@@ -302,10 +359,19 @@ impl Sidecar {
                 }
             });
         }
+        // Last `FATAL:` line the sidecar printed, so a death can be reported with the
+        // sidecar's own words rather than a bare exit code.
+        let fatal: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         if let Some(err) = child.stderr.take() {
             let log = log.clone();
+            let fatal = fatal.clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(err).lines().map_while(Result::ok) {
+                    if let Some(msg) = line.strip_prefix("FATAL: ") {
+                        if let Ok(mut g) = fatal.lock() {
+                            *g = Some(msg.to_string());
+                        }
+                    }
                     eprintln!("[sidecar:err] {line}");
                     if let Some(l) = &log {
                         if let Ok(mut f) = l.lock() {
@@ -340,7 +406,7 @@ impl Sidecar {
 
         println!("[sidecar] spawned pid {}", child.id());
         let child = Arc::new(Mutex::new(Some(child)));
-        spawn_supervisor(app.clone(), child.clone(), log.clone());
+        spawn_supervisor(app.clone(), child.clone(), log.clone(), fatal);
         Ok(Sidecar {
             child,
             token,
@@ -474,6 +540,36 @@ mod tests {
         let code2 = std::process::ExitStatus::from_raw(2 << 8);
         assert_eq!(code2.signal(), None, "precondition: this one is a plain exit");
         assert!(describe_exit(&code2).contains("exit code 2"), "got {}", describe_exit(&code2));
+    }
+
+    /// A taken port is not a crash, and saying "exit code 1" for it sent a field
+    /// reporter (bug 2c0cd78a) chasing a geometry bug that did not exist. Exit
+    /// code 3 must classify separately and repeat the sidecar's own message.
+    #[cfg(unix)]
+    #[test]
+    fn classify_exit_separates_a_taken_port_from_a_crash() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let port = std::process::ExitStatus::from_raw(EXIT_PORT_IN_USE << 8);
+        assert_eq!(port.code(), Some(EXIT_PORT_IN_USE), "precondition");
+        let d = classify_exit(&port, Some("cannot open port 8765 on 127.0.0.1: …".into()));
+        assert_eq!(d.kind, "port_in_use");
+        assert!(d.cause.contains("8765"), "the port must survive into the message: {}", d.cause);
+
+        // …and without a captured FATAL line it must still say something usable
+        let d = classify_exit(&port, None);
+        assert_eq!(d.kind, "port_in_use");
+        assert!(!d.cause.is_empty());
+
+        // an ordinary crash is untouched
+        let segv = std::process::ExitStatus::from_raw(11);
+        let d = classify_exit(&segv, None);
+        assert_eq!(d.kind, "crash");
+        assert!(d.cause.contains("SIGSEGV"), "got {}", d.cause);
+
+        // a plain non-zero exit is a crash too, not a port problem
+        let two = std::process::ExitStatus::from_raw(2 << 8);
+        assert_eq!(classify_exit(&two, None).kind, "crash");
     }
 
     /// Fresh, empty scratch dir under the OS temp dir, wiped on both entry and Drop

@@ -20,6 +20,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A second copy of SindriCAD no longer breaks the first one's geometry engine.**
+  Opening the app twice started two engines, and the second could not take the
+  port the first was already using, so it died and the app reported "The geometry
+  engine crashed (exit code 1)" with nothing pointing at the real cause. Launching
+  SindriCAD again now brings the window you already have to the front instead of
+  starting a second copy. If the port is unavailable for any other reason, the
+  message now names the port and says what to do about it rather than blaming the
+  geometry engine.
+
 - **The geometry engine starts on NixOS, and anywhere else PYTHONHOME is set.**
   Running the AppImage through `appimage-run` exports `PYTHONHOME` pointing at
   the AppDir, and the bundled interpreter inherited it, went looking for its

@@ -8,7 +8,11 @@ Run:  uv run python test_ws.py
 
 import asyncio
 import json
+import os
+import socket
 import struct
+import subprocess
+import sys
 
 import numpy as np
 import websockets
@@ -191,5 +195,51 @@ async def main():
     print("WS ALL PASS")
 
 
+def test_port_in_use_exits_with_its_own_code():
+    """A taken port must fail LOUDLY and distinctly, not as a generic crash.
+
+    Field bug 2c0cd78a: a Windows user launched a second copy of the app, its
+    sidecar could not bind 8765, and the shell reported "The geometry engine
+    crashed (exit code 1)" — which named neither the port nor anything the user
+    could do. server.py now exits EXIT_PORT_IN_USE and prints a FATAL line; the
+    Rust shell (classify_exit in src-tauri/src/sidecar.rs) turns that pair into a
+    message naming the port. This test pins BOTH halves of that contract.
+    """
+    holder = socket.socket()
+    holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    holder.bind((HOST, 0))
+    holder.listen()
+    taken = holder.getsockname()[1]
+    try:
+        p = subprocess.run(
+            [sys.executable, "server.py"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env={**os.environ, "SINDRI_SIDECAR_PORT": str(taken)},
+            capture_output=True, text=True, timeout=180,
+        )
+    finally:
+        holder.close()
+
+    assert p.returncode == server.EXIT_PORT_IN_USE, (
+        f"expected exit {server.EXIT_PORT_IN_USE} for a taken port, got {p.returncode}\n"
+        f"stderr: {p.stderr[-2000:]}"
+    )
+    fatal = [ln for ln in p.stderr.splitlines() if ln.startswith("FATAL: ")]
+    assert fatal, f"a bind failure must print a FATAL line; stderr: {p.stderr[-2000:]}"
+    # the port has to be IN the message: it is the one thing that lets a user find
+    # what is holding it, and Rust repeats this line verbatim rather than
+    # hardcoding 8765 a fourth time.
+    assert str(taken) in fatal[0], f"the port must be named: {fatal[0]}"
+    # ...and it has to stay short, because it is repeated into a toast. The raw
+    # OSError restates the address twice and belongs on the detail line instead.
+    assert len(fatal[0]) < 100, f"FATAL line is too long for a toast: {fatal[0]}"
+    assert any(ln.strip().startswith("bind failed:") for ln in p.stderr.splitlines()), \
+        f"the underlying OSError must still reach the log; stderr: {p.stderr[-2000:]}"
+    # and it must never claim to be listening
+    assert "LISTENING" not in p.stdout, f"must not signal readiness: {p.stdout[-500:]}"
+    print(f"  WS port-in-use OK: exit {p.returncode}, {fatal[0]}")
+
+
 if __name__ == "__main__":
+    test_port_in_use_exits_with_its_own_code()
     asyncio.run(main())

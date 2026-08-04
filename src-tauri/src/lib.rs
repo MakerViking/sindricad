@@ -23,6 +23,20 @@ fn sidecar_token(state: tauri::State<'_, Sidecar>) -> String {
     state.token.clone()
 }
 
+/// Restart the app after an update, releasing the single-instance lock first.
+///
+/// The frontend used to call the process plugin's `relaunch()` directly. That maps
+/// to `app.request_restart()`, which spawns the replacement process while this one
+/// is still shutting down — so with a single-instance guard in place the NEW
+/// instance can find the lock still held and exit immediately, leaving the user
+/// with no app at all after accepting an update. `destroy` drops the lock first,
+/// which is what it exists for.
+#[tauri::command]
+fn restart_for_update(app: tauri::AppHandle) {
+    tauri_plugin_single_instance::destroy(&app);
+    app.restart();
+}
+
 // --- crash-recovery snapshots -------------------------------------------------
 // Autosave lives OUTSIDE the webview's tightened fs scope on purpose: widening
 // `fs:scope` to an app-data dir would re-open part of the post-XSS persistence
@@ -128,6 +142,19 @@ fn updates_supported() -> bool {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        // MUST be registered before every other plugin (Tauri's documented
+        // requirement). A second launch focuses the window that is already open
+        // instead of starting an app whose sidecar cannot take port 8765.
+        // No `fileAssociations` exist, so `argv` carries nothing worth forwarding;
+        // if one is ever added, this callback has to hand it to the running
+        // instance or double-clicking a .sindri file will silently do nothing.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize(); // a minimized window would otherwise just blink
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
@@ -145,6 +172,7 @@ pub fn run() {
         geom::geom_rebuild,
         geom::geom_export,
         sidecar_token,
+        restart_for_update,
         updates_supported,
         recovery_write,
         recovery_read,
@@ -180,6 +208,7 @@ pub fn run() {
     #[cfg(not(feature = "rust-geom"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         sidecar_token,
+        restart_for_update,
         updates_supported,
         recovery_write,
         recovery_read,

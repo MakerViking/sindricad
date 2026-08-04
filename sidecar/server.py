@@ -54,6 +54,11 @@ HOST = "127.0.0.1"
 # sidecar without stealing its port.
 PORT = int(os.environ.get("SINDRI_SIDECAR_PORT", "8765"))
 
+# Exit status for "could not bind the port". A contract with the Rust shell:
+# src-tauri/src/sidecar.rs `describe_exit` turns it into a message that names the
+# port instead of the useless "exit code 1". Do not reuse this code for anything else.
+EXIT_PORT_IN_USE = 3
+
 # WebSocket auth: every connection must carry the per-launch shared secret.
 # Rust sets SINDRI_SIDECAR_TOKEN when it spawns us; a manual `python server.py`
 # (no env) mints one and prints `TOKEN <t>` on stdout so a prober can read it
@@ -1596,11 +1601,30 @@ async def main():
         # compression=None: the socket is 127.0.0.1-only, so permessage-deflate
         # (the websockets default) buys no bandwidth and costs real CPU both
         # sides — measured 84ms to deflate one 5MB mesh reply.
-        async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024,
-                                    compression=None):
-            # readiness signal the Rust shell waits for before connecting
-            print(f"LISTENING {PORT}", flush=True)
-            await asyncio.Future()  # run forever
+        bound = False
+        try:
+            async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024,
+                                        compression=None):
+                bound = True
+                # readiness signal the Rust shell waits for before connecting
+                print(f"LISTENING {PORT}", flush=True)
+                await asyncio.Future()  # run forever
+        except OSError as e:
+            if bound:
+                raise  # already serving; this is not a bind failure, do not mislabel it
+            # Almost always "address already in use": a second copy of the app, a
+            # sidecar orphaned by a previous run, or an unrelated program sitting on
+            # the port. Whatever the cause, the user needs the PORT named — the Rust
+            # shell used to report only "exit code 1", which told a field reporter
+            # nothing (bug 2c0cd78a). errno is deliberately not matched: EADDRINUSE
+            # is 98 on Linux and 10048 on Windows, and every bind failure means the
+            # same thing here.
+            # The FATAL line is repeated verbatim by the Rust shell into a toast, so
+            # it stays short and readable; the raw OSError (which restates the address
+            # twice) goes on the following line, for sidecar.log only.
+            print(f"FATAL: cannot open port {PORT} on {HOST}", file=sys.stderr, flush=True)
+            print(f"  bind failed: {e}", file=sys.stderr, flush=True)
+            sys.exit(EXIT_PORT_IN_USE)
     finally:
         _kill_pool(_pool)
 

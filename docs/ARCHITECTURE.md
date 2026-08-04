@@ -55,6 +55,14 @@ reason, not a quick patch.
    `SINDRI_SIDECAR_TOKEN` shared secret, hardcoded on both sides and in the CSP. The
    webview's Content-Security-Policy `connect-src` is deliberately narrow (localhost and
    that one WebSocket) and must never be widened to admit an arbitrary URL.
+   A fixed port only works while exactly one app instance exists, so
+   `tauri-plugin-single-instance` enforces that (registered first, in `lib.rs`); a
+   second launch focuses the running window. When the port is unavailable anyway
+   (an orphaned sidecar, an unrelated program), `server.py` exits `EXIT_PORT_IN_USE`
+   and `classify_exit` in `sidecar.rs` turns that into a message naming the port.
+   Note that this is why the updater restarts through `restart_for_update` rather
+   than the process plugin's `relaunch()`: the instance lock has to be dropped
+   before the replacement process starts, or the new instance quits on launch.
 5. **Display-only state stays in frontend side-maps.** Visibility, display names, and
    palette/body colors are UI state, not model state - they live in `DocumentStore`
    side-maps, not in the `document` sent to the sidecar, and are threaded explicitly

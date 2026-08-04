@@ -61,8 +61,12 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
     if (pick !== "install") return;
     toast("Downloading the update…");
     await update.downloadAndInstall();
-    const { relaunch } = await import("@tauri-apps/plugin-process");
-    await relaunch();
+    // NOT the process plugin's relaunch(): it restarts without releasing the
+    // single-instance lock, and the replacement process can start while this one
+    // is still exiting, find the lock held, and quit on the spot. This command
+    // drops the lock first (see restart_for_update in src-tauri/src/lib.rs).
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("restart_for_update");
   } catch (err) {
     console.error("[updates] check/install failed:", err);
     if (interactive) {
