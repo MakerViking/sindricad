@@ -153,6 +153,75 @@ fn updates_supported() -> bool {
     }
 }
 
+// --- frontend load watchdog ---------------------------------------------------
+// A webview that never loads its page shows a blank window and says NOTHING.
+// Issue #3 spent four rounds on that: the geometry engine was up and logging
+// happily, the window painted, and there was no way to tell from the outside
+// whether the document had failed to load, or had loaded and thrown. Every reply
+// was a guess at an environment variable.
+//
+// So the frontend reports in, and Rust says so when it does not.
+
+/// Set by `frontend_ready`. `AtomicBool` rather than a channel because the
+/// watchdog only ever asks one yes/no question, and a channel would have to be
+/// kept alive for a message that normally never comes.
+struct FrontendReady(std::sync::atomic::AtomicBool);
+
+/// How long to wait before concluding the interface is not coming.
+///
+/// Generous on purpose. A cold first launch on a slow disk has to parse and
+/// execute the whole bundle, and the cost of being wrong is asymmetric: a late
+/// line in a log is harmless, while crying wolf on a working app would teach
+/// people to ignore the one message that matters. This is why the watchdog only
+/// logs and does not raise a dialog.
+const FRONTEND_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Called by `src/boot.ts` as the document loads. Its only job is to prove the
+/// webview got far enough to run our code and reach Tauri IPC.
+#[tauri::command]
+fn frontend_ready(state: tauri::State<'_, FrontendReady>) {
+    state.0.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Watch for the frontend checking in, and write a diagnosis if it never does.
+///
+/// The message deliberately rules the geometry engine out by name. That is the
+/// wrong turn this is built to prevent: the sidecar is the loudest thing in the
+/// log, so a blank window with a healthy `[sidecar] LISTENING 8765` above it
+/// reads as an engine problem to everyone who sees it, and it is not one.
+fn watch_frontend_load(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(FRONTEND_READY_TIMEOUT);
+
+        let ready = app
+            .try_state::<FrontendReady>()
+            .map(|s| s.0.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(false);
+        if ready {
+            return;
+        }
+
+        let secs = FRONTEND_READY_TIMEOUT.as_secs();
+        let lines = [
+            format!("[ui] WARNING: the interface has not loaded after {secs}s."),
+            "[ui] The window opened but the page never started, so this is NOT a geometry".to_string(),
+            "[ui] engine problem — the engine's own status is logged separately above."
+                .to_string(),
+            "[ui] Either the document failed to load, or a script threw while loading it."
+                .to_string(),
+            "[ui] Please report this log at https://github.com/MakerViking/sindricad/issues"
+                .to_string(),
+        ];
+        // Through the sidecar so the warning reaches sidecar.log, which is the
+        // file a bug report attaches. Without the sidecar (it failed to spawn)
+        // stdout is all there is, and that is still better than silence.
+        match app.try_state::<Sidecar>() {
+            Some(sidecar) => lines.iter().for_each(|l| sidecar.log_line(l)),
+            None => lines.iter().for_each(|l| println!("{l}")),
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -188,6 +257,7 @@ pub fn run() {
         sidecar_token,
         restart_for_update,
         updates_supported,
+        frontend_ready,
         recovery_write,
         recovery_read,
         recovery_list,
@@ -224,6 +294,7 @@ pub fn run() {
         sidecar_token,
         restart_for_update,
         updates_supported,
+        frontend_ready,
         recovery_write,
         recovery_read,
         recovery_list,
@@ -269,6 +340,13 @@ pub fn run() {
             // stream 3Dconnexion SpaceMouse events to the frontend (best-effort:
             // no-op if no device / no permission — see spacemouse.rs)
             spacemouse::start(app.handle().clone());
+            // LAST, so the sidecar is already managed and the warning can reach
+            // sidecar.log. Started here rather than before the builder because
+            // the clock should run from the window existing, not from process
+            // start: everything above it is work the frontend has to wait for
+            // anyway, and counting it would eat into the timeout.
+            app.manage(FrontendReady(std::sync::atomic::AtomicBool::new(false)));
+            watch_frontend_load(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

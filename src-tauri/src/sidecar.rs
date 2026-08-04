@@ -30,6 +30,12 @@ use std::os::windows::process::CommandExt;
 pub struct Sidecar {
     pub child: Arc<Mutex<Option<Child>>>,
     pub token: String,
+    /// The same `sidecar.log` handle the output mirroring writes through.
+    /// Anything else that needs to reach a field report has to go through this
+    /// handle rather than opening the file again: this one is not in append
+    /// mode, so a second writer's line would be overwritten by the next thing
+    /// Python said.
+    log: Option<Arc<Mutex<std::fs::File>>>,
     /// Windows Job Object owning the child tree; closing it (kill/Drop) reaps the
     /// sidecar AND its ProcessPoolExecutor workers.
     #[cfg(windows)]
@@ -410,9 +416,26 @@ impl Sidecar {
         Ok(Sidecar {
             child,
             token,
+            log,
             #[cfg(windows)]
             job: Mutex::new(job),
         })
+    }
+
+    /// Write a line to stdout AND to `sidecar.log`.
+    ///
+    /// The log file is what a bug report uploads, and on a Windows release build
+    /// (`windows_subsystem = "windows"`) stdout goes nowhere at all, so anything
+    /// that only gets `println!`d is invisible in exactly the situation where it
+    /// is needed. Callers outside the sidecar's own plumbing use this so their
+    /// diagnostics survive into a field report.
+    pub fn log_line(&self, line: &str) {
+        println!("{line}");
+        if let Some(l) = &self.log {
+            if let Ok(mut f) = l.lock() {
+                let _ = writeln!(f, "{line}");
+            }
+        }
     }
 
     /// Kill the sidecar and its whole process tree.

@@ -47,6 +47,9 @@
       </div>
       <footer id="timeline"></footer>
     </div>
+    <!-- Before main.ts on purpose: boot.ts reports to Rust that the page
+         loaded, and must not be able to fail because main.ts did. -->
+    <script type="module" src="/src/boot.ts"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
