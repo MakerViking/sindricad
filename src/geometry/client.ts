@@ -191,6 +191,28 @@ interface RebuildFullPayload {
 }
 type RebuildPayload = RebuildDeltaPayload | RebuildFullPayload;
 
+/** Largest message the sidecar will accept, mirroring `max_size` on
+ *  `websockets.serve` in sidecar/server.py. Keep the two in step: anything past
+ *  it is answered with a 1009 close rather than an error reply, so the client
+ *  has to catch it BEFORE sending. */
+export const MAX_MESSAGE_BYTES = 128 * 1024 * 1024;
+
+/** The user-facing message for an over-cap payload, or null when it fits.
+ *  Pure and exported so the boundary can be tested without allocating a 128 MiB
+ *  string. `len` is `raw.length` (UTF-16 units), which slightly UNDER-counts a
+ *  document carrying non-ASCII text — acceptable because the payload is
+ *  overwhelmingly base64 and ASCII JSON, and measuring UTF-8 exactly would mean
+ *  copying a 100+ MiB string on every single call. */
+export function tooLargeToSend(len: number): string | null {
+  if (len <= MAX_MESSAGE_BYTES) return null;
+  const mib = (n: number) => `${Math.round(n / (1024 * 1024))} MiB`;
+  return (
+    `This model is too large for the geometry engine: ${mib(len)}, ` +
+    `and the limit is ${mib(MAX_MESSAGE_BYTES)}. ` +
+    `Remove or simplify the imported body, then try again.`
+  );
+}
+
 export class Geometry implements GeometryBackend {
   private ws: WebSocket | null = null;
   private readonly url: string;
@@ -291,8 +313,17 @@ export class Geometry implements GeometryBackend {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       this.emitStatus();
+      // 1009 = "message too big": the sidecar refused a frame past its max_size.
+      // The pre-flight guard in call() should have caught it, so reaching here
+      // means the two limits have drifted apart — say so rather than blaming the
+      // connection, which is what sent GH #4's reporter looking in the wrong place.
+      const tooBig = ev.code === 1009;
+      const message = tooBig
+        ? "That model is too large for the geometry engine to accept. "
+          + "Remove or simplify the imported body, then try again."
+        : "geometry engine connection lost";
       // Settle every in-flight call with a synthetic error reply shaped like a
       // real sidecar error, matching the `msg.ok === false` contract every
       // caller already checks (rebuild/export/etc). Without this, a call made
@@ -302,7 +333,7 @@ export class Geometry implements GeometryBackend {
       // main.ts's onStatus() silently no-ops (rebuildNow sees rebuilding===true
       // and just sets rebuildQueued, forever).
       for (const [id, resolve] of this.pending) {
-        resolve({ id, ok: false, error: { message: "geometry engine connection lost" } });
+        resolve({ id, ok: false, error: { message } });
       }
       this.pending.clear();
       this.scheduleReconnect();
@@ -373,6 +404,17 @@ export class Geometry implements GeometryBackend {
     const id = crypto.randomUUID();
     const raw = JSON.stringify({ id, op, ...extra });
     return new Promise((resolve) => {
+      // Refuse an over-cap message rather than let the sidecar close the socket
+      // on it. websockets answers anything past `max_size` with a 1009 close,
+      // which took the WHOLE session down: the oversized body stays in the
+      // document, so every following rebuild re-sent it and re-killed the
+      // connection, and all the user got was "connection lost" (GH #4, reported
+      // as "cannot open files larger than 245 MB").
+      const tooLarge = tooLargeToSend(raw.length);
+      if (tooLarge) {
+        resolve({ id, ok: false, error: { message: tooLarge } } as RawReply<T>);
+        return;
+      }
       // the pending map is heterogeneous across calls with different T, so
       // storing this call's typed resolver erases to Pending here — the one
       // type-erasing cast the generic requires.

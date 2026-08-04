@@ -20,6 +20,16 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A model too large for the geometry engine now says so, instead of looking
+  like a broken connection.** Opening a very large file could produce a model
+  bigger than the geometry engine accepts in one message. The engine responded by
+  closing the connection, and because the oversized body stayed in the document,
+  every following rebuild closed it again, so the app sat there reporting
+  "geometry engine connection lost" with no hint that the file was the problem
+  ([#4](https://github.com/MakerViking/sindricad/issues/4)). The size is now
+  checked before anything is sent, and the message names both the size of the
+  model and the limit. Raising that limit is a separate piece of work.
+
 - **A second copy of SindriCAD no longer breaks the first one's geometry engine.**
   Opening the app twice started two engines, and the second could not take the
   port the first was already using, so it died and the app reported "The geometry
