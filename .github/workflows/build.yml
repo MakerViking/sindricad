@@ -81,6 +81,7 @@ jobs:
           uv run python test_geomstore.py
           uv run python test_selector_v2.py
           uv run python test_ws.py
+          uv run python test_pool_init.py
           uv run python test_texture.py
           uv run python test_checkpoint.py
           uv run python test_projected.py
