@@ -23,16 +23,30 @@ fn sidecar_token(state: tauri::State<'_, Sidecar>) -> String {
     state.token.clone()
 }
 
-/// Restart the app after an update, releasing the single-instance lock first.
-///
-/// The frontend used to call the process plugin's `relaunch()` directly. That maps
-/// to `app.request_restart()`, which spawns the replacement process while this one
-/// is still shutting down — so with a single-instance guard in place the NEW
-/// instance can find the lock still held and exit immediately, leaving the user
-/// with no app at all after accepting an update. `destroy` drops the lock first,
-/// which is what it exists for.
+/// Restart the app after an update, tearing down the geometry engine and
+/// releasing the single-instance lock first, so the replacement process comes up
+/// clean. Neither step can be left to a destructor — see the body.
 #[tauri::command]
 fn restart_for_update(app: tauri::AppHandle) {
+    // Kill the geometry engine EXPLICITLY rather than trusting a platform backstop.
+    // `app.restart()` ends this process through exit(), which does not run
+    // destructors, so `Sidecar::drop` never fires. Each platform has a fallback for
+    // that, but they are timing-dependent: macOS has no PR_SET_PDEATHSIG and polls
+    // getppid() once a SECOND (see `_die_with_parent` in sidecar/server.py), so the
+    // replacement process can start, find port 8765 still held by the old sidecar,
+    // and come up with a dead engine — reporting "another copy is already running"
+    // immediately after an update, which is both wrong and alarming.
+    // `Sidecar::kill` waits for the child, so the port is free before we return.
+    if let Some(sidecar) = app.try_state::<Sidecar>() {
+        sidecar.kill();
+    }
+    // Then release the single-instance lock. The frontend used to call the process
+    // plugin's `relaunch()` directly, which maps to `app.request_restart()` and
+    // spawns the replacement while this process is still shutting down — so with a
+    // single-instance guard in place the NEW instance can find the lock still held
+    // and exit immediately, leaving the user with no app at all after an update.
+    // `destroy` is synchronous on every platform (D-Bus release_name on Linux,
+    // ReleaseMutex + DestroyWindow on Windows), so it completes before the spawn.
     tauri_plugin_single_instance::destroy(&app);
     app.restart();
 }
