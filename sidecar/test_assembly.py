@@ -450,6 +450,84 @@ def test_node_ref_survives_a_disk_checkpoint_resume():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_debris_dropping_never_changes_the_body_count():
+    """`_drop_debris` runs on every body in the final pass and deletes a solid
+    that is sub-0.1% of the biggest AND clear of it. Binding one body per LEAF
+    SOLID keeps it a no-op (it early-returns below 2 solids), but that is a
+    property of the binding, not a guarantee — if a future change ever put
+    several solids in one body, a small part next to a large one would silently
+    vanish from an assembly. This pins the count.
+    """
+    import builder
+    from build123d import Box, Compound, Pos
+
+    # a plate and a chip 0.0008% its volume, well clear of it: exactly the shape
+    # _drop_debris exists to delete
+    plate = Pos(0, 0, 0) * Box(40, 40, 4)
+    chip = Pos(60, 0, 0) * Box(0.5, 0.5, 0.5)
+    blob = builder._shape_to_brep_b64(Compound(children=[plate, chip]))
+    feature = {
+        "id": "f1", "type": "import", "format": "step", "name": "Debris",
+        "brep": blob,
+        "nodes": [
+            {"name": "Assembly", "parent": None},
+            {"name": "Plate", "parent": 0},
+            {"name": "Chip", "parent": 0},
+        ],
+        "parts": [{"node": 1, "faces": 6}, {"node": 2, "faces": 6}],
+    }
+    bodies = _rebuild({"version": 1, "parameters": {}, "features": [feature]})
+    names = [b["name"] for b in bodies]
+    assert len(bodies) == len(feature["parts"]), (
+        f"body count changed across the debris pass: {len(feature['parts'])} parts "
+        f"-> {len(bodies)} bodies ({names})"
+    )
+    assert "Chip" in names, f"the tiny part was dropped as debris: {names}"
+    print(f"  {names} — the 0.0008% chip survived")
+
+
+def test_a_part_name_cannot_move_an_import_s_chain_key():
+    """The disk-cache chain key folds in each feature's param SCOPE. A product
+    called "Bracket t Left" must not put parameter `t` in that scope, or moving
+    an unrelated slider would force a cold re-import of the single most
+    expensive feature in the document.
+
+    Asserted on the CHAIN KEY itself, not just on `_feature_scope`: the key is
+    what the disk cache actually looks up.
+    """
+    import builder
+
+    doc = {
+        "version": 1,
+        "parameters": {"t": 5.0},
+        "features": [{
+            "id": "f1", "type": "import", "format": "step", "name": "Imported",
+            "brep": "",
+            "nodes": [{"name": "Bracket t Left", "parent": None}],
+            "parts": [{"node": 0, "faces": 6}],
+        }],
+    }
+    sigs = builder._feature_sigs(doc["features"])
+    at5 = builder._chain_keys_scoped(doc, sigs)
+    doc["parameters"] = {"t": 6.0}
+    at6 = builder._chain_keys_scoped(doc, sigs)
+    assert at5 == at6, (
+        f"changing an unrelated parameter moved the import's chain key: {at5} vs {at6}"
+    )
+
+    # and the guard is real: a feature that GENUINELY references `t` must still move
+    moving = dict(doc["features"][0])
+    moving.pop("nodes")
+    moving["depth"] = "t"
+    doc2 = {"version": 1, "parameters": {"t": 5.0}, "features": [moving]}
+    sigs2 = builder._feature_sigs(doc2["features"])
+    m5 = builder._chain_keys_scoped(doc2, sigs2)
+    doc2["parameters"] = {"t": 6.0}
+    m6 = builder._chain_keys_scoped(doc2, sigs2)
+    assert m5 != m6, "a feature that really uses `t` must be invalidated when `t` changes"
+    print("  product names do not move the chain key; a real reference still does")
+
+
 if __name__ == "__main__":
     missing = [
         n for n in FIXTURE_NAMES if not os.path.exists(os.path.join(FIXTURES, f"{n}.step"))
@@ -474,6 +552,8 @@ if __name__ == "__main__":
         test_an_import_without_a_manifest_rebuilds_exactly_as_before,
         test_part_names_do_not_leak_into_the_parameter_scope,
         test_node_ref_survives_a_disk_checkpoint_resume,
+        test_debris_dropping_never_changes_the_body_count,
+        test_a_part_name_cannot_move_an_import_s_chain_key,
     ]:
         print(f"{fn.__name__} …")
         try:
