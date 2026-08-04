@@ -1,19 +1,31 @@
 name: Linux system dependencies
 description: >
-  The Tauri webkit build stack for ubuntu-22.04 (NO OCCT/cmake - the default
-  build links no OpenCASCADE). The ONE definition shared by the test, build,
-  and rust-geom-check jobs - change the package list here, nowhere else.
+  The Tauri webkit build stack for the Ubuntu runners (NO OCCT/cmake - the
+  default build links no OpenCASCADE). The ONE definition shared by the test,
+  build, and rust-geom-check jobs - change the package list here, nowhere else.
+  Must work on BOTH 22.04 (deb/rpm leg) and 24.04 (AppImage leg).
 runs:
   using: composite
   steps:
     - name: Install Linux system dependencies (Tauri webkit stack; NO OCCT/cmake)
       shell: bash
       run: |
+        set -euo pipefail
         sudo apt-get update
+        # libfuse2 is AppImage tooling's runtime. Noble (24.04) renamed it to
+        # libfuse2t64 in the 64-bit time_t transition, so asking for the 22.04
+        # name there fails the whole install and takes the AppImage leg with it.
+        # Pick whichever the runner's archive actually has.
+        if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+          fuse=libfuse2t64
+        else
+          fuse=libfuse2
+        fi
+        echo "fuse package: $fuse"
         sudo apt-get install -y \
           libwebkit2gtk-4.1-dev \
           build-essential curl wget file \
           libssl-dev libgtk-3-dev \
           libayatana-appindicator3-dev librsvg2-dev \
           libudev-dev \
-          patchelf libfuse2
+          patchelf "$fuse"

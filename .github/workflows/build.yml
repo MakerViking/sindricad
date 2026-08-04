@@ -110,9 +110,23 @@ jobs:
       fail-fast: false # one OS failing must not hide the others' status
       matrix:
         include:
-          # ubuntu-22.04: webkit2gtk-4.1 + a lower glibc, so the AppImage/.deb runs
-          # on more systems than a -24.04 build would.
+          # TWO Ubuntu legs on purpose, because the artifacts want opposite things
+          # from the build base.
+          #
+          # .deb/.rpm link against the HOST's webkit2gtk, so the oldest base gives
+          # the widest reach: a 22.04 build runs fine on a 2026 rolling distro.
+          #
+          # The AppImage BUNDLES its whole GTK/WebKit/GStreamer stack, and a
+          # 22.04-era WebKit aborts its web process at startup on hosts with a
+          # modern one — blank window, no error (#3, reported on NixOS with
+          # WebKitGTK 2.50.4, reproduced locally on Arch with 2.52.5, where the
+          # .deb built from the same commit works). The bundle is interlocking, so
+          # dropping just WebKit is not possible: it drags GStreamer, which drags
+          # GLib, which drags pcre2 and libmount. A newer base is the lever.
           - platform: ubuntu-22.04
+            bundles: deb,rpm
+          - platform: ubuntu-24.04
+            bundles: appimage
           - platform: macos-14 # Apple Silicon (arm64) runner
           - platform: windows-latest
     runs-on: ${{ matrix.platform }}
@@ -123,7 +137,7 @@ jobs:
         # default build never compiles it, so a plain checkout is enough.
 
       - name: Install Linux system dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu')
         uses: ./.github/actions/linux-deps
 
       - name: Install Rust
@@ -163,7 +177,7 @@ jobs:
       # dir holding a real shared library (lib*.so*, not python extension modules)
       # on LD_LIBRARY_PATH so dependency deployment can find the vendored names.
       - name: Expose vendored sidecar libs to linuxdeploy (AppImage)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.bundles == 'appimage'
         run: |
           dirs=$(find "$PWD/src-tauri/sidecar-runtime" -name 'lib*.so*' -printf '%h\n' | sort -u | paste -sd: -)
           echo "LD_LIBRARY_PATH=$dirs" >> "$GITHUB_ENV"
@@ -233,7 +247,9 @@ jobs:
           # bundle-only config ships sidecar-runtime/ as a resource. (No macOS signing
           # block here, so tauri produces an unsigned .app without attempting codesign.)
           # --verbose so bundler sub-tool failures (linuxdeploy) show their real output.
-          args: --verbose --config src-tauri/tauri.bundle.conf.json
+          # `--bundles` splits the two Ubuntu legs (see the matrix comment). Unset on
+          # macOS/Windows, where the default target list is what we want.
+          args: --verbose --config src-tauri/tauri.bundle.conf.json${{ matrix.bundles && format(' --bundles {0}', matrix.bundles) || '' }}
 
       # KNOWN FOLLOW-UP (macOS notarization): notarization is NOT recursive, so every
       # embedded Mach-O under sidecar-runtime (libpython + the cadquery-ocp .dylibs)
