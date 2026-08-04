@@ -43,6 +43,18 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **SindriCAD starts on machines with Nvidia graphics.** On Linux with the Nvidia
+  driver, the window process could crash inside the driver the moment the app
+  launched, before anything was drawn, so SindriCAD quit with no window and no
+  message at all ([#6](https://github.com/MakerViking/sindricad/issues/6)). The
+  crash comes from one specific way WebKit hands rendered frames to the window,
+  and that path is now switched off when an Nvidia driver is present. Other
+  graphics drivers are unaffected and keep it. The 3D viewport is still drawn by
+  the GPU, but frames take a slower route to the window without it, so a heavy
+  model may not feel quite as smooth on Nvidia as it otherwise would. If your
+  machine does not need the fix, starting SindriCAD with
+  `SINDRICAD_NO_GPU_WORKAROUND=1` leaves the setting untouched.
+
 - **A model too large for the geometry engine now says so, instead of looking
   like a broken connection.** Opening a very large file could produce a model
   bigger than the geometry engine accepts in one message. The engine responded by

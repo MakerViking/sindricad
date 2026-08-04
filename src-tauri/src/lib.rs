@@ -10,6 +10,9 @@ mod sidecar;
 mod slicer;
 mod spacemouse;
 mod tinkeratlas;
+// WebKitGTK only exists on Linux; macOS and Windows use WKWebView and WebView2.
+#[cfg(target_os = "linux")]
+mod webkit;
 
 use sidecar::Sidecar;
 use tauri::{Manager, RunEvent};
@@ -224,6 +227,12 @@ fn watch_frontend_load(app: tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // FIRST, before any GTK/WebKit type is touched: the web process inherits this
+    // environment when WebKit spawns it, so a variable set later is a variable the
+    // renderer never sees. See webkit.rs for what it changes and why (issue #6).
+    #[cfg(target_os = "linux")]
+    webkit::apply_gpu_workarounds();
+
     let builder = tauri::Builder::default()
         // MUST be registered before every other plugin (Tauri's documented
         // requirement). A second launch focuses the window that is already open
