@@ -97,3 +97,62 @@ describe("assemble (protocol v2, multi-body)", () => {
     expect(Array.from(r.mesh.faceIds)).toEqual([0, 0, 1]);
   });
 });
+
+// Regression: an "unchanged" stub carries its OWN identity.
+//
+// assemble() backs a stub with the CACHED mesh for that etag, then used to read
+// id/name straight off that cached payload — so anything the sidecar changed
+// without changing the geometry was discarded. `name` was already wrong this
+// way and only looked right because a rename changes the etag, which turns the
+// body back into a full payload. `nodeRef` (the imported assembly tree) has no
+// such luck: on an assembly rebuild almost every body arrives as a stub.
+describe("assemble (protocol v2, unchanged stubs)", () => {
+  /** Prime the client's per-body mesh cache, then feed it a stub. */
+  function assembleWithCache(
+    first: ReturnType<typeof wireBody>[],
+    second: unknown[],
+  ): RebuildResult {
+    const g = new Geometry();
+    const call = (r: unknown) =>
+      (g as unknown as { assemble(r: unknown): RebuildResult | null }).assemble(r);
+    const bbox = { min: [0, 0, 0], max: [1, 1, 1] };
+    expect(call({ protocol: 2, bodies: first, bbox })).not.toBeNull();
+    const out = call({ protocol: 2, bodies: second, bbox });
+    expect(out).not.toBeNull();
+    return out as RebuildResult;
+  }
+
+  it("takes id, name and nodeRef from the stub, not from the cached mesh", () => {
+    const cached = { ...wireBody("bodyA", [0, 0, 1]), name: "Old Name", nodeRef: "f1/7" };
+    const r = assembleWithCache(
+      [cached],
+      [{ id: "bodyA", name: "M3 Nut (x3) 1", etag: "etag-bodyA", nodeRef: "f1/2", unchanged: true }],
+    );
+    const body = (r.bodies ?? [])[0]!;
+    expect(body.name).toBe("M3 Nut (x3) 1");
+    expect(body.nodeRef).toBe("f1/2");
+    // the geometry still comes from the cache
+    expect(r.mesh.faceIds.length).toBe(3);
+  });
+
+  it("carries nodeRef through a rebuild where every body is unchanged", () => {
+    const a = { ...wireBody("bodyA", [0, 0, 1]), nodeRef: "f1/1" };
+    const b = { ...wireBody("bodyB", [0, 1, 1, 2]), nodeRef: "f1/2" };
+    const r = assembleWithCache(
+      [a, b],
+      [
+        { id: "bodyA", name: "bodyA", etag: "etag-bodyA", nodeRef: "f1/1", unchanged: true },
+        { id: "bodyB", name: "bodyB", etag: "etag-bodyB", nodeRef: "f1/2", unchanged: true },
+      ],
+    );
+    expect((r.bodies ?? []).map((x) => x.nodeRef)).toEqual(["f1/1", "f1/2"]);
+  });
+
+  it("omits nodeRef entirely for a body that has none", () => {
+    const r = assembleWithCache(
+      [wireBody("bodyA", [0, 0, 1])],
+      [{ id: "bodyA", name: "bodyA", etag: "etag-bodyA", unchanged: true }],
+    );
+    expect("nodeRef" in ((r.bodies ?? [])[0]!)).toBe(false);
+  });
+});

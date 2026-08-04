@@ -671,11 +671,17 @@ def _rebuild_job(document, tolerance, known=None):
             continue
         live_ids.add(b["id"])
         ent = _body_payload(b, tolerance)
+        # The assembly-tree node lives in the ENVELOPE, next to id/name/etag, and
+        # is sent on BOTH branches. It must not go inside the mesh payload: that
+        # is etag-cached, so the tree would freeze at whatever it was when the
+        # geometry last changed. The stub branch matters most — on an assembly
+        # rebuild almost every body is unchanged.
+        node_ref = {"nodeRef": b["node_ref"]} if b.get("node_ref") else {}
         if known.get(b["id"]) == ent["etag"]:
             out.append({"id": b["id"], "name": b["name"], "etag": ent["etag"],
-                        "unchanged": True})
+                        **node_ref, "unchanged": True})
         else:
-            item = {"id": b["id"], "name": b["name"], "etag": ent["etag"]}
+            item = {"id": b["id"], "name": b["name"], "etag": ent["etag"], **node_ref}
             item.update(ent["payload"])
             out.append(item)
     t_payload = time.monotonic() - t0

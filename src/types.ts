@@ -455,6 +455,22 @@ export type Feature =
       // assemblies: divides body count by solids-per-import). Absent/true =
       // historical one-body-per-solid behavior.
       explode?: boolean;
+      // The XCAF assembly tree, when the imported STEP carried one. Both are
+      // absent for every other import and for every document saved before this
+      // existed, which is what keeps those rebuilding byte-identically.
+      //
+      // `nodes` is the product tree in pre-order; `parent` indexes back into it
+      // and is null at a root. A subassembly instanced twice appears as two
+      // nodes, so the occurrences stay independently selectable.
+      //
+      // `parts` has ONE row per body, in body order: row i binds to top-level
+      // child i of `brep`, which is a FLAT compound of world-placed leaves.
+      // `faces` is a checksum on that ordinal binding — the sidecar refuses the
+      // whole tree and falls back to unnamed bodies if it disagrees, because a
+      // wrong tree still builds and would just label parts with each other's
+      // names. Rows are objects so a later phase can add fields to them.
+      nodes?: { name: string; parent: number | null; color?: string }[];
+      parts?: { node: number; faces: number }[];
     }
   // Cut a body by a plane. keep=top/bottom keeps one side; keep=both splits it
   // into separate bodies. `body` targets a specific body (default: the active one);
@@ -654,7 +670,7 @@ export interface RebuildResult {
   // `etag` (when the backend supplies one) is a content fingerprint the render
   // layer diffs to decide whether a body needs rebuilding at all — absent means
   // "always rebuild" (e.g. the in-process Rust backend, which has no etag cache).
-  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string }[];
+  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string; nodeRef?: string }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
   // set when features failed but the rest of the timeline still built — the
@@ -680,7 +696,11 @@ export type ExportFormat = "step" | "stl" | "3mf" | "glb";
 // the embeddable BREP payload plus a little metadata for the new `import` feature.
 export type ImportFormat = "stl" | "3mf" | "step" | "obj" | "brep" | "glb";
 export type ImportReply =
-  | { ok: true; brep: string; name: string; solid: boolean; faces: number; color?: string }
+  | { ok: true; brep: string; name: string; solid: boolean; faces: number; color?: string;
+      // present only for a STEP that carried a real assembly tree; see the
+      // `import` feature above for what they mean
+      nodes?: { name: string; parent: number | null; color?: string }[];
+      parts?: { node: number; faces: number }[] }
   // `cancelled` = the user stopped it. Distinct from a failure so the UI can
   // dismiss quietly instead of showing an error the user already knows about.
   | { ok: false; cancelled?: boolean; message: string };

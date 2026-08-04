@@ -393,6 +393,10 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     source: path,
     solid: res.solid,
     ...(res.color !== undefined ? { color: res.color } : {}),
+    // the file's assembly tree, when it had one. Spread the same way `color` is,
+    // so an import with no tree produces exactly the feature it always did.
+    ...(res.nodes !== undefined ? { nodes: res.nodes } : {}),
+    ...(res.parts !== undefined ? { parts: res.parts } : {}),
   });
 
   // Carry the file's own colour onto the body it produced. The body doesn't

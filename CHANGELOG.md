@@ -18,6 +18,29 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Added
+
+- **Imported STEP assemblies keep their structure.** A STEP file that contains an
+  assembly is no longer flattened into a pile of bodies called Body1, Body2,
+  Body3. The Browser now shows the tree the CAD system wrote: subassemblies as
+  collapsible groups, parts under them with the names from the file, and each
+  part still individually selectable. A product holding several solids, the
+  common "M3 Nut (x20)" pattern, stays one named group whose pieces can be picked
+  apart. Assembly groups start collapsed, and the eye on a group shows or hides
+  everything inside it in one step.
+
+  Two things came out of this that are worth naming. Parts that a file describes
+  but that contain no solid used to be dropped without a word; they are kept now,
+  so nothing in a file silently fails to arrive. And importing a large assembly
+  got substantially faster as a side effect of the rework: on a 356 MB test
+  assembly the import went from about 190 seconds to about 99.
+
+  Two limits to be aware of. Subassembly names come from the file and cannot be
+  renamed in the Browser, though individual bodies still can. And STEP export
+  does not yet write names or colours back out, so a round trip through export
+  still loses the tree. Part colours from the file are recorded but not shown,
+  because colour in SindriCAD means which filament prints a body.
+
 ### Fixed
 
 - **A model too large for the geometry engine now says so, instead of looking

@@ -35,6 +35,7 @@ green-select.png
 *.stl
 *.3mf
 !sidecar/tools/bench/textured_box.sindri
+!sidecar/fixtures/asm_*.step
 !third_party/opencascade-rs/crates/viewer/models/*.step
 
 # research / experiment shelf: kept out of the repo

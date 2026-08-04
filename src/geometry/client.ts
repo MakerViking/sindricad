@@ -142,6 +142,8 @@ interface WireBodyFull {
   name: string;
   etag: string;
   unchanged?: false;
+  /** "<importFeatureId>/<nodeIndex>" for a body from an imported assembly tree. */
+  nodeRef?: string;
   positions: F32Wire;
   indices: U32Wire;
   faceIds: U32Wire;
@@ -157,6 +159,7 @@ interface WireBodyStub {
   id: string;
   name: string;
   etag: string;
+  nodeRef?: string;
   unchanged: true;
 }
 type WireBody = WireBodyFull | WireBodyStub;
@@ -544,8 +547,13 @@ export class Geometry implements GeometryBackend {
   private assemble(r: WireRebuildResult): RebuildResult | null {
     const bodies: WireBody[] = r.bodies ?? [];
     const live = new Set<string>();
-    // first pass: resolve payloads + prune
-    const payloads: WireBodyFull[] = [];
+    // first pass: resolve payloads + prune. Each entry keeps the wire item
+    // (`nb`) alongside the mesh (`p`), because for an "unchanged" stub the mesh
+    // is the CACHED one, whose id/name/nodeRef are whatever they were when the
+    // geometry last changed. Identity must come from the envelope. `name` was
+    // already read from the wrong side; it only looked right because a rename
+    // happens to change the etag and so never arrives as a stub.
+    const items: { p: WireBodyFull; nb: WireBody }[] = [];
     for (const nb of bodies) {
       live.add(nb.id);
       let p: WireBodyFull;
@@ -557,7 +565,7 @@ export class Geometry implements GeometryBackend {
         p = nb;
         this.bodyMesh.set(nb.id, nb);
       }
-      payloads.push(p);
+      items.push({ p, nb });
     }
     for (const id of this.bodyMesh.keys()) if (!live.has(id)) this.bodyMesh.delete(id);
 
@@ -572,7 +580,7 @@ export class Geometry implements GeometryBackend {
     let totalVerts3 = 0;
     let totalIdx = 0;
     let totalTris = 0;
-    for (const p of payloads) {
+    for (const { p } of items) {
       totalVerts3 += p.positions.length;
       totalIdx += p.indices.length;
       totalTris += p.faceIds.length;
@@ -580,7 +588,7 @@ export class Geometry implements GeometryBackend {
     // sidecar sends explicit normals only for textured bodies; bodies without
     // keep their zero-initialized slice, and render.ts falls back to
     // computeVertexNormals for an all-zero slice.
-    const anyNormals = payloads.some((p) => p.normals !== undefined);
+    const anyNormals = items.some(({ p }) => p.normals !== undefined);
     const positions = new Float32Array(totalVerts3);
     const normals = anyNormals ? new Float32Array(totalVerts3) : undefined;
     const indices = new Uint32Array(totalIdx);
@@ -592,7 +600,7 @@ export class Geometry implements GeometryBackend {
     let vOff = 0;
     let iOff = 0;
     let tOff = 0;
-    for (const p of payloads) {
+    for (const { p, nb } of items) {
       const vbase = vOff / 3;
       positions.set(p.positions, vOff);
       if (normals && p.normals !== undefined) normals.set(p.normals, vOff);
@@ -606,11 +614,13 @@ export class Geometry implements GeometryBackend {
       tOff += pf.length;
       for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, ...(e.body !== undefined ? { body: e.body } : {}) });
       meta.push({
-        id: p.id, name: p.name, faceStart: faceBase,
+        // identity from the envelope, geometry from the payload
+        id: nb.id, name: nb.name, faceStart: faceBase,
         faceCount: p.faceCount ?? 0,
         ...(p.faceOwners !== undefined ? { faceOwners: p.faceOwners } : {}),
         ...(p.textureColorSlots !== undefined ? { textureColorSlots: p.textureColorSlots } : {}),
-        ...(p.etag !== undefined ? { etag: p.etag } : {}),
+        ...(nb.etag !== undefined ? { etag: nb.etag } : {}),
+        ...(nb.nodeRef !== undefined ? { nodeRef: nb.nodeRef } : {}),
       });
       faceBase += p.faceCount ?? 0;
     }
@@ -711,12 +721,18 @@ export class Geometry implements GeometryBackend {
   }
 
   async importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply> {
-    const msg = await this.call<{ brep: string; name: string; solid: boolean; faces: number; color?: string }>("import", { path, format }, onStarted);
+    const msg = await this.call<{
+      brep: string; name: string; solid: boolean; faces: number; color?: string;
+      nodes?: { name: string; parent: number | null; color?: string }[];
+      parts?: { node: number; faces: number }[];
+    }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
       return {
         ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces,
         ...(r.color !== undefined ? { color: r.color } : {}),
+        ...(r.nodes !== undefined ? { nodes: r.nodes } : {}),
+        ...(r.parts !== undefined ? { parts: r.parts } : {}),
       };
     }
     if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: "import cancelled" };

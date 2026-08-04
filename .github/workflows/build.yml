@@ -88,6 +88,7 @@ jobs:
           uv run python test_val_guard.py
           uv run python test_body_binding.py
           uv run python test_selector_ambiguity.py
+          uv run python test_assembly.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script
@@ -342,7 +343,7 @@ jobs:
           else
             echo "WARNING: no CHANGELOG.md, publishing boilerplate notes only"
           fi
-          printf '\n---\n\nThe builds are unsigned for now: Windows shows a SmartScreen warning ("More info", then "Run anyway"); on macOS right-click the app and choose Open. Install notes are in the [README](https://github.com/%s#install). Installed apps update themselves from this release.\n' \
+          printf '\n---\n\nThe builds are unsigned for now: Windows shows a SmartScreen warning ("More info", then "Run anyway"); on macOS Gatekeeper may report the app as damaged, which it is not, and `xattr -dr com.apple.quarantine /Applications/SindriCAD.app` clears it. Install notes are in the [README](https://github.com/%s#install). Installed apps update themselves from this release.\n' \
             '${{ github.repository }}' >> notes.md
           cat notes.md
 

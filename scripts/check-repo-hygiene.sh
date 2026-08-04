@@ -47,12 +47,14 @@ done
 # nothing about `git add -f` or a model that predates the rule, which is exactly
 # why this checks what git ACTUALLY tracks.
 #
-# Allowed: the synthetic bench fixture the perf harness needs, and third_party
-# sample models that ship with vendored code. Add to this list only for files
-# that are genuinely synthetic or already public.
+# Allowed: the synthetic bench fixture the perf harness needs, the generated
+# assembly-tree fixtures (boxes emitted by tools/gen_asm_fixtures.py — no real
+# geometry, reproducible from source), and third_party sample models that ship
+# with vendored code. Add to this list only for files that are genuinely
+# synthetic or already public.
 echo "checking for tracked CAD models…"
 models=$(git ls-files -- '*.sindri' '*.3mf' '*.stl' '*.step' '*.stp' 2>/dev/null \
-  | grep -vE '^(sidecar/tools/bench/textured_box\.sindri$|third_party/)' || true)
+  | grep -vE '^(sidecar/tools/bench/textured_box\.sindri$|sidecar/fixtures/asm_[a-z_]+\.step$|third_party/)' || true)
 if [ -n "$models" ]; then
   note "tracked CAD model — is this a real part in a public repo?:"
   printf '%s\n' "$models" | sed 's/^/    /'

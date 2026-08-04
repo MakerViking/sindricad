@@ -1024,6 +1024,48 @@ def _read_glb(path):
     return wrapped
 
 
+def _assembly_payload(asm):
+    """Turn a read STEP assembly into the flat blob shape plus its manifest.
+
+    The blob's top-level children ARE the leaf occurrences, in order, already
+    world-placed. Nesting is deliberately NOT kept in the geometry: binding
+    manifest row i to child i only needs flat order to survive the BREP round
+    trip, which is a far weaker property than 12 levels of nesting surviving,
+    and is asserted directly by test_assembly.py.
+
+    `_canonicalize` runs PER LEAF rather than over the whole shape. That is not
+    only cheaper — it is the only version that can work at all here. Gate 4
+    compares `result.volume` against `shape.volume`, and `Compound.volume`
+    (composite.py) does not recurse into nested compounds, so the gate is
+    structurally unpassable for any assembly shape. A single solid is exactly
+    what those gates were written for.
+    """
+    leaves, parts = [], []
+    for node_index, topods in asm.leaves:
+        leaf = _wrap_topods(topods)
+        if leaf is None:
+            continue
+        if leaf.solids():
+            leaf = _canonicalize(leaf)
+        else:
+            # A solid-less product (a bare face or shell) fails gate 1 —
+            # `len(solids) == max(1, len(shape.solids()))` compares 0 against 1
+            # — so canonicalizing it can only waste time and never succeed.
+            pass
+        leaves.append(leaf)
+        parts.append({"node": node_index, "faces": len(leaf.faces())})
+
+    nodes = [
+        {
+            "name": n.name,
+            "parent": n.parent,
+            **({"color": n.color} if n.color else {}),
+        }
+        for n in asm.nodes
+    ]
+    return Compound(children=leaves), nodes, parts
+
+
 def import_geometry(path, fmt):
     """Read an external geometry file and return the document payload for an
     `import` feature: {brep, solid, faces, name}. STL/3MF/OBJ are read as a
@@ -1038,17 +1080,36 @@ def import_geometry(path, fmt):
             f"file is {size / (1024 * 1024):.0f} MiB — too large to import "
             f"(limit {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB)."
         )
+    manifest = None
     if fmt in ("step", "stp"):
-        # snap near-analytic spline faces to true planes/cylinders/… ONCE at
-        # import, so the canonical form is baked into the embedded BREP.
+        # Read the XCAF product tree ourselves rather than through
+        # build123d.import_step: that helper mangles every product name
+        # (translate(" .()" -> "____"), so "M3 Nut (x20)" arrives as
+        # "M3_Nut__x20_") and its `.children` are not world-placed. Same
+        # STEPCAFControl_Reader underneath, so this is one read, not two.
         # Phase-marked because these are the two multi-minute stages on a large
-        # assembly: measured 90.6 s for import_step and 93.9 s for _canonicalize
-        # on a 356 MiB file. _canonicalize being the LARGER of the two is why a
-        # bar covering only the read would sit at 100% for a minute and a half.
+        # assembly: measured 90.6 s for the read and 93.9 s for _canonicalize on
+        # a 356 MiB file. _canonicalize being the LARGER of the two is why a bar
+        # covering only the read would sit at 100% for a minute and a half.
+        import step_assembly
+
         _import_phase(IMPORT_PHASE_READ)
-        _shape = import_step(path)
+        asm = step_assembly.read_assembly(path)
         _import_phase(IMPORT_PHASE_CANONICALIZE)
-        shape = _canonicalize(_shape)
+        if asm.is_assembly:
+            shape, nodes, parts = _assembly_payload(asm)
+            manifest = {"nodes": nodes, "parts": parts}
+        else:
+            # An ordinary part file stays on the historical path: ONE shape,
+            # canonicalized whole, no manifest. Verified geometrically identical
+            # to import_step's result across every .step in this repo.
+            _shape = asm.roots[0] if len(asm.roots) == 1 else None
+            _shape = _wrap_topods(_shape) if _shape is not None else Compound(
+                children=[_wrap_topods(r) for r in asm.roots]
+            )
+            # snap near-analytic spline faces to true planes/cylinders/… ONCE at
+            # import, so the canonical form is baked into the embedded BREP.
+            shape = _canonicalize(_shape)
     elif fmt == "brep":
         shape = import_brep(path)
     elif fmt in ("stl", "3mf", "obj"):
@@ -1107,6 +1168,10 @@ def import_geometry(path, fmt):
         colour = _glb_dominant_color(path)
         if colour:
             out["color"] = colour
+    # The assembly tree, when the file carried one. Absent for every other
+    # import, which is what keeps the historical rebuild path byte-identical.
+    if manifest:
+        out.update(manifest)
     return out
 
 
@@ -1653,6 +1718,76 @@ def _handle_sweep(f, ctx):
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
 
 
+def _blob_top_children(shape):
+    """The blob's top-level children, in stored order. Deliberately NOT
+    `.solids()`: the manifest binds row i to child i, and a leaf product with no
+    solid (the ones dropped silently today) has to keep its slot."""
+    from OCP.TopoDS import TopoDS_Iterator
+
+    out = []
+    it = TopoDS_Iterator(shape.wrapped)
+    while it.More():
+        out.append(it.Value())
+        it.Next()
+    return out
+
+
+def _bind_assembly(f, ctx, shape, nodes, parts):
+    """Name the blob's children from the assembly manifest. Returns False, having
+    recorded WHY, if the manifest and the geometry disagree — the caller then
+    falls back to the historical unnamed explode. A wrong tree is worse than no
+    tree: every body would still build, just labelled as the wrong part."""
+    children = _blob_top_children(shape)
+    if len(children) != len(parts):
+        _skip_feature(
+            ctx.diagnostics, f, "import",
+            f"assembly manifest lists {len(parts)} parts but the stored geometry "
+            f"has {len(children)} top-level shapes — falling back to unnamed bodies",
+        )
+        return False
+
+    wrapped = []
+    for i, (child, part) in enumerate(zip(children, parts)):
+        w = _wrap_topods(child)
+        node_index = part.get("node") if isinstance(part, dict) else None
+        if w is None or not isinstance(node_index, int) or not 0 <= node_index < len(nodes):
+            _skip_feature(
+                ctx.diagnostics, f, "import",
+                f"assembly manifest entry {i} does not refer to a known part "
+                f"— falling back to unnamed bodies",
+            )
+            return False
+        # Face count is the checksum that turns an ordinal reference into a
+        # CHECKED one. Without it a reordered or re-generated blob would bind
+        # silently, and the only symptom would be parts wearing each other's names.
+        expected_faces = part.get("faces")
+        if expected_faces is not None and len(w.faces()) != expected_faces:
+            _skip_feature(
+                ctx.diagnostics, f, "import",
+                f"assembly part {i} expected {expected_faces} faces but the stored "
+                f"geometry has {len(w.faces())} — falling back to unnamed bodies",
+            )
+            return False
+        wrapped.append((w, node_index))
+
+    # A product owning several solids numbers them; one owning a single solid
+    # keeps its bare name. Same convention the anonymous path already used.
+    owned = {}
+    for _w, node_index in wrapped:
+        owned[node_index] = owned.get(node_index, 0) + 1
+
+    base = f.get("name") or "Imported"
+    feature_id = f.get("id")
+    seen = {}
+    for w, node_index in wrapped:
+        label = (nodes[node_index] or {}).get("name") or base
+        if owned[node_index] > 1:
+            seen[node_index] = seen.get(node_index, 0) + 1
+            label = f"{label} {seen[node_index]}"
+        ctx.new_body(w, label, node_ref=f"{feature_id}/{node_index}")
+    return True
+
+
 def _handle_import(f, ctx):
     base = f.get("name") or "Imported"
     shape = _brep_b64_to_shape(f["brep"])
@@ -1660,9 +1795,16 @@ def _handle_import(f, ctx):
     # assemblies with hundreds of import features this divides body count
     # (browser tree entries, per-body payloads, draw calls) by the average
     # solids-per-import. Default (absent/true) keeps the historical
-    # one-body-per-solid behavior.
+    # one-body-per-solid behavior. It is checked FIRST because it is an explicit
+    # instruction to collapse, which a manifest cannot override.
     if f.get("explode") is False:
         ctx.new_body(shape, base)
+        return
+    # Assembly manifest, when the import recorded one. Absent for every import
+    # made before this existed and for every non-assembly file, which is what
+    # keeps those documents rebuilding exactly as they did.
+    nodes, parts = f.get("nodes"), f.get("parts")
+    if nodes and parts and _bind_assembly(f, ctx, shape, nodes, parts):
         return
     parts = _explode_solids(shape)
     if len(parts) == 1:
@@ -2040,11 +2182,19 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     counter = {"n": 0}
     errors = []
 
-    def new_body(shape, name=None):
+    def new_body(shape, name=None, node_ref=None):
         counter["n"] += 1
-        bodies.append(
-            {"id": f"body{counter['n']}", "name": name or f"Body{counter['n']}", "shape": shape}
-        )
+        entry = {
+            "id": f"body{counter['n']}",
+            "name": name or f"Body{counter['n']}",
+            "shape": shape,
+        }
+        # Which assembly-tree node this body came from, as "<featureId>/<index>".
+        # Set only for manifest-bound imports, and omitted (not None) otherwise so
+        # every other body dict is byte-identical to what it was before.
+        if node_ref:
+            entry["node_ref"] = node_ref
+        bodies.append(entry)
         return bodies[-1]
 
     def active():
@@ -2221,9 +2371,16 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             # final pass only — mid-timeline drops would shift downstream
             # geometric selectors and delete chips a later join re-absorbs
             sh = _drop_debris(sh)
-        out_bodies.append({"id": b["id"], "name": b["name"], "shape": sh,
-                           "owners": b.get("_owners") or {},
-                           "_textures": b.get("_textures")})
+        entry = {"id": b["id"], "name": b["name"], "shape": sh,
+                 "owners": b.get("_owners") or {},
+                 "_textures": b.get("_textures")}
+        # Rebuilt from an explicit key set, so anything new on the body dict has
+        # to be listed here or it is silently dropped between rebuild and the
+        # wire — which is how `_textures` was lost once already. Added only when
+        # set, so a body from a non-assembly import stays byte-identical.
+        if b.get("node_ref"):
+            entry["node_ref"] = b["node_ref"]
+        out_bodies.append(entry)
 
     shapes = [b["shape"] for b in out_bodies if b["shape"] is not None]
     if not shapes:
@@ -2381,7 +2538,16 @@ def _feature_scope(f, params, closure, hidden_json):
             if len(v) <= 256:  # embedded BREP b64 etc. can't reference params
                 refs.update(_IDENT_RE.findall(v))
         elif isinstance(v, dict):
-            for x in v.values():
+            for k, x in v.items():
+                # `nodes`/`parts` are the imported assembly tree: product NAMES
+                # straight out of a STEP file, which are not expressions and must
+                # never be scanned for parameter identifiers. A real product
+                # called "Bracket t Left" would otherwise pull parameter `t` into
+                # this import's invalidation scope, so dragging an unrelated
+                # slider would force a cold re-import of the single most
+                # expensive feature in the document.
+                if k in ("nodes", "parts"):
+                    continue
                 walk(x)
         elif isinstance(v, list):
             for x in v:
@@ -2519,13 +2685,25 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
         textures = {}
         for b in bodies:
             sh = b.get("shape")
+            # The assembly-tree node this body came from. Body metadata that is
+            # NOT recoverable from the shape, exactly like `_owners` and
+            # `_textures` below — and an import always blows the checkpoint
+            # budget, so a disk resume is the NORMAL way an assembly document
+            # reopens. Omitting it here would flatten the tree on every reopen,
+            # with no error and nothing for `_body_fingerprint` to catch, since
+            # that compares geometry only.
+            node_ref = b.get("node_ref")
+            entry = {"body_id": b["id"], "name": b["name"], "blob_key": None}
+            if node_ref:
+                entry["node_ref"] = node_ref
             if sh is None or _wrapped_or_none(sh) is None:
-                manifest.append({"body_id": b["id"], "name": b["name"], "blob_key": None})
+                manifest.append(entry)
                 fps.append(None)
                 continue
             blob_key = (mod.get(b["id"]) or (None, _blob_key(keys[i], b["id"])))[1]
             store.put_blob(blob_key, sh)
-            manifest.append({"body_id": b["id"], "name": b["name"], "blob_key": blob_key})
+            entry["blob_key"] = blob_key
+            manifest.append(entry)
             fps.append(_body_fingerprint(sh))
             owners[b["id"]] = [[list(k), v] for k, v in (b.get("_owners") or {}).items()]
             # `_textures` is body state that is NOT in the shape: _handle_texture
@@ -2569,8 +2747,11 @@ def _restore_from_disk(store, chain_keys):
         mod = {}
         for ent, fp in zip(cp["manifest"], state["fps"]):
             if ent["blob_key"] is None:
-                bodies.append({"id": ent["body_id"], "name": ent["name"],
-                               "shape": None, "_owners": {}})
+                shapeless = {"id": ent["body_id"], "name": ent["name"],
+                             "shape": None, "_owners": {}}
+                if ent.get("node_ref"):
+                    shapeless["node_ref"] = ent["node_ref"]
+                bodies.append(shapeless)
                 continue
             raw = store.get_blob(ent["blob_key"])
             if raw is None:
@@ -2595,6 +2776,11 @@ def _restore_from_disk(store, chain_keys):
             tex = state.get("textures", {}).get(ent["body_id"])
             if tex:
                 body["_textures"] = tex
+            # same rule for the assembly-tree node: absent on every body that did
+            # not come from a manifest-bound import, and on every checkpoint
+            # written before this existed
+            if ent.get("node_ref"):
+                body["node_ref"] = ent["node_ref"]
             bodies.append(body)
             mod[ent["body_id"]] = (shape, ent["blob_key"])
         snap = {

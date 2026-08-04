@@ -624,6 +624,8 @@ tree.onTogglePlane = (id) => {
 
 // body multi-selection (Bodies select mode) — viewport ↔ tree kept in sync
 tree.isBodySelected = (id) => viewport.getSelectedBodies().includes(id);
+// preferred by the tree: one call per render rather than one per body
+tree.selectedBodyIds = () => viewport.getSelectedBodies();
 tree.onSelectBody = (id, additive) => {
   const cur = new Set(viewport.getSelectedBodies());
   if (additive) cur.has(id) ? cur.delete(id) : cur.add(id);
