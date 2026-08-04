@@ -240,7 +240,18 @@ export class BrowserTree {
       .map((b) => `${b.id}=${bodyLabel(b)}${(this.isBodyVisible?.(b.id) ?? true) ? "" : ":h"}${isSelected(b.id) ? ":s" : ""}#${this.store.bodyColorSlot(b.id) ?? ""}${b.nodeRef ? `@${b.nodeRef}` : ""}`)
       .join(",");
     const palSig = this.store.colorPalette.map((s) => `${s.name}:${s.color}:${s.material ?? ""}`).join(",");
-    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}|${this.printerOnline}|${[...this.staleSlots].join(",")}`;
+    // The assembly tree is read from the DOCUMENT, not from the bodies, so it has
+    // to be in the signature too. Two documents can produce identical bodies (same
+    // ids, names and nodeRefs) while their product NAMES differ — without this the
+    // guard below sees no change and the panel keeps painting the old tree. Costs
+    // nothing for a document with no imported assembly, which is the common case.
+    const treeSig = doc.features
+      .map((f) => {
+        const nodes = (f as { nodes?: { name: string }[] }).nodes;
+        return nodes ? `${f.id}#${nodes.map((n) => n.name).join("")}` : "";
+      })
+      .join("");
+    const sig = `${sLabels}|${pLabels}|${bLabels}|${palSig}|${treeSig}|${errId}|${this.selectedId}|${[...this.collapsed].join(",")}|${this.printerOnline}|${[...this.staleSlots].join(",")}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
     this.renameHooks.clear(); // rebuilt below with the fresh rows
