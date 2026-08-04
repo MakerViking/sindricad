@@ -89,6 +89,7 @@ jobs:
           uv run python test_body_binding.py
           uv run python test_selector_ambiguity.py
           uv run python test_assembly.py
+          uv run python test_cancel.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script
