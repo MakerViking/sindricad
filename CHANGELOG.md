@@ -43,6 +43,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A window that opens without its interface now says so.** If the app failed to
+  load its own page, the result was a blank window and no explanation anywhere.
+  The geometry engine logs happily right up to "LISTENING 8765" above it, so the
+  log read like an engine fault when it was nothing of the kind, and a report of
+  it took days to place ([#3](https://github.com/MakerViking/sindricad/issues/3)).
+  The app now waits twelve seconds for the interface to start, and if it has not,
+  writes that plainly to `sidecar.log` along with the fact that the geometry
+  engine is not the problem. This changes nothing when the app starts normally.
+
 - **SindriCAD starts on machines with Nvidia graphics.** On Linux with the Nvidia
   driver, the window process could crash inside the driver the moment the app
   launched, before anything was drawn, so SindriCAD quit with no window and no
