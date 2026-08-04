@@ -59,8 +59,9 @@ Installers for **Linux, Windows and macOS** are on the
 [latest beta release](https://github.com/MakerViking/sindricad/releases/tag/beta),
 rebuilt automatically from every green `main` build. Free, no account needed, and
 everything is bundled including Python and the geometry engine. The builds are
-unsigned, so each platform asks you to confirm the first launch once:
-[see Install](#install) for the exact steps, and note that macOS is the awkward one.
+unsigned, so the first launch needs one extra step per platform:
+[see Install](#install) for the exact steps. macOS is the awkward one: it refuses
+outright and claims the app is damaged, which it is not.
 
 If SindriCAD looks useful, starring the repo helps other people find it.
 
@@ -88,7 +89,9 @@ appear on the release itself.
   automatic healing, and a cleanup pass for messy imported geometry.
 - **Import** STEP, BREP, STL, 3MF, OBJ, and GLB, with facet cleanup and STEP
   canonicalization, so imported parts come back as editable faces instead of a
-  triangle soup. Export STEP, STL, 3MF, and GLB.
+  triangle soup. A STEP assembly keeps its tree: subassemblies and part names as
+  the CAD system wrote them, each part still individually selectable. Export
+  STEP, STL, 3MF, and GLB.
 - **References that survive edits**: geometry is picked by queryable descriptors (an
   axis, a face normal, the nearest point), never by a topology index. Change an
   upstream parameter and a downstream fillet still lands on the right edge.
@@ -171,6 +174,15 @@ sectioned, textured, and used as sketch planes instead of arriving as a triangle
 Mesh formats are cleaned up on the way in, and STEP is canonicalized so its faces come
 back in a form the selectors can address.
 
+A STEP file holding an assembly keeps its structure. The Browser shows the tree the
+originating CAD system wrote: subassemblies as collapsible groups, parts named as the
+file names them, and one entry per solid so a product like "M3 Nut (x20)" stays a single
+named group whose twenty pieces are still individually selectable. Two limits worth
+knowing up front: subassembly names come from the file and cannot be renamed in the
+Browser, and STEP export does not yet write names or colours back out, so exporting an
+assembly still flattens it. Part colours are read from the file and recorded, but not
+displayed, because a body's colour here means which filament prints it.
+
 ## Snapmaker U1 print pipeline
 
 SindriCAD carries print prep for the Snapmaker U1 multi-material printer from model to
@@ -247,10 +259,29 @@ manager workflow, not in-app).
 </details>
 
 <details>
-<summary><b>macOS</b> (.dmg, needs a right-click to open)</summary>
+<summary><b>macOS</b> (.dmg, unsigned: one command on first launch)</summary>
 
-The `.dmg` is unsigned: right-click the app, choose Open, then confirm. Apple code
-signing is planned.
+SindriCAD is not signed with an Apple Developer certificate yet, so macOS
+quarantines it on download. It reports that as **"SindriCAD.app is damaged and
+can't be opened. You should move it to the Trash."** The download is not damaged.
+That is the message macOS shows for an app whose signature it cannot verify.
+
+Drag the app to Applications, then clear the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/SindriCAD.app
+```
+
+Adjust the path if you put it somewhere else. Alternatively, open System Settings,
+go to Privacy and Security, and choose **Open Anyway** after the first failed
+launch.
+
+Right-clicking the app and choosing Open is the older advice and is not enough on
+current macOS, which is what this section used to say. Apple code signing is
+planned; it needs a paid Apple Developer account.
+
+Builds are **Apple Silicon** only for now. An Intel Mac will fail for a different
+reason, and the command above will not help it.
 
 </details>
 
