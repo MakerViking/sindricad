@@ -371,6 +371,74 @@ jobs:
   # added here to build OCCT >= 7.9 from source (slow; deliberately not done today).
   # Trigger to revisit: when a runner image with OCCT 7.9 exists, or when rust-geom
   # gets promoted off the experimental-spike path.
+  # Browser end-to-end checks for the imported-assembly Browser tree.
+  #
+  # Deliberately NON-GATING: nothing `needs:` this job, exactly like
+  # rust-geom-check below, so a browser flake can never block a beta publish.
+  # That matters here because a green `build` auto-publishes to users who
+  # auto-update, and browser e2e is the classic flaky surface.
+  #
+  # These exist because everything else about the assembly tree is unit tests and
+  # row counts. The render-signature bug (a document whose product NAMES changed
+  # while its bodies did not never repainted the panel) passed every unit test and
+  # was only caught by looking at the rendered panel.
+  #
+  # Uses the runner's PREINSTALLED Google Chrome rather than downloading a browser,
+  # and installs playwright-core with --no-save so the main build path keeps its
+  # dependency set unchanged.
+  e2e:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/linux-deps
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install frontend dependencies
+        run: |
+          npm ci
+          npm i --no-save playwright-core@1.56.0
+
+      - name: Install Python 3.12 + sync sidecar deps (locked)
+        run: |
+          uv python install 3.12
+          cd sidecar && uv sync
+
+      - name: Start the geometry sidecar and vite
+        run: |
+          cd sidecar && SINDRI_SIDECAR_PORT=8765 SINDRI_SIDECAR_TOKEN=citoken \
+            uv run python server.py > /tmp/ci_sidecar.log 2>&1 &
+          cd "$GITHUB_WORKSPACE" && npx vite --port 5173 > /tmp/ci_vite.log 2>&1 &
+          for i in $(seq 1 60); do
+            grep -q "LISTENING 8765" /tmp/ci_sidecar.log 2>/dev/null && break
+            sleep 2
+          done
+          grep -q "LISTENING 8765" /tmp/ci_sidecar.log || { echo "sidecar never listened"; cat /tmp/ci_sidecar.log; exit 1; }
+
+      - name: Assembly tree end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/assembly_tree_e2e.cjs
+
+      - name: Browser tree render cost
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/browser_tree_perf.cjs
+
+      - name: Sidecar log on failure
+        if: failure()
+        run: tail -50 /tmp/ci_sidecar.log /tmp/ci_vite.log || true
+
   rust-geom-check:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
