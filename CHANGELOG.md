@@ -67,9 +67,16 @@ This file starts on 2026-08-03. For anything before that, see the
   ([#3](https://github.com/MakerViking/sindricad/issues/3)). The AppImage now uses the
   WebKit your distribution ships, the same as the `.deb` and `.rpm` always have, and it
   is about 100 MB smaller for it. **It is no longer fully self-contained:** a system
-  without WebKitGTK 4.1 installed needs it added first. The
+  without WebKitGTK 4.1 and libsoup 3 installed needs them added first. The
   [Requirements](https://github.com/MakerViking/sindricad#requirements) section of the
-  README lists what each build needs.
+  README lists what each build needs, and now carries a confirmed NixOS recipe.
+
+  Thanks to [@boustanihani](https://github.com/boustanihani) for reporting this and
+  for sticking with it through several rounds of diagnostics. The detail that
+  cracked it came from those reports: the `.deb` worked where the AppImage did
+  not, on the same machine and the same build. The fix is confirmed on NixOS
+  25.05, and the `appimage-run` configuration it needed came back with that
+  confirmation, which is what the README recipe is built from.
 
 - **A window that opens without its interface now says so.** If the app failed to
   load its own page, the result was a blank window and no explanation anywhere.
