@@ -216,6 +216,113 @@ def test_progress_tick_survives_a_broken_hook():
     print(f"{PASS} progress_tick swallows a broken hook and a missing one")
 
 
+# --- stall supervision (Wave 1.2) --------------------------------------------
+#
+# export / exportProject / interference / projectGeometry moved off a 120 s wall
+# clock onto _run_stall. The contract that move depends on is exactly two
+# things, so both are asserted here against the real _run_stall with a stubbed
+# pool: work that keeps ticking is NEVER reaped for merely being long, and work
+# that goes silent IS reaped at ~stall with a message that says "stalled".
+#
+# A stub pool rather than the real one on purpose: this is a test of the
+# supervision loop, not of process mechanics, and a thread pool lets the job
+# bump the heartbeat the supervisor is reading.
+
+
+class _StubValue:
+    def __init__(self, v=0):
+        self.value = v
+
+
+def _drive_run_stall(job, stall):
+    """Run server._run_stall(job) against a thread pool and a stub heartbeat.
+    Returns (result, elapsed_seconds)."""
+    import asyncio
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import server
+
+    saved = (server._pool, server._HB, server._HB_IDX, server._kill_pool,
+             server._new_pool, server._env_broken)
+    pool = ThreadPoolExecutor(max_workers=1)
+    hb = _StubValue(0)
+    try:
+        server._pool, server._HB, server._HB_IDX = pool, hb, _StubValue(-1)
+        server._env_broken = False
+        # Stubbed so a reap exercises the supervision decision without tearing
+        # down a real process pool underneath the test.
+        server._kill_pool = lambda _p: None
+        server._new_pool = lambda: pool
+
+        async def _go():
+            t0 = _time.monotonic()
+            res = await server._run_stall(asyncio.get_running_loop(), job, hb, stall=stall)
+            return res, _time.monotonic() - t0
+
+        return asyncio.run(_go())
+    finally:
+        (server._pool, server._HB, server._HB_IDX, server._kill_pool,
+         server._new_pool, server._env_broken) = saved
+        pool.shutdown(wait=False)
+
+
+def _ticking_job(hb):
+    """Runs well past the stall window, but keeps publishing progress."""
+    import time as _time
+    for _ in range(30):
+        _time.sleep(0.1)
+        hb.value += 1
+    return {"ok": True, "did": "long work"}
+
+
+def _stalling_job(hb):
+    """Publishes progress, then wedges — the shape of one stuck OCCT call."""
+    import time as _time
+    for _ in range(3):
+        _time.sleep(0.1)
+        hb.value += 1
+    _time.sleep(6.0)
+    return {"ok": True, "did": "should never be returned"}
+
+
+def test_long_but_ticking_work_is_never_reaped():
+    """3 s of work under a 1 s stall completes, because it keeps ticking.
+    Under the old 120 s wall clock the equivalent case was export at 180 s."""
+    res, elapsed = _drive_run_stall(_ticking_job, stall=1.0)
+    assert res.get("did") == "long work", f"ticking work was reaped: {res}"
+    assert elapsed >= 3.0, f"job returned too early ({elapsed:.2f}s) to prove anything"
+    print(f"{PASS} ticking work ran {elapsed:.1f}s under a 1.0s stall and completed")
+
+
+def test_silent_work_is_reaped_with_a_stalled_message():
+    """Ticks, then goes quiet: reaped at ~stall, not at the job's full length."""
+    res, elapsed = _drive_run_stall(_stalling_job, stall=1.0)
+    msg = (res.get("error") or {}).get("message", "")
+    assert "stalled" in msg, f"expected a stalled message, got {res}"
+    assert elapsed < 4.0, f"reaped at {elapsed:.2f}s — should be ~1s, not the job's 6s"
+    assert res.get("did") is None, "a reaped job must not return its result"
+    print(f"{PASS} silent work reaped at {elapsed:.1f}s: {msg[:58]}…")
+
+
+def test_the_document_ops_no_longer_use_a_wall_clock():
+    """The four document-scaled ops are dispatched through _run_stall, and
+    DOC_TIMEOUT is gone. Pins the wiring 1.2 is: a later edit that quietly puts
+    one back on _run(timeout=...) would restore the exact failure this removed,
+    where a long build and a wedged one are indistinguishable."""
+    import re
+
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")).read()
+    assert "DOC_TIMEOUT = " not in src, "DOC_TIMEOUT is back"
+    for op, job in (("export", "_export_job"), ("exportProject", "_export_project_job"),
+                    ("interference", "_interference_job"),
+                    ("projectGeometry", "_project_geometry_job")):
+        m = re.search(r"_run(_stall)?\(\s*\n?\s*loop,\s*" + job + r"\b", src)
+        assert m, f"{op}: no dispatch found for {job}"
+        assert m.group(1) == "_stall", f"{op} ({job}) is on a wall clock again"
+    print(f"{PASS} export/exportProject/interference/projectGeometry all on _run_stall")
+
+
 if __name__ == "__main__":
     print("heartbeat ticks (stall watchdog)")
     test_export_mesh_ticks_on_every_tier()
@@ -224,4 +331,7 @@ if __name__ == "__main__":
     test_checkpoint_write_ticks_per_body()
     test_tick_hook_is_restored()
     test_progress_tick_survives_a_broken_hook()
+    test_long_but_ticking_work_is_never_reaped()
+    test_silent_work_is_reaped_with_a_stalled_message()
+    test_the_document_ops_no_longer_use_a_wall_clock()
     print("all heartbeat tests passed")

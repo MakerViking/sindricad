@@ -96,12 +96,24 @@ _ip_conns: dict[str, int] = {}
 # offset that collapses a hole); the timeout + worker recycling turns that into a
 # clean, recoverable error instead of a frozen app.
 JOB_TIMEOUT = 25.0
-# Document-scaled ops (rebuild / export / interference re-run the whole feature
-# history) get a roomier budget: a long document's COLD rebuild legitimately
-# exceeds JOB_TIMEOUT (measured 26s at 125 features on the DDR model), and a
-# timeout there is self-perpetuating — it recycles the worker, which clears the
-# incremental cache, so every retry is cold again. 120s still catches runaways.
-DOC_TIMEOUT = 120.0
+# DOC_TIMEOUT (120 s) USED TO LIVE HERE, for the document-scaled ops that replay
+# the whole feature history: export, exportProject, interference,
+# projectGeometry. It is gone — those four are supervised by PROGRESS now (see
+# STALL_TIMEOUT below), which is what the roomier budget was really reaching for.
+#
+# A wall clock could not tell a long build from a wedged one, and its failure was
+# self-perpetuating: the timeout recycled the worker, which cleared the
+# incremental cache, so every retry started cold and hit the same wall.
+#
+# Safe to move ONLY because the silent phases in those jobs are short. Measured
+# on a 3,000-body assembly: the ticking rebuild is 10.2 s while the silent write
+# is 2.8 s for a 48 MB STEP, 0.7 s for STL, and 0.1 s for a project 3MF. If a
+# future format grows a write phase that can run past STALL_TIMEOUT without
+# ticking, it needs ticks or its own stall= — not a return to wall clock.
+#
+# The `import` op keeps its own size-derived wall-clock budget on purpose: OCP
+# holds the GIL for the whole of ReadFile+Transfer, so nothing can tick inside it
+# and there is no progress to supervise.
 
 # Import phase labels and their share of the wall clock, measured on the 356 MiB
 # reference STEP: read+convert 90.6 s, canonicalize 93.9 s, encode 7.3 s.
@@ -1605,7 +1617,7 @@ async def _dispatch(ws, loop, req, req_id, op):
         await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
     elif op == "export":
-        res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {}, timeout=DOC_TIMEOUT)
+        res = await _run_stall(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {})
         await ws.send(_reply_for(req_id, res))
 
     elif op == "exportProject":
@@ -1615,15 +1627,15 @@ async def _dispatch(ws, loop, req, req_id, op):
         if not isinstance(settings, dict) or len(json.dumps(settings)) > 262144:
             await ws.send(_err(req_id, "exportProject: bad settings"))
             return
-        res = await _run(
+        res = await _run_stall(
             loop, _export_project_job, req["document"], req["path"],
             req.get("palette") or [], req.get("bodyColors") or {},
-            req.get("bodyNames") or {}, settings, timeout=DOC_TIMEOUT,
+            req.get("bodyNames") or {}, settings,
         )
         await ws.send(_reply_for(req_id, res))
 
     elif op == "interference":
-        res = await _run(loop, _interference_job, req["document"], timeout=DOC_TIMEOUT)
+        res = await _run_stall(loop, _interference_job, req["document"])
         await ws.send(_reply_for(req_id, res))
 
     elif op == "import":
@@ -1683,18 +1695,20 @@ async def _dispatch(ws, loop, req, req_id, op):
         await ws.send(_reply_for(req_id, res))
 
     elif op == "projectGeometry":
-        # DOC_TIMEOUT: usually a warm prefix-cache hit, but a cold
-        # start replays the whole prefix like export/interference do.
-        res = await _run(
+        # Usually a warm prefix-cache hit, but a cold start replays the whole
+        # prefix like export/interference do — and that replay ticks, so a long
+        # one is no longer mistaken for a hang.
+        res = await _run_stall(
             loop, _project_geometry_job, req["document"], req["plane"],
-            req.get("sources") or [], timeout=DOC_TIMEOUT,
+            req.get("sources") or [],
         )
         await ws.send(_reply_for(req_id, res))
 
     elif op == "migrateGeometry":
         # One-way v4 -> v5: the document still carries inline base64, so nothing
-        # is lost if this never runs. JOB_TIMEOUT, not DOC_TIMEOUT: this decodes
-        # a bounded list of already-embedded blobs, it does not rebuild.
+        # is lost if this never runs. JOB_TIMEOUT and a WALL CLOCK, not stall
+        # supervision: this decodes a bounded list of already-embedded blobs, it
+        # does not rebuild, so it has no heartbeat to supervise.
         res = await _run(loop, _migrate_geometry_job, req.get("items") or [], timeout=JOB_TIMEOUT)
         await ws.send(_reply_for(req_id, res))
 
