@@ -179,9 +179,13 @@ originating CAD system wrote: subassemblies as collapsible groups, parts named a
 file names them, and one entry per solid so a product like "M3 Nut (x20)" stays a single
 named group whose twenty pieces are still individually selectable. Two limits worth
 knowing up front: subassembly names come from the file and cannot be renamed in the
-Browser, and STEP export does not yet write names or colours back out, so exporting an
-assembly still flattens it. Part colours are read from the file and recorded, but not
-displayed, because a body's colour here means which filament prints it.
+Browser, and only STEP carries the tree back out so far, not 3MF or glTF. Part colours are
+read from the file and written back into an exported STEP, but not displayed on screen,
+because a body's colour here means which filament prints it.
+
+Exporting to STEP preserves what import kept: the hierarchy, the part names, the colours
+and the position of every occurrence. Re-importing your own export returns the same parts,
+names, colours, positions and face count.
 
 ## Snapmaker U1 print pipeline
 

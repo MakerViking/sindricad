@@ -20,6 +20,24 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Exporting a STEP assembly keeps its structure.** Opening an assembly kept its
+  tree, names and colours; exporting one then flattened all three, so a file you
+  could open was a file you could not ship. A STEP export now carries the
+  assembly hierarchy, the per-part names, the colours the original file
+  carried, and the position of every part, including repeated subassemblies that
+  appear in several places. Re-importing your own export gives you back what you
+  started with: same parts, same names, same colours, same positions, same face
+  count.
+
+  Parts that contain no solid survive the round trip too. They used to vanish on
+  the way in; now they make it all the way back out.
+
+  Documents you modelled yourself also carry their body names into the exported
+  file, so a part arrives called "Base Plate" rather than "Solid".
+
+  Still not there: 3MF and glTF exports do not yet carry the tree, only STEP
+  does, and a subassembly still cannot be renamed.
+
 - **Imported STEP assemblies keep their structure.** A STEP file that contains an
   assembly is no longer flattened into a pile of bodies called Body1, Body2,
   Body3. The Browser now shows the tree the CAD system wrote: subassemblies as
@@ -36,10 +54,9 @@ This file starts on 2026-08-03. For anything before that, see the
   assembly the import went from about 190 seconds to about 99.
 
   Two limits to be aware of. Subassembly names come from the file and cannot be
-  renamed in the Browser, though individual bodies still can. And STEP export
-  does not yet write names or colours back out, so a round trip through export
-  still loses the tree. Part colours from the file are recorded but not shown,
-  because colour in SindriCAD means which filament prints a body.
+  renamed in the Browser, though individual bodies still can. And part colours
+  from the file are recorded but not shown on screen, because colour in SindriCAD
+  means which filament prints a body.
 
 ### Fixed
 
