@@ -281,12 +281,24 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
   const fmt = extToFormat(path);
   // GLB carries one material per body, so it needs the palette and each body's
   // slot; the other formats ignore both.
-  const res = await geometry.export(store.document, fmt, path, {
-    ...opts,
-    palette: store.colorPalette,
-    bodyColors: store.bodyColorsMap(),
-  });
+  // Wrapped exactly like importPath's runBusy below, and for the same reason:
+  // an export replays the whole feature history, so on a large document it runs
+  // for as long as an import does with nothing on screen to show it and nothing
+  // for Cancel to attach to. onStarted hands back the request id so a cancel
+  // targets THIS export — the document stays editable meanwhile, so any rebuild
+  // the user triggers would otherwise be the "most recent" op.
+  const res = await store.runBusy(
+    `Exporting ${path.split(/[\\/]/).pop() ?? "file"}`,
+    (onStarted) => geometry.export(store.document, fmt, path, {
+      ...opts,
+      palette: store.colorPalette,
+      bodyColors: store.bodyColorsMap(),
+    }, onStarted),
+  );
   if (!res.ok) {
+    // The user stopped it: they know, so say nothing. Reporting their own
+    // action back as "Export failed: cancelled" is the bug this avoids.
+    if (res.cancelled) return;
     await reportError(`Export failed: ${res.message ?? "unknown error"}`);
     return;
   }
@@ -364,13 +376,20 @@ export async function exportPrintProject(
     path = picked;
   }
 
-  const res = await geometry.exportProject(store.document, path, {
-    palette: store.colorPalette,
-    bodyColors: store.bodyColorsMap(),
-    bodyNames: store.bodyNamesMap(),
-    settings: { ...U1_PROJECT_SETTINGS, ...(opts.settings ?? {}) },
-  });
+  // Same busy/cancel treatment as exportModel and importPath — this path
+  // tessellates every body at export grade before writing the project, so it is
+  // every bit as long-running as a plain export on a large document.
+  const res = await store.runBusy(
+    `Exporting ${path.split(/[\\/]/).pop() ?? "project"}`,
+    (onStarted) => geometry.exportProject!(store.document, path, {
+      palette: store.colorPalette,
+      bodyColors: store.bodyColorsMap(),
+      bodyNames: store.bodyNamesMap(),
+      settings: { ...U1_PROJECT_SETTINGS, ...(opts.settings ?? {}) },
+    }, onStarted),
+  );
   if (!res.ok) {
+    if (res.cancelled) return null;  // the user stopped it — not an error
     await reportError(`Print export failed: ${res.message ?? "unknown error"}`);
     return null;
   }

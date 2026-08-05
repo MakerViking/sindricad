@@ -83,11 +83,18 @@ export interface GeometryBackend {
       palette?: { name: string; color: string; material?: string }[];
       bodyColors?: Record<string, number>;
     },
+    // Same contract as importGeometry's: hands back the request id so a Cancel
+    // targets THIS export rather than whatever ran most recently. The document
+    // stays editable while an export runs, so "most recent" is not this one.
+    onStarted?: (id: string) => void,
   ): Promise<{
     ok: boolean;
     path?: string;
     paths?: string[];
     message?: string;
+    // the user stopped it — distinct from a failure, so the caller can stay
+    // silent instead of reporting their own action back to them as an error
+    cancelled?: boolean;
     // features that FAILED during the export rebuild: their bodies are absent
     // from the written files (export-what-built, never silently)
     warnings?: { message: string; feature_id?: string }[];
@@ -112,10 +119,12 @@ export interface GeometryBackend {
       bodyNames: Record<string, string>;
       settings?: Record<string, unknown>;
     },
+    onStarted?: (id: string) => void,
   ): Promise<{
     ok: boolean;
     path?: string;
     message?: string;
+    cancelled?: boolean;
     warnings?: { message: string; feature_id?: string }[];
   }>;
   // Fetch the per-launch sidecar auth token from the Rust shell (Tauri) and
@@ -674,7 +683,8 @@ export class Geometry implements GeometryBackend {
       palette?: { name: string; color: string; material?: string }[];
       bodyColors?: Record<string, number>;
     } = {},
-  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
+    onStarted?: (id: string) => void,
+  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; cancelled?: boolean; warnings?: { message: string; feature_id?: string }[] }> {
     const msg = await this.call<{ path?: string; paths?: string[]; warnings?: { message: string; feature_id?: string }[] }>(
       "export",
       {
@@ -683,6 +693,7 @@ export class Geometry implements GeometryBackend {
         // to empty, so other formats are unaffected by sending them.
         palette: opts.palette, bodyColors: opts.bodyColors,
       },
+      onStarted,
     );
     if (msg.ok) {
       const r = msg.result;
@@ -693,6 +704,7 @@ export class Geometry implements GeometryBackend {
         ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
       };
     }
+    if (msg.cancelled) return { ok: false, cancelled: true, message: "export cancelled" };
     return { ok: false, message: msg.error?.message };
   }
 
@@ -705,7 +717,8 @@ export class Geometry implements GeometryBackend {
       bodyNames: Record<string, string>;
       settings?: Record<string, unknown>;
     },
-  ): Promise<{ ok: boolean; path?: string; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
+    onStarted?: (id: string) => void,
+  ): Promise<{ ok: boolean; path?: string; message?: string; cancelled?: boolean; warnings?: { message: string; feature_id?: string }[] }> {
     const msg = await this.call<{ path?: string; warnings?: { message: string; feature_id?: string }[] }>("exportProject", {
       document: doc,
       path,
@@ -713,7 +726,7 @@ export class Geometry implements GeometryBackend {
       bodyColors: opts.bodyColors,
       bodyNames: opts.bodyNames,
       settings: opts.settings ?? {},
-    });
+    }, onStarted);
     if (msg.ok) {
       const r = msg.result;
       return {
@@ -722,6 +735,7 @@ export class Geometry implements GeometryBackend {
         ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
       };
     }
+    if (msg.cancelled) return { ok: false, cancelled: true, message: "export cancelled" };
     return { ok: false, message: msg.error?.message };
   }
 
