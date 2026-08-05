@@ -1,4 +1,5 @@
-"""Memory-refusal tests: the pre-import RAM check and the three platform probes.
+"""Pre-parse import gates: the RAM refusal, the three platform probes, and the
+per-format file-size cap.
 
 Run: uv run python test_sysmem.py   (or .venv/bin/python test_sysmem.py)
 
@@ -175,6 +176,59 @@ def test_describe_never_raises():
     print(f"{PASS} describe() survives every input including None")
 
 
+# --- the per-format size cap (Wave 2.1) ---------------------------------------
+#
+# Nothing pinned either cap value before this. That mattered: the record spent
+# weeks believing MAX_IMPORT_FILE_BYTES was the binding limit on STEP imports
+# when MAX_BREP_BYTES (a different constant, on a different path) was the one
+# actually refusing them.
+
+
+def test_brep_formats_get_the_higher_cap():
+    from builder import (MAX_IMPORT_BREP_FILE_BYTES, MAX_IMPORT_FILE_BYTES,
+                         _import_size_cap)
+
+    for fmt in ("step", "stp", "brep"):
+        assert _import_size_cap(fmt) == MAX_IMPORT_BREP_FILE_BYTES, fmt
+    # A STEP file is a compact description of exact surfaces; a MESH file of the
+    # same byte size is a far larger triangle count and a much heavier viewport.
+    for fmt in ("stl", "3mf", "obj", "glb", ""):
+        assert _import_size_cap(fmt) == MAX_IMPORT_FILE_BYTES, fmt
+    assert MAX_IMPORT_BREP_FILE_BYTES > MAX_IMPORT_FILE_BYTES
+    print(f"{PASS} caps split: b-rep {MAX_IMPORT_BREP_FILE_BYTES // MIB} MiB, "
+          f"mesh {MAX_IMPORT_FILE_BYTES // MIB} MiB")
+
+
+def test_the_reference_assembly_size_is_now_admissible():
+    """The 356 MiB reference STEP is the whole point of the cap raise: it was
+    refused outright before, at a limit of 256 MiB."""
+    from builder import MAX_IMPORT_FILE_BYTES, _import_size_cap
+
+    reference = 356 * MIB
+    assert reference > MAX_IMPORT_FILE_BYTES, "the old cap would have admitted it"
+    assert reference < _import_size_cap("step"), "still refused — the raise did nothing"
+    print(f"{PASS} a 356 MiB STEP passes the size cap (it did not before)")
+
+
+def test_import_geometry_uses_the_cap_for_the_format_it_was_given():
+    """The wiring: `fmt` must be lowercased BEFORE the cap is chosen, or "STEP"
+    silently takes the mesh cap."""
+    import builder
+
+    seen = {}
+    real = builder._import_size_cap
+    builder._import_size_cap = lambda f: (seen.setdefault("fmt", f), real(f))[1]
+    try:
+        try:
+            builder.import_geometry("/nonexistent/x.step", "STEP")
+        except Exception:  # noqa: BLE001 — only the recorded fmt matters here
+            pass
+    finally:
+        builder._import_size_cap = real
+    assert seen.get("fmt") == "step", f"cap chosen for {seen.get('fmt')!r}, not lowercased"
+    print(f"{PASS} the cap is chosen from the LOWERCASED format")
+
+
 def test_import_geometry_refuses_before_it_parses_anything():
     """The wiring, not just the helper. Uses a file of pure GARBAGE: if the
     refusal fires the error is about memory, and if the gate were missing (or
@@ -229,5 +283,8 @@ if __name__ == "__main__":
     test_an_unknown_memory_figure_never_refuses()
     test_a_zero_size_file_is_never_refused()
     test_describe_never_raises()
+    test_brep_formats_get_the_higher_cap()
+    test_the_reference_assembly_size_is_now_admissible()
+    test_import_geometry_uses_the_cap_for_the_format_it_was_given()
     test_import_geometry_refuses_before_it_parses_anything()
     print("all memory tests passed")

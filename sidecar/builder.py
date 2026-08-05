@@ -742,9 +742,30 @@ MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/cu
 # the user opened, which may be hostile). Caps bound the worst case BEFORE a heavy
 # read/parse, so a crafted file can't OOM the worker or aim a parser fuzz at OCCT.
 MAX_IMPORT_FILE_BYTES = 256 * 1024 * 1024   # reject any import file above this outright
+# B-rep formats get a far higher ceiling than meshes. A STEP file is a compact
+# description of exact surfaces, so its byte size says little about the work it
+# implies; the 356 MiB reference assembly is 3,071 leaves and 133,284 faces. A
+# MESH file of the same byte size is a far larger triangle count and a much
+# heavier viewport, which is why STL/3MF/OBJ keep the lower cap.
+#
+# What actually protects the machine now is the RAM check
+# (_refuse_if_memory_is_short), which scales with the file AND with what is free
+# at that moment. This is only a backstop against absurd input, so it can be
+# generous without being reckless.
+MAX_IMPORT_BREP_FILE_BYTES = 1024 * 1024 * 1024
 MAX_IMPORT_SCAN_BYTES = 64 * 1024 * 1024    # decompressed ASCII-STL / 3MF scan window
 MAX_BREP_BYTES = 64 * 1024 * 1024           # decoded embedded-BREP body cap
 _BREP_MAGIC = b"CASCADE Topology V"         # OCCT ASCII BREP header signature
+
+
+def _import_size_cap(fmt):
+    """The file-size ceiling for `fmt`. B-rep formats (STEP/STP/BREP) get the
+    higher one; everything mesh-shaped keeps the original."""
+    return (
+        MAX_IMPORT_BREP_FILE_BYTES
+        if fmt in ("step", "stp", "brep")
+        else MAX_IMPORT_FILE_BYTES
+    )
 
 
 def _count_stream(fh, needle, limit, max_bytes=None):
@@ -1154,10 +1175,11 @@ def import_geometry(path, fmt):
         size = os.path.getsize(path)
     except OSError:
         size = 0
-    if size > MAX_IMPORT_FILE_BYTES:
+    cap = _import_size_cap(fmt)
+    if size > cap:
         raise ValueError(
             f"file is {size / (1024 * 1024):.0f} MiB — too large to import "
-            f"(limit {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB)."
+            f"(limit {cap // (1024 * 1024)} MiB)."
         )
     _refuse_if_memory_is_short(size)
     manifest = None
