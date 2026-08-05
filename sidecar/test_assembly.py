@@ -528,6 +528,153 @@ def test_a_part_name_cannot_move_an_import_s_chain_key():
     print("  product names do not move the chain key; a real reference still does")
 
 
+def _roundtrip(fixture):
+    """import -> build -> export STEP -> re-import. Returns (source, exported)."""
+    import tempfile
+
+    import builder
+    import export_tree
+    from exporters import export
+    from step_assembly import read_assembly
+
+    src_path = os.path.join(FIXTURES, f"{fixture}.step")
+    payload = builder.import_geometry(src_path, "step")
+    doc = {
+        "version": 1, "parameters": {},
+        "features": [dict(payload, id="f1", type="import", format="step")],
+    }
+    _p, errors, bodies = builder.rebuild(doc)
+    assert not errors, errors
+    tree = export_tree.build_export_tree(doc, bodies, root_name=fixture)
+    assert tree is not None, f"{fixture}: no export tree was built"
+    out = os.path.join(tempfile.mkdtemp(prefix="sindri_f_"), f"{fixture}.step")
+    export(tree, "step", out)
+    return read_assembly(src_path), read_assembly(out)
+
+
+def _leaf_faces(asm):
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    total = 0
+    for _i, shape in asm.leaves:
+        exp = TopExp_Explorer(shape, TopAbs_FACE)
+        while exp.More():
+            total += 1
+            exp.Next()
+    return total
+
+
+def _leaf_boxes(asm):
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    out = []
+    for _i, shape in asm.leaves:
+        box = Bnd_Box()
+        BRepBndLib.Add_s(shape, box)
+        out.append(tuple(round(v, 6) for v in box.Get()))
+    return sorted(out)
+
+
+def test_exported_step_keeps_the_assembly_tree():
+    """THE PHASE F GATE. An assembly you can open but cannot ship is not a
+    feature: until this passed, export flattened the tree, the names and the
+    colours that import had just gone to the trouble of keeping.
+
+    Runs on the synthetic fixtures, because the 356 MiB reference file is still
+    unimportable (the cap raise is blocked on Phase D).
+    """
+    for fixture in ("asm_flat", "asm_multisolid", "asm_nested", "asm_colors", "asm_empty_product"):
+        src, back = _roundtrip(fixture)
+
+        assert len(back.leaves) == len(src.leaves), (
+            f"{fixture}: {len(src.leaves)} parts in, {len(back.leaves)} out"
+        )
+        # Face count is NOT optional: without it this passes while silently
+        # losing the solid-less products (asm_empty_product's "Decal", and the
+        # 11 of them on the reference file).
+        assert _leaf_faces(back) == _leaf_faces(src), (
+            f"{fixture}: {_leaf_faces(src)} faces in, {_leaf_faces(back)} out — "
+            f"geometry was lost on the way through STEP"
+        )
+        # Every source product name must still be somewhere in the exported tree.
+        src_names = {n.name for n in src.nodes}
+        back_names = {n.name for n in back.nodes}
+        missing = sorted(n for n in src_names if n not in back_names)
+        assert not missing, f"{fixture}: product names lost on export: {missing}"
+        # Placement: per-occurrence locations ride on each leaf's TopLoc_Location
+        # (`.Moved()` sets the field, it does not bake coordinates), so a repeated
+        # subassembly must not collapse onto one spot.
+        assert _leaf_boxes(back) == _leaf_boxes(src), (
+            f"{fixture}: world placement moved across the round trip"
+        )
+        colours_in = sum(1 for n in src.nodes if n.color)
+        colours_out = sum(1 for n in back.nodes if n.color)
+        assert colours_out >= colours_in, (
+            f"{fixture}: {colours_in} coloured products in, {colours_out} out"
+        )
+        print(
+            f"  {fixture}: {len(src.leaves)} parts, {_leaf_faces(src)} faces, "
+            f"{colours_in} colours — all survived"
+        )
+
+
+def test_a_modelled_document_exports_its_body_names():
+    """No import, so no assembly tree — but the bodies should still carry their
+    names out. build123d's export_step writes `.label` as the STEP product name,
+    so this is nearly free; it is asserted because it changes the shape of the
+    most common export in the product."""
+    import tempfile
+
+    import builder
+    import export_tree
+    from exporters import export
+    from step_assembly import read_assembly
+
+    doc = {
+        "version": 1, "parameters": {},
+        "features": [
+            {"id": "b1", "type": "box", "length": 10, "width": 10, "height": 4},
+            {"id": "b2", "type": "box", "length": 4, "width": 4, "height": 12},
+        ],
+    }
+    _p, errors, bodies = builder.rebuild(doc)
+    assert not errors, errors
+    assert not any(b.get("node_ref") for b in bodies), "a modelled doc must have no tree"
+    for b, name in zip(bodies, ("Base Plate", "Post")):
+        b["name"] = name
+
+    tree = export_tree.build_export_tree(doc, bodies, root_name="Modelled")
+    out = os.path.join(tempfile.mkdtemp(prefix="sindri_f_"), "modelled.step")
+    export(tree, "step", out)
+    names = {n.name for n in read_assembly(out).nodes}
+    assert "Base Plate" in names and "Post" in names, f"body names were lost: {names}"
+    print(f"  modelled bodies exported as {sorted(names)}")
+
+
+def test_building_an_export_tree_does_not_mutate_the_cached_bodies():
+    """`Compound(children=[...])` re-parents its children and setting `.label`
+    writes to the shape object. The shapes handed to an export are the LIVE ones
+    from rebuild_cached, also held by builder._CACHE prefix snapshots in a
+    long-lived worker — re-parenting them would corrupt the rebuild cache for
+    every later edit in the session."""
+    import builder
+    import export_tree
+
+    _payload, doc = _import_doc("asm_multisolid")
+    _p, errors, bodies = builder.rebuild(doc)
+    assert not errors, errors
+    before = [(b["shape"].parent, getattr(b["shape"], "label", "")) for b in bodies]
+    export_tree.build_export_tree(doc, bodies, root_name="X")
+    after = [(b["shape"].parent, getattr(b["shape"], "label", "")) for b in bodies]
+    assert before == after, (
+        "building the export tree mutated the live body shapes: "
+        f"{before} -> {after}"
+    )
+    print("  live body shapes untouched by the export tree")
+
+
 if __name__ == "__main__":
     missing = [
         n for n in FIXTURE_NAMES if not os.path.exists(os.path.join(FIXTURES, f"{n}.step"))
@@ -554,6 +701,9 @@ if __name__ == "__main__":
         test_node_ref_survives_a_disk_checkpoint_resume,
         test_debris_dropping_never_changes_the_body_count,
         test_a_part_name_cannot_move_an_import_s_chain_key,
+        test_exported_step_keeps_the_assembly_tree,
+        test_a_modelled_document_exports_its_body_names,
+        test_building_an_export_tree_does_not_mutate_the_cached_bodies,
     ]:
         print(f"{fn.__name__} …")
         try:

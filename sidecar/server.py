@@ -914,6 +914,20 @@ def _export_job(document, fmt, path, body=None, separate=False,
         return _done({"path": _glb_export(live, path)})
     if any_textured and fmt in ("stl", "3mf"):
         return _done({"path": _mesh_export(live, path)})
+    # STEP carries structure: hand build123d a LABELLED tree instead of the fused
+    # part, so product names — and an imported assembly's hierarchy, per-part
+    # colours and per-occurrence placement — survive the export. build123d's
+    # export_step already writes XCAF via STEPCAFControl_Writer, so this only has
+    # to supply the tree. Whole-document exports only: `body=` and `separate=True`
+    # each write a single body, which has no tree.
+    if fmt == "step" and body is None and not separate:
+        import export_tree
+
+        tree = export_tree.build_export_tree(
+            document, live, root_name=os.path.splitext(os.path.basename(path))[0] or "Model"
+        )
+        if tree is not None:
+            return _done({"path": export(tree, fmt, path)})
     return _done({"path": export(part, fmt, path)})
 
 
