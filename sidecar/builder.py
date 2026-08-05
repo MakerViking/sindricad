@@ -1098,6 +1098,53 @@ def _assembly_payload(asm):
     return Compound(children=leaves), nodes, parts
 
 
+# Peak RSS an import costs, as a multiple of the FILE size, over and above the
+# already-resident OCCT/build123d libraries. MEASURED on generated STEP
+# assemblies: a 13.7 MiB file grew RSS by 122.1 MiB (8.94x) and a 46.1 MiB file
+# by 370.4 MiB (8.04x) — linear in file size across that range. 10x is those
+# numbers with headroom, not a guess.
+#
+# Deliberately conservative in the SAFE direction: over-estimating the cost makes
+# us refuse an import that might just have fitted, which the user can act on.
+# Under-estimating it hands them an OOM kill, which arrives as "the geometry
+# kernel crashed" and sends them hunting a geometry bug that does not exist.
+IMPORT_RSS_PER_FILE_BYTE = 10
+
+# Leave this much of the estimate as slack for everything else on the machine.
+# An import that would consume literally all available memory takes the desktop
+# down with it.
+_MEMORY_HEADROOM = 1.25
+
+
+def _refuse_if_memory_is_short(size, available=None):
+    """Refuse an import that plainly will not fit in RAM, BEFORE OCCT starts.
+
+    An OOM kill lands on the worker as a bare SIGKILL with no traceback, which
+    the supervisor can only report as "the geometry kernel crashed" — naming a
+    geometry fault for what is actually a machine limit.
+
+    Proceeds silently when memory cannot be measured (`available_bytes()`
+    returns None on an unrecognised platform or a failed probe): refusing on a
+    number we could not read would be a worse failure than the one this prevents.
+    """
+    if size <= 0:
+        return
+    if available is None:
+        import sysmem
+        available = sysmem.available_bytes()
+    if available is None:
+        return  # unknown — never refuse on a number we could not read
+    need = size * IMPORT_RSS_PER_FILE_BYTE
+    if need * _MEMORY_HEADROOM <= available:
+        return
+    import sysmem
+    raise ValueError(
+        f"not enough memory to import this file — it needs about "
+        f"{sysmem.describe(need)} and only {sysmem.describe(available)} is free. "
+        f"Close some applications and try again, or import a smaller file."
+    )
+
+
 def import_geometry(path, fmt):
     """Read an external geometry file and return the document payload for an
     `import` feature: {brep, solid, faces, name}. STL/3MF/OBJ are read as a
@@ -1112,6 +1159,7 @@ def import_geometry(path, fmt):
             f"file is {size / (1024 * 1024):.0f} MiB — too large to import "
             f"(limit {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB)."
         )
+    _refuse_if_memory_is_short(size)
     manifest = None
     if fmt in ("step", "stp"):
         # Read the XCAF product tree ourselves rather than through
