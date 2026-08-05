@@ -93,6 +93,7 @@ jobs:
           uv run python test_blobstore.py
           uv run python test_import_blob.py
           uv run python test_blob_rebuild.py
+          uv run python test_heartbeat.py
           # Was never in CI and was quietly rotting: it is the only suite that
           # drives ops over the real socket end to end, including the v4 -> v5
           # geometry migration.

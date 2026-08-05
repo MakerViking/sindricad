@@ -307,7 +307,13 @@ def _export_mesh(b):
 
     from tessellate import tessellate
     from texture import resolve_body_textures
+    from builder import progress_tick
 
+    # Unlike the viewport twin, this ticks on EVERY tier including a RAM hit,
+    # not just the compute path: export walks every body in one uninterrupted
+    # loop, so the guarantee worth having is one tick per body regardless of
+    # which tier served it. A mixed warm/cold export is the common case.
+    progress_tick()
     bid, sh = b["id"], b["shape"]
     if b.get("_textures"):
         from texture import CODE_VERSION as _tex_ver
@@ -998,7 +1004,7 @@ def _interference_job(document):
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
     intersection volume above a tiny epsilon), with the overlap volume + bbox so the
     frontend can report and zoom to each clash."""
-    from builder import rebuild_cached, _bbox_overlap
+    from builder import rebuild_cached, _bbox_overlap, progress_tick
 
     # rebuild_cached for the same reason as _export_job: same worker, warm cache
     part, errors, bodies = rebuild_cached(document)
@@ -1010,10 +1016,16 @@ def _interference_job(document):
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
     pairs = []
     for i in range(len(live)):
+        # Ticked in two places, both proportional to real work: once per row,
+        # and again before each boolean. The bbox rejects are cheap enough to
+        # sweep in bulk, but a single row of a dense assembly can spend minutes
+        # in the booleans below, which is longer than the stall timeout.
+        progress_tick()
         for j in range(i + 1, len(live)):
             a, b = live[i], live[j]
             if not _bbox_overlap(a["shape"], b["shape"]):
                 continue  # cheap AABB reject before the (crashable) boolean
+            progress_tick()
             try:
                 common = a["shape"] & b["shape"]
                 vol = abs(getattr(common, "volume", 0.0) or 0.0)

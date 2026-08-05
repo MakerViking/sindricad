@@ -1249,6 +1249,24 @@ def _import_phase(code):
             pass  # a dropped progress frame must never fail an import
 
 
+def progress_tick():
+    """Publish one unit of progress from a long phase that isn't a feature build
+    (export meshing, checkpoint writes, the interference sweep). Same globals()
+    lookup as `_import_phase`, for the same reason.
+
+    `-1` is the server's documented "not a feature" heartbeat index, so this
+    advances the counter without claiming some feature is building. It matters
+    because the supervisor reaps on a heartbeat that STOPS MOVING: a phase that
+    runs long without ticking is killed for being slow rather than for being
+    wedged, which is the exact distinction the stall watchdog exists to make."""
+    cb = globals().get("on_feature_tick")
+    if cb is not None:
+        try:
+            cb(-1)
+        except Exception:
+            pass  # a dropped progress frame must never fail the work
+
+
 @dataclass
 class _RebuildCtx:
     """Bundle of the per-rebuild closures/containers a feature handler needs.
@@ -2784,6 +2802,11 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
         manifest, fps, owners = [], [], {}
         textures = {}
         for b in bodies:
+            # One tick per body, at the top so every path through the loop
+            # counts (the shapeless `continue` below included). Serialising a
+            # body's B-rep to the blob store is the expensive part, and on a
+            # large assembly this loop alone can outrun the stall timeout.
+            progress_tick()
             sh = b.get("shape")
             # The assembly-tree node this body came from. Body metadata that is
             # NOT recoverable from the shape, exactly like `_owners` and
