@@ -243,6 +243,64 @@ jobs:
       # Windows Authenticode: set bundle.windows.signCommand in the bundle config +
       # a signing secret to clear SmartScreen (optional; unsigned still runs).
 
+      # The AppImage must NOT carry the GTK/WebKit/GStreamer stack. Tauri's AppImage
+      # bundler copies webkit2gtk in explicitly and linuxdeploy pulls the rest of the GTK
+      # stack in behind it, and that bundled stack aborts its own web process at startup
+      # on any host running a modern WebKit: the window opens, the page never loads, and
+      # before the load watchdog there was nothing in the log at all. Reported on NixOS
+      # with WebKitGTK 2.50.4 (#3), reproduced on Arch with 2.52.5.
+      #
+      # It is not version skew. A 24.04-built bundle fails identically (PR #8), the
+      # bundle is internally consistent (LD_DEBUG shows GTK/GLib/WebKit all resolving to
+      # it), and the environment is not at fault either (the .deb binary runs fine under
+      # the full set of variables the AppImage's GTK hook exports). What fails is that
+      # bundled stack meeting the host's GPU drivers, which are never bundled and cannot
+      # be. Removing the bundled stack outright is what fixes it, and it is the
+      # configuration the .deb has shipped all along.
+      #
+      # Measured: with all 233 bundled system libraries removed, the AppImage starts and
+      # leaves no coredump on a host where the shipped one does neither.
+      #
+      # usr/lib/SindriCAD holds the Python geometry engine and MUST survive: it is the
+      # app, not a system library, and no host provides it.
+      - name: Un-bundle the system stack from the AppImage
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          img=$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' | head -1)
+          [ -n "$img" ] || { echo "::error::no AppImage was produced"; exit 1; }
+          echo "before: $(du -m "$img" | cut -f1) MB"
+
+          work=$(mktemp -d)
+          cp "$img" "$work/in.AppImage"
+          (cd "$work" && ./in.AppImage --appimage-extract >/dev/null)
+          root="$work/squashfs-root"
+
+          find "$root/usr/lib" -maxdepth 1 -type f -name '*.so*' -delete
+          rm -rf "$root/usr/lib/x86_64-linux-gnu"
+          # the geometry engine must still be there, or we just shipped a dead app
+          test -d "$root/usr/lib/SindriCAD/sidecar-runtime"
+
+          wget -qO "$work/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$work/appimagetool"
+          ARCH=x86_64 "$work/appimagetool" --appimage-extract-and-run "$root" "$img"
+          echo "after: $(du -m "$img" | cut -f1) MB"
+
+          # The old .sig covers the old bytes. Leaving it would hand every existing
+          # install an update whose signature does not verify.
+          rm -f "$img.sig"
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            npx --yes @tauri-apps/cli signer sign "$img"
+            test -f "$img.sig"
+          else
+            echo "::warning::no signing key, AppImage left unsigned (not shippable)"
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()
