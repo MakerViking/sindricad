@@ -94,12 +94,26 @@ else
 fi
 
 # NOT WIRED YET: tools/golden_corpus.py --check.
-# It self-gates (exit 1 on drift) and is the strongest detector here, but its
-# baselines are currently stale — 12 of 13 documents differ, and one of those
-# diffs is a REAL geometry change in 644ffc2 (1.sindri body2 +4.73% volume,
-# z-extent -25 -> -24, from routing _do_combine through _serial_bool). Adding
-# it now would just pin CI red. It goes in as part of re-blessing golden.json,
-# which needs a human decision on whether the new geometry is correct.
+# It self-gates (exit 1 on drift) and is the strongest detector here. Its
+# baselines were re-blessed on 2026-08-05 and it now passes 13/13 locally,
+# confirmed as a live detector (a +5% volume perturbation exits 1).
+#
+# THE BLOCKER IS NO LONGER THE BASELINES — it is that the 13 corpus documents
+# are UNTRACKED. `*.sindri` is gitignored repo-wide on purpose (public repo, no
+# real geometry), so on a fresh checkout every path in golden.json is missing
+# and this would go red immediately. Wiring it needs SYNTHETIC .sindri documents
+# committed as an explicit exception in BOTH .gitignore and
+# check-repo-hygiene.sh — the same treatment the assembly STEP fixtures already
+# get — with their own captured baselines. Do NOT commit the real 1-5*.sindri:
+# they are actual work, and this repo is public.
+#
+# What was re-blessed and why: 12 of 13 documents drifted, and every new error
+# was an `ambiguous face reference` refusal introduced deliberately by f58858b
+# ("Refuse an ambiguous nearest-selector instead of flipping a coin", 2026-07-28)
+# — 16 days AFTER the 2026-07-12 capture. Verified before re-blessing: no new
+# error CLASS appeared anywhere in the corpus, and the refused picks are genuine
+# exact ties (0.600 vs 0.600 mm, 0.000 vs 0.000, 5.731 vs 5.731 on 1.sindri f73,
+# which is the very feature that commit was written for).
 
 printf '\n'
 if [ "$fail" -ne 0 ]; then echo "geometry evals FAILED"; exit 1; fi
