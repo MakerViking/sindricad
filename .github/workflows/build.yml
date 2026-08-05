@@ -377,7 +377,13 @@ jobs:
           files=$(find dist -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
             -o -name '*.dmg' -o -name '*.msi' -o -name '*setup.exe' \
             -o -name '*.app.tar.gz' -o -name '*.sig' \))
-          gh release delete beta --repo ${{ github.repository }} --cleanup-tag --yes || true
+          # Deliberately NOT `gh release delete ... --cleanup-tag` first. That left a
+          # window with no release at all — and since the delete came BEFORE the
+          # asset upload, the window was however long ~2GB takes to push, during
+          # which downloads 404 and the updater has no latest.json to read. If the
+          # create then failed the release simply stayed gone, which happened for
+          # real on 2026-08-05. Everything below updates in place instead, so a
+          # release always exists and a retry repairs rather than destroys.
 
           # Release notes: boilerplate, plus a section of CHANGELOG.md (every line
           # after a "## " heading, up to the next one). "### " subheads survive
@@ -410,11 +416,41 @@ jobs:
             '${{ github.repository }}' >> notes.md
           cat notes.md
 
-          gh release create beta --repo ${{ github.repository }} \
-            --prerelease --target ${{ github.sha }} \
-            --title "SindriCAD beta (rolling)" \
-            --notes-file notes.md \
-            $files latest.json
+          R='${{ github.repository }}'
+          SHA='${{ github.sha }}'
+
+          # Move the rolling tag onto this commit (create it if it is missing).
+          # Moving beats delete+recreate: the tag never stops existing, so the
+          # release attached to it never does either.
+          gh api -X PATCH "repos/$R/git/refs/tags/beta" -f sha="$SHA" -F force=true \
+            || gh api -X POST "repos/$R/git/refs" -f ref=refs/tags/beta -f sha="$SHA"
+
+          # Create only when there is nothing there; otherwise refresh the notes.
+          if gh release view beta --repo "$R" >/dev/null 2>&1; then
+            gh release edit beta --repo "$R" --prerelease \
+              --title "SindriCAD beta (rolling)" --notes-file notes.md
+          else
+            gh release create beta --repo "$R" --prerelease \
+              --title "SindriCAD beta (rolling)" --notes-file notes.md
+          fi
+
+          # Binaries first, latest.json LAST. Ordering is the whole point: the
+          # previous build's assets stay live while these upload, so the manifest
+          # on the release always names files that exist. It only starts pointing
+          # at this build once every binary of this build is up.
+          gh release upload beta --repo "$R" --clobber $files
+          gh release upload beta --repo "$R" --clobber latest.json
+
+          # Only now retire assets from older builds. Their filenames carry the
+          # version, so they do not get clobbered by name and would otherwise pile
+          # up forever. Failing here leaves extra files, which is harmless next to
+          # leaving none.
+          keep=$(for f in $files latest.json; do basename "$f"; done | sort -u)
+          gh release view beta --repo "$R" --json assets -q '.assets[].name' \
+            | while read -r asset; do
+                printf '%s\n' "$keep" | grep -qxF "$asset" \
+                  || gh release delete-asset beta "$asset" --repo "$R" --yes || true
+              done
 
   # docs/IMPROVEMENT-AUDIT.md §5.4: the opt-in `rust-geom` feature (src-tauri/src/geom.rs,
   # 2320 lines / 67 unwrap-or-expect calls) is never compiled by the `build` job above
