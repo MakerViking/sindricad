@@ -94,6 +94,17 @@ jobs:
           uv run python test_import_blob.py
           uv run python test_blob_rebuild.py
           uv run python test_heartbeat.py
+          # These six existed and PASSED for weeks without ever running here —
+          # the same gap that had left texture/checkpoint/projected/val_guard/
+          # body_binding inert. Inert regression protection reads as coverage
+          # while protecting nothing. test_text.py is the ONLY thing covering
+          # the list_fonts / tessellate_text paths at any layer.
+          uv run python test_glb.py
+          uv run python test_project_op.py
+          uv run python test_refresh.py
+          uv run python test_silhouette.py
+          uv run python test_text.py
+          uv run python test_texture_cells.py
           # Was never in CI and was quietly rotting: it is the only suite that
           # drives ops over the real socket end to end, including the v4 -> v5
           # geometry migration.

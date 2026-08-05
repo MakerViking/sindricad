@@ -31,6 +31,12 @@ import tempfile
 
 import websockets
 
+# sidecar/ on the path: the migrateGeometry check has to CONSTRUCT a pre-v5
+# document, and `builder._shape_to_brep_b64` is kept alive for exactly that
+# ("nothing writes it any more … kept because the tests need to be able to
+# construct one"). Same pattern as eval_fillet_corpus.py.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 import golden_corpus as GC
 import harness_util as H
 
@@ -40,13 +46,52 @@ BBOX_ABS_TOL = 1e-4      # bbox / delta_bbox component absolute tolerance (mm)
 FINE_TOL = 0.005         # rebuild tessellation tol — fine enough that a curved
                          # body's mesh volume matches its analytic volume <0.5%
 
+# Mesh volume of a 20-cube with `ribs` (depth 0.4, scale 2.0) on its top face,
+# at FINE_TOL. MEASURED, like check_draft's constant — texture displaces the
+# MESH, so there is no closed form to derive it from. Reproduced to six decimals
+# across repeated runs.
+#
+# What makes it a real check rather than a rubber stamp: the untextured body
+# reads exactly 8000, and 8000 is 0.88% away from this, i.e. OUTSIDE the 0.5%
+# acceptance band. So a texture that silently resolved to nothing FAILS here.
+# Re-measure deliberately when texture's CODE_VERSION changes; never widen the
+# tolerance to absorb a drift.
+TEXTURED_BOX_VOLUME = 8071.166667
+
 # Units whose credit MUST come from a pre/post delta (rule (d)). Corpus presence
 # alone never credits these — a document has no "before" to compare against.
 # Single source of truth lives in harness_util so golden_corpus can't drift.
 DELTA_UNITS = H.DELTA_UNITS
 
 # ops already covered by other harnesses / trivially elsewhere — excluded from U.
-EXCLUDED_OPS = {"rebuild", "ping", "exportProject", "import"}
+#
+# The four below are excluded on a STRICTER test than "someone tested it
+# somewhere": there is no numeric geometric invariant to assert about them, so
+# the only way to make them count would be to weaken register()'s rule (c) —
+# and that gate is the only reason this number means anything. Each names the
+# suite that actually covers it. Adding to this set is a decision to stop
+# measuring something; do not do it to make a floor reachable.
+EXCLUDED_OPS = {
+    "rebuild", "ping", "exportProject", "import",
+    # A race, not a shape. test_cancel.py drives it over a real socket.
+    "cancel",
+    # Best-effort BY DESIGN: "a body that can't confidently be cleaned stays
+    # unchanged" (builder._handle_clean_up). On the clean input this harness can
+    # construct, a box goes in and a box comes out, so any volume assertion here
+    # passes for a do-nothing implementation. Covered by test_smoke.py.
+    # ACKNOWLEDGED DEBT, not a solved problem: crediting it honestly needs a
+    # deterministically rotten body plus a solid-count invariant kind that
+    # register() does not have.
+    "cleanUp",
+    # Returns font families. No geometry, and the answer is a property of the
+    # HOST's font set rather than of this code. Covered by test_text.py.
+    "listFonts",
+    # Glyph outlines are font-dependent, so a hardcoded numeric invariant would
+    # be unreachable in CI by construction — precisely the trap that once put
+    # this floor at 23 on one machine and 21 on every other checkout. Covered by
+    # test_text.py.
+    "tessellateText",
+}
 
 # unit -> {"kind","expected","actual","source"} once credited.
 COVERED = {}
@@ -357,6 +402,148 @@ async def check_simplify_mesh(ws):
         register("simplifyMesh", "bodies_eq", 1, _nbodies(r))
 
 
+async def check_sketch(ws):
+    # A sketch produces NO solid, so it can only be credited through a consumer
+    # that honours it — the same argument datumPlane is credited by below. The
+    # profile here is 12x8, deliberately NOT check_extrude's 20x20, so the
+    # asserted numbers are determined by THIS sketch's geometry and nothing else.
+    r = await _rebuild(ws, [_sketch_rect("s", 12, 8),
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 5, "operation": "new"}])
+    register("sketch", "volume", 480.0, _total_volume(r))
+    register("sketch", "bbox", [-6, -4, 0, 6, 4, 5], _flat_bbox(r))
+
+
+async def check_combine(ws):
+    # two 20-cubes, the second shoved +10 in x, then joined:
+    # 8000 + 8000 - 4000 of overlap. A join that merely grouped the two bodies
+    # without fusing them would read 16000 here.
+    r = await _rebuild(ws, [
+        _box("b1", 20, 20, 20), _box("b2", 20, 20, 20),
+        {"id": "mv", "type": "move", "dx": 10},
+        {"id": "cb", "type": "combine", "operation": "join",
+         "target": "body1", "tools": ["body2"]}])
+    register("combine", "volume", 12000.0, _total_volume(r))
+    register("combine", "bodies_eq", 1, _nbodies(r))
+
+
+async def check_press_pull(ws):
+    # the top face of a 20-cube pushed +5 along its own normal: 20*20*25.
+    # NOT 1.0 mm and not a cut: a cut past an exact 1.0 mm boundary is on record
+    # as SIGSEGV-ing inside OCCT, and a segfault here takes the whole harness
+    # down rather than failing one check.
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 5,
+         "face": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}}])
+    register("press-pull", "volume", 10000.0, _total_volume(r))
+    register("press-pull", "bbox", [-10, -10, -10, 10, 10, 15], _flat_bbox(r))
+
+
+async def check_offset_face(ws):
+    # offset the top face out by 2: 20*20*22. The bbox is what separates this
+    # from a thicken — the ORIGINAL body has to have grown, not gained a neighbour.
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "of", "type": "offsetFace", "distance": 2,
+         "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}}])
+    register("offsetFace", "volume", 8800.0, _total_volume(r))
+    register("offsetFace", "bbox", [-10, -10, -10, 10, 10, 12], _flat_bbox(r))
+
+
+async def check_thicken(ws):
+    # thicken defaults to a NEW body: the 20x20 top face at thickness 3 adds
+    # 1200 alongside the untouched 8000, which is why the body count is asserted
+    # too — 9200 in one body would mean it silently merged.
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "th", "type": "thicken", "thickness": 3,
+         "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}}])
+    register("thicken", "volume", 9200.0, _total_volume(r))
+    register("thicken", "bodies_eq", 2, _nbodies(r))
+
+
+async def check_delete_face(ws):
+    # chamfer one edge, then defeature it away. The heal must restore the
+    # ORIGINAL 4000 exactly: a delete that left a hole, or one that healed by
+    # extending the wrong neighbour, both miss it.
+    r = await _rebuild(ws, [
+        {"id": "bx", "type": "box", "length": 20, "width": 20, "height": 10},
+        {"id": "ch", "type": "chamfer",
+         "edges": {"kind": "edge", "by": "nearest", "point": [0, 10, 5]}, "distance": 3},
+        {"id": "df", "type": "deleteFace",
+         "face": {"kind": "face", "by": "nearest", "point": [0, 8.5, 3.5]}}])
+    register("deleteFace", "volume", 4000.0, _total_volume(r))
+    register("deleteFace", "bbox", [-10, -10, -5, 10, 10, 5], _flat_bbox(r))
+
+
+async def check_texture(ws):
+    # Texture displaces at TESSELLATION, not on the solid, so the thing that
+    # moves is the MESH volume — which is exactly what _total_volume measures.
+    # The constant is measured (like check_draft's), and it is the point of the
+    # check: a texture that resolved to nothing would read the untextured 8000.
+    r = await _rebuild(ws, [_box("b", 20, 20, 20),
+        {"id": "tx", "type": "texture", "kind": "ribs", "depth": 0.4, "scale": 2.0,
+         "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}}])
+    register("texture", "volume", TEXTURED_BOX_VOLUME, _total_volume(r))
+    # Deliberately NO bodies_eq here. A textured body is still one body, so that
+    # assertion holds just as well for a texture that did nothing — and because
+    # register() credits a unit on ANY passing assertion, pairing it with the
+    # volume would let the weak one grant credit whenever the strong one broke.
+
+
+async def check_project_geometry(ws):
+    # The top-face boundary of a 20x20x10 extrusion projected onto XY: four exact
+    # lines on the +-10 footprint. Asserted as a bbox in PLANE coordinates, with
+    # z pinned to 0 — a planar projection has no third component, so carrying a
+    # real z here would be inventing precision the result does not have.
+    doc = {"parameters": {}, "features": [
+        _sketch_rect("s1", 20, 20),
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 10,
+         "operation": "new"}]}
+    reply = await H.ws_call(ws, "projectGeometry", "c", document=doc, plane="XY",
+                            sources=[{"kind": "faceBoundary", "body": "body1",
+                                      "sel": {"kind": "face", "by": "nearest",
+                                              "point": [0, 0, 10]}}])
+    if not reply.get("ok"):
+        print(f"  REFUSE projectGeometry  — op not ok: {reply.get('error')}")
+        return
+    res = reply["result"]["results"]
+    if not res or not res[0].get("ok"):
+        print(f"  REFUSE projectGeometry  — source not ok: {res}")
+        return
+    curves = [e["curve"] for e in res[0]["curves"]]
+    if not curves or not all(c.get("kind") == "line" for c in curves):
+        print(f"  REFUSE projectGeometry  — expected 4 lines, got {curves}")
+        return
+    xs = [v for c in curves for v in (c["x1"], c["x2"])]
+    ys = [v for c in curves for v in (c["y1"], c["y2"])]
+    register("projectGeometry", "bbox", [-10, -10, 0, 10, 10, 0],
+             [min(xs), min(ys), 0, max(xs), max(ys), 0])
+
+
+async def check_migrate_geometry(ws):
+    # v4 -> v5 in one hop: hand the op a pre-v5 inline base64 BREP, then rebuild
+    # an import feature from the hash it hands back. The volume is what proves
+    # the migrated blob is the SAME SOLID. A hash recorded over the wrong bytes,
+    # or a blob the rebuild cannot find, both fail here instead of surfacing as
+    # an empty document in front of a user opening an old file.
+    from build123d import Box
+
+    from builder import _shape_to_brep_b64
+
+    reply = await H.ws_call(ws, "migrateGeometry", "c",
+                            items=[{"id": "legacy1",
+                                    "brep": _shape_to_brep_b64(Box(20, 20, 20))}])
+    if not reply.get("ok"):
+        print(f"  REFUSE migrateGeometry  — op not ok: {reply.get('error')}")
+        return
+    result = reply["result"]
+    if result.get("failed") or not result.get("items"):
+        print(f"  REFUSE migrateGeometry  — failed={result.get('failed')}")
+        return
+    r = await _rebuild(ws, [{"id": "im", "type": "import", "format": "brep",
+                             "name": "legacy", "geom": result["items"][0]["geom"]}])
+    register("migrateGeometry", "volume", 8000.0, _total_volume(r))
+    register("migrateGeometry", "bbox", [-10, -10, -10, 10, 10, 10], _flat_bbox(r))
+
+
 async def check_datum_split(ws):
     # datumPlane + split, together on purpose: a datum registers a plane and
     # produces NO geometry, so its only observable effect is that a consumer
@@ -386,6 +573,9 @@ EXPLICIT_CHECKS = [
     check_compute_all, check_interference, check_export,
     check_fillet, check_chamfer, check_draft, check_sweep, check_simplify_mesh,
     check_datum_split,
+    check_sketch, check_combine, check_press_pull, check_offset_face,
+    check_thicken, check_delete_face, check_texture, check_project_geometry,
+    check_migrate_geometry,
 ]
 
 
