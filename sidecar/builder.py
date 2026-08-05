@@ -887,7 +887,7 @@ def _canonicalize_roots(roots):
     return Compound(children=out)
 
 
-def _canonical_ok(result, shape, tol=1e-3):
+def _canonical_ok(result, shape):
     """Is `result` an acceptable canonicalisation of `shape`?
 
     Same solid count, same face count, structurally valid, and the volume within
@@ -993,7 +993,7 @@ def _canonicalize(shape, tol=1e-3):
             # something invalid or volume-shifted, the unchecked return baked it
             # into the embedded B-rep, permanently and silently. Same gate as the
             # converted path below.
-            if work is not shape and _canonical_ok(work, shape, tol):
+            if work is not shape and _canonical_ok(work, shape):
                 return work
             return shape
 
@@ -1015,7 +1015,7 @@ def _canonicalize(shape, tol=1e-3):
         if not solids:
             return shape
         result = solids[0] if len(solids) == 1 else Compound(solids)
-        return result if _canonical_ok(result, shape, tol) else shape
+        return result if _canonical_ok(result, shape) else shape
     except Exception:
         return shape
 
@@ -2982,6 +2982,15 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
             entry = {"body_id": b["id"], "name": b["name"], "blob_key": None}
             if node_ref:
                 entry["node_ref"] = node_ref
+            # Same class of state, and the same trap: `_intact` exempts an
+            # explicitly collapsed import from _drop_debris, and it is NOT
+            # recoverable from the shape. Dropping it here would let the debris
+            # pass delete legitimate small parts on every disk resume — which is
+            # the NORMAL way an assembly document reopens, since an import always
+            # blows the checkpoint budget. Third time this key set has bitten:
+            # `_textures`, then `node_ref`, now this.
+            if b.get("_intact"):
+                entry["_intact"] = True
             if sh is None or _wrapped_or_none(sh) is None:
                 manifest.append(entry)
                 fps.append(None)
@@ -3037,6 +3046,8 @@ def _restore_from_disk(store, chain_keys):
                              "shape": None, "_owners": {}}
                 if ent.get("node_ref"):
                     shapeless["node_ref"] = ent["node_ref"]
+                if ent.get("_intact"):
+                    shapeless["_intact"] = True
                 bodies.append(shapeless)
                 continue
             raw = store.get_blob(ent["blob_key"])
@@ -3067,6 +3078,8 @@ def _restore_from_disk(store, chain_keys):
             # written before this existed
             if ent.get("node_ref"):
                 body["node_ref"] = ent["node_ref"]
+            if ent.get("_intact"):
+                body["_intact"] = True
             bodies.append(body)
             mod[ent["body_id"]] = (shape, ent["blob_key"])
         snap = {
@@ -4051,26 +4064,33 @@ def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
 
 def _bbox_overlap(a, b, tol=1e-6):
     """Cheap AABB overlap test (no boolean, can't crash)."""
-    ba, bb = _as_compound(a).bounding_box(), _as_compound(b).bounding_box()
-    return _bbox_pair_overlap(ba, bb, tol)
+    return _bbox_pair_overlap(bbox_of(a), bbox_of(b), tol)
 
 
 def bbox_of(shape):
-    """A shape's AABB, for callers that will test it against many others.
+    """A shape's AABB as a PLAIN TUPLE (minX, minY, minZ, maxX, maxY, maxZ).
+
+    Two reasons it is a tuple and not the BoundBox.
 
     The pair sweep is O(n^2) in PAIRS but only O(n) in distinct shapes, so
     recomputing both boxes inside the test does quadratic work for linear
     information: at 3,060 bodies that is 9,360,540 OCCT bounding-box walks
-    instead of 3,060."""
-    return _as_compound(shape).bounding_box()
+    instead of 3,060.
+
+    And `BoundBox.min.X` is a pybind11 property that calls into OCP on EVERY
+    access, up to 12 per pair. Measured over 4,680,270 pairs (3,060 bodies):
+    2.58 s reading BoundBox attributes against 0.40 s reading a tuple. The walk
+    is hoisted; this hoists the reads out of the walk's result too."""
+    bb = _as_compound(shape).bounding_box()
+    return (bb.min.X, bb.min.Y, bb.min.Z, bb.max.X, bb.max.Y, bb.max.Z)
 
 
-def _bbox_pair_overlap(ba, bb, tol=1e-6):
-    """AABB overlap for two ALREADY-COMPUTED boxes."""
+def _bbox_pair_overlap(a, b, tol=1e-6):
+    """AABB overlap for two boxes already reduced to tuples by `bbox_of`."""
     return (
-        ba.min.X <= bb.max.X + tol and ba.max.X >= bb.min.X - tol
-        and ba.min.Y <= bb.max.Y + tol and ba.max.Y >= bb.min.Y - tol
-        and ba.min.Z <= bb.max.Z + tol and ba.max.Z >= bb.min.Z - tol
+        a[0] <= b[3] + tol and a[3] >= b[0] - tol
+        and a[1] <= b[4] + tol and a[4] >= b[1] - tol
+        and a[2] <= b[5] + tol and a[5] >= b[2] - tol
     )
 
 

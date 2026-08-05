@@ -379,11 +379,21 @@ def _export_mesh(b, tol=None):
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(mesh, 5))
             except Exception:
                 pass
+    # Cached as NUMPY, not as the boxed Python lists tessellate returns.
+    # Routing untextured stl/3mf through here means every export now populates
+    # this cache, and it is only pruned of DELETED bodies — live ones are held
+    # for the worker's lifetime. Measured for a 2M-triangle document: 96 MB of
+    # positions + 217 MB of indices as lists, against 24 + 24 MB as float64/int32.
+    # Lossless (float64 is the width tessellate produced; int32 covers 2.1e9
+    # vertices), 6.5x smaller, and it removes the conversion each consumer was
+    # doing anyway — on the very worker the rest of this branch defends from OOM.
+    positions = np.asarray(mesh[0], dtype=np.float64)
+    indices = np.asarray(mesh[1], dtype=np.int32)
     _EXPORT_MESH_CACHE[bid] = {
         "shape": sh, "texture_key": texture_key, "tol": tol,
-        "positions": mesh[0], "indices": mesh[1],
+        "positions": positions, "indices": indices,
     }
-    return mesh[0], mesh[1]
+    return positions, indices
 
 
 # Filenames Windows refuses outright, in ANY case and with or without an
@@ -399,10 +409,10 @@ _WINDOWS_RESERVED = {
 # Filesystems cap a name in BYTES, not characters: ext4 and APFS both stop at
 # 255 bytes. `\w` is Unicode-aware, so a CJK or emoji body name survives
 # sanitising and then blows the limit at about a third of the character count.
-_MAX_NAME_BYTES = 200  # leaves room for the extension and a dedup suffix
+_MAX_NAME_BYTES = 200  # flat reserve for the extension and a dedup suffix
 
 
-def _safe_part_filename(label, fallback, ext=""):
+def _safe_part_filename(label, fallback):
     """A filesystem-safe stem for one exported body.
 
     Refuses nothing and raises nothing: every input yields SOME usable name, so
@@ -419,6 +429,31 @@ def _safe_part_filename(label, fallback, ext=""):
     if name.split(".")[0].lower() in _WINDOWS_RESERVED:
         name = f"{name}_"
     return name
+
+
+def _budget_refusal(ntri):
+    """The refusal message past the triangle hard cap, or None while under it.
+
+    ONE mechanism, because this had drifted into three: two raising sites and one
+    returning an error dict, with the WARN threshold duplicated beside two of
+    them and missing from the third — which is how exportProject came to have no
+    budget at all. A new export format now cannot be added without it.
+
+    Deliberately NOT worded "textured": since untextured stl/3mf was routed
+    through this path too, the old message told someone exporting a plain
+    3,000-body assembly to reduce a texture scale they were not using.
+    """
+    if ntri <= EXPORT_TRIANGLE_HARD_CAP:
+        return None
+    return (f"export too dense ({ntri:,}+ triangles) — reduce texture scale or "
+            f"depth, or export fewer bodies")
+
+
+def _budget_warning(ntri):
+    """The non-blocking 'very dense' warning, or None. Same single-source reason."""
+    if ntri <= EXPORT_TRIANGLE_WARN:
+        return None
+    return f"export is very dense ({ntri:,} triangles)"
 
 
 def _prune_export_cache(live):
@@ -893,17 +928,22 @@ def _export_job(document, fmt, path, body=None, separate=False,
             # it could report the OOM it was meant to prevent. Bounded now to
             # the cap plus one body.
             ntri += len(idx) // 3
-            if ntri > EXPORT_TRIANGLE_HARD_CAP:
-                raise ValueError(
-                    f"textured export too dense ({ntri:,}+ triangles) — reduce texture scale or depth"
-                )
+            refusal = _budget_refusal(ntri)
+            if refusal:
+                raise ValueError(refusal)
             pos_parts.append(np.asarray(pos, dtype=np.float64))
             idx_parts.append(np.asarray(idx, dtype=np.int64) + vbase)
             vbase += len(pos_parts[-1]) // 3
-        positions = np.concatenate(pos_parts) if pos_parts else np.empty(0)
-        mindices = np.concatenate(idx_parts) if idx_parts else np.empty(0, dtype=np.int64)
-        if ntri > EXPORT_TRIANGLE_WARN:
-            warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
+        # A one-element concatenate copies the whole array a second time, and the
+        # separate/single-body paths always hit that case.
+        positions = (pos_parts[0] if len(pos_parts) == 1
+                     else np.concatenate(pos_parts) if pos_parts else np.empty(0))
+        mindices = (idx_parts[0] if len(idx_parts) == 1
+                    else np.concatenate(idx_parts) if idx_parts
+                    else np.empty(0, dtype=np.int64))
+        warn = _budget_warning(ntri)
+        if warn:
+            warnings.append({"message": warn})
         if fmt == "stl":
             mesh_writers.write_stl(positions, mindices, p)
         elif fmt == "3mf":
@@ -932,10 +972,9 @@ def _export_job(document, fmt, path, body=None, separate=False,
             # Same reason as _mesh_export: bound the allocation as it happens.
             # GLB keeps bodies SEPARATE, so without this a 3,000-body assembly
             # holds every mesh at once before anything is checked.
-            if ntri > EXPORT_TRIANGLE_HARD_CAP:
-                raise ValueError(
-                    f"textured export too dense ({ntri:,}+ triangles) — reduce texture scale or depth"
-                )
+            refusal = _budget_refusal(ntri)
+            if refusal:
+                raise ValueError(refusal)
             slot = slots.get(b["id"], 0)  # unassigned -> slot 0, as the 3MF path does
             entry = pal[slot] if isinstance(slot, int) and 0 <= slot < len(pal) else None
             entries.append({
@@ -944,9 +983,24 @@ def _export_job(document, fmt, path, body=None, separate=False,
                 "indices": idx,
                 "color": _norm_color(entry.get("color")) if entry else None,
             })
-        if ntri > EXPORT_TRIANGLE_WARN:
-            warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
+        warn = _budget_warning(ntri)
+        if warn:
+            warnings.append({"message": warn})
         return mesh_writers.write_glb(entries, p)
+
+    def _write_one_body(b, p):
+        """ONE body to `p`, via whichever writer the format needs.
+
+        Shared by the separate-bodies and single-body paths, which became
+        identical once untextured stl/3mf stopped taking the bypass: the
+        `b.get("_textures")` test was the only thing that had distinguished them.
+        The whole-document path stays separate — it genuinely differs (STEP tree,
+        fused part)."""
+        if fmt == "glb":
+            return _glb_export([b], p)
+        if fmt in ("stl", "3mf"):
+            return _mesh_export([b], p)  # textured or not: caps, cache, tolerance
+        return export(b["shape"], fmt, p)
 
     if separate:
         if not live:
@@ -978,19 +1032,12 @@ def _export_job(document, fmt, path, body=None, separate=False,
         written, used = [], set()
         for b in live:
             label = names.get(b["id"]) or b["name"]
-            name = _safe_part_filename(label, b["id"], ext)
+            name = _safe_part_filename(label, b["id"])
             cand, i = name, 2
             while cand.lower() in used:  # case-insensitive: Windows and macOS
                 cand, i = f"{name}_{i}", i + 1
             used.add(cand.lower())
-            p = os.path.join(outdir, f"{cand}{ext}")
-            if fmt == "glb":
-                _glb_export([b], p)
-            elif fmt in ("stl", "3mf"):
-                _mesh_export([b], p)  # textured or not: caps, cache, tolerance
-            else:
-                export(b["shape"], fmt, p)
-            written.append(p)
+            written.append(_write_one_body(b, os.path.join(outdir, f"{cand}{ext}")))
         return _done({"path": outdir, "paths": written})
 
     if body:
@@ -999,9 +1046,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
             return {"error": {"message": f"body '{body}' not found to export"}}
         if fmt == "glb":
             return _done({"path": _glb_export([tgt], path)})
-        if fmt in ("stl", "3mf"):
-            return _done({"path": _mesh_export([tgt], path)})
-        return _done({"path": export(tgt["shape"], fmt, path)})
+        return _done({"path": _write_one_body(tgt, path)})
 
     # GLB always goes per-body: it carries per-body colour, and routing it through
     # export() would drop texture displacement (see _glb_export).
@@ -1065,11 +1110,9 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
         # the plain export enforces. Checked per body, before the mesh is kept,
         # so the allocation is bounded to the cap plus one body.
         ntri += len(indices) // 3
-        if ntri > EXPORT_TRIANGLE_HARD_CAP:
-            return {"error": {"message": (
-                f"project export too dense ({ntri:,}+ triangles) — reduce texture "
-                f"scale or depth, or export fewer bodies"
-            )}}
+        refusal = _budget_refusal(ntri)
+        if refusal:
+            return {"error": {"message": refusal}}
         meshed.append(
             {"id": b["id"], "name": b["name"], "positions": positions, "indices": indices}
         )

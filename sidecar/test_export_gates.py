@@ -183,9 +183,9 @@ def test_windows_reserved_names_are_defused():
     name in mechanical CAD. The failure is an opaque OS error at write time, on
     one platform only."""
     for bad in ("CON", "con", "Aux", "NUL", "com1", "LPT9"):
-        got = server._safe_part_filename(bad, "body1", ".step")
+        got = server._safe_part_filename(bad, "body1")
         assert got.split(".")[0].lower() not in server._WINDOWS_RESERVED, f"{bad} -> {got}"
-    assert server._safe_part_filename("Console", "b", ".step") == "Console", "over-eager"
+    assert server._safe_part_filename("Console", "b") == "Console", "over-eager"
     print(f"{PASS} reserved device names are defused, 'Console' is left alone")
 
 
@@ -193,7 +193,7 @@ def test_names_are_budgeted_in_BYTES_and_stay_valid_utf8():
     """`\\w` is Unicode-aware, so a CJK name survives sanitising and then blows a
     255-BYTE filesystem limit at a third of the character count."""
     long_cjk = "部品" * 200            # 400 chars, 1200 bytes
-    got = server._safe_part_filename(long_cjk, "body1", ".step")
+    got = server._safe_part_filename(long_cjk, "body1")
     assert len(got.encode("utf-8")) <= server._MAX_NAME_BYTES, len(got.encode("utf-8"))
     got.encode("utf-8").decode("utf-8")  # must not have split a codepoint
     assert got, "trimmed to nothing"
@@ -202,7 +202,7 @@ def test_names_are_budgeted_in_BYTES_and_stay_valid_utf8():
 
 def test_awkward_names_always_yield_something_usable():
     for label in ("", "...", "///", "___", None, 42):
-        got = server._safe_part_filename(label, "body7", ".step")
+        got = server._safe_part_filename(label, "body7")
         assert got and got not in (".", ".."), f"{label!r} -> {got!r}"
     print(f"{PASS} every awkward label still yields a usable filename")
 

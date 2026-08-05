@@ -818,6 +818,67 @@ def test_explode_false_keeps_the_assembly_tree():
           f"{faces_collapsed} faces intact")
 
 
+def test_intact_survives_a_disk_checkpoint_resume():
+    """`_intact` must round-trip the DISK checkpoint, not just the RAM snapshot.
+
+    The RAM tier copies whole body dicts (`dict(b)`), so it carried the flag for
+    free. The disk tier rebuilds bodies from an EXPLICIT key set, and a resume
+    that dropped `_intact` would let _drop_debris delete the collapsed import's
+    small parts again — on the NORMAL reopen path, since an import always blows
+    the checkpoint budget. Third time this key set has bitten: `_textures`, then
+    `node_ref`, now this.
+    """
+    import shutil
+    import tempfile
+
+    import geomstore
+    from builder import _restore_from_disk, _save_checkpoint, import_geometry, rebuild
+
+    path = os.path.join(FIXTURES, "asm_nested.step")
+    pay = import_geometry(path, "step")
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"],
+         "explode": False}]}
+    _p, err, out = rebuild(doc)
+    assert not err, err
+    # `_intact` lives on the INTERNAL body list only — out_bodies deliberately
+    # omits it, since the wire has no use for it. So the checkpoint round trip
+    # is tested against a body of the shape _save_checkpoint actually receives.
+    faces_before = _all_faces(out[0]["shape"])
+    bodies = [{"id": out[0]["id"], "name": out[0]["name"],
+               "shape": out[0]["shape"], "_intact": True}]
+
+    root = tempfile.mkdtemp(prefix="sindri-intact-")
+    store = None
+    try:
+        store = geomstore.Store(root)
+        key = "chain-intact-0"
+        persist = {"store": store, "keys": [key], "mod": {}, "acc_ms": 0.0}
+        _save_checkpoint(persist, 0, bodies, [], [], 0)
+
+        got = _restore_from_disk(store, [key])
+        assert got is not None, "checkpoint did not land — nothing to prove"
+        _start, snap, _mod = got
+        restored = snap["bodies"][0]
+        assert restored.get("_intact"), (
+            "_intact was lost through the disk checkpoint — a resumed build "
+            "would run _drop_debris and delete the collapsed assembly's small parts"
+        )
+        # and the geometry the flag protects is still whole
+        assert _all_faces(restored["shape"]) == faces_before, (
+            f'{_all_faces(restored["shape"])} faces restored vs {faces_before}'
+        )
+        print(f"  _intact survives a disk resume: {faces_before} faces intact")
+    finally:
+        if store is not None:
+            try:
+                store.db.close()
+            except Exception:
+                pass
+        shutil.rmtree(root, ignore_errors=True)
+
+
 if __name__ == "__main__":
     missing = [
         n for n in FIXTURE_NAMES if not os.path.exists(os.path.join(FIXTURES, f"{n}.step"))
@@ -856,5 +917,6 @@ if __name__ == "__main__":
             failures += 1
             print(f"  FAIL: {exc}")
     test_explode_false_keeps_the_assembly_tree()
+    test_intact_survives_a_disk_checkpoint_resume()
     print("FAILED" if failures else "all assembly tests passed")
     sys.exit(1 if failures else 0)
