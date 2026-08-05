@@ -879,6 +879,46 @@ def test_intact_survives_a_disk_checkpoint_resume():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_the_import_rebuild_is_not_silent():
+    """A single import feature must publish progress WHILE it rebuilds.
+
+    This was the longest silent phase in the product: rebuilding one import
+    feature for the 356 MiB reference assembly took 90 s and emitted ONE tick,
+    the first at 47 s, against a 60 s stall budget. Wave 1.1 ticked export, the
+    interference sweep and checkpoint writes and missed this one, so the
+    headline capability of the whole arc was one slow machine away from being
+    reaped mid-rebuild.
+
+    Asserted against the BODY COUNT rather than "non-zero": one tick is what the
+    broken version produced, and it would pass any weaker check.
+    """
+    import builder
+    from builder import import_geometry, rebuild
+
+    pay = import_geometry(os.path.join(FIXTURES, "asm_nested.step"), "step")
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"]}]}
+
+    ticks = []
+    prev = builder.on_feature_tick
+    builder.on_feature_tick = lambda _i: ticks.append(1)
+    try:
+        _p, err, bodies = rebuild(doc)
+    finally:
+        builder.on_feature_tick = prev
+    assert not err, err
+    n = len(bodies)
+    assert n > 1, n
+    # Two ticks per body are expected (the manifest bind and the final pass) plus
+    # face attribution; the floor is what matters, not the exact number.
+    assert len(ticks) >= n, (
+        f"{len(ticks)} ticks for a {n}-body import rebuild — the stall watchdog "
+        f"sees almost nothing while this runs"
+    )
+    print(f"  import rebuild ticks {len(ticks)}x for {n} bodies")
+
+
 if __name__ == "__main__":
     missing = [
         n for n in FIXTURE_NAMES if not os.path.exists(os.path.join(FIXTURES, f"{n}.step"))
@@ -918,5 +958,6 @@ if __name__ == "__main__":
             print(f"  FAIL: {exc}")
     test_explode_false_keeps_the_assembly_tree()
     test_intact_survives_a_disk_checkpoint_resume()
+    test_the_import_rebuild_is_not_silent()
     print("FAILED" if failures else "all assembly tests passed")
     sys.exit(1 if failures else 0)

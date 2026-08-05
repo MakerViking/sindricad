@@ -574,9 +574,14 @@ def _drop_debris(shape, debug=False):
             return cached  # same input object => same output OBJECT (identity
             # matters: the server's mesh cache is keyed by shape identity, and
             # rebuilding a fresh Compound here every rebuild would defeat it)
-        parts = sorted(shape.solids(), key=lambda s: -abs(s.volume))
+        parts = shape.solids()
+        # Count FIRST. Sorting by volume computes one per solid, and a body with
+        # a single solid cannot have debris — so the old order paid for a volume
+        # it then threw away. Measured on the reference assembly: 42.7 s across
+        # 3,071 single-solid bodies, for an answer known from the count alone.
         if len(parts) < 2:
             return shape
+        parts = sorted(parts, key=lambda s: -abs(s.volume))
         main, kept = parts[0], [parts[0]]
         for s in parts[1:]:
             tiny = abs(s.volume) < 1e-3 * abs(main.volume)
@@ -887,13 +892,26 @@ def _canonicalize_roots(roots):
     return Compound(children=out)
 
 
-def _canonical_ok(result, shape):
+def _canonical_ok(result, shape, deep=True):
     """Is `result` an acceptable canonicalisation of `shape`?
 
-    Same solid count, same face count, structurally valid, and the volume within
-    0.5%. Any doubt (an exception anywhere in the checks) is a NO — this decides
-    whether a rewritten surface gets baked permanently into the stored B-rep, so
-    the safe answer is to keep the original.
+    Same solid count, same face count, and with `deep`, also structurally valid
+    with the volume within 0.5%. Any doubt (an exception anywhere in the checks)
+    is a NO — this decides whether a rewritten surface gets baked permanently
+    into the stored B-rep, so the safe answer is to keep the original.
+
+    `deep` exists because the two halves differ in cost by two orders of
+    magnitude. MEASURED across the 3,060 leaves of the reference assembly:
+    the counts cost 3.5 s, `BRepCheck_Analyzer` 72 s and the volume comparison
+    122 s. Running the full gate on every leaf made _canonicalize 209 s against
+    the 6.9 s it costs without — 29x the entire pass it was meant to guard, and
+    62% of the whole import.
+
+    So: full gate after the sew/ShapeFix rebuild below, which re-creates faces
+    from scratch and genuinely can produce an invalid or volume-shifted solid.
+    Counts only after SweptToElementary alone, which is a topology-preserving
+    modifier — the counts still catch gross damage, and this path previously had
+    NO validation at all.
 
     NOTE the volume comparison is only meaningful when neither side is a compound
     of compounds: `Compound.volume` does not recurse, so on nested input it reads
@@ -904,10 +922,14 @@ def _canonical_ok(result, shape):
     from OCP.BRepCheck import BRepCheck_Analyzer
 
     try:
+        if len(result.solids()) != max(1, len(shape.solids())):
+            return False
+        if len(result.faces()) != len(shape.faces()):
+            return False
+        if not deep:
+            return True
         return bool(
-            len(result.solids()) == max(1, len(shape.solids()))
-            and len(result.faces()) == len(shape.faces())
-            and BRepCheck_Analyzer(result.wrapped).IsValid()
+            BRepCheck_Analyzer(result.wrapped).IsValid()
             and abs(result.volume - shape.volume)
             <= max(1e-6, 0.005 * abs(shape.volume))
         )
@@ -993,7 +1015,7 @@ def _canonicalize(shape, tol=1e-3):
             # something invalid or volume-shifted, the unchecked return baked it
             # into the embedded B-rep, permanently and silently. Same gate as the
             # converted path below.
-            if work is not shape and _canonical_ok(work, shape):
+            if work is not shape and _canonical_ok(work, shape, deep=False):
                 return work
             return shape
 
@@ -1929,6 +1951,11 @@ def _bind_assembly(f, ctx, shape, nodes, parts):
 
     wrapped = []
     for i, (child, part) in enumerate(zip(children, parts)):
+        # One tick per leaf. A single import feature rebuilding a large assembly
+        # was the longest SILENT phase left in the product: measured 90 s
+        # emitting one tick, against a 60 s stall budget. Wave 1.1 ticked export,
+        # the interference sweep and checkpoint writes and missed this one.
+        progress_tick()
         w = _wrap_topods(child)
         node_index = part.get("node") if isinstance(part, dict) else None
         if w is None or not isinstance(node_index, int) or not 0 <= node_index < len(nodes):
@@ -2645,6 +2672,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     # every consumer (tessellate/bbox/edges/export) gets a uniform Shape.
     out_bodies = []
     for b in bodies:
+        progress_tick()  # per body: the final pass over a 3,000-body document
         sh = b["shape"]
         if sh is not None and _wrapped_or_none(sh) is None:
             sh = Compound(list(sh))
@@ -4046,6 +4074,7 @@ def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
         dx, dy, dz = val(f.get("dx", 0)), val(f.get("dy", 0)), val(f.get("dz", 0))
         trsf = (Pos(dx, dy, dz) * Rot(rx, ry, rz)).wrapped.Transformation()
     for b in bodies:
+        progress_tick()  # per body: face attribution walks every face
         sh = b.get("shape")
         if sh is None:
             b["_owners"] = {}
