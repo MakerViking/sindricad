@@ -166,8 +166,43 @@ interface WireBodyFull {
   normals?: F32Wire;
   faceOwners?: (string | null)[];
   textureColorSlots?: (number | null)[];
-  edges?: { points: [number, number, number][]; body?: string }[];
+  edges?: WireEdgeList;
   faceCount?: number;
+}
+/** Edge polylines, the form every consumer sees. The binary reply carries them
+ *  packed instead (WireEdgesPacked); handleBinaryReply expands them before the
+ *  body reaches anything else, so this stays the single downstream contract. */
+type WireEdgeList = { points: [number, number, number][]; body?: string }[];
+/** Edge polylines packed into binary buffers (see server.py's _pack_edges):
+ *  every point triple flattened, plus a per-edge POINT count to re-split them.
+ *  Exists only between reading a binary frame and expanding it. */
+interface WireEdgesPacked {
+  $pts: F32Wire;
+  $counts: U32Wire;
+  body?: string;
+}
+
+/** Re-split a packed edge buffer into the per-edge point triples every consumer
+ *  expects. `counts` holds each edge's POINT count; `pts` is every triple of
+ *  every edge, flattened, in the same order.
+ *
+ *  Exported for its own test: this is the client half of the wire change that
+ *  keeps a large assembly's reply under the frame cap, and the sidecar-side
+ *  test can only prove the encoder. */
+export function expandPackedEdges(
+  pts: Float32Array,
+  counts: Uint32Array,
+  body: string | undefined,
+): WireEdgeList {
+  const list: WireEdgeList = [];
+  let o = 0;
+  for (let i = 0; i < counts.length; i++) {
+    const n = counts[i]!;
+    const points: [number, number, number][] = new Array(n) as [number, number, number][];
+    for (let k = 0; k < n; k++, o += 3) points[k] = [pts[o]!, pts[o + 1]!, pts[o + 2]!];
+    list.push(body !== undefined ? { points, body } : { points });
+  }
+  return list;
 }
 interface WireBodyStub {
   id: string;
@@ -437,6 +472,19 @@ export class Geometry implements GeometryBackend {
         if (fb.normals !== undefined) fb.normals = resolveBuf(fb.normals) as Float32Array;
         fb.indices = resolveBuf(fb.indices) as Uint32Array;
         fb.faceIds = resolveBuf(fb.faceIds) as Uint32Array;
+        // Edges arrive packed (server.py's _pack_edges) — expand them back to
+        // the plain list every consumer expects, here at the one point the raw
+        // frame is interpreted. Rebuilding the triples is still cheaper than
+        // the JSON text it replaces: on a large assembly that was 97.1 MiB to
+        // parse, and the frame it saves is what keeps the reply under the cap.
+        const rawEdges = (fb as { edges?: WireEdgeList | WireEdgesPacked }).edges;
+        if (rawEdges !== undefined && !Array.isArray(rawEdges)) {
+          fb.edges = expandPackedEdges(
+            resolveBuf(rawEdges.$pts) as Float32Array,
+            resolveBuf(rawEdges.$counts) as Uint32Array,
+            rawEdges.body,
+          );
+        }
       }
       delete header.result.$buffers;
       const resolve = this.pending.get(header.id);

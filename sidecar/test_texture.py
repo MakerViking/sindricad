@@ -178,11 +178,13 @@ def test_cache_key_changes_with_texture_params():
     server._MESH_CACHE.pop(b["id"], None)
 
     b["_textures"] = None
-    ent1 = server._body_payload(b, 0.1)
+    # a small document keeps full quality — see server._viewport_profile
+    profile = server._viewport_profile(1)
+    ent1 = server._body_payload(b, 0.1, profile)
     b["_textures"] = [texture.validate_texture_spec(
         {"kind": "knurl", "faces": {"by": "all"}, "depth": 0.4, "scale": 2.0}
     )]
-    ent2 = server._body_payload(b, 0.1)
+    ent2 = server._body_payload(b, 0.1, profile)
 
     assert ent1["etag"] != ent2["etag"], "a texture-only edit must invalidate the cached mesh"
     assert len(ent2["payload"]["positions"]) > len(ent1["payload"]["positions"]), \

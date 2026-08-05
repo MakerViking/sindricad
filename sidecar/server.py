@@ -50,6 +50,7 @@ import numpy as np
 import websockets
 
 import occt_smp
+import sysmem
 
 HOST = "127.0.0.1"
 # Env-overridable so a test/benchmark instance can run beside the app's own
@@ -515,8 +516,43 @@ _DEFAULT_RELATIVE_DEFLECTION = 0.002
 # criterion OCCT applies. Re-measure this table before touching either number.
 _VIEWPORT_ANG_TOL = 0.18
 
+# DOCUMENT-SIZE tolerance profile. A large assembly's rebuild reply has to fit
+# the 128 MiB websocket frame cap (a security control — see MAX_FRAME), and at
+# shipping quality it does not: measured on the 356 MiB reference assembly
+# (3,071 bodies), 0.002/0.18 yields 9,943,003 triangles and a 263.3 MiB reply
+# even after edge packing. 0.008/0.35 yields 3,809,240 and 121.1 MiB.
+#
+# The LINEAR term alone cannot do this — 4x coarser cut only 13% of the
+# triangles, because the angular term is what binds. Re-measured on the same
+# 60mm ring + 1mm fillet the block above uses, worst adjacent-facet angle:
+#     lin 0.002 ang 0.18    5.14deg   10,640 tris   <- shipping
+#     lin 0.004 ang 0.26    7.35deg    5,488 tris
+#     lin 0.008 ang 0.35   10.04deg    2,880 tris   <- large-document tier
+# Note the block above's 45.96deg row is lin 0.001, NOT 0.002; coarsening the
+# ANGULAR term from 0.18 to 0.35 costs 5.14 -> 10.04deg, not the 47deg that
+# table reads as implying. Still a real regression, so it applies only where it
+# buys something: a document small enough to fit keeps full quality.
+#
+# Thresholds are anchored on the measured ~86 KiB/body of that assembly at
+# shipping quality (128 MiB / 86 KiB ~= 1,500 bodies). Body count is a PROXY —
+# bodies vary enormously in face count — so _rebuild_job also guards the encoded
+# reply against the cap rather than trusting this to be right.
+_VIEWPORT_SIZE_TIERS = (
+    # (bodies at or above, linear scale on _DEFAULT_RELATIVE_DEFLECTION, angular)
+    (2200, 4.0, 0.35),
+    (1200, 2.0, 0.26),
+)
 
-def _effective_tolerance(shape, requested):
+
+def _viewport_profile(n_bodies):
+    """(linear scale, angular tolerance) for a document of `n_bodies` bodies."""
+    for threshold, scale, ang in _VIEWPORT_SIZE_TIERS:
+        if n_bodies >= threshold:
+            return scale, ang
+    return 1.0, _VIEWPORT_ANG_TOL
+
+
+def _effective_tolerance(shape, requested, size_scale=1.0):
     """Map the requested (interactive-viewport) wire tolerance to the value we
     actually hand BRepMesh, in the units the viewport's meshing mode expects.
 
@@ -541,8 +577,13 @@ def _effective_tolerance(shape, requested):
     Either way the `requested / DEFAULT` factor keeps the wire contract intact: a
     client that asks for a smaller tolerance than the default still gets a
     proportionally finer mesh for every body. Deterministic — a pure function of
-    (bbox, requested) — so cache keys built from the result stay stable."""
-    scale = requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0
+    (bbox, requested, size_scale) — so cache keys built from the result stay
+    stable.
+
+    `size_scale` is the document-size coarsening from _viewport_profile: 1.0 for
+    a document that fits the frame cap at full quality, higher for one that does
+    not. It multiplies the deflection in BOTH modes."""
+    scale = (requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0) * size_scale
     if _VIEWPORT_RELATIVE:
         return _DEFAULT_RELATIVE_DEFLECTION * scale
 
@@ -557,7 +598,25 @@ def _effective_tolerance(shape, requested):
     return base * scale
 
 
-def _body_payload(b, tolerance):
+def _union_bbox(boxes):
+    """Union of {"min":[x,y,z],"max":[...]} boxes, or None if there are none.
+
+    This replaces a single bbox(merged_compound) call. That call was ONE OCCT
+    walk over every solid with no way to tick inside it — measured 95.3 s on the
+    356 MiB reference assembly against STALL_TIMEOUT = 60 s, so the supervisor
+    reaped the worker before the rebuild could finish, every time. The union is
+    exactly equivalent (`part` is the Compound of the same shapes) but is
+    accumulated per body, where _body_payload's own progress tick covers it."""
+    present = [bb for bb in boxes if bb is not None]
+    if not present:
+        return None
+    return {
+        "min": [min(bb["min"][i] for bb in present) for i in range(3)],
+        "max": [max(bb["max"][i] for bb in present) for i in range(3)],
+    }
+
+
+def _body_payload(b, tolerance, profile):
     """Compute (or fetch) the full render payload for one body: positions/indices/
     faceIds (LOCAL ids, offset client-side), faceOwners, per-body edges. Three
     tiers: identity-cached in RAM -> disk mesh artifact (load path: never pays the
@@ -578,12 +637,13 @@ def _body_payload(b, tolerance):
     import pickle
     import uuid as _uuid
 
-    from tessellate import tessellate, edge_polylines_by_body
+    from tessellate import tessellate, edge_polylines_by_body, bbox as _bbox_of
     from builder import _face_fp, on_feature_tick
     from texture import resolve_body_textures
 
     bid, sh = b["id"], b.get("shape")
     requested = tolerance
+    size_scale, ang_tol = profile
     if b.get("_textures"):
         from texture import CODE_VERSION as _tex_ver
         # code version rides in the key: a texture-algorithm update must not
@@ -601,11 +661,12 @@ def _body_payload(b, tolerance):
         ent is not None
         and ent["shape"] is sh
         and ent["requested"] == requested
+        and ent.get("profile") == profile
         and ent.get("texture_key") == texture_key
     ):
         return ent
     if sh is not None:
-        tolerance = _effective_tolerance(sh, tolerance)
+        tolerance = _effective_tolerance(sh, tolerance, size_scale)
 
     mesh_key = None
     mk = b.get("meshKey")
@@ -618,7 +679,7 @@ def _body_payload(b, tolerance):
         from tessellate import CODE_VERSION as _tess_ver
         mesh_key = "%s-tv%d-%s%s-a%s" % (mk, _tess_ver,
                                          "r" if _VIEWPORT_RELATIVE else "a", tolerance,
-                                         _VIEWPORT_ANG_TOL)
+                                         ang_tol)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     payload = None
@@ -634,7 +695,7 @@ def _body_payload(b, tolerance):
         t0 = time.monotonic()
         textures = resolve_body_textures(b) if b.get("_textures") else None
         norm_chunks = [] if textures else None
-        pos, idx, fids = tessellate(sh, tolerance, angular_tolerance=_VIEWPORT_ANG_TOL,
+        pos, idx, fids = tessellate(sh, tolerance, angular_tolerance=ang_tol,
                                     textures=textures,
                                     density_cap=VIEWPORT_DENSITY_CAP,
                                     normals_out=norm_chunks,
@@ -681,7 +742,16 @@ def _body_payload(b, tolerance):
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
             except Exception:
                 pass
+    # This body's own bounding box, cached alongside its mesh. The document bbox
+    # is the union of these (see the payload loop): computing it per body means
+    # it is covered by this function's progress tick and reuses the cache on an
+    # unchanged body, where walking the merged compound was neither.
+    try:
+        body_bbox = _bbox_of(sh) if sh is not None else None
+    except Exception:
+        body_bbox = None
     ent = {"shape": sh, "requested": requested, "tolerance": tolerance,
+           "profile": profile, "bbox": body_bbox,
            "etag": _uuid.uuid4().hex, "payload": payload, "texture_key": texture_key}
     _MESH_CACHE[bid] = ent
     if on_feature_tick is not None:
@@ -764,16 +834,24 @@ def _rebuild_job(document, tolerance, known=None):
         if proj:
             result["projectionUpdates"] = proj
         return result
-    from tessellate import bbox
 
     live_ids = set()
     out = []
+    body_boxes = []
     t0 = time.monotonic()
+    # One profile for the whole document: a big assembly is meshed coarser so its
+    # reply fits the frame cap (see _VIEWPORT_SIZE_TIERS). Computed once, outside
+    # the loop, so every body in one reply is meshed on the same terms.
+    profile = _viewport_profile(len(bodies))
+    if profile[0] != 1.0:
+        print("[rebuild] %d bodies -> coarse viewport profile (x%.1f linear, ang %.2f)"
+              % (len(bodies), profile[0], profile[1]), flush=True)
     for b in bodies:
         if b.get("shape") is None:
             continue
         live_ids.add(b["id"])
-        ent = _body_payload(b, tolerance)
+        ent = _body_payload(b, tolerance, profile)
+        body_boxes.append(ent.get("bbox"))
         # The assembly-tree node lives in the ENVELOPE, next to id/name/etag, and
         # is sent on BOTH branches. It must not go inside the mesh payload: that
         # is etag-cached, so the tree would freeze at whatever it was when the
@@ -791,22 +869,15 @@ def _rebuild_job(document, tolerance, known=None):
     for bid in list(_MESH_CACHE):
         if bid not in live_ids:
             del _MESH_CACHE[bid]  # body deleted/consumed — drop its cache
-    # bbox of the merged part walks every solid — on a many-body document this
-    # is its own long phase; tick around it so the stall watchdog sees progress.
-    from builder import on_feature_tick as _tick_fn
-    if _tick_fn is not None:
-        try:
-            _tick_fn(-1)
-        except Exception:
-            pass
+    # The document bbox is the UNION of the per-body boxes accumulated above —
+    # see _union_bbox for why this is no longer one walk over the merged part.
+    # No bbox(part) fallback: it can only be reached when EVERY body's box
+    # failed, where walking the merged compound of those same shapes would fail
+    # too — after spending the untickable 95 s this change exists to remove.
+    # `bbox: null` is already a legal reply (the no-bodies branch sends it).
     t0 = time.monotonic()
-    doc_bbox = bbox(part)
+    doc_bbox = _union_bbox(body_boxes)
     t_bbox = time.monotonic() - t0
-    if _tick_fn is not None:
-        try:
-            _tick_fn(-1)
-        except Exception:
-            pass
     # Phase log for scale diagnosis (large assemblies): shows where a slow
     # build actually spends its time, and correlates with the stall watchdog.
     print(f"[rebuild] features={len(document.get('features', []))} "
@@ -1302,6 +1373,12 @@ def _reply_for(req_id, res):
     return _ok(req_id, res)
 
 
+# The largest frame the websocket server will accept or emit. A security control
+# (sidecar DoS surface), deliberately lowered from 512 MiB in the 2026-07-02
+# hardening round — raise it only with that in mind. Enforced on the way IN by
+# websockets.serve(max_size=...) and on the way OUT by _reply_bytes.
+_MAX_FRAME = 128 * 1024 * 1024
+
 # Binary mesh reply (opt-in via `"binary": true` on rebuild/computeAll requests).
 # Wire layout, all integers little-endian:
 #   [u32 header_len][header_len bytes UTF-8 JSON header][pad to 4][buf0][buf1]...
@@ -1312,10 +1389,51 @@ def _reply_for(req_id, res):
 # dtypes are 4 bytes/element, so after the single header pad every buffer is
 # 4-aligned for free — INVARIANT: adding a wider dtype requires per-buffer
 # padding. f32 is lossless vs today's end state (the client always builds
-# Float32BufferAttributes). Everything else (stubs, edges, faceOwners, bbox,
-# diagnostics) stays inline JSON in the header.
+# Float32BufferAttributes). A body's EDGE polylines are packed the same way
+# (see _pack_edges) into {"$pts","$counts","body"}; everything else (stubs,
+# faceOwners, bbox, diagnostics) stays inline JSON in the header.
 _WIRE_F32 = np.dtype("<f4")
 _WIRE_U32 = np.dtype("<u4")
+
+
+def _pack_edges(edges, take, body):
+    """Move one body's edge polylines out of the inline JSON header and into two
+    binary buffers: all point triples flattened (f32) plus a per-edge POINT count
+    (u32) the client walks to re-split them.
+
+    Edge polylines are the largest single component of a large assembly's reply
+    AND the one part tessellation tolerance cannot shrink — they sample at the
+    fixed _EDGE_DEFLECTION, not at the viewport tolerance. Measured on the 356 MiB
+    reference assembly: 97.1 MiB across 1,726,523 points, byte-identical at every
+    point of a 5-step tolerance sweep, i.e. a hard floor under the 128 MiB frame
+    cap that no adaptive-tolerance scheme can lift. As JSON text a point costs
+    59 bytes against 12 as f32, so this is the cheapest large saving available and
+    it costs no visual fidelity.
+
+    `body` is the owning body id, taken from the envelope rather than re-derived
+    from the polylines: every list reaching here comes from a SINGLE-body
+    edge_polylines_by_body([b]) call, which stamps that same id on each edge."""
+    counts, flat = [], []
+    for e in edges or ():
+        pts = e.get("points") or ()
+        counts.append(len(pts))
+        for p in pts:
+            flat.extend(p)
+    return {
+        "$pts": take(flat, _WIRE_F32, "f32"),
+        "$counts": take(counts, _WIRE_U32, "u32"),
+        "body": body,
+    }
+
+
+class _ReplyTooLarge(Exception):
+    """The encoded frame would exceed _MAX_FRAME. Carries the size so the caller
+    can say how far over it was, and is raised BEFORE the buffers are joined so
+    the doomed frame is never actually materialised."""
+
+    def __init__(self, size):
+        super().__init__(size)
+        self.size = size
 
 
 def _encode_binary_reply(req_id, res):
@@ -1327,7 +1445,10 @@ def _encode_binary_reply(req_id, res):
 
     def take(vals, dtype, tag):
         arr = np.asarray(vals, dtype=dtype)
-        buffers.append(arr.tobytes())
+        # memoryview, not .tobytes(): join copies either way, so a bytes copy
+        # here would put TWO full payloads in the parent at once — ~245 MiB at
+        # the shipping tier. The array stays alive through the view.
+        buffers.append(memoryview(arr).cast("B"))
         buf_meta.append({"dtype": tag, "len": int(arr.size)})
         return {"$buf": len(buf_meta) - 1}
 
@@ -1342,6 +1463,7 @@ def _encode_binary_reply(req_id, res):
             nb["normals"] = take(b["normals"], _WIRE_F32, "f32")
         nb["indices"] = take(b["indices"], _WIRE_U32, "u32")
         nb["faceIds"] = take(b["faceIds"], _WIRE_U32, "u32")
+        nb["edges"] = _pack_edges(b.get("edges"), take, b.get("id"))
         bodies_out.append(nb)
 
     header_obj = dict(res)
@@ -1351,19 +1473,54 @@ def _encode_binary_reply(req_id, res):
     pad = (-len(header)) % 4
     parts = [struct.pack("<I", len(header)), header, b"\x00" * pad]
     parts.extend(buffers)
+    # Size the frame from its parts and refuse BEFORE joining: the join is a
+    # second full-size allocation, and on an over-cap reply every byte of it is
+    # discarded to send a short error string.
+    total = sum(len(p) for p in parts)
+    if total >= _MAX_FRAME:
+        raise _ReplyTooLarge(total)
     return b"".join(parts)
+
+
+def _too_large_error(req_id, size, n_bodies):
+    """The reply exceeded the frame cap. websockets closes the connection with
+    1009 "message too big" when a frame exceeds max_size, which reaches the user
+    as the app dying mid-rebuild with no explanation — the failure mode of GH #4.
+    _viewport_profile coarsens a large document's mesh to stay under the cap, but
+    it keys off BODY COUNT, and bodies vary enormously in face count; this is the
+    backstop for when that proxy is wrong."""
+    print("[rebuild] reply %s over the %s frame cap (%d bodies)"
+          % (sysmem.describe(size), sysmem.describe(_MAX_FRAME), n_bodies),
+          file=sys.stderr, flush=True)
+    return _err(
+        req_id,
+        "This model is too detailed to display: the rebuilt geometry came to "
+        f"{sysmem.describe(size)} across {n_bodies:,} bodies, over the "
+        f"{sysmem.describe(_MAX_FRAME)} limit. Hide some bodies or simplify "
+        "the model.",
+    )
 
 
 def _reply_bytes(req_id, res, binary):
     """Dispatch a rebuild/computeAll result to its wire form: binary frame when
     the client opted in and the result is a successful mesh reply; the plain
-    JSON text reply otherwise (errors, resync, opt-out, or encoder failure)."""
+    JSON text reply otherwise (errors, resync, opt-out, or encoder failure).
+
+    Either form is refused if it would exceed the frame cap — see
+    _too_large_error for why that must not reach websockets."""
+    n_bodies = len(res.get("bodies") or ())
     if not binary or "error" in res or res.get("resync"):
-        return _reply_for(req_id, res)
-    try:
-        return _encode_binary_reply(req_id, res)
-    except Exception:
-        return _reply_for(req_id, res)
+        reply = _reply_for(req_id, res)
+    else:
+        try:
+            reply = _encode_binary_reply(req_id, res)
+        except _ReplyTooLarge as over:
+            return _too_large_error(req_id, over.size, n_bodies)
+        except Exception:
+            reply = _reply_for(req_id, res)
+    if len(reply) >= _MAX_FRAME:
+        return _too_large_error(req_id, len(reply), n_bodies)
+    return reply
 
 
 def _new_pool():
@@ -1986,7 +2143,7 @@ async def main():
         # sides — measured 84ms to deflate one 5MB mesh reply.
         bound = False
         try:
-            async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024,
+            async with websockets.serve(handle, HOST, PORT, max_size=_MAX_FRAME,
                                         compression=None):
                 bound = True
                 # readiness signal the Rust shell waits for before connecting
