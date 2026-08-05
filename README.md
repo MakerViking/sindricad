@@ -234,9 +234,31 @@ Any numeric field is either a literal (`5`) or the name of a parameter (`"width"
 
 ## Install
 
-Everything is bundled, including Python and the geometry engine, so there is nothing
-else to install. The builds are unsigned for now, so each platform asks you to confirm
-the first launch once. Open the section for your platform:
+The geometry engine and its Python runtime are bundled, so those need no separate
+install. On Linux the app uses your distribution's WebKit rather than carrying its own,
+which is the one system dependency worth knowing about: see
+[Requirements](#requirements). The builds are unsigned for now, so the first launch
+needs one extra step per platform. Open the section for your platform:
+
+### Requirements
+
+|  | Needs |
+| --- | --- |
+| **Linux** (`.deb`, `.rpm`, AppImage) | glibc 2.34 or newer, plus WebKitGTK 4.1 and GTK 3 from your distribution |
+| **Windows** | Windows 10 or 11, x86-64. Edge WebView2, which the setup exe fetches if it is missing |
+| **macOS** | Apple Silicon. There is no Intel build yet |
+
+None of the Linux builds carry their own WebKit, the AppImage included. They use the one
+your distribution ships, which keeps them smaller and means they follow your distro's
+security updates instead of freezing a browser engine in place. The `.deb` and `.rpm`
+declare that dependency, so a package install pulls it in for you; an AppImage on a
+distribution without WebKitGTK 4.1 installed will need it added by hand.
+
+Every platform needs working GPU drivers for the 3D viewport (OpenGL or EGL).
+
+WebKit may log `GStreamer element appsink not found`. Nothing in modeling, export or
+printing uses it, so it is safe to ignore; installing your distribution's
+`gst-plugins-base` silences it.
 
 <details>
 <summary><b>Windows</b> (.exe or .msi, self-updating)</summary>
@@ -256,9 +278,13 @@ restart-and-update.
 <details>
 <summary><b>Linux</b> (.AppImage, .deb or .rpm)</summary>
 
-Grab the `.AppImage` (`chmod +x`, runs on any distro, updates itself in place), or
-the `.deb` / `.rpm` (`sudo dpkg -i` / `sudo rpm -i`; updates come from your package
-manager workflow, not in-app).
+Grab the `.AppImage` (`chmod +x`, updates itself in place), or the `.deb` / `.rpm`
+(`sudo dpkg -i` / `sudo rpm -i`; updates come from your package manager workflow, not
+in-app).
+
+All three use your distribution's WebKitGTK 4.1 rather than carrying one, so a system
+that does not already have it needs it installed first. See
+[Requirements](#requirements).
 
 </details>
 

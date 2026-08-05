@@ -60,6 +60,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The AppImage starts on distributions that ship a current WebKit.** It carried its
+  own copy of WebKit and the GTK stack around it, and on a system whose own WebKit is
+  newer, that bundled copy killed its rendering process the moment the app launched. The
+  window opened and stayed blank, with nothing in the log to explain it
+  ([#3](https://github.com/MakerViking/sindricad/issues/3)). The AppImage now uses the
+  WebKit your distribution ships, the same as the `.deb` and `.rpm` always have, and it
+  is about 100 MB smaller for it. **It is no longer fully self-contained:** a system
+  without WebKitGTK 4.1 installed needs it added first. The
+  [Requirements](https://github.com/MakerViking/sindricad#requirements) section of the
+  README lists what each build needs.
+
 - **A window that opens without its interface now says so.** If the app failed to
   load its own page, the result was a blank window and no explanation anywhere.
   The geometry engine logs happily right up to "LISTENING 8765" above it, so the
