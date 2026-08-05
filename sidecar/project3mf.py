@@ -93,15 +93,49 @@ def _bbox(bodies):
 
 
 def _mesh_xml(positions, indices):
-    verts = "".join(
-        f'<vertex x="{positions[i]:.6g}" y="{positions[i + 1]:.6g}" z="{positions[i + 2]:.6g}"/>'
-        for i in range(0, len(positions), 3)
-    )
-    tris = "".join(
-        f'<triangle v1="{indices[i]}" v2="{indices[i + 1]}" v3="{indices[i + 2]}"/>'
-        for i in range(0, len(indices), 3)
-    )
-    return f"<mesh><vertices>{verts}</vertices><triangles>{tris}</triangles></mesh>"
+    """The whole mesh as one string. Kept for callers with small meshes and for
+    the tests; `_mesh_chunks` is what the writer uses."""
+    return "".join(_mesh_chunks(positions, indices))
+
+
+# Vertices per emitted chunk. Large enough that the per-chunk overhead is noise,
+# small enough that peak memory stays flat regardless of body size.
+_XML_CHUNK_VERTS = 4096
+
+
+def _mesh_chunks(positions, indices):
+    """Yield a body's <mesh> XML in bounded pieces.
+
+    Built as a generator rather than one string because the caller streams it
+    straight into the zip. A 3,000-body assembly at export grade is millions of
+    triangles, and materialising that as a single Python str (plus the list of
+    per-element strings "".join consumes) costs many times the mesh itself — on
+    the one path that has no triangle budget of its own.
+    """
+    yield "<mesh><vertices>"
+    buf = []
+    for i in range(0, len(positions) - 2, 3):
+        buf.append(
+            f'<vertex x="{positions[i]:.6g}" y="{positions[i + 1]:.6g}" '
+            f'z="{positions[i + 2]:.6g}"/>'
+        )
+        if len(buf) >= _XML_CHUNK_VERTS:
+            yield "".join(buf)
+            buf = []
+    if buf:
+        yield "".join(buf)
+    yield "</vertices><triangles>"
+    buf = []
+    for i in range(0, len(indices) - 2, 3):
+        buf.append(
+            f'<triangle v1="{indices[i]}" v2="{indices[i + 1]}" v3="{indices[i + 2]}"/>'
+        )
+        if len(buf) >= _XML_CHUNK_VERTS:
+            yield "".join(buf)
+            buf = []
+    if buf:
+        yield "".join(buf)
+    yield "</triangles></mesh>"
 
 
 def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
@@ -134,17 +168,16 @@ def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
     )
     basematerials = f'<m:basematerials id="1">{mats}</m:basematerials>' if palette else ""
 
-    objects_xml, items_xml, cfg_objects = [], [], []
+    objects_meta, items_xml, cfg_objects = [], [], []
     for n, b in enumerate(bodies):
         oid = n + 2  # id 1 = the basematerials resource
         slot = body_colors.get(str(b["id"]), 0) if palette else 0
         name = body_names.get(str(b["id"])) or b.get("name") or f"Body{n + 1}"
         name = name[:MAX_NAME]
         pid = f' pid="1" pindex="{slot}"' if palette else ""
-        objects_xml.append(
-            f'<object id="{oid}" type="model" name={quoteattr(name)}{pid}>'
-            f"{_mesh_xml(b['positions'], b['indices'])}</object>"
-        )
+        # Header only. The MESH is streamed later, straight into the zip, so it
+        # is never held here alongside every other body's.
+        objects_meta.append((b, f'<object id="{oid}" type="model" name={quoteattr(name)}{pid}>'))
         items_xml.append(f'<item objectid="{oid}" transform="{transform}" printable="1"/>')
         cfg_objects.append(
             f'  <object id="{oid}">\n'
@@ -156,18 +189,23 @@ def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
             f"  </object>"
         )
 
-    model = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<model unit="millimeter" xml:lang="en-US"'
-        ' xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
-        ' xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"'
-        f' xmlns:BambuStudio="{_BBS_NS}">\n'
-        ' <metadata name="Application">SindriCAD</metadata>\n'
-        ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n'
-        f" <resources>{basematerials}{''.join(objects_xml)}</resources>\n"
-        f" <build>{''.join(items_xml)}</build>\n"
-        "</model>"
-    )
+    def _model_chunks():
+        """The 3dmodel.model document, in bounded pieces."""
+        yield (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<model unit="millimeter" xml:lang="en-US"'
+            ' xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"'
+            ' xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02"'
+            f' xmlns:BambuStudio="{_BBS_NS}">\n'
+            ' <metadata name="Application">SindriCAD</metadata>\n'
+            ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n'
+            f" <resources>{basematerials}"
+        )
+        for b, header in objects_meta:
+            yield header
+            yield from _mesh_chunks(b["positions"], b["indices"])
+            yield "</object>"
+        yield f"</resources>\n <build>{''.join(items_xml)}</build>\n</model>"
 
     model_settings = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -188,7 +226,12 @@ def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
-        z.writestr("3D/3dmodel.model", model)
+        # Streamed, not writestr'd: the mesh XML for a large assembly is far
+        # bigger than the mesh, and writestr would need all of it in memory at
+        # once on top of the meshes themselves.
+        with z.open("3D/3dmodel.model", "w") as fh:
+            for chunk in _model_chunks():
+                fh.write(chunk.encode("utf-8"))
         z.writestr("Metadata/model_settings.config", model_settings)
         z.writestr("Metadata/project_settings.config", json.dumps(proj, indent=1))
     return path

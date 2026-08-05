@@ -33,6 +33,7 @@ import hmac
 import json
 import multiprocessing as mp
 import os
+import re
 import secrets
 import signal
 import struct
@@ -311,7 +312,7 @@ _EXPORT_ANG_TOL = 0.3
 _EXPORT_MESH_CACHE = {}  # body id -> {"shape", "texture_key", "positions", "indices"}
 
 
-def _export_mesh(b):
+def _export_mesh(b, tol=None):
     """Export-grade (positions, indices) for one live body, three-tier cached
     (RAM identity -> disk artifact -> compute + persist), mirroring
     _body_payload. Worker-side only."""
@@ -326,6 +327,7 @@ def _export_mesh(b):
     # loop, so the guarantee worth having is one tick per body regardless of
     # which tier served it. A mixed warm/cold export is the common case.
     progress_tick()
+    tol = _EXPORT_TOL if tol is None else tol
     bid, sh = b["id"], b["shape"]
     if b.get("_textures"):
         from texture import CODE_VERSION as _tex_ver
@@ -333,12 +335,24 @@ def _export_mesh(b):
     else:
         texture_key = None
     ent = _EXPORT_MESH_CACHE.get(bid)
-    if ent is not None and ent["shape"] is sh and ent["texture_key"] == texture_key:
+    # TOLERANCE IS PART OF THE KEY. Without it a coarser retry (a tolerance
+    # backoff after a triangle-budget refusal) would be handed the mesh from the
+    # finer attempt still sitting in this cache — the backoff would appear to
+    # succeed while changing nothing, and the export would blow the same budget
+    # a second time with no way to tell why.
+    if (ent is not None and ent["shape"] is sh
+            and ent["texture_key"] == texture_key and ent["tol"] == tol):
         return ent["positions"], ent["indices"]
+    # This body was last meshed at a DIFFERENT tolerance. OCCT keeps the
+    # triangulation on the shape and considers an existing finer mesh adequate
+    # for a coarser request, so without dropping it first the new tolerance is
+    # silently ignored — which is what would make a backoff a no-op even with
+    # the cache keyed correctly.
+    retolerance = ent is not None and ent["shape"] is sh and ent.get("tol") != tol
 
     mesh_key = None
     if b.get("meshKey"):
-        mesh_key = "%s-export-t%s" % (b["meshKey"], _EXPORT_TOL)
+        mesh_key = "%s-export-t%s" % (b["meshKey"], tol)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     mesh = None
@@ -354,8 +368,9 @@ def _export_mesh(b):
         t0 = time.monotonic()
         textures = resolve_body_textures(b) if b.get("_textures") else None
         pos, idx, _fids = tessellate(
-            sh, tolerance=_EXPORT_TOL, angular_tolerance=_EXPORT_ANG_TOL,
+            sh, tolerance=tol, angular_tolerance=_EXPORT_ANG_TOL,
             textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
+            force_remesh=retolerance,
         )
         mesh = (pos, idx)
         if mesh_key and (time.monotonic() - t0) * 1000.0 >= _MESH_PERSIST_MIN_MS:
@@ -365,10 +380,45 @@ def _export_mesh(b):
             except Exception:
                 pass
     _EXPORT_MESH_CACHE[bid] = {
-        "shape": sh, "texture_key": texture_key,
+        "shape": sh, "texture_key": texture_key, "tol": tol,
         "positions": mesh[0], "indices": mesh[1],
     }
     return mesh[0], mesh[1]
+
+
+# Filenames Windows refuses outright, in ANY case and with or without an
+# extension: CON.step is as invalid as CON. A body legitimately named "Con" or
+# "Aux" is not exotic in mechanical CAD ("auxiliary bracket"), and the failure
+# is an opaque OS error at write time on one platform only.
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+# Filesystems cap a name in BYTES, not characters: ext4 and APFS both stop at
+# 255 bytes. `\w` is Unicode-aware, so a CJK or emoji body name survives
+# sanitising and then blows the limit at about a third of the character count.
+_MAX_NAME_BYTES = 200  # leaves room for the extension and a dedup suffix
+
+
+def _safe_part_filename(label, fallback, ext=""):
+    """A filesystem-safe stem for one exported body.
+
+    Refuses nothing and raises nothing: every input yields SOME usable name, so
+    an awkwardly-named body can never block an export of the others.
+    """
+    name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_")
+    if not name or set(name) <= {"."}:  # empty or dot-only → no dotfiles
+        name = str(fallback)
+    # Byte budget, trimmed on a CHARACTER boundary so the result stays valid
+    # UTF-8 — truncating the bytes directly can split a multi-byte codepoint.
+    while len(name.encode("utf-8")) > _MAX_NAME_BYTES and len(name) > 1:
+        name = name[:-1]
+    name = name.rstrip("_.") or str(fallback)
+    if name.split(".")[0].lower() in _WINDOWS_RESERVED:
+        name = f"{name}_"
+    return name
 
 
 def _prune_export_cache(live):
@@ -833,18 +883,25 @@ def _export_job(document, fmt, path, body=None, separate=False,
         document-wide safety net so a pathological scale/depth combo can't
         allocate an unbounded mesh."""
         pos_parts, idx_parts, vbase = [], [], 0
+        ntri = 0
         for b in target_bodies:
             pos, idx = _export_mesh(b)
+            # Checked HERE, per body, rather than on the concatenated total.
+            # The cap exists to stop a pathological document allocating
+            # unbounded memory, and a check that runs only after every body has
+            # been meshed and concatenated has already allowed exactly that —
+            # it could report the OOM it was meant to prevent. Bounded now to
+            # the cap plus one body.
+            ntri += len(idx) // 3
+            if ntri > EXPORT_TRIANGLE_HARD_CAP:
+                raise ValueError(
+                    f"textured export too dense ({ntri:,}+ triangles) — reduce texture scale or depth"
+                )
             pos_parts.append(np.asarray(pos, dtype=np.float64))
             idx_parts.append(np.asarray(idx, dtype=np.int64) + vbase)
             vbase += len(pos_parts[-1]) // 3
         positions = np.concatenate(pos_parts) if pos_parts else np.empty(0)
         mindices = np.concatenate(idx_parts) if idx_parts else np.empty(0, dtype=np.int64)
-        ntri = len(mindices) // 3
-        if ntri > EXPORT_TRIANGLE_HARD_CAP:
-            raise ValueError(
-                f"textured export too dense ({ntri:,} triangles) — reduce texture scale or depth"
-            )
         if ntri > EXPORT_TRIANGLE_WARN:
             warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
         if fmt == "stl":
@@ -872,6 +929,13 @@ def _export_job(document, fmt, path, body=None, separate=False,
         for b in target_bodies:
             pos, idx = _export_mesh(b)
             ntri += len(idx) // 3
+            # Same reason as _mesh_export: bound the allocation as it happens.
+            # GLB keeps bodies SEPARATE, so without this a 3,000-body assembly
+            # holds every mesh at once before anything is checked.
+            if ntri > EXPORT_TRIANGLE_HARD_CAP:
+                raise ValueError(
+                    f"textured export too dense ({ntri:,}+ triangles) — reduce texture scale or depth"
+                )
             slot = slots.get(b["id"], 0)  # unassigned -> slot 0, as the 3MF path does
             entry = pal[slot] if isinstance(slot, int) and 0 <= slot < len(pal) else None
             entries.append({
@@ -880,10 +944,6 @@ def _export_job(document, fmt, path, body=None, separate=False,
                 "indices": idx,
                 "color": _norm_color(entry.get("color")) if entry else None,
             })
-        if ntri > EXPORT_TRIANGLE_HARD_CAP:
-            raise ValueError(
-                f"textured export too dense ({ntri:,} triangles) — reduce texture scale or depth"
-            )
         if ntri > EXPORT_TRIANGLE_WARN:
             warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
         return mesh_writers.write_glb(entries, p)
@@ -896,25 +956,42 @@ def _export_job(document, fmt, path, body=None, separate=False,
         # are named the way the user named the bodies.
         names = document.get("bodyNames") or {}
         base, ext = os.path.splitext(path)
+        # Into a DIRECTORY of our own, created with exist_ok=False.
+        #
+        # The save dialog asks the user to confirm overwriting `parts.step`, and
+        # then that file is never written — N sibling files are. So the one file
+        # they were asked about was the only one that could not be clobbered,
+        # while `parts-Body1.step` and its siblings were silently overwritten
+        # with no prompt at all. A fresh directory makes the collision
+        # impossible AND keeps the N files together.
+        outdir = base
+        try:
+            os.makedirs(outdir, exist_ok=False)
+        except FileExistsError:
+            return {"error": {"message": (
+                f"{os.path.basename(outdir)} already exists — the separate-bodies "
+                f"export writes a folder of that name. Choose another name, or "
+                f"move the existing folder."
+            )}}
+        except OSError as e:
+            return {"error": {"message": f"could not create {outdir}: {e}"}}
         written, used = [], set()
         for b in live:
             label = names.get(b["id"]) or b["name"]
-            name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_")
-            if not name or set(name) <= {"."}:  # empty or dot-only → no dotfiles
-                name = b["id"]
+            name = _safe_part_filename(label, b["id"], ext)
             cand, i = name, 2
-            while cand in used:  # keep filenames unique if two bodies share a name
+            while cand.lower() in used:  # case-insensitive: Windows and macOS
                 cand, i = f"{name}_{i}", i + 1
-            used.add(cand)
-            p = f"{base}-{cand}{ext}"
+            used.add(cand.lower())
+            p = os.path.join(outdir, f"{cand}{ext}")
             if fmt == "glb":
                 _glb_export([b], p)
-            elif b.get("_textures") and fmt in ("stl", "3mf"):
-                _mesh_export([b], p)
+            elif fmt in ("stl", "3mf"):
+                _mesh_export([b], p)  # textured or not: caps, cache, tolerance
             else:
                 export(b["shape"], fmt, p)
             written.append(p)
-        return _done({"path": path, "paths": written})
+        return _done({"path": outdir, "paths": written})
 
     if body:
         tgt = next((b for b in live if b["id"] == body), None)
@@ -922,7 +999,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
             return {"error": {"message": f"body '{body}' not found to export"}}
         if fmt == "glb":
             return _done({"path": _glb_export([tgt], path)})
-        if tgt.get("_textures") and fmt in ("stl", "3mf"):
+        if fmt in ("stl", "3mf"):
             return _done({"path": _mesh_export([tgt], path)})
         return _done({"path": export(tgt["shape"], fmt, path)})
 
@@ -930,7 +1007,17 @@ def _export_job(document, fmt, path, body=None, separate=False,
     # export() would drop texture displacement (see _glb_export).
     if fmt == "glb":
         return _done({"path": _glb_export(live, path)})
-    if any_textured and fmt in ("stl", "3mf"):
+    # UNTEXTURED stl/3mf goes the same way as textured. It used to fall through to
+    # exporters.export, which calls build123d's export_stl / Mesher directly and
+    # so bypassed every cap, every cache and the export tolerance — the one path
+    # where a pathological document could allocate without limit.
+    #
+    # Measured before switching, because it changes which tessellation runs: at
+    # export grade a sphere, a cylinder and a filleted box all produce the
+    # IDENTICAL triangle count to build123d's default, and a torus produces
+    # 1.84x fewer. The deviation that buys is 0.02 mm, far below any printer's
+    # resolution, and it is the same tolerance textured exports have always used.
+    if fmt in ("stl", "3mf"):
         return _done({"path": _mesh_export(live, path)})
     # STEP carries structure: hand build123d a LABELLED tree instead of the fused
     # part, so product names — and an imported assembly's hierarchy, per-part
@@ -967,12 +1054,22 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
 
     palette, body_colors, body_names = sanitize_inputs(palette, body_colors, body_names)
     meshed = []
+    ntri = 0
     for b in live:
         # Export-grade tolerance — the viewport default (0.1) is visibly faceted
         # on a printed part. Cached across exports of an unchanged body.
         positions, indices = _export_mesh(b)
         if not len(indices):
             continue  # degenerate body with no triangulation — skip, like exports do
+        # This path had NO budget at all, which made it the way round every cap
+        # the plain export enforces. Checked per body, before the mesh is kept,
+        # so the allocation is bounded to the cap plus one body.
+        ntri += len(indices) // 3
+        if ntri > EXPORT_TRIANGLE_HARD_CAP:
+            return {"error": {"message": (
+                f"project export too dense ({ntri:,}+ triangles) — reduce texture "
+                f"scale or depth, or export fewer bodies"
+            )}}
         meshed.append(
             {"id": b["id"], "name": b["name"], "positions": positions, "indices": indices}
         )
@@ -1016,7 +1113,7 @@ def _interference_job(document):
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
     intersection volume above a tiny epsilon), with the overlap volume + bbox so the
     frontend can report and zoom to each clash."""
-    from builder import rebuild_cached, _bbox_overlap, progress_tick
+    from builder import rebuild_cached, _bbox_pair_overlap, bbox_of, progress_tick
 
     # rebuild_cached for the same reason as _export_job: same worker, warm cache
     part, errors, bodies = rebuild_cached(document)
@@ -1026,6 +1123,10 @@ def _interference_job(document):
     if errors and not live:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+    # ONE bbox per body, not one per pair. The sweep is quadratic in pairs but
+    # linear in distinct shapes, so computing the box inside the pair test did
+    # 9,360,540 OCCT bounding-box walks at 3,060 bodies to learn 3,060 things.
+    boxes = [bbox_of(b["shape"]) for b in live]
     pairs = []
     for i in range(len(live)):
         # Ticked in two places, both proportional to real work: once per row,
@@ -1035,7 +1136,7 @@ def _interference_job(document):
         progress_tick()
         for j in range(i + 1, len(live)):
             a, b = live[i], live[j]
-            if not _bbox_overlap(a["shape"], b["shape"]):
+            if not _bbox_pair_overlap(boxes[i], boxes[j]):
                 continue  # cheap AABB reject before the (crashable) boolean
             progress_tick()
             try:

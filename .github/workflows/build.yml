@@ -95,6 +95,7 @@ jobs:
           uv run python test_blob_rebuild.py
           uv run python test_heartbeat.py
           uv run python test_sysmem.py
+          uv run python test_export_gates.py
           # These six existed and PASSED for weeks without ever running here —
           # the same gap that had left texture/checkpoint/projected/val_guard/
           # body_binding inert. Inert regression protection reads as coverage

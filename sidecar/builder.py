@@ -3959,6 +3959,21 @@ def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
 def _bbox_overlap(a, b, tol=1e-6):
     """Cheap AABB overlap test (no boolean, can't crash)."""
     ba, bb = _as_compound(a).bounding_box(), _as_compound(b).bounding_box()
+    return _bbox_pair_overlap(ba, bb, tol)
+
+
+def bbox_of(shape):
+    """A shape's AABB, for callers that will test it against many others.
+
+    The pair sweep is O(n^2) in PAIRS but only O(n) in distinct shapes, so
+    recomputing both boxes inside the test does quadratic work for linear
+    information: at 3,060 bodies that is 9,360,540 OCCT bounding-box walks
+    instead of 3,060."""
+    return _as_compound(shape).bounding_box()
+
+
+def _bbox_pair_overlap(ba, bb, tol=1e-6):
+    """AABB overlap for two ALREADY-COMPUTED boxes."""
     return (
         ba.min.X <= bb.max.X + tol and ba.max.X >= bb.min.X - tol
         and ba.min.Y <= bb.max.Y + tol and ba.max.Y >= bb.min.Y - tol
