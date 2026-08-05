@@ -5,6 +5,10 @@
 
 #[cfg(feature = "rust-geom")]
 mod geom;
+// `pub` so the cross-language seam test (tests/container_seam.rs) can drive the
+// container the way `container_save` / `container_open` do. Nothing outside the
+// crate consumes it in the app itself.
+pub mod container;
 mod printer;
 mod sidecar;
 mod slicer;
@@ -271,6 +275,9 @@ pub fn run() {
         recovery_read,
         recovery_list,
         recovery_clear,
+        container::container_save,
+        container::container_open,
+        container::container_is_container,
         printer::printers_list,
         printer::printers_upsert,
         printer::printers_remove,
@@ -308,6 +315,9 @@ pub fn run() {
         recovery_read,
         recovery_list,
         recovery_clear,
+        container::container_save,
+        container::container_open,
+        container::container_is_container,
         printer::printers_list,
         printer::printers_upsert,
         printer::printers_remove,

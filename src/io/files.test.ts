@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { extToFormat, extToImportFormat, nearestPaletteSlot } from "./files";
+import { extToFormat, extToImportFormat, looksLikeContainer, nearestPaletteSlot } from "./files";
 
 // Both mappers are TOTAL — an unrecognised extension silently becomes "step"
 // rather than erroring. That is deliberate (the save dialog can hand back a bare
@@ -40,6 +40,43 @@ describe("extToImportFormat", () => {
 
   it("is case-insensitive", () => {
     expect(extToImportFormat("/tmp/A.GLB")).toBe("glb");
+  });
+});
+
+// A v5 `.sindri` is a ZIP; builds that predate it must SAY so rather than
+// showing a JSON syntax error, and must NOT drop the file from Recent while
+// telling the user to upgrade. `openDocumentAtPath` and the welcome-screen
+// wiring need Tauri + a DOM, neither of which this suite has (see
+// vitest.config.ts: "no DOM/Tauri APIs mocked yet"), so the DECISION is
+// unit-tested here and the wiring is left to the browser harness.
+// NOT COVERED by any unit test: that welcome.ts actually skips forgetRecent on
+// the "newerFormat" outcome. Stated rather than implied.
+describe("looksLikeContainer", () => {
+  // 0x50 0x4b 0x03 0x04 = "PK\x03\x04", a ZIP local-file header, followed by
+  // bytes that are invalid UTF-8 (0xff 0xfe ...) — i.e. a realistic prefix.
+  const zipBytes = new Uint8Array([
+    0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x08, 0x00, 0x08, 0x00,
+    0xff, 0xfe, 0x9c, 0x8d, 0xe2, 0x28, 0x00, 0x00,
+  ]);
+
+  // The whole diagnosis rests on one premise: plugin-fs decodes with a
+  // NON-FATAL TextDecoder, so reading a zip as text SUCCEEDS (mangled) rather
+  // than throwing, which is why JSON.parse is what fails and why we still have
+  // the text to inspect. If that ever became fatal the read would throw first
+  // and the friendly message would be unreachable — so pin the premise itself.
+  it("decoding zip bytes as UTF-8 does not throw (the premise)", () => {
+    expect(() => new TextDecoder().decode(zipBytes)).not.toThrow();
+  });
+
+  it("recognises a zip through that lossy decode", () => {
+    expect(looksLikeContainer(new TextDecoder().decode(zipBytes))).toBe(true);
+  });
+
+  it("does not fire on a real document, or on ordinary corruption", () => {
+    expect(looksLikeContainer('{ "version": 4, "features": [] }')).toBe(false);
+    expect(looksLikeContainer("")).toBe(false);
+    expect(looksLikeContainer("<!DOCTYPE html>")).toBe(false);
+    expect(looksLikeContainer(" PK")).toBe(false); // leading space: not a header
   });
 });
 

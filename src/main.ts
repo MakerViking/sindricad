@@ -270,7 +270,7 @@ const welcome = new WelcomeScreen({
   onOpen: () => void openDoc(),
   onOpenPath: async (path) => {
     if (sketch.active) sketch.cancel(); // same guard as openDoc
-    return openDocumentAtPath(store, path);
+    return openDocumentAtPath(store, path, geometry);
   },
   onSignIn: () => void openSignInDialog(),
   onSignOut: () => void signOutFlow(),

@@ -59,6 +59,23 @@ glam = { version = "0.24", optional = true }
 threemf = { version = "0.8", optional = true }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# The `.sindri` container (container.rs): a ZIP holding document.json plus the
+# geometry it references by content hash. Rust owns it, NOT the sidecar, because
+# sidecar.rs deliberately does not auto-respawn — a dead sidecar is permanent for
+# the session, and a save that needed it would leave the user unable to save at
+# all. Saving is byte plumbing over files already on disk, so it needs no OCCT.
+#
+# `deflate-flate2`, NOT the `deflate` umbrella: that one also pulls
+# `deflate-zopfli`, a much slower alternative compressor we have no use for and
+# which would otherwise land in the DEFAULT build. flate2 itself is already
+# compiled (tauri-plugin-updater depends on it, non-optionally, for tar.gz), so
+# this adds no new crate at all — it only switches on zip's flate2 backend,
+# which feature-unifies into the updater's copy. Feature unification is additive
+# and cannot change updater behaviour.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+# content hashing for the container's blob ids. blake2b-128, matching the digest
+# size the sidecar already uses for its own keys.
+blake2 = "0.10"
 
 [features]
 # Off by default: the default build has zero OCCT/cmake dependency. Turn on to

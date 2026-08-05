@@ -110,12 +110,12 @@ def test_import_roundtrip():
         payload = import_geometry(p, fmt)
         assert "error" not in payload, payload
         assert payload["solid"], f"{fmt} import should yield a solid"
-        assert payload["brep"], "no BREP produced"
+        assert payload["geom"], "no geometry hash produced"
         # a clean box must come back as 6 faces — proves coplanar-facet merging
         # (UnifySameDomain) recovers real editable faces, not a triangle soup.
         assert payload["faces"] == 6, f"{fmt} box should merge to 6 faces, got {payload['faces']}"
         doc = {"parameters": {}, "features": [
-            {"id": "imp", "type": "import", "format": fmt, "name": payload["name"], "brep": payload["brep"]}
+            {"id": "imp", "type": "import", "format": fmt, "name": payload["name"], "geom": payload["geom"]}
         ]}
         ipart, ierr, ibodies = rebuild(doc)
         assert not ierr, ierr
@@ -563,7 +563,7 @@ def test_offset_face_and_thicken():
     path = os.path.join(d, "cyl.stl")
     export(Cylinder(6, 20), "stl", path)
     mesh = [{"id": "im", "type": "import", "format": "stl", "name": "cyl",
-             "brep": import_geometry(path, "stl")["brep"]}]
+             "geom": import_geometry(path, "stl")["geom"]}]
     _p, e, bodies = rebuild({"parameters": {}, "features": mesh})
     before = bodies[0]["shape"].volume
     _p, e, bodies = rebuild({"parameters": {}, "features": mesh + [
@@ -583,7 +583,7 @@ def test_simplify_mesh():
     export(Cylinder(6, 20), "stl", p)
     payload = import_geometry(p, "stl")
     doc = {"parameters": {}, "features": [
-        {"id": "im", "type": "import", "format": "stl", "name": "cyl", "brep": payload["brep"]}]}
+        {"id": "im", "type": "import", "format": "stl", "name": "cyl", "geom": payload["geom"]}]}
     base, e0, _ = rebuild(doc)
     f_before = len(base.faces())
     doc["features"].append({"id": "sm", "type": "simplifyMesh", "tolerance": 15})
@@ -792,7 +792,7 @@ def test_multibody_import_and_guards():
         export(two, fmt, p)
         pay = import_geometry(p, fmt)
         doc = {"parameters": {}, "features": [
-            {"id": "im", "type": "import", "format": fmt, "name": pay["name"], "brep": pay["brep"]}]}
+            {"id": "im", "type": "import", "format": fmt, "name": pay["name"], "geom": pay["geom"]}]}
         part, e, bodies = rebuild(doc)
         assert not e and len(bodies) == 2, f"{fmt} two-object import → {len(bodies)} bodies, want 2"
     sp = os.path.join(d, "sphere.stl")

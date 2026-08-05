@@ -147,6 +147,70 @@ def test_flat_compound_order_survives_the_brep_round_trip():
         print(f"  {name}: {len(expected)} leaves, order stable over 3 generations")
 
 
+def test_migration_preserves_flat_compound_order():
+    """THE v4 -> v5 GATE. Migrating a pre-container document converts its inline
+    ASCII BREP to binary BinTools V3 in the blob store. The assembly manifest
+    binds row i to flat child i, so if that conversion reorders children, EVERY
+    legacy assembly document silently binds its parts to the wrong geometry —
+    and a per-row face-count checksum will not catch it when two parts happen to
+    have the same face count.
+
+    The existing gate above covers ASCII -> ASCII. This covers the path the
+    migration actually takes, which nothing else exercises."""
+    import tempfile, shutil
+    import blobstore
+    import builder
+
+    root = tempfile.mkdtemp(prefix="migrate_gate_")
+    old = os.environ.get("SINDRI_BLOB_DIR")
+    os.environ["SINDRI_BLOB_DIR"] = root
+    blobstore._default = None
+    try:
+        for name in FIXTURE_NAMES:
+            path = os.path.join(FIXTURES, f"{name}.step")
+            leaves = leaf_occurrences(path)
+            expected = [_fingerprint(s) for _n, s in leaves]
+            assert len(set(expected)) == len(expected), (
+                f"{name}: leaf fingerprints are not unique, so this fixture "
+                f"cannot detect a reordering"
+            )
+
+            # Exactly what a v4 document carries.
+            b64 = _flat_blob(leaves)
+
+            # Exactly what the migration does with it.
+            digest = builder._shape_to_blob(builder._brep_b64_to_shape(b64))
+
+            for generation in (1, 2, 3):
+                data = blobstore.default_store().get_bytes(digest)
+                assert data is not None, f"{name} gen{generation}: blob vanished"
+                assert data.lstrip(b"\n\r ").startswith(b"Open CASCADE Topology V"), (
+                    f"{name}: migrated blob is not binary BinTools"
+                )
+                shape = builder._blob_to_shape(data)
+                kids = _occt_children(shape.wrapped)
+                assert len(kids) == len(expected), (
+                    f"{name} gen{generation}: {len(expected)} children in, "
+                    f"{len(kids)} out — migration does not preserve child COUNT"
+                )
+                got = [_fingerprint(k) for k in kids]
+                assert got == expected, (
+                    f"{name} gen{generation}: child ORDER or identity changed "
+                    f"across the migration.\n  in:  {expected}\n  out: {got}"
+                )
+                # Re-store what we just read, so the next generation tests the
+                # blob this code would actually keep, not the original again.
+                digest = builder._shape_to_blob(shape)
+            print(f"  {name}: {len(expected)} leaves, order stable over 3 migrated generations")
+    finally:
+        if old is None:
+            os.environ.pop("SINDRI_BLOB_DIR", None)
+        else:
+            os.environ["SINDRI_BLOB_DIR"] = old
+        blobstore._default = None
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def test_leaf_walk_places_every_occurrence_in_world_space():
     """The transform regression test. asm_nested instances the same "Board"
     subassembly twice, 50mm apart. Harvesting leaves from build123d's `.children`
@@ -686,6 +750,7 @@ if __name__ == "__main__":
     failures = 0
     for fn in [
         test_flat_compound_order_survives_the_brep_round_trip,
+        test_migration_preserves_flat_compound_order,
         test_leaf_walk_places_every_occurrence_in_world_space,
         test_solid_less_products_are_not_dropped,
         test_multi_solid_product_stays_one_product_with_many_leaves,

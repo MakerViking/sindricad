@@ -98,7 +98,12 @@ describe("migrateDocument", () => {
   });
 
   it("v3 (projected entities) is a no-op stamp: v3 docs pass through unchanged, twice", () => {
-    expect(FORMAT_VERSION).toBe(4);
+    // Pins the current format so a version bump has to come past these tests.
+    // v5 moved geometry OUT of the document (inline base64 `brep` -> the `geom`
+    // content hash carried in the container), but a v3 document still passes
+    // through migrateDocument untouched: `brep` is still READ, so nothing here
+    // rewrites it.
+    expect(FORMAT_VERSION).toBe(5);
     const doc = v1({
       version: 3,
       features: [{ id: "f1", type: "sketch", plane: "XY", entities: [

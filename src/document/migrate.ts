@@ -28,8 +28,22 @@ import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFiel
 import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id";
 import { nextDName } from "../params/engine";
 
+// v4 → v5: geometry left the document. An `import` feature used to carry the
+// whole shape inline as base64 ASCII BREP (`brep`); it now carries `geom`, the
+// content hash of the same geometry stored as binary BREP inside the `.sindri`
+// container. On the 356 MiB reference assembly that inline field alone was
+// 541.8 MiB — 4.2x over the websocket frame cap and 6.4x over the 64 MiB
+// embedded-BREP cap re-checked on every rebuild, which is why an assembly that
+// size could not be opened at all.
+//
+// The stamp alone marks the format: `brep` is still READ, so a v4 document keeps
+// rebuilding untouched, and it is rewritten to `geom` when the document is
+// migrated on open. The file itself also changes shape (JSON → ZIP), which is
+// the first migration that is not purely a data rewrite — older builds get an
+// explicit "update SindriCAD" message rather than a JSON syntax error.
+
 /** .sindri file-format version (bump when the on-disk shape changes incompatibly). */
-export const FORMAT_VERSION = 4;
+export const FORMAT_VERSION = 5;
 
 export function migrateDocument(parsed: CadDocument): string[] {
   const version = parsed.version ?? 1;

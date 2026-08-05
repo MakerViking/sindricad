@@ -143,15 +143,47 @@ def _plane_of(spec, datums=None):
 
 
 def _shape_to_brep_b64(shape):
-    """Serialize a body to a base64 BREP string for embedding in the document.
+    """Serialize a body to a base64 ASCII BREP string. LEGACY.
 
-    External geometry can't be regenerated from parameters, but the rebuild model
-    is "send the whole document, rebuild from scratch". So we sew/read the file
-    ONCE on import and stash the resulting solid as a self-contained BREP string;
-    every rebuild just deserializes it (no dependency on the original file)."""
+    This is how imported geometry used to be embedded in the document. Nothing
+    writes it any more — v5 stores binary BREP in the blob store and the document
+    carries only its content hash (`_shape_to_blob`), because on the 356 MiB
+    reference assembly this encoding produced a 541.8 MiB field, over both the
+    websocket frame cap and the 64 MiB embedded-BREP cap.
+
+    Kept because `_brep_b64_to_shape` still READS pre-v5 documents, and the tests
+    need to be able to construct one."""
     buf = io.BytesIO()
     export_brep(shape, buf)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _shape_to_blob(shape):
+    """Store a shape's geometry in the durable blob store and return its content
+    hash.
+
+    THE HASH RULE. `blobstore.put_bytes` hashes exactly the bytes it stores, at
+    the moment they are produced, and we carry that value from here into the
+    document. Never re-derive a hash by re-serialising a shape: `write(read(x))
+    != x` byte-wise for BREP, because reading rebuilds the shape graph in a
+    different but equivalent order. A re-derived hash would change on every
+    generation, so every lookup would miss.
+
+    Raises on failure, deliberately. The document no longer carries an embedded
+    copy, so a hash we could not store means a feature with NO geometry
+    anywhere — and quietly handing back a document like that would lose the
+    user's import in a way nothing downstream could detect. Refusing the import
+    is recoverable; a silently empty document is not."""
+    import geomstore
+    import blobstore
+
+    try:
+        return blobstore.default_store().put_bytes(geomstore.serialize_shape(shape))
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(
+            f"could not store the imported geometry ({e}). Check free disk space "
+            "and permissions on the SindriCAD data directory."
+        ) from e
 
 
 def _brep_b64_to_shape(b64):
@@ -1156,8 +1188,14 @@ def import_geometry(path, fmt):
     is_solid = len(shape.solids()) > 0
     name = os.path.splitext(os.path.basename(path))[0] or "Imported"
     _import_phase(IMPORT_PHASE_ENCODE)
+    # The content hash of the geometry in the durable blob store. This REPLACED
+    # an inline base64 ASCII BREP: on the 356 MiB reference assembly that field
+    # alone was 541.8 MiB, i.e. 4.2x over the websocket frame cap and 6.4x over
+    # the 64 MiB embedded-BREP cap re-checked on every rebuild, which is why a
+    # large assembly could not be opened at all. Documents saved before this
+    # still carry `brep` and are still read (see _import_shape).
     out = {
-        "brep": _shape_to_brep_b64(shape),
+        "geom": _shape_to_blob(shape),
         "solid": is_solid,
         "faces": len(shape.faces()),
         "name": name,
@@ -1788,9 +1826,71 @@ def _bind_assembly(f, ctx, shape, nodes, parts):
     return True
 
 
+_BINTOOLS_MAGIC = b"Open CASCADE Topology V"
+
+
+def _blob_to_shape(data):
+    """A stored binary BREP blob back to a build123d Shape.
+
+    The magic check is NOT redundant with the blob store's hash verification.
+    That hash proves the bytes are the ones the container declared — it does not
+    prove they are benign, because whoever crafted a hostile `.sindri` chose both
+    the bytes and the declared hash. So the same reasoning as
+    `_brep_b64_to_shape` applies: refuse to aim a parser fuzz at OCCT.
+
+    There is deliberately NO size cap here, unlike the 64 MiB `MAX_BREP_BYTES` on
+    the legacy embedded path. That cap is exactly what makes a large assembly
+    unopenable, and it is the thing this whole change exists to remove. The bound
+    that replaces it is upstream: the container reader refuses an archive that
+    declares more than 8 GiB before inflating a byte."""
+    import geomstore
+
+    if not data[: len(_BINTOOLS_MAGIC) + 2].lstrip(b"\n\r ").startswith(_BINTOOLS_MAGIC):
+        raise ValueError("stored geometry is not a valid binary BREP (bad header)")
+    # _wrap_topods, not Shape.cast: BinTools hands back a raw TopoDS, and for an
+    # assembly that is a COMPOUND, which Shape.cast() turns into None (see its
+    # docstring). Same trap the XCAF reader hit.
+    shape = _wrap_topods(geomstore.deserialize_shape(data))
+    if shape is None:
+        raise ValueError("stored geometry decoded to an empty shape")
+    return shape
+
+
+def _import_shape(f):
+    """The geometry for an import feature.
+
+    Prefers the content hash (`geom`) and falls back to the legacy embedded
+    base64 (`brep`). Both fields are present during the transition, so a blob
+    that has gone missing — a wiped app-data directory, a document copied
+    without its container — still rebuilds from the embedded copy rather than
+    failing. Once `brep` is gone that fallback disappears and the missing-blob
+    error below becomes the live path."""
+    import blobstore
+
+    digest = f.get("geom")
+    b64 = f.get("brep")
+    if digest:
+        data = blobstore.default_store().get_bytes(digest)
+        if data is not None:
+            return _blob_to_shape(data)
+        if not b64:
+            raise ValueError(
+                "the geometry for this imported body is missing from local storage. "
+                "Open the .sindri file it was saved in, or re-import the original file."
+            )
+        # Fall through to the embedded copy, loudly: a miss here means either a
+        # wiped store or a document that travelled without its container, and
+        # both are worth seeing in the log rather than silently absorbing.
+        print(f"[blobstore] blob {digest} missing; falling back to the embedded BREP",
+              file=sys.stderr, flush=True)
+    if not b64:
+        raise ValueError("this imported body has no geometry attached")
+    return _brep_b64_to_shape(b64)
+
+
 def _handle_import(f, ctx):
     base = f.get("name") or "Imported"
-    shape = _brep_b64_to_shape(f["brep"])
+    shape = _import_shape(f)
     # explode:false keeps a multi-solid payload as ONE body. For imported
     # assemblies with hundreds of import features this divides body count
     # (browser tree entries, per-body payloads, draw calls) by the average

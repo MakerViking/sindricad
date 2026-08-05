@@ -66,6 +66,11 @@ export interface GeometryBackend {
   projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]>;
   /** System font family names for the text tool's font picker. */
   listFonts(): Promise<string[]>;
+  /** One-way v4 -> v5: turn a pre-container document's inline base64 BREP into
+   *  blobs in the durable store, returning the content hash for each feature.
+   *  Best-effort by design — the document keeps its inline copy, so a failure
+   *  (or a dead sidecar) costs nothing. */
+  migrateGeometry(items: { id: string; brep: string }[]): Promise<{ id: string; geom: string }[]>;
   export(
     doc: CadDocument,
     format: ExportFormat,
@@ -722,14 +727,14 @@ export class Geometry implements GeometryBackend {
 
   async importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply> {
     const msg = await this.call<{
-      brep: string; name: string; solid: boolean; faces: number; color?: string;
+      geom: string; name: string; solid: boolean; faces: number; color?: string;
       nodes?: { name: string; parent: number | null; color?: string }[];
       parts?: { node: number; faces: number }[];
     }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
       return {
-        ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces,
+        ok: true, geom: r.geom, name: r.name, solid: r.solid, faces: r.faces,
         ...(r.color !== undefined ? { color: r.color } : {}),
         ...(r.nodes !== undefined ? { nodes: r.nodes } : {}),
         ...(r.parts !== undefined ? { parts: r.parts } : {}),
@@ -788,5 +793,20 @@ export class Geometry implements GeometryBackend {
   async listFonts(): Promise<string[]> {
     const msg = await this.call<{ families: string[] }>("listFonts", {});
     return msg.ok ? (msg.result.families ?? []) : [];
+  }
+
+  async migrateGeometry(
+    items: { id: string; brep: string }[],
+  ): Promise<{ id: string; geom: string }[]> {
+    if (!items.length) return [];
+    const msg = await this.call<{
+      items: { id: string; geom: string }[];
+      failed?: { id: string; message: string }[];
+    }>("migrateGeometry", { items });
+    if (!msg.ok) return []; // keep the inline copy; nothing is lost
+    for (const f of msg.result.failed ?? []) {
+      console.warn(`could not migrate geometry for ${f.id}: ${f.message}`);
+    }
+    return msg.result.items ?? [];
   }
 }

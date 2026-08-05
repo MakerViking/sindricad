@@ -271,6 +271,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake2"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -859,6 +868,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -3691,6 +3701,7 @@ name = "sindricad"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "blake2",
  "getrandom 0.2.17",
  "glam",
  "hidapi",
@@ -3711,6 +3722,7 @@ dependencies = [
  "threemf",
  "tokio",
  "windows 0.58.0",
+ "zip 4.6.1",
 ]
 
 [[package]]
@@ -5904,6 +5916,7 @@ checksum = "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap 2.14.0",
  "memchr",
 ]

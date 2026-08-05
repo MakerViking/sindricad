@@ -63,6 +63,41 @@ def _fsync_dir(path):
         pass
 
 
+def serialize_shape(shape, with_triangles=True):
+    """A shape as binary BREP bytes, pinned to BinTools format V3.
+
+    THE ONE PLACE THAT PIN LIVES. `put_blob` below and the container blob writer
+    in builder.py both call this, so neither can drift onto the BinTools default
+    — this OCP build's V4 reader is measured broken on real sidecar bodies, and
+    in a cache that is a miss but in a SAVED FILE it is permanent data loss.
+
+    Triangles are ALWAYS included: writing with_triangles=False on a shape that
+    has been tessellated leaves dangling polygon-on-triangulation point
+    representations in the stream, and BinTools_ShapeSet::ReadGeometry fails with
+    'UnExpected BRep_PointRepresentation' on read (measured on real DDR bodies).
+    The flag is kept for API stability but False is ignored on purpose; the size
+    cost buys load-time remeshing becoming a no-op.
+    """
+    wrapped = shape.wrapped if hasattr(shape, "wrapped") else shape
+    buf = io.BytesIO()
+    BinTools.Write_s(wrapped, buf, True, False, _FMT)
+    return buf.getvalue()
+
+
+def deserialize_shape(data):
+    """Inverse of `serialize_shape`: binary BREP bytes back to a TopoDS_Shape.
+
+    Raises on anything that is not a readable shape. Callers that treat a bad
+    blob as a cache MISS catch it themselves; callers for whom the blob is the
+    source of truth must not, because silently continuing would mean building
+    the wrong geometry."""
+    shape = TopoDS_Shape()
+    BinTools.Read_s(shape, io.BytesIO(data))
+    if shape.IsNull():
+        raise ValueError("binary BREP decoded to a null shape")
+    return shape
+
+
 class Store:
     """Durable blob + checkpoint store rooted at a cache directory."""
 
@@ -160,19 +195,11 @@ class Store:
         If the key already exists this is a no-op (same key => identical body), which
         is what gives cross-checkpoint dedup for free.
 
-        Triangles are ALWAYS included: writing with_triangles=False on a shape that
-        has been tessellated leaves dangling polygon-on-triangulation point
-        representations in the stream, and BinTools_ShapeSet::ReadGeometry fails with
-        'UnExpected BRep_PointRepresentation' on read (measured on real DDR bodies).
-        The flag is kept for API stability but False is ignored on purpose; the size
-        cost buys load-time remeshing becoming a no-op."""
+        The format pin and the with_triangles rationale live in `serialize_shape`."""
         dest = self._blob_path(key)
         if os.path.exists(dest):
             return os.path.getsize(dest)
-        wrapped = shape.wrapped if hasattr(shape, "wrapped") else shape
-        buf = io.BytesIO()
-        BinTools.Write_s(wrapped, buf, True, False, _FMT)
-        data = buf.getvalue()
+        data = serialize_shape(shape, with_triangles)
         self._atomic_write(dest, data)
         return len(data)
 

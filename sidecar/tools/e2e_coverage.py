@@ -294,8 +294,8 @@ async def check_export(ws):
         if not imp.get("ok"):
             print(f"  REFUSE export           — reimport not ok: {imp.get('error')}")
             return
-        brep = imp["result"]["brep"]
-        r = await _rebuild(ws, [{"id": "im", "type": "import", "format": "stl", "name": "box", "brep": brep}])
+        geom = imp["result"]["geom"]
+        r = await _rebuild(ws, [{"id": "im", "type": "import", "format": "stl", "name": "box", "geom": geom}])
         register("export", "volume", 8000.0, _total_volume(r))
 
 
@@ -351,7 +351,7 @@ async def check_simplify_mesh(ws):
             print(f"  REFUSE simplifyMesh     — reimport not ok: {imp.get('error')}")
             return
         r = await _rebuild(ws, [
-            {"id": "im", "type": "import", "format": "stl", "name": "box", "brep": imp["result"]["brep"]},
+            {"id": "im", "type": "import", "format": "stl", "name": "box", "geom": imp["result"]["geom"]},
             {"id": "sm", "type": "simplifyMesh", "tolerance": 1}])
         register("simplifyMesh", "volume", 8000.0, _total_volume(r))
         register("simplifyMesh", "bodies_eq", 1, _nbodies(r))

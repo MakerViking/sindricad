@@ -253,7 +253,7 @@ fn spawn_supervisor(
 /// Split out from `spawn` so a test can assert it: this is packaging behaviour
 /// that only misfires on machines nobody here builds on, which is exactly how
 /// the NixOS failure below shipped unnoticed.
-fn configure_env(cmd: &mut Command, rt: &Runtime, token: &str) {
+fn configure_env(cmd: &mut Command, rt: &Runtime, token: &str, blobs: Option<&std::path::Path>) {
     cmd.env("SINDRI_SIDECAR_TOKEN", token) // hand the secret to the sidecar
         .env("PYTHONDONTWRITEBYTECODE", "1") // read-only bundle: never write .pyc
         // NixOS, issue #3: `appimage-run` exports PYTHONHOME=<AppDir>/usr, and an
@@ -273,6 +273,15 @@ fn configure_env(cmd: &mut Command, rt: &Runtime, token: &str) {
     if let Some(pp) = &rt.pythonpath {
         cmd.env("PYTHONPATH", pp); // bundled site-packages (dir install, no venv)
     }
+    // The durable geometry blob store (container.rs::blob_dir). Rust resolves
+    // app_data_dir and tells the sidecar, rather than the sidecar guessing:
+    // the two must agree exactly, since Rust writes this directory when opening
+    // a container and Python writes it at import. Absent (e.g. a bare `python
+    // server.py`) means "no store" and the sidecar falls back to its own
+    // default — never a crash, since geometry can always be re-imported.
+    if let Some(dir) = blobs {
+        cmd.env("SINDRI_BLOB_DIR", dir);
+    }
 }
 
 impl Sidecar {
@@ -285,7 +294,7 @@ impl Sidecar {
             .current_dir(&rt.cwd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        configure_env(&mut cmd, &rt, &token);
+        configure_env(&mut cmd, &rt, &token, crate::container::blob_dir(app).ok().as_deref());
 
         // own process group so we can SIGTERM the whole tree at once (Unix)
         #[cfg(unix)]
@@ -522,7 +531,7 @@ mod tests {
             pythonpath: Some(PathBuf::from("/opt/app/sidecar-runtime/site-packages")),
         };
         let mut cmd = Command::new(&rt.python);
-        configure_env(&mut cmd, &rt, "tok");
+        configure_env(&mut cmd, &rt, "tok", Some(std::path::Path::new("/data/blobs")));
 
         let envs: Vec<_> = cmd.get_envs().collect();
         let find = |k: &str| envs.iter().find(|(n, _)| *n == std::ffi::OsStr::new(k));
@@ -538,6 +547,41 @@ mod tests {
         // the bundled site-packages must still be handed over
         let pp = find("PYTHONPATH").expect("PYTHONPATH must be set for a bundle");
         assert_eq!(pp.1, Some(std::ffi::OsStr::new("/opt/app/sidecar-runtime/site-packages")));
+    }
+
+    /// The blob store is the seam between Rust and Python: Rust writes it when
+    /// opening a container, the sidecar writes it at import. They must agree on
+    /// the path, so Rust resolves it and TELLS the sidecar rather than letting
+    /// each side guess. Absent is a valid state (a bare `python server.py`),
+    /// which is why it is an Option — but when present it must be passed.
+    #[test]
+    fn sidecar_env_carries_the_blob_dir() {
+        let rt = Runtime {
+            python: PathBuf::from("/opt/app/python3.12"),
+            script: PathBuf::from("server.py"),
+            cwd: PathBuf::from("/opt/app"),
+            pythonpath: None,
+        };
+        let mut cmd = Command::new(&rt.python);
+        configure_env(&mut cmd, &rt, "tok", Some(std::path::Path::new("/data/blobs")));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let dir = envs
+            .iter()
+            .find(|(n, _)| *n == std::ffi::OsStr::new("SINDRI_BLOB_DIR"))
+            .expect("SINDRI_BLOB_DIR must be passed when a store is resolved");
+        assert_eq!(dir.1, Some(std::ffi::OsStr::new("/data/blobs")));
+
+        // ...and omitted entirely when there is none, rather than set to "".
+        // An empty value would make the sidecar's `or` fallback fire on a value
+        // it was explicitly given, which is a confusing state to debug.
+        let mut bare = Command::new(&rt.python);
+        configure_env(&mut bare, &rt, "tok", None);
+        assert!(
+            !bare
+                .get_envs()
+                .any(|(n, _)| n == std::ffi::OsStr::new("SINDRI_BLOB_DIR")),
+            "no store => the variable must be absent, not empty"
+        );
     }
 
     /// A crash arrives as an ExitStatus whose `code()` is None for every signal

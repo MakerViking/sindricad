@@ -969,6 +969,30 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     return res
 
 
+def _migrate_geometry_job(items):
+    """Worker: convert pre-v5 inline base64 ASCII BREP to blobs in the durable
+    store, returning the content hash for each.
+
+    IN THE WORKER, deliberately. This parses geometry that came out of a file the
+    user opened, and `builder._brep_b64_to_shape` exists precisely so a crafted
+    `.sindri` cannot aim a parser fuzz at OCCT — doing it in the parent would put
+    that fuzz one segfault away from taking the whole sidecar down instead of a
+    disposable worker.
+
+    Per-item failures are reported, not raised: one unreadable legacy body must
+    not block migrating the rest, and the document keeps its inline copy for
+    anything that fails, so nothing is lost either way."""
+    from builder import _brep_b64_to_shape, _shape_to_blob
+
+    out, failed = [], []
+    for it in items:
+        try:
+            out.append({"id": it["id"], "geom": _shape_to_blob(_brep_b64_to_shape(it["brep"]))})
+        except Exception as e:  # noqa: BLE001
+            failed.append({"id": it.get("id"), "message": str(e)})
+    return {"items": out, "failed": failed}
+
+
 def _interference_job(document):
     """Worker: rebuild + pairwise interference check among live bodies. Returns
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
@@ -1653,6 +1677,13 @@ async def _dispatch(ws, loop, req, req_id, op):
             loop, _project_geometry_job, req["document"], req["plane"],
             req.get("sources") or [], timeout=DOC_TIMEOUT,
         )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "migrateGeometry":
+        # One-way v4 -> v5: the document still carries inline base64, so nothing
+        # is lost if this never runs. JOB_TIMEOUT, not DOC_TIMEOUT: this decodes
+        # a bounded list of already-embedded blobs, it does not rebuild.
+        res = await _run(loop, _migrate_geometry_job, req.get("items") or [], timeout=JOB_TIMEOUT)
         await ws.send(_reply_for(req_id, res))
 
     elif op == "ping":

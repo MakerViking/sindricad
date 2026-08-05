@@ -6,21 +6,52 @@
 
 import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
-import type { ExportFormat, ImportFormat } from "../types";
+import type { CadDocument, ExportFormat, Feature, ImportFormat } from "../types";
 import { clearRecovery } from "./recovery";
 import { noteRecent } from "./recentFiles";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** Every geometry hash the document references, and the mesh keys worth
+ *  carrying. Rust turns these into container entries; the frontend collects them
+ *  because it is the one that owns the document. */
+function referencedHashes(store: DocumentStore): string[] {
+  const out = new Set<string>();
+  for (const f of store.document.features ?? []) {
+    if (f.type === "import" && f.geom) out.add(f.geom);
+  }
+  return [...out];
+}
+
+/** Write the document as a container at `path`. Returns an error message, or
+ *  null on success.
+ *
+ *  Goes through Rust, NOT the sidecar: `sidecar.rs` does not auto-respawn, so a
+ *  save that needed the geometry engine would be impossible for the whole rest
+ *  of the session once it died — with unsaved work on screen. Saving needs no
+ *  geometry anyway; the blobs are already bytes on disk. */
+async function writeContainer(store: DocumentStore, path: string): Promise<string | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("container_save", {
+      path,
+      documentJson: store.toJSON(),
+      hashes: referencedHashes(store),
+      meshKeys: [],
+    });
+    return null;
+  } catch (e) {
+    return errMsg(e);
+  }
+}
+
 /** Save: write to the current path if known, else behave like Save As. */
 export async function saveDocument(store: DocumentStore) {
   if (isTauri() && store.filePath) {
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-    try {
-      await writeTextFile(store.filePath, store.toJSON());
-    } catch (e) {
-      await reportError(`Couldn't save ${store.filePath}: ${errMsg(e)}`);
+    const err = await writeContainer(store, store.filePath);
+    if (err) {
+      await reportError(`Couldn't save ${store.filePath}: ${err}`);
       return;
     }
     store.markSaved(store.filePath);
@@ -33,19 +64,16 @@ export async function saveDocument(store: DocumentStore) {
 
 /** Save As: always prompt for a path (or download in a plain browser). */
 export async function saveDocumentAs(store: DocumentStore) {
-  const json = store.toJSON();
   if (isTauri()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await save({
       filters: [{ name: "SindriCAD Document", extensions: ["sindri"] }],
       defaultPath: store.filePath ?? `${store.fileName}.sindri`,
     });
     if (path) {
-      try {
-        await writeTextFile(path, json);
-      } catch (e) {
-        await reportError(`Couldn't save ${path}: ${errMsg(e)}`);
+      const err = await writeContainer(store, path);
+      if (err) {
+        await reportError(`Couldn't save ${path}: ${err}`);
         return;
       }
       store.markSaved(path);
@@ -53,7 +81,10 @@ export async function saveDocumentAs(store: DocumentStore) {
       void clearRecovery(path);
     }
   } else {
-    downloadText(`${store.fileName}.sindri`, json);
+    // Plain dev browser: no Tauri, so no container. Geometry lives in the
+    // sidecar's blob store either way, so this download is the document only —
+    // useful for inspecting a feature tree, NOT a portable file.
+    downloadText(`${store.fileName}.sindri`, store.toJSON());
   }
 }
 
@@ -73,7 +104,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
     if (typeof path !== "string") return;
     const ext = path.split(".").pop()?.toLowerCase();
     if (ext === "sindri" || ext === "json") {
-      await openDocumentAtPath(store, path);
+      await openDocumentAtPath(store, path, geometry);
     } else {
       await importPath(store, geometry, path); // a mesh / CAD file → import as a body
     }
@@ -89,19 +120,121 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
   }
 }
 
-/** Open a .sindri/.json document at a known path (no dialog) — shared by Open…
- *  and the welcome screen's recent-files list. Returns false if unreadable. */
-export async function openDocumentAtPath(store: DocumentStore, path: string): Promise<boolean> {
-  const { readTextFile } = await import("@tauri-apps/plugin-fs");
+/** What happened when we tried to open a document.
+ *  "unreadable" means the file is gone or corrupt — callers may forget it.
+ *  "newerFormat" means the file is fine and this build is too old, so the
+ *  recent-files entry must SURVIVE: dropping it would delete the one affordance
+ *  the user has for finding the file again, in the same breath as telling them
+ *  to upgrade. */
+export type OpenOutcome = "ok" | "unreadable" | "newerFormat";
+
+/** True if `text` is a ZIP archive rather than JSON — i.e. a v5 packaged
+ *  document this build cannot read.
+ *
+ *  `readTextFile` decodes with a NON-FATAL TextDecoder, so a zip's invalid bytes
+ *  become U+FFFD instead of throwing: the read SUCCEEDS and `JSON.parse` is what
+ *  fails. The local-file header is pure ASCII ("PK" followed by two control
+ *  bytes), so it survives that decode intact and we can diagnose from the text
+ *  we already hold — no second read, and no binary fs permission (the webview
+ *  has none, by design). Matching on "PK" alone is deliberate: it also catches
+ *  the empty and spanned-archive headers, and anything starting "PK" is not a
+ *  JSON document regardless. */
+export function looksLikeContainer(text: string): boolean {
+  return text.startsWith("PK");
+}
+
+/** Rewrite a pre-v5 document's inline base64 BREP into blob-store references.
+ *  Returns the original text unchanged on ANY failure — this is an optimisation
+ *  of the on-disk format, never a precondition for opening a file. */
+async function migrateInlineGeometry(text: string, geometry: GeometryBackend): Promise<string> {
   try {
-    store.load(await readTextFile(path));
+    const doc = JSON.parse(text) as CadDocument;
+    const legacy = (doc.features ?? []).filter(
+      (f): f is Extract<Feature, { type: "import" }> =>
+        f.type === "import" && typeof f.brep === "string" && !f.geom,
+    );
+    if (!legacy.length) return text;
+
+    const migrated = await geometry.migrateGeometry(
+      legacy.map((f) => ({ id: f.id, brep: f.brep as string })),
+    );
+    if (!migrated.length) return text;
+
+    const byId = new Map(migrated.map((m) => [m.id, m.geom]));
+    for (const f of doc.features ?? []) {
+      if (f.type !== "import") continue;
+      const geom = byId.get(f.id);
+      // Only drop the inline copy for features that actually got a hash; a body
+      // that failed to migrate keeps its base64 and still rebuilds.
+      if (geom) {
+        f.geom = geom;
+        delete f.brep;
+      }
+    }
+    return JSON.stringify(doc);
+  } catch {
+    return text;
+  }
+}
+
+/** Open a .sindri/.json document at a known path (no dialog) — shared by Open…
+ *  and the welcome screen's recent-files list.
+ *
+ *  A v5 document is a ZIP and is read by Rust, which also extracts its geometry
+ *  into the blob store before returning. A pre-v5 document is plain JSON and is
+ *  read as text exactly as it always was.
+ *
+ *  NOTE on ordering: `store.load()` ends by firing a rebuild SYNCHRONOUSLY,
+ *  before `markSaved(path)` below has run — so that first rebuild sees the
+ *  PREVIOUS document's path. That is harmless here only because geometry is
+ *  resolved by content hash out of the blob store, which needs no path at all.
+ *  Do not add anything to the rebuild path that depends on `store.filePath`. */
+export async function openDocumentAtPath(
+  store: DocumentStore,
+  path: string,
+  geometry?: GeometryBackend,
+): Promise<OpenOutcome> {
+  const base = path.split(/[\\/]/).pop();
+  const { invoke } = await import("@tauri-apps/api/core");
+  let text: string;
+  let wasContainer = false;
+  try {
+    wasContainer = await invoke<boolean>("container_is_container", { path });
+    text = wasContainer
+      ? await invoke<string>("container_open", { path })
+      : await (await import("@tauri-apps/plugin-fs")).readTextFile(path);
   } catch (e) {
-    await reportError(`Couldn't open ${path.split(/[\\/]/).pop()}: ${errMsg(e)}`);
-    return false;
+    // Rust's container errors are already user-facing sentences (a newer
+    // container format, a damaged archive, geometry that does not match its
+    // manifest), so pass them through rather than wrapping them in ours.
+    await reportError(`Couldn't open ${base}: ${errMsg(e)}`);
+    return "unreadable";
+  }
+  // One-way v4 -> v5, done on the PARSED text before `load()` rather than by
+  // patching the store afterwards: patching would record an undo entry, mark a
+  // freshly-opened document dirty, and fire a second rebuild. If anything here
+  // fails — a dead sidecar, an unreadable legacy body — `text` is untouched and
+  // the document opens exactly as it did before, still carrying its inline copy.
+  if (!wasContainer && geometry) text = await migrateInlineGeometry(text, geometry);
+
+  try {
+    // Throws before mutating anything: load() parses first (store.ts), so a
+    // file we can't read leaves the open document untouched.
+    store.load(text);
+  } catch (e) {
+    if (looksLikeContainer(text)) {
+      await reportError(
+        `${base} was saved by a newer version of SindriCAD, which stores geometry in a ` +
+          `packaged document this build can't read. Update SindriCAD to open it.`,
+      );
+      return "newerFormat";
+    }
+    await reportError(`Couldn't open ${base}: ${errMsg(e)}`);
+    return "unreadable";
   }
   store.markSaved(path); // freshly opened == clean, with a known path
   noteRecent(path);
-  return true;
+  return "ok";
 }
 
 export async function exportModel(store: DocumentStore, geometry: GeometryBackend) {
@@ -389,7 +522,7 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     type: "import",
     format: fmt,
     name: res.name,
-    brep: res.brep,
+    geom: res.geom,
     source: path,
     solid: res.solid,
     ...(res.color !== undefined ? { color: res.color } : {}),

@@ -103,14 +103,35 @@ async def main(token):
         ok_imp = r["ok"] and r["result"]["solid"] and r["result"]["faces"] == 6
         check("import stl (merged to 6 faces)", ok_imp, f"faces={r['result'].get('faces') if r.get('ok') else r}")
         if ok_imp:
-            brep = r["result"]["brep"]
-            r = await rebuild(ws, [{"id": "im", "type": "import", "format": "stl", "name": "box", "brep": brep}])
+            geom = r["result"]["geom"]
+            r = await rebuild(ws, [{"id": "im", "type": "import", "format": "stl", "name": "box", "geom": geom}])
             check("rebuild imported body", r["ok"] and nbodies(r) == 1)
             # combine an imported body with a primitive (cut a hole in the import)
-            r = await rebuild(ws, [{"id": "im", "type": "import", "format": "stl", "name": "box", "brep": brep},
+            r = await rebuild(ws, [{"id": "im", "type": "import", "format": "stl", "name": "box", "geom": geom},
                                    {"id": "cy", "type": "cylinder", "radius": 4, "height": 40},
                                    {"id": "cb", "type": "combine", "operation": "cut"}])
             check("import + combine cut", r["ok"] and nbodies(r) == 1)
+
+            # v4 -> v5 migration, over the real socket. Build a pre-container
+            # feature (inline base64 ASCII BREP) the way every saved document
+            # used to, migrate it, and rebuild from the hash alone.
+            import base64, io as _io
+            from build123d import export_brep as _eb
+            import builder as _b
+            _shape = _b._blob_to_shape(
+                __import__("blobstore").default_store().get_bytes(geom))
+            _buf = _io.BytesIO(); _eb(_shape, _buf)
+            legacy_b64 = base64.b64encode(_buf.getvalue()).decode("ascii")
+
+            r = await call(ws, "migrateGeometry", items=[{"id": "im", "brep": legacy_b64}])
+            got = r["ok"] and r["result"]["items"] and r["result"]["items"][0]["id"] == "im"
+            check("migrateGeometry returns a hash", bool(got), str(r)[:160])
+            if got:
+                new_hash = r["result"]["items"][0]["geom"]
+                check("...and no item failed", not r["result"].get("failed"))
+                r = await rebuild(ws, [{"id": "im", "type": "import", "format": "stl",
+                                        "name": "box", "geom": new_hash}])
+                check("rebuild from the MIGRATED hash", r["ok"] and nbodies(r) == 1)
 
         # export step + 3mf
         for fmt, ext in (("step", "step"), ("3mf", "3mf")):
