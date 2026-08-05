@@ -43,6 +43,20 @@ def _occt_children(shape):
     return out
 
 
+def _all_faces(shape):
+    """Every face in a shape, recursing through nested compounds. `.faces()`
+    stops at the first compound level, which silently under-counts an assembly."""
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    exp = TopExp_Explorer(shape.wrapped, TopAbs_FACE)
+    n = 0
+    while exp.More():
+        n += 1
+        exp.Next()
+    return n
+
+
 def leaf_occurrences(path):
     """The ordered leaf occurrences of a STEP assembly, as (node, shape).
 
@@ -739,6 +753,71 @@ def test_building_an_export_tree_does_not_mutate_the_cached_bodies():
     print("  live body shapes untouched by the export tree")
 
 
+def test_explode_false_keeps_the_assembly_tree():
+    """`explode:false` collapses the GEOMETRY to one body; it must not throw away
+    the TREE.
+
+    This flag is the escape hatch for large assemblies — exactly the documents
+    whose hierarchy matters most. It used to be checked before the manifest was
+    even looked at, so it returned a single body named "Imported" with no
+    node_ref, discarding product names, structure and colours in one step. A
+    single body can only honestly claim one node, so it claims the ROOT.
+    """
+    from builder import import_geometry, rebuild
+
+    path = os.path.join(FIXTURES, "asm_nested.step")
+    pay = import_geometry(path, "step")
+    assert pay.get("nodes"), "fixture carries no assembly tree"
+
+    exploded = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"]}]}
+    _p, err, bodies = rebuild(exploded)
+    assert not err, err
+    n_exploded = len(bodies)
+    assert n_exploded > 1, f"fixture should explode to several bodies, got {n_exploded}"
+
+    collapsed = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"],
+         "explode": False}]}
+    _p2, err2, bodies2 = rebuild(collapsed)
+    assert not err2, err2
+    assert len(bodies2) == 1, f"explode:false must give ONE body, got {len(bodies2)}"
+
+    body = bodies2[0]
+    # The tree survives: the body points at the assembly root...
+    assert body.get("node_ref"), (
+        "explode:false produced a body with no node_ref — the assembly tree was "
+        "discarded, which is the bug this guards"
+    )
+    feat_id, _, idx = body["node_ref"].partition("/")
+    assert feat_id == "im", body["node_ref"]
+    root = int(idx)
+    assert pay["nodes"][root].get("parent") is None, (
+        f"node_ref points at node {root}, which is not the assembly root"
+    )
+    # ...and wears the assembly's own name rather than the generic fallback.
+    assert body["name"] == pay["nodes"][root].get("name"), (
+        f'body named {body["name"]!r}, expected the root product '
+        f'{pay["nodes"][root].get("name")!r}'
+    )
+    # The geometry really is all there, just in one body. Counted with a
+    # TopExp_Explorer rather than `.solids()` or `.faces()`: NEITHER build123d
+    # accessor recurses into nested compounds (the same gotcha as
+    # `Compound.volume`), so both under-report a collapsed assembly — measured
+    # here as 3 solids and 18 faces against the real 7 and 42.
+    faces_exploded = sum(_all_faces(b["shape"]) for b in bodies)
+    faces_collapsed = _all_faces(body["shape"])
+    assert faces_collapsed == faces_exploded, (
+        f"{faces_collapsed} faces collapsed vs {faces_exploded} exploded — "
+        "geometry was lost"
+    )
+    print(f"  explode:false OK: {n_exploded} bodies -> 1 body named "
+          f"{body['name']!r}, node_ref {body['node_ref']}, "
+          f"{faces_collapsed} faces intact")
+
+
 if __name__ == "__main__":
     missing = [
         n for n in FIXTURE_NAMES if not os.path.exists(os.path.join(FIXTURES, f"{n}.step"))
@@ -776,5 +855,6 @@ if __name__ == "__main__":
         except AssertionError as exc:
             failures += 1
             print(f"  FAIL: {exc}")
+    test_explode_false_keeps_the_assembly_tree()
     print("FAILED" if failures else "all assembly tests passed")
     sys.exit(1 if failures else 0)

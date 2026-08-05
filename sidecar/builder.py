@@ -1976,9 +1976,21 @@ def _import_shape(f):
     return _brep_b64_to_shape(b64)
 
 
+def _assembly_root_index(nodes):
+    """Index of the assembly's root product (the node with no parent), or None.
+    First one wins: a well-formed tree has exactly one."""
+    if not nodes:
+        return None
+    for i, n in enumerate(nodes):
+        if isinstance(n, dict) and n.get("parent") is None:
+            return i
+    return None
+
+
 def _handle_import(f, ctx):
     base = f.get("name") or "Imported"
     shape = _import_shape(f)
+    nodes, parts = f.get("nodes"), f.get("parts")
     # explode:false keeps a multi-solid payload as ONE body. For imported
     # assemblies with hundreds of import features this divides body count
     # (browser tree entries, per-body payloads, draw calls) by the average
@@ -1986,12 +1998,38 @@ def _handle_import(f, ctx):
     # one-body-per-solid behavior. It is checked FIRST because it is an explicit
     # instruction to collapse, which a manifest cannot override.
     if f.get("explode") is False:
-        ctx.new_body(shape, base)
+        # ...but collapsing the GEOMETRY must not throw away the TREE. This used
+        # to return here with a body named "Imported" and no node_ref at all, so
+        # the whole assembly hierarchy — product names, structure, colours —
+        # was discarded by the one flag a user would reach for on exactly the
+        # documents where that hierarchy matters most.
+        #
+        # One body can only honestly claim one node, so it claims the ROOT: the
+        # body carries the assembly's own name and sits under it in the Browser,
+        # instead of appearing as an anonymous loose body.
+        root = _assembly_root_index(nodes)
+        if root is not None:
+            label = (nodes[root] or {}).get("name") or base
+            body = ctx.new_body(shape, label, node_ref=f"{f.get('id')}/{root}")
+        else:
+            body = ctx.new_body(shape, base)
+        # Exempt from _drop_debris. That pass deletes any solid under 0.1% of
+        # the biggest one that does not touch it, on the theory that it is
+        # residue from the booleans that carved the body. An explicitly
+        # collapsed import is the opposite case: every solid in it is a part
+        # the user's file declared, and small ones that float clear of the
+        # largest are the NORM in an assembly, not debris.
+        #
+        # Measured on asm_nested: main body 3200 mm3, and four legitimate parts
+        # at 3.0 mm3 each — 0.094%, just under the threshold — were silently
+        # deleted, taking 4 of 7 parts and 24 of 42 faces with them. It never
+        # showed up before because the exploded path gives each body ONE solid,
+        # and the pass returns early below two.
+        body["_intact"] = True
         return
     # Assembly manifest, when the import recorded one. Absent for every import
     # made before this existed and for every non-assembly file, which is what
     # keeps those documents rebuilding exactly as they did.
-    nodes, parts = f.get("nodes"), f.get("parts")
     if nodes and parts and _bind_assembly(f, ctx, shape, nodes, parts):
         return
     parts = _explode_solids(shape)
@@ -2555,7 +2593,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
         sh = b["shape"]
         if sh is not None and _wrapped_or_none(sh) is None:
             sh = Compound(list(sh))
-        if sh is not None:
+        if sh is not None and not b.get("_intact"):
             # final pass only — mid-timeline drops would shift downstream
             # geometric selectors and delete chips a later join re-absorbs
             sh = _drop_debris(sh)
