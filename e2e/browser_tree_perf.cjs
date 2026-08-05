@@ -12,7 +12,13 @@
 // Both documents hold the SAME bodies; only the manifest differs, so the
 // difference measured is the tree and nothing else.
 //
+// A BENCHMARK, not a regression gate, and deliberately not run in CI: its
+// verdict compares two medians, which a shared runner's noise can invert, and
+// the question it answers ("does the collapsed tree pay for itself?") was
+// answered once. Re-run it by hand when the Browser's rendering changes.
+//
 // Usage (from the repo root, with vite on 5173 + sidecar on 8765):
+//   sidecar/.venv/bin/python e2e/gen_perf_docs.py
 //   SC_TOKEN=<sidecar token> node e2e/browser_tree_perf.cjs
 const { chromium } = require("playwright-core");
 const fs = require("fs");
@@ -20,6 +26,7 @@ const fs = require("fs");
 const TOKEN = process.env.SC_TOKEN || "";
 if (!TOKEN) { console.error("set SC_TOKEN"); process.exit(1); }
 const SIZES = [100, 1000, 3000];
+const DOCS = process.env.SC_PERF_DIR || "/tmp";
 const REPEATS = 7;
 
 (async () => {
@@ -55,7 +62,15 @@ const REPEATS = 7;
   const results = [];
   for (const n of SIZES) {
     for (const kind of ["flat", "tree"]) {
-      const doc = JSON.parse(fs.readFileSync(`/tmp/perf_${kind}_${n}.sindri`, "utf8"));
+      const docPath = `${DOCS}/perf_${kind}_${n}.sindri`;
+      if (!fs.existsSync(docPath)) {
+        console.error(
+          `missing ${docPath} — generate the benchmark documents first:\n` +
+            `  sidecar/.venv/bin/python e2e/gen_perf_docs.py`,
+        );
+        process.exit(1);
+      }
+      const doc = JSON.parse(fs.readFileSync(docPath, "utf8"));
       const stat = await page.evaluate(
         async ({ doc, repeats }) => {
           window.store.loadDocument(doc);

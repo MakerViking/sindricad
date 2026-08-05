@@ -423,17 +423,14 @@ jobs:
           done
           grep -q "LISTENING 8765" /tmp/ci_sidecar.log || { echo "sidecar never listened"; cat /tmp/ci_sidecar.log; exit 1; }
 
+      # e2e/browser_tree_perf.cjs is deliberately NOT run here: it is a
+      # benchmark whose verdict compares two medians, and a shared runner's
+      # noise can invert that. Run it by hand (see its header).
       - name: Assembly tree end-to-end
         env:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/assembly_tree_e2e.cjs
-
-      - name: Browser tree render cost
-        env:
-          SC_TOKEN: citoken
-          SC_CHROME: /usr/bin/google-chrome
-        run: node e2e/browser_tree_perf.cjs
 
       - name: Sidecar log on failure
         if: failure()
