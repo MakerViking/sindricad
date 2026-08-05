@@ -60,6 +60,31 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The geometry engine starts on Windows machines whose font folder holds a file
+  it cannot read.** Starting SindriCAD could fail outright with "the geometry
+  engine could not start on this computer", and the message blamed your
+  installation, which was wrong and left nothing to act on. The real cause was
+  one file in `C:\Windows\Fonts`. The geometry library scans that folder the
+  moment it loads, and a single font it cannot parse took the whole engine down
+  with it: either a font collection saved under a plain `.ttf` name, or an old
+  bitmap font that is not really a font file at all. Both are ordinary things to
+  have on a Windows install, and neither has anything to do with your model. The
+  scan now skips a file it cannot read instead of giving up, and names the
+  skipped file in the engine log. Reported by four people across four builds.
+
+- **An ordinary mouse is no longer mistaken for a 3D mouse.** SindriCAD looks for
+  a 3Dconnexion SpaceMouse at startup, and 3Dconnexion's older devices share a
+  manufacturer id with every Logitech mouse and keyboard ever made. On a machine
+  where the system does not say what a device is for, SindriCAD trusted that id
+  alone, opened whatever it found and fed the result to the camera, so moving an
+  ordinary mouse could spin the model. It now asks the device itself what it is
+  and ignores anything that does not declare itself a multi-axis controller. A
+  real SpaceMouse is unaffected, including models not known by name.
+
+  The list of what was found is also recorded reliably now. It was being gathered
+  before the window existed and then thrown away, so a bug report about a 3D
+  mouse arrived with no trace of any hardware in it.
+
 - **The AppImage starts on distributions that ship a current WebKit.** It carried its
   own copy of WebKit and the GTK stack around it, and on a system whose own WebKit is
   newer, that bundled copy killed its rendering process the moment the app launched. The
