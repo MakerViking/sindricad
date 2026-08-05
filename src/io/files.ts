@@ -510,8 +510,38 @@ export function cancelledImportPath(): string | null {
   return lastCancelledImport;
 }
 
-/** Import a specific mesh / CAD file path as a new body. Shared by the Import
- *  Mesh command and by Open (when the chosen file isn't a .sindri document). */
+// Viewport capability, MEASURED post-Phase-A on real WebKitGTK: about 60 fps at
+// 1,000 bodies, falling to 27-37 fps at 3,060. The residual is draw-call bound
+// at 2 calls per body, which is why the threshold is a BODY count and not a
+// triangle count. Merging draw calls across bodies is the only lever left and it
+// breaks three shipped invariants (per-body `.visible`, etag reuse, move-ghost
+// translation), so these numbers are the honest limit rather than a bug.
+const SMOOTH_BODY_LIMIT = 1000;
+const SLOW_BODY_LIMIT = 3000;
+
+/** What to tell the user about a document this size, or null when it will be
+ *  fine. Separated from the import flow so the thresholds can be tested without
+ *  a dialog, a backend or a viewport.
+ *
+ *  The point is to say what the document will be like BEFORE the viewport is
+ *  built. The counts are known at import time, so the alternative to saying it
+ *  is letting the user discover it as a freeze and conclude the app is broken. */
+export function describeImportCapability(bodies: number): string | null {
+  if (!Number.isFinite(bodies) || bodies <= SMOOTH_BODY_LIMIT) return null;
+  const n = bodies.toLocaleString();
+  if (bodies <= SLOW_BODY_LIMIT) {
+    return `Imported ${n} bodies. The 3D view is smooth to about ${SMOOTH_BODY_LIMIT.toLocaleString()} bodies, so orbiting may lag a little. Everything still works.`;
+  }
+  return `Imported ${n} bodies. Expect the 3D view to be slow: measured 27-37 fps at ${SLOW_BODY_LIMIT.toLocaleString()} bodies against 60 at ${SMOOTH_BODY_LIMIT.toLocaleString()}. Modelling, export and printing are unaffected.`;
+}
+
+/** Bodies an import feature will produce: one per assembly leaf, or a single
+ *  body when the file carried no tree. */
+export function importedBodyCount(res: { parts?: { node: number; faces: number }[] }): number {
+  return res.parts?.length ?? 1;
+}
+
+
 async function importPath(store: DocumentStore, geometry: GeometryBackend, path: string) {
   const fmt = extToImportFormat(path);
   // runBusy is what makes the operation VISIBLE and stoppable: an import used to
@@ -550,6 +580,16 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     ...(res.nodes !== undefined ? { nodes: res.nodes } : {}),
     ...(res.parts !== undefined ? { parts: res.parts } : {}),
   });
+
+  // Say what the document will be like while the user is still deciding what to
+  // do with it, rather than letting them discover it as a freeze and conclude
+  // the app is broken. Non-blocking on purpose: this is a heads-up about a
+  // measured limit, not a refusal, and everything except orbiting is unaffected.
+  const capability = describeImportCapability(importedBodyCount(res));
+  if (capability) {
+    const { toast } = await import("../ui/toast");
+    toast(capability, { kind: "info" });
+  }
 
   // Carry the file's own colour onto the body it produced. The body doesn't
   // exist until the rebuild runs, and its id is positional, so wait for the

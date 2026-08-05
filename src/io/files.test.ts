@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 
-import { extToFormat, extToImportFormat, looksLikeContainer, nearestPaletteSlot } from "./files";
+import { describeImportCapability, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot } from "./files";
 
 // Both mappers are TOTAL — an unrecognised extension silently becomes "step"
 // rather than erroring. That is deliberate (the save dialog can hand back a bare
@@ -213,5 +213,57 @@ describe("export runs as a cancellable busy op", () => {
     const { exportModel } = await import("./files");
     await expect(exportModel(store, backend)).rejects.toThrow("socket died");
     expect(store.busyState.active).toBe(false);
+  });
+});
+
+// --- import capability warning (Wave 1.5) ------------------------------------
+//
+// The counts are known at import time, before the viewport is built. Saying
+// nothing means the user discovers a 3,000-body document as a freeze and
+// concludes the app is broken. The thresholds are MEASURED post-Phase-A on real
+// WebKitGTK — 60 fps at 1,000 bodies, 27-37 at 3,060 — not guessed, so a test
+// that pins them is pinning a measurement.
+describe("describeImportCapability", () => {
+  it("says nothing about a document that will be fine", () => {
+    for (const n of [1, 7, 500, 999, 1000]) {
+      expect(describeImportCapability(n)).toBeNull();
+    }
+  });
+
+  it("warns gently just past the smooth limit", () => {
+    const msg = describeImportCapability(1500);
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain("1,500");
+    expect(msg!).toMatch(/still works/i);   // reassures: not a refusal
+    expect(msg!).not.toMatch(/27-37/);      // the harsher figure is for later
+  });
+
+  it("is blunt about a document past the slow limit, and says what still works", () => {
+    const msg = describeImportCapability(3060);
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain("3,060");
+    expect(msg!).toContain("27-37 fps");    // the measured number, not a vague "slow"
+    // The user needs to know this is a VIEWPORT limit, not a broken import —
+    // otherwise the natural conclusion is that the file failed to load.
+    expect(msg!).toMatch(/export/i);
+  });
+
+  it("never warns on a nonsense count", () => {
+    expect(describeImportCapability(NaN)).toBeNull();
+    expect(describeImportCapability(0)).toBeNull();
+    expect(describeImportCapability(-5)).toBeNull();
+  });
+});
+
+describe("importedBodyCount", () => {
+  it("counts assembly leaves", () => {
+    expect(importedBodyCount({ parts: [{ node: 0, faces: 6 }, { node: 1, faces: 8 }] })).toBe(2);
+  });
+
+  it("treats a file with no tree as one body", () => {
+    // A plain STL/STEP carries no `parts`, and it still produces a body — a
+    // count of 0 here would silently disable the warning for single-body files
+    // and, worse, misreport the document.
+    expect(importedBodyCount({})).toBe(1);
   });
 });
