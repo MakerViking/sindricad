@@ -861,6 +861,60 @@ def _explode_solids(shape):
     return out
 
 
+def _canonicalize_roots(roots):
+    """Canonicalise a multi-root file PER ROOT, then compound the results.
+
+    Per root for the same reason the assembly path works per leaf: `_canonical_ok`
+    compares `result.volume` against `shape.volume`, and `Compound.volume` does
+    not recurse into nested compounds. Hand the gate a multi-root compound and it
+    reads a partial volume it can never match, so `_canonicalize` does the whole
+    expensive pass and then silently discards every bit of it. Per root, each
+    comparison is on a shape the gate can actually measure.
+
+    REACHABILITY, measured rather than assumed: this needs a STEP whose product
+    count does not exceed its root count (`step_assembly`'s `is_assembly` test),
+    with more than one root. A file written by OCCT's own STEPCAFControl_Writer
+    from two free shapes does NOT qualify — it gains a wrapper product, so 2
+    roots arrive as 3 nodes and the file takes the assembly path instead. So this
+    is a correctness fix on a branch that another writer's output can reach, not
+    one demonstrated against a file in this repo.
+    """
+    out = []
+    for r in roots:
+        w = _wrap_topods(r)
+        if w is not None:
+            out.append(_canonicalize(w))
+    return Compound(children=out)
+
+
+def _canonical_ok(result, shape, tol=1e-3):
+    """Is `result` an acceptable canonicalisation of `shape`?
+
+    Same solid count, same face count, structurally valid, and the volume within
+    0.5%. Any doubt (an exception anywhere in the checks) is a NO — this decides
+    whether a rewritten surface gets baked permanently into the stored B-rep, so
+    the safe answer is to keep the original.
+
+    NOTE the volume comparison is only meaningful when neither side is a compound
+    of compounds: `Compound.volume` does not recurse, so on nested input it reads
+    a partial figure and the gate can never pass. Callers with multi-root input
+    must canonicalise per root (see import_geometry) rather than hand the whole
+    compound in here.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    try:
+        return bool(
+            len(result.solids()) == max(1, len(shape.solids()))
+            and len(result.faces()) == len(shape.faces())
+            and BRepCheck_Analyzer(result.wrapped).IsValid()
+            and abs(result.volume - shape.volume)
+            <= max(1e-6, 0.005 * abs(shape.volume))
+        )
+    except Exception:  # noqa: BLE001 — an unmeasurable result is not acceptable
+        return False
+
+
 def _canonicalize(shape, tol=1e-3):
     """Canonical-recognition pre-pass for B-rep imports (STEP): snap near-analytic
     B-spline/Bezier faces to true planes/cylinders/cones/spheres, and swept
@@ -933,7 +987,15 @@ def _canonicalize(shape, tol=1e-3):
                         converted += 1
             new_faces.append(nf)
         if converted == 0:
-            return work if work is not shape else shape
+            # `work` is SweptToElementary's output, and until now it was returned
+            # here WITHOUT any of the validation every other exit applies. That
+            # modifier rewrites surfaces across the whole shape; if it produced
+            # something invalid or volume-shifted, the unchecked return baked it
+            # into the embedded B-rep, permanently and silently. Same gate as the
+            # converted path below.
+            if work is not shape and _canonical_ok(work, shape, tol):
+                return work
+            return shape
 
         sew = BRepBuilderAPI_Sewing(max(tol, 1e-6))
         for nf in new_faces:
@@ -953,14 +1015,7 @@ def _canonicalize(shape, tol=1e-3):
         if not solids:
             return shape
         result = solids[0] if len(solids) == 1 else Compound(solids)
-        ok = (
-            len(solids) == max(1, len(shape.solids()))
-            and len(result.faces()) == len(shape.faces())
-            and BRepCheck_Analyzer(result.wrapped).IsValid()
-            and abs(result.volume - shape.volume)
-            <= max(1e-6, 0.005 * abs(shape.volume))
-        )
-        return result if ok else shape
+        return result if _canonical_ok(result, shape, tol) else shape
     except Exception:
         return shape
 
@@ -1205,13 +1260,13 @@ def import_geometry(path, fmt):
             # An ordinary part file stays on the historical path: ONE shape,
             # canonicalized whole, no manifest. Verified geometrically identical
             # to import_step's result across every .step in this repo.
-            _shape = asm.roots[0] if len(asm.roots) == 1 else None
-            _shape = _wrap_topods(_shape) if _shape is not None else Compound(
-                children=[_wrap_topods(r) for r in asm.roots]
-            )
+            #
             # snap near-analytic spline faces to true planes/cylinders/… ONCE at
             # import, so the canonical form is baked into the embedded BREP.
-            shape = _canonicalize(_shape)
+            if len(asm.roots) == 1:
+                shape = _canonicalize(_wrap_topods(asm.roots[0]))
+            else:
+                shape = _canonicalize_roots(asm.roots)
     elif fmt == "brep":
         shape = import_brep(path)
     elif fmt in ("stl", "3mf", "obj"):
