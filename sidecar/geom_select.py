@@ -51,6 +51,8 @@ import json
 import math
 import os
 
+import font_guard  # noqa: F401  MUST precede build123d — see font_guard.py
+
 from build123d import Axis, Vector, GeomType
 
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}

@@ -44,6 +44,8 @@ from collections import ChainMap
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import font_guard  # noqa: F401  MUST precede build123d — see font_guard.py
+
 from build123d import (
     Rectangle,
     Circle,
