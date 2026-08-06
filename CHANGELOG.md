@@ -20,6 +20,30 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **A very large assembly now opens instead of killing the app.** Importing the
+  file worked, but on a 356 MB assembly of about 3,000 parts the app then died
+  partway through drawing it, with no message. Two separate causes, both fixed.
+
+  The finished geometry was too big to hand to the 3D view in one piece. Most of
+  that turned out to be the model's edge lines, which were being sent as text;
+  they are now sent in a compact binary form, about a quarter of the size and
+  visually identical. On top of that, a document with more than about a thousand
+  parts is now drawn at a slightly coarser level of detail, and above roughly two
+  thousand parts coarser again. Curved surfaces on those very large assemblies
+  are therefore a little less smooth than on an ordinary document, which is the
+  trade that lets them open at all. Documents below that size are drawn exactly
+  as before.
+
+  The second cause was the step that works out how big the model is, so the view
+  knows where to point the camera. On an assembly this size that single
+  calculation took over a minute and a half, long enough that the geometry engine
+  was assumed to have hung and was restarted, every time. It now measures the
+  model already prepared for drawing, which takes no measurable time at all.
+
+  If a model is still too large to display, SindriCAD now says so and names the
+  size, rather than closing the connection to the geometry engine and leaving the
+  app looking like it crashed.
+
 - **Large STEP assemblies import.** A STEP file over 256 MB was refused outright,
   which ruled out most real assemblies exported from a full CAD system. STEP,
   STP and BREP files can now be up to 1 GB. Mesh formats keep the old limit on
