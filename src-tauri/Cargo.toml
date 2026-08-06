@@ -67,12 +67,18 @@ tauri-plugin-process = "2"
 #
 # `deflate-flate2`, NOT the `deflate` umbrella: that one also pulls
 # `deflate-zopfli`, a much slower alternative compressor we have no use for and
-# which would otherwise land in the DEFAULT build. flate2 itself is already
-# compiled (tauri-plugin-updater depends on it, non-optionally, for tar.gz), so
-# this adds no new crate at all — it only switches on zip's flate2 backend,
-# which feature-unifies into the updater's copy. Feature unification is additive
-# and cannot change updater behaviour.
+# which would otherwise land in the DEFAULT build.
 zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+# flate2 is named EXPLICITLY, with its default `rust_backend`, and must stay that
+# way. zip's `deflate-flate2` turns on the flate2 dependency but does NOT select
+# a compression backend, so flate2 needs someone to enable one. This used to be
+# left to tauri-plugin-updater, which pulls flate2 for its tar.gz path — true on
+# Linux and macOS, FALSE on Windows, where the updater ships .exe/.msi and never
+# touches tar.gz. The Windows build therefore got a backend-less flate2 and died
+# with "No compression backend selected" plus an unresolved `crc32fast`, while
+# Linux and macOS built clean. Pure Rust (miniz_oxide), so this pulls in no C
+# zlib; feature unification is additive and cannot change updater behaviour.
+flate2 = "1"
 # content hashing for the container's blob ids. blake2b-128, matching the digest
 # size the sidecar already uses for its own keys.
 blake2 = "0.10"
