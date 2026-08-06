@@ -173,19 +173,48 @@ def test_oversized_reply_becomes_an_error():
     print("  oversized-reply guard OK")
 
 
-def test_doc_bbox_equals_merged_part_bbox():
-    """The document bbox is now the UNION of per-body boxes instead of one
+def test_mesh_bbox_is_tight_on_curved_geometry():
+    """mesh_bbox must box the TRIANGULATION, not OCCT's poles.
+
+    Curved geometry is the only place the difference shows: on planar solids the
+    poles box IS the exact box, which is why the multi-solid fixture below cannot
+    catch this. Measured on a 60mm ring with a 1mm fillet — exact +/-30.0,
+    triangulation +/-30.118, poles +/-32.472."""
+    from build123d import Cylinder, Mode, fillet
+    from tessellate import tessellate, mesh_bbox, bbox as exact_bbox_of
+
+    ring = fillet((Cylinder(30, 10) - Cylinder(25, 10, mode=Mode.SUBTRACT)).edges(), 1.0)
+    tessellate(ring, 0.008, angular_tolerance=0.35, relative=True, force_remesh=True)
+    got = mesh_bbox(ring)
+    # AFTER mesh_bbox: bounding_box() runs BRepTools.Clean_s and drops the
+    # triangulation mesh_bbox needs.
+    exact = exact_bbox_of(ring)
+
+    for i in range(3):
+        assert got["min"][i] <= exact["min"][i] + 1e-9, (i, got, exact)
+        assert got["max"][i] >= exact["max"][i] - 1e-9, (i, got, exact)
+    worst = max(max(exact["min"][i] - got["min"][i], got["max"][i] - exact["max"][i])
+                for i in range(3))
+    assert worst < 0.5, f"box is {worst:.3f}mm loose — poles box, not triangulation?"
+    print(f"  mesh_bbox tight on curved geometry ({worst:.3f}mm)")
+
+
+def test_doc_bbox_covers_the_model_without_the_slow_walk():
+    """The document bbox is the UNION of per-body MESH boxes instead of one
     bbox(part) walk. That walk was a single 95.3 s OCCT call on the reference
     assembly with no way to tick inside it, against STALL_TIMEOUT = 60 s, so the
     supervisor reaped the worker before the rebuild could ever finish.
 
-    The two must agree exactly — `part` is the Compound of the same shapes — or
-    the camera silently frames the wrong volume. Driven through the REAL
-    _rebuild_job on a multi-body document, not on hand-made dicts."""
+    Asserts the two properties that matter, against the exact geometric box:
+    it CONTAINS the model (a camera fit must never clip), and it is TIGHT. The
+    tightness bound is what catches a regression to OCCT's poles-based box —
+    `bounding_box(optimal=False)` measures 2.5mm out on a 60mm part, where the
+    triangulation box is 0.118mm out. Driven through the REAL _rebuild_job on a
+    multi-body document, not on hand-made dicts."""
     import os
 
     import builder
-    from tessellate import bbox as bbox_of
+    from tessellate import bbox as exact_bbox_of
 
     # union math first, including the cases the loop can hand it
     assert server._union_bbox([]) is None
@@ -207,9 +236,17 @@ def test_doc_bbox_equals_merged_part_bbox():
     assert len(res["bodies"]) > 1, f"need a multi-body fixture, got {len(res['bodies'])}"
 
     part, _errs, _bodies = builder.rebuild_cached(doc)
-    expected = bbox_of(part)   # the very compound the old bbox(part) call walked
-    assert res["bbox"] == expected, (res["bbox"], expected)
-    print(f"  document bbox == merged-part bbox OK ({len(res['bodies'])} bodies)")
+    exact = exact_bbox_of(part)   # the compound the old bbox(part) call walked
+    got = res["bbox"]
+    extent = max(exact["max"][i] - exact["min"][i] for i in range(3))
+    slack = 0.01 * extent + 0.05    # generous vs 0.118mm, tight vs 2.5mm
+
+    for i in range(3):
+        assert got["min"][i] <= exact["min"][i] + 1e-9, (i, got, exact)
+        assert got["max"][i] >= exact["max"][i] - 1e-9, (i, got, exact)
+        assert got["min"][i] >= exact["min"][i] - slack, (i, got, exact)
+        assert got["max"][i] <= exact["max"][i] + slack, (i, got, exact)
+    print(f"  document bbox covers the model, tight ({len(res['bodies'])} bodies)")
 
 
 async def main():
@@ -321,7 +358,8 @@ async def main():
     # THIS process, and the socket tests above are supervised by a 60 s stall
     # timer against a worker pool that is created lazily on first use. Running
     # heavy work in the parent first perturbs their timing enough to trip it.
-    test_doc_bbox_equals_merged_part_bbox()
+    test_mesh_bbox_is_tight_on_curved_geometry()
+    test_doc_bbox_covers_the_model_without_the_slow_walk()
 
     print("WS ALL PASS")
 

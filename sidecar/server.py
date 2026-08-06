@@ -637,7 +637,7 @@ def _body_payload(b, tolerance, profile):
     import pickle
     import uuid as _uuid
 
-    from tessellate import tessellate, edge_polylines_by_body, bbox as _bbox_of
+    from tessellate import tessellate, edge_polylines_by_body, mesh_bbox
     from builder import _face_fp, on_feature_tick
     from texture import resolve_body_textures
 
@@ -722,6 +722,11 @@ def _body_payload(b, tolerance, profile):
             "positions": pos, "indices": idx, "faceIds": fids,
             "faceOwners": face_owners, "edges": edges,
             "faceCount": (max(fids) + 1) if fids else 0,
+            # Computed HERE, while the triangulation tessellate() just built is
+            # still on the shape, and stored in the payload so the disk mesh
+            # artifact carries it too — a cache hit must not fall back to the
+            # loose poles-based box and make the camera jump between runs.
+            "bbox": mesh_bbox(sh),
         }
         if tex_color_slots:
             payload["textureColorSlots"] = tex_color_slots
@@ -742,16 +747,11 @@ def _body_payload(b, tolerance, profile):
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
             except Exception:
                 pass
-    # This body's own bounding box, cached alongside its mesh. The document bbox
-    # is the union of these (see the payload loop): computing it per body means
-    # it is covered by this function's progress tick and reuses the cache on an
-    # unchanged body, where walking the merged compound was neither.
-    try:
-        body_bbox = _bbox_of(sh) if sh is not None else None
-    except Exception:
-        body_bbox = None
+    # The document bbox is the union of these (see the payload loop), so it is
+    # covered by this function's progress tick and reuses the cache on an
+    # unchanged body — walking the merged compound was neither.
     ent = {"shape": sh, "requested": requested, "tolerance": tolerance,
-           "profile": profile, "bbox": body_bbox,
+           "profile": profile, "bbox": payload.get("bbox"),
            "etag": _uuid.uuid4().hex, "payload": payload, "texture_key": texture_key}
     _MESH_CACHE[bid] = ent
     if on_feature_tick is not None:
