@@ -45,8 +45,31 @@ def _decode_binary_frame(frame):
         for field in ("positions", "normals", "indices", "faceIds"):
             if field in b and isinstance(b[field], dict):
                 b[field] = views[b[field]["$buf"]]
+        # packed edge polylines (server._pack_edges) — expand to the same list
+        # the JSON reply carries, exactly as client.ts handleBinaryReply does
+        ed = b.get("edges")
+        if isinstance(ed, dict):
+            pts = views[ed["$pts"]["$buf"]]
+            counts = views[ed["$counts"]["$buf"]]
+            out, o = [], 0
+            for n in counts.tolist():
+                pl = [[float(pts[o + k * 3 + j]) for j in range(3)] for k in range(n)]
+                o += n * 3
+                out.append({"points": pl, "body": ed["body"]}
+                           if ed.get("body") is not None else {"points": pl})
+            b["edges"] = out
     header["result"].pop("$buffers", None)
     return header
+
+
+def _one_body_res(**over):
+    """The minimal protocol-2 result the encoder accepts, with `over` replacing
+    fields. Four tests built this literal by hand; a drifting copy still passes."""
+    body = {"id": "b1", "name": "A", "etag": "e1",
+            "positions": [0.0, 0.0, 0.0], "indices": [0],
+            "faceIds": [0], "faceCount": 1}
+    body.update(over)
+    return {"protocol": 2, "bodies": [body]}
 
 
 def test_encoder_unit():
@@ -78,6 +101,33 @@ def test_encoder_unit():
     print("  binary encoder unit OK")
 
 
+def test_encoder_packs_edges():
+    """Edge polylines move OUT of the inline JSON header into binary buffers and
+    come back identical. Edges are the largest tolerance-INVARIANT component of a
+    large assembly's reply (97.1 MiB / 1,726,523 points measured on the 356 MiB
+    reference file), so packing them is what puts that reply under the frame cap.
+
+    Asserts the packing HAPPENED, not just that the round-trip agrees: a
+    _pack_edges that quietly left the triples inline would still round-trip, and
+    this test would prove nothing."""
+    edges = [
+        {"points": [[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], "body": "b1"},
+        {"points": [[4.0, 5.0, 6.0], [7.0, 8.0, 9.0], [1.5, -2.5, 0.25]], "body": "b1"},
+    ]
+    frame = server._encode_binary_reply("rq", _one_body_res(edges=edges))
+
+    # the header must NOT still carry the point triples inline
+    (header_len,) = struct.unpack_from("<I", frame, 0)
+    raw_header = json.loads(frame[4:4 + header_len].decode("utf-8"))
+    raw_edges = raw_header["result"]["bodies"][0]["edges"]
+    assert isinstance(raw_edges, dict), f"edges were not packed: {type(raw_edges)}"
+    assert set(raw_edges) == {"$pts", "$counts", "body"}, raw_edges
+
+    out = _decode_binary_frame(frame)
+    assert out["result"]["bodies"][0]["edges"] == edges
+    print("  binary edge packing OK")
+
+
 async def _recv_reply(ws):
     """Next non-progress frame (text-decoded JSON or raw bytes)."""
     while True:
@@ -90,8 +140,120 @@ async def _recv_reply(ws):
         return msg
 
 
+def test_viewport_profile_tiers():
+    """A document large enough to blow the frame cap is meshed coarser; one that
+    fits keeps full quality. Measured anchors: the 356 MiB reference assembly is
+    3,071 bodies and needs 4.0/0.35 to fit; a normal document must be untouched."""
+    assert server._viewport_profile(0) == (1.0, server._VIEWPORT_ANG_TOL)
+    assert server._viewport_profile(1199) == (1.0, server._VIEWPORT_ANG_TOL)
+    assert server._viewport_profile(1200) == (2.0, 0.26)
+    assert server._viewport_profile(2199) == (2.0, 0.26)
+    assert server._viewport_profile(2200) == (4.0, 0.35)
+    assert server._viewport_profile(3071) == (4.0, 0.35), "the reference assembly"
+
+    # the coarsening must actually reach the deflection BRepMesh gets
+    fine = server._effective_tolerance(None, 0.1, 1.0)
+    coarse = server._effective_tolerance(None, 0.1, 4.0)
+    assert coarse == fine * 4.0, (fine, coarse)
+    print("  viewport size tiers OK")
+
+
+def test_oversized_reply_becomes_an_error():
+    """A reply over the frame cap must come back as a NAMED error, not as a frame
+    websockets refuses to send (which closes the socket with 1009 and reaches the
+    user as the app vanishing mid-rebuild — GH #4's failure mode)."""
+    big = "x" * (server._MAX_FRAME + 1024)
+    out = json.loads(server._reply_bytes("rq", _one_body_res(name=big), True))
+    assert out["ok"] is False, out
+    assert "too detailed" in out["error"]["message"], out["error"]
+    assert len(json.dumps(out)) < server._MAX_FRAME, "the error itself must fit"
+
+    # and a normal reply is still returned intact
+    assert isinstance(server._reply_bytes("rq", _one_body_res(), True), (bytes, bytearray))
+    print("  oversized-reply guard OK")
+
+
+def test_mesh_bbox_is_tight_on_curved_geometry():
+    """mesh_bbox must box the TRIANGULATION, not OCCT's poles.
+
+    Curved geometry is the only place the difference shows: on planar solids the
+    poles box IS the exact box, which is why the multi-solid fixture below cannot
+    catch this. Measured on a 60mm ring with a 1mm fillet — exact +/-30.0,
+    triangulation +/-30.118, poles +/-32.472."""
+    from build123d import Cylinder, Mode, fillet
+    from tessellate import tessellate, mesh_bbox, bbox as exact_bbox_of
+
+    ring = fillet((Cylinder(30, 10) - Cylinder(25, 10, mode=Mode.SUBTRACT)).edges(), 1.0)
+    tessellate(ring, 0.008, angular_tolerance=0.35, relative=True, force_remesh=True)
+    got = mesh_bbox(ring)
+    # AFTER mesh_bbox: bounding_box() runs BRepTools.Clean_s and drops the
+    # triangulation mesh_bbox needs.
+    exact = exact_bbox_of(ring)
+
+    for i in range(3):
+        assert got["min"][i] <= exact["min"][i] + 1e-9, (i, got, exact)
+        assert got["max"][i] >= exact["max"][i] - 1e-9, (i, got, exact)
+    worst = max(max(exact["min"][i] - got["min"][i], got["max"][i] - exact["max"][i])
+                for i in range(3))
+    assert worst < 0.5, f"box is {worst:.3f}mm loose — poles box, not triangulation?"
+    print(f"  mesh_bbox tight on curved geometry ({worst:.3f}mm)")
+
+
+def test_doc_bbox_covers_the_model_without_the_slow_walk():
+    """The document bbox is the UNION of per-body MESH boxes instead of one
+    bbox(part) walk. That walk was a single 95.3 s OCCT call on the reference
+    assembly with no way to tick inside it, against STALL_TIMEOUT = 60 s, so the
+    supervisor reaped the worker before the rebuild could ever finish.
+
+    Asserts the two properties that matter, against the exact geometric box:
+    it CONTAINS the model (a camera fit must never clip), and it is TIGHT. The
+    tightness bound is what catches a regression to OCCT's poles-based box —
+    `bounding_box(optimal=False)` measures 2.5mm out on a 60mm part, where the
+    triangulation box is 0.118mm out. Driven through the REAL _rebuild_job on a
+    multi-body document, not on hand-made dicts."""
+    import os
+
+    import builder
+    from tessellate import bbox as exact_bbox_of
+
+    # union math first, including the cases the loop can hand it
+    assert server._union_bbox([]) is None
+    assert server._union_bbox([None, None]) is None
+    assert server._union_bbox([
+        {"min": [0, 0, 0], "max": [1, 1, 1]},
+        None,
+        {"min": [-5, 2, 0], "max": [-1, 9, 0.5]},
+    ]) == {"min": [-5, 0, 0], "max": [1, 9, 1]}
+
+    # then the real thing: a multi-solid import gives several bodies
+    fixture = os.path.join(os.path.dirname(__file__), "fixtures", "asm_multisolid.step")
+    payload = builder.import_geometry(fixture, "step")
+    doc = {"version": 1, "parameters": {},
+           "features": [dict(payload, id="f1", type="import", format="step")]}
+
+    res = server._rebuild_job(doc, 0.1)
+    assert "error" not in res, res
+    assert len(res["bodies"]) > 1, f"need a multi-body fixture, got {len(res['bodies'])}"
+
+    part, _errs, _bodies = builder.rebuild_cached(doc)
+    exact = exact_bbox_of(part)   # the compound the old bbox(part) call walked
+    got = res["bbox"]
+    extent = max(exact["max"][i] - exact["min"][i] for i in range(3))
+    slack = 0.01 * extent + 0.05    # generous vs 0.118mm, tight vs 2.5mm
+
+    for i in range(3):
+        assert got["min"][i] <= exact["min"][i] + 1e-9, (i, got, exact)
+        assert got["max"][i] >= exact["max"][i] - 1e-9, (i, got, exact)
+        assert got["min"][i] >= exact["min"][i] - slack, (i, got, exact)
+        assert got["max"][i] <= exact["max"][i] + slack, (i, got, exact)
+    print(f"  document bbox covers the model, tight ({len(res['bodies'])} bodies)")
+
+
 async def main():
     test_encoder_unit()
+    test_encoder_packs_edges()
+    test_viewport_profile_tiers()
+    test_oversized_reply_becomes_an_error()
     async with websockets.serve(handle, HOST, PORT):
         async with websockets.connect(URL) as ws:
             req_id = "req-1"
@@ -191,6 +353,13 @@ async def main():
                 xp2 = json.loads(await ws.recv())
                 assert not xp2.get("ok"), "oversized settings must be rejected"
                 print("  WS exportProject settings-cap OK")
+
+    # LAST, deliberately: this one does real geometry (import + two rebuilds) in
+    # THIS process, and the socket tests above are supervised by a 60 s stall
+    # timer against a worker pool that is created lazily on first use. Running
+    # heavy work in the parent first perturbs their timing enough to trip it.
+    test_mesh_bbox_is_tight_on_curved_geometry()
+    test_doc_bbox_covers_the_model_without_the_slow_walk()
 
     print("WS ALL PASS")
 

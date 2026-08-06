@@ -43,6 +43,20 @@ def _occt_children(shape):
     return out
 
 
+def _all_faces(shape):
+    """Every face in a shape, recursing through nested compounds. `.faces()`
+    stops at the first compound level, which silently under-counts an assembly."""
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    exp = TopExp_Explorer(shape.wrapped, TopAbs_FACE)
+    n = 0
+    while exp.More():
+        n += 1
+        exp.Next()
+    return n
+
+
 def leaf_occurrences(path):
     """The ordered leaf occurrences of a STEP assembly, as (node, shape).
 
@@ -145,6 +159,70 @@ def test_flat_compound_order_survives_the_brep_round_trip():
             # this code would actually store, not the original one again
             b64 = builder._shape_to_brep_b64(shape)
         print(f"  {name}: {len(expected)} leaves, order stable over 3 generations")
+
+
+def test_migration_preserves_flat_compound_order():
+    """THE v4 -> v5 GATE. Migrating a pre-container document converts its inline
+    ASCII BREP to binary BinTools V3 in the blob store. The assembly manifest
+    binds row i to flat child i, so if that conversion reorders children, EVERY
+    legacy assembly document silently binds its parts to the wrong geometry —
+    and a per-row face-count checksum will not catch it when two parts happen to
+    have the same face count.
+
+    The existing gate above covers ASCII -> ASCII. This covers the path the
+    migration actually takes, which nothing else exercises."""
+    import tempfile, shutil
+    import blobstore
+    import builder
+
+    root = tempfile.mkdtemp(prefix="migrate_gate_")
+    old = os.environ.get("SINDRI_BLOB_DIR")
+    os.environ["SINDRI_BLOB_DIR"] = root
+    blobstore._default = None
+    try:
+        for name in FIXTURE_NAMES:
+            path = os.path.join(FIXTURES, f"{name}.step")
+            leaves = leaf_occurrences(path)
+            expected = [_fingerprint(s) for _n, s in leaves]
+            assert len(set(expected)) == len(expected), (
+                f"{name}: leaf fingerprints are not unique, so this fixture "
+                f"cannot detect a reordering"
+            )
+
+            # Exactly what a v4 document carries.
+            b64 = _flat_blob(leaves)
+
+            # Exactly what the migration does with it.
+            digest = builder._shape_to_blob(builder._brep_b64_to_shape(b64))
+
+            for generation in (1, 2, 3):
+                data = blobstore.default_store().get_bytes(digest)
+                assert data is not None, f"{name} gen{generation}: blob vanished"
+                assert data.lstrip(b"\n\r ").startswith(b"Open CASCADE Topology V"), (
+                    f"{name}: migrated blob is not binary BinTools"
+                )
+                shape = builder._blob_to_shape(data)
+                kids = _occt_children(shape.wrapped)
+                assert len(kids) == len(expected), (
+                    f"{name} gen{generation}: {len(expected)} children in, "
+                    f"{len(kids)} out — migration does not preserve child COUNT"
+                )
+                got = [_fingerprint(k) for k in kids]
+                assert got == expected, (
+                    f"{name} gen{generation}: child ORDER or identity changed "
+                    f"across the migration.\n  in:  {expected}\n  out: {got}"
+                )
+                # Re-store what we just read, so the next generation tests the
+                # blob this code would actually keep, not the original again.
+                digest = builder._shape_to_blob(shape)
+            print(f"  {name}: {len(expected)} leaves, order stable over 3 migrated generations")
+    finally:
+        if old is None:
+            os.environ.pop("SINDRI_BLOB_DIR", None)
+        else:
+            os.environ["SINDRI_BLOB_DIR"] = old
+        blobstore._default = None
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_leaf_walk_places_every_occurrence_in_world_space():
@@ -675,6 +753,172 @@ def test_building_an_export_tree_does_not_mutate_the_cached_bodies():
     print("  live body shapes untouched by the export tree")
 
 
+def test_explode_false_keeps_the_assembly_tree():
+    """`explode:false` collapses the GEOMETRY to one body; it must not throw away
+    the TREE.
+
+    This flag is the escape hatch for large assemblies — exactly the documents
+    whose hierarchy matters most. It used to be checked before the manifest was
+    even looked at, so it returned a single body named "Imported" with no
+    node_ref, discarding product names, structure and colours in one step. A
+    single body can only honestly claim one node, so it claims the ROOT.
+    """
+    from builder import import_geometry, rebuild
+
+    path = os.path.join(FIXTURES, "asm_nested.step")
+    pay = import_geometry(path, "step")
+    assert pay.get("nodes"), "fixture carries no assembly tree"
+
+    exploded = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"]}]}
+    _p, err, bodies = rebuild(exploded)
+    assert not err, err
+    n_exploded = len(bodies)
+    assert n_exploded > 1, f"fixture should explode to several bodies, got {n_exploded}"
+
+    collapsed = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"],
+         "explode": False}]}
+    _p2, err2, bodies2 = rebuild(collapsed)
+    assert not err2, err2
+    assert len(bodies2) == 1, f"explode:false must give ONE body, got {len(bodies2)}"
+
+    body = bodies2[0]
+    # The tree survives: the body points at the assembly root...
+    assert body.get("node_ref"), (
+        "explode:false produced a body with no node_ref — the assembly tree was "
+        "discarded, which is the bug this guards"
+    )
+    feat_id, _, idx = body["node_ref"].partition("/")
+    assert feat_id == "im", body["node_ref"]
+    root = int(idx)
+    assert pay["nodes"][root].get("parent") is None, (
+        f"node_ref points at node {root}, which is not the assembly root"
+    )
+    # ...and wears the assembly's own name rather than the generic fallback.
+    assert body["name"] == pay["nodes"][root].get("name"), (
+        f'body named {body["name"]!r}, expected the root product '
+        f'{pay["nodes"][root].get("name")!r}'
+    )
+    # The geometry really is all there, just in one body. Counted with a
+    # TopExp_Explorer rather than `.solids()` or `.faces()`: NEITHER build123d
+    # accessor recurses into nested compounds (the same gotcha as
+    # `Compound.volume`), so both under-report a collapsed assembly — measured
+    # here as 3 solids and 18 faces against the real 7 and 42.
+    faces_exploded = sum(_all_faces(b["shape"]) for b in bodies)
+    faces_collapsed = _all_faces(body["shape"])
+    assert faces_collapsed == faces_exploded, (
+        f"{faces_collapsed} faces collapsed vs {faces_exploded} exploded — "
+        "geometry was lost"
+    )
+    print(f"  explode:false OK: {n_exploded} bodies -> 1 body named "
+          f"{body['name']!r}, node_ref {body['node_ref']}, "
+          f"{faces_collapsed} faces intact")
+
+
+def test_intact_survives_a_disk_checkpoint_resume():
+    """`_intact` must round-trip the DISK checkpoint, not just the RAM snapshot.
+
+    The RAM tier copies whole body dicts (`dict(b)`), so it carried the flag for
+    free. The disk tier rebuilds bodies from an EXPLICIT key set, and a resume
+    that dropped `_intact` would let _drop_debris delete the collapsed import's
+    small parts again — on the NORMAL reopen path, since an import always blows
+    the checkpoint budget. Third time this key set has bitten: `_textures`, then
+    `node_ref`, now this.
+    """
+    import shutil
+    import tempfile
+
+    import geomstore
+    from builder import _restore_from_disk, _save_checkpoint, import_geometry, rebuild
+
+    path = os.path.join(FIXTURES, "asm_nested.step")
+    pay = import_geometry(path, "step")
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"],
+         "explode": False}]}
+    _p, err, out = rebuild(doc)
+    assert not err, err
+    # `_intact` lives on the INTERNAL body list only — out_bodies deliberately
+    # omits it, since the wire has no use for it. So the checkpoint round trip
+    # is tested against a body of the shape _save_checkpoint actually receives.
+    faces_before = _all_faces(out[0]["shape"])
+    bodies = [{"id": out[0]["id"], "name": out[0]["name"],
+               "shape": out[0]["shape"], "_intact": True}]
+
+    root = tempfile.mkdtemp(prefix="sindri-intact-")
+    store = None
+    try:
+        store = geomstore.Store(root)
+        key = "chain-intact-0"
+        persist = {"store": store, "keys": [key], "mod": {}, "acc_ms": 0.0}
+        _save_checkpoint(persist, 0, bodies, [], [], 0)
+
+        got = _restore_from_disk(store, [key])
+        assert got is not None, "checkpoint did not land — nothing to prove"
+        _start, snap, _mod = got
+        restored = snap["bodies"][0]
+        assert restored.get("_intact"), (
+            "_intact was lost through the disk checkpoint — a resumed build "
+            "would run _drop_debris and delete the collapsed assembly's small parts"
+        )
+        # and the geometry the flag protects is still whole
+        assert _all_faces(restored["shape"]) == faces_before, (
+            f'{_all_faces(restored["shape"])} faces restored vs {faces_before}'
+        )
+        print(f"  _intact survives a disk resume: {faces_before} faces intact")
+    finally:
+        if store is not None:
+            try:
+                store.db.close()
+            except Exception:
+                pass
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_the_import_rebuild_is_not_silent():
+    """A single import feature must publish progress WHILE it rebuilds.
+
+    This was the longest silent phase in the product: rebuilding one import
+    feature for the 356 MiB reference assembly took 90 s and emitted ONE tick,
+    the first at 47 s, against a 60 s stall budget. Wave 1.1 ticked export, the
+    interference sweep and checkpoint writes and missed this one, so the
+    headline capability of the whole arc was one slow machine away from being
+    reaped mid-rebuild.
+
+    Asserted against the BODY COUNT rather than "non-zero": one tick is what the
+    broken version produced, and it would pass any weaker check.
+    """
+    import builder
+    from builder import import_geometry, rebuild
+
+    pay = import_geometry(os.path.join(FIXTURES, "asm_nested.step"), "step")
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "step", "name": pay["name"],
+         "geom": pay["geom"], "nodes": pay["nodes"], "parts": pay["parts"]}]}
+
+    ticks = []
+    prev = builder.on_feature_tick
+    builder.on_feature_tick = lambda _i: ticks.append(1)
+    try:
+        _p, err, bodies = rebuild(doc)
+    finally:
+        builder.on_feature_tick = prev
+    assert not err, err
+    n = len(bodies)
+    assert n > 1, n
+    # Two ticks per body are expected (the manifest bind and the final pass) plus
+    # face attribution; the floor is what matters, not the exact number.
+    assert len(ticks) >= n, (
+        f"{len(ticks)} ticks for a {n}-body import rebuild — the stall watchdog "
+        f"sees almost nothing while this runs"
+    )
+    print(f"  import rebuild ticks {len(ticks)}x for {n} bodies")
+
+
 if __name__ == "__main__":
     missing = [
         n for n in FIXTURE_NAMES if not os.path.exists(os.path.join(FIXTURES, f"{n}.step"))
@@ -686,6 +930,7 @@ if __name__ == "__main__":
     failures = 0
     for fn in [
         test_flat_compound_order_survives_the_brep_round_trip,
+        test_migration_preserves_flat_compound_order,
         test_leaf_walk_places_every_occurrence_in_world_space,
         test_solid_less_products_are_not_dropped,
         test_multi_solid_product_stays_one_product_with_many_leaves,
@@ -711,5 +956,8 @@ if __name__ == "__main__":
         except AssertionError as exc:
             failures += 1
             print(f"  FAIL: {exc}")
+    test_explode_false_keeps_the_assembly_tree()
+    test_intact_survives_a_disk_checkpoint_resume()
+    test_the_import_rebuild_is_not_silent()
     print("FAILED" if failures else "all assembly tests passed")
     sys.exit(1 if failures else 0)

@@ -143,15 +143,47 @@ def _plane_of(spec, datums=None):
 
 
 def _shape_to_brep_b64(shape):
-    """Serialize a body to a base64 BREP string for embedding in the document.
+    """Serialize a body to a base64 ASCII BREP string. LEGACY.
 
-    External geometry can't be regenerated from parameters, but the rebuild model
-    is "send the whole document, rebuild from scratch". So we sew/read the file
-    ONCE on import and stash the resulting solid as a self-contained BREP string;
-    every rebuild just deserializes it (no dependency on the original file)."""
+    This is how imported geometry used to be embedded in the document. Nothing
+    writes it any more — v5 stores binary BREP in the blob store and the document
+    carries only its content hash (`_shape_to_blob`), because on the 356 MiB
+    reference assembly this encoding produced a 541.8 MiB field, over both the
+    websocket frame cap and the 64 MiB embedded-BREP cap.
+
+    Kept because `_brep_b64_to_shape` still READS pre-v5 documents, and the tests
+    need to be able to construct one."""
     buf = io.BytesIO()
     export_brep(shape, buf)
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _shape_to_blob(shape):
+    """Store a shape's geometry in the durable blob store and return its content
+    hash.
+
+    THE HASH RULE. `blobstore.put_bytes` hashes exactly the bytes it stores, at
+    the moment they are produced, and we carry that value from here into the
+    document. Never re-derive a hash by re-serialising a shape: `write(read(x))
+    != x` byte-wise for BREP, because reading rebuilds the shape graph in a
+    different but equivalent order. A re-derived hash would change on every
+    generation, so every lookup would miss.
+
+    Raises on failure, deliberately. The document no longer carries an embedded
+    copy, so a hash we could not store means a feature with NO geometry
+    anywhere — and quietly handing back a document like that would lose the
+    user's import in a way nothing downstream could detect. Refusing the import
+    is recoverable; a silently empty document is not."""
+    import geomstore
+    import blobstore
+
+    try:
+        return blobstore.default_store().put_bytes(geomstore.serialize_shape(shape))
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(
+            f"could not store the imported geometry ({e}). Check free disk space "
+            "and permissions on the SindriCAD data directory."
+        ) from e
 
 
 def _brep_b64_to_shape(b64):
@@ -542,9 +574,14 @@ def _drop_debris(shape, debug=False):
             return cached  # same input object => same output OBJECT (identity
             # matters: the server's mesh cache is keyed by shape identity, and
             # rebuilding a fresh Compound here every rebuild would defeat it)
-        parts = sorted(shape.solids(), key=lambda s: -abs(s.volume))
+        parts = shape.solids()
+        # Count FIRST. Sorting by volume computes one per solid, and a body with
+        # a single solid cannot have debris — so the old order paid for a volume
+        # it then threw away. Measured on the reference assembly: 42.7 s across
+        # 3,071 single-solid bodies, for an answer known from the count alone.
         if len(parts) < 2:
             return shape
+        parts = sorted(parts, key=lambda s: -abs(s.volume))
         main, kept = parts[0], [parts[0]]
         for s in parts[1:]:
             tiny = abs(s.volume) < 1e-3 * abs(main.volume)
@@ -710,9 +747,30 @@ MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/cu
 # the user opened, which may be hostile). Caps bound the worst case BEFORE a heavy
 # read/parse, so a crafted file can't OOM the worker or aim a parser fuzz at OCCT.
 MAX_IMPORT_FILE_BYTES = 256 * 1024 * 1024   # reject any import file above this outright
+# B-rep formats get a far higher ceiling than meshes. A STEP file is a compact
+# description of exact surfaces, so its byte size says little about the work it
+# implies; the 356 MiB reference assembly is 3,071 leaves and 133,284 faces. A
+# MESH file of the same byte size is a far larger triangle count and a much
+# heavier viewport, which is why STL/3MF/OBJ keep the lower cap.
+#
+# What actually protects the machine now is the RAM check
+# (_refuse_if_memory_is_short), which scales with the file AND with what is free
+# at that moment. This is only a backstop against absurd input, so it can be
+# generous without being reckless.
+MAX_IMPORT_BREP_FILE_BYTES = 1024 * 1024 * 1024
 MAX_IMPORT_SCAN_BYTES = 64 * 1024 * 1024    # decompressed ASCII-STL / 3MF scan window
 MAX_BREP_BYTES = 64 * 1024 * 1024           # decoded embedded-BREP body cap
 _BREP_MAGIC = b"CASCADE Topology V"         # OCCT ASCII BREP header signature
+
+
+def _import_size_cap(fmt):
+    """The file-size ceiling for `fmt`. B-rep formats (STEP/STP/BREP) get the
+    higher one; everything mesh-shaped keeps the original."""
+    return (
+        MAX_IMPORT_BREP_FILE_BYTES
+        if fmt in ("step", "stp", "brep")
+        else MAX_IMPORT_FILE_BYTES
+    )
 
 
 def _count_stream(fh, needle, limit, max_bytes=None):
@@ -808,6 +866,77 @@ def _explode_solids(shape):
     return out
 
 
+def _canonicalize_roots(roots):
+    """Canonicalise a multi-root file PER ROOT, then compound the results.
+
+    Per root for the same reason the assembly path works per leaf: `_canonical_ok`
+    compares `result.volume` against `shape.volume`, and `Compound.volume` does
+    not recurse into nested compounds. Hand the gate a multi-root compound and it
+    reads a partial volume it can never match, so `_canonicalize` does the whole
+    expensive pass and then silently discards every bit of it. Per root, each
+    comparison is on a shape the gate can actually measure.
+
+    REACHABILITY, measured rather than assumed: this needs a STEP whose product
+    count does not exceed its root count (`step_assembly`'s `is_assembly` test),
+    with more than one root. A file written by OCCT's own STEPCAFControl_Writer
+    from two free shapes does NOT qualify — it gains a wrapper product, so 2
+    roots arrive as 3 nodes and the file takes the assembly path instead. So this
+    is a correctness fix on a branch that another writer's output can reach, not
+    one demonstrated against a file in this repo.
+    """
+    out = []
+    for r in roots:
+        w = _wrap_topods(r)
+        if w is not None:
+            out.append(_canonicalize(w))
+    return Compound(children=out)
+
+
+def _canonical_ok(result, shape, deep=True):
+    """Is `result` an acceptable canonicalisation of `shape`?
+
+    Same solid count, same face count, and with `deep`, also structurally valid
+    with the volume within 0.5%. Any doubt (an exception anywhere in the checks)
+    is a NO — this decides whether a rewritten surface gets baked permanently
+    into the stored B-rep, so the safe answer is to keep the original.
+
+    `deep` exists because the two halves differ in cost by two orders of
+    magnitude. MEASURED across the 3,060 leaves of the reference assembly:
+    the counts cost 3.5 s, `BRepCheck_Analyzer` 72 s and the volume comparison
+    122 s. Running the full gate on every leaf made _canonicalize 209 s against
+    the 6.9 s it costs without — 29x the entire pass it was meant to guard, and
+    62% of the whole import.
+
+    So: full gate after the sew/ShapeFix rebuild below, which re-creates faces
+    from scratch and genuinely can produce an invalid or volume-shifted solid.
+    Counts only after SweptToElementary alone, which is a topology-preserving
+    modifier — the counts still catch gross damage, and this path previously had
+    NO validation at all.
+
+    NOTE the volume comparison is only meaningful when neither side is a compound
+    of compounds: `Compound.volume` does not recurse, so on nested input it reads
+    a partial figure and the gate can never pass. Callers with multi-root input
+    must canonicalise per root (see import_geometry) rather than hand the whole
+    compound in here.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    try:
+        if len(result.solids()) != max(1, len(shape.solids())):
+            return False
+        if len(result.faces()) != len(shape.faces()):
+            return False
+        if not deep:
+            return True
+        return bool(
+            BRepCheck_Analyzer(result.wrapped).IsValid()
+            and abs(result.volume - shape.volume)
+            <= max(1e-6, 0.005 * abs(shape.volume))
+        )
+    except Exception:  # noqa: BLE001 — an unmeasurable result is not acceptable
+        return False
+
+
 def _canonicalize(shape, tol=1e-3):
     """Canonical-recognition pre-pass for B-rep imports (STEP): snap near-analytic
     B-spline/Bezier faces to true planes/cylinders/cones/spheres, and swept
@@ -880,7 +1009,15 @@ def _canonicalize(shape, tol=1e-3):
                         converted += 1
             new_faces.append(nf)
         if converted == 0:
-            return work if work is not shape else shape
+            # `work` is SweptToElementary's output, and until now it was returned
+            # here WITHOUT any of the validation every other exit applies. That
+            # modifier rewrites surfaces across the whole shape; if it produced
+            # something invalid or volume-shifted, the unchecked return baked it
+            # into the embedded B-rep, permanently and silently. Same gate as the
+            # converted path below.
+            if work is not shape and _canonical_ok(work, shape, deep=False):
+                return work
+            return shape
 
         sew = BRepBuilderAPI_Sewing(max(tol, 1e-6))
         for nf in new_faces:
@@ -900,14 +1037,7 @@ def _canonicalize(shape, tol=1e-3):
         if not solids:
             return shape
         result = solids[0] if len(solids) == 1 else Compound(solids)
-        ok = (
-            len(solids) == max(1, len(shape.solids()))
-            and len(result.faces()) == len(shape.faces())
-            and BRepCheck_Analyzer(result.wrapped).IsValid()
-            and abs(result.volume - shape.volume)
-            <= max(1e-6, 0.005 * abs(shape.volume))
-        )
-        return result if ok else shape
+        return result if _canonical_ok(result, shape) else shape
     except Exception:
         return shape
 
@@ -1066,6 +1196,53 @@ def _assembly_payload(asm):
     return Compound(children=leaves), nodes, parts
 
 
+# Peak RSS an import costs, as a multiple of the FILE size, over and above the
+# already-resident OCCT/build123d libraries. MEASURED on generated STEP
+# assemblies: a 13.7 MiB file grew RSS by 122.1 MiB (8.94x) and a 46.1 MiB file
+# by 370.4 MiB (8.04x) — linear in file size across that range. 10x is those
+# numbers with headroom, not a guess.
+#
+# Deliberately conservative in the SAFE direction: over-estimating the cost makes
+# us refuse an import that might just have fitted, which the user can act on.
+# Under-estimating it hands them an OOM kill, which arrives as "the geometry
+# kernel crashed" and sends them hunting a geometry bug that does not exist.
+IMPORT_RSS_PER_FILE_BYTE = 10
+
+# Leave this much of the estimate as slack for everything else on the machine.
+# An import that would consume literally all available memory takes the desktop
+# down with it.
+_MEMORY_HEADROOM = 1.25
+
+
+def _refuse_if_memory_is_short(size, available=None):
+    """Refuse an import that plainly will not fit in RAM, BEFORE OCCT starts.
+
+    An OOM kill lands on the worker as a bare SIGKILL with no traceback, which
+    the supervisor can only report as "the geometry kernel crashed" — naming a
+    geometry fault for what is actually a machine limit.
+
+    Proceeds silently when memory cannot be measured (`available_bytes()`
+    returns None on an unrecognised platform or a failed probe): refusing on a
+    number we could not read would be a worse failure than the one this prevents.
+    """
+    if size <= 0:
+        return
+    if available is None:
+        import sysmem
+        available = sysmem.available_bytes()
+    if available is None:
+        return  # unknown — never refuse on a number we could not read
+    need = size * IMPORT_RSS_PER_FILE_BYTE
+    if need * _MEMORY_HEADROOM <= available:
+        return
+    import sysmem
+    raise ValueError(
+        f"not enough memory to import this file — it needs about "
+        f"{sysmem.describe(need)} and only {sysmem.describe(available)} is free. "
+        f"Close some applications and try again, or import a smaller file."
+    )
+
+
 def import_geometry(path, fmt):
     """Read an external geometry file and return the document payload for an
     `import` feature: {brep, solid, faces, name}. STL/3MF/OBJ are read as a
@@ -1075,11 +1252,13 @@ def import_geometry(path, fmt):
         size = os.path.getsize(path)
     except OSError:
         size = 0
-    if size > MAX_IMPORT_FILE_BYTES:
+    cap = _import_size_cap(fmt)
+    if size > cap:
         raise ValueError(
             f"file is {size / (1024 * 1024):.0f} MiB — too large to import "
-            f"(limit {MAX_IMPORT_FILE_BYTES // (1024 * 1024)} MiB)."
+            f"(limit {cap // (1024 * 1024)} MiB)."
         )
+    _refuse_if_memory_is_short(size)
     manifest = None
     if fmt in ("step", "stp"):
         # Read the XCAF product tree ourselves rather than through
@@ -1103,13 +1282,13 @@ def import_geometry(path, fmt):
             # An ordinary part file stays on the historical path: ONE shape,
             # canonicalized whole, no manifest. Verified geometrically identical
             # to import_step's result across every .step in this repo.
-            _shape = asm.roots[0] if len(asm.roots) == 1 else None
-            _shape = _wrap_topods(_shape) if _shape is not None else Compound(
-                children=[_wrap_topods(r) for r in asm.roots]
-            )
+            #
             # snap near-analytic spline faces to true planes/cylinders/… ONCE at
             # import, so the canonical form is baked into the embedded BREP.
-            shape = _canonicalize(_shape)
+            if len(asm.roots) == 1:
+                shape = _canonicalize(_wrap_topods(asm.roots[0]))
+            else:
+                shape = _canonicalize_roots(asm.roots)
     elif fmt == "brep":
         shape = import_brep(path)
     elif fmt in ("stl", "3mf", "obj"):
@@ -1156,8 +1335,14 @@ def import_geometry(path, fmt):
     is_solid = len(shape.solids()) > 0
     name = os.path.splitext(os.path.basename(path))[0] or "Imported"
     _import_phase(IMPORT_PHASE_ENCODE)
+    # The content hash of the geometry in the durable blob store. This REPLACED
+    # an inline base64 ASCII BREP: on the 356 MiB reference assembly that field
+    # alone was 541.8 MiB, i.e. 4.2x over the websocket frame cap and 6.4x over
+    # the 64 MiB embedded-BREP cap re-checked on every rebuild, which is why a
+    # large assembly could not be opened at all. Documents saved before this
+    # still carry `brep` and are still read (see _import_shape).
     out = {
-        "brep": _shape_to_brep_b64(shape),
+        "geom": _shape_to_blob(shape),
         "solid": is_solid,
         "faces": len(shape.faces()),
         "name": name,
@@ -1209,6 +1394,24 @@ def _import_phase(code):
             cb(code)
         except Exception:
             pass  # a dropped progress frame must never fail an import
+
+
+def progress_tick():
+    """Publish one unit of progress from a long phase that isn't a feature build
+    (export meshing, checkpoint writes, the interference sweep). Same globals()
+    lookup as `_import_phase`, for the same reason.
+
+    `-1` is the server's documented "not a feature" heartbeat index, so this
+    advances the counter without claiming some feature is building. It matters
+    because the supervisor reaps on a heartbeat that STOPS MOVING: a phase that
+    runs long without ticking is killed for being slow rather than for being
+    wedged, which is the exact distinction the stall watchdog exists to make."""
+    cb = globals().get("on_feature_tick")
+    if cb is not None:
+        try:
+            cb(-1)
+        except Exception:
+            pass  # a dropped progress frame must never fail the work
 
 
 @dataclass
@@ -1748,6 +1951,11 @@ def _bind_assembly(f, ctx, shape, nodes, parts):
 
     wrapped = []
     for i, (child, part) in enumerate(zip(children, parts)):
+        # One tick per leaf. A single import feature rebuilding a large assembly
+        # was the longest SILENT phase left in the product: measured 90 s
+        # emitting one tick, against a 60 s stall budget. Wave 1.1 ticked export,
+        # the interference sweep and checkpoint writes and missed this one.
+        progress_tick()
         w = _wrap_topods(child)
         node_index = part.get("node") if isinstance(part, dict) else None
         if w is None or not isinstance(node_index, int) or not 0 <= node_index < len(nodes):
@@ -1788,9 +1996,83 @@ def _bind_assembly(f, ctx, shape, nodes, parts):
     return True
 
 
+_BINTOOLS_MAGIC = b"Open CASCADE Topology V"
+
+
+def _blob_to_shape(data):
+    """A stored binary BREP blob back to a build123d Shape.
+
+    The magic check is NOT redundant with the blob store's hash verification.
+    That hash proves the bytes are the ones the container declared — it does not
+    prove they are benign, because whoever crafted a hostile `.sindri` chose both
+    the bytes and the declared hash. So the same reasoning as
+    `_brep_b64_to_shape` applies: refuse to aim a parser fuzz at OCCT.
+
+    There is deliberately NO size cap here, unlike the 64 MiB `MAX_BREP_BYTES` on
+    the legacy embedded path. That cap is exactly what makes a large assembly
+    unopenable, and it is the thing this whole change exists to remove. The bound
+    that replaces it is upstream: the container reader refuses an archive that
+    declares more than 8 GiB before inflating a byte."""
+    import geomstore
+
+    if not data[: len(_BINTOOLS_MAGIC) + 2].lstrip(b"\n\r ").startswith(_BINTOOLS_MAGIC):
+        raise ValueError("stored geometry is not a valid binary BREP (bad header)")
+    # _wrap_topods, not Shape.cast: BinTools hands back a raw TopoDS, and for an
+    # assembly that is a COMPOUND, which Shape.cast() turns into None (see its
+    # docstring). Same trap the XCAF reader hit.
+    shape = _wrap_topods(geomstore.deserialize_shape(data))
+    if shape is None:
+        raise ValueError("stored geometry decoded to an empty shape")
+    return shape
+
+
+def _import_shape(f):
+    """The geometry for an import feature.
+
+    Prefers the content hash (`geom`) and falls back to the legacy embedded
+    base64 (`brep`). Both fields are present during the transition, so a blob
+    that has gone missing — a wiped app-data directory, a document copied
+    without its container — still rebuilds from the embedded copy rather than
+    failing. Once `brep` is gone that fallback disappears and the missing-blob
+    error below becomes the live path."""
+    import blobstore
+
+    digest = f.get("geom")
+    b64 = f.get("brep")
+    if digest:
+        data = blobstore.default_store().get_bytes(digest)
+        if data is not None:
+            return _blob_to_shape(data)
+        if not b64:
+            raise ValueError(
+                "the geometry for this imported body is missing from local storage. "
+                "Open the .sindri file it was saved in, or re-import the original file."
+            )
+        # Fall through to the embedded copy, loudly: a miss here means either a
+        # wiped store or a document that travelled without its container, and
+        # both are worth seeing in the log rather than silently absorbing.
+        print(f"[blobstore] blob {digest} missing; falling back to the embedded BREP",
+              file=sys.stderr, flush=True)
+    if not b64:
+        raise ValueError("this imported body has no geometry attached")
+    return _brep_b64_to_shape(b64)
+
+
+def _assembly_root_index(nodes):
+    """Index of the assembly's root product (the node with no parent), or None.
+    First one wins: a well-formed tree has exactly one."""
+    if not nodes:
+        return None
+    for i, n in enumerate(nodes):
+        if isinstance(n, dict) and n.get("parent") is None:
+            return i
+    return None
+
+
 def _handle_import(f, ctx):
     base = f.get("name") or "Imported"
-    shape = _brep_b64_to_shape(f["brep"])
+    shape = _import_shape(f)
+    nodes, parts = f.get("nodes"), f.get("parts")
     # explode:false keeps a multi-solid payload as ONE body. For imported
     # assemblies with hundreds of import features this divides body count
     # (browser tree entries, per-body payloads, draw calls) by the average
@@ -1798,12 +2080,38 @@ def _handle_import(f, ctx):
     # one-body-per-solid behavior. It is checked FIRST because it is an explicit
     # instruction to collapse, which a manifest cannot override.
     if f.get("explode") is False:
-        ctx.new_body(shape, base)
+        # ...but collapsing the GEOMETRY must not throw away the TREE. This used
+        # to return here with a body named "Imported" and no node_ref at all, so
+        # the whole assembly hierarchy — product names, structure, colours —
+        # was discarded by the one flag a user would reach for on exactly the
+        # documents where that hierarchy matters most.
+        #
+        # One body can only honestly claim one node, so it claims the ROOT: the
+        # body carries the assembly's own name and sits under it in the Browser,
+        # instead of appearing as an anonymous loose body.
+        root = _assembly_root_index(nodes)
+        if root is not None:
+            label = (nodes[root] or {}).get("name") or base
+            body = ctx.new_body(shape, label, node_ref=f"{f.get('id')}/{root}")
+        else:
+            body = ctx.new_body(shape, base)
+        # Exempt from _drop_debris. That pass deletes any solid under 0.1% of
+        # the biggest one that does not touch it, on the theory that it is
+        # residue from the booleans that carved the body. An explicitly
+        # collapsed import is the opposite case: every solid in it is a part
+        # the user's file declared, and small ones that float clear of the
+        # largest are the NORM in an assembly, not debris.
+        #
+        # Measured on asm_nested: main body 3200 mm3, and four legitimate parts
+        # at 3.0 mm3 each — 0.094%, just under the threshold — were silently
+        # deleted, taking 4 of 7 parts and 24 of 42 faces with them. It never
+        # showed up before because the exploded path gives each body ONE solid,
+        # and the pass returns early below two.
+        body["_intact"] = True
         return
     # Assembly manifest, when the import recorded one. Absent for every import
     # made before this existed and for every non-assembly file, which is what
     # keeps those documents rebuilding exactly as they did.
-    nodes, parts = f.get("nodes"), f.get("parts")
     if nodes and parts and _bind_assembly(f, ctx, shape, nodes, parts):
         return
     parts = _explode_solids(shape)
@@ -2364,10 +2672,11 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     # every consumer (tessellate/bbox/edges/export) gets a uniform Shape.
     out_bodies = []
     for b in bodies:
+        progress_tick()  # per body: the final pass over a 3,000-body document
         sh = b["shape"]
         if sh is not None and _wrapped_or_none(sh) is None:
             sh = Compound(list(sh))
-        if sh is not None:
+        if sh is not None and not b.get("_intact"):
             # final pass only — mid-timeline drops would shift downstream
             # geometric selectors and delete chips a later join re-absorbs
             sh = _drop_debris(sh)
@@ -2684,6 +2993,11 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
         manifest, fps, owners = [], [], {}
         textures = {}
         for b in bodies:
+            # One tick per body, at the top so every path through the loop
+            # counts (the shapeless `continue` below included). Serialising a
+            # body's B-rep to the blob store is the expensive part, and on a
+            # large assembly this loop alone can outrun the stall timeout.
+            progress_tick()
             sh = b.get("shape")
             # The assembly-tree node this body came from. Body metadata that is
             # NOT recoverable from the shape, exactly like `_owners` and
@@ -2696,6 +3010,15 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
             entry = {"body_id": b["id"], "name": b["name"], "blob_key": None}
             if node_ref:
                 entry["node_ref"] = node_ref
+            # Same class of state, and the same trap: `_intact` exempts an
+            # explicitly collapsed import from _drop_debris, and it is NOT
+            # recoverable from the shape. Dropping it here would let the debris
+            # pass delete legitimate small parts on every disk resume — which is
+            # the NORMAL way an assembly document reopens, since an import always
+            # blows the checkpoint budget. Third time this key set has bitten:
+            # `_textures`, then `node_ref`, now this.
+            if b.get("_intact"):
+                entry["_intact"] = True
             if sh is None or _wrapped_or_none(sh) is None:
                 manifest.append(entry)
                 fps.append(None)
@@ -2751,6 +3074,8 @@ def _restore_from_disk(store, chain_keys):
                              "shape": None, "_owners": {}}
                 if ent.get("node_ref"):
                     shapeless["node_ref"] = ent["node_ref"]
+                if ent.get("_intact"):
+                    shapeless["_intact"] = True
                 bodies.append(shapeless)
                 continue
             raw = store.get_blob(ent["blob_key"])
@@ -2781,6 +3106,8 @@ def _restore_from_disk(store, chain_keys):
             # written before this existed
             if ent.get("node_ref"):
                 body["node_ref"] = ent["node_ref"]
+            if ent.get("_intact"):
+                body["_intact"] = True
             bodies.append(body)
             mod[ent["body_id"]] = (shape, ent["blob_key"])
         snap = {
@@ -3747,6 +4074,7 @@ def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
         dx, dy, dz = val(f.get("dx", 0)), val(f.get("dy", 0)), val(f.get("dz", 0))
         trsf = (Pos(dx, dy, dz) * Rot(rx, ry, rz)).wrapped.Transformation()
     for b in bodies:
+        progress_tick()  # per body: face attribution walks every face
         sh = b.get("shape")
         if sh is None:
             b["_owners"] = {}
@@ -3765,11 +4093,33 @@ def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
 
 def _bbox_overlap(a, b, tol=1e-6):
     """Cheap AABB overlap test (no boolean, can't crash)."""
-    ba, bb = _as_compound(a).bounding_box(), _as_compound(b).bounding_box()
+    return _bbox_pair_overlap(bbox_of(a), bbox_of(b), tol)
+
+
+def bbox_of(shape):
+    """A shape's AABB as a PLAIN TUPLE (minX, minY, minZ, maxX, maxY, maxZ).
+
+    Two reasons it is a tuple and not the BoundBox.
+
+    The pair sweep is O(n^2) in PAIRS but only O(n) in distinct shapes, so
+    recomputing both boxes inside the test does quadratic work for linear
+    information: at 3,060 bodies that is 9,360,540 OCCT bounding-box walks
+    instead of 3,060.
+
+    And `BoundBox.min.X` is a pybind11 property that calls into OCP on EVERY
+    access, up to 12 per pair. Measured over 4,680,270 pairs (3,060 bodies):
+    2.58 s reading BoundBox attributes against 0.40 s reading a tuple. The walk
+    is hoisted; this hoists the reads out of the walk's result too."""
+    bb = _as_compound(shape).bounding_box()
+    return (bb.min.X, bb.min.Y, bb.min.Z, bb.max.X, bb.max.Y, bb.max.Z)
+
+
+def _bbox_pair_overlap(a, b, tol=1e-6):
+    """AABB overlap for two boxes already reduced to tuples by `bbox_of`."""
     return (
-        ba.min.X <= bb.max.X + tol and ba.max.X >= bb.min.X - tol
-        and ba.min.Y <= bb.max.Y + tol and ba.max.Y >= bb.min.Y - tol
-        and ba.min.Z <= bb.max.Z + tol and ba.max.Z >= bb.min.Z - tol
+        a[0] <= b[3] + tol and a[3] >= b[0] - tol
+        and a[1] <= b[4] + tol and a[4] >= b[1] - tol
+        and a[2] <= b[5] + tol and a[5] >= b[2] - tol
     )
 
 

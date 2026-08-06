@@ -12,7 +12,9 @@ Python loop — single-threaded and GIL-bound. On a 6-sphere union @0.01mm that 
 ~670ms; the parallel path below is ~85ms on a 5900X.)
 """
 
+from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Tool
+from OCP.BRepBndLib import BRepBndLib
 from OCP.BRepAdaptor import BRepAdaptor_Curve
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.GCPnts import GCPnts_QuasiUniformDeflection
@@ -25,11 +27,12 @@ from OCP.TopLoc import TopLoc_Location
 # written by an older algorithm is never served. (Same trick texture.py uses.)
 #   1 -> fixed 24-segment edge polylines, absolute-only surface deflection
 #   2 -> deviation-bounded edge polylines + optional relative surface deflection
-CODE_VERSION = 2
+#   3 -> the cached payload carries the body's mesh bbox (see mesh_bbox)
+CODE_VERSION = 3
 
 
 def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, density_cap=None,
-                diag=None, normals_out=None, relative=False):
+                diag=None, normals_out=None, relative=False, force_remesh=False):
     """Return (positions, indices, face_ids).
 
     positions : flat [x,y,z, ...] floats
@@ -62,6 +65,19 @@ def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, densi
     """
     # Mesh the entire solid at once, in parallel (isInParallel=True). This fills an
     # incremental triangulation onto every TopoDS_Face, which we read back below.
+    # OCCT STORES THE TRIANGULATION ON THE SHAPE, and BRepMesh_IncrementalMesh
+    # treats an existing FINER mesh as good enough for a coarser request. So
+    # asking for 0.02 after something asked for 0.001 silently returns the 0.001
+    # mesh: measured on a sphere, 201,198 triangles when 10,108 were requested.
+    #
+    # That makes a tolerance BACKOFF a no-op by default — it would return the
+    # mesh that already blew the budget, and look like it had worked. Dropping
+    # the stored triangulation first is the only way to get the coarser mesh.
+    # Off by default because it forces a re-mesh: only callers that are
+    # deliberately CHANGING tolerance need it.
+    if force_remesh:
+        from OCP.BRepTools import BRepTools
+        BRepTools.Clean_s(shape.wrapped)
     BRepMesh_IncrementalMesh(shape.wrapped, tolerance, relative, angular_tolerance, True)
 
     positions = []
@@ -501,3 +517,29 @@ def bbox(shape):
         "min": [bb.min.X, bb.min.Y, bb.min.Z],
         "max": [bb.max.X, bb.max.Y, bb.max.Z],
     }
+
+
+def mesh_bbox(shape):
+    """Bounding box of the shape's TRIANGULATION — what the viewport actually
+    draws — rather than of its exact geometry. For a display bbox this is both
+    the cheaper and the more honest number.
+
+    `shape.bounding_box()` runs BRepBndLib.AddOptimal_s, and on a 60mm filleted
+    ring that measures 44.84 ms against 0.053 ms here — 846x, which across the
+    3,071 bodies of a large assembly is ~138 s versus ~0.2 s. It also calls
+    BRepTools.Clean_s, DISCARDING the triangulation tessellate() just built;
+    BRepBndLib.Add_s leaves it in place.
+
+    Accuracy on that same ring: exact is +/-30.0, this is +/-30.118 (OCCT adds
+    its gap tolerance), and `bounding_box(optimal=False)` — the obvious cheap
+    alternative — is +/-32.472, i.e. 2.5mm out on a 60mm part. Slightly LARGER
+    than exact is also the safe direction for a camera fit: it never clips.
+
+    Requires a triangulation to be present, so call it AFTER tessellate();
+    without one OCCT falls back to the loose poles-based box."""
+    bnd = Bnd_Box()
+    BRepBndLib.Add_s(shape.wrapped, bnd, True)
+    if bnd.IsVoid():
+        return None
+    xm, ym, zm, xM, yM, zM = bnd.Get()
+    return {"min": [xm, ym, zm], "max": [xM, yM, zM]}

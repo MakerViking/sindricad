@@ -442,7 +442,15 @@ export type Feature =
       type: "import";
       format: "stl" | "3mf" | "step" | "obj" | "brep" | "glb";
       name: string;
-      brep: string;
+      // Content hash of this body's geometry in the durable blob store, carried
+      // inside the `.sindri` container. Replaced an inline base64 ASCII BREP:
+      // on the 356 MiB reference assembly that field alone was 541.8 MiB, which
+      // is why a large assembly could not be opened at all.
+      geom?: string;
+      // The pre-v5 inline payload. Still READ so every document saved before the
+      // container format keeps opening; never written any more. Exactly one of
+      // `geom` / `brep` is present in practice.
+      brep?: string;
       source?: string;
       solid?: boolean;
       // The dominant material colour the source file carried ('#RRGGBB'), when it
@@ -693,10 +701,11 @@ export type RebuildReply =
 export type ExportFormat = "step" | "stl" | "3mf" | "glb";
 
 // Import: the format the user picks, and the sidecar's reply for an `import` op —
-// the embeddable BREP payload plus a little metadata for the new `import` feature.
+// the content hash of the stored geometry plus a little metadata for the new
+// `import` feature.
 export type ImportFormat = "stl" | "3mf" | "step" | "obj" | "brep" | "glb";
 export type ImportReply =
-  | { ok: true; brep: string; name: string; solid: boolean; faces: number; color?: string;
+  | { ok: true; geom: string; name: string; solid: boolean; faces: number; color?: string;
       // present only for a STEP that carried a real assembly tree; see the
       // `import` feature above for what they mean
       nodes?: { name: string; parent: number | null; color?: string }[];

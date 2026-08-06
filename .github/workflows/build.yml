@@ -90,6 +90,28 @@ jobs:
           uv run python test_selector_ambiguity.py
           uv run python test_assembly.py
           uv run python test_cancel.py
+          uv run python test_blobstore.py
+          uv run python test_import_blob.py
+          uv run python test_blob_rebuild.py
+          uv run python test_heartbeat.py
+          uv run python test_sysmem.py
+          uv run python test_export_gates.py
+          uv run python test_canonicalize.py
+          # These six existed and PASSED for weeks without ever running here —
+          # the same gap that had left texture/checkpoint/projected/val_guard/
+          # body_binding inert. Inert regression protection reads as coverage
+          # while protecting nothing. test_text.py is the ONLY thing covering
+          # the list_fonts / tessellate_text paths at any layer.
+          uv run python test_glb.py
+          uv run python test_project_op.py
+          uv run python test_refresh.py
+          uv run python test_silhouette.py
+          uv run python test_text.py
+          uv run python test_texture_cells.py
+          # Was never in CI and was quietly rotting: it is the only suite that
+          # drives ops over the real socket end to end, including the v4 -> v5
+          # geometry migration.
+          uv run python test_fullstack.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script
@@ -98,9 +120,14 @@ jobs:
       - name: Geometry evals (thresholded)
         run: sh scripts/check-geometry-evals.sh
 
-      - name: Rust unit tests
+      # --tests, not --lib: tests/container_seam.rs drives a real STEP import
+      # through the sidecar, packages it with the Rust container writer, extracts
+      # it somewhere fresh and rebuilds from it. Nothing else proves the two
+      # halves of that seam compose. It needs sidecar/.venv, which the `uv sync`
+      # step above created.
+      - name: Rust tests (unit + cross-language seam)
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test --tests
 
   build:
     needs: test

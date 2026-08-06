@@ -52,6 +52,14 @@ export class TauriGeometry implements GeometryBackend {
     return [];
   }
 
+  // The v4 -> v5 geometry migration lives in the Python sidecar (it needs OCCT to
+  // re-serialise ASCII BREP as binary). Returning nothing leaves a legacy
+  // document exactly as it was — it still opens and rebuilds from its inline
+  // copy, so this stub costs a size optimisation, never data.
+  async migrateGeometry(): Promise<{ id: string; geom: string }[]> {
+    return [];
+  }
+
   async export(
     doc: CadDocument,
     format: ExportFormat,

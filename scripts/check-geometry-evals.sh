@@ -17,12 +17,26 @@ cd "$(dirname "$0")/.."/sidecar
 PY="${PY:-uv run python}"
 
 # Coverage RATCHET, not a target: real-server op coverage may never drop below
-# what it is today. It is currently 23 of 34 units — the 11 uncovered ops
-# (cleanUp, combine, deleteFace, listFonts, offsetFace, press-pull,
-# projectGeometry, sketch, tessellateText, texture, thicken) are acknowledged
-# debt from ops added after the harness was written. Raise this number when you
-# cover more; never lower it to make a build pass.
-COVERAGE_FLOOR=23
+# what it is today. It is currently 32 of 32 — every unit in the universe is
+# covered by an EXPLICIT check that asserts a precomputed numeric geometric
+# invariant against a real spawned server.
+#
+# VERIFIED REACHABLE ON A CLEAN CHECKOUT: with corpus credit disabled entirely,
+# coverage still reads 32/32, so not one counted unit depends on a fixture
+# document. That check is not optional ceremony — this floor was once set to 23
+# from a machine where two ops were credited only by a corpus document whose
+# import source lived in the developer's home directory, and every other
+# checkout scored 21. Re-run that way before raising this number again.
+#
+# Four ops are excluded in e2e_coverage.py rather than counted, because no
+# numeric geometric invariant exists for them and the only way to make them
+# count would be to weaken the credit gate: cancel (a race — test_cancel.py),
+# listFonts and tessellateText (font-dependent, so a hardcoded constant would be
+# unreachable in CI by construction — test_text.py), and cleanUp, which is
+# best-effort-no-op by design and is the one ACKNOWLEDGED remaining gap.
+#
+# Raise this number when you cover more; never lower it to make a build pass.
+COVERAGE_FLOOR=32
 
 # The fillet/chamfer corpus was driven to zero failures by the Norn loop
 # (149/500 -> 0/500, holdout-verified). Any regression is a real one.
@@ -80,12 +94,26 @@ else
 fi
 
 # NOT WIRED YET: tools/golden_corpus.py --check.
-# It self-gates (exit 1 on drift) and is the strongest detector here, but its
-# baselines are currently stale — 12 of 13 documents differ, and one of those
-# diffs is a REAL geometry change in 644ffc2 (1.sindri body2 +4.73% volume,
-# z-extent -25 -> -24, from routing _do_combine through _serial_bool). Adding
-# it now would just pin CI red. It goes in as part of re-blessing golden.json,
-# which needs a human decision on whether the new geometry is correct.
+# It self-gates (exit 1 on drift) and is the strongest detector here. Its
+# baselines were re-blessed on 2026-08-05 and it now passes 13/13 locally,
+# confirmed as a live detector (a +5% volume perturbation exits 1).
+#
+# THE BLOCKER IS NO LONGER THE BASELINES — it is that the 13 corpus documents
+# are UNTRACKED. `*.sindri` is gitignored repo-wide on purpose (public repo, no
+# real geometry), so on a fresh checkout every path in golden.json is missing
+# and this would go red immediately. Wiring it needs SYNTHETIC .sindri documents
+# committed as an explicit exception in BOTH .gitignore and
+# check-repo-hygiene.sh — the same treatment the assembly STEP fixtures already
+# get — with their own captured baselines. Do NOT commit the real 1-5*.sindri:
+# they are actual work, and this repo is public.
+#
+# What was re-blessed and why: 12 of 13 documents drifted, and every new error
+# was an `ambiguous face reference` refusal introduced deliberately by f58858b
+# ("Refuse an ambiguous nearest-selector instead of flipping a coin", 2026-07-28)
+# — 16 days AFTER the 2026-07-12 capture. Verified before re-blessing: no new
+# error CLASS appeared anywhere in the corpus, and the refused picks are genuine
+# exact ties (0.600 vs 0.600 mm, 0.000 vs 0.000, 5.731 vs 5.731 on 1.sindri f73,
+# which is the very feature that commit was written for).
 
 printf '\n'
 if [ "$fail" -ne 0 ]; then echo "geometry evals FAILED"; exit 1; fi

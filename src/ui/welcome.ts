@@ -8,6 +8,7 @@
 import { pushModal, popModal } from "./choice";
 import { esc } from "./escape";
 import { getRecentFiles, forgetRecent } from "../io/recentFiles";
+import type { OpenOutcome } from "../io/files";
 import logoUrl from "../../assets/brand/sindricad-lockup-app.svg";
 import {
   TA_WELCOME_URL,
@@ -37,7 +38,7 @@ export async function openExternal(url: string): Promise<void> {
 export interface WelcomeCallbacks {
   onNew: () => void;
   onOpen: () => void;
-  onOpenPath: (path: string) => Promise<boolean>;
+  onOpenPath: (path: string) => Promise<OpenOutcome>;
   onSignIn: () => void;
   onSignOut: () => void;
 }
@@ -179,13 +180,15 @@ export class WelcomeScreen {
         row.title = r.path;
         row.innerHTML = `<span class="welcome-recent-name">${esc(base)}</span><span class="welcome-recent-dir">${esc(parts.join("/"))}</span>`;
         row.onclick = async () => {
-          const ok = await this.cb.onOpenPath(r.path);
-          if (ok) {
+          const outcome = await this.cb.onOpenPath(r.path);
+          if (outcome === "ok") {
             this.close();
-          } else {
+          } else if (outcome === "unreadable") {
             forgetRecent(r.path); // gone from disk — drop it so it stops teasing
             row.remove();
           }
+          // "newerFormat": the file is fine, we're too old. Keep the row —
+          // it's how the user finds the file again after updating.
         };
         list.appendChild(row);
       }

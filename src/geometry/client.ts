@@ -66,6 +66,11 @@ export interface GeometryBackend {
   projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]>;
   /** System font family names for the text tool's font picker. */
   listFonts(): Promise<string[]>;
+  /** One-way v4 -> v5: turn a pre-container document's inline base64 BREP into
+   *  blobs in the durable store, returning the content hash for each feature.
+   *  Best-effort by design — the document keeps its inline copy, so a failure
+   *  (or a dead sidecar) costs nothing. */
+  migrateGeometry(items: { id: string; brep: string }[]): Promise<{ id: string; geom: string }[]>;
   export(
     doc: CadDocument,
     format: ExportFormat,
@@ -78,11 +83,18 @@ export interface GeometryBackend {
       palette?: { name: string; color: string; material?: string }[];
       bodyColors?: Record<string, number>;
     },
+    // Same contract as importGeometry's: hands back the request id so a Cancel
+    // targets THIS export rather than whatever ran most recently. The document
+    // stays editable while an export runs, so "most recent" is not this one.
+    onStarted?: (id: string) => void,
   ): Promise<{
     ok: boolean;
     path?: string;
     paths?: string[];
     message?: string;
+    // the user stopped it — distinct from a failure, so the caller can stay
+    // silent instead of reporting their own action back to them as an error
+    cancelled?: boolean;
     // features that FAILED during the export rebuild: their bodies are absent
     // from the written files (export-what-built, never silently)
     warnings?: { message: string; feature_id?: string }[];
@@ -107,10 +119,12 @@ export interface GeometryBackend {
       bodyNames: Record<string, string>;
       settings?: Record<string, unknown>;
     },
+    onStarted?: (id: string) => void,
   ): Promise<{
     ok: boolean;
     path?: string;
     message?: string;
+    cancelled?: boolean;
     warnings?: { message: string; feature_id?: string }[];
   }>;
   // Fetch the per-launch sidecar auth token from the Rust shell (Tauri) and
@@ -152,8 +166,43 @@ interface WireBodyFull {
   normals?: F32Wire;
   faceOwners?: (string | null)[];
   textureColorSlots?: (number | null)[];
-  edges?: { points: [number, number, number][]; body?: string }[];
+  edges?: WireEdgeList;
   faceCount?: number;
+}
+/** Edge polylines, the form every consumer sees. The binary reply carries them
+ *  packed instead (WireEdgesPacked); handleBinaryReply expands them before the
+ *  body reaches anything else, so this stays the single downstream contract. */
+type WireEdgeList = { points: [number, number, number][]; body?: string }[];
+/** Edge polylines packed into binary buffers (see server.py's _pack_edges):
+ *  every point triple flattened, plus a per-edge POINT count to re-split them.
+ *  Exists only between reading a binary frame and expanding it. */
+interface WireEdgesPacked {
+  $pts: F32Wire;
+  $counts: U32Wire;
+  body?: string;
+}
+
+/** Re-split a packed edge buffer into the per-edge point triples every consumer
+ *  expects. `counts` holds each edge's POINT count; `pts` is every triple of
+ *  every edge, flattened, in the same order.
+ *
+ *  Exported for its own test: this is the client half of the wire change that
+ *  keeps a large assembly's reply under the frame cap, and the sidecar-side
+ *  test can only prove the encoder. */
+export function expandPackedEdges(
+  pts: Float32Array,
+  counts: Uint32Array,
+  body: string | undefined,
+): WireEdgeList {
+  const list: WireEdgeList = [];
+  let o = 0;
+  for (let i = 0; i < counts.length; i++) {
+    const n = counts[i]!;
+    const points: [number, number, number][] = new Array(n) as [number, number, number][];
+    for (let k = 0; k < n; k++, o += 3) points[k] = [pts[o]!, pts[o + 1]!, pts[o + 2]!];
+    list.push(body !== undefined ? { points, body } : { points });
+  }
+  return list;
 }
 interface WireBodyStub {
   id: string;
@@ -423,6 +472,19 @@ export class Geometry implements GeometryBackend {
         if (fb.normals !== undefined) fb.normals = resolveBuf(fb.normals) as Float32Array;
         fb.indices = resolveBuf(fb.indices) as Uint32Array;
         fb.faceIds = resolveBuf(fb.faceIds) as Uint32Array;
+        // Edges arrive packed (server.py's _pack_edges) — expand them back to
+        // the plain list every consumer expects, here at the one point the raw
+        // frame is interpreted. Rebuilding the triples is still cheaper than
+        // the JSON text it replaces: on a large assembly that was 97.1 MiB to
+        // parse, and the frame it saves is what keeps the reply under the cap.
+        const rawEdges = (fb as { edges?: WireEdgeList | WireEdgesPacked }).edges;
+        if (rawEdges !== undefined && !Array.isArray(rawEdges)) {
+          fb.edges = expandPackedEdges(
+            resolveBuf(rawEdges.$pts) as Float32Array,
+            resolveBuf(rawEdges.$counts) as Uint32Array,
+            rawEdges.body,
+          );
+        }
       }
       delete header.result.$buffers;
       const resolve = this.pending.get(header.id);
@@ -669,7 +731,8 @@ export class Geometry implements GeometryBackend {
       palette?: { name: string; color: string; material?: string }[];
       bodyColors?: Record<string, number>;
     } = {},
-  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
+    onStarted?: (id: string) => void,
+  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; cancelled?: boolean; warnings?: { message: string; feature_id?: string }[] }> {
     const msg = await this.call<{ path?: string; paths?: string[]; warnings?: { message: string; feature_id?: string }[] }>(
       "export",
       {
@@ -678,6 +741,7 @@ export class Geometry implements GeometryBackend {
         // to empty, so other formats are unaffected by sending them.
         palette: opts.palette, bodyColors: opts.bodyColors,
       },
+      onStarted,
     );
     if (msg.ok) {
       const r = msg.result;
@@ -688,6 +752,7 @@ export class Geometry implements GeometryBackend {
         ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
       };
     }
+    if (msg.cancelled) return { ok: false, cancelled: true, message: "export cancelled" };
     return { ok: false, message: msg.error?.message };
   }
 
@@ -700,7 +765,8 @@ export class Geometry implements GeometryBackend {
       bodyNames: Record<string, string>;
       settings?: Record<string, unknown>;
     },
-  ): Promise<{ ok: boolean; path?: string; message?: string; warnings?: { message: string; feature_id?: string }[] }> {
+    onStarted?: (id: string) => void,
+  ): Promise<{ ok: boolean; path?: string; message?: string; cancelled?: boolean; warnings?: { message: string; feature_id?: string }[] }> {
     const msg = await this.call<{ path?: string; warnings?: { message: string; feature_id?: string }[] }>("exportProject", {
       document: doc,
       path,
@@ -708,7 +774,7 @@ export class Geometry implements GeometryBackend {
       bodyColors: opts.bodyColors,
       bodyNames: opts.bodyNames,
       settings: opts.settings ?? {},
-    });
+    }, onStarted);
     if (msg.ok) {
       const r = msg.result;
       return {
@@ -717,19 +783,20 @@ export class Geometry implements GeometryBackend {
         ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
       };
     }
+    if (msg.cancelled) return { ok: false, cancelled: true, message: "export cancelled" };
     return { ok: false, message: msg.error?.message };
   }
 
   async importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply> {
     const msg = await this.call<{
-      brep: string; name: string; solid: boolean; faces: number; color?: string;
+      geom: string; name: string; solid: boolean; faces: number; color?: string;
       nodes?: { name: string; parent: number | null; color?: string }[];
       parts?: { node: number; faces: number }[];
     }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
       return {
-        ok: true, brep: r.brep, name: r.name, solid: r.solid, faces: r.faces,
+        ok: true, geom: r.geom, name: r.name, solid: r.solid, faces: r.faces,
         ...(r.color !== undefined ? { color: r.color } : {}),
         ...(r.nodes !== undefined ? { nodes: r.nodes } : {}),
         ...(r.parts !== undefined ? { parts: r.parts } : {}),
@@ -788,5 +855,20 @@ export class Geometry implements GeometryBackend {
   async listFonts(): Promise<string[]> {
     const msg = await this.call<{ families: string[] }>("listFonts", {});
     return msg.ok ? (msg.result.families ?? []) : [];
+  }
+
+  async migrateGeometry(
+    items: { id: string; brep: string }[],
+  ): Promise<{ id: string; geom: string }[]> {
+    if (!items.length) return [];
+    const msg = await this.call<{
+      items: { id: string; geom: string }[];
+      failed?: { id: string; message: string }[];
+    }>("migrateGeometry", { items });
+    if (!msg.ok) return []; // keep the inline copy; nothing is lost
+    for (const f of msg.result.failed ?? []) {
+      console.warn(`could not migrate geometry for ${f.id}: ${f.message}`);
+    }
+    return msg.result.items ?? [];
   }
 }

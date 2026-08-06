@@ -33,6 +33,7 @@ import hmac
 import json
 import multiprocessing as mp
 import os
+import re
 import secrets
 import signal
 import struct
@@ -49,6 +50,7 @@ import numpy as np
 import websockets
 
 import occt_smp
+import sysmem
 
 HOST = "127.0.0.1"
 # Env-overridable so a test/benchmark instance can run beside the app's own
@@ -96,12 +98,24 @@ _ip_conns: dict[str, int] = {}
 # offset that collapses a hole); the timeout + worker recycling turns that into a
 # clean, recoverable error instead of a frozen app.
 JOB_TIMEOUT = 25.0
-# Document-scaled ops (rebuild / export / interference re-run the whole feature
-# history) get a roomier budget: a long document's COLD rebuild legitimately
-# exceeds JOB_TIMEOUT (measured 26s at 125 features on the DDR model), and a
-# timeout there is self-perpetuating — it recycles the worker, which clears the
-# incremental cache, so every retry is cold again. 120s still catches runaways.
-DOC_TIMEOUT = 120.0
+# DOC_TIMEOUT (120 s) USED TO LIVE HERE, for the document-scaled ops that replay
+# the whole feature history: export, exportProject, interference,
+# projectGeometry. It is gone — those four are supervised by PROGRESS now (see
+# STALL_TIMEOUT below), which is what the roomier budget was really reaching for.
+#
+# A wall clock could not tell a long build from a wedged one, and its failure was
+# self-perpetuating: the timeout recycled the worker, which cleared the
+# incremental cache, so every retry started cold and hit the same wall.
+#
+# Safe to move ONLY because the silent phases in those jobs are short. Measured
+# on a 3,000-body assembly: the ticking rebuild is 10.2 s while the silent write
+# is 2.8 s for a 48 MB STEP, 0.7 s for STL, and 0.1 s for a project 3MF. If a
+# future format grows a write phase that can run past STALL_TIMEOUT without
+# ticking, it needs ticks or its own stall= — not a return to wall clock.
+#
+# The `import` op keeps its own size-derived wall-clock budget on purpose: OCP
+# holds the GIL for the whole of ReadFile+Transfer, so nothing can tick inside it
+# and there is no progress to supervise.
 
 # Import phase labels and their share of the wall clock, measured on the 356 MiB
 # reference STEP: read+convert 90.6 s, canonicalize 93.9 s, encode 7.3 s.
@@ -299,7 +313,7 @@ _EXPORT_ANG_TOL = 0.3
 _EXPORT_MESH_CACHE = {}  # body id -> {"shape", "texture_key", "positions", "indices"}
 
 
-def _export_mesh(b):
+def _export_mesh(b, tol=None):
     """Export-grade (positions, indices) for one live body, three-tier cached
     (RAM identity -> disk artifact -> compute + persist), mirroring
     _body_payload. Worker-side only."""
@@ -307,7 +321,14 @@ def _export_mesh(b):
 
     from tessellate import tessellate
     from texture import resolve_body_textures
+    from builder import progress_tick
 
+    # Unlike the viewport twin, this ticks on EVERY tier including a RAM hit,
+    # not just the compute path: export walks every body in one uninterrupted
+    # loop, so the guarantee worth having is one tick per body regardless of
+    # which tier served it. A mixed warm/cold export is the common case.
+    progress_tick()
+    tol = _EXPORT_TOL if tol is None else tol
     bid, sh = b["id"], b["shape"]
     if b.get("_textures"):
         from texture import CODE_VERSION as _tex_ver
@@ -315,12 +336,24 @@ def _export_mesh(b):
     else:
         texture_key = None
     ent = _EXPORT_MESH_CACHE.get(bid)
-    if ent is not None and ent["shape"] is sh and ent["texture_key"] == texture_key:
+    # TOLERANCE IS PART OF THE KEY. Without it a coarser retry (a tolerance
+    # backoff after a triangle-budget refusal) would be handed the mesh from the
+    # finer attempt still sitting in this cache — the backoff would appear to
+    # succeed while changing nothing, and the export would blow the same budget
+    # a second time with no way to tell why.
+    if (ent is not None and ent["shape"] is sh
+            and ent["texture_key"] == texture_key and ent["tol"] == tol):
         return ent["positions"], ent["indices"]
+    # This body was last meshed at a DIFFERENT tolerance. OCCT keeps the
+    # triangulation on the shape and considers an existing finer mesh adequate
+    # for a coarser request, so without dropping it first the new tolerance is
+    # silently ignored — which is what would make a backoff a no-op even with
+    # the cache keyed correctly.
+    retolerance = ent is not None and ent["shape"] is sh and ent.get("tol") != tol
 
     mesh_key = None
     if b.get("meshKey"):
-        mesh_key = "%s-export-t%s" % (b["meshKey"], _EXPORT_TOL)
+        mesh_key = "%s-export-t%s" % (b["meshKey"], tol)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     mesh = None
@@ -336,8 +369,9 @@ def _export_mesh(b):
         t0 = time.monotonic()
         textures = resolve_body_textures(b) if b.get("_textures") else None
         pos, idx, _fids = tessellate(
-            sh, tolerance=_EXPORT_TOL, angular_tolerance=_EXPORT_ANG_TOL,
+            sh, tolerance=tol, angular_tolerance=_EXPORT_ANG_TOL,
             textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
+            force_remesh=retolerance,
         )
         mesh = (pos, idx)
         if mesh_key and (time.monotonic() - t0) * 1000.0 >= _MESH_PERSIST_MIN_MS:
@@ -346,11 +380,81 @@ def _export_mesh(b):
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(mesh, 5))
             except Exception:
                 pass
+    # Cached as NUMPY, not as the boxed Python lists tessellate returns.
+    # Routing untextured stl/3mf through here means every export now populates
+    # this cache, and it is only pruned of DELETED bodies — live ones are held
+    # for the worker's lifetime. Measured for a 2M-triangle document: 96 MB of
+    # positions + 217 MB of indices as lists, against 24 + 24 MB as float64/int32.
+    # Lossless (float64 is the width tessellate produced; int32 covers 2.1e9
+    # vertices), 6.5x smaller, and it removes the conversion each consumer was
+    # doing anyway — on the very worker the rest of this branch defends from OOM.
+    positions = np.asarray(mesh[0], dtype=np.float64)
+    indices = np.asarray(mesh[1], dtype=np.int32)
     _EXPORT_MESH_CACHE[bid] = {
-        "shape": sh, "texture_key": texture_key,
-        "positions": mesh[0], "indices": mesh[1],
+        "shape": sh, "texture_key": texture_key, "tol": tol,
+        "positions": positions, "indices": indices,
     }
-    return mesh[0], mesh[1]
+    return positions, indices
+
+
+# Filenames Windows refuses outright, in ANY case and with or without an
+# extension: CON.step is as invalid as CON. A body legitimately named "Con" or
+# "Aux" is not exotic in mechanical CAD ("auxiliary bracket"), and the failure
+# is an opaque OS error at write time on one platform only.
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
+# Filesystems cap a name in BYTES, not characters: ext4 and APFS both stop at
+# 255 bytes. `\w` is Unicode-aware, so a CJK or emoji body name survives
+# sanitising and then blows the limit at about a third of the character count.
+_MAX_NAME_BYTES = 200  # flat reserve for the extension and a dedup suffix
+
+
+def _safe_part_filename(label, fallback):
+    """A filesystem-safe stem for one exported body.
+
+    Refuses nothing and raises nothing: every input yields SOME usable name, so
+    an awkwardly-named body can never block an export of the others.
+    """
+    name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_")
+    if not name or set(name) <= {"."}:  # empty or dot-only → no dotfiles
+        name = str(fallback)
+    # Byte budget, trimmed on a CHARACTER boundary so the result stays valid
+    # UTF-8 — truncating the bytes directly can split a multi-byte codepoint.
+    while len(name.encode("utf-8")) > _MAX_NAME_BYTES and len(name) > 1:
+        name = name[:-1]
+    name = name.rstrip("_.") or str(fallback)
+    if name.split(".")[0].lower() in _WINDOWS_RESERVED:
+        name = f"{name}_"
+    return name
+
+
+def _budget_refusal(ntri):
+    """The refusal message past the triangle hard cap, or None while under it.
+
+    ONE mechanism, because this had drifted into three: two raising sites and one
+    returning an error dict, with the WARN threshold duplicated beside two of
+    them and missing from the third — which is how exportProject came to have no
+    budget at all. A new export format now cannot be added without it.
+
+    Deliberately NOT worded "textured": since untextured stl/3mf was routed
+    through this path too, the old message told someone exporting a plain
+    3,000-body assembly to reduce a texture scale they were not using.
+    """
+    if ntri <= EXPORT_TRIANGLE_HARD_CAP:
+        return None
+    return (f"export too dense ({ntri:,}+ triangles) — reduce texture scale or "
+            f"depth, or export fewer bodies")
+
+
+def _budget_warning(ntri):
+    """The non-blocking 'very dense' warning, or None. Same single-source reason."""
+    if ntri <= EXPORT_TRIANGLE_WARN:
+        return None
+    return f"export is very dense ({ntri:,} triangles)"
 
 
 def _prune_export_cache(live):
@@ -412,8 +516,43 @@ _DEFAULT_RELATIVE_DEFLECTION = 0.002
 # criterion OCCT applies. Re-measure this table before touching either number.
 _VIEWPORT_ANG_TOL = 0.18
 
+# DOCUMENT-SIZE tolerance profile. A large assembly's rebuild reply has to fit
+# the 128 MiB websocket frame cap (a security control — see MAX_FRAME), and at
+# shipping quality it does not: measured on the 356 MiB reference assembly
+# (3,071 bodies), 0.002/0.18 yields 9,943,003 triangles and a 263.3 MiB reply
+# even after edge packing. 0.008/0.35 yields 3,809,240 and 121.1 MiB.
+#
+# The LINEAR term alone cannot do this — 4x coarser cut only 13% of the
+# triangles, because the angular term is what binds. Re-measured on the same
+# 60mm ring + 1mm fillet the block above uses, worst adjacent-facet angle:
+#     lin 0.002 ang 0.18    5.14deg   10,640 tris   <- shipping
+#     lin 0.004 ang 0.26    7.35deg    5,488 tris
+#     lin 0.008 ang 0.35   10.04deg    2,880 tris   <- large-document tier
+# Note the block above's 45.96deg row is lin 0.001, NOT 0.002; coarsening the
+# ANGULAR term from 0.18 to 0.35 costs 5.14 -> 10.04deg, not the 47deg that
+# table reads as implying. Still a real regression, so it applies only where it
+# buys something: a document small enough to fit keeps full quality.
+#
+# Thresholds are anchored on the measured ~86 KiB/body of that assembly at
+# shipping quality (128 MiB / 86 KiB ~= 1,500 bodies). Body count is a PROXY —
+# bodies vary enormously in face count — so _rebuild_job also guards the encoded
+# reply against the cap rather than trusting this to be right.
+_VIEWPORT_SIZE_TIERS = (
+    # (bodies at or above, linear scale on _DEFAULT_RELATIVE_DEFLECTION, angular)
+    (2200, 4.0, 0.35),
+    (1200, 2.0, 0.26),
+)
 
-def _effective_tolerance(shape, requested):
+
+def _viewport_profile(n_bodies):
+    """(linear scale, angular tolerance) for a document of `n_bodies` bodies."""
+    for threshold, scale, ang in _VIEWPORT_SIZE_TIERS:
+        if n_bodies >= threshold:
+            return scale, ang
+    return 1.0, _VIEWPORT_ANG_TOL
+
+
+def _effective_tolerance(shape, requested, size_scale=1.0):
     """Map the requested (interactive-viewport) wire tolerance to the value we
     actually hand BRepMesh, in the units the viewport's meshing mode expects.
 
@@ -438,8 +577,13 @@ def _effective_tolerance(shape, requested):
     Either way the `requested / DEFAULT` factor keeps the wire contract intact: a
     client that asks for a smaller tolerance than the default still gets a
     proportionally finer mesh for every body. Deterministic — a pure function of
-    (bbox, requested) — so cache keys built from the result stay stable."""
-    scale = requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0
+    (bbox, requested, size_scale) — so cache keys built from the result stay
+    stable.
+
+    `size_scale` is the document-size coarsening from _viewport_profile: 1.0 for
+    a document that fits the frame cap at full quality, higher for one that does
+    not. It multiplies the deflection in BOTH modes."""
+    scale = (requested / _DEFAULT_TOLERANCE if _DEFAULT_TOLERANCE else 1.0) * size_scale
     if _VIEWPORT_RELATIVE:
         return _DEFAULT_RELATIVE_DEFLECTION * scale
 
@@ -454,7 +598,25 @@ def _effective_tolerance(shape, requested):
     return base * scale
 
 
-def _body_payload(b, tolerance):
+def _union_bbox(boxes):
+    """Union of {"min":[x,y,z],"max":[...]} boxes, or None if there are none.
+
+    This replaces a single bbox(merged_compound) call. That call was ONE OCCT
+    walk over every solid with no way to tick inside it — measured 95.3 s on the
+    356 MiB reference assembly against STALL_TIMEOUT = 60 s, so the supervisor
+    reaped the worker before the rebuild could finish, every time. The union is
+    exactly equivalent (`part` is the Compound of the same shapes) but is
+    accumulated per body, where _body_payload's own progress tick covers it."""
+    present = [bb for bb in boxes if bb is not None]
+    if not present:
+        return None
+    return {
+        "min": [min(bb["min"][i] for bb in present) for i in range(3)],
+        "max": [max(bb["max"][i] for bb in present) for i in range(3)],
+    }
+
+
+def _body_payload(b, tolerance, profile):
     """Compute (or fetch) the full render payload for one body: positions/indices/
     faceIds (LOCAL ids, offset client-side), faceOwners, per-body edges. Three
     tiers: identity-cached in RAM -> disk mesh artifact (load path: never pays the
@@ -475,12 +637,13 @@ def _body_payload(b, tolerance):
     import pickle
     import uuid as _uuid
 
-    from tessellate import tessellate, edge_polylines_by_body
+    from tessellate import tessellate, edge_polylines_by_body, mesh_bbox
     from builder import _face_fp, on_feature_tick
     from texture import resolve_body_textures
 
     bid, sh = b["id"], b.get("shape")
     requested = tolerance
+    size_scale, ang_tol = profile
     if b.get("_textures"):
         from texture import CODE_VERSION as _tex_ver
         # code version rides in the key: a texture-algorithm update must not
@@ -498,11 +661,12 @@ def _body_payload(b, tolerance):
         ent is not None
         and ent["shape"] is sh
         and ent["requested"] == requested
+        and ent.get("profile") == profile
         and ent.get("texture_key") == texture_key
     ):
         return ent
     if sh is not None:
-        tolerance = _effective_tolerance(sh, tolerance)
+        tolerance = _effective_tolerance(sh, tolerance, size_scale)
 
     mesh_key = None
     mk = b.get("meshKey")
@@ -515,7 +679,7 @@ def _body_payload(b, tolerance):
         from tessellate import CODE_VERSION as _tess_ver
         mesh_key = "%s-tv%d-%s%s-a%s" % (mk, _tess_ver,
                                          "r" if _VIEWPORT_RELATIVE else "a", tolerance,
-                                         _VIEWPORT_ANG_TOL)
+                                         ang_tol)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     payload = None
@@ -531,7 +695,7 @@ def _body_payload(b, tolerance):
         t0 = time.monotonic()
         textures = resolve_body_textures(b) if b.get("_textures") else None
         norm_chunks = [] if textures else None
-        pos, idx, fids = tessellate(sh, tolerance, angular_tolerance=_VIEWPORT_ANG_TOL,
+        pos, idx, fids = tessellate(sh, tolerance, angular_tolerance=ang_tol,
                                     textures=textures,
                                     density_cap=VIEWPORT_DENSITY_CAP,
                                     normals_out=norm_chunks,
@@ -558,6 +722,11 @@ def _body_payload(b, tolerance):
             "positions": pos, "indices": idx, "faceIds": fids,
             "faceOwners": face_owners, "edges": edges,
             "faceCount": (max(fids) + 1) if fids else 0,
+            # Computed HERE, while the triangulation tessellate() just built is
+            # still on the shape, and stored in the payload so the disk mesh
+            # artifact carries it too — a cache hit must not fall back to the
+            # loose poles-based box and make the camera jump between runs.
+            "bbox": mesh_bbox(sh),
         }
         if tex_color_slots:
             payload["textureColorSlots"] = tex_color_slots
@@ -578,7 +747,11 @@ def _body_payload(b, tolerance):
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
             except Exception:
                 pass
+    # The document bbox is the union of these (see the payload loop), so it is
+    # covered by this function's progress tick and reuses the cache on an
+    # unchanged body — walking the merged compound was neither.
     ent = {"shape": sh, "requested": requested, "tolerance": tolerance,
+           "profile": profile, "bbox": payload.get("bbox"),
            "etag": _uuid.uuid4().hex, "payload": payload, "texture_key": texture_key}
     _MESH_CACHE[bid] = ent
     if on_feature_tick is not None:
@@ -661,16 +834,24 @@ def _rebuild_job(document, tolerance, known=None):
         if proj:
             result["projectionUpdates"] = proj
         return result
-    from tessellate import bbox
 
     live_ids = set()
     out = []
+    body_boxes = []
     t0 = time.monotonic()
+    # One profile for the whole document: a big assembly is meshed coarser so its
+    # reply fits the frame cap (see _VIEWPORT_SIZE_TIERS). Computed once, outside
+    # the loop, so every body in one reply is meshed on the same terms.
+    profile = _viewport_profile(len(bodies))
+    if profile[0] != 1.0:
+        print("[rebuild] %d bodies -> coarse viewport profile (x%.1f linear, ang %.2f)"
+              % (len(bodies), profile[0], profile[1]), flush=True)
     for b in bodies:
         if b.get("shape") is None:
             continue
         live_ids.add(b["id"])
-        ent = _body_payload(b, tolerance)
+        ent = _body_payload(b, tolerance, profile)
+        body_boxes.append(ent.get("bbox"))
         # The assembly-tree node lives in the ENVELOPE, next to id/name/etag, and
         # is sent on BOTH branches. It must not go inside the mesh payload: that
         # is etag-cached, so the tree would freeze at whatever it was when the
@@ -688,22 +869,15 @@ def _rebuild_job(document, tolerance, known=None):
     for bid in list(_MESH_CACHE):
         if bid not in live_ids:
             del _MESH_CACHE[bid]  # body deleted/consumed — drop its cache
-    # bbox of the merged part walks every solid — on a many-body document this
-    # is its own long phase; tick around it so the stall watchdog sees progress.
-    from builder import on_feature_tick as _tick_fn
-    if _tick_fn is not None:
-        try:
-            _tick_fn(-1)
-        except Exception:
-            pass
+    # The document bbox is the UNION of the per-body boxes accumulated above —
+    # see _union_bbox for why this is no longer one walk over the merged part.
+    # No bbox(part) fallback: it can only be reached when EVERY body's box
+    # failed, where walking the merged compound of those same shapes would fail
+    # too — after spending the untickable 95 s this change exists to remove.
+    # `bbox: null` is already a legal reply (the no-bodies branch sends it).
     t0 = time.monotonic()
-    doc_bbox = bbox(part)
+    doc_bbox = _union_bbox(body_boxes)
     t_bbox = time.monotonic() - t0
-    if _tick_fn is not None:
-        try:
-            _tick_fn(-1)
-        except Exception:
-            pass
     # Phase log for scale diagnosis (large assemblies): shows where a slow
     # build actually spends its time, and correlates with the stall watchdog.
     print(f"[rebuild] features={len(document.get('features', []))} "
@@ -815,20 +989,32 @@ def _export_job(document, fmt, path, body=None, separate=False,
         document-wide safety net so a pathological scale/depth combo can't
         allocate an unbounded mesh."""
         pos_parts, idx_parts, vbase = [], [], 0
+        ntri = 0
         for b in target_bodies:
             pos, idx = _export_mesh(b)
+            # Checked HERE, per body, rather than on the concatenated total.
+            # The cap exists to stop a pathological document allocating
+            # unbounded memory, and a check that runs only after every body has
+            # been meshed and concatenated has already allowed exactly that —
+            # it could report the OOM it was meant to prevent. Bounded now to
+            # the cap plus one body.
+            ntri += len(idx) // 3
+            refusal = _budget_refusal(ntri)
+            if refusal:
+                raise ValueError(refusal)
             pos_parts.append(np.asarray(pos, dtype=np.float64))
             idx_parts.append(np.asarray(idx, dtype=np.int64) + vbase)
             vbase += len(pos_parts[-1]) // 3
-        positions = np.concatenate(pos_parts) if pos_parts else np.empty(0)
-        mindices = np.concatenate(idx_parts) if idx_parts else np.empty(0, dtype=np.int64)
-        ntri = len(mindices) // 3
-        if ntri > EXPORT_TRIANGLE_HARD_CAP:
-            raise ValueError(
-                f"textured export too dense ({ntri:,} triangles) — reduce texture scale or depth"
-            )
-        if ntri > EXPORT_TRIANGLE_WARN:
-            warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
+        # A one-element concatenate copies the whole array a second time, and the
+        # separate/single-body paths always hit that case.
+        positions = (pos_parts[0] if len(pos_parts) == 1
+                     else np.concatenate(pos_parts) if pos_parts else np.empty(0))
+        mindices = (idx_parts[0] if len(idx_parts) == 1
+                    else np.concatenate(idx_parts) if idx_parts
+                    else np.empty(0, dtype=np.int64))
+        warn = _budget_warning(ntri)
+        if warn:
+            warnings.append({"message": warn})
         if fmt == "stl":
             mesh_writers.write_stl(positions, mindices, p)
         elif fmt == "3mf":
@@ -854,6 +1040,12 @@ def _export_job(document, fmt, path, body=None, separate=False,
         for b in target_bodies:
             pos, idx = _export_mesh(b)
             ntri += len(idx) // 3
+            # Same reason as _mesh_export: bound the allocation as it happens.
+            # GLB keeps bodies SEPARATE, so without this a 3,000-body assembly
+            # holds every mesh at once before anything is checked.
+            refusal = _budget_refusal(ntri)
+            if refusal:
+                raise ValueError(refusal)
             slot = slots.get(b["id"], 0)  # unassigned -> slot 0, as the 3MF path does
             entry = pal[slot] if isinstance(slot, int) and 0 <= slot < len(pal) else None
             entries.append({
@@ -862,13 +1054,24 @@ def _export_job(document, fmt, path, body=None, separate=False,
                 "indices": idx,
                 "color": _norm_color(entry.get("color")) if entry else None,
             })
-        if ntri > EXPORT_TRIANGLE_HARD_CAP:
-            raise ValueError(
-                f"textured export too dense ({ntri:,} triangles) — reduce texture scale or depth"
-            )
-        if ntri > EXPORT_TRIANGLE_WARN:
-            warnings.append({"message": f"textured export is very dense ({ntri:,} triangles)"})
+        warn = _budget_warning(ntri)
+        if warn:
+            warnings.append({"message": warn})
         return mesh_writers.write_glb(entries, p)
+
+    def _write_one_body(b, p):
+        """ONE body to `p`, via whichever writer the format needs.
+
+        Shared by the separate-bodies and single-body paths, which became
+        identical once untextured stl/3mf stopped taking the bypass: the
+        `b.get("_textures")` test was the only thing that had distinguished them.
+        The whole-document path stays separate — it genuinely differs (STEP tree,
+        fused part)."""
+        if fmt == "glb":
+            return _glb_export([b], p)
+        if fmt in ("stl", "3mf"):
+            return _mesh_export([b], p)  # textured or not: caps, cache, tolerance
+        return export(b["shape"], fmt, p)
 
     if separate:
         if not live:
@@ -878,25 +1081,35 @@ def _export_job(document, fmt, path, body=None, separate=False,
         # are named the way the user named the bodies.
         names = document.get("bodyNames") or {}
         base, ext = os.path.splitext(path)
+        # Into a DIRECTORY of our own, created with exist_ok=False.
+        #
+        # The save dialog asks the user to confirm overwriting `parts.step`, and
+        # then that file is never written — N sibling files are. So the one file
+        # they were asked about was the only one that could not be clobbered,
+        # while `parts-Body1.step` and its siblings were silently overwritten
+        # with no prompt at all. A fresh directory makes the collision
+        # impossible AND keeps the N files together.
+        outdir = base
+        try:
+            os.makedirs(outdir, exist_ok=False)
+        except FileExistsError:
+            return {"error": {"message": (
+                f"{os.path.basename(outdir)} already exists — the separate-bodies "
+                f"export writes a folder of that name. Choose another name, or "
+                f"move the existing folder."
+            )}}
+        except OSError as e:
+            return {"error": {"message": f"could not create {outdir}: {e}"}}
         written, used = [], set()
         for b in live:
             label = names.get(b["id"]) or b["name"]
-            name = re.sub(r"[^\w.-]+", "_", str(label)).strip("_")
-            if not name or set(name) <= {"."}:  # empty or dot-only → no dotfiles
-                name = b["id"]
+            name = _safe_part_filename(label, b["id"])
             cand, i = name, 2
-            while cand in used:  # keep filenames unique if two bodies share a name
+            while cand.lower() in used:  # case-insensitive: Windows and macOS
                 cand, i = f"{name}_{i}", i + 1
-            used.add(cand)
-            p = f"{base}-{cand}{ext}"
-            if fmt == "glb":
-                _glb_export([b], p)
-            elif b.get("_textures") and fmt in ("stl", "3mf"):
-                _mesh_export([b], p)
-            else:
-                export(b["shape"], fmt, p)
-            written.append(p)
-        return _done({"path": path, "paths": written})
+            used.add(cand.lower())
+            written.append(_write_one_body(b, os.path.join(outdir, f"{cand}{ext}")))
+        return _done({"path": outdir, "paths": written})
 
     if body:
         tgt = next((b for b in live if b["id"] == body), None)
@@ -904,15 +1117,23 @@ def _export_job(document, fmt, path, body=None, separate=False,
             return {"error": {"message": f"body '{body}' not found to export"}}
         if fmt == "glb":
             return _done({"path": _glb_export([tgt], path)})
-        if tgt.get("_textures") and fmt in ("stl", "3mf"):
-            return _done({"path": _mesh_export([tgt], path)})
-        return _done({"path": export(tgt["shape"], fmt, path)})
+        return _done({"path": _write_one_body(tgt, path)})
 
     # GLB always goes per-body: it carries per-body colour, and routing it through
     # export() would drop texture displacement (see _glb_export).
     if fmt == "glb":
         return _done({"path": _glb_export(live, path)})
-    if any_textured and fmt in ("stl", "3mf"):
+    # UNTEXTURED stl/3mf goes the same way as textured. It used to fall through to
+    # exporters.export, which calls build123d's export_stl / Mesher directly and
+    # so bypassed every cap, every cache and the export tolerance — the one path
+    # where a pathological document could allocate without limit.
+    #
+    # Measured before switching, because it changes which tessellation runs: at
+    # export grade a sphere, a cylinder and a filleted box all produce the
+    # IDENTICAL triangle count to build123d's default, and a torus produces
+    # 1.84x fewer. The deviation that buys is 0.02 mm, far below any printer's
+    # resolution, and it is the same tolerance textured exports have always used.
+    if fmt in ("stl", "3mf"):
         return _done({"path": _mesh_export(live, path)})
     # STEP carries structure: hand build123d a LABELLED tree instead of the fused
     # part, so product names — and an imported assembly's hierarchy, per-part
@@ -949,12 +1170,20 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
 
     palette, body_colors, body_names = sanitize_inputs(palette, body_colors, body_names)
     meshed = []
+    ntri = 0
     for b in live:
         # Export-grade tolerance — the viewport default (0.1) is visibly faceted
         # on a printed part. Cached across exports of an unchanged body.
         positions, indices = _export_mesh(b)
         if not len(indices):
             continue  # degenerate body with no triangulation — skip, like exports do
+        # This path had NO budget at all, which made it the way round every cap
+        # the plain export enforces. Checked per body, before the mesh is kept,
+        # so the allocation is bounded to the cap plus one body.
+        ntri += len(indices) // 3
+        refusal = _budget_refusal(ntri)
+        if refusal:
+            return {"error": {"message": refusal}}
         meshed.append(
             {"id": b["id"], "name": b["name"], "positions": positions, "indices": indices}
         )
@@ -969,12 +1198,36 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     return res
 
 
+def _migrate_geometry_job(items):
+    """Worker: convert pre-v5 inline base64 ASCII BREP to blobs in the durable
+    store, returning the content hash for each.
+
+    IN THE WORKER, deliberately. This parses geometry that came out of a file the
+    user opened, and `builder._brep_b64_to_shape` exists precisely so a crafted
+    `.sindri` cannot aim a parser fuzz at OCCT — doing it in the parent would put
+    that fuzz one segfault away from taking the whole sidecar down instead of a
+    disposable worker.
+
+    Per-item failures are reported, not raised: one unreadable legacy body must
+    not block migrating the rest, and the document keeps its inline copy for
+    anything that fails, so nothing is lost either way."""
+    from builder import _brep_b64_to_shape, _shape_to_blob
+
+    out, failed = [], []
+    for it in items:
+        try:
+            out.append({"id": it["id"], "geom": _shape_to_blob(_brep_b64_to_shape(it["brep"]))})
+        except Exception as e:  # noqa: BLE001
+            failed.append({"id": it.get("id"), "message": str(e)})
+    return {"items": out, "failed": failed}
+
+
 def _interference_job(document):
     """Worker: rebuild + pairwise interference check among live bodies. Returns
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
     intersection volume above a tiny epsilon), with the overlap volume + bbox so the
     frontend can report and zoom to each clash."""
-    from builder import rebuild_cached, _bbox_overlap
+    from builder import rebuild_cached, _bbox_pair_overlap, bbox_of, progress_tick
 
     # rebuild_cached for the same reason as _export_job: same worker, warm cache
     part, errors, bodies = rebuild_cached(document)
@@ -984,12 +1237,22 @@ def _interference_job(document):
     if errors and not live:
         e = errors[0]
         return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+    # ONE bbox per body, not one per pair. The sweep is quadratic in pairs but
+    # linear in distinct shapes, so computing the box inside the pair test did
+    # 9,360,540 OCCT bounding-box walks at 3,060 bodies to learn 3,060 things.
+    boxes = [bbox_of(b["shape"]) for b in live]
     pairs = []
     for i in range(len(live)):
+        # Ticked in two places, both proportional to real work: once per row,
+        # and again before each boolean. The bbox rejects are cheap enough to
+        # sweep in bulk, but a single row of a dense assembly can spend minutes
+        # in the booleans below, which is longer than the stall timeout.
+        progress_tick()
         for j in range(i + 1, len(live)):
             a, b = live[i], live[j]
-            if not _bbox_overlap(a["shape"], b["shape"]):
+            if not _bbox_pair_overlap(boxes[i], boxes[j]):
                 continue  # cheap AABB reject before the (crashable) boolean
+            progress_tick()
             try:
                 common = a["shape"] & b["shape"]
                 vol = abs(getattr(common, "volume", 0.0) or 0.0)
@@ -1110,6 +1373,12 @@ def _reply_for(req_id, res):
     return _ok(req_id, res)
 
 
+# The largest frame the websocket server will accept or emit. A security control
+# (sidecar DoS surface), deliberately lowered from 512 MiB in the 2026-07-02
+# hardening round — raise it only with that in mind. Enforced on the way IN by
+# websockets.serve(max_size=...) and on the way OUT by _reply_bytes.
+_MAX_FRAME = 128 * 1024 * 1024
+
 # Binary mesh reply (opt-in via `"binary": true` on rebuild/computeAll requests).
 # Wire layout, all integers little-endian:
 #   [u32 header_len][header_len bytes UTF-8 JSON header][pad to 4][buf0][buf1]...
@@ -1120,10 +1389,51 @@ def _reply_for(req_id, res):
 # dtypes are 4 bytes/element, so after the single header pad every buffer is
 # 4-aligned for free — INVARIANT: adding a wider dtype requires per-buffer
 # padding. f32 is lossless vs today's end state (the client always builds
-# Float32BufferAttributes). Everything else (stubs, edges, faceOwners, bbox,
-# diagnostics) stays inline JSON in the header.
+# Float32BufferAttributes). A body's EDGE polylines are packed the same way
+# (see _pack_edges) into {"$pts","$counts","body"}; everything else (stubs,
+# faceOwners, bbox, diagnostics) stays inline JSON in the header.
 _WIRE_F32 = np.dtype("<f4")
 _WIRE_U32 = np.dtype("<u4")
+
+
+def _pack_edges(edges, take, body):
+    """Move one body's edge polylines out of the inline JSON header and into two
+    binary buffers: all point triples flattened (f32) plus a per-edge POINT count
+    (u32) the client walks to re-split them.
+
+    Edge polylines are the largest single component of a large assembly's reply
+    AND the one part tessellation tolerance cannot shrink — they sample at the
+    fixed _EDGE_DEFLECTION, not at the viewport tolerance. Measured on the 356 MiB
+    reference assembly: 97.1 MiB across 1,726,523 points, byte-identical at every
+    point of a 5-step tolerance sweep, i.e. a hard floor under the 128 MiB frame
+    cap that no adaptive-tolerance scheme can lift. As JSON text a point costs
+    59 bytes against 12 as f32, so this is the cheapest large saving available and
+    it costs no visual fidelity.
+
+    `body` is the owning body id, taken from the envelope rather than re-derived
+    from the polylines: every list reaching here comes from a SINGLE-body
+    edge_polylines_by_body([b]) call, which stamps that same id on each edge."""
+    counts, flat = [], []
+    for e in edges or ():
+        pts = e.get("points") or ()
+        counts.append(len(pts))
+        for p in pts:
+            flat.extend(p)
+    return {
+        "$pts": take(flat, _WIRE_F32, "f32"),
+        "$counts": take(counts, _WIRE_U32, "u32"),
+        "body": body,
+    }
+
+
+class _ReplyTooLarge(Exception):
+    """The encoded frame would exceed _MAX_FRAME. Carries the size so the caller
+    can say how far over it was, and is raised BEFORE the buffers are joined so
+    the doomed frame is never actually materialised."""
+
+    def __init__(self, size):
+        super().__init__(size)
+        self.size = size
 
 
 def _encode_binary_reply(req_id, res):
@@ -1135,7 +1445,10 @@ def _encode_binary_reply(req_id, res):
 
     def take(vals, dtype, tag):
         arr = np.asarray(vals, dtype=dtype)
-        buffers.append(arr.tobytes())
+        # memoryview, not .tobytes(): join copies either way, so a bytes copy
+        # here would put TWO full payloads in the parent at once — ~245 MiB at
+        # the shipping tier. The array stays alive through the view.
+        buffers.append(memoryview(arr).cast("B"))
         buf_meta.append({"dtype": tag, "len": int(arr.size)})
         return {"$buf": len(buf_meta) - 1}
 
@@ -1150,6 +1463,7 @@ def _encode_binary_reply(req_id, res):
             nb["normals"] = take(b["normals"], _WIRE_F32, "f32")
         nb["indices"] = take(b["indices"], _WIRE_U32, "u32")
         nb["faceIds"] = take(b["faceIds"], _WIRE_U32, "u32")
+        nb["edges"] = _pack_edges(b.get("edges"), take, b.get("id"))
         bodies_out.append(nb)
 
     header_obj = dict(res)
@@ -1159,19 +1473,54 @@ def _encode_binary_reply(req_id, res):
     pad = (-len(header)) % 4
     parts = [struct.pack("<I", len(header)), header, b"\x00" * pad]
     parts.extend(buffers)
+    # Size the frame from its parts and refuse BEFORE joining: the join is a
+    # second full-size allocation, and on an over-cap reply every byte of it is
+    # discarded to send a short error string.
+    total = sum(len(p) for p in parts)
+    if total >= _MAX_FRAME:
+        raise _ReplyTooLarge(total)
     return b"".join(parts)
+
+
+def _too_large_error(req_id, size, n_bodies):
+    """The reply exceeded the frame cap. websockets closes the connection with
+    1009 "message too big" when a frame exceeds max_size, which reaches the user
+    as the app dying mid-rebuild with no explanation — the failure mode of GH #4.
+    _viewport_profile coarsens a large document's mesh to stay under the cap, but
+    it keys off BODY COUNT, and bodies vary enormously in face count; this is the
+    backstop for when that proxy is wrong."""
+    print("[rebuild] reply %s over the %s frame cap (%d bodies)"
+          % (sysmem.describe(size), sysmem.describe(_MAX_FRAME), n_bodies),
+          file=sys.stderr, flush=True)
+    return _err(
+        req_id,
+        "This model is too detailed to display: the rebuilt geometry came to "
+        f"{sysmem.describe(size)} across {n_bodies:,} bodies, over the "
+        f"{sysmem.describe(_MAX_FRAME)} limit. Hide some bodies or simplify "
+        "the model.",
+    )
 
 
 def _reply_bytes(req_id, res, binary):
     """Dispatch a rebuild/computeAll result to its wire form: binary frame when
     the client opted in and the result is a successful mesh reply; the plain
-    JSON text reply otherwise (errors, resync, opt-out, or encoder failure)."""
+    JSON text reply otherwise (errors, resync, opt-out, or encoder failure).
+
+    Either form is refused if it would exceed the frame cap — see
+    _too_large_error for why that must not reach websockets."""
+    n_bodies = len(res.get("bodies") or ())
     if not binary or "error" in res or res.get("resync"):
-        return _reply_for(req_id, res)
-    try:
-        return _encode_binary_reply(req_id, res)
-    except Exception:
-        return _reply_for(req_id, res)
+        reply = _reply_for(req_id, res)
+    else:
+        try:
+            reply = _encode_binary_reply(req_id, res)
+        except _ReplyTooLarge as over:
+            return _too_large_error(req_id, over.size, n_bodies)
+        except Exception:
+            reply = _reply_for(req_id, res)
+    if len(reply) >= _MAX_FRAME:
+        return _too_large_error(req_id, len(reply), n_bodies)
+    return reply
 
 
 def _new_pool():
@@ -1569,7 +1918,7 @@ async def _dispatch(ws, loop, req, req_id, op):
         await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
     elif op == "export":
-        res = await _run(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {}, timeout=DOC_TIMEOUT)
+        res = await _run_stall(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {})
         await ws.send(_reply_for(req_id, res))
 
     elif op == "exportProject":
@@ -1579,15 +1928,15 @@ async def _dispatch(ws, loop, req, req_id, op):
         if not isinstance(settings, dict) or len(json.dumps(settings)) > 262144:
             await ws.send(_err(req_id, "exportProject: bad settings"))
             return
-        res = await _run(
+        res = await _run_stall(
             loop, _export_project_job, req["document"], req["path"],
             req.get("palette") or [], req.get("bodyColors") or {},
-            req.get("bodyNames") or {}, settings, timeout=DOC_TIMEOUT,
+            req.get("bodyNames") or {}, settings,
         )
         await ws.send(_reply_for(req_id, res))
 
     elif op == "interference":
-        res = await _run(loop, _interference_job, req["document"], timeout=DOC_TIMEOUT)
+        res = await _run_stall(loop, _interference_job, req["document"])
         await ws.send(_reply_for(req_id, res))
 
     elif op == "import":
@@ -1647,12 +1996,21 @@ async def _dispatch(ws, loop, req, req_id, op):
         await ws.send(_reply_for(req_id, res))
 
     elif op == "projectGeometry":
-        # DOC_TIMEOUT: usually a warm prefix-cache hit, but a cold
-        # start replays the whole prefix like export/interference do.
-        res = await _run(
+        # Usually a warm prefix-cache hit, but a cold start replays the whole
+        # prefix like export/interference do — and that replay ticks, so a long
+        # one is no longer mistaken for a hang.
+        res = await _run_stall(
             loop, _project_geometry_job, req["document"], req["plane"],
-            req.get("sources") or [], timeout=DOC_TIMEOUT,
+            req.get("sources") or [],
         )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "migrateGeometry":
+        # One-way v4 -> v5: the document still carries inline base64, so nothing
+        # is lost if this never runs. JOB_TIMEOUT and a WALL CLOCK, not stall
+        # supervision: this decodes a bounded list of already-embedded blobs, it
+        # does not rebuild, so it has no heartbeat to supervise.
+        res = await _run(loop, _migrate_geometry_job, req.get("items") or [], timeout=JOB_TIMEOUT)
         await ws.send(_reply_for(req_id, res))
 
     elif op == "ping":
@@ -1785,7 +2143,7 @@ async def main():
         # sides — measured 84ms to deflate one 5MB mesh reply.
         bound = False
         try:
-            async with websockets.serve(handle, HOST, PORT, max_size=128 * 1024 * 1024,
+            async with websockets.serve(handle, HOST, PORT, max_size=_MAX_FRAME,
                                         compression=None):
                 bound = True
                 # readiness signal the Rust shell waits for before connecting

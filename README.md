@@ -244,7 +244,7 @@ needs one extra step per platform. Open the section for your platform:
 
 |  | Needs |
 | --- | --- |
-| **Linux** (`.deb`, `.rpm`, AppImage) | glibc 2.34 or newer, plus WebKitGTK 4.1 and GTK 3 from your distribution |
+| **Linux** (`.deb`, `.rpm`, AppImage) | glibc 2.34 or newer, plus WebKitGTK 4.1, libsoup 3 and GTK 3 from your distribution |
 | **Windows** | Windows 10 or 11, x86-64. Edge WebView2, which the setup exe fetches if it is missing |
 | **macOS** | Apple Silicon. There is no Intel build yet |
 
@@ -253,6 +253,31 @@ your distribution ships, which keeps them smaller and means they follow your dis
 security updates instead of freezing a browser engine in place. The `.deb` and `.rpm`
 declare that dependency, so a package install pulls it in for you; an AppImage on a
 distribution without WebKitGTK 4.1 installed will need it added by hand.
+
+<details>
+<summary><b>NixOS</b> — the AppImage needs its libraries named explicitly</summary>
+
+NixOS is not FHS, so `appimage-run` decides what the AppImage can see, and it exposes
+nothing it has not been told about. Adding WebKitGTK and libsoup to it is enough
+(confirmed on NixOS 25.05 by the reporter of
+[#3](https://github.com/MakerViking/sindricad/issues/3), running 0.1.100):
+
+```nix
+programs.appimage = {
+  enable = true;
+  binfmt = true;
+  package = pkgs.appimage-run.override {
+    extraPkgs = pkgs: with pkgs; [
+      webkitgtk_4_1
+      libsoup_3
+    ];
+  };
+};
+```
+
+`libsoup_3` matters as much as the WebKit line. On most distributions it arrives as a
+dependency of WebKitGTK and nobody has to think about it; here it has to be named.
+</details>
 
 Every platform needs working GPU drivers for the 3D viewport (OpenGL or EGL).
 

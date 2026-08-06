@@ -20,6 +20,52 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **A very large assembly now opens instead of killing the app.** Importing the
+  file worked, but on a 356 MB assembly of about 3,000 parts the app then died
+  partway through drawing it, with no message. Two separate causes, both fixed.
+
+  The finished geometry was too big to hand to the 3D view in one piece. Most of
+  that turned out to be the model's edge lines, which were being sent as text;
+  they are now sent in a compact binary form, about a quarter of the size and
+  visually identical. On top of that, a document with more than about a thousand
+  parts is now drawn at a slightly coarser level of detail, and above roughly two
+  thousand parts coarser again. Curved surfaces on those very large assemblies
+  are therefore a little less smooth than on an ordinary document, which is the
+  trade that lets them open at all. Documents below that size are drawn exactly
+  as before.
+
+  The second cause was the step that works out how big the model is, so the view
+  knows where to point the camera. On an assembly this size that single
+  calculation took over a minute and a half, long enough that the geometry engine
+  was assumed to have hung and was restarted, every time. It now measures the
+  model already prepared for drawing, which takes no measurable time at all.
+
+  If a model is still too large to display, SindriCAD now says so and names the
+  size, rather than closing the connection to the geometry engine and leaving the
+  app looking like it crashed.
+
+- **Large STEP assemblies import.** A STEP file over 256 MB was refused outright,
+  which ruled out most real assemblies exported from a full CAD system. STEP,
+  STP and BREP files can now be up to 1 GB. Mesh formats keep the old limit on
+  purpose: an STL of the same size is a far larger triangle count and a much
+  heavier document, so the number that is safe for one is not safe for the other.
+
+  Two things came with it. Before an import starts, SindriCAD works out roughly
+  how much memory the file will need and checks that against what your machine
+  actually has free. If it will not fit, you get a sentence saying how much is
+  needed and how much is available, instead of the app being killed partway
+  through and reporting that the geometry engine crashed. And once a large
+  assembly is in, SindriCAD tells you what to expect from it rather than letting
+  you discover it: above about a thousand bodies the 3D view starts to lag when
+  you orbit, and above three thousand it is slow. Everything else, including
+  modelling, export and printing, is unaffected at any of those sizes.
+
+- **Exports show that they are running, and can be stopped.** Exporting replays
+  your whole feature history, so on a large document it takes as long as an
+  import does. Until now it did that with nothing on screen to say so and no way
+  to stop it. Both the model export and the print-project export now show
+  progress and have a working Stop button.
+
 - **Exporting a STEP assembly keeps its structure.** Opening an assembly kept its
   tree, names and colours; exporting one then flattened all three, so a file you
   could open was a file you could not ship. A STEP export now carries the
@@ -58,7 +104,63 @@ This file starts on 2026-08-03. For anything before that, see the
   from the file are recorded but not shown on screen, because colour in SindriCAD
   means which filament prints a body.
 
+### Changed
+
+- **A saved `.sindri` file is now a container, and is much smaller.** Geometry
+  used to be written into the document as text, which made files far bigger than
+  the geometry in them and meant a part used twice was stored twice. A `.sindri`
+  is now an archive holding the document and its geometry separately, with each
+  distinct piece of geometry stored once. On the test documents the saved file is
+  about a sixth of its former size.
+
+  **Files you already have still open**, and are quietly upgraded to the new
+  layout when you save them. The one thing to know before you update: a file
+  saved by this build **cannot be opened by an older build of SindriCAD**. If you
+  need to move a document back to an older version, keep a copy before saving it
+  here.
+
+- **"Each body separately" writes a folder.** Choosing to export each body to its
+  own file used to scatter the files next to the name you picked, so choosing
+  `parts.step` produced `parts-Body1.step`, `parts-Body2.step` and so on. The
+  file the save dialog asked you to confirm overwriting was never actually
+  written, which meant it was the only one that could not be overwritten: the
+  files that were written replaced any existing ones of the same name without
+  asking. The export now creates a folder named after your chosen file and puts
+  the parts inside it, and if a folder of that name already exists it stops and
+  says so rather than writing over what is in it.
+
+  Body names that a filesystem cannot take are handled properly now too: very
+  long names in non-Latin scripts are trimmed to fit, and names that Windows
+  reserves, such as a body called "Con" or "Aux", no longer produce an
+  unexplained failure on that platform.
+
+- **STL and 3MF exports use one quality setting.** Untextured models took a
+  different route out of SindriCAD from textured ones and were tessellated at a
+  different setting. Both now use the same export quality. For most shapes the
+  result is identical; for a strongly curved one, such as a torus, the exported
+  mesh has roughly half as many triangles. The largest deviation from the true
+  surface is 0.02 mm either way, which is far below what any printer can
+  resolve, so this shows up as a smaller file rather than a visibly coarser part.
+
 ### Fixed
+
+- **A long export is no longer cut off partway.** Exporting, checking for
+  clashes, and projecting geometry each had two minutes to finish, whatever the
+  document. A large assembly can legitimately need longer, and the failure fed
+  itself: giving up restarted the geometry engine, which discarded the cached
+  work, so every retry started from cold and hit the same wall. These now run
+  for as long as they are making progress, and are only stopped if the geometry
+  engine genuinely gets stuck, which is now noticed in one minute rather than two.
+
+- **Running out of memory says so.** A file too large for the machine's memory
+  ended with the operating system killing the geometry engine, which SindriCAD
+  could only report as "the geometry kernel crashed". That sent people looking
+  for a fault in their model when there was none. The cause is named now, before
+  the work starts.
+
+- **Stopping an export is no longer reported as a failure.** Pressing Stop
+  produced an error dialog reading "Export failed: cancelled", which is your own
+  action handed back to you as a problem. It now just stops.
 
 - **The AppImage starts on distributions that ship a current WebKit.** It carried its
   own copy of WebKit and the GTK stack around it, and on a system whose own WebKit is
@@ -67,9 +169,16 @@ This file starts on 2026-08-03. For anything before that, see the
   ([#3](https://github.com/MakerViking/sindricad/issues/3)). The AppImage now uses the
   WebKit your distribution ships, the same as the `.deb` and `.rpm` always have, and it
   is about 100 MB smaller for it. **It is no longer fully self-contained:** a system
-  without WebKitGTK 4.1 installed needs it added first. The
+  without WebKitGTK 4.1 and libsoup 3 installed needs them added first. The
   [Requirements](https://github.com/MakerViking/sindricad#requirements) section of the
-  README lists what each build needs.
+  README lists what each build needs, and now carries a confirmed NixOS recipe.
+
+  Thanks to [@boustanihani](https://github.com/boustanihani) for reporting this and
+  for sticking with it through several rounds of diagnostics. The detail that
+  cracked it came from those reports: the `.deb` worked where the AppImage did
+  not, on the same machine and the same build. The fix is confirmed on NixOS
+  25.05, and the `appimage-run` configuration it needed came back with that
+  confirmation, which is what the README recipe is built from.
 
 - **A window that opens without its interface now says so.** If the app failed to
   load its own page, the result was a blank window and no explanation anywhere.
@@ -100,7 +209,10 @@ This file starts on 2026-08-03. For anything before that, see the
   "geometry engine connection lost" with no hint that the file was the problem
   ([#4](https://github.com/MakerViking/sindricad/issues/4)). The size is now
   checked before anything is sent, and the message names both the size of the
-  model and the limit. Raising that limit is a separate piece of work.
+  model and the limit. That limit is on a single message rather than on the file
+  you opened, and it is a different one from the import size described above.
+  Now that geometry no longer travels inside the document, a model is much less
+  likely to reach it.
 
 - **A second copy of SindriCAD no longer breaks the first one's geometry engine.**
   Opening the app twice started two engines, and the second could not take the

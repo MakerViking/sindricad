@@ -18,7 +18,7 @@ import zipfile
 
 import numpy as np
 
-from project3mf import CONTENT_TYPES, RELS, _mesh_xml
+from project3mf import CONTENT_TYPES, RELS, _mesh_chunks
 
 
 def write_stl(positions, indices, path):
@@ -57,21 +57,35 @@ def write_stl(positions, indices, path):
 
 def write_plain_3mf(positions, indices, path):
     """A minimal single-object plain 3MF (no Orca project metadata — see
-    project3mf.py for that variant). Reuses the SAME _mesh_xml vertex/triangle
-    serialization as the Orca-project writer instead of forking it."""
-    model = (
+    project3mf.py for that variant). Reuses the SAME vertex/triangle
+    serialization as the Orca-project writer instead of forking it.
+
+    STREAMED, for the same reason write_project_3mf is: this is now the writer
+    for EVERY stl/3mf export, textured or not, so materialising the model as one
+    string would cost ~560 MB of peak for a 2M-triangle document (the join, the
+    f-string interpolation and writestr's UTF-8 encode each hold a full copy) and
+    ~2.8 GB at EXPORT_TRIANGLE_HARD_CAP. Chunked, peak is one 4096-vertex block.
+    """
+    head = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<model unit="millimeter" xml:lang="en-US"'
         ' xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n'
         ' <metadata name="Application">SindriCAD</metadata>\n'
-        f' <resources><object id="1" type="model">{_mesh_xml(positions, indices)}</object></resources>\n'
+        ' <resources><object id="1" type="model">'
+    )
+    tail = (
+        "</object></resources>\n"
         ' <build><item objectid="1" printable="1"/></build>\n'
         "</model>"
     )
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
-        z.writestr("3D/3dmodel.model", model)
+        with z.open("3D/3dmodel.model", "w") as fh:
+            fh.write(head.encode("utf-8"))
+            for chunk in _mesh_chunks(positions, indices):
+                fh.write(chunk.encode("utf-8"))
+            fh.write(tail.encode("utf-8"))
     return path
 
 
