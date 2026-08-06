@@ -52,7 +52,7 @@ const check = (name, ok, detail) => {
     if (!res.ok) return { ok: false, message: res.message };
     window.store.addFeature({
       id: window.store.nextId(), type: "import", format: "step",
-      name: res.name, brep: res.brep, source: file, solid: res.solid,
+      name: res.name, geom: res.geom, source: file, solid: res.solid,
       ...(res.nodes !== undefined ? { nodes: res.nodes } : {}),
       ...(res.parts !== undefined ? { parts: res.parts } : {}),
     });
