@@ -143,7 +143,11 @@ def test_export_project_has_a_budget_at_all():
 
 def test_the_interference_sweep_computes_each_bbox_once():
     """O(n^2) in pairs, O(n) in shapes. Computing the box inside the pair test
-    did 9,360,540 OCCT walks at 3,060 bodies to learn 3,060 things."""
+    did 9,360,540 OCCT walks at 3,060 bodies to learn 3,060 things.
+
+    Each walk is expensive (95.5 s over the reference assembly's 3,072 bodies), so
+    the count is what keeps the sweep survivable — the precompute also ticks per
+    body now, because unticked it was reaped at STALL_TIMEOUT."""
     doc = _box_doc(8)
     builder.rebuild_cached(doc)  # warm
     calls = []

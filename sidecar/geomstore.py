@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import time
 import uuid
@@ -38,6 +39,12 @@ _FMT = BinTools_FormatVersion.BinTools_FormatVersion_VERSION_3
 # Mesh keys embed a body key + a tolerance suffix; keep the filename to hex+dash so a
 # stray key can never escape meshes/ or collide with the shard layout.
 _MESH_SANITIZE = re.compile(r"[^0-9a-fA-F-]")
+
+# Bounds for the auto-sized cache budget (see Store.cache_budget). The floor is
+# roughly one large assembly's meshes, below which the cache thrashes and buys
+# nothing; the ceiling stops a workstation with a terabyte free from hoarding.
+_CACHE_MIN = 512 << 20
+_CACHE_MAX = 8 << 30
 
 _BBREP = ".bbrep"
 
@@ -234,11 +241,115 @@ class Store:
         return len(payload)
 
     def get_mesh(self, key):
+        path = self._mesh_path(key)
         try:
-            with open(self._mesh_path(key), "rb") as fh:
-                return fh.read()
+            with open(path, "rb") as fh:
+                data = fh.read()
         except OSError:
             return None
+        # Stamp the access time so evict_meshes can drop LEAST-RECENTLY-USED
+        # rather than oldest-written. Most filesystems mount `relatime`, so a
+        # read does not move atime on its own, and mtime never moves on read —
+        # without this the eviction order would be write order, which throws
+        # away the artifacts a document actually opens with. Best-effort: a
+        # failure here only costs eviction accuracy.
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return data
+
+    def _mesh_entries(self):
+        """[(mtime, size, path)] for every mesh artifact, plus their total bytes."""
+        try:
+            names = os.listdir(self.meshes_dir)
+        except OSError:
+            return [], 0
+        entries = []
+        total = 0
+        for name in names:
+            if not name.endswith(".bin"):
+                continue
+            path = os.path.join(self.meshes_dir, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            entries.append((st.st_mtime, st.st_size, path))
+            total += st.st_size
+        return entries, total
+
+    def cache_budget(self):
+        """Total bytes this store may occupy, sized from FREE DISK SPACE.
+
+        A fixed number is wrong in both directions: too small on a workstation,
+        and far too big on a laptop where $XDG_CACHE_HOME shares the partition
+        with the user's home directory. A tenth of the available space, clamped
+        to [512 MiB, 8 GiB], degrades gracefully on a nearly-full disk and never
+        claims a share anyone would notice on a healthy one.
+
+        Sized against free space PLUS what the cache already holds, not bare free
+        space. Otherwise the budget shrinks as the cache grows, so every sweep
+        would evict a little more than the last — a ratchet, not a cap.
+
+        `SINDRI_CACHE_MAX_GB` overrides it outright, for a user with unusual
+        files or an unusual disk."""
+        env = os.environ.get("SINDRI_CACHE_MAX_GB")
+        if env:
+            try:
+                gb = float(env)
+            except ValueError:
+                gb = 0.0
+            if gb > 0:
+                return int(gb * (1 << 30))
+        try:
+            free = shutil.disk_usage(self.root).free
+        except OSError:
+            return _CACHE_MAX  # cannot probe: fall back to the ceiling
+        available = free + self._mesh_entries()[1] + self.stats()["bytes"]
+        cap = min(_CACHE_MAX, max(_CACHE_MIN, available // 10))
+        return min(cap, available // 2)
+
+    def evict_to_budget(self, byte_cap=None):
+        """Bring the WHOLE store under budget. Returns (meshes, checkpoints) removed.
+
+        Ordered by what a miss COSTS, not by what it frees: a dropped mesh costs
+        one body's re-tessellation, a dropped checkpoint costs a full history
+        replay. So meshes absorb the entire squeeze first — down to nothing if
+        they have to — and checkpoints are touched ONLY when the blobs alone
+        still exceed the budget. On anything short of a multi-thousand-body
+        assembly that second step never runs, which is what makes bounding the
+        cache safe to do automatically."""
+        cap = self.cache_budget() if byte_cap is None else byte_cap
+        blob_bytes = self.stats()["bytes"]
+        meshes = self.evict_meshes(max(0, cap - blob_bytes))
+        checkpoints = self.evict(byte_cap=cap) if blob_bytes > cap else 0
+        return meshes, checkpoints
+
+    def evict_meshes(self, byte_cap):
+        """Bring meshes/ under `byte_cap`, dropping least-recently-used first.
+        Returns the number of artifacts removed.
+
+        Meshes need their own sweep because `evict()` cannot touch them: it works
+        by refcounting blob keys over checkpoint manifests, and a mesh key is
+        derived from a body's content plus the tolerance/profile/code-version it
+        was tessellated at, so no manifest ever references one. Nothing else
+        pruned this directory, so it grew without bound — measured at 3.2 GB."""
+        entries, total = self._mesh_entries()
+        if total <= byte_cap:
+            return 0
+        entries.sort()  # oldest access first
+        removed = 0
+        for _mtime, size, path in entries:
+            if total <= byte_cap:
+                break
+            try:
+                os.unlink(path)
+            except OSError:
+                continue
+            total -= size
+            removed += 1
+        return removed
 
     # --- checkpoints ----------------------------------------------------------
 

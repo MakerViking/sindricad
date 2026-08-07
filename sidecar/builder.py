@@ -2759,7 +2759,7 @@ def _global_sig(document):
 # (and params/visibility/env) that produced it is byte-identical — exactly the
 # validity condition of today's RAM prefix cache. Phase 1 changes durability only,
 # not invalidation semantics. Restores are verified against per-body fingerprints
-# (face count / volume / bbox): any divergence is a cache MISS, never wrong geometry.
+# (face/edge/vertex counts + bbox): any divergence is a cache MISS, never wrong geometry.
 
 _ENV_SIG = None
 
@@ -2943,19 +2943,52 @@ def _disk_store():
 
 def _body_fingerprint(shape):
     """Cheap identity check for a restored body (design §3.3): face/edge/vertex counts
-    + volume + bbox. BinTools preserves doubles exactly, so comparison is tight; a
-    mismatch means the restore diverged and the checkpoint is treated as a miss. The
-    exact edge/vertex counts catch a same-volume/same-bbox but topologically different
-    solid that the aggregate volume/bbox alone would wave through (they are deterministic
-    integers, so they never cause a false miss on OCCT float noise)."""
-    bb = shape.bounding_box()
+    + bbox. A mismatch means the restore diverged and the checkpoint is treated as a
+    miss. The counts are deterministic integers, so they never cause a false miss on
+    OCCT float noise, and they catch a same-bbox but topologically different solid the
+    box alone would wave through — measured stable across a real BREP round trip on
+    400 bodies of the reference assembly.
+
+    Every term here is chosen for cost: this runs per body inside _restore_from_disk,
+    which walks 3,072 of them on that assembly (see the loop's comment for what the
+    old cost did to the stall supervisor).
+
+    - Counts come from TopExp.MapShapes_s, not build123d's `.faces()/.edges()/
+      .vertices()`, which build a full list of wrapper objects just to take len() —
+      measured 45x slower, and `.edges()` additionally runs a Python-level degenerate
+      filter over every edge. These counts therefore INCLUDE degenerate edges, which
+      is fine for a fingerprint (still deterministic) but means a value taken here is
+      NOT comparable with one taken through build123d.
+    - The box is BRepBndLib's poles-based one, not `shape.bounding_box()` (OCCT's
+      exact AddOptimal_s): 0.080 ms/body against 67.3 ms.
+    - `useTriangulation` MUST stay False. With True the box shifts by up to 0.49 mm
+      once a shape carries a triangulation — 492x the 1e-3 compare tolerance — and a
+      body IS tessellated when the checkpoint is written and is NEVER tessellated when
+      restored, so True would false-miss intermittently and force a cold rebuild. That
+      is also why `tessellate.mesh_bbox` (True by design) must not be reused here
+      despite computing the same kind of box.
+    - Volume is deliberately absent: 23.0 ms/body buying discrimination the counts and
+      the box already provide. A blob-key collision restores either a different part
+      (caught by the counts) or the same part at a different placement (caught by the
+      box)."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    def count(kind):
+        m = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(shape.wrapped, kind, m)
+        return m.Extent()
+
+    bnd = Bnd_Box()
+    BRepBndLib.Add_s(shape.wrapped, bnd, False)
     return {
-        "f": len(shape.faces()),
-        "e": len(shape.edges()),
-        "vx": len(shape.vertices()),
-        "v": round(shape.volume, 6),
-        "b": [round(x, 4) for x in (bb.min.X, bb.min.Y, bb.min.Z,
-                                    bb.max.X, bb.max.Y, bb.max.Z)],
+        "f": count(TopAbs_FACE),
+        "e": count(TopAbs_EDGE),
+        "vx": count(TopAbs_VERTEX),
+        "b": [] if bnd.IsVoid() else [round(x, 4) for x in bnd.Get()],
     }
 
 
@@ -3071,6 +3104,16 @@ def _restore_from_disk(store, chain_keys):
         bodies = []
         mod = {}
         for ent, fp in zip(cp["manifest"], state["fps"]):
+            # One tick per body, at the top so every path through the loop counts —
+            # same rule as the checkpoint-WRITE loop. Ticking INSIDE matters: this
+            # restore measured 146.2 s on the 356 MiB reference assembly (3,072
+            # bodies) against STALL_TIMEOUT = 60 s, and the ticks used to sit only
+            # before and after, leaving one silent 146 s gap. The supervisor reaped
+            # the worker at 60 s, before rebuild_cached's first print — which is why
+            # the document simply never opened and NOTHING was logged. Cheapening
+            # _body_fingerprint brought the same restore under 8.5 s, but a bigger
+            # assembly would walk into the same wall; the tick is the real fix.
+            progress_tick()
             if ent["blob_key"] is None:
                 shapeless = {"id": ent["body_id"], "name": ent["name"],
                              "shape": None, "_owners": {}}
@@ -3087,8 +3130,12 @@ def _restore_from_disk(store, chain_keys):
             if shape is None:
                 return None
             got = _body_fingerprint(shape)
+            # e/vx were always computed and stored but never actually compared; they
+            # carry the discrimination the dropped volume term used to add, for free.
             if (got["f"] != fp["f"]
-                    or abs(got["v"] - fp["v"]) > max(1e-4, 1e-6 * abs(fp["v"]))
+                    or got["e"] != fp["e"]
+                    or got["vx"] != fp["vx"]
+                    or len(got["b"]) != len(fp["b"])
                     or any(abs(a - c) > 1e-3 for a, c in zip(got["b"], fp["b"]))):
                 return None  # diverged restore = miss, never wrong geometry
             body = {
@@ -3195,20 +3242,13 @@ def rebuild_cached(document, diagnostics=None, projections=None):
         if k > 0 and k - 1 < len(_CACHE["snaps"]) and _CACHE["snaps"][k - 1] is not None:
             resume = (k, _CACHE["snaps"][k - 1])  # restore state after feature k-1
     if resume is None and store is not None:
-        # Checkpoint restore unpickles every prefix body from disk — on a large
-        # document this is a long, otherwise-silent phase; tick around it so
-        # the supervisor's stall watchdog never mistakes it for a hang.
-        if on_feature_tick is not None:
-            try:
-                on_feature_tick(-1)
-            except Exception:
-                pass
+        # Checkpoint restore reads every prefix body from disk — on a large
+        # document that is a long phase, and these two calls only bracket it.
+        # Bracketing is NOT what keeps it alive: the gap the stall watchdog sees
+        # is the one INSIDE, which is why _restore_from_disk ticks per body.
+        progress_tick()
         hit = _restore_from_disk(store, keys if proj_cap is None else keys[:proj_cap])
-        if on_feature_tick is not None:
-            try:
-                on_feature_tick(-1)
-            except Exception:
-                pass
+        progress_tick()
         if hit is not None:
             start_i, snap, disk_mod = hit
             resume = (start_i, snap)
@@ -4098,8 +4138,44 @@ def _bbox_overlap(a, b, tol=1e-6):
     return _bbox_pair_overlap(bbox_of(a), bbox_of(b), tol)
 
 
+# Memoized exact bounding boxes, keyed by shape OBJECT identity.
+#
+# An AddOptimal_s walk costs 95.5 s over the 3,072 bodies of the reference
+# assembly, and BOTH callers loop over every body in the document — on every
+# boolean feature and every interference run. Bodies a feature did not touch keep
+# their shape object across rebuilds (rebuild_cached resumes from snapshots), so
+# after the first pass a large assembly's boxes are free.
+#
+# Keyed by id() with the shape held ALIVE in the value, exactly like _SIG_MEMO:
+# the strong reference is what makes id() reuse impossible, which is the only way
+# an id-keyed cache can go wrong. It relies on the same identity assumption
+# _MESH_CACHE already does — a feature that changes geometry produces a NEW shape
+# object rather than mutating one in place (texture.py's module docstring spells
+# out the one place that could have violated it, and does not).
+_BBOX_MEMO = {}
+_BBOX_MEMO_CAP = 20000  # ~6 generations of the largest assembly seen; then reset
+
+
 def bbox_of(shape):
-    """A shape's AABB as a PLAIN TUPLE (minX, minY, minZ, maxX, maxY, maxZ).
+    """A shape's EXACT AABB as a PLAIN TUPLE (minX, minY, minZ, maxX, maxY, maxZ),
+    memoized on shape identity (see _BBOX_MEMO).
+
+    The underlying walk is EXPENSIVE and deliberately so: `.bounding_box()` is
+    OCCT's AddOptimal_s, measured at 95.5 s over the 3,072 bodies of the 356 MiB
+    reference assembly. Callers that loop over every body must still tick (see
+    `_interference_job`) — the memo makes the SECOND pass free, not the first.
+
+    The obvious cheap substitute — `BRepBndLib.Add_s(..., useTriangulation=False)`,
+    the poles box `_body_fingerprint` uses — was tried here and REJECTED. It is 165x
+    faster and usually looser, but on that same assembly it came out up to 0.164 mm
+    TIGHTER than exact on 3 of 3,072 bodies (against a 1e-6 compare tol). For a
+    fingerprint that is irrelevant; for these callers a box tighter than the truth
+    silently drops a real interference or a body a boolean should have touched. If
+    you retry this, the property to prove is CONSERVATISM per body over the whole
+    document, not average speed — a 500-body sample showed zero violations and was
+    simply too small. (Its one genuine advantage: it reports empty compounds as
+    void, where the exact call hands back a degenerate point-box at the origin that
+    spuriously overlaps anything near it — 8 such bodies in the reference assembly.)
 
     Two reasons it is a tuple and not the BoundBox.
 
@@ -4112,8 +4188,18 @@ def bbox_of(shape):
     access, up to 12 per pair. Measured over 4,680,270 pairs (3,060 bodies):
     2.58 s reading BoundBox attributes against 0.40 s reading a tuple. The walk
     is hoisted; this hoists the reads out of the walk's result too."""
+    key = id(shape)
+    hit = _BBOX_MEMO.get(key)
+    if hit is not None and hit[0] is shape:
+        return hit[1]
     bb = _as_compound(shape).bounding_box()
-    return (bb.min.X, bb.min.Y, bb.min.Z, bb.max.X, bb.max.Y, bb.max.Z)
+    box = (bb.min.X, bb.min.Y, bb.min.Z, bb.max.X, bb.max.Y, bb.max.Z)
+    if len(_BBOX_MEMO) >= _BBOX_MEMO_CAP:
+        # Coarse but bounded: dropping everything costs one repopulating pass,
+        # where an LRU would cost a comparison on every hit forever.
+        _BBOX_MEMO.clear()
+    _BBOX_MEMO[key] = (shape, box)
+    return box
 
 
 def _bbox_pair_overlap(a, b, tol=1e-6):
@@ -4219,12 +4305,19 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
     if op == "new":
         new_body(solid)
         return
-    hits = [
-        b for b in bodies
-        if b.get("shape") is not None
-        and b.get("id") not in hidden
-        and _bbox_overlap(b["shape"], solid)
-    ]
+    # Tick per body. `_bbox_overlap` runs the EXACT `bbox_of` on each candidate,
+    # measured 95.5 s over the 3,072 bodies of the 356 MiB reference assembly —
+    # past the 60 s STALL_TIMEOUT, and `rebuild`'s tick is per FEATURE, so it has
+    # already been spent by the time this loop starts. Unticked, a Join/Cut on a
+    # freshly imported assembly is reaped mid-filter and dies with nothing logged.
+    # This is still slow; the tick is what lets it finish and report progress.
+    hits = []
+    for b in bodies:
+        progress_tick()
+        if (b.get("shape") is not None
+                and b.get("id") not in hidden
+                and _bbox_overlap(b["shape"], solid)):
+            hits.append(b)
     # a change smaller than this counts as "nothing happened" — shared by every
     # boolean guard site (here and _do_combine) so the tolerance convention
     # can't drift between features.

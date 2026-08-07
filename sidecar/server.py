@@ -213,6 +213,20 @@ def _worker_init(hb=None, hb_idx=None, err_buf=None):
         except Exception:
             pass
 
+        # Bound the disk cache, once per worker start and off the request path.
+        # Nothing pruned it before: evict() reclaims by refcounting blob keys over
+        # checkpoint manifests, and no manifest ever references a mesh key, so
+        # meshes/ grew without bound — measured at 3.2 GB. The budget is sized
+        # from FREE DISK (see Store.cache_budget), because $XDG_CACHE_HOME is the
+        # user's home partition on most laptops; SINDRI_CACHE_MAX_GB overrides.
+        # Meshes are evicted first and checkpoints only as a last resort, so a
+        # normal-sized document never loses a checkpoint to this.
+        try:
+            import geomstore
+            geomstore.default_store().evict_to_budget()
+        except Exception:
+            pass  # advisory maintenance must never stop a worker coming up
+
         if hb is not None:
             def _tick(i):
                 hb.value += 1  # single writer (this worker); no lock needed
@@ -741,7 +755,17 @@ def _body_payload(b, tolerance, profile):
                 norms[vbase * 3:vbase * 3 + len(chunk)] = chunk
             payload["normals"] = norms
         build_ms = (time.monotonic() - t0) * 1000.0
-        if mesh_key and build_ms >= _MESH_PERSIST_MIN_MS:
+        # Persist when the build was expensive OR the document is large. The
+        # flat 50 ms rule was written for an interactive drag of a small model,
+        # where re-tessellating one changed body every tick under a brand-new
+        # content key is pure write churn. It reads very differently at scale:
+        # 85% of the 3,072 bodies in the reference assembly build in under
+        # 50 ms, so NONE of them were ever cached and every cold-worker open
+        # re-tessellated the whole model — most of a 32.9 s payload phase that
+        # actual disk loading accounts for only ~5 s of. profile[0] != 1.0 is
+        # already the ">1,200 bodies" signal _viewport_profile computed, and a
+        # document that large is not being scrubbed tick-by-tick anyway.
+        if mesh_key and (build_ms >= _MESH_PERSIST_MIN_MS or profile[0] != 1.0):
             try:
                 import geomstore
                 geomstore.default_store().put_mesh(mesh_key, pickle.dumps(payload, 5))
@@ -1240,7 +1264,16 @@ def _interference_job(document):
     # ONE bbox per body, not one per pair. The sweep is quadratic in pairs but
     # linear in distinct shapes, so computing the box inside the pair test did
     # 9,360,540 OCCT bounding-box walks at 3,060 bodies to learn 3,060 things.
-    boxes = [bbox_of(b["shape"]) for b in live]
+    # Ticked per body: this precompute runs BEFORE the first row tick below, and
+    # `bbox_of` is OCCT's exact AddOptimal_s — measured 95.5 s over the 3,072
+    # bodies of the reference assembly, against a 60 s STALL_TIMEOUT. Unticked it
+    # was reaped mid-precompute and the whole operation died with nothing logged.
+    # It is still slow; the tick is what makes it finish and report progress. A
+    # cheaper poles-based box was measured and REJECTED — see `bbox_of`.
+    boxes = []
+    for b in live:
+        progress_tick()
+        boxes.append(bbox_of(b["shape"]))
     pairs = []
     for i in range(len(live)):
         # Ticked in two places, both proportional to real work: once per row,

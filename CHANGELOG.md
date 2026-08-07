@@ -106,6 +106,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **The geometry cache no longer grows without limit.** SindriCAD keeps prepared
+  geometry on disk so that a document you have opened before opens quickly.
+  Nothing ever removed the older parts of it, so on a machine used for large
+  assemblies it could reach several gigabytes and carry on from there. The cache
+  is now given a size budget worked out from the free space on the drive it sits
+  on, between 512 MB and 8 GB, and the least recently used entries are dropped
+  once that is exceeded. What goes first is whatever is cheapest to recreate, so
+  a dropped entry costs a moment of extra work rather than a full rebuild. Saved
+  documents are never touched by this. Setting `SINDRI_CACHE_MAX_GB` overrides
+  the budget for anyone who wants a specific size.
+
 - **A saved `.sindri` file is now a container, and is much smaller.** Geometry
   used to be written into the document as text, which made files far bigger than
   the geometry in them and meant a part used twice was stored twice. A `.sindri`
@@ -143,6 +154,31 @@ This file starts on 2026-08-03. For anything before that, see the
   resolve, so this shows up as a smaller file rather than a visibly coarser part.
 
 ### Fixed
+
+- **A very large assembly now opens every time, and reopens in seconds.** The
+  previous build could open a 356 MB assembly of about 3,000 parts, but only
+  around two attempts in five. The others failed silently: the model never
+  appeared, nothing was written to the log, and the app sat showing the previous
+  document with no error to go on.
+
+  The cause was the step that restores a previous build from the on-disk cache.
+  On a document that size it took over two minutes, and it ran without reporting
+  any progress, so the watchdog that looks for a stuck geometry engine assumed
+  the worst and restarted it. That happened before the rebuild had printed
+  anything at all, which is why there was never a message to find. The restore
+  now reports progress as it works, and the identity check it spent almost all
+  of that time on has been replaced with a far cheaper one, so the same step
+  finishes in about two seconds.
+
+  Reopening a document of that size went from roughly 48 seconds to under 11.
+  Most of the rest of that saving is in the drawing data: on a large assembly it
+  is now kept on disk between sessions, where before nearly all of it was thrown
+  away and rebuilt from scratch on every open. Opening such a file for the first
+  time is unchanged, and still takes a few minutes.
+
+  Two other operations could fail the same silent way on an assembly of this
+  size, checking for clashes and running a cut or join against thousands of
+  bodies. Both now report progress instead of being mistaken for a hang.
 
 - **A long export is no longer cut off partway.** Exporting, checking for
   clashes, and projecting geometry each had two minutes to finish, whatever the

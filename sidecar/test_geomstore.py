@@ -9,6 +9,7 @@ import io
 import os
 import shutil
 import tempfile
+import time
 
 from build123d import Solid
 from OCP.BRepGProp import BRepGProp
@@ -184,6 +185,98 @@ def test_eviction(store):
     check("evict under high cap is a no-op", store.evict(byte_cap=1 << 40) == 0)
 
 
+def test_mesh_eviction(store):
+    print("test_mesh_eviction")
+    # evict() cannot reach meshes/ — it reclaims by refcounting blob keys over
+    # checkpoint manifests, and no manifest references a mesh key — so before
+    # evict_meshes() existed this directory grew without bound (3.2 GB measured).
+    payload = b"m" * 4096
+    keys = ["evm%02d-0.1" % i for i in range(10)]
+    for k in keys:
+        store.put_mesh(k, payload)
+    check("meshes written", all(store.get_mesh(k) is not None for k in keys))
+
+    # get_mesh stamps access time, so the ones READ most recently must survive.
+    # Age everything, then touch a couple by reading them.
+    old = time.time() - 10_000
+    for k in keys:
+        os.utime(store._mesh_path(k), (old, old))
+    kept = keys[:2]
+    for k in kept:
+        store.get_mesh(k)
+
+    cap = 4 * len(payload)  # room for ~4 artifacts
+    removed = store.evict_meshes(byte_cap=cap)
+    check("evict_meshes removed something", removed >= 1)
+
+    total = sum(os.path.getsize(os.path.join(store.meshes_dir, f))
+                for f in os.listdir(store.meshes_dir) if f.endswith(".bin"))
+    check("meshes/ brought under the cap", total <= cap)
+    check("most-recently-READ artifacts survive",
+          all(store.get_mesh(k) is not None for k in kept))
+    check("evict_meshes under a high cap is a no-op",
+          store.evict_meshes(byte_cap=1 << 40) == 0)
+
+
+def test_cache_budget(store):
+    print("test_cache_budget")
+    # Auto-sized: must land inside the documented bounds and be a real number.
+    auto = store.cache_budget()
+    check("auto budget is within [512 MiB, 8 GiB]",
+          512 * 1024**2 <= auto <= 8 * 1024**3)
+
+    # Sized against free + what the cache already holds, so it must NOT shrink
+    # just because the cache grew — that ratchet would evict a little more on
+    # every sweep instead of holding a stable cap.
+    before = store.cache_budget()
+    for i in range(20):
+        store.put_mesh("bud%02d-0.1" % i, b"z" * 65536)
+    after = store.cache_budget()
+    check("budget is stable as the cache grows", abs(after - before) <= 1 << 20)
+
+    # Env override wins outright.
+    os.environ["SINDRI_CACHE_MAX_GB"] = "3"
+    try:
+        check("SINDRI_CACHE_MAX_GB overrides", store.cache_budget() == 3 * 1024**3)
+    finally:
+        del os.environ["SINDRI_CACHE_MAX_GB"]
+    os.environ["SINDRI_CACHE_MAX_GB"] = "not-a-number"
+    try:
+        check("a junk override falls back to auto", store.cache_budget() == auto)
+    finally:
+        del os.environ["SINDRI_CACHE_MAX_GB"]
+
+
+def test_evict_to_budget_spares_checkpoints(store):
+    print("test_evict_to_budget_spares_checkpoints")
+    # The load-bearing policy: meshes absorb the squeeze so checkpoints — which
+    # cost a full history replay, not one re-tessellation — survive.
+    shape = _sample_shape()
+    bk = "eb" + "7" * 30
+    store.put_blob(bk, shape)
+    store.save_checkpoint("ebc0" + "7" * 28, 0, _manifest(bk), "{}", 500.0)
+    blob_bytes = store.stats()["bytes"]
+
+    for i in range(16):
+        store.put_mesh("ebm%02d-0.1" % i, b"q" * 65536)
+    mesh_bytes = store._mesh_entries()[1]
+
+    # A budget that fits the blobs but not the meshes: meshes must go, the
+    # checkpoint must not.
+    cap = blob_bytes + mesh_bytes // 4
+    meshes, checkpoints = store.evict_to_budget(byte_cap=cap)
+    check("meshes were evicted", meshes >= 1)
+    check("no checkpoint was touched", checkpoints == 0)
+    check("the checkpoint survives",
+          store.find_checkpoint(["ebc0" + "7" * 28]) is not None)
+    check("store is under budget",
+          store._mesh_entries()[1] + store.stats()["bytes"] <= cap)
+
+    # Only when the blobs ALONE bust the budget may checkpoints be evicted.
+    _m, c = store.evict_to_budget(byte_cap=blob_bytes // 2)
+    check("checkpoints evicted only as a last resort", c >= 1)
+
+
 def test_stats(store):
     print("test_stats")
     s = store.stats()
@@ -206,6 +299,9 @@ def main():
         test_corrupt_blob_skips(store)
         test_tmp_sweep()
         test_mesh_roundtrip(store)
+        test_mesh_eviction(store)
+        test_cache_budget(store)
+        test_evict_to_budget_spares_checkpoints(store)
         test_eviction(store)
         test_stats(store)
         test_default_store()
