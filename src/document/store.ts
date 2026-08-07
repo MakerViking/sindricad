@@ -3,7 +3,7 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import { applyProjectionUpdate } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
@@ -30,6 +30,11 @@ export interface RebuildState {
   // while building: the feature index the sidecar is currently executing
   // (-1 = tessellating), streamed ~1/s during long rebuilds; null otherwise
   progress: number | null;
+  /** During the meshing (payload) phase: bodies meshed so far and the total.
+   *  Both null outside it. The feature index is -1 for that whole phase, so
+   *  without these the chip has nothing to show a fraction from. */
+  meshed: number | null;
+  meshTotal: number | null;
 }
 
 /** A long non-rebuild operation the user can watch and stop (today: import).
@@ -164,6 +169,8 @@ export class DocumentStore {
     errorFeatureId: null,
     errorMessage: null,
     progress: null,
+    meshed: null,
+    meshTotal: null,
   };
 
   private busy: BusyState = { active: false, label: "", id: null, pct: null };
@@ -180,9 +187,16 @@ export class DocumentStore {
     this.doc = clone(initial);
     migrateDocument(this.doc); // the seed doc skips load(); normalize it the same way
     // long-rebuild progress frames -> live "building 57/103" in the timeline
-    geometry.onProgress?.((feature) => {
+    geometry.onProgress?.((feature, meshed, meshTotal) => {
       if (!this.build.building) return;
-      this.build = { ...this.build, progress: feature };
+      // -1/-1 means "not meshing"; keep those out of the state as null so the
+      // chip can distinguish "no denominator" from "0 of N done".
+      this.build = {
+        ...this.build,
+        progress: feature,
+        meshed: meshed >= 0 ? meshed : null,
+        meshTotal: meshTotal > 0 ? meshTotal : null,
+      };
       this.emitBuild();
     });
     // coarse phase progress for a long non-rebuild op (import) -> the busy chip
@@ -238,9 +252,13 @@ export class DocumentStore {
   /** Stop the busy op, if any. Resolves to whether anything was stopped — false
    *  covers both "nothing running" and "the sidecar had already finished". */
   async cancelBusy(): Promise<boolean> {
-    const id = this.busy.id;
-    if (!this.busy.active || !id) return false;
-    return (await this.geometry.cancel?.(id)) ?? false;
+    if (!this.busy.active) return false;
+    // A rebuild never learns its request id — rebuild() takes no onStarted, so
+    // runBusy's callback is never fired for it. Passing undefined lets the
+    // client fall back to lastHeavyId, which is precisely the fallback it
+    // documents for callers that never learned an id. Imports/exports still
+    // pass their own id and are unaffected.
+    return (await this.geometry.cancel?.(this.busy.id ?? undefined)) ?? false;
   }
 
   onBuild(fn: BuildListener): () => void {
@@ -1103,6 +1121,38 @@ export class DocumentStore {
     return this.geometry.projectGeometry(doc, plane, sources);
   }
 
+  /** Publish "a rebuild round-trip has started": keep whatever is on screen,
+   *  clear every progress field so a stale fraction can't linger under the new
+   *  build's label. */
+  private emitBuildStarted() {
+    this.build = { ...this.build, building: true, progress: null, meshed: null, meshTotal: null };
+    this.emitBuild();
+  }
+
+  /** The state a FINISHED rebuild round-trip publishes. A partial build carries
+   *  its failing feature inside the result, so the surviving geometry renders
+   *  AND the error surfaces; an outright failure keeps the last good mesh on
+   *  screen instead of blanking the viewport. Shared by rebuildNow and
+   *  computeAllNow, which settle identically. */
+  private settledBuild(reply: RebuildReply): RebuildState {
+    const done = { building: false, progress: null, meshed: null, meshTotal: null };
+    if (!reply.ok) {
+      return {
+        ...done,
+        result: this.build.result,
+        errorFeatureId: reply.error.feature_id ?? null,
+        errorMessage: reply.error.message,
+      };
+    }
+    const fe = reply.result.featureError;
+    return {
+      ...done,
+      result: reply.result,
+      errorFeatureId: fe?.feature_id ?? null,
+      errorMessage: fe?.message ?? null,
+    };
+  }
+
   async rebuildNow() {
     // Serialize rebuilds: if one is already in flight, just mark that another is
     // wanted. When the current one finishes it drains to the LATEST effectiveDoc.
@@ -1114,40 +1164,38 @@ export class DocumentStore {
     }
     this.rebuilding = true;
     try {
-      do {
-        this.rebuildQueued = false;
-        this.build = { ...this.build, building: true, progress: null };
-        this.emitBuild();
-        const reply = await this.geometry.rebuild(this.effectiveDoc());
-        if (reply.ok) {
-          // a partial build carries the failing feature inside the result —
-          // render the surviving geometry AND surface the error
-          const fe = reply.result.featureError;
-          this.build = {
-            building: false,
-            result: reply.result,
-            errorFeatureId: fe?.feature_id ?? null,
-            errorMessage: fe?.message ?? null,
-            progress: null,
-          };
-        } else {
-          this.build = {
-            building: false,
-            result: this.build.result, // keep last good mesh on screen
-            errorFeatureId: reply.error.feature_id ?? null,
-            errorMessage: reply.error.message,
-            progress: null,
-          };
+      // Wrap the whole drain in runBusy so a LONG rebuild gets the Cancel button
+      // and busy label. Without this, busy.active stayed false for every rebuild
+      // and timeline.ts — which gates both on it — offered no way to stop a build
+      // that runs for minutes on a large assembly (measured 138.7 s on the
+      // reference file). Short rebuilds are unaffected: the button only appears
+      // after CANCEL_DELAY_MS (700 ms).
+      await this.runBusy("Rebuilding", async () => {
+        try {
+          do {
+            this.rebuildQueued = false;
+            this.emitBuildStarted();
+            const reply = await this.geometry.rebuild(this.effectiveDoc());
+            this.build = this.settledBuild(reply);
+            this.emitBuild();
+            // associative projection refresh: decide AFTER the result is published
+            // (a queued commit lands via paramChain and triggers its own rebuild).
+            // A FAILED rebuild says nothing about projections — it must neither
+            // apply nor reset the streak, so only ok results reach the valve.
+            if (reply.ok) this.maybeQueueProjectionRefresh(reply.result.projectionUpdates);
+          } while (this.rebuildQueued);
+        } finally {
+          // Release the serialization flag HERE, not in the outer finally.
+          // runBusy's teardown adds await points after this callback returns,
+          // and a projection refresh chained on paramChain can run in that
+          // window: it would see rebuilding === true, set rebuildQueued on a
+          // loop that has already exited, and be dropped. That silently broke
+          // the derived-commit refresh loop (2 rebuilds became 1).
+          this.rebuilding = false;
         }
-        this.emitBuild();
-        // associative projection refresh: decide AFTER the result is published
-        // (a queued commit lands via paramChain and triggers its own rebuild).
-        // A FAILED rebuild says nothing about projections — it must neither
-        // apply nor reset the streak, so only ok results reach the valve.
-        if (reply.ok) this.maybeQueueProjectionRefresh(reply.result.projectionUpdates);
-      } while (this.rebuildQueued);
+      });
     } finally {
-      this.rebuilding = false;
+      this.rebuilding = false; // belt and braces if runBusy throws before the callback
     }
   }
 
@@ -1164,27 +1212,9 @@ export class DocumentStore {
     }
     this.rebuilding = true;
     try {
-      this.build = { ...this.build, building: true, progress: null };
-      this.emitBuild();
+      this.emitBuildStarted();
       const reply = await ca(this.effectiveDoc());
-      if (reply.ok) {
-        const fe = reply.result.featureError;
-        this.build = {
-          building: false,
-          result: reply.result,
-          errorFeatureId: fe?.feature_id ?? null,
-          errorMessage: fe?.message ?? null,
-          progress: null,
-        };
-      } else {
-        this.build = {
-          building: false,
-          result: this.build.result, // keep last good mesh on screen
-          errorFeatureId: reply.error.feature_id ?? null,
-          errorMessage: reply.error.message,
-          progress: null,
-        };
-      }
+      this.build = this.settledBuild(reply);
       this.emitBuild();
       // Compute All is the explicit retry gesture the valve toast promises:
       // re-arm the valve and route the (freshly recomputed) projection updates

@@ -56,10 +56,27 @@ const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edg
 // past it — and there, hiding contact lines between separate parts is arguably
 // wrong anyway, since part boundaries are what you want to see.
 const FLUSH_SEAM_MAX_EDGES = 20_000;
+
 import { Highlighter } from "./highlight";
 import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
+
+/** Shallow equality for the flat id→hex paint maps. Cheap enough to run on every
+ *  build (microseconds at 3,000 entries) and it saves a full GPU colour upload
+ *  whenever the answer is yes, which is the common case. Body ids are strings and
+ *  face ids are numbers; both index the same way, so one signature serves both. */
+export function sameStringMap(
+  a: Record<string, string> | Record<number, string>,
+  b: Record<string, string> | Record<number, string>,
+): boolean {
+  const av = a as Record<string, string>;
+  const bv = b as Record<string, string>;
+  const ka = Object.keys(av);
+  if (ka.length !== Object.keys(bv).length) return false;
+  for (const k of ka) if (av[k] !== bv[k]) return false;
+  return true;
+}
 
 export class Viewport {
   readonly scene: SceneBundle;
@@ -68,6 +85,10 @@ export class Viewport {
   private picker = new Picker();
   private highlighter: Highlighter | null = null;
   private model: ModelView | null = null;
+  /** The RebuildResult behind the current scene, held by IDENTITY so setModel
+   *  can recognise a re-emit of the same reply (an eye toggle) and skip
+   *  everything but the visibility flags. Never read for its contents. */
+  private lastResult: RebuildResult | null = null;
   // Z the ground grid sits at: the model's lowest point (so the grid is always a
   // floor under the model), or 0 (world XY) when the document is empty.
   private targetGridZ = 0;
@@ -528,6 +549,14 @@ export class Viewport {
   /** set the per-body assigned colors (body id → hex) and repaint if no analysis
    *  overlay is currently masking them. */
   setBodyPaint(map: Record<string, string>) {
+    // Skip the repaint when nothing actually changed. main.ts calls setModel,
+    // then setBodyPaint, then setTexturePaint on EVERY build, and each of the
+    // latter two runs a full colour re-upload (~40 MiB of attribute writes on
+    // the reference assembly) — 0.39 s of a 0.63 s no-op rebuild. setModel
+    // already paints with the maps stored here, so if the map is unchanged its
+    // pass was correct and this one is pure waste. A CHANGED map still repaints,
+    // which is what keeps setModel's stale-map pass from sticking.
+    if (sameStringMap(this.bodyPaint, map)) return;
     this.bodyPaint = map;
     if (this.analysis === "none") this.applyAnalysis();
   }
@@ -535,6 +564,7 @@ export class Viewport {
   /** per-face texture-inlay colors (global face id → hex), from texture features
    *  carrying a colorSlot — same lifecycle as setBodyPaint. */
   setTexturePaint(map: Record<number, string>) {
+    if (sameStringMap(this.texturePaint, map)) return;
     this.texturePaint = map;
     if (this.analysis === "none") this.applyAnalysis();
   }
@@ -823,6 +853,31 @@ export class Viewport {
 
   setModel(result: RebuildResult, fit = false, hiddenBodies: string[] = []) {
     const hidden = new Set(hiddenBodies);
+    // VISIBILITY-ONLY fast path. An eye toggle changes no geometry: the store
+    // re-emits the SAME RebuildResult object (setBodiesVisibility calls
+    // emitBuild without a rebuild), so every etag matches and the whole pass
+    // below reduces to flipping `visible` flags. Running it in full cost 0.63 s
+    // per toggle on the 3,071-body reference assembly — a Highlighter rebuild
+    // plus a full colour re-upload — and hiding bodies is the normal way to work
+    // with an assembly that size, which made this the highest-frequency freeze
+    // in the app.
+    //
+    // Keyed on result IDENTITY, so any real rebuild (a fresh reply object) takes
+    // the full path. `fit` forces it too: the caller wants the camera reframed.
+    if (!fit && this.model && this.lastResult === result) {
+      let anyChanged = false;
+      for (const b of this.model.bodies) {
+        const vis = !hidden.has(b.id);
+        if (b.mesh.visible !== vis) {
+          b.mesh.visible = vis;
+          b.edges.setBodyVisible(vis);
+          anyChanged = true;
+        }
+      }
+      if (anyChanged) for (const d of edgeObjects(this.model)) d.flush();
+      return;
+    }
+    this.lastResult = result;
     const bodyMeta = result.bodies ?? [];
     const bodyIds = new Set(bodyMeta.map((b) => b.id));
     const { byBody, orphans } = groupEdgesByBody(result.edges, bodyIds);

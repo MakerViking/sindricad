@@ -106,6 +106,42 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **A very large assembly opens about 40% faster.** Opening the 356 MB,
+  3,000-part reference assembly for the first time went from roughly five
+  minutes to under three, measured end to end on the same machine. Two things
+  accounted for nearly all of it. Extracting the model's edge lines was spending
+  almost all of its time on bookkeeping rather than on geometry, and is now
+  about eleven times faster. And every surface in the model was being measured
+  twice on every open, once to track which feature created it and once to draw
+  it; the second measurement now reuses the first. What ends up on screen is
+  unchanged: the same parts, the same edges, the same level of detail, down to
+  the last point.
+
+  Importing the STEP file itself is not part of that saving and is unchanged.
+  That stage is almost entirely inside the geometry kernel, and every setting
+  that could shorten it either made no difference or quietly dropped parts of
+  the model, which is not a trade worth making. It is also paid only once per
+  file: reopening a document you have already imported does not repeat it.
+
+- **Progress while a large model is prepared for drawing now means something.**
+  After the feature history finishes rebuilding there is a further stage that
+  prepares every part for display, which on a large assembly runs for over two
+  minutes. That entire stage showed the word "meshing" with the bar sitting at
+  zero and offered no way to stop it. It now counts the parts as it works
+  through them, and a Stop button appears for any rebuild long enough to want
+  one.
+
+- **Hiding and showing bodies is instant on a large assembly.** Clicking the eye
+  next to a body rebuilt the whole 3D scene, which on a 3,000-part assembly
+  locked the window up for about two thirds of a second every time. Hiding parts
+  is the normal way to work with an assembly that size. Toggling visibility
+  changes no geometry, so nothing is rebuilt for it now.
+
+- **Importing an STL or 3MF is faster.** The same bookkeeping problem behind the
+  edge-line saving above was also sitting in the mesh import path. A prismatic
+  part imports between 1.3 and 6 times faster depending on its size, and the
+  resulting model is identical.
+
 - **The geometry cache no longer grows without limit.** SindriCAD keeps prepared
   geometry on disk so that a document you have opened before opens quickly.
   Nothing ever removed the older parts of it, so on a machine used for large
@@ -154,6 +190,30 @@ This file starts on 2026-08-03. For anything before that, see the
   resolve, so this shows up as a smaller file rather than a visibly coarser part.
 
 ### Fixed
+
+- **Exporting a large assembly now produces a file.** On an assembly of about
+  3,000 parts, exporting to STEP wrote nothing at all. The export was working
+  fine: it simply takes about a minute to write a file that size, and the
+  watchdog that looks for a wedged geometry engine gives up after one minute. So
+  the export was killed seconds before it finished, you were told the geometry
+  engine had been restarted, and the file you asked for was never created.
+  Export now gets a time budget scaled to the size of the document, the way
+  import already did. The same assembly exports in about 48 seconds and writes a
+  984 MB file.
+
+- **Importing an OBJ file works.** OBJ was listed in both the Open and Import
+  file pickers and failed every single time with a raw developer error, because
+  the reader underneath only ever accepted STL and 3MF. OBJ files now import
+  properly, including ones whose faces are quads or larger polygons.
+
+- **A dense mesh no longer crashes the geometry engine.** Importing a detailed
+  scanned or organic STL of around 150,000 triangles killed the geometry engine
+  outright after about half a minute. Just below that size it did not crash, but
+  it worked for two minutes before reporting that the model was not something
+  SindriCAD can edit. Both cases are answered immediately now: the shape of the
+  mesh is checked first, and a curved or organic surface that cannot become an
+  editable model is refused in well under a second. Meshes that did import
+  before are unaffected, including detailed prismatic parts with many holes.
 
 - **A very large assembly now opens every time, and reopens in seconds.** The
   previous build could open a 356 MB assembly of about 3,000 parts, but only

@@ -149,6 +149,15 @@ _pool: ProcessPoolExecutor | None = None
 _mp_ctx = None  # the 'spawn' context, kept so we can rebuild the pool after a crash
 _HB = None  # shared heartbeat counter (multiprocessing.Value), set in main()
 _HB_IDX = None  # feature index the worker last started (Value 'q'; -1 = meshing/none)
+# Meshing progress, deliberately a SEPARATE channel from _HB_IDX rather than more
+# overloading of its -1 sentinel. The payload phase ticks per body, which kept the
+# stall watchdog happy but published feature=-1 every time, so the timeline showed
+# "meshing…" pinned at 0% for the whole phase — measured 136 s of it on the
+# reference assembly, the largest single feel defect on the open path. The counts
+# were always known here; only the wire to carry them was missing.
+# Both are -1 when no meshing is in flight.
+_HB_MESH = None       # bodies meshed so far (Value 'q')
+_HB_MESH_TOTAL = None  # bodies to mesh in this pass (Value 'q')
 
 # --- pool bring-up health --------------------------------------------------
 # A worker that dies DURING startup is a different failure from one that
@@ -179,7 +188,7 @@ _INIT_FAIL_MSG = (
 # --- worker process (separate interpreter) ---------------------------------
 
 
-def _worker_init(hb=None, hb_idx=None, err_buf=None):
+def _worker_init(hb=None, hb_idx=None, err_buf=None, mesh=None, mesh_total=None):
     """Runs once when a worker process starts: die with the server (anti-orphan),
     pin OCCT to all cores, and warm the heavy imports so the first real rebuild
     isn't paying build123d's import cost. `hb` is the shared heartbeat counter;
@@ -200,8 +209,9 @@ def _worker_init(hb=None, hb_idx=None, err_buf=None):
         # anything else running in this process needs the error buffer, and the
         # parent's _HB/_HB_IDX are set in main(), which never runs in a spawned
         # worker (so these are None here without this).
-        global _WORKER_ERR_BUF, _HB, _HB_IDX
+        global _WORKER_ERR_BUF, _HB, _HB_IDX, _HB_MESH, _HB_MESH_TOTAL
         _WORKER_ERR_BUF, _HB, _HB_IDX = err_buf, hb, hb_idx
+        _HB_MESH, _HB_MESH_TOTAL = mesh, mesh_total
         occt_smp.configure()
         import builder  # noqa: F401  (warm the import)
         import tessellate  # noqa: F401
@@ -630,6 +640,19 @@ def _union_bbox(boxes):
     }
 
 
+def _set_mesh_progress(done, total):
+    """Publish "meshed `done` of `total` bodies" to the supervisor, or (-1, -1)
+    to say no meshing is in flight. Worker-side; a failure here must never break
+    a rebuild, so every path is swallowed."""
+    try:
+        if _HB_MESH is not None:
+            _HB_MESH.value = int(done)
+        if _HB_MESH_TOTAL is not None:
+            _HB_MESH_TOTAL.value = int(total)
+    except Exception:
+        pass
+
+
 def _body_payload(b, tolerance, profile):
     """Compute (or fetch) the full render payload for one body: positions/indices/
     faceIds (LOCAL ids, offset client-side), faceOwners, per-body edges. Three
@@ -870,11 +893,18 @@ def _rebuild_job(document, tolerance, known=None):
     if profile[0] != 1.0:
         print("[rebuild] %d bodies -> coarse viewport profile (x%.1f linear, ang %.2f)"
               % (len(bodies), profile[0], profile[1]), flush=True)
+    # Announce the denominator BEFORE the loop so the very first progress frame
+    # can already say "1 of 3071" rather than starting at an unknown total.
+    n_to_mesh = sum(1 for b in bodies if b.get("shape") is not None)
+    n_meshed = 0
+    _set_mesh_progress(0, n_to_mesh)
     for b in bodies:
         if b.get("shape") is None:
             continue
         live_ids.add(b["id"])
         ent = _body_payload(b, tolerance, profile)
+        n_meshed += 1
+        _set_mesh_progress(n_meshed, n_to_mesh)
         body_boxes.append(ent.get("bbox"))
         # The assembly-tree node lives in the ENVELOPE, next to id/name/etag, and
         # is sent on BOTH branches. It must not go inside the mesh payload: that
@@ -890,6 +920,7 @@ def _rebuild_job(document, tolerance, known=None):
             item.update(ent["payload"])
             out.append(item)
     t_payload = time.monotonic() - t0
+    _set_mesh_progress(-1, -1)  # meshing done — stop claiming a denominator
     for bid in list(_MESH_CACHE):
         if bid not in live_ids:
             del _MESH_CACHE[bid]  # body deleted/consumed — drop its cache
@@ -1574,7 +1605,8 @@ def _new_pool():
             pass
     pool = ProcessPoolExecutor(
         max_workers=1, mp_context=_mp_ctx,
-        initializer=_worker_init, initargs=(_HB, _HB_IDX, _INIT_ERR),
+        initializer=_worker_init,
+        initargs=(_HB, _HB_IDX, _INIT_ERR, _HB_MESH, _HB_MESH_TOTAL),
     )
     try:
         # Submitted at creation to force the lazy spawn — and KEPT, because this
@@ -1767,6 +1799,56 @@ async def _run(loop, fn, *args, timeout=JOB_TIMEOUT):
         return _on_broken(gen)
 
 
+_EXPORT_SEC_PER_BODY = 0.09  # 4x the measured 22.6 ms/body — see _export_stall_budget
+
+
+def _export_stall_budget(document):
+    """Wall-clock reap budget for an export, in seconds.
+
+    `_run_stall` normally supervises by PROGRESS, which is the right design — but
+    the export WRITE (build123d's export_step/export_stl, or Mesher.write) is a
+    single atomic OCCT call that holds the GIL, so nothing inside it can bump the
+    heartbeat. Supervision therefore degrades to a wall clock here, exactly as it
+    already does for `import` below, and for the same reason.
+
+    Left on the default STALL_TIMEOUT this was not a slow path but a BROKEN one:
+    the 3,071-body reference assembly writes 1,031.8 MB of STEP in 69.4 s, and
+    the 60 s default reaped it at 60.1 s — reporting "the geometry kernel was
+    restarted" for a kernel that was working fine, and leaving NO file at the
+    path the user chose. `_export_job` ticks once per body while `rebuild_cached`
+    runs and then goes silent for the whole write, so the rebuild half never
+    protected it.
+
+    Scaled on the document's body count, which is what the write actually costs
+    per unit: _EXPORT_SEC_PER_BODY is 4x the measured 22.6 ms/body, floored at the
+    old default so a small export keeps its tight guard. Generous at the top is
+    safe because Cancel stays live throughout — the frontend wraps export in
+    `runBusy`, and the supervisor's 1 s poll honours the cancel token
+    independently of the GIL-holding worker."""
+    # an import feature carries one `parts` entry per body it explodes to; any
+    # other feature contributes at most a body or two
+    feats = (document or {}).get("features") or ()
+    n = sum(len(f.get("parts") or ()) or 1 for f in feats if isinstance(f, dict))
+    return max(STALL_TIMEOUT, _EXPORT_SEC_PER_BODY * n)
+
+
+def _building_frame(ws, rid):
+    """An `on_progress` callback that emits one interim "building" frame.
+
+    The client routes status frames to its progress listeners and never resolves
+    the pending call with one. `meshed`/`meshTotal` carry the payload phase's
+    real denominator so the timeline can say "meshing 812/3071" instead of
+    sitting at 0%. Shared by `rebuild` and `computeAll`, which want the identical
+    frame."""
+    async def _send(idx, meshed=-1, mesh_total=-1):
+        await ws.send(json.dumps(
+            {"id": rid, "status": "building", "feature": idx,
+             "meshed": meshed, "meshTotal": mesh_total}
+        ))
+
+    return _send
+
+
 async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     """Run a rebuild-class job supervised by PROGRESS instead of wall clock: kill
     the worker only when the shared heartbeat hasn't moved for `stall` seconds.
@@ -1807,7 +1889,11 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                 return _cancelled_result()
             if on_progress is not None:
                 try:
-                    await on_progress(int(_HB_IDX.value) if _HB_IDX is not None else -1)
+                    await on_progress(
+                        int(_HB_IDX.value) if _HB_IDX is not None else -1,
+                        int(_HB_MESH.value) if _HB_MESH is not None else -1,
+                        int(_HB_MESH_TOTAL.value) if _HB_MESH_TOTAL is not None else -1,
+                    )
                 except Exception:
                     pass  # a dropped progress frame must never kill the build
             if _HB is not None:
@@ -1921,17 +2007,9 @@ async def _dispatch(ws, loop, req, req_id, op):
             if k in req
         }
 
-        async def _building(idx, _rid=req_id):
-            # interim progress frame — the client routes status
-            # frames to its progress listeners and never resolves
-            # the pending call with one
-            await ws.send(json.dumps(
-                {"id": _rid, "status": "building", "feature": idx}
-            ))
-
         res = await _run_stall(
             loop, _rebuild_delta_job, payload, tol, req.get("known"),
-            on_progress=_building,
+            on_progress=_building_frame(ws, req_id),
         )
         res = _crash_feature(res, req.get("document"))
         await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
@@ -1939,19 +2017,13 @@ async def _dispatch(ws, loop, req, req_id, op):
     elif op == "computeAll":
         tol = req.get("tolerance", 0.1)
         payload = {"document": req["document"], "revision": req.get("revision")}
-
-        async def _building2(idx, _rid=req_id):
-            await ws.send(json.dumps(
-                {"id": _rid, "status": "building", "feature": idx}
-            ))
-
         res = await _run_stall(loop, _compute_all_job, payload, tol,
-                               on_progress=_building2)
+                               on_progress=_building_frame(ws, req_id))
         res = _crash_feature(res, req.get("document"))
         await ws.send(_reply_bytes(req_id, res, bool(req.get("binary"))))
 
     elif op == "export":
-        res = await _run_stall(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {})
+        res = await _run_stall(loop, _export_job, req["document"], req["format"], req["path"], req.get("body"), req.get("separate", False), req.get("palette") or [], req.get("bodyColors") or {}, stall=_export_stall_budget(req["document"]))
         await ws.send(_reply_for(req_id, res))
 
     elif op == "exportProject":
@@ -1965,6 +2037,7 @@ async def _dispatch(ws, loop, req, req_id, op):
             loop, _export_project_job, req["document"], req["path"],
             req.get("palette") or [], req.get("bodyColors") or {},
             req.get("bodyNames") or {}, settings,
+            stall=_export_stall_budget(req["document"]),
         )
         await ws.send(_reply_for(req_id, res))
 
@@ -2000,7 +2073,10 @@ async def _dispatch(ws, loop, req, req_id, op):
         # "nearly there" rather than "stuck at 6%".
         eta = max(3.0, 0.5 * _sz)
 
-        async def _importing(code, _rid=req_id, _t0=loop.time(), _b=eta):
+        async def _importing(code, *_mesh, _rid=req_id, _t0=loop.time(), _b=eta):
+            # *_mesh swallows the meshing counters _run_stall passes positionally
+            # (an import does not mesh). Without it they would bind to _rid/_t0
+            # and corrupt every import frame.
             i = code if 0 <= code < len(_IMPORT_PHASES) else 0
             base = sum(w for _, w in _IMPORT_PHASES[:i])
             label, w = _IMPORT_PHASES[i]
@@ -2151,12 +2227,15 @@ async def handle(ws):
 
 
 async def main():
-    global _pool, _mp_ctx, _TOKEN, _HB, _HB_IDX, _INIT_ERR
+    global _pool, _mp_ctx, _TOKEN, _HB, _HB_IDX, _INIT_ERR, _HB_MESH, _HB_MESH_TOTAL
     _die_with_parent()
     _TOKEN = os.environ.get("SINDRI_SIDECAR_TOKEN") or _mint_token()
     _mp_ctx = mp.get_context("spawn")
     _HB = _mp_ctx.Value("Q", 0)  # heartbeat: bumped by the worker per feature
     _HB_IDX = _mp_ctx.Value("q", -1)  # which feature is building (-1 = meshing)
+    # meshing progress; -1/-1 means "not meshing" (see the _HB_MESH comment above)
+    _HB_MESH = _mp_ctx.Value("q", -1)
+    _HB_MESH_TOTAL = _mp_ctx.Value("q", -1)
     # lock=False deliberately: a locked Array could deadlock the parent's read if
     # _kill_pool SIGKILLs a worker mid-write. One writer (the dying worker), one
     # reader (us, after it is dead) — the same reasoning as _HB's single-writer

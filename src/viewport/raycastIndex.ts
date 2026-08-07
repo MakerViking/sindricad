@@ -12,9 +12,9 @@
 // of three other projects here, so it is not a new vendor to trust.
 //
 // This module patches THREE.Mesh.prototype as a SIDE EFFECT of being imported.
-// render.ts imports buildRaycastIndex from it, and render.ts is pulled in by
+// render.ts imports scheduleRaycastIndex from it, and render.ts is pulled in by
 // viewport.ts at app load, so the patch is in place long before any pointermove
-// can raycast. Nothing else needs to import it.
+// can raycast. picking.ts additionally imports flushRaycastIndex.
 import * as THREE from "three";
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from "three-mesh-bvh";
 
@@ -34,9 +34,9 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
  *  face. Indirect mode keeps its own ordering in a side buffer and leaves the
  *  index alone.
  *
- *  Cost is paid here rather than on the first pick, so the first mouse move
- *  after a rebuild is not the slow one. Safe to call twice: three-mesh-bvh
- *  replaces an existing tree. */
+ *  Safe to call twice: three-mesh-bvh replaces an existing tree. Callers should
+ *  normally use scheduleRaycastIndex (below) rather than this directly — the
+ *  build is deferred past the first paint, not skipped. */
 export function buildRaycastIndex(geo: THREE.BufferGeometry) {
   // A geometry with no index has nothing to accelerate against, and
   // computeBoundsTree would throw rather than no-op.
@@ -47,5 +47,79 @@ export function buildRaycastIndex(geo: THREE.BufferGeometry) {
 /** Release a BVH with its geometry. Skipping this leaks the tree's typed
  *  arrays for every rebuild, and a rebuild happens on EVERY document change. */
 export function disposeRaycastIndex(geo: THREE.BufferGeometry) {
+  pending.delete(geo); // never build a tree for geometry that is already gone
   if (geo.boundsTree) geo.disposeBoundsTree();
+}
+
+// --- deferred building ------------------------------------------------------
+//
+// Building every body's BVH inline during setModel measured ~0.7 s of the 2.26 s
+// of frozen main thread after a large reply lands (3,071 bodies). A fully LAZY
+// build is still the wrong answer — it just moves the stall into the user's
+// first mouse move, which is worse than a stall during a load they are already
+// waiting through.
+//
+// So: build after the first paint instead. `scheduleRaycastIndex` queues the
+// geometry, one rAF hands the browser its frame, then idle callbacks drain the
+// queue in deadline-bounded chunks. The model appears ~0.7 s sooner and the
+// trees are ready a frame or two later.
+//
+// `flushRaycastIndex` closes the only hole: a pick that arrives before the queue
+// drains. Without it three-mesh-bvh would silently fall back to the stock
+// brute-force raycast — correct, but a scan of millions of triangles. The picker
+// calls it first, and it is free once the queue is empty.
+const pending = new Set<THREE.BufferGeometry>();
+let scheduled = false;
+
+function drain(hasTime: () => boolean) {
+  for (const geo of pending) {
+    pending.delete(geo);
+    buildRaycastIndex(geo);
+    if (!hasTime()) break;
+  }
+  scheduled = false;
+  if (pending.size) schedule();
+}
+
+function schedule() {
+  if (scheduled || !pending.size) return;
+  scheduled = true;
+  if (typeof globalThis.requestIdleCallback === "function") {
+    // timeout so a permanently busy main thread still gets the trees built
+    globalThis.requestIdleCallback((d) => drain(() => d.timeRemaining() > 1), { timeout: 500 });
+    return;
+  }
+  // WebKitGTK has no requestIdleCallback: fall back to a macrotask and bound
+  // the chunk by wall clock so one slice can't become its own long task.
+  setTimeout(() => {
+    const t0 = performance.now();
+    drain(() => performance.now() - t0 < 8);
+  }, 0);
+}
+
+/** Queue a body geometry's BVH to be built after the current frame paints. */
+export function scheduleRaycastIndex(geo: THREE.BufferGeometry) {
+  if (!geo.getIndex() || geo.boundsTree) return;
+  pending.add(geo);
+  if (scheduled) return;
+  // One rAF first, so the browser gets to paint the model before we spend any
+  // main thread on trees. Headless callers (vitest) have no rAF — fall straight
+  // through to the idle/macrotask path rather than throwing.
+  if (typeof globalThis.requestAnimationFrame !== "function") {
+    schedule();
+    return;
+  }
+  scheduled = true;
+  globalThis.requestAnimationFrame(() => {
+    scheduled = false;
+    schedule();
+  });
+}
+
+/** Build any queued BVHs right now. Called before a pick so an interaction can
+ *  never fall back to the stock brute-force raycast. No-op when idle already
+ *  drained the queue, which is the normal case. */
+export function flushRaycastIndex() {
+  if (!pending.size) return;
+  drain(() => true);
 }

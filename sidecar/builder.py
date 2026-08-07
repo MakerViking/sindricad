@@ -234,6 +234,31 @@ def _maybe_unify(shape):
     return shape
 
 
+def _list_shapes(lst):
+    """Elements of an OCP shape list WITHOUT draining its Python iterator.
+
+    Exhausting a pybind11-bound OCCT collection costs ~101 us of FIXED cost when
+    StopIteration fires, independent of length, while Extent() is 0.18 us and
+    First()/Last() are 0.55 us together. In a per-EDGE loop that dominates
+    everything else: the same pattern in tessellate.edge_polylines_by_body was
+    11x on the reference assembly, and here it measured 3.2-3.4x on
+    _refacet_clean and 1.66x end-to-end on a 64k-triangle mesh import.
+
+    First() on an EMPTY list raises Standard_NoSuchObject, so the count is
+    checked before either accessor is touched. An edge has one or two adjacent
+    faces in all but non-manifold geometry, so the drain only happens in the >2
+    case. Returns a tuple so callers can iterate it as often as they like for
+    free. (tessellate.py carries its own copy — see the note in its version.)"""
+    n = lst.Extent()
+    if n == 0:
+        return ()
+    if n == 1:
+        return (lst.First(),)
+    if n == 2:
+        return (lst.First(), lst.Last())
+    return tuple(lst)  # non-manifold: rare, and correctness beats the microseconds
+
+
 def _refacet_clean(shape, tol=0.12, debug=False):
     """Collapse facet-import raggedness. STL→B-rep leaves sliver bands and
     near-coplanar "staircase" faces around every real design plane (the planar
@@ -293,7 +318,7 @@ def _refacet_clean(shape, tol=0.12, debug=False):
             exp = TopExp_Explorer(fmap.FindKey(i), TopAbs_EDGE)
             while exp.More():
                 if emap.Contains(exp.Current()):
-                    for other in emap.FindFromKey(exp.Current()):
+                    for other in _list_shapes(emap.FindFromKey(exp.Current())):
                         j = fmap.FindIndex(other)
                         if j != i:
                             out.add(j)
@@ -514,7 +539,7 @@ def _refacet_clean(shape, tol=0.12, debug=False):
                 eexp = TopExp_Explorer(cmap.FindKey(k), TopAbs_EDGE)
                 while eexp.More():
                     if cemap.Contains(eexp.Current()):
-                        for other in cemap.FindFromKey(eexp.Current()):
+                        for other in _list_shapes(cemap.FindFromKey(eexp.Current())):
                             j = cmap.FindIndex(other)
                             if j in unvisited:
                                 unvisited.discard(j)
@@ -1044,6 +1069,73 @@ def _canonicalize(shape, tol=1e-3):
         return shape
 
 
+def _stl_distinct_normals(path):
+    """How many DISTINCT facet normals a binary STL has, or None if it isn't one.
+
+    Used as a cheap EMPIRICAL screen for "this mesh is organic and cannot reduce".
+    It is deliberately NOT claimed as an exact bound: `_maybe_unify` merges only
+    coplanar faces, but `_refacet_clean` also collapses NEAR-coplanar staircases,
+    so the final face count can land well below the number of distinct normals —
+    measured, a 4,001-normal sphere finishes at 1,269 faces. Calibrate against
+    measurement, not against the merge rule.
+
+    Binary STL stores the normal in the first 12 bytes of each 50-byte record, so
+    this is one strided numpy read with no geometry work: measured 50 ms on 72k
+    triangles. ASCII STL returns None (the caller then just skips the gate)."""
+    import numpy as np
+
+    try:
+        size = os.path.getsize(path)
+        if size < 84:
+            return None
+        with open(path, "rb") as fh:
+            head = fh.read(84)
+            ntri = int(np.frombuffer(head[80:84], dtype="<u4")[0])
+            # the exact-size identity is what distinguishes binary from ASCII
+            if ntri == 0 or size != 84 + 50 * ntri:
+                return None
+            raw = np.frombuffer(fh.read(50 * ntri), dtype=np.uint8)
+        if raw.size != 50 * ntri:
+            return None
+        n = raw.reshape(ntri, 50)[:, :12].copy().view("<f4").reshape(ntri, 3)
+        n = n[np.isfinite(n).all(axis=1)]
+        if n.size == 0:
+            return None
+        # quantize before uniquing: triangles of one planar face give normals that
+        # agree only to floating-point noise, and rounding merges them.
+        return int(len(np.unique(np.round(n, 3), axis=0)))
+    except Exception:
+        return None
+
+
+# Distinct-facet-normal ceiling for the early organic-mesh refusal in
+# _sew_mesh_file. CALIBRATED FROM MEASUREMENT, not derived — the screen is only a
+# correlate of "will not reduce", so the number is set above every mesh observed
+# to import successfully, and the cost of being wrong is rejecting a model that
+# would have worked. Measured on spheres/tori (normals -> outcome on the slow
+# path): 4,001 -> PASS (1,269 faces), 10,105 -> PASS (1,155 faces),
+# 8,631 -> reject, 19,918 -> reject. The pass/reject frontier is not monotonic in
+# this statistic, so the gate sits at 20,000 — clear of the largest measured PASS
+# by ~2x. Anything between 10k and 20k simply takes the old slow path and gets the
+# old answer; the gate exists for the 40k-175k range, where the slow path costs
+# ~2 minutes or SIGSEGVs.
+MAX_IMPORT_FACET_DIRECTIONS = 20_000
+
+
+def _too_dense_error(ntri):
+    """The user-facing refusal for a mesh past MAX_IMPORT_TRIANGLES.
+
+    Raised from two places, which is not redundancy: import_geometry uses the
+    cheap header/line-count peek, while _sew_obj_file re-checks the EXACT count
+    after parsing, because an OBJ n-gon fans out to more triangles than the
+    peek's one-per-`f`-line estimate."""
+    return ValueError(
+        f"This mesh has ~{ntri:,} triangles — too dense to import as an editable "
+        f"model (limit ~{MAX_IMPORT_TRIANGLES:,}). It's almost certainly an organic/"
+        f"scanned model; reduce it first, or import a STEP / clean CAD mesh."
+    )
+
+
 def _sew_mesh_file(path):
     """Read a triangle-mesh file (STL/3MF/OBJ) into a sewn, editable B-rep body.
 
@@ -1051,6 +1143,24 @@ def _sew_mesh_file(path):
     triangles through a temporary STL to get here — the sew + unify + refacet
     sequence is what turns 12 triangles back into a 6-faced box, and duplicating
     it for glTF would mean maintaining two versions of the same recovery."""
+    # Refuse a hopeless mesh BEFORE the expensive path, not after it. The face gate
+    # at the bottom of this function only fires once sew + unify + refacet have run,
+    # which on an organic mesh means the user waits for work that cannot succeed:
+    # measured 117.8 s for a 125,706-triangle sphere before the refusal, and at
+    # 147,851 triangles ShapeUpgrade_UnifySameDomain SIGSEGVs the worker outright
+    # (~35 s in, reproduced twice) — under MAX_IMPORT_TRIANGLES, so the cap does not
+    # protect against it. Screening on facet directions rejects those in ~50 ms.
+    #
+    # OBJ and glTF both round-trip through a temporary binary STL to get here, so
+    # they inherit the gate; native 3MF does not and still takes the slow path.
+    nn = _stl_distinct_normals(path)
+    if nn is not None and nn > MAX_IMPORT_FACET_DIRECTIONS:
+        raise ValueError(
+            f"This mesh is curved/organic ({nn:,} distinct facet directions — a clean "
+            f"CAD part has a few hundred at most), so it cannot reduce to an editable "
+            f"model. SindriCAD edits prismatic CAD models; import a STEP or a "
+            f"flat-faced part."
+        )
     shapes = Mesher().read(path)
     if not shapes:
         raise ValueError("no geometry found in the mesh file")
@@ -1068,6 +1178,79 @@ def _sew_mesh_file(path):
             f"models; import a STEP or a flat-faced part."
         )
     return shape
+
+
+def _read_obj_triangles(path):
+    """(positions, indices) from a Wavefront OBJ, triangulated.
+
+    Only `v` and `f` matter for a solid import: normals and texture coords are
+    per-corner presentation data that the sew + unify + refacet path recomputes
+    anyway, and materials carry no geometry. Handles the three things real OBJ
+    files in the wild actually use beyond the basics: `f a/b/c` corner triples
+    (only the vertex index is read), NEGATIVE indices (relative to the vertices
+    seen so far, per the spec), and n-gon faces (fan-triangulated, which is
+    correct for the convex planar faces OBJ faces are required to be).
+
+    Raises ValueError with a user-facing message rather than returning empty, so
+    a malformed file cannot silently import as nothing."""
+    verts, tris = [], []
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if line.startswith("v "):
+                p = line.split()
+                if len(p) >= 4:
+                    verts.append((float(p[1]), float(p[2]), float(p[3])))
+            elif line.startswith("f "):
+                idx = []
+                for tok in line.split()[1:]:
+                    s = tok.split("/", 1)[0]
+                    if not s:
+                        continue
+                    i = int(s)
+                    # OBJ is 1-based; a negative index counts back from the last
+                    # vertex READ SO FAR, so it must be resolved here and not later
+                    idx.append(i - 1 if i > 0 else len(verts) + i)
+                for k in range(1, len(idx) - 1):  # fan
+                    tris.extend((idx[0], idx[k], idx[k + 1]))
+    if not verts or not tris:
+        raise ValueError("no triangles found in the OBJ file")
+    # Bounds-checked only now: a POSITIVE index may legally forward-reference a
+    # vertex that appears further down the file, so `n` is not known during parse.
+    n = len(verts)
+    if any(i < 0 or i >= n for i in tris):
+        raise ValueError("the OBJ file references vertices that do not exist")
+    pos = [c for v in verts for c in v]
+    return pos, tris
+
+
+def _sew_triangles(pos, idx):
+    """Sew a raw triangle soup into an editable B-rep body.
+
+    Round-trips through a temporary binary STL so it lands in _sew_mesh_file:
+    the sew + unify + refacet recovery there is what turns 12 triangles back
+    into a 6-faced box, and neither the OBJ nor the glTF importer wants a
+    second copy of it. Both call here."""
+    import mesh_writers
+
+    fd, tmp = tempfile.mkstemp(suffix=".stl")
+    os.close(fd)
+    try:
+        mesh_writers.write_stl(pos, idx, tmp)
+        return _sew_mesh_file(tmp)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _sew_obj_file(path):
+    """Read an OBJ into a sewn, editable B-rep body via the shared mesh path."""
+    pos, idx = _read_obj_triangles(path)
+    ntri = len(idx) // 3
+    if ntri > MAX_IMPORT_TRIANGLES:
+        raise _too_dense_error(ntri)
+    return _sew_triangles(pos, idx)
 
 
 def _glb_dominant_color(path):
@@ -1296,21 +1479,23 @@ def import_geometry(path, fmt):
     elif fmt in ("stl", "3mf", "obj"):
         ntri = _peek_triangle_count(path, fmt)
         if ntri and ntri > MAX_IMPORT_TRIANGLES:
-            raise ValueError(
-                f"This mesh has ~{ntri:,} triangles — too dense to import as an editable "
-                f"model (limit ~{MAX_IMPORT_TRIANGLES:,}). It's almost certainly an organic/"
-                f"scanned model; reduce it first, or import a STEP / clean CAD mesh."
-            )
-        shape = _sew_mesh_file(path)
+            raise _too_dense_error(ntri)
+        if fmt == "obj":
+            # build123d's Mesher reads ONLY .3mf and .stl, so every .obj import
+            # raised a raw "Unknown file format .obj" — while both file pickers
+            # advertised OBJ (src/io/files.ts). Parse it here and round-trip the
+            # triangles through a temporary STL, exactly as the glTF branch below
+            # does, so OBJ inherits the same sew + unify + refacet recovery
+            # instead of a second copy of it.
+            shape = _sew_obj_file(path)
+        else:
+            shape = _sew_mesh_file(path)
     elif fmt == "glb":
         # OCCT's glTF reader returns ONE triangulated FACE per mesh — geometrically
         # correct but a surface body, so a GLB box arrived as 1 face / 0 solids
         # where the identical STL imports as 6 faces and a real solid. Round-trip
         # the triangles through the shared mesh path rather than duplicating (or
         # skipping) its sew + unify + refacet work.
-        import tempfile
-
-        import mesh_writers
         from tessellate import tessellate
 
         pos, idx, _fids = tessellate(_read_glb(path), tolerance=0.01)
@@ -1321,16 +1506,7 @@ def import_geometry(path, fmt):
                 f"model (limit ~{MAX_IMPORT_TRIANGLES:,}). Reduce it first, or import a "
                 f"STEP / clean CAD mesh."
             )
-        fd, tmp = tempfile.mkstemp(suffix=".stl")
-        os.close(fd)
-        try:
-            mesh_writers.write_stl(pos, idx, tmp)
-            shape = _sew_mesh_file(tmp)
-        finally:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        shape = _sew_triangles(pos, idx)
     else:
         raise ValueError(f"unsupported import format: {fmt}")
 
@@ -3352,33 +3528,77 @@ def _as_compound(s):
 # unchanged faces keep their owner. A move transforms the fingerprint keys so
 # provenance survives it. Fingerprint = (area, centre) quantized.
 
+def _fp_world(area, cx, cy, cz, loc):
+    """Round a LOCAL-frame (area, centre) into the world-frame fingerprint.
+
+    Module level, not a closure inside _face_fp: that allocated a function
+    object on all ~70k calls per rebuild, and re-ran the gp_Pnt import lookup
+    on the hot memo-hit path. The import now only happens when there is an
+    actual transform to apply."""
+    if loc is None or loc.IsIdentity():
+        return (round(area, 2), round(cx, 1), round(cy, 1), round(cz, 1))
+    from OCP.gp import gp_Pnt
+
+    p = gp_Pnt(cx, cy, cz)
+    p.Transform(loc.Transformation())
+    return (round(area, 2), round(p.X(), 1), round(p.Y(), 1), round(p.Z(), 1))
+
+
 def _face_fp(face):
-    """Quantized (area, centre) fingerprint. Memoized by the face's TShape when
-    its Location is identity (measured: >99% of faces after booleans, and equal
-    identity-located TShapes ARE the same geometry): OCP hashes TShape wrappers
-    stably at ~0.3 µs, while the GProp area/centre evaluation behind .area and
-    .center() was 23% of a cold rebuild (70k calls). Non-identity locations are
-    computed uncached — correctness over coverage."""
+    """Quantized (area, centre) fingerprint, memoized by the face's TShape.
+
+    The memo caches the face's geometry in its OWN (local) frame and applies the
+    face's Location on retrieval. Area is invariant under a rigid transform and
+    the centre is equivariant, so this is exact — verified on the 3,072-body
+    reference assembly: 25,523 of 25,523 fingerprints byte-identical to the
+    direct world-frame computation, zero differences.
+
+    It used to memoize ONLY when the Location was already identity, on the
+    measurement that >99% of faces are identity-located after booleans. That
+    holds for modelled geometry and is completely false for IMPORTED assemblies:
+    step_assembly places every leaf with `.Moved()`, so 0 of 133,295 faces on the
+    reference file qualified and the memo was entirely dead there — the same
+    `.Moved()` blind spot that killed the edge memo in tessellate.py. Since
+    `_face_fp` is called twice per face on an open (once building the owner map
+    in _update_owners, once resolving faceOwners in server._body_payload) and
+    each call is a GProp surface integration at ~137 us, that dead memo was the
+    single largest quality-preserving cost on the open path.
+
+    TShape identity implies identical local geometry, which is what makes the
+    key sound; the Location supplies everything else."""
     w = _wrapped_or_none(face)
-    key = None
+    key = loc = None
     if w is not None:
         try:
-            if w.Location().IsIdentity():
-                key = w.TShape()
-                hit = _FP_MEMO.get(key)
-                if hit is not None:
-                    return hit
+            key = w.TShape()
+            loc = w.Location()
+            hit = _FP_MEMO.get(key)
+            if hit is not None:
+                return _fp_world(*hit, loc)
         except Exception:
-            key = None
+            # both, or a half-set loc would be applied to a world-frame centre
+            # below and transform it twice
+            key = loc = None
     try:
-        c = face.center()
-        fp = (round(face.area, 2), round(c.X, 1), round(c.Y, 1), round(c.Z, 1))
+        # Evaluate in the LOCAL frame and transform, rather than evaluating in
+        # world and separately caching a local copy: that did TWO GProp
+        # integrations per miss and measured 43.6 s -> 82.1 s on the first pass,
+        # eating the whole benefit. One integration, same as before the memo.
+        lf = face
+        if loc is not None and not loc.IsIdentity():
+            from OCP.TopLoc import TopLoc_Location
+            from build123d import Face
+
+            lf = Face(w.Located(TopLoc_Location()))
+        c = lf.center()
+        local = (lf.area, c.X, c.Y, c.Z)
+        fp = _fp_world(*local, loc)
     except Exception:
         return None
     if key is not None:
         if len(_FP_MEMO) > 200_000:
             _FP_MEMO.clear()  # bound process-lifetime growth; it's only a cache
-        _FP_MEMO[key] = fp
+        _FP_MEMO[key] = local
     return fp
 
 
@@ -3535,7 +3755,7 @@ def _expand_blend_chain(shape, seeds, width_factor=4.0, max_faces=64):
             edge = exp.Current()
             if emap.Contains(edge):
                 mid = None
-                for other in emap.FindFromKey(edge):
+                for other in _list_shapes(emap.FindFromKey(edge)):
                     j = fmap.FindIndex(other)
                     if j != i:
                         if mid is None:
@@ -3625,7 +3845,7 @@ def _wound_boundary(comp, faces):
         exp = TopExp_Explorer(x.wrapped, TopAbs_EDGE)
         while exp.More():
             if emap.Contains(exp.Current()):
-                for other in emap.FindFromKey(exp.Current()):
+                for other in _list_shapes(emap.FindFromKey(exp.Current())):
                     j = fmap.FindIndex(other)
                     if j not in removed:
                         adj.add(j)

@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import type { RebuildResult } from "../types";
 import { disposeObject } from "./dispose";
-import { buildRaycastIndex } from "./raycastIndex";
+import { scheduleRaycastIndex } from "./raycastIndex";
 import { BodyEdges, EDGE_IDLE_COLOR, EDGE_IDLE_WIDTH, type EdgeRef } from "./edgeLines";
 
 export { BodyEdges, EDGE_IDLE_COLOR, EDGE_IDLE_WIDTH };
@@ -317,7 +317,7 @@ export function buildBodyMesh(
   mesh.name = "model";
   // Hover picking raycasts this mesh on every pointermove; without a BVH that
   // is a full triangle scan (2.60ms median on a 50k-triangle textured body).
-  buildRaycastIndex(geo);
+  scheduleRaycastIndex(geo); // built after the first paint — see raycastIndex.ts
 
   const edges = buildEdgeLines(bodyEdges, resolution);
 

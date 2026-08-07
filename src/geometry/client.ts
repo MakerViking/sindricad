@@ -134,8 +134,13 @@ export interface GeometryBackend {
   onStatus(fn: StatusListener): () => void;
   /** Interim build progress: fires with the feature index the sidecar is
    *  currently building (-1 = tessellating) roughly once a second during a
-   *  long rebuild. Optional — the in-process backend doesn't stream. */
-  onProgress?(fn: (feature: number) => void): () => void;
+   *  long rebuild. Optional — the in-process backend doesn't stream.
+   *
+   *  `meshed`/`meshTotal` are -1 except during the payload (meshing) phase,
+   *  where they carry its real per-body denominator. Without them the phase
+   *  reported only feature=-1, which the timeline rendered as a bar pinned at
+   *  0% for its whole duration — 136 s of it on the reference assembly. */
+  onProgress?(fn: (feature: number, meshed: number, meshTotal: number) => void): () => void;
   /** MCAD-style "Compute All": rebuild bypassing every cache layer. Optional. */
   computeAll?(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
   /** Stop an op in flight. `target` is the request id to cancel — pass the id
@@ -289,7 +294,7 @@ export class Geometry implements GeometryBackend {
   private outbox: string[] = [];
   private statusListeners = new Set<StatusListener>();
   private opProgressListeners = new Set<(pct: number, label: string) => void>();
-  private progressListeners = new Set<(feature: number) => void>();
+  private progressListeners = new Set<(feature: number, meshed: number, meshTotal: number) => void>();
   private reconnectTimer: number | null = null;
   private reconnectDelay = 500; // ms; doubles on each failed attempt, capped, reset on open
   // Protocol-v2 per-body mesh cache: the sidecar answers unchanged bodies with
@@ -297,6 +302,12 @@ export class Geometry implements GeometryBackend {
   // full payload per body and reassemble the merged RebuildResult locally, so
   // everything downstream (render/picking/store) sees the same shape as before.
   private bodyMesh = new Map<string, WireBodyFull>();
+  /** The last RebuildResult assemble() produced, plus the reply signature that
+   *  produced it. A rebuild whose bodies all arrive as unchanged stubs with the
+   *  same signature returns this object by reference instead of rebuilding
+   *  ~98 MiB of typed arrays — see the fast path in assemble(). */
+  private lastAssembled: RebuildResult | null = null;
+  private lastAssembledSig: string | null = null;
   // Delta wire protocol: the sidecar worker holds the last document; we send
   // {baseRevision, revision, ops} with only the CHANGED features (reference
   // inequality against the last sent feature list — effectiveDoc() reuses
@@ -338,7 +349,7 @@ export class Geometry implements GeometryBackend {
     return () => this.opProgressListeners.delete(fn);
   }
 
-  onProgress(fn: (feature: number) => void): () => void {
+  onProgress(fn: (feature: number, meshed: number, meshTotal: number) => void): () => void {
     this.progressListeners.add(fn);
     return () => this.progressListeners.delete(fn);
   }
@@ -384,7 +395,9 @@ export class Geometry implements GeometryBackend {
         // sidecar happily kept working for another minute.
         if (msg.status === "building") {
           const f = typeof msg.feature === "number" ? msg.feature : -1;
-          for (const fn of this.progressListeners) fn(f);
+          const m = typeof msg.meshed === "number" ? msg.meshed : -1;
+          const mt = typeof msg.meshTotal === "number" ? msg.meshTotal : -1;
+          for (const fn of this.progressListeners) fn(f, m, mt);
         } else if (msg.status === "importing") {
           const pct = typeof msg.pct === "number" ? msg.pct : 0;
           const label = typeof msg.label === "string" ? msg.label : "";
@@ -573,6 +586,9 @@ export class Geometry implements GeometryBackend {
         // we claimed an etag the cache no longer backs (e.g. page kept state
         // across a worker respawn race) — resync with a full request
         this.bodyMesh.clear();
+        // the assemble cache is keyed on payloads that just went away
+        this.lastAssembled = null;
+        this.lastAssembledSig = null;
         msg = await this.call<WireRebuildResult>("rebuild", { document: doc, revision: ++this.revision, tolerance, binary: true });
         if (msg.ok && msg.result?.protocol === 2) assembled = this.assemble(msg.result);
       }
@@ -630,6 +646,35 @@ export class Geometry implements GeometryBackend {
       items.push({ p, nb });
     }
     for (const id of this.bodyMesh.keys()) if (!live.has(id)) this.bodyMesh.delete(id);
+
+    // NO-OP FAST PATH. When every body arrived as an `unchanged` stub and the
+    // id/etag/order/bbox signature matches the previous reply, the arrays the
+    // second pass is about to build are provably identical to the ones it built
+    // last time — same cached payloads, same order, same offsets. Rebuilding
+    // them allocated ~98 MiB of fresh typed arrays (positions 40.3 + indices
+    // 43.6 + faceIds 14.5 MiB) and cost 0.171 s on EVERY rebuild, including ones
+    // that changed nothing at all.
+    //
+    // Returning the previous object BY REFERENCE (not a copy) is deliberate: the
+    // viewport's setModel keys its own visibility-only fast path on result
+    // identity, so this is what lets a no-op rebuild skip the scene rebuild too.
+    // The signature includes the non-geometry extras precisely because they CAN
+    // change while geometry does not — a new diagnostic or featureError must
+    // still produce a fresh object. The all-stubs test is belt and braces on top
+    // of the etags: cheap, and geometry correctness is worth more than it costs.
+    const sig = items.length === 0 ? null : JSON.stringify([
+      items.map(({ p, nb }) => [nb.id, nb.etag, nb.name, nb.nodeRef, p.faceCount]),
+      r.bbox,
+      r.diagnostics, r.featureError, r.featureErrors, r.projectionUpdates,
+    ]);
+    if (
+      sig !== null
+      && sig === this.lastAssembledSig
+      && this.lastAssembled !== null
+      && bodies.every((nb) => nb.unchanged)
+    ) {
+      return this.lastAssembled;
+    }
 
     // second pass: preallocated typed arrays (total sizes are known), filled
     // with .set() for the float arrays — accepts number[] AND typed-array
@@ -698,6 +743,8 @@ export class Geometry implements GeometryBackend {
     if (r.featureError) out.featureError = r.featureError;
     if (r.featureErrors) out.featureErrors = r.featureErrors;
     if (r.projectionUpdates) out.projectionUpdates = r.projectionUpdates;
+    this.lastAssembledSig = sig;
+    this.lastAssembled = out;
     return out;
   }
 

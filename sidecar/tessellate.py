@@ -434,6 +434,42 @@ def edge_polylines(shape, deflection=_EDGE_DEFLECTION):
     return out
 
 
+def _list_shapes(lst):
+    """Elements of an OCP shape list WITHOUT draining its Python iterator.
+
+    Exhausting a pybind11-bound OCCT collection costs ~101us of FIXED cost when
+    StopIteration fires, independent of length (measured on a 2-element
+    TopTools_ListOfShape: iter + 2 next() = 0.9us, the third next() = 101us),
+    while Extent() is 0.18us and First()/Last() together are 0.55us.
+
+    edge_polylines_by_body used to drain each edge's ancestor list TWICE — once
+    for the coplanar test, once for the seam test — so ~202us of every edge went
+    on iterator teardown, dwarfing the ~1us to emit a straight line or ~82us to
+    sample a circle. Almost every edge has one or two adjacent faces, so the
+    drain now happens only in the non-manifold >2 case, which no shape in the
+    fixtures produces at all. Measured on a cold open of the 356 MiB reference
+    assembly: that pass went 85.7 s -> 7.7 s (11.1x), taking the whole cold open
+    from 298 s to 220 s. Output is byte-identical — same 348,580 polylines, same
+    1,726,523 points — which is why this needs no CODE_VERSION bump: the cached
+    mesh artifacts stay valid, so the warm reopen path is untouched.
+
+    First() on an EMPTY list raises Standard_NoSuchObject, and an edge with no
+    adjacent face is reachable (a free wire on a compound body), so the count is
+    checked before either accessor is touched. Returns a tuple, so callers can
+    iterate it as many times as they like for free.
+
+    builder.py keeps its own copy of this; tessellate deliberately does not
+    import builder, which would drag build123d's whole import graph in here."""
+    n = lst.Extent()
+    if n == 0:
+        return ()
+    if n == 1:
+        return (lst.First(),)
+    if n == 2:
+        return (lst.First(), lst.Last())
+    return tuple(lst)  # non-manifold: rare, and correctness beats the microseconds
+
+
 def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_seams=True):
     """Sample each body's edges as polylines tagged with the body id (so the frontend
     can hide a hidden body's WIREFRAME). Two classes of edge are NOT real and are
@@ -478,10 +514,9 @@ def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_se
 
         fmap, fnorm, em = _planar_face_normals(sh)
         for i in range(1, em.Extent() + 1):
-            faces = em.FindFromIndex(i)
-            if faces.Extent() == 2:
-                fl = list(faces)
-                n0, n1 = fnorm.get(fmap.FindIndex(fl[0])), fnorm.get(fmap.FindIndex(fl[1]))
+            faces = _list_shapes(em.FindFromIndex(i))
+            if len(faces) == 2:
+                n0, n1 = fnorm.get(fmap.FindIndex(faces[0])), fnorm.get(fmap.FindIndex(faces[1]))
                 if n0 and n1 and abs(n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2]) > cos_tol:
                     continue  # coplanar seam — don't draw it
             ek = em.FindKey(i)
@@ -500,6 +535,8 @@ def edge_polylines_by_body(bodies, deflection=_EDGE_DEFLECTION, hide_coplanar_se
             # segments. Harmless on screen but pure waste in the payload.
             if BRep_Tool.Degenerated_s(ke):
                 continue
+            # A wrap-around seam is ONE face listed TWICE, so both entries of the
+            # (already materialized, free to re-iterate) tuple get tested.
             if any(BRep_Tool.IsClosed_s(ke, TopoDS.Face_s(f)) for f in faces):
                 continue
             e = Edge(ek)

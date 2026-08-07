@@ -8,6 +8,7 @@ import type { ModelView } from "./render";
 import { edgeObjects, faceIdOfHit, visibleBodyMeshes } from "./render";
 import type { BodyEdges, EdgeRef } from "./edgeLines";
 import { edgeSelectorFrom } from "./edgeMatch";
+import { flushRaycastIndex } from "./raycastIndex";
 
 export interface EdgeHit {
   kind: "edge";
@@ -68,6 +69,11 @@ export class Picker {
     camera: THREE.Camera,
     view: ModelView,
   ): Hit | null {
+    // Body BVHs are built after the first paint, not during setModel (see
+    // raycastIndex.ts). If a pick beats that, build them now: three-mesh-bvh
+    // would otherwise fall back to a brute-force scan of every triangle. Free
+    // once the queue has drained, which is the normal case.
+    flushRaycastIndex();
     const edge = this.pickEdge(clientX, clientY, rect, camera, view);
 
     this.raycaster.setFromCamera(this.ndc, camera); // ndc set by pickEdge
