@@ -261,6 +261,23 @@ This file starts on 2026-08-03. For anything before that, see the
   Two other operations could fail the same silent way on an assembly of this
   size, checking for clashes and running a cut or join against thousands of
   bodies. Both now report progress instead of being mistaken for a hang.
+- **A circle diameter now takes a typed value even where the constraint solver
+  will not start.** On a machine whose WebView2 refuses to run the sketch
+  solver, typing a new diameter on a circle did nothing at all: no change, no
+  message. Rectangles kept working, which made it look like a problem with
+  circles specifically, and that is how it was reported. The cause is that a
+  circle's diameter and a line's length are the only two dimensions applied by
+  the solver rather than written straight to the shape, so they were the only
+  two that vanished when it was missing.
+
+  Both are now applied to the shape directly when there is no solver, and
+  SindriCAD says once that it has done so. The dimension is still recorded, so
+  it drives the geometry properly as soon as the solver is available, and a
+  sketch made this way is no different from one made on a working machine.
+
+  If you see the message about the solver not starting, updating the Microsoft
+  Edge WebView2 Runtime is still the real fix: without it, dimensions do not
+  hold when other geometry moves.
 
 - **A long export is no longer cut off partway.** Exporting, checking for
   clashes, and projecting geometry each had two minutes to finish, whatever the

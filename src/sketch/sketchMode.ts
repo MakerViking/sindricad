@@ -33,6 +33,7 @@ import { circumcenter } from "./arc";
 import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
+import { applyDrivingDimsDirect } from "./directDims";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
@@ -199,6 +200,7 @@ export class SketchMode {
   // than letting every stroke raise the same unhandled rejection
   private solverDead = false;
   private solverDeadToast = false;
+  private directDimToast = false; // said once: dims are being written straight to geometry
   private solveDirty = false; // a constraint/dimension solve is pending
   private entityVersion = 0; // bumped on every entity change; guards stale solves
   private conflict = false; // last solve reported conflicting (over-)constraints
@@ -670,6 +672,39 @@ export class SketchMode {
     this.refreshActive();
   }
 
+  /** Write the driving length/⌀ dimensions straight into the geometry, for when
+   *  there is no solver to do it properly.
+   *
+   *  These two dimensions are the only ones that go through a constraint rather
+   *  than editing coordinates (see editDimension), so on a machine where the
+   *  solver's WASM will not start they were the only ones that silently did
+   *  NOTHING: the constraint was recorded, never solved, and the circle stayed
+   *  the size it was drawn. Rectangle W/H kept working, which is exactly how a
+   *  Windows user reported it — "when creating a circle I am unable to put in a
+   *  new value for the dimension, other shapes seem to work fine" (0.1.100).
+   *
+   *  The constraint is deliberately KEPT. This is a best-effort stand-in, not a
+   *  replacement: the moment a real solver is available it drives the geometry
+   *  properly, and nothing about the saved sketch is different from one authored
+   *  on a working machine.
+   *
+   *  Only the unambiguous single-entity cases are handled. Anything relating two
+   *  entities needs a solve to decide WHICH of them moves, and guessing would
+   *  put geometry somewhere the user did not ask for. */
+  private applyDrivingDimsDirectly() {
+    if (!applyDrivingDimsDirect(this.entities, this.constraints)) return;
+    this.entityVersion++; // guards any in-flight solve against this write
+    if (!this.directDimToast) {
+      this.directDimToast = true;
+      toast(
+        "Without the constraint solver, a length or diameter is applied to the shape directly and is not kept as a live dimension. It will drive the geometry properly once the solver runs.",
+        { timeout: 12000 },
+      );
+    }
+    this.refreshActive();
+    this.onState?.();
+  }
+
   /** clickable labels for the distance constraints: editing one writes the
    *  constraint's driving value and re-solves. Reads the cdims activeCurves()
    *  computed earlier in the same refreshActive() pass. */
@@ -839,6 +874,11 @@ export class SketchMode {
     if (isDimConstraint(c) && !c.id) c.id = replacedId ?? newConstraintId();
     this.constraints.push(c);
     this.requestSolve();
+    // requestSolve is a no-op once the solver is known dead, so on those
+    // machines the value has to be written into the geometry here or it is
+    // recorded and never seen. Harmless when the solver is alive: this is not
+    // reached, and the solve is what moves anything.
+    if (this.solverDead) this.applyDrivingDimsDirectly();
   }
 
   // --- parameter bindings on sketch dims -------------------------------------
@@ -3511,6 +3551,9 @@ export class SketchMode {
           { kind: "error", timeout: 12000 },
         );
       }
+      // The dimension that was in flight when the solver died still has to
+      // land, or the very first one a user types is the one that vanishes.
+      this.applyDrivingDimsDirectly();
       this.refreshActive();
     } finally {
       this.solveBusy = false;
