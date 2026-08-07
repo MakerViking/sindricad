@@ -91,7 +91,17 @@ body {
      the window — the ribbon un-collapsed, the browser and inspector slid out of
      bounds. The 0 minimum lets every row be narrower than its content instead. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: 36px 76px 1fr 52px;
+  /* The ribbon row is AUTO, not a fixed height. It was 76px, and a group's
+     content (padding + a 24px icon + its label + the CREATE/MODIFY/... caption)
+     comes to roughly 85px once the platform's font metrics are counted. Since
+     .ribbon-context stretches every group to the row height and #ribbon hides
+     vertical overflow, the caption was simply cut in half — reported twice on
+     the same day, from macOS ("category names are only showing the top 1/2")
+     and from Linux/Hyprland (issue #10, "tool labels are cut off"), and not
+     visible on the box it was built on, because how much gets cut depends
+     entirely on the font. Sizing the row to its content cannot be wrong on a
+     font nobody here has. */
+  grid-template-rows: 36px auto 1fr 52px;
   height: 100vh;
   width: 100%;
   overflow: hidden;
@@ -361,6 +371,13 @@ body {
 #ribbon {
   background: linear-gradient(180deg, var(--panel) 0%, #131519 100%);
   border-bottom: 1px solid var(--line);
+  /* The auto row above is not enough on its own: #ribbon scrolls horizontally,
+     and a scroll container's automatic minimum size is ZERO in both axes, so a
+     short window could still squeeze the row back down and re-clip the caption
+     (measured: 89px -> 76px in a 300px-tall window). fit-content gives the
+     block axis a real content floor while leaving the horizontal scrolling,
+     which is what overflow-x is here for, exactly as it was. */
+  min-height: fit-content;
   overflow-x: auto;
   overflow-y: hidden;
 }

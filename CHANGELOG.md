@@ -261,6 +261,17 @@ This file starts on 2026-08-03. For anything before that, see the
   Two other operations could fail the same silent way on an assembly of this
   size, checking for clashes and running a cut or join against thousands of
   bodies. Both now report progress instead of being mistaken for a hang.
+- **The group names under the toolbar are no longer cut in half.** CREATE,
+  MODIFY, CONSTRUCT and INSPECT were sitting in a toolbar of fixed height with
+  slightly more content than would fit, so the bottom of the lettering was
+  simply clipped. How much you lost depended on the font your system draws with,
+  which is why it showed up on macOS and on Linux and was easy to miss
+  elsewhere. Measured here at 7 pixels of a 13 pixel caption, so a little over
+  half. The toolbar now takes the height its contents actually need, on every
+  platform and at any window size, and still scrolls sideways when the window is
+  too narrow for every tool. Reported from macOS and, separately, as
+  [#10](https://github.com/MakerViking/sindricad/issues/10).
+
 - **A circle diameter now takes a typed value even where the constraint solver
   will not start.** On a machine whose WebView2 refuses to run the sketch
   solver, typing a new diameter on a circle did nothing at all: no change, no
