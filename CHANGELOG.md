@@ -213,6 +213,25 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The Units dropdown is no longer white with grey text on the dark title
+  bar.** Native controls, a dropdown and its popup list among them, are drawn
+  by the browser engine rather than by SindriCAD, and they default to the light
+  palette however dark the page around them is. The dropdowns are now told to
+  use the dark palette, so the closed control, its list and its scrollbars all
+  match the rest of the window.
+
+- **The panels no longer paint over the timeline.** In a short window the
+  browser, the 3D view and the inspector stretched to the height of whichever
+  panel had the most content in it, ran past the bottom of the window, and
+  covered the timeline underneath, hiding the buttons in the bottom-left corner
+  with nothing to indicate they were still there. The panels are now bounded by
+  the space they are given rather than by what is inside them.
+
+- **Leaving a sketch clears its prompt.** The hint line kept telling you to
+  click two corners and type a width long after the sketch had closed and the
+  toolbar had switched back to solid tools, so the app was asking for something
+  it had stopped listening for.
+
 - **Starting a new document, or opening one, no longer leaves the old model on
   screen.** If a rebuild was still running, "New" emptied the document but left
   the previous model in the 3D view, said nothing about it, and hiding the body

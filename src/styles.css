@@ -6,6 +6,14 @@
    ============================================================================ */
 
 :root {
+  /* Every NATIVE control — a <select> and its popup list, scrollbars, the focus
+     ring on form fields — is drawn by the engine, not by us, and defaults to the
+     LIGHT palette however dark the page around it is. That is why the Units
+     dropdown came out white with near-invisible grey text on a black title bar.
+     Declaring the scheme is what makes the engine draw them dark; the rules on
+     the selects below then only have to handle the closed control's shape. */
+  color-scheme: dark;
+
   /* --- surfaces (dark → light, back → front) --- */
   --bg: #0e0f12;          /* app background, deepest */
   --panel: #16181d;       /* docked panels (browser/inspector/ribbon/timeline) */
@@ -101,7 +109,7 @@ body {
      visible on the box it was built on, because how much gets cut depends
      entirely on the font. Sizing the row to its content cannot be wrong on a
      font nobody here has. */
-  grid-template-rows: 36px auto 1fr 52px;
+  grid-template-rows: 36px auto minmax(0, 1fr) 52px;
   height: 100vh;
   width: 100%;
   overflow: hidden;
@@ -712,6 +720,13 @@ body {
 #main {
   display: grid;
   grid-template-columns: 232px 1fr 252px;
+  /* The single row must be capped at #main's own height. Left implicit it is
+     auto-sized, so the tallest panel's CONTENT set the row height (measured:
+     #main 723px, row 811px) and the browser, viewport and canvas all stretched
+     to 811px and painted 88px down over the timeline, hiding the buttons in the
+     bottom-left. min-height on #main does not help: it bounds #main, not the
+     track inside it. Same reason the columns are minmax(0, 1fr). */
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -1267,11 +1282,11 @@ button.active {
 }
 .params-row input,
 .params-row select {
-  background: var(--panel-2);
+  background-color: var(--panel-2);
   border: 1px solid var(--line-strong);
   color: var(--text);
   border-radius: var(--r-sm);
-  padding: 4px 7px;
+  padding: 4px 22px 4px 7px; /* right side reserved for the arrow above */
   width: 100%;
   font: inherit;
   font-size: 12px;
@@ -1562,6 +1577,29 @@ button.finish:hover {
   transition: opacity 0.18s var(--ease);
 }
 
+/* Shared look for the app's <select>s. `appearance: none` is the load-bearing
+   part: without it the engine draws its own button face and simply ignores
+   background/color, which is exactly how the Units control ended up light. The
+   arrow has to be redrawn once appearance is off, so it comes in as a background
+   image; keep the right padding clear of it. */
+.units select,
+.params-row select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b93a4' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+  background-size: 9px 6px;
+}
+/* The popup list is a native menu. color-scheme above is what darkens it on
+   engines that honour it; these are belt and braces for the ones that read
+   option colours instead. */
+.units select option,
+.params-row select option {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
 /* ---- unit selector in the top bar ---- */
 .units {
   display: flex;
@@ -1574,11 +1612,11 @@ button.finish:hover {
   color: var(--text-mute);
 }
 .units select {
-  background: var(--panel-2);
+  background-color: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
-  padding: 4px 6px;
+  padding: 4px 22px 4px 6px; /* right side reserved for the arrow above */
   font: inherit;
   font-size: 12px;
   text-transform: none;

@@ -469,6 +469,12 @@ export class SketchMode {
     this.glyphs.hide();
     this.textPanel.hide();
     this.projectPanel.hide();
+    // The prompt is a transient like the rest of these, and was the one thing
+    // cleanup() forgot: leaving the sketch used to leave "Rectangle: click two
+    // corners · type W, Tab, H · Enter · Esc" on screen while the context tab
+    // had already switched back to SOLID, telling the user to do something the
+    // app was no longer listening for. Whichever tool comes next sets its own.
+    setPrompt(null);
     this.viewport.hoverEntity(null); // drop any Project-tool 3D hover highlight
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
