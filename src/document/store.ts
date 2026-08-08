@@ -35,6 +35,35 @@ export interface RebuildState {
    *  without these the chip has nothing to show a fraction from. */
   meshed: number | null;
   meshTotal: number | null;
+  /** During a CHUNKED reply: bodies handed to the viewport so far, and the
+   *  reply's total. Both null outside a stream.
+   *
+   *  `result` is still the PREVIOUS committed model while these are non-null.
+   *  That is the whole safety property of progressive display: the partial
+   *  geometry reaches the viewport on onBuildChunk and NOWHERE else, so no
+   *  exporter, feature tree, or persisted document can ever observe a partial
+   *  body list. */
+  streamed: number | null;
+  streamTotal: number | null;
+}
+
+/** One installment of a chunked reply on its way to the VIEWPORT.
+ *
+ *  The only legitimate subscriber is the viewport bridge in main.ts. Anything
+ *  that reads document truth — export, the browser tree, a feature that bakes
+ *  body ids into the document — must use onBuild, which never sees a partial. */
+export interface BuildChunk {
+  epoch: number;
+  phase: "begin" | "bodies";
+  /** the IN-PROGRESS result: only the bodies delivered so far hold real data */
+  result: RebuildResult;
+  manifest: NonNullable<RebuildResult["bodies"]>;
+  bodies: NonNullable<RebuildResult["bodies"]>;
+  edgesByBody: Map<string, RebuildResult["edges"]>;
+  triRange: { triStart: number; triEnd: number };
+  bbox: RebuildResult["bbox"];
+  done: number;
+  total: number;
 }
 
 /** A long non-rebuild operation the user can watch and stop (today: import).
@@ -163,11 +192,18 @@ export class DocumentStore {
   private rebuildTimer: number | null = null;
   private rebuilding = false; // a rebuild round-trip is in flight
   private rebuildQueued = false; // a newer rebuild was requested while one was in flight
+  /** Bumped on every rebuild start. Chunk installments carry it so a late one
+   *  from an abandoned reply can be recognised and dropped. */
+  private buildEpoch = 0;
+  private chunkListeners = new Set<(c: BuildChunk) => void>();
+  private abortListeners = new Set<(epoch: number) => void>();
   private build: RebuildState = {
     building: false,
     result: null,
     errorFeatureId: null,
     errorMessage: null,
+    streamed: null,
+    streamTotal: null,
     progress: null,
     meshed: null,
     meshTotal: null,
@@ -198,6 +234,14 @@ export class DocumentStore {
         meshTotal: meshTotal > 0 ? meshTotal : null,
       };
       this.emitBuild();
+    });
+    // installments of a chunked reply -> the viewport, and ONLY the viewport
+    geometry.onRebuildChunk?.((c) => {
+      if (!this.build.building) return;
+      this.build = { ...this.build, streamed: c.done, streamTotal: c.total };
+      this.emitBuild();
+      const chunk: BuildChunk = { ...c, epoch: this.buildEpoch };
+      for (const fn of this.chunkListeners) fn(chunk);
     });
     // coarse phase progress for a long non-rebuild op (import) -> the busy chip
     geometry.onOpProgress?.((pct, label) => {
@@ -265,6 +309,22 @@ export class DocumentStore {
     this.buildListeners.add(fn);
     fn(this.build);
     return () => this.buildListeners.delete(fn);
+  }
+  /** Installments of a chunked reply, for the VIEWPORT ONLY — see BuildChunk.
+   *  Deliberately a separate channel from onBuild: every tool's onBuild handler
+   *  is a one-shot on the `!building` edge (ghost seeding, selection reseeding,
+   *  the new-failure toast diff), and firing those per chunk would seed against
+   *  a model that is not there yet. Unlike onBuild this does NOT replay the
+   *  current state to a new subscriber: there is nothing meaningful to replay. */
+  onBuildChunk(fn: (c: BuildChunk) => void): () => void {
+    this.chunkListeners.add(fn);
+    return () => this.chunkListeners.delete(fn);
+  }
+  /** A chunked reply that will never finish (dropped connection, cancel, a
+   *  malformed frame). The viewport must tear down whatever it has drawn. */
+  onBuildAbort(fn: (epoch: number) => void): () => void {
+    this.abortListeners.add(fn);
+    return () => this.abortListeners.delete(fn);
   }
   /** notified when the file path or dirty flag changes (for the titlebar). */
   onMeta(fn: MetaListener): () => void {
@@ -1125,7 +1185,12 @@ export class DocumentStore {
    *  clear every progress field so a stale fraction can't linger under the new
    *  build's label. */
   private emitBuildStarted() {
-    this.build = { ...this.build, building: true, progress: null, meshed: null, meshTotal: null };
+    // A new rebuild invalidates any stream still in flight for the old one.
+    this.buildEpoch++;
+    this.build = {
+      ...this.build, building: true,
+      progress: null, meshed: null, meshTotal: null, streamed: null, streamTotal: null,
+    };
     this.emitBuild();
   }
 
@@ -1134,8 +1199,18 @@ export class DocumentStore {
    *  AND the error surfaces; an outright failure keeps the last good mesh on
    *  screen instead of blanking the viewport. Shared by rebuildNow and
    *  computeAllNow, which settle identically. */
+  /** Tell the viewport to drop a partial model. Called when a build settles
+   *  without the stream having completed — the reply failed, was cancelled, or
+   *  came back by some path that never produced a final chunk. */
+  private emitBuildAbort() {
+    for (const fn of this.abortListeners) fn(this.buildEpoch);
+  }
+
   private settledBuild(reply: RebuildReply): RebuildState {
-    const done = { building: false, progress: null, meshed: null, meshTotal: null };
+    const done = {
+      building: false, progress: null, meshed: null, meshTotal: null,
+      streamed: null, streamTotal: null,
+    };
     if (!reply.ok) {
       return {
         ...done,
@@ -1176,6 +1251,10 @@ export class DocumentStore {
             this.rebuildQueued = false;
             this.emitBuildStarted();
             const reply = await this.geometry.rebuild(this.effectiveDoc());
+            // A stream that was in flight but never completed has left a PARTIAL
+            // model on screen. Tell the viewport to drop it before this result —
+            // which on a failure is the PREVIOUS document — renders over the top.
+            if (this.build.streamed !== null && !reply.ok) this.emitBuildAbort();
             this.build = this.settledBuild(reply);
             this.emitBuild();
             // associative projection refresh: decide AFTER the result is published
@@ -1214,6 +1293,7 @@ export class DocumentStore {
     try {
       this.emitBuildStarted();
       const reply = await ca(this.effectiveDoc());
+      if (this.build.streamed !== null && !reply.ok) this.emitBuildAbort();
       this.build = this.settledBuild(reply);
       this.emitBuild();
       // Compute All is the explicit retry gesture the valve toast promises:

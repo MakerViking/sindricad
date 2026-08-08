@@ -105,31 +105,62 @@ export interface MeshPartition {
 /** Bucket `result`'s triangles by owning body, in two passes over the model.
  *  Only bodies named in `rebuilding` get a list: a body whose etag is unchanged
  *  keeps its existing GPU objects and is never passed to buildBodyMesh, so
- *  bucketing its triangles would be pure waste. */
-export function partitionMesh(result: RebuildResult, rebuilding: Iterable<string>): MeshPartition {
+ *  bucketing its triangles would be pure waste.
+ *
+ *  `opts.range` restricts both passes to a slice of the triangle array, and
+ *  `opts.remap` supplies a caller-owned scratch buffer instead of allocating
+ *  one. Both exist for PROGRESSIVE loads, where the reply's arrays are
+ *  allocated at full size but filled a chunk at a time:
+ *
+ *   - `range` is a CORRECTNESS requirement there, not a speed one. An unwritten
+ *     slice is still zeros, and zero is a legitimate faceId — scanning it would
+ *     attribute every not-yet-arrived triangle to whichever body owns face 0.
+ *   - `remap` is the speed one: it is sized to the whole model, and
+ *     buildBodyMesh hands it back clean, so allocating and re-filling one per
+ *     chunk is exactly the O(chunks x model) cost this avoids.
+ *
+ *  Called without opts the behaviour is unchanged. */
+export function partitionMesh(
+  result: RebuildResult,
+  rebuilding: Iterable<string>,
+  opts?: { range?: { triStart: number; triEnd: number }; remap?: Int32Array },
+): MeshPartition {
   const metas = result.bodies ?? [];
   const wanted = rebuilding instanceof Set ? rebuilding : new Set(rebuilding);
   const { faceIds, positions } = result.mesh;
 
   // faceId -> slot, so the per-triangle test is one array read instead of a
   // range comparison against every body. -1 = a face nobody is rebuilding.
+  // Bounds come from the WANTED bodies only: a face outside them is skipped
+  // either way, and on a chunk that keeps this array chunk-sized rather than
+  // model-sized.
+  let faceBase = Infinity;
   let faceLimit = 0;
-  for (const m of metas) faceLimit = Math.max(faceLimit, m.faceStart + m.faceCount);
-  const slotOfFace = new Int32Array(faceLimit).fill(-1);
+  for (const m of metas) {
+    if (!wanted.has(m.id)) continue;
+    faceBase = Math.min(faceBase, m.faceStart);
+    faceLimit = Math.max(faceLimit, m.faceStart + m.faceCount);
+  }
+  if (!Number.isFinite(faceBase)) faceBase = 0;
+  const slotOfFace = new Int32Array(Math.max(0, faceLimit - faceBase)).fill(-1);
   const slotBodies: string[] = [];
   for (const m of metas) {
     if (!wanted.has(m.id)) continue;
     const slot = slotBodies.length;
     slotBodies.push(m.id);
-    slotOfFace.fill(slot, m.faceStart, Math.min(m.faceStart + m.faceCount, faceLimit));
+    slotOfFace.fill(slot, m.faceStart - faceBase,
+      Math.min(m.faceStart + m.faceCount, faceLimit) - faceBase);
   }
+
+  const tFrom = opts?.range ? Math.max(0, opts.range.triStart) : 0;
+  const tTo = opts?.range ? Math.min(faceIds.length, opts.range.triEnd) : faceIds.length;
 
   // pass 1: count, so each body's list is exactly sized (no growing arrays)
   const counts = new Int32Array(slotBodies.length);
-  for (let t = 0; t < faceIds.length; t++) {
+  for (let t = tFrom; t < tTo; t++) {
     const fid = faceIds[t];
-    if (fid === undefined || fid < 0 || fid >= faceLimit) continue;
-    const slot = slotOfFace[fid]!;
+    if (fid === undefined || fid < faceBase || fid >= faceLimit) continue;
+    const slot = slotOfFace[fid - faceBase]!;
     if (slot >= 0) counts[slot]!++;
   }
 
@@ -138,17 +169,17 @@ export function partitionMesh(result: RebuildResult, rebuilding: Iterable<string
   // scan-every-triangle path.
   const lists = slotBodies.map((_, i) => new Int32Array(counts[i]!));
   const cursor = new Int32Array(slotBodies.length);
-  for (let t = 0; t < faceIds.length; t++) {
+  for (let t = tFrom; t < tTo; t++) {
     const fid = faceIds[t];
-    if (fid === undefined || fid < 0 || fid >= faceLimit) continue;
-    const slot = slotOfFace[fid]!;
+    if (fid === undefined || fid < faceBase || fid >= faceLimit) continue;
+    const slot = slotOfFace[fid - faceBase]!;
     if (slot < 0) continue;
     lists[slot]![cursor[slot]!++] = t;
   }
 
   const trisByBody = new Map<string, Int32Array>();
   for (let i = 0; i < slotBodies.length; i++) trisByBody.set(slotBodies[i]!, lists[i]!);
-  return { trisByBody, remap: new Int32Array(positions.length / 3).fill(-1) };
+  return { trisByBody, remap: opts?.remap ?? new Int32Array(positions.length / 3).fill(-1) };
 }
 
 /** Build one body's own isolated Mesh+BufferGeometry: slice its triangles out of

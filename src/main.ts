@@ -701,13 +701,17 @@ viewport.onSelectionChange = () => {
 };
 
 // --- rebuild pipeline -> viewport ---
-let firstModel = true;
+// Whether the camera still owes the model a frame. Cleared by whichever path
+// performs the fit — a progressive load fits from the manifest's bbox on its
+// FIRST frame, so the camera settles before any geometry exists and never moves
+// again while chunks land.
+let pendingFit = true;
 
 // resolve each body's assigned palette slot to a hex color for the viewport.
-function computeBodyPaint(): Record<string, string> {
+function computeBodyPaint(bodies = store.buildState.result?.bodies): Record<string, string> {
   const pal = store.colorPalette;
   const out: Record<string, string> = {};
-  for (const b of store.buildState.result?.bodies ?? []) {
+  for (const b of bodies ?? []) {
     const slot = store.bodyColorSlot(b.id);
     if (slot != null && pal[slot]) out[b.id] = pal[slot].color;
   }
@@ -745,6 +749,28 @@ function noteCommitted(id: string | null) {
   if (id) lastCommittedId = id;
 }
 
+// --- progressive display -------------------------------------------------
+// The ONLY subscriber to the chunk channel. A chunked reply reaches the viewport
+// here and nowhere else: store.buildState.result keeps pointing at the PREVIOUS
+// document for the whole stream, so export, the browser tree, and every feature
+// that bakes body ids into the document are structurally unable to see a partial
+// model. The completed build below is still what makes it official.
+store.onBuildChunk((c) => {
+  if (c.phase === "begin") {
+    const hidden = c.manifest.filter((b) => !store.isBodyVisible(b.id)).map((b) => b.id);
+    // Push the palette BEFORE the first body lands, from the manifest — so
+    // streamed bodies arrive already wearing their assigned colour instead of
+    // popping from grey when the build commits.
+    viewport.setBodyPaint(computeBodyPaint(c.manifest));
+    viewport.beginProgressiveModel(c.epoch, c.manifest, c.result, c.bbox, hidden, pendingFit);
+    pendingFit = false;
+    return;
+  }
+  const hidden = c.bodies.filter((b) => !store.isBodyVisible(b.id)).map((b) => b.id);
+  viewport.appendProgressiveBodies(c.epoch, c.result, c.bodies, c.edgesByBody, c.triRange, hidden);
+});
+store.onBuildAbort(() => viewport.abortProgressiveModel());
+
 store.onBuild((s) => {
   // Only render COMPLETED builds. A `building` tick carries the previous result
   // (the new geometry isn't ready yet); re-rendering it would momentarily revert an
@@ -757,8 +783,8 @@ store.onBuild((s) => {
       const hidden = (s.result.bodies ?? [])
         .filter((b) => !store.isBodyVisible(b.id))
         .map((b) => b.id);
-      viewport.setModel(s.result, firstModel, hidden);
-      firstModel = false;
+      viewport.setModel(s.result, pendingFit, hidden);
+      pendingFit = false;
       viewport.setBodyPaint(computeBodyPaint()); // apply assigned per-body colors
       viewport.setTexturePaint(computeTexturePaint()); // + per-face inlay colors
     } else {

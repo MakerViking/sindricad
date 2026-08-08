@@ -20,6 +20,28 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Model size is no longer a hard limit on what you can open.** Until now the
+  finished geometry had to reach the 3D view as one piece, and there was a
+  ceiling on how big that piece could be — about 128 MB. The 356 MB reference
+  assembly came in at 95% of it, so a model only a few per cent larger simply
+  refused to open, with a message telling you to hide some bodies in a document
+  you could not open in the first place.
+
+  The geometry is now sent in pieces and put back together as it arrives, so
+  there is no ceiling to hit. Nothing about the models you already have changes —
+  the same geometry, drawn the same way — but a document that used to be turned
+  away now opens. A single body that is enormous on its own is still refused,
+  and that message now tells you which body it is.
+
+- **A large assembly now appears piece by piece instead of all at once.** The
+  last stretch of opening a big model used to be one long pause with the
+  previous document still on screen. Parts now fill in as they arrive, and the
+  view frames the finished model before the first one lands, so the camera
+  settles once and stays put while the rest appears. Measured on a 3,000-part
+  assembly: it fills in over eight steps rather than arriving in a single jump.
+  Picking and tools stay off until it has finished loading, which is when a
+  selection would have survived anyway.
+
 - **A very large assembly now opens instead of killing the app.** Importing the
   file worked, but on a 356 MB assembly of about 3,000 parts the app then died
   partway through drawing it, with no message. Two separate causes, both fixed.

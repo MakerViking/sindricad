@@ -3,6 +3,10 @@
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
 import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, ImportFormat, ImportReply, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
+import { RebuildAssembly, manifestFromBodies } from "./assembly";
+import type {
+  WireBody, WireBodyFull, WireEdgeList, WireManifestEntry, WireRebuildResult,
+} from "./assembly";
 
 // The sidecar's wire-level reply envelope (see sidecar/server.py's _ok/_err):
 // every call resolves to one of these two shapes; `result`'s type is per-op,
@@ -141,6 +145,9 @@ export interface GeometryBackend {
    *  reported only feature=-1, which the timeline rendered as a bar pinned at
    *  0% for its whole duration — 136 s of it on the reference assembly. */
   onProgress?(fn: (feature: number, meshed: number, meshTotal: number) => void): () => void;
+  /** Installments of a chunked rebuild reply, for progressive display. Optional:
+   *  the in-process backend answers in one piece and never streams. */
+  onRebuildChunk?(fn: (c: RebuildChunk) => void): () => void;
   /** MCAD-style "Compute All": rebuild bypassing every cache layer. Optional. */
   computeAll?(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
   /** Stop an op in flight. `target` is the request id to cancel — pass the id
@@ -152,32 +159,6 @@ export interface GeometryBackend {
   readonly connected: boolean;
 }
 
-// --- Protocol-v2 wire shapes (see sidecar/server.py's _rebuild_job / _body_payload) ---
-// One body's per-body payload: either the full mesh (positions/indices/faceIds
-// etc.) or an "unchanged" stub referencing an etag the client already caches
-// locally (see assemble() below). `unchanged` is the discriminant.
-interface WireBodyFull {
-  id: string;
-  name: string;
-  etag: string;
-  unchanged?: false;
-  /** "<importFeatureId>/<nodeIndex>" for a body from an imported assembly tree. */
-  nodeRef?: string;
-  positions: F32Wire;
-  indices: U32Wire;
-  faceIds: U32Wire;
-  // present only for a body with texture features: analytic displaced normals
-  // (plain faces carry the same accumulation the client would compute)
-  normals?: F32Wire;
-  faceOwners?: (string | null)[];
-  textureColorSlots?: (number | null)[];
-  edges?: WireEdgeList;
-  faceCount?: number;
-}
-/** Edge polylines, the form every consumer sees. The binary reply carries them
- *  packed instead (WireEdgesPacked); handleBinaryReply expands them before the
- *  body reaches anything else, so this stays the single downstream contract. */
-type WireEdgeList = { points: [number, number, number][]; body?: string }[];
 /** Edge polylines packed into binary buffers (see server.py's _pack_edges):
  *  every point triple flattened, plus a per-edge POINT count to re-split them.
  *  Exists only between reading a binary frame and expanding it. */
@@ -209,38 +190,116 @@ export function expandPackedEdges(
   }
   return list;
 }
-interface WireBodyStub {
+
+
+/** The framing envelope a chunked reply adds. Non-final frames carry
+ *  `status: "chunk"` and no `ok`, so a peer that does not understand them
+ *  treats them as informational rather than as the reply. */
+interface WireStreamEnvelope {
+  sid: string;
+  seq: number;
+  final: boolean;
+}
+
+/** A decoded binary frame: the JSON envelope with every {"$buf": i} already
+ *  swapped for a TypedArray view over the frame's own ArrayBuffer. */
+interface BinaryHeader {
   id: string;
-  name: string;
-  etag: string;
-  nodeRef?: string;
-  unchanged: true;
-}
-type WireBody = WireBodyFull | WireBodyStub;
-
-// The sidecar's raw rebuild/computeAll result before local reassembly: a
-// resync request, a protocol-v2 per-body result, or (defensively) the legacy
-// single-mesh shape a backend could still return directly. Modeled as one flat
-// shape with everything optional (rather than a discriminated union) so the ad
-// hoc `?.resync` / `?.protocol` checks below type-check without narrowing first.
-interface WireRebuildResult {
-  resync?: true;
-  protocol?: 2;
-  bodies?: WireBody[];
-  bbox?: { min: number[]; max: number[] } | null;
-  diagnostics?: RebuildResult["diagnostics"];
-  featureError?: RebuildResult["featureError"];
-  featureErrors?: RebuildResult["featureErrors"];
-  // projection refresh entries ride the top-level header as plain JSON (never
-  // inside per-body payloads, so "unchanged" stubs can't drop them)
-  projectionUpdates?: RebuildResult["projectionUpdates"];
-  // legacy direct-mesh shape (only when `protocol` is absent)
-  mesh?: RebuildResult["mesh"];
-  edges?: RebuildResult["edges"];
+  ok?: boolean;
+  status?: string;
+  stream?: WireStreamEnvelope;
+  result: WireRebuildResult & { $buffers?: { dtype: string; len: number }[] };
 }
 
-type RebuildBody = NonNullable<RebuildResult["bodies"]>[number];
-type RebuildEdge = RebuildResult["edges"][number];
+/** Longest gap tolerated between two frames of one chunked reply before the
+ *  client gives up on it. Chunks are sent back to back off a result the sidecar
+ *  already holds in full, so any real gap is a sidecar bug — this exists so
+ *  that bug surfaces as one failed rebuild instead of a permanently wedged UI. */
+type RebuildBodyMeta = NonNullable<RebuildResult["bodies"]>[number];
+
+/** One installment of a chunked rebuild reply, for RENDERERS ONLY.
+ *
+ *  `result` is the IN-PROGRESS RebuildResult: its arrays are allocated at full
+ *  size but only the bodies delivered so far hold real data — the rest is still
+ *  zeros. Never retain it, and never read it as document truth. Anything that
+ *  needs the finished, authoritative model waits for the ordinary completed
+ *  build (store.onBuild), which is why store.build.result keeps pointing at the
+ *  PREVIOUS document for the whole stream.
+ *
+ *  `triRange` is the half-open triangle span this installment filled; pass it to
+ *  partitionMesh so the scan cannot wander into unwritten (zeroed) triangles,
+ *  which would otherwise read as faceId 0. */
+export interface RebuildChunk {
+  phase: "begin" | "bodies";
+  result: RebuildResult;
+  /** metadata for EVERY body of the reply, in final order, known from frame 0 */
+  manifest: RebuildBodyMeta[];
+  /** just the bodies this installment filled */
+  bodies: RebuildBodyMeta[];
+  edgesByBody: Map<string, RebuildResult["edges"]>;
+  triRange: { triStart: number; triEnd: number };
+  /** final for the whole reply, known from frame 0 — so the camera can settle
+   *  once, before any geometry arrives, and never move again */
+  bbox: RebuildResult["bbox"];
+  done: number;
+  total: number;
+}
+
+const STREAM_IDLE_MS = 30_000;
+
+/** Decode ONE binary frame: [u32 LE header_len][JSON header][pad to 4][bufs...].
+ *  Mesh arrays become zero-copy TypedArray views over `buf`, and packed edges
+ *  are expanded to the list every consumer expects.
+ *
+ *  Buffer indices are FRAME-local, which is what lets a chunked reply reuse this
+ *  unchanged: each chunk carries its own header, pad and $buffers table and is
+ *  independently decodable.
+ *
+ *  Exported for its own test, like expandPackedEdges — the sidecar-side test can
+ *  only prove the encoder. */
+export function decodeBinaryFrame(buf: ArrayBuffer): BinaryHeader {
+  const dv = new DataView(buf);
+  const headerLen = dv.getUint32(0, true);
+  const header = JSON.parse(
+    new TextDecoder().decode(new Uint8Array(buf, 4, headerLen)),
+  ) as BinaryHeader;
+  let offset = 4 + headerLen + ((4 - (headerLen % 4)) % 4);
+  const views: (Float32Array | Uint32Array)[] = [];
+  for (const meta of header.result.$buffers ?? []) {
+    views.push(
+      meta.dtype === "f32"
+        ? new Float32Array(buf, offset, meta.len)
+        : new Uint32Array(buf, offset, meta.len),
+    );
+    offset += meta.len * 4;
+  }
+  const resolveBuf = (v: unknown) => views[(v as { $buf: number }).$buf]!;
+  for (const b of header.result.bodies ?? []) {
+    if (b.unchanged) continue;
+    const fb = b as WireBodyFull;
+    fb.positions = resolveBuf(fb.positions) as Float32Array;
+    if (fb.normals !== undefined) fb.normals = resolveBuf(fb.normals) as Float32Array;
+    fb.indices = resolveBuf(fb.indices) as Uint32Array;
+    fb.faceIds = resolveBuf(fb.faceIds) as Uint32Array;
+    // Edges arrive packed (server.py's _pack_edges) — expand them back to the
+    // plain list every consumer expects, here at the one point the raw frame is
+    // interpreted. Rebuilding the triples is still cheaper than the JSON text it
+    // replaces: on a large assembly that was 97.1 MiB to parse, and the frame it
+    // saves is what keeps the reply under the cap.
+    const rawEdges = (fb as { edges?: WireEdgeList | WireEdgesPacked }).edges;
+    if (rawEdges !== undefined && !Array.isArray(rawEdges)) {
+      fb.edges = expandPackedEdges(
+        resolveBuf(rawEdges.$pts) as Float32Array,
+        resolveBuf(rawEdges.$counts) as Uint32Array,
+        rawEdges.body,
+      );
+    }
+  }
+  delete header.result.$buffers;
+  return header;
+}
+
+
 
 // Delta wire protocol's request payload (see rebuild()'s comment below) vs a
 // full-document send.
@@ -302,6 +361,22 @@ export class Geometry implements GeometryBackend {
   // full payload per body and reassemble the merged RebuildResult locally, so
   // everything downstream (render/picking/store) sees the same shape as before.
   private bodyMesh = new Map<string, WireBodyFull>();
+  /** Chunked replies in flight, by request id (see server.py's
+   *  _stream_binary_reply). INVARIANT: an entry here implies a live entry in
+   *  `pending` for the same id — every teardown clears both or neither, which
+   *  is what keeps a broken stream from wedging rebuildNow()'s `rebuilding`
+   *  flag forever. In practice there is at most one: both sides serialize
+   *  rebuilds, and the map is keyed by id so a stale one cannot be mistaken for
+   *  the live one. */
+  private streams = new Map<string, {
+    sid: string;
+    nextSeq: number;
+    manifest: WireManifestEntry[];
+    assembly: RebuildAssembly;
+    ids: string[];
+    timer: number;
+  }>();
+  private chunkListeners = new Set<(c: RebuildChunk) => void>();
   /** The last RebuildResult assemble() produced, plus the reply signature that
    *  produced it. A rebuild whose bodies all arrive as unchanged stubs with the
    *  same signature returns this object by reference instead of rebuilding
@@ -347,6 +422,15 @@ export class Geometry implements GeometryBackend {
   onOpProgress(fn: (pct: number, label: string) => void): () => void {
     this.opProgressListeners.add(fn);
     return () => this.opProgressListeners.delete(fn);
+  }
+
+  /** Installments of a chunked rebuild reply, so the viewport can draw bodies as
+   *  they arrive instead of showing the previous document until the whole reply
+   *  lands. The ONLY legitimate subscriber is the viewport bridge in main.ts;
+   *  anything reading document truth uses store.onBuild. */
+  onRebuildChunk(fn: (c: RebuildChunk) => void): () => void {
+    this.chunkListeners.add(fn);
+    return () => this.chunkListeners.delete(fn);
   }
 
   onProgress(fn: (feature: number, meshed: number, meshTotal: number) => void): () => void {
@@ -408,6 +492,10 @@ export class Geometry implements GeometryBackend {
       const resolve = this.pending.get(msg.id);
       if (resolve) {
         this.pending.delete(msg.id);
+        // A terminal TEXT reply for an id with a stream in flight is how the
+        // sidecar aborts one mid-send (cancel, or a single body over the frame
+        // cap). Drop the partial stream — this reply supersedes it.
+        this.dropStream(msg.id);
         resolve(msg);
       }
     };
@@ -435,6 +523,11 @@ export class Geometry implements GeometryBackend {
         resolve({ id, ok: false, error: { message } });
       }
       this.pending.clear();
+      // Every pending call has just been settled, so no stream can still have
+      // its partner entry — clear them (and their watchdogs) to keep the
+      // streams/pending invariant true rather than merely usually true.
+      for (const s of this.streams.values()) clearTimeout(s.timer);
+      this.streams.clear();
       this.scheduleReconnect();
     };
 
@@ -453,62 +546,195 @@ export class Geometry implements GeometryBackend {
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10_000);
   }
 
-  /** Decode a binary mesh reply (see server.py's _encode_binary_reply for the
-   *  layout: [u32 LE header_len][JSON header][pad to 4][buf0][buf1]...). The
-   *  header is the normal {id, ok, result} envelope with each big mesh array
-   *  replaced by {"$buf": i} into result.$buffers ({dtype, len} in wire
-   *  order); buffers become TypedArray VIEWS over this frame's ArrayBuffer —
-   *  zero copy, no JSON number parsing. Resolves the same pending map the
-   *  JSON path does; a malformed frame is logged like a JSON parse failure. */
+  /** Decode ONE binary frame (see server.py's _encode_binary_reply / _frame_bytes
+   *  for the layout: [u32 LE header_len][JSON header][pad to 4][buf0][buf1]...).
+   *  The header is the normal {id, ok, result} envelope with each big mesh array
+   *  replaced by {"$buf": i} into result.$buffers ({dtype, len} in wire order);
+   *  buffers become TypedArray VIEWS over this frame's ArrayBuffer — zero copy,
+   *  no JSON number parsing.
+   *
+   *  Buffer indices are FRAME-local, which is what lets a chunked reply reuse
+   *  this unchanged: every chunk carries its own header, pad and $buffers table
+   *  and is independently decodable.
+   *
+   *  Exported for its own test, like expandPackedEdges. */
   private handleBinaryReply(buf: ArrayBuffer) {
+    let header: BinaryHeader | null = null;
     try {
-      const dv = new DataView(buf);
-      const headerLen = dv.getUint32(0, true);
-      const header = JSON.parse(
-        new TextDecoder().decode(new Uint8Array(buf, 4, headerLen)),
-      ) as { id: string; ok: boolean; result: WireRebuildResult & { $buffers?: { dtype: string; len: number }[] } };
-      let offset = 4 + headerLen + ((4 - (headerLen % 4)) % 4);
-      const views: (Float32Array | Uint32Array)[] = [];
-      for (const meta of header.result.$buffers ?? []) {
-        views.push(
-          meta.dtype === "f32"
-            ? new Float32Array(buf, offset, meta.len)
-            : new Uint32Array(buf, offset, meta.len),
-        );
-        offset += meta.len * 4;
+      header = decodeBinaryFrame(buf);
+      if (header.stream) {
+        this.routeStreamFrame(header);
+        return;
       }
-      const resolveBuf = (v: unknown) => views[(v as { $buf: number }).$buf]!;
-      for (const b of header.result.bodies ?? []) {
-        if (b.unchanged) continue;
-        const fb = b as WireBodyFull;
-        fb.positions = resolveBuf(fb.positions) as Float32Array;
-        if (fb.normals !== undefined) fb.normals = resolveBuf(fb.normals) as Float32Array;
-        fb.indices = resolveBuf(fb.indices) as Uint32Array;
-        fb.faceIds = resolveBuf(fb.faceIds) as Uint32Array;
-        // Edges arrive packed (server.py's _pack_edges) — expand them back to
-        // the plain list every consumer expects, here at the one point the raw
-        // frame is interpreted. Rebuilding the triples is still cheaper than
-        // the JSON text it replaces: on a large assembly that was 97.1 MiB to
-        // parse, and the frame it saves is what keeps the reply under the cap.
-        const rawEdges = (fb as { edges?: WireEdgeList | WireEdgesPacked }).edges;
-        if (rawEdges !== undefined && !Array.isArray(rawEdges)) {
-          fb.edges = expandPackedEdges(
-            resolveBuf(rawEdges.$pts) as Float32Array,
-            resolveBuf(rawEdges.$counts) as Uint32Array,
-            rawEdges.body,
-          );
-        }
-      }
-      delete header.result.$buffers;
       const resolve = this.pending.get(header.id);
       if (resolve) {
         this.pending.delete(header.id);
+        // a single-frame reply supersedes any stream for the same id
+        this.dropStream(header.id);
         resolve(header as RawReply<unknown>);
       }
     } catch (err) {
-      // as unrecoverable as a bad JSON frame: we may not even have a valid id
-      // to resolve — log and let onclose/reconnect settle the pending call
+      // A frame we cannot read is as unrecoverable as bad JSON. If we got far
+      // enough to know the id, settle the caller: leaving it pending is worse
+      // than an error, because rebuildNow()'s `rebuilding` flag never clears
+      // and every later rebuild silently no-ops (see the onclose comment).
       console.error("[geometry] bad binary frame from sidecar:", err);
+      const id = header?.id;
+      if (id !== undefined) this.abortStream(id, "the geometry engine sent an unreadable reply");
+    }
+  }
+
+  /** Accumulate one frame of a chunked reply, and resolve the caller on the
+   *  final one. See server.py's _stream_binary_reply for the framing.
+   *
+   *  Every exit that drops a stream also settles its pending call — INVARIANT:
+   *  an entry in `streams` implies a live entry in `pending` for the same id.
+   *  That pairing is the whole leak surface. */
+  private routeStreamFrame(header: BinaryHeader) {
+    const st = header.stream!;
+    const id = header.id;
+    if (st.seq === 0) {
+      // A head frame always starts a fresh stream, replacing any half-received
+      // one for the same id. Cannot happen (rebuilds are serialized on both
+      // sides) — but a silent body splice is a far worse failure than a reset.
+      const prev = this.streams.get(id);
+      if (prev) clearTimeout(prev.timer);
+      const result = header.result as WireRebuildResult & { manifest?: WireManifestEntry[] };
+      const manifest = result.manifest ?? [];
+      delete result.manifest;
+      // Plan the whole reply NOW, from the manifest, so each body can be written
+      // the moment its chunk lands and the viewport can draw it without waiting
+      // for the rest. This is also where an unbacked stub is caught — before any
+      // allocation and before any partial display, so a resync costs one round
+      // trip and no visual damage.
+      const begun = RebuildAssembly.begin(
+        result, manifest, this.bodyMesh, this.lastAssembled, this.lastAssembledSig,
+      );
+      if (begun.kind === "resync") {
+        this.settleStream(id, { id, ok: true, result: { resync: true } } as RawReply<unknown>);
+        return;
+      }
+      if (begun.kind === "noop") {
+        this.settleStream(id, {
+          id, ok: true, result: { protocol: 2, assembled: begun.result },
+        } as RawReply<unknown>);
+        return;
+      }
+      this.streams.set(id, {
+        sid: st.sid, nextSeq: 1, manifest, assembly: begun.assembly, ids: [], timer: 0,
+      });
+      this.emitChunk({
+        phase: "begin", result: begun.assembly.result,
+        manifest: begun.assembly.result.bodies ?? [], bodies: [],
+        edgesByBody: new Map(), triRange: { triStart: 0, triEnd: 0 },
+        bbox: begun.assembly.result.bbox,
+        done: 0, total: manifest.length,
+      });
+    } else {
+      const s = this.streams.get(id);
+      if (!s) return; // a late chunk of a stream we already abandoned
+      if (st.sid !== s.sid) {
+        this.abortStream(id, "the geometry engine restarted its reply mid-send");
+        return;
+      }
+      if (st.seq !== s.nextSeq) {
+        this.abortStream(id, "the geometry engine's reply arrived out of order");
+        return;
+      }
+      s.nextSeq++;
+      const arrived: string[] = [];
+      for (const b of header.result.bodies ?? []) {
+        if (b.unchanged) { arrived.push(b.id); continue; }
+        this.bodyMesh.set(b.id, b);
+        if (!s.assembly.writeBody(b)) {
+          // The payload disagrees with what the manifest promised. Writing it
+          // would run past this body's slice and corrupt the NEXT body's
+          // triangles, producing a wrong-but-believable model.
+          this.abortStream(id, "the geometry engine sent a body that did not match its manifest");
+          return;
+        }
+        arrived.push(b.id);
+      }
+      s.ids.push(...arrived);
+      if (arrived.length) {
+        const edgesByBody = new Map<string, RebuildResult["edges"]>();
+        const metas: RebuildBodyMeta[] = [];
+        for (const bid of arrived) {
+          const m = s.assembly.metaOf(bid);
+          if (m) metas.push(m);
+          edgesByBody.set(bid, s.assembly.edgesOf(bid));
+        }
+        this.emitChunk({
+          phase: "bodies", result: s.assembly.result,
+          manifest: s.assembly.result.bodies ?? [], bodies: metas, edgesByBody,
+          triRange: s.assembly.triRange(arrived),
+          bbox: s.assembly.result.bbox,
+          done: s.ids.length, total: s.manifest.length,
+        });
+      }
+    }
+    const s = this.streams.get(id)!;
+    clearTimeout(s.timer);
+    if (!st.final) {
+      // Chunks are sent back to back with no worker involvement, so this can
+      // only fire on a sidecar bug — but without it that bug wedges the UI
+      // permanently, since nothing else will ever settle the pending call.
+      s.timer = setTimeout(
+        () => this.abortStream(id, "the geometry engine stopped part-way through its reply"),
+        STREAM_IDLE_MS,
+      );
+      return;
+    }
+    this.streams.delete(id);
+    // Every body the manifest named must have arrived. Checking is not belt and
+    // braces: finishAssembly PRUNES bodyMesh to the ids this reply named, so a
+    // stream that ended one body short would evict that body from the cache and
+    // corrupt the NEXT rebuild's `known` map too — a failure that outlives the
+    // bad stream, with nothing on screen to show for it. complete() enforces the
+    // same thing from the other side, and returns null rather than hand on a
+    // zero-filled slice.
+    const out = this.finishAssembly(s.assembly, s.manifest.map((m) => m.id));
+    if (out === null) {
+      this.abortStream(id, "the geometry engine's reply was incomplete");
+      return;
+    }
+    this.settleStream(id, {
+      id, ok: true, result: { protocol: 2, assembled: out },
+    } as RawReply<unknown>);
+  }
+
+  /** Resolve a stream's pending call and drop any state it left behind. */
+  private settleStream(id: string, reply: RawReply<unknown>) {
+    this.dropStream(id);
+    const resolve = this.pending.get(id);
+    if (!resolve) return;
+    this.pending.delete(id);
+    resolve(reply);
+  }
+
+  private emitChunk(c: RebuildChunk) {
+    for (const fn of this.chunkListeners) {
+      try { fn(c); } catch (err) { console.error("[geometry] chunk listener threw:", err); }
+    }
+  }
+
+  /** Drop a stream WITHOUT settling its call — only safe when the caller is
+   *  about to settle it another way (a terminal single-frame reply). */
+  private dropStream(id: string) {
+    const s = this.streams.get(id);
+    if (!s) return;
+    clearTimeout(s.timer);
+    this.streams.delete(id);
+  }
+
+  /** The single teardown path for a stream that cannot finish: drop it AND
+   *  settle its pending call with an error shaped like a real sidecar one. */
+  private abortStream(id: string, message: string) {
+    this.dropStream(id);
+    const resolve = this.pending.get(id);
+    if (resolve) {
+      this.pending.delete(id);
+      resolve({ id, ok: false, error: { message } } as RawReply<unknown>);
     }
   }
 
@@ -544,6 +770,16 @@ export class Geometry implements GeometryBackend {
     });
   }
 
+  /** Every rebuild/computeAll request goes through here, so the wire opt-in
+   *  flags are set in exactly one place. They were easy to get wrong scattered:
+   *  of the four call sites, the two that matter most are the RESYNC paths,
+   *  which re-request the whole document with no `known` map — i.e. the largest
+   *  reply the sidecar can produce, and precisely the one that must not fall
+   *  back to a single frame. */
+  private rebuildCall(op: "rebuild" | "computeAll", extra: object) {
+    return this.call<WireRebuildResult>(op, { ...extra, binary: true, chunked: true });
+  }
+
   async rebuild(doc: CadDocument, tolerance = 0.1): Promise<RebuildReply> {
     const known: Record<string, string> = {};
     for (const [id, p] of this.bodyMesh) known[id] = p.etag;
@@ -568,13 +804,13 @@ export class Geometry implements GeometryBackend {
     }
     if (!payload) payload = { document: doc, revision: this.revision + 1 };
 
-    let msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance, known, binary: true });
+    let msg = await this.rebuildCall("rebuild", { ...payload, tolerance, known });
     if (msg.ok && msg.result?.resync) {
       // worker respawned or lost sync — one full resend recovers everything
       this.lastSent = null;
       this.bodyMesh.clear();
       payload = { document: doc, revision: this.revision + 1 };
-      msg = await this.call<WireRebuildResult>("rebuild", { ...payload, tolerance, binary: true });
+      msg = await this.rebuildCall("rebuild", { ...payload, tolerance });
     }
     if (msg.ok && !msg.result?.resync) {
       this.revision = payload.revision;
@@ -589,7 +825,7 @@ export class Geometry implements GeometryBackend {
         // the assemble cache is keyed on payloads that just went away
         this.lastAssembled = null;
         this.lastAssembledSig = null;
-        msg = await this.call<WireRebuildResult>("rebuild", { document: doc, revision: ++this.revision, tolerance, binary: true });
+        msg = await this.rebuildCall("rebuild", { document: doc, revision: ++this.revision, tolerance });
         if (msg.ok && msg.result?.protocol === 2) assembled = this.assemble(msg.result);
       }
       if (msg.ok && assembled !== null) return { ok: true, result: assembled };
@@ -607,7 +843,7 @@ export class Geometry implements GeometryBackend {
   async computeAll(doc: CadDocument, tolerance = 0.1): Promise<RebuildReply> {
     this.bodyMesh.clear();
     this.lastSent = null;
-    const msg = await this.call<WireRebuildResult>("computeAll", { document: doc, revision: ++this.revision, tolerance, binary: true });
+    const msg = await this.rebuildCall("computeAll", { document: doc, revision: ++this.revision, tolerance });
     if (msg.ok && msg.result?.protocol === 2) {
       const assembled = this.assemble(msg.result);
       if (assembled !== null) return { ok: true, result: assembled };
@@ -621,132 +857,45 @@ export class Geometry implements GeometryBackend {
   }
 
   /** Merge protocol-v2 per-body payloads into the legacy RebuildResult shape.
-   *  Returns null if an "unchanged" stub references a body we don't hold. */
+   *  Returns null if an "unchanged" stub references a body we don't hold.
+   *
+   *  A thin wrapper over RebuildAssembly, which is the same logic in a form
+   *  that can also be driven incrementally by a chunked reply. The single-frame
+   *  path derives the manifest from the bodies it already has, so both paths
+   *  run identical code and assemble.test.ts / assembleNoop.test.ts cover both. */
   private assemble(r: WireRebuildResult): RebuildResult | null {
+    // A chunked reply was assembled as its frames arrived (routeStreamFrame),
+    // including the cache prune and the no-op baseline. Nothing left to do.
+    if (r.assembled) return r.assembled;
     const bodies: WireBody[] = r.bodies ?? [];
-    const live = new Set<string>();
-    // first pass: resolve payloads + prune. Each entry keeps the wire item
-    // (`nb`) alongside the mesh (`p`), because for an "unchanged" stub the mesh
-    // is the CACHED one, whose id/name/nodeRef are whatever they were when the
-    // geometry last changed. Identity must come from the envelope. `name` was
-    // already read from the wrong side; it only looked right because a rename
-    // happens to change the etag and so never arrives as a stub.
-    const items: { p: WireBodyFull; nb: WireBody }[] = [];
+    const begun = RebuildAssembly.begin(
+      r, manifestFromBodies(bodies), this.bodyMesh, this.lastAssembled, this.lastAssembledSig,
+    );
+    if (begun.kind === "resync") return null;
+    if (begun.kind === "noop") return begun.result;
     for (const nb of bodies) {
-      live.add(nb.id);
-      let p: WireBodyFull;
-      if (nb.unchanged) {
-        const cached = this.bodyMesh.get(nb.id);
-        if (!cached || cached.etag !== nb.etag) return null; // stub we can't back — resync
-        p = cached;
-      } else {
-        p = nb;
-        this.bodyMesh.set(nb.id, nb);
-      }
-      items.push({ p, nb });
+      if (nb.unchanged) continue;
+      this.bodyMesh.set(nb.id, nb);
+      if (!begun.assembly.writeBody(nb)) return null;
     }
-    for (const id of this.bodyMesh.keys()) if (!live.has(id)) this.bodyMesh.delete(id);
+    return this.finishAssembly(begun.assembly, bodies.map((b) => b.id));
+  }
 
-    // NO-OP FAST PATH. When every body arrived as an `unchanged` stub and the
-    // id/etag/order/bbox signature matches the previous reply, the arrays the
-    // second pass is about to build are provably identical to the ones it built
-    // last time — same cached payloads, same order, same offsets. Rebuilding
-    // them allocated ~98 MiB of fresh typed arrays (positions 40.3 + indices
-    // 43.6 + faceIds 14.5 MiB) and cost 0.171 s on EVERY rebuild, including ones
-    // that changed nothing at all.
-    //
-    // Returning the previous object BY REFERENCE (not a copy) is deliberate: the
-    // viewport's setModel keys its own visibility-only fast path on result
-    // identity, so this is what lets a no-op rebuild skip the scene rebuild too.
-    // The signature includes the non-geometry extras precisely because they CAN
-    // change while geometry does not — a new diagnostic or featureError must
-    // still produce a fresh object. The all-stubs test is belt and braces on top
-    // of the etags: cheap, and geometry correctness is worth more than it costs.
-    const sig = items.length === 0 ? null : JSON.stringify([
-      items.map(({ p, nb }) => [nb.id, nb.etag, nb.name, nb.nodeRef, p.faceCount]),
-      r.bbox,
-      r.diagnostics, r.featureError, r.featureErrors, r.projectionUpdates,
-    ]);
-    if (
-      sig !== null
-      && sig === this.lastAssembledSig
-      && this.lastAssembled !== null
-      && bodies.every((nb) => nb.unchanged)
-    ) {
-      return this.lastAssembled;
-    }
-
-    // second pass: preallocated typed arrays (total sizes are known), filled
-    // with .set() for the float arrays — accepts number[] AND typed-array
-    // sources alike, so mixed cached-stub/JSON-fallback bodies need no branch.
-    // Replaces the old per-element push loops (~1M elements on big documents).
-    // NOTE the two different arities: `indices` is 3 entries per triangle,
-    // `faceIds` is ONE. They must be sized and cursored separately — conflating
-    // them scatters body N>1's faceIds past the end of the triangle range,
-    // which renders every body after the first as edges with no surface.
-    let totalVerts3 = 0;
-    let totalIdx = 0;
-    let totalTris = 0;
-    for (const { p } of items) {
-      totalVerts3 += p.positions.length;
-      totalIdx += p.indices.length;
-      totalTris += p.faceIds.length;
-    }
-    // sidecar sends explicit normals only for textured bodies; bodies without
-    // keep their zero-initialized slice, and render.ts falls back to
-    // computeVertexNormals for an all-zero slice.
-    const anyNormals = items.some(({ p }) => p.normals !== undefined);
-    const positions = new Float32Array(totalVerts3);
-    const normals = anyNormals ? new Float32Array(totalVerts3) : undefined;
-    const indices = new Uint32Array(totalIdx);
-    const faceIds = new Uint32Array(totalTris);
-    const edges: RebuildEdge[] = [];
-    const meta: RebuildBody[] = [];
-    let faceBase = 0;
-    let ek = 0;
-    let vOff = 0;
-    let iOff = 0;
-    let tOff = 0;
-    for (const { p, nb } of items) {
-      const vbase = vOff / 3;
-      positions.set(p.positions, vOff);
-      if (normals && p.normals !== undefined) normals.set(p.normals, vOff);
-      vOff += p.positions.length;
-      // indices/faceIds need per-element offsets — indexed reads work on both
-      // union members, and writes into a preallocated Uint32Array are cheap
-      const pi = p.indices, pf = p.faceIds;
-      for (let k = 0; k < pi.length; k++) indices[iOff + k] = (pi[k] as number) + vbase;
-      for (let k = 0; k < pf.length; k++) faceIds[tOff + k] = (pf[k] as number) + faceBase;
-      iOff += pi.length;
-      tOff += pf.length;
-      for (const e of p.edges ?? []) edges.push({ id: `e${ek++}`, points: e.points, ...(e.body !== undefined ? { body: e.body } : {}) });
-      meta.push({
-        // identity from the envelope, geometry from the payload
-        id: nb.id, name: nb.name, faceStart: faceBase,
-        faceCount: p.faceCount ?? 0,
-        ...(p.faceOwners !== undefined ? { faceOwners: p.faceOwners } : {}),
-        ...(p.textureColorSlots !== undefined ? { textureColorSlots: p.textureColorSlots } : {}),
-        ...(nb.etag !== undefined ? { etag: nb.etag } : {}),
-        ...(nb.nodeRef !== undefined ? { nodeRef: nb.nodeRef } : {}),
-      });
-      faceBase += p.faceCount ?? 0;
-    }
-    const out: RebuildResult = {
-      mesh: { positions, indices, faceIds, ...(normals ? { normals } : {}) },
-      edges,
-      // the wire can supply `bbox: null` when nothing has built yet (no
-      // bodies); preserved as-is — RebuildResult models bbox as always-present.
-      bbox: r.bbox as RebuildResult["bbox"],
-      bodies: meta,
-    };
-    if (r.diagnostics) out.diagnostics = r.diagnostics;
-    if (r.featureError) out.featureError = r.featureError;
-    if (r.featureErrors) out.featureErrors = r.featureErrors;
-    if (r.projectionUpdates) out.projectionUpdates = r.projectionUpdates;
-    this.lastAssembledSig = sig;
+  /** Common tail of both assembly paths: prune the per-body cache to the bodies
+   *  this reply actually named, then publish the result as the no-op fast
+   *  path's new baseline. Returns null on an incomplete assembly — a
+   *  partially-filled result would hand on zeroed slices, which render as
+   *  plausible-looking degenerate geometry rather than as an error. */
+  private finishAssembly(assembly: RebuildAssembly, live: string[]): RebuildResult | null {
+    const out = assembly.complete();
+    if (out === null) return null;
+    const keep = new Set(live);
+    for (const id of this.bodyMesh.keys()) if (!keep.has(id)) this.bodyMesh.delete(id);
+    this.lastAssembledSig = assembly.sig;
     this.lastAssembled = out;
     return out;
   }
+
 
   /** Build the legacy single-mesh RebuildResult from a protocol-v1 reply (no
    *  per-body payload — mesh/edges inline). Returns null if the reply carries no

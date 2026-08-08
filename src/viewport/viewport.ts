@@ -58,6 +58,7 @@ const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edg
 const FLUSH_SEAM_MAX_EDGES = 20_000;
 
 import { Highlighter } from "./highlight";
+import { ProgressiveModel } from "./progressive";
 import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
@@ -89,6 +90,16 @@ export class Viewport {
    *  can recognise a re-emit of the same reply (an eye toggle) and skip
    *  everything but the visibility flags. Never read for its contents. */
   private lastResult: RebuildResult | null = null;
+  /** True while a chunked reply is being drawn. Picking is suppressed for the
+   *  duration (see pickSuppressed): any selection made mid-stream is wiped by
+   *  the commit's fresh Highlighter anyway, a partial edge set makes
+   *  nearestEdgeByMid return edges that will not exist, and Picker.pick's
+   *  flushRaycastIndex would force-build every queued BVH synchronously —
+   *  exactly the stall the deferral exists to avoid, stolen from the thread the
+   *  next chunk needs. Separate from suspendPicking so a stream cannot clobber a
+   *  tool's own suspension. */
+  private streaming = false;
+  private progressive: ProgressiveModel;
   // Z the ground grid sits at: the model's lowest point (so the grid is always a
   // floor under the model), or 0 (world XY) when the document is empty.
   private targetGridZ = 0;
@@ -121,6 +132,12 @@ export class Viewport {
   // "faces" = pick faces/edges (default); "bodies" = pick whole bodies (to move).
   private selectionMode: "faces" | "bodies" = "faces";
   suspendPicking = false;
+
+  /** Picking is off while a chunked reply is being drawn OR while a tool has
+   *  suspended it. Two independent reasons, deliberately not one flag. */
+  private get pickSuppressed(): boolean {
+    return this.suspendPicking || this.streaming;
+  }
   // until the user drives the camera, the model is kept auto-framed on resize —
   // this catches the canvas layout settling a frame or two after the first fit
   // (common under remote desktops / fractional scaling), which would otherwise
@@ -136,6 +153,7 @@ export class Viewport {
 
   constructor(private canvas: HTMLCanvasElement) {
     this.scene = createScene(canvas);
+    this.progressive = new ProgressiveModel(this.scene.modelGroup, disposeBody);
     this.scene.scene.add(this.datumGroup);
     const rect = canvas.getBoundingClientRect();
     this.rig = createCameraRig(canvas, rect.width / rect.height);
@@ -346,7 +364,7 @@ export class Viewport {
       this.hoverFaceAt(e.clientX, e.clientY);
       return;
     }
-    if (this.suspendPicking) return;
+    if (this.pickSuppressed) return;
     if (this.selectionMode === "bodies") return; // no face hover while picking bodies
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -367,7 +385,7 @@ export class Viewport {
   }
 
   private handleClick(e: PointerEvent) {
-    if (this.suspendPicking) return;
+    if (this.pickSuppressed) return;
     const rect = this.canvas.getBoundingClientRect();
 
     // --- Bodies mode: a click selects the WHOLE body under the cursor ---
@@ -509,14 +527,14 @@ export class Viewport {
     if (this.analysis === "draft") this.applyAnalysis();
   }
 
-  private applyAnalysis() {
+  private applyAnalysis(only?: Iterable<BodyMesh>) {
     if (!this.highlighter || !this.model) return;
     if (this.analysis === "component") {
       const hue = new Map<string, THREE.Color>();
       this.model.bodies.forEach((b, i) =>
         hue.set(b.id, new THREE.Color().setHSL((i * 0.137 + 0.05) % 1, 0.45, 0.55)),
       );
-      this.highlighter.setBase((fid) => hue.get(this.faceIdToBodyId(fid) ?? "") ?? BASE_COLOR);
+      this.highlighter.setBase((fid) => hue.get(this.faceIdToBodyId(fid) ?? "") ?? BASE_COLOR, only);
     } else if (this.analysis === "draft") {
       const B = this.draftDir;
       const OVERHANG = new THREE.Color(0xe24a3b); // unsupported overhang (red)
@@ -530,7 +548,7 @@ export class Viewport {
         if (c >= -0.02) return c > 0.02 ? TOP : WALL; // up-facing or vertical
         const beta = Math.acos(Math.min(1, -c)) * (180 / Math.PI); // 0..90, 0 = straight down
         return beta < this.draftThreshold ? OVERHANG : WALL;
-      });
+      }, only);
     } else {
       // default appearance: per-face texture-inlay colors win over the body's
       // assigned color, else the neutral shade. (component/draft overlays above
@@ -541,7 +559,7 @@ export class Viewport {
         const bid = this.faceIdToBodyId(fid);
         const hex = bid ? this.bodyPaint[bid] : undefined;
         return hex ? new THREE.Color(hex) : BASE_COLOR;
-      });
+      }, only);
     }
     this.requestRender();
   }
@@ -851,6 +869,87 @@ export class Viewport {
     };
   }
 
+  /** Start drawing a chunked reply as it arrives. `manifest` names every body,
+   *  and `bbox` is already final — which is why the camera can settle here, once,
+   *  before any geometry exists, and never move again during the load.
+   *
+   *  The commit (setModel, with the finished result) is still authoritative;
+   *  everything built here is keyed by id+etag so setModel reuses it. */
+  beginProgressiveModel(
+    epoch: number,
+    manifest: NonNullable<RebuildResult["bodies"]>,
+    result: RebuildResult,
+    bbox: RebuildResult["bbox"],
+    hiddenBodies: string[],
+    fit: boolean,
+  ) {
+    const box = new THREE.Box3(
+      new THREE.Vector3(...(bbox?.min ?? [0, 0, 0])),
+      new THREE.Vector3(...(bbox?.max ?? [0, 0, 0])),
+    );
+    this.streaming = true;
+    // Force any stray setModel during the stream down the FULL path: the
+    // visibility-only fast path keys on result identity, and the in-progress
+    // result is not a model anyone should shortcut against.
+    this.lastResult = null;
+    const view = this.progressive.begin(
+      epoch, manifest, result, box, this.model, new Set(hiddenBodies),
+    );
+    this.adoptProgressiveView(view);
+    this.targetGridZ = box.min.z;
+    if (fit) this.rig.fit(box, true);
+    this.requestRender();
+  }
+
+  /** Add the bodies one chunk delivered. Deliberately does NOT run the
+   *  whole-model passes setModel does (groupEdgesByBody, hideFlushSeams,
+   *  applyCombs, rig.fit, the unrestricted repaint, the trailing dispose): each
+   *  is O(model) and would turn a load into O(chunks x model). They run exactly
+   *  once, at the commit. */
+  appendProgressiveBodies(
+    epoch: number,
+    result: RebuildResult,
+    metas: NonNullable<RebuildResult["bodies"]>,
+    edgesByBody: Map<string, RebuildResult["edges"]>,
+    triRange: { triStart: number; triEnd: number },
+    hiddenBodies: string[],
+  ) {
+    const before = new Set(this.progressive.current?.bodies ?? []);
+    const view = this.progressive.append(
+      epoch, result, metas, edgesByBody, triRange, new Set(hiddenBodies), this.resolution,
+    );
+    if (!view) return; // a chunk of a stream we are no longer running
+    this.adoptProgressiveView(view);
+    // repaint ONLY what just arrived, so streamed bodies show their assigned
+    // colour rather than popping from grey at the commit
+    const fresh = view.bodies.filter((b) => !before.has(b));
+    if (fresh.length) this.applyAnalysis(fresh);
+    this.requestRender();
+  }
+
+  /** Tear down a stream that cannot finish. The caller then re-renders whatever
+   *  the store still holds, which rebuilds the previous model from scratch. */
+  abortProgressiveModel() {
+    if (!this.streaming) return;
+    this.progressive.abort();
+    this.streaming = false;
+    this.model = null;
+    this.highlighter = null;
+    this.lastResult = null;
+    this.picker.invalidate();
+    this.requestRender();
+  }
+
+  /** Publish one installment's ModelView. A FRESH object every time is required,
+   *  not cosmetic: render.ts's faceIndexCache and Highlighter.byId are keyed on
+   *  ModelView identity and documented as never needing invalidation because a
+   *  new reply always makes a new one. */
+  private adoptProgressiveView(view: ModelView) {
+    this.model = view;
+    this.highlighter = new Highlighter(view);
+    this.picker.invalidate();
+  }
+
   setModel(result: RebuildResult, fit = false, hiddenBodies: string[] = []) {
     const hidden = new Set(hiddenBodies);
     // VISIBILITY-ONLY fast path. An eye toggle changes no geometry: the store
@@ -876,6 +975,15 @@ export class Viewport {
       }
       if (anyChanged) for (const d of edgeObjects(this.model)) d.flush();
       return;
+    }
+    // A stream that reached here has done its job: every body it built is keyed
+    // by id+etag, so the diff below reuses them all and this call reduces to the
+    // whole-model passes the stream deliberately skipped. finish(), not abort():
+    // the bodies now belong to the model, and disposing them here would throw
+    // away exactly the work the stream existed to do.
+    if (this.streaming) {
+      this.progressive.finish();
+      this.streaming = false;
     }
     this.lastResult = result;
     const bodyMeta = result.bodies ?? [];

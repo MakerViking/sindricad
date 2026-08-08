@@ -81,6 +81,69 @@ describe("partitionMesh", () => {
   });
 });
 
+describe("partitionMesh ranged (progressive loads)", () => {
+  // A chunked reply allocates its arrays at FULL size and fills them a chunk at
+  // a time, so anything not yet written is still zeros. Zero is a legitimate
+  // faceId, which makes an unranged scan actively WRONG there, not merely
+  // wasteful. These pin the range and the shared remap.
+
+  /** sharedVertexReply with body1's triangles not yet written (zeros). */
+  function halfFilled(): RebuildResult {
+    const r = sharedVertexReply();
+    r.mesh.faceIds = [0, 1, 0, 0]; // tris 2,3 unwritten -> zeros
+    return r;
+  }
+
+  it("ignores unwritten triangles instead of attributing them to face 0", () => {
+    // unranged, the two zeroed triangles look exactly like body0's face 0
+    const full = partitionMesh(halfFilled(), ["b0"]);
+    expect(Array.from(full.trisByBody.get("b0")!)).toEqual([0, 1, 2, 3]);
+
+    const ranged = partitionMesh(halfFilled(), ["b0"], { range: { triStart: 0, triEnd: 2 } });
+    expect(Array.from(ranged.trisByBody.get("b0")!)).toEqual([0, 1]);
+  });
+
+  it("two ranged passes over disjoint chunks equal one whole-model pass", () => {
+    const r = sharedVertexReply();
+    const whole = partitionMesh(r, ["b0", "b1"]);
+    const first = partitionMesh(r, ["b0"], { range: { triStart: 0, triEnd: 2 } });
+    const second = partitionMesh(r, ["b1"], { range: { triStart: 2, triEnd: 4 } });
+    expect(Array.from(first.trisByBody.get("b0")!))
+      .toEqual(Array.from(whole.trisByBody.get("b0")!));
+    expect(Array.from(second.trisByBody.get("b1")!))
+      .toEqual(Array.from(whole.trisByBody.get("b1")!));
+  });
+
+  it("reuses a caller-owned remap across chunks and hands it back clean", () => {
+    // The case that catches a body reading another chunk's stale local index:
+    // both bodies index the SAME vertices, so a remap left dirty by chunk 1
+    // silently gives chunk 2's body the wrong ones.
+    const r = sharedVertexReply();
+    const remap = new Int32Array(6).fill(-1);
+
+    const p0 = partitionMesh(r, ["b0"], { range: { triStart: 0, triEnd: 2 }, remap });
+    expect(p0.remap).toBe(remap); // handed through, not copied
+    const b0 = buildBodyMesh(r, r.bodies![0]!, [], RES, undefined, p0);
+    expect(Array.from(remap)).toEqual([-1, -1, -1, -1, -1, -1]);
+
+    const p1 = partitionMesh(r, ["b1"], { range: { triStart: 2, triEnd: 4 }, remap });
+    const b1 = buildBodyMesh(r, r.bodies![1]!, [], RES, undefined, p1);
+    expect(Array.from(remap)).toEqual([-1, -1, -1, -1, -1, -1]);
+
+    // and both match what the whole-model path builds
+    const whole = partitionMesh(r, ["b0", "b1"]);
+    expect(snapshot(b0)).toEqual(snapshot(buildBodyMesh(r, r.bodies![0]!, [], RES, undefined, whole)));
+    expect(snapshot(b1)).toEqual(snapshot(buildBodyMesh(r, r.bodies![1]!, [], RES, undefined, whole)));
+  });
+
+  it("clamps a range that runs past the array", () => {
+    const r = sharedVertexReply();
+    const p = partitionMesh(r, ["b0", "b1"], { range: { triStart: -5, triEnd: 999 } });
+    expect(Array.from(p.trisByBody.get("b0")!)).toEqual([0, 1]);
+    expect(Array.from(p.trisByBody.get("b1")!)).toEqual([2, 3]);
+  });
+});
+
 describe("buildBodyMesh with a partition", () => {
   it("produces byte-identical output to the scan path", () => {
     const r = sharedVertexReply();

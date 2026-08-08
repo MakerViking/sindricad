@@ -173,6 +173,256 @@ def test_oversized_reply_becomes_an_error():
     print("  oversized-reply guard OK")
 
 
+class _FakeWS:
+    """Collects what _stream_binary_reply sends, in order."""
+
+    def __init__(self):
+        self.frames = []
+
+    async def send(self, frame):
+        self.frames.append(frame)
+
+
+def _normalize(v):
+    """numpy views -> lists, so a decoded reply can be compared with ==."""
+    if isinstance(v, dict):
+        return {k: _normalize(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_normalize(x) for x in v]
+    if isinstance(v, np.ndarray):
+        return v.tolist()
+    return v
+
+
+def _decode_stream(frames):
+    """Python mirror of the client's stream reassembly: fold chunk frames back
+    into the one {"id","ok","result"} dict the single-frame encoder produces, so
+    assertions written against a one-frame reply run unchanged against a stream.
+
+    Also enforces the framing invariants inline, because every test that
+    reassembles a stream should be proving them for free."""
+    head, bodies, sid, final_seen = None, [], None, False
+    for expect, frame in enumerate(frames):
+        assert not final_seen, "frames continued after the final one"
+        d = _decode_binary_frame(frame)
+        st = d["stream"]
+        assert st["seq"] == expect, f"seq {st['seq']} out of order, wanted {expect}"
+        if sid is None:
+            sid = st["sid"]
+        assert st["sid"] == sid, "sid changed mid-stream"
+        assert d["id"] == frames_id(frames), "id changed mid-stream"
+        if st["final"]:
+            final_seen = True
+            assert d.get("ok") is True, "the final frame must carry ok"
+            assert "status" not in d, "the final frame must not look interim"
+        else:
+            assert d.get("status") == "chunk", "a non-final frame must be interim"
+            assert "ok" not in d, "only the final frame may carry ok"
+        if expect == 0:
+            head = d
+        else:
+            bodies.extend(d["result"].get("bodies", []))
+    assert final_seen, "the stream never terminated"
+    result = dict(head["result"])
+    manifest = result.pop("manifest")
+    assert len(manifest) == len(bodies), \
+        f"manifest names {len(manifest)} bodies, {len(bodies)} arrived"
+    assert [m["id"] for m in manifest] == [b["id"] for b in bodies], \
+        "bodies did not arrive in manifest order"
+    result["bodies"] = bodies
+    return {"id": head["id"], "ok": True, "result": result}
+
+
+def frames_id(frames):
+    (n,) = struct.unpack_from("<I", frames[0], 0)
+    return json.loads(frames[0][4:4 + n].decode("utf-8"))["id"]
+
+
+def _many_body_res(n=6, verts=64):
+    """A result with enough bodies, and enough bytes each, to span chunks."""
+    bodies = []
+    for i in range(n):
+        if i == 2:  # one stub in the middle: the mixed case is the real one
+            bodies.append({"id": f"b{i}", "name": f"N{i}", "etag": f"e{i}",
+                           "unchanged": True})
+            continue
+        bodies.append({
+            "id": f"b{i}", "name": f"N{i}", "etag": f"e{i}",
+            "positions": [float(i) + k * 0.5 for k in range(verts * 3)],
+            "indices": list(range(verts)),
+            "faceIds": [k % 3 for k in range(verts)],
+            "faceOwners": ["f1", "f2", None],
+            "edges": [{"points": [[0.0, 0.0, 0.0], [1.0, 1.0, float(i)]],
+                       "body": f"b{i}"}],
+            "faceCount": 3,
+        })
+    return {"protocol": 2, "bodies": bodies,
+            "bbox": {"min": [0, 0, 0], "max": [1, 1, 1]},
+            "diagnostics": [{"kind": "note"}]}
+
+
+async def test_chunked_reply_reassembles_to_the_single_frame_reply():
+    """The whole point: chunking must be INVISIBLE. Encode one result both ways
+    and assert the reassembled stream equals the single frame, field for field.
+
+    If this passes, every existing assertion about the reply shape still holds
+    on the chunked path without being restated."""
+    res = _many_body_res()
+    single = _decode_binary_frame(server._encode_binary_reply("rq", res))
+
+    ws = _FakeWS()
+    server._CHUNK_TARGET_BYTES = 700  # force several chunks on this fixture
+    try:
+        await server._stream_binary_reply(ws, "rq", res)
+    finally:
+        server._CHUNK_TARGET_BYTES = 16 * 1024 * 1024
+    assert len(ws.frames) > 2, f"expected a head + several chunks, got {len(ws.frames)}"
+    streamed = _decode_stream(ws.frames)
+
+    assert _normalize(single) == _normalize(streamed)
+    print(f"  chunked reply == single-frame reply ({len(ws.frames)} frames) OK")
+
+
+async def test_chunk_manifest_describes_every_body():
+    """The manifest is what lets the client plan its arrays before any payload
+    lands, so it must name every body in final order and carry sizes for the
+    full ones. Sizes are deliberately ABSENT for stubs — the sidecar does not
+    have them (they live in the client's cache), and a zero there would make the
+    client allocate a body-shaped hole."""
+    res = _many_body_res()
+    ws = _FakeWS()
+    await server._stream_binary_reply(ws, "rq", res)
+    head = _decode_binary_frame(ws.frames[0])["result"]
+    manifest = head["manifest"]
+
+    assert [m["id"] for m in manifest] == [b["id"] for b in res["bodies"]]
+    assert "bodies" not in head, "the head frame must not carry payloads"
+    for m, b in zip(manifest, res["bodies"]):
+        assert m["etag"] == b["etag"] and m["name"] == b["name"]
+        if b.get("unchanged"):
+            assert m["unchanged"] is True
+            assert "nVerts3" not in m, "a stub cannot carry sizes the sidecar lacks"
+            continue
+        assert m["nVerts3"] == len(b["positions"])
+        assert m["nIdx"] == len(b["indices"])
+        assert m["nTris"] == len(b["faceIds"])
+        assert m["nEdges"] == len(b["edges"])
+        assert m["faceCount"] == b["faceCount"]
+    # non-body fields ride the head, not the chunks
+    assert head["bbox"]["max"] == [1, 1, 1] and head["diagnostics"] == [{"kind": "note"}]
+    print("  chunk manifest OK")
+
+
+async def test_every_chunk_stays_under_the_frame_cap():
+    """The cap now bounds a CHUNK. Squeeze both the cap and the target down
+    rather than allocating 128 MiB in CI."""
+    res = _many_body_res(n=8)
+    ws = _FakeWS()
+    server._CHUNK_TARGET_BYTES, server._MAX_FRAME = 700, 4096
+    try:
+        await server._stream_binary_reply(ws, "rq", res)
+        assert len(ws.frames) > 2
+        for f in ws.frames:
+            assert len(f) < 4096, f"a chunk reached {len(f)} B against a 4096 B cap"
+    finally:
+        server._CHUNK_TARGET_BYTES, server._MAX_FRAME = 16 * 1024 * 1024, 128 * 1024 * 1024
+    print("  per-chunk frame cap OK")
+
+
+def test_chunk_packing_respects_target_and_order():
+    """Greedy packing in body order; a body over target gets its own chunk
+    rather than being split, because a body is the indivisible unit."""
+    bodies = [{"id": "a", "positions": [0.0] * 300},   # ~1.5 KiB
+              {"id": "b", "positions": [0.0] * 300},
+              {"id": "c", "positions": [0.0] * 8000}]  # alone, way over target
+    chunks = list(server._chunk_bodies(bodies, 2048))
+    assert [[b["id"] for b in c] for c in chunks] == [["a"], ["b"], ["c"]], chunks
+
+    # everything fits in one chunk when the target is generous
+    assert len(list(server._chunk_bodies(bodies, 1 << 20))) == 1
+    # order is preserved across any target
+    for target in (256, 1024, 4096, 1 << 20):
+        flat = [b["id"] for c in server._chunk_bodies(bodies, target) for b in c]
+        assert flat == ["a", "b", "c"], (target, flat)
+    print("  chunk packing OK")
+
+
+def test_body_wire_size_accepts_numpy_arrays():
+    """Sizing a body must not assume its arrays are Python lists.
+
+    `len(x or ())` reads fine and works on a list, but on a numpy array `or`
+    evaluates __bool__ and raises "truth value of an array with more than one
+    element is ambiguous". Today tessellate returns lists, so this was
+    unreachable — but moving those arrays to numpy across the pool boundary is
+    the named next step for the ~1 GiB result-dict cost, and it would have
+    landed exactly here."""
+    arr = {"id": "b", "positions": np.zeros(9, dtype="<f4"),
+           "indices": np.zeros(3, dtype="<u4"), "faceIds": np.zeros(1, dtype="<u4"),
+           "edges": [], "faceCount": 1}
+    lst = {"id": "b", "positions": [0.0] * 9, "indices": [0] * 3,
+           "faceIds": [0], "edges": [], "faceCount": 1}
+    assert server._body_wire_size(arr) == server._body_wire_size(lst)
+    assert server._manifest_entry(arr)["nVerts3"] == 9
+    # and a body with no arrays at all sizes without raising
+    assert server._body_wire_size({"id": "x"}) > 0
+    print("  body sizing is dtype-agnostic OK")
+
+
+async def test_single_oversized_body_aborts_the_stream_by_name():
+    """A body whose own payload exceeds the cap is the one case chunking cannot
+    fix. The user must be told WHICH body — "hide some bodies" is useless advice
+    when the problem is one of them."""
+    res = {"protocol": 2, "bodies": [
+        {"id": "b1", "name": "Small", "etag": "e1", "positions": [0.0] * 30,
+         "indices": [0], "faceIds": [0], "faceCount": 1},
+        {"id": "b2", "name": "Enormous Import", "etag": "e2",
+         "positions": [0.0] * 40000, "indices": [0], "faceIds": [0], "faceCount": 1},
+    ]}
+    ws = _FakeWS()
+    server._CHUNK_TARGET_BYTES, server._MAX_FRAME = 1024, 8192
+    try:
+        await server._stream_binary_reply(ws, "rq", res)
+    finally:
+        server._CHUNK_TARGET_BYTES, server._MAX_FRAME = 16 * 1024 * 1024, 128 * 1024 * 1024
+
+    last = json.loads(ws.frames[-1])
+    assert last["ok"] is False, last
+    assert "Enormous Import" in last["error"]["message"], last["error"]
+    assert len(json.dumps(last)) < 8192, "the error itself must fit"
+    print("  oversized-single-body abort OK")
+
+
+def test_unchunked_client_still_gets_one_frame():
+    """Back-compat in both skew directions: a client that does not ask for
+    chunking must see exactly today's behaviour, including the over-cap error."""
+    res = _many_body_res()
+    single = server._reply_bytes("rq", res, True)
+    assert isinstance(single, (bytes, bytearray))
+    assert _decode_binary_frame(single)["result"]["bodies"][0]["id"] == "b0"
+    assert "stream" not in _decode_binary_frame(single), "no stream envelope when opted out"
+
+    over = json.loads(server._reply_bytes("rq", _one_body_res(name="x" * (server._MAX_FRAME + 1024)), True))
+    assert over["ok"] is False and "too detailed" in over["error"]["message"]
+    print("  unchunked back-compat OK")
+
+
+async def test_cancel_mid_stream_stops_sending():
+    """A cancel between chunks must stop the send, shaped like every other
+    cancelled reply. Without it a user who cancels still waits out the whole
+    reply — after the worker they cancelled has already been killed."""
+    res = _many_body_res(n=8)
+    ws = _FakeWS()
+    server._CHUNK_TARGET_BYTES = 700
+    try:
+        await server._stream_binary_reply(ws, "rq", res, lambda: True)
+    finally:
+        server._CHUNK_TARGET_BYTES = 16 * 1024 * 1024
+    assert len(ws.frames) == 2, f"expected head + cancel, got {len(ws.frames)}"
+    last = json.loads(ws.frames[-1])
+    assert last["cancelled"] is True and last["ok"] is False, last
+    print("  cancel mid-stream OK")
+
+
 def test_mesh_bbox_is_tight_on_curved_geometry():
     """mesh_bbox must box the TRIANGULATION, not OCCT's poles.
 
@@ -254,6 +504,14 @@ async def main():
     test_encoder_packs_edges()
     test_viewport_profile_tiers()
     test_oversized_reply_becomes_an_error()
+    await test_chunked_reply_reassembles_to_the_single_frame_reply()
+    await test_chunk_manifest_describes_every_body()
+    await test_every_chunk_stays_under_the_frame_cap()
+    test_chunk_packing_respects_target_and_order()
+    test_body_wire_size_accepts_numpy_arrays()
+    await test_single_oversized_body_aborts_the_stream_by_name()
+    test_unchunked_client_still_gets_one_frame()
+    await test_cancel_mid_stream_stops_sending()
     async with websockets.serve(handle, HOST, PORT):
         async with websockets.connect(URL) as ws:
             req_id = "req-1"
@@ -292,6 +550,44 @@ async def main():
                 if "normals" in sb:
                     assert np.allclose(tb["normals"], sb["normals"], atol=1e-6)
             print("  WS binary round-trip OK: matches JSON reply")
+
+            # chunked opt-in over the REAL socket: the same document must come
+            # back as a stream that reassembles to the same reply. Also pins
+            # that no `building` progress frame lands mid-stream — it shares the
+            # request id, so a client demultiplexing on id alone would splice it
+            # into the body list. That is safe today only because _run_stall has
+            # returned before the first chunk goes out.
+            await ws.send(json.dumps({
+                "id": "req-chunk", "op": "rebuild", "tolerance": 0.1,
+                "document": EXAMPLE, "binary": True, "chunked": True,
+            }))
+            frames, started = [], False
+            while True:
+                raw = await ws.recv()
+                if isinstance(raw, (bytes, bytearray)):
+                    frames.append(raw)
+                    started = True
+                    if _decode_binary_frame(raw)["stream"]["final"]:
+                        break
+                    continue
+                msg = json.loads(raw)
+                if msg.get("status") == "building":
+                    assert not started, "a building frame landed mid-stream"
+                    continue
+                raise AssertionError(f"unexpected text frame mid-stream: {msg}")
+            assert len(frames) >= 2, f"expected a head plus a chunk, got {len(frames)}"
+            streamed = _decode_stream(frames)
+            assert streamed["id"] == "req-chunk" and streamed["ok"] is True
+            sb = {b["id"]: b for b in streamed["result"]["bodies"]}
+            assert sb.keys() == jb.keys(), "chunked reply lost or gained a body"
+            for bid, cb in sb.items():
+                ref = jb[bid]
+                if cb.get("unchanged") or ref.get("unchanged"):
+                    continue
+                assert np.allclose(cb["positions"], ref["positions"], rtol=1e-6, atol=1e-4)
+                assert cb["indices"].tolist() == ref["indices"]
+                assert cb["faceIds"].tolist() == ref["faceIds"]
+            print(f"  WS chunked round-trip OK: {len(frames)} frames, matches JSON reply")
 
             # ping
             await ws.send(json.dumps({"id": "p", "op": "ping"}))

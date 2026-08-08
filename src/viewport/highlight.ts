@@ -270,9 +270,13 @@ export class Highlighter {
    *  clear an analysis. Body selections re-apply on top afterward. Loops every
    *  body's own buffer (faceIds are globally unique, so the same faceId never
    *  reappears in two bodies — each body only ever repaints its own faces). */
-  setBase(colorOf: (faceId: number) => THREE.Color) {
+  setBase(colorOf: (faceId: number) => THREE.Color, only?: Iterable<BodyMesh>) {
     const cache = new Map<number, THREE.Color>();
-    for (const body of this.view.bodies) {
+    // `only` restricts the repaint to the bodies given. A progressive load paints
+    // each chunk's bodies as they arrive; without the restriction every chunk
+    // would re-upload the WHOLE model's vertex colours (0.39 s at 3,071 bodies),
+    // turning an O(model) job into O(chunks x model).
+    for (const body of only ?? this.view.bodies) {
       const colorAttr = body.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
       const index = body.mesh.geometry.getIndex();
       if (!colorAttr || !index) continue;

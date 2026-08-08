@@ -235,10 +235,96 @@ connection, reusing the request's `id` but with **no `ok` field**:
 ```
 
 `feature` is the index of the feature currently being built, or `-1` while
-tessellating. These fire roughly once a second during a long rebuild. A client must
-route `status === "building"` frames to progress listeners and never treat one as the
-terminal reply - the real `{ "ok": ... }` reply always follows once the rebuild
-finishes (or the worker is judged stalled/crashed, per the `rebuild` error cases above).
+tessellating. `meshed` / `meshTotal` carry the payload phase's per-body denominator
+(both `-1` outside it), so a client can say "meshing 812/3071" rather than sitting at
+0% for the whole phase. These fire roughly once a second during a long rebuild. An
+`import` streams the same way with `status: "importing"` and `phase` / `label` / `pct`.
+
+A client must route **any** frame carrying a `status` string to its progress listeners
+and never treat one as the terminal reply - the real `{ "ok": ... }` reply always
+follows once the rebuild finishes (or the worker is judged stalled/crashed, per the
+`rebuild` error cases above). Guarding on `status === "building"` alone is a trap: an
+unrecognised status then falls through to the pending-request map and resolves the
+caller with a frame carrying no `ok`, so the caller reports failure while the sidecar
+happily keeps working.
+
+## Binary mesh frames (`"binary": true`)
+
+`rebuild` and `computeAll` accept `"binary": true`, which moves the per-body mesh arrays
+out of the JSON header and into raw little-endian buffers appended to the same frame:
+
+```
+[u32 LE header_len][header_len bytes UTF-8 JSON header][pad to 4][buf0][buf1]...
+```
+
+The header is the normal `{"id","ok","result"}` envelope, except each mesh array
+(`positions`/`normals` → f32, `indices`/`faceIds` → u32) is replaced by `{"$buf": i}`
+referencing `result.$buffers[i] = {"dtype","len"}` (`len` is an **element** count) in
+on-wire order; the client walks `$buffers` to compute offsets sequentially. A body's
+edge polylines are packed the same way into `{"$pts","$counts","body"}`, where `$counts`
+holds each edge's **point** count. Everything else - stubs, `faceOwners`, `bbox`,
+`diagnostics` - stays inline JSON in the header.
+
+Both dtypes are 4 bytes/element, so after the single header pad every buffer is
+4-aligned for free. **INVARIANT: adding a wider dtype requires per-buffer padding.**
+
+## Chunked replies (`"chunked": true`)
+
+A successful `rebuild`/`computeAll` mesh reply can exceed any single frame the socket
+will carry (`_MAX_FRAME`, 128 MiB - a DoS control, mirrored in `client.ts` as
+`MAX_MESSAGE_BYTES`). `"chunked": true` (which also requires `"binary": true`) splits
+the reply across several frames instead, so document size stops being a hard limit.
+
+Each chunk is a **self-contained binary frame** in exactly the layout above - its own
+header, its own pad, its own `$buffers` table. Buffer indices are therefore **frame-local**
+and each chunk decodes independently. The framing rides in one extra envelope field:
+
+```jsonc
+{ "id": "<request id>",
+  "stream": { "sid": "<per-reply id>", "seq": 0, "final": false },
+  "status": "chunk",          // NON-final frames only
+  "ok": true,                 // the FINAL frame only
+  "result": { /* ... */ } }
+```
+
+- **`seq: 0` (the head)** carries every non-body field (`protocol`, `bbox`,
+  `diagnostics`, `projectionUpdates`, `featureError(s)`) plus a **`manifest`**: one entry
+  per body of the reply, in final order, as `{id, name, etag, nodeRef?, unchanged?}` plus
+  `{faceCount, nVerts3, nIdx, nTris, nEdges, hasNormals?}` **for full bodies only**.
+  Sizes are absent on stubs by design - the sidecar does not have them, because those
+  arrays live in the client's own per-body cache. The head carries no `bodies`.
+- **`seq: 1..N`** each carry a contiguous slice of `bodies` (plus its `$buffers`), in
+  manifest order. Order is load-bearing: the client accumulates each body's global
+  `faceStart` by it, and face picking keys off those ranges.
+- The **final** frame carries `ok: true` and `stream.final: true` and no `status`; it is
+  what resolves the request.
+
+A client must treat the stream as complete only when `final` is set, `seq` arrived dense
+from 0, and the accumulated body count equals the manifest length. The count check is
+load-bearing rather than defensive: `assemble()` prunes its per-body cache to the ids it
+was handed, so silently accepting a short stream would evict the missing body and corrupt
+the *next* rebuild's `known` map too.
+
+Two invariants a client may rely on, neither of them local to the sending code:
+
+- **Streams never interleave.** `_serialized` holds its lock across the whole of
+  `_dispatch`, including every send.
+- **No `building` frame lands mid-stream**, even though it shares the request `id`: the
+  worker has already returned before the first chunk goes out.
+
+Chunking is **binary-only**. There is deliberately no JSON-text chunk form: a text frame
+carrying `status` is routed to progress listeners and dropped.
+
+Negotiation is per request, exactly like `binary`. An older sidecar ignores the unknown
+flag and answers with one frame; an older client never sets it and gets one frame. So
+neither side can emit a stream the other cannot read. When the flag *is* set, every
+successful mesh reply is streamed - not just large ones - so the multi-frame path is
+exercised constantly rather than for the first time on a user's oversized assembly.
+
+Two cases still end a reply with a terminal **text** error, which supersedes any partial
+stream: a cancel arriving between chunks (`{"ok": false, "cancelled": true, ...}`), and a
+**single body** whose own payload exceeds the frame cap - the one case chunking cannot
+fix, since a body is the indivisible unit of a chunk. That error names the offending body.
 
 ## Bad input
 
