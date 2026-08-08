@@ -5,8 +5,7 @@ import { Geometry } from "./geometry/client";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { DocumentStore } from "./document/store";
-import { EXAMPLE_BRACKET } from "./document/example";
+import { DocumentStore, EMPTY_DOCUMENT } from "./document/store";
 import { Timeline } from "./ui/timeline";
 import { isEditableTarget } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
@@ -107,7 +106,11 @@ if ("__TAURI_INTERNALS__" in window) {
     });
   });
 }
-const store = new DocumentStore(geometry, EXAMPLE_BRACKET);
+// Start on a blank canvas. It used to open a built-in example bracket, which
+// meant every launch began by rebuilding geometry nobody asked for, and "File →
+// New" was the first thing most people did. Recovery still restores real work
+// (checkRecovery below), so the only thing lost is the sample.
+const store = new DocumentStore(geometry, EMPTY_DOCUMENT);
 store.onWarning = (msg) => toast(msg);
 // crash-safety: periodic recovery snapshots + restore-on-launch prompt
 installAutosave(store);

@@ -93,7 +93,7 @@ type MetaListener = () => void;
 // forbids it), so the `"hiddenBodies" in f` gates see identical shapes.
 const clone = (d: CadDocument): CadDocument => structuredClone(d);
 
-const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
+export const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
 
 /** The features a sketch at a given timeline position may reference: everything
  *  up to the rollback marker, minus suppressed features — and, when EDITING an
@@ -352,6 +352,41 @@ export class DocumentStore {
     this.emitMeta();
   }
   /** reset to a blank document (New). */
+  /** A document replacement (New / Open) discards the model on screen along
+   *  with the document it belonged to, and stops whatever is still building.
+   *
+   *  `rebuildNow` deliberately keeps the last good result when a rebuild fails,
+   *  which is correct within one document and wrong across a replacement: the
+   *  shape left on screen is no longer in the document, so the Browser has
+   *  nothing to hide and the user has no way to tell what they are looking at.
+   *  And a rebuild already in flight holds the queue until it finishes, so the
+   *  replacement's own rebuild cannot even start until then.
+   *
+   *  Reported 2026-08-08: File → New during a 3,000-body rebuild left the old
+   *  model on screen over an empty document, said nothing, and hiding the body
+   *  did not help — because there was no body in the document to hide. Both
+   *  halves are needed. Clearing alone would leave New waiting minutes for the
+   *  old rebuild; cancelling alone would leave the stale model up until the
+   *  replacement's rebuild returned. */
+  private discardModelForReplacement() {
+    this.build = {
+      ...this.build,
+      building: false,
+      result: null,
+      errorFeatureId: null,
+      errorMessage: null,
+      streamed: null,
+      streamTotal: null,
+      progress: null,
+      meshed: null,
+      meshTotal: null,
+    };
+    this.emitBuild();
+    // No-op when nothing is running. Cancel kills the pool worker, which is the
+    // only way to interrupt an OCCT call already under way.
+    void this.cancelBusy();
+  }
+
   newDocument() {
     this.undoStack = [];
     this.redoStack = [];
@@ -367,6 +402,7 @@ export class DocumentStore {
     this.bodyColors.clear();
     this.path = null;
     this.isDirty = false;
+    this.discardModelForReplacement();
     this.emitDoc();
     this.emitMeta();
     this.scheduleRebuild(true);
@@ -1129,6 +1165,7 @@ export class DocumentStore {
       }
     }
     this.markDirty(); // openDocument clears this via markSaved() once the path is known
+    this.discardModelForReplacement();
     this.emitDoc();
     this.scheduleRebuild(true);
   }

@@ -213,6 +213,21 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Starting a new document, or opening one, no longer leaves the old model on
+  screen.** If a rebuild was still running, "New" emptied the document but left
+  the previous model in the 3D view, said nothing about it, and hiding the body
+  did not remove it, because there was no longer a body in the document to hide.
+  On a large assembly the rebuild can run for minutes, and for all of that time
+  the app looked broken. Replacing the document now clears the view and stops
+  the build that belonged to the old one, so the new document appears straight
+  away.
+
+- **SindriCAD opens on an empty canvas.** It used to start by loading a built-in
+  example part, so every launch began by building geometry you had not asked
+  for, and "New" was the first thing most people pressed. Anything you were
+  working on when SindriCAD last closed is still restored as before.
+
+
 - **Exporting a large assembly now produces a file.** On an assembly of about
   3,000 parts, exporting to STEP wrote nothing at all. The export was working
   fine: it simply takes about a minute to write a file that size, and the
