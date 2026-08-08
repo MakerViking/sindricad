@@ -41,7 +41,12 @@ export function buildRaycastIndex(geo: THREE.BufferGeometry) {
   // A geometry with no index has nothing to accelerate against, and
   // computeBoundsTree would throw rather than no-op.
   if (!geo.getIndex()) return;
-  geo.computeBoundsTree({ indirect: true, maxLeafTris: 8 });
+  // `targetLeafSize` was `maxLeafTris` until three-mesh-bvh deprecated the name.
+  // The old name still works, but the shim console.warn()s on EVERY build — one
+  // line per body, so ~3,000 of them on the reference assembly, and enough
+  // console traffic in the test run to widen a vitest worker-RPC teardown race.
+  // The library maps one to the other verbatim; this is a rename, not a retune.
+  geo.computeBoundsTree({ indirect: true, targetLeafSize: 8 });
 }
 
 /** Release a BVH with its geometry. Skipping this leaks the tree's typed
