@@ -57,7 +57,7 @@ import { createPanels } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
 import { solveSketchFeature } from "./sketch/headlessSolve";
 import { setPrompt } from "./ui/prompt";
-import { getUnit, setUnit, type Unit } from "./ui/units";
+import { getUnit, setUnit, asUnit } from "./ui/units";
 import type { Feature, PlaneDef } from "./types";
 
 // Last-resort net: an uncaught error/rejection anywhere shouldn't fail silently
@@ -949,7 +949,10 @@ selBtn.addEventListener("click", () => handleAction("selmode"));
 // unit selector (display/input only; geometry stays in mm)
 const unitSel = document.getElementById("unit") as HTMLSelectElement;
 unitSel.value = getUnit();
-unitSel.addEventListener("change", () => setUnit(unitSel.value as Unit));
+unitSel.addEventListener("change", () => {
+  const u = asUnit(unitSel.value);
+  if (u) setUnit(u);
+});
 const projBtn = document.getElementById("proj") as HTMLButtonElement;
 projBtn.addEventListener("click", () => handleAction("persp"));
 
