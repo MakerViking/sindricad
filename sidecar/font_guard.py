@@ -33,12 +33,20 @@ import, and only for patterns that are looking for fonts, ``glob.glob`` is
 wrapped to drop files that fontTools would refuse. build123d then never sees
 them, and nothing in build123d is patched.
 
-Importing THIS module performs the guarded build123d import. Consumers just put
+Call `ensure()` before anything imports build123d. It is idempotent and cheap
+after the first call (build123d is in sys.modules by then).
 
-    import font_guard  # noqa: F401  (must precede build123d)
-
-above their own ``from build123d import ...``; by then build123d is in
-sys.modules and is never rescanned.
+WHY A CALL AND NOT AN IMPORT SIDE EFFECT
+----------------------------------------
+The obvious shape — `import font_guard` at the top of every module that imports
+build123d — was the first version, and it was wrong for a reason that has
+nothing to do with fonts. `builder._env_sig` hashes the BYTES of builder.py,
+geom_select.py, tessellate.py and selector_tuning.json into the mesh-cache key,
+so adding even an import line to two of them changes the key and costs every
+user a full cold rebuild of every document. On a large assembly that is minutes.
+Guarding from server.py's `_worker_init` instead reaches every worker (it is the
+pool initializer, so no geometry job can run without it) and leaves the four
+signature files untouched.
 
 The check is the first four bytes of each file, not a full parse: a real parse
 of every system font would add seconds to every cold start. That covers both
@@ -119,31 +127,41 @@ def _import_build123d(drop_everything: bool):
         glob.glob = original
 
 
-_skipped.clear()
-try:
-    _import_build123d(drop_everything=False)
-except Exception as exc:  # noqa: BLE001 — the retry is the whole point; re-raised below
-    # A font with a valid signature that still will not parse. Rather than take
-    # the sidecar down, give up on system fonts altogether and say so loudly.
-    print(
-        f"[fonts] a system font broke build123d's import ({type(exc).__name__}: {exc}); "
-        "retrying with system font scanning disabled. Sketch text will fall back to "
-        "build123d's bundled fonts.",
-        file=sys.stderr,
-        flush=True,
-    )
-    _purge_partial_import()
-    _skipped.clear()
-    _import_build123d(drop_everything=True)
+_done = False
 
-if _skipped:
-    # Named, not counted: knowing WHICH file a machine chokes on is the whole
-    # reason the last four reports took a round trip each to diagnose.
-    shown = ", ".join(os.path.basename(p) for p in _skipped[:12])
-    more = f" (+{len(_skipped) - 12} more)" if len(_skipped) > 12 else ""
-    print(
-        f"[fonts] skipped {len(_skipped)} unusable font file(s) so build123d could "
-        f"import: {shown}{more}",
-        file=sys.stderr,
-        flush=True,
-    )
+
+def ensure():
+    """Import build123d with the font scan guarded. Idempotent."""
+    global _done
+    if _done:
+        return
+    _done = True  # set FIRST: a re-entrant call must not start a second import
+    _skipped.clear()
+    try:
+        _import_build123d(drop_everything=False)
+    except Exception as exc:  # noqa: BLE001 — the retry is the whole point; re-raised below
+        # A font with a valid signature that still will not parse. Rather than
+        # take the sidecar down, give up on system fonts altogether and say so.
+        print(
+            f"[fonts] a system font broke build123d's import ({type(exc).__name__}: {exc}); "
+            "retrying with system font scanning disabled. Sketch text will fall back to "
+            "build123d's bundled fonts.",
+            file=sys.stderr,
+            flush=True,
+        )
+        _purge_partial_import()
+        _skipped.clear()
+        _import_build123d(drop_everything=True)
+
+    if _skipped:
+        # Named, not counted: knowing WHICH file a machine chokes on is the whole
+        # reason the last four reports took a round trip each to diagnose.
+        shown = ", ".join(os.path.basename(p) for p in _skipped[:12])
+        more = f" (+{len(_skipped) - 12} more)" if len(_skipped) > 12 else ""
+        print(
+            f"[fonts] skipped {len(_skipped)} unusable font file(s) so build123d could "
+            f"import: {shown}{more}",
+            file=sys.stderr,
+            flush=True,
+        )
+

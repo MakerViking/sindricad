@@ -14,7 +14,9 @@ import glob as glob_module
 import os
 import tempfile
 
-import font_guard  # noqa: F401  installs the guard and imports build123d
+import font_guard
+
+font_guard.ensure()  # installs the guard and imports build123d
 
 from build123d.text import FontManager
 

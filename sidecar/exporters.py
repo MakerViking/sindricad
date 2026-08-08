@@ -4,7 +4,9 @@ STEP and STL are build123d free functions. 3MF is NOT — it needs the Mesher
 class (which also writes STL). Keep STL as a fallback if 3MF ever fails.
 """
 
-import font_guard  # noqa: F401  MUST precede build123d — see font_guard.py
+import font_guard
+
+font_guard.ensure()  # MUST precede build123d — see font_guard.py
 
 from build123d import export_step, export_stl, Mesher
 

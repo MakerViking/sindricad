@@ -213,6 +213,17 @@ def _worker_init(hb=None, hb_idx=None, err_buf=None, mesh=None, mesh_total=None)
         _WORKER_ERR_BUF, _HB, _HB_IDX = err_buf, hb, hb_idx
         _HB_MESH, _HB_MESH_TOTAL = mesh, mesh_total
         occt_smp.configure()
+        # MUST precede `import builder`, which pulls in build123d. build123d
+        # scans the system font folders at import time and one unreadable file
+        # there takes the whole import down with it — four Windows field reports
+        # across 0.1.82/0.1.85/0.1.100, all "the geometry engine could not
+        # start". Guarding HERE rather than inside builder.py is deliberate:
+        # _env_sig hashes builder.py's bytes into the mesh-cache key, so editing
+        # it would cost every user a cold rebuild of every document. This is the
+        # pool initializer, so no geometry job can run without passing through.
+        import font_guard
+
+        font_guard.ensure()
         import builder  # noqa: F401  (warm the import)
         import tessellate  # noqa: F401
 
