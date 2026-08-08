@@ -173,6 +173,15 @@ void initSolver().then((ok) => {
 
 // --- 3D mouse (SpaceMouse): navigate the camera + map buttons (desktop app) ---
 (window as any).spaceMouseConfig = setSpaceMouseConfig; // live-tune from devtools
+// DEV-only handle for driving the app from outside (demo capture, e2e). Never
+// present in a production bundle — Vite drops the branch at build time.
+if (import.meta.env.DEV) {
+  (window as any).__sindri = { store, viewport, sketch, handleAction, extrude, overlay, toolBusy,
+    busyWhy: () => ({ sketch: sketch.active, extrude: extrude.active, edgeFeature: edgeFeature.active,
+      pressPull: pressPull.active, faceOffset: faceOffset.active, loft: loftTool.active,
+      planeOffset: planeOffset.active, move: moveTool.active, measure: measure.active,
+      section: section.active, texture: textureTool.active, planePick, choice: isChoiceOpen() }) };
+}
 void initSpaceMouse(viewport, (pressed) => {
   if (pressed & 1) viewport.fitView(); // button 1 → Fit
   else if (pressed & 2) viewport.setStandardView("iso"); // button 2 → Home/ISO

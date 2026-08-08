@@ -402,7 +402,12 @@ export class Geometry implements GeometryBackend {
       const { invoke } = await import("@tauri-apps/api/core");
       this.token = await invoke<string>("sidecar_token");
     } catch {
-      this.token = ""; // plain browser dev (no Tauri) — no sidecar anyway
+      // Plain browser, no Tauri. DEV builds accept a token on the URL so the app
+      // can be driven against a hand-started sidecar (demo capture, e2e); a
+      // production bundle keeps the old "" and simply has no sidecar.
+      this.token = import.meta.env.DEV
+        ? (new URLSearchParams(location.search).get("token") ?? "")
+        : "";
     }
     this.connect();
   }
