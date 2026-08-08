@@ -213,6 +213,13 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **An empty document now shows the grid and the origin instead of nothing.**
+  With no geometry to frame, the view was pointed away from the scene entirely,
+  so a new document looked like a black window with no way to tell what had
+  gone wrong. It now settles on a hand-sized view of the origin, which puts the
+  ground grid at a legible scale. This was never visible while SindriCAD opened
+  on a built-in example part, and appeared as soon as it started empty.
+
 - **Choosing a sketch plane from the Browser no longer disables every tool.**
   Answering "select a plane" by clicking the plane in the Browser tree, rather
   than in the 3D view, left the plane picker running underneath. From then on
