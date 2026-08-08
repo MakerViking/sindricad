@@ -12,6 +12,10 @@ const FOV = 45;
 // the camera's near plane (0.1) so an extreme zoom-in can't push the surface behind
 // near — which used to clip the whole model away, leaving just the grid.
 const MIN_PERSP_DIST = 0.5;
+/** Half-extent framed when there is nothing to frame (an empty document), in mm.
+ *  Roughly a fist-sized part, so the ground grid lands at a legible scale rather
+ *  than as one enormous cell or a haze of tiny ones. */
+const EMPTY_VIEW_MM = 50;
 
 export interface CameraRig {
   controls: CameraControls;
@@ -300,7 +304,17 @@ export function createCameraRig(
       // fitToBox resets the orbit to an axis view under a Z-up camera.)
       const center = box.getCenter(new THREE.Vector3());
       const sphere = box.getBoundingSphere(new THREE.Sphere(center.clone()));
-      const r = sphere.radius * 1.15; // padding
+      // An EMPTY document has an empty box, and three.js answers that with
+      // Sphere.makeEmpty() — radius -1, not 0. Multiplied through, `dist` came
+      // out NEGATIVE and the camera was placed behind its own target, looking
+      // away from the scene: an empty viewport with no grid and no way to tell
+      // why. It never showed while startup always loaded an example part with a
+      // real box. Fall back to a human-scale view of the origin instead.
+      let r = sphere.radius * 1.15; // padding
+      if (!Number.isFinite(r) || r <= 0) {
+        r = EMPTY_VIEW_MM;
+        center.set(0, 0, 0);
+      }
       const dir = controls
         .getPosition(new THREE.Vector3())
         .sub(controls.getTarget(new THREE.Vector3()))
