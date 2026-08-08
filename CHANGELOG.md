@@ -213,6 +213,14 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Choosing a sketch plane from the Browser no longer disables every tool.**
+  Answering "select a plane" by clicking the plane in the Browser tree, rather
+  than in the 3D view, left the plane picker running underneath. From then on
+  every tool that first checks whether another tool is busy, extrude, fillet,
+  shell, press/pull, measure and section among them, did nothing at all when
+  clicked, gave no message explaining why, and stayed that way until SindriCAD
+  was restarted.
+
 - **The Units dropdown is no longer white with grey text on the dark title
   bar.** Native controls, a dropdown and its popup list among them, are drawn
   by the browser engine rather than by SindriCAD, and they default to the light

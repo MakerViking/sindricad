@@ -588,7 +588,13 @@ store.onBuild((s) => {
 
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
-  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !loftTool.active && !planeOffset.active) sketch.enter(plane, store);
+  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !loftTool.active && !planeOffset.active) {
+    // Answering "select a plane" from the Browser instead of the viewport: end
+    // the interactive pick, or its planePick flag stays set and toolBusy() is
+    // true forever, silently disabling every tool from here on.
+    starters.cancelPlanePick();
+    sketch.enter(plane, store);
+  }
 };
 
 // --- sketch visibility (MCAD-style: a sketch consumed by a feature hides by

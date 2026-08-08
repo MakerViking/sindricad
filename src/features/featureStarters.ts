@@ -83,6 +83,20 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   };
 
+  /** Abort an in-flight interactive plane pick, if any.
+   *
+   *  `planePick` is part of toolBusy(), and pickPlaneInteractive only clears it
+   *  from its own canvas click or Escape. Choosing the plane in the BROWSER
+   *  instead (tree.onSketchOnPlane) enters the sketch by a different route and
+   *  left the flag set forever, so from then on every tool guarded by toolBusy()
+   *  — extrude, fillet, shell, press/pull, measure, section — returned silently
+   *  and did nothing at all, with no message, until the app was restarted. */
+  function cancelPlanePick() {
+    pendingPickCleanup?.();
+  }
+
+  let pendingPickCleanup: (() => void) | null = null;
+
   function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
     if (toolBusy()) return;
     setPlanePick(true);
@@ -117,6 +131,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       if (e.key === "Escape") cleanup();
     };
     const cleanup = () => {
+      pendingPickCleanup = null;
       setPlanePick(false);
       viewport.showAllPlanes(false);
       viewport.suspendPicking = false;
@@ -126,6 +141,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       window.removeEventListener("keydown", onEsc, true);
       setPrompt(null);
     };
+    pendingPickCleanup = cleanup;
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerdown", onDown, true);
     window.addEventListener("keydown", onEsc, true);
@@ -636,6 +652,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   }
 
   return {
+    cancelPlanePick,
     startFillet,
     startChamfer,
     startPressPull,
