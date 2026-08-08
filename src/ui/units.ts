@@ -12,9 +12,18 @@ const KEY = "sindricad.unit";
 let current: Unit = readStored();
 const listeners = new Set<() => void>();
 
+/** Narrow an untrusted string — a `<select>` value, a stored setting — to a Unit,
+ *  or null. Every boundary that feeds `current` MUST come through here instead of
+ *  casting: the unit is interpolated raw into innerHTML markup downstream (the
+ *  properties and interference panels), so an unchecked value is a script-injection
+ *  path into the privileged webview. */
+export function asUnit(v: unknown): Unit | null {
+  return v === "mm" || v === "cm" || v === "in" ? v : null;
+}
+
 function readStored(): Unit {
-  const v = (typeof localStorage !== "undefined" && localStorage.getItem(KEY)) as Unit | null;
-  return v === "mm" || v === "cm" || v === "in" ? v : "mm";
+  const raw = typeof localStorage !== "undefined" ? localStorage.getItem(KEY) : null;
+  return asUnit(raw) ?? "mm";
 }
 
 export function getUnit(): Unit {
