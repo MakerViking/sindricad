@@ -18,6 +18,22 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Fixed
+
+- **The app no longer breaks on startup.** A status-bar message written while the
+  app was still starting up could throw, and everything set up after that point
+  in the startup sequence never ran. It arrived in the previous beta and is the
+  most likely explanation for an app that opens and then behaves oddly without
+  anything having been done to it.
+
+- **An extrude covering several areas can be edited down to fewer.** Reopening an
+  extrude offered "Ctrl-click areas to add/remove" and then committed the extrude
+  on the very first Ctrl-click, so an extrude made across two profiles could not
+  be reduced to one — the only way out was to delete it and start again.
+  Ctrl-click, Shift-click and Cmd-click now change the area set; a plain click
+  still commits. Removing the last area returns to picking rather than leaving a
+  preview of nothing on screen.
+
 ### Changed
 
 - **Texture cells no longer break up around embossed text, or against any

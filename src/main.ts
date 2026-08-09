@@ -83,6 +83,13 @@ window.onerror = (message, source, lineno, colno, error) => {
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const contextTab = document.getElementById("context-tab")!;
+// setStatus's dedup state (see the helper far below). It lives up HERE with the
+// element it writes to, not next to the function: `setStatus` is a hoisted
+// function declaration and is called during module evaluation — main.ts:681's
+// build handler is one such caller — so a `let` declared beside the function
+// would still be in its temporal dead zone at that point and every early call
+// threw "Cannot access 'lastStatusCrumb' before initialization".
+let lastStatusCrumb = "";
 
 const viewport = new Viewport(canvas);
 
@@ -1375,7 +1382,6 @@ window.addEventListener("keydown", (e) => {
 });
 
 // --- helpers ---
-let lastStatusCrumb = "";
 function setStatus(text: string, cls: "" | "connected" | "error") {
   statusEl.textContent = text;
   statusEl.className = `status ${cls}`;
