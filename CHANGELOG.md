@@ -271,6 +271,14 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **An extrude covering several areas can be edited down to fewer.** Reopening an
+  extrude offered "Ctrl-click areas to add/remove" and then committed the extrude
+  on the very first Ctrl-click, so an extrude made across two profiles could not
+  be reduced to one — the only way out was to delete it and start again.
+  Ctrl-click, Shift-click and Cmd-click now change the area set; a plain click
+  still commits. Removing the last area returns to picking rather than leaving a
+  preview of nothing on screen.
+
 - **The keyboard works again.** A change in the previous build added a trail of
   breadcrumbs to the status line so that a bug report would carry the message
   that prompted it. The state that trail keeps was declared near the bottom of
