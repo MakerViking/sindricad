@@ -105,6 +105,25 @@ Press `?` in the app for the full keyboard shortcut list.
   <em>A part is its history: sketch, extrude, fillet, cut, texture, and every step stays editable.</em>
 </p>
 
+## Tutorials
+
+Eight short clips, each under a minute, covering the tools you need to make a
+real part. Nothing is sped up and nothing is faked: they are recordings of the
+app doing the work.
+
+**[Watch the playlist](https://www.youtube.com/playlist?list=PLS7xEtXRFd1A)**
+
+| | |
+|---|---|
+| [Sketch and extrude](https://www.youtube.com/watch?v=AYAOFz4KZsI&list=PLS7xEtXRFd1A) | Draw a profile, type the dimensions you want, pull it into a solid |
+| [Fillet](https://www.youtube.com/watch?v=oQjM8aquMBE&list=PLS7xEtXRFd1A) | Round off sharp edges, several at once, editable afterwards |
+| [Chamfer](https://www.youtube.com/watch?v=mS58lIBp27c&list=PLS7xEtXRFd1A) | Cut an edge back to a flat, angled face |
+| [Shell](https://www.youtube.com/watch?v=QrbbrvAWdvA&list=PLS7xEtXRFd1A) | Hollow a solid out to a wall thickness and open one face |
+| [Parameters](https://www.youtube.com/watch?v=JiHMyNAdh3c&list=PLS7xEtXRFd1A) | Name a dimension, change it once, watch the part rebuild |
+| [Press pull](https://www.youtube.com/watch?v=N0i97IjU1Xg&list=PLS7xEtXRFd1A) | Move a face directly, with no sketch involved |
+| [Combine](https://www.youtube.com/watch?v=Ssc8MbJ3zjE&list=PLS7xEtXRFd1A) | Join two bodies, cut one from the other, or keep the overlap |
+| [Revolve](https://www.youtube.com/watch?v=8hgK_BzNE_M&list=PLS7xEtXRFd1A) | Spin a flat profile around an axis into a round solid |
+
 ## Sketching
 
 <p align="center">
