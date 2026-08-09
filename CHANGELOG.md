@@ -271,6 +271,23 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The keyboard works again.** A change in the previous build added a trail of
+  breadcrumbs to the status line so that a bug report would carry the message
+  that prompted it. The state that trail keeps was declared near the bottom of
+  the startup file, but the status line is written to near the top, before the
+  app has reached the sidecar — and the very first thing it writes, "connecting
+  to sidecar…", is exactly what tripped over it. Startup stopped there every
+  time, part-way through wiring the app up, so everything set up after that
+  point was never set up at all.
+
+  In practice that meant the keyboard: every shortcut, from Escape and the
+  single-key tool keys to Ctrl+N, Ctrl+O, Ctrl+S and Ctrl+E. The sketch palette
+  stopped following the tool you were using, and the toolbar stopped switching
+  to its sketch row when you entered a sketch. An unexplained "Something went
+  wrong — check console" appeared alongside it. The menus and the toolbar
+  buttons kept working, which is why it looked like a handful of unrelated
+  faults rather than one.
+
 - **No more "Something went wrong" for something that did not go wrong.** Opening
   the app and touching nothing could raise a string of error toasts saying
   something had broken and to check the console. Behind each one was a
