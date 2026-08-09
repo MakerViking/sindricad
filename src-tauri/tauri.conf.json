@@ -39,6 +39,11 @@
     ],
     "linux": {
       "deb": {
+        "depends": [
+          "libc6 (>= 2.34)",
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ],
         "files": {
           "/usr/lib/udev/rules.d/99-sindricad-spacemouse.rules": "../packaging/99-spacemouse.rules"
         },

@@ -79,13 +79,41 @@ describe("constraint solver warm-up", () => {
 });
 
 describe("SolverUnavailable", () => {
+  /** Swap the user agent for one test. The remedy is chosen from it, so this is
+   *  the only way to prove a Linux user is not sent to update Microsoft Edge. */
+  function withUserAgent<T>(ua: string, fn: () => T): T {
+    const original = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+    Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true });
+    try {
+      return fn();
+    } finally {
+      if (original) Object.defineProperty(navigator, "userAgent", original);
+    }
+  }
+
+  const WINDOWS_UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36 Edg/120";
+  const LINUX_UA =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15";
+
   it("turns a CSP refusal into something a user can act on", async () => {
     const { SolverUnavailable } = await solverWith(works);
     const cause = new EvalError(CSP_MESSAGE);
-    const e = new SolverUnavailable(cause);
+    const e = withUserAgent(WINDOWS_UA, () => new SolverUnavailable(cause));
+    expect(e.message).toMatch(/refuses to compile WebAssembly/);
     expect(e.message).toMatch(/WebView2/);
     expect(e.message).toMatch(/Sketching still works without constraints/);
     expect(e.cause).toBe(cause);
+  });
+
+  // 0.1.111, DragonOS Noble: WebKitGTK threw the same CSP shape and the user was
+  // told to update Microsoft Edge WebView2, which does not exist on Linux.
+  it("names the engine that is actually running, not the one from the first report", async () => {
+    const { SolverUnavailable } = await solverWith(works);
+    const e = withUserAgent(LINUX_UA, () => new SolverUnavailable(new EvalError(CSP_MESSAGE)));
+    expect(e.message).toMatch(/WebKitGTK/);
+    expect(e.message).not.toMatch(/WebView2|Microsoft Edge/);
+    expect(e.message).toMatch(/Sketching still works without constraints/);
   });
 
   it("passes any other cause through rather than guessing", async () => {

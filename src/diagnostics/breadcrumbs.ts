@@ -34,15 +34,33 @@ export function breadcrumbs(): string[] {
   return [...sticky, ...buf];
 }
 
+/** Browser notifications that arrive through `window.onerror` but are not
+ *  errors and mean nothing to a user or to a triager.
+ *
+ *  "ResizeObserver loop completed with undelivered notifications" is the one
+ *  that matters: it is a spec-defined signal that observation work spilled into
+ *  the next frame, it is harmless, and any app that resizes a canvas emits it.
+ *  A 0.1.111 report from a user who had opened the app and touched nothing
+ *  carried SEVEN of them, each paired with a "Something went wrong" toast, and
+ *  they crowded the useful entries out of a capped breadcrumb ring. */
+export function isBenignBrowserNoise(message: unknown): boolean {
+  return /ResizeObserver loop (limit exceeded|completed with undelivered notifications)/i.test(
+    String(message ?? ""),
+  );
+}
+
 // Self-installing listeners (imported once from main.ts). Guarded so the module
 // stays importable without a DOM — the rest of this codebase keeps its logic
 // DOM-free for exactly this reason, and there is no jsdom in the test setup.
 if (typeof window !== "undefined") {
   window.addEventListener("error", (e) => {
+    if (isBenignBrowserNoise(e.message)) return;
     crumb(`[error] ${e.message} (${e.filename ?? "?"}:${e.lineno ?? "?"})`);
   });
   window.addEventListener("unhandledrejection", (e) => {
     const r = e.reason;
-    crumb(`[unhandledrejection] ${r instanceof Error ? r.message : String(r)}`);
+    const message = r instanceof Error ? r.message : String(r);
+    if (isBenignBrowserNoise(message)) return;
+    crumb(`[unhandledrejection] ${message}`);
   });
 }

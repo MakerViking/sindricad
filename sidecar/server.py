@@ -2142,6 +2142,19 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                     last, last_t = cur, loop.time()
                     continue
             if loop.time() - last_t > stall:
+                # Say so in the log. This watchdog previously recycled the pool
+                # and returned its message to the UI without printing a thing,
+                # so a 0.1.111 field report of exactly this stall arrived with a
+                # 179-byte log holding only "LISTENING 8765" — the one event
+                # worth diagnosing left no trace anywhere. The heartbeat index is
+                # the feature the worker was on, and it is all that survives.
+                idx = int(_HB_IDX.value) if _HB_IDX is not None else -1
+                print(
+                    f"STALL: no worker heartbeat for {int(stall)}s while running "
+                    f"{getattr(fn, '__name__', fn)!r} (feature index {idx}) — "
+                    "recycling the worker pool",
+                    flush=True,
+                )
                 _kill_pool(_pool)
                 _pool = _new_pool()
                 fut.cancel()

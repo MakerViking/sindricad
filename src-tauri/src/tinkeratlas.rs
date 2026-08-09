@@ -588,6 +588,32 @@ fn fnv1a64_hex(s: &str) -> String {
     format!("{h:016x}")
 }
 
+/// Which OS build this is, for reports where the distribution is the story.
+///
+/// A 0.1.111 report from a Linux user whose webview refused to compile the
+/// constraint solver's WASM could not be diagnosed, because the only platform
+/// facts collected were "linux" and "x86_64" — neither of which says which
+/// WebKitGTK is installed. Paired with `tauri::webview_version()`, this is the
+/// difference between "some Linux" and an answerable question.
+///
+/// Linux reads /etc/os-release rather than shelling out. Windows and macOS
+/// return empty for now: there is no std API for it and spawning a process
+/// during a bug report is not worth it, and on both of those the webview
+/// version is the more useful number anyway.
+fn os_version() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(text) = std::fs::read_to_string("/etc/os-release") {
+            for line in text.lines() {
+                if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
+                    return v.trim().trim_matches('"').to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 /// last `max` bytes of the sidecar log, lossily decoded (never fails the
 /// report over a missing/unreadable log — the report IS the diagnostic path).
 fn read_log_tail(app: &AppHandle, max: usize) -> Option<String> {
@@ -696,6 +722,8 @@ pub async fn ta_bug_report(
         "description": clean_description,
         "app_version": app_version,
         "os": std::env::consts::OS,
+        "os_version": os_version(),
+        "webview_version": tauri::webview_version().unwrap_or_default(),
         "arch": std::env::consts::ARCH,
         "sidecar_connected": sidecar_connected,
         "log_tail": log_tail,

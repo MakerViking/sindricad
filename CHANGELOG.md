@@ -213,6 +213,37 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **No more "Something went wrong" for something that did not go wrong.** Opening
+  the app and touching nothing could raise a string of error toasts saying
+  something had broken and to check the console. Behind each one was a
+  ResizeObserver notification: a routine browser signal that a resize spilled
+  into the next frame, emitted by anything that resizes a 3D view, and harmless.
+  The catch-all that turns unexpected errors into a toast now ignores it, and so
+  does the bug-report trail, where a run of them was pushing out the entries that
+  actually explain a problem.
+
+- **A Linux user is no longer told to update Microsoft Edge.** When the webview
+  refuses to compile the constraint solver, the message named Microsoft Edge
+  WebView2, because the first machine this ever happened on ran Windows. On Linux
+  it now names WebKitGTK, and on macOS the system webview. Sketching still works
+  without constraints in every case, and the message still says so.
+
+- **Bug reports now carry enough to diagnose a stall.** When an operation stalls
+  and the geometry engine is restarted, that is now written to the log; it used
+  to happen silently, so a report filed about a stall could arrive with a log
+  holding nothing but the engine starting up. The warning banner is recorded in
+  the report trail too, and reports now include the OS build and webview version,
+  which is what decides whether a machine can run the constraint solver at all.
+
+- **The Linux .deb now says which system libraries it needs.** It declared
+  WebKitGTK and GTK but nothing about the C library, so on a distribution too old
+  to run SindriCAD at all the package installed happily and the app then died at
+  launch with a `GLIBC_2.34 not found` message that pointed at nothing useful.
+  The package now requires glibc 2.34 or newer, which is the same bar the
+  requirements table has always described, so apt refuses up front and says why.
+  Nothing changes on a supported distribution: Ubuntu 22.04 and newer, Debian 12
+  and newer already satisfy it.
+
 - **Shell now asks for the wall thickness instead of choosing it for you.**
   Picking a face to open committed the shell immediately with a 2 mm wall, and
   nothing on screen ever said so — the only way to find the number, let alone

@@ -100,17 +100,39 @@ function getWrapper(): Promise<GcsWrapper> {
   return wrapperPromise;
 }
 
+/** Which engine is refusing, so the remedy names something the reader can
+ *  actually do.
+ *
+ *  The first field report of this was a Windows WebView2, so the message said
+ *  so unconditionally. WebKitGTK then threw the same shape (blocked WASM
+ *  compilation surfaces through the same code-generation-from-strings hook) and
+ *  a Linux user on 0.1.111 was told to update Microsoft Edge, which is not a
+ *  thing that exists on his machine. Name the engine that is actually running. */
+function wasmBlockedRemedy(): string {
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  if (/Edg\/|Windows/i.test(ua)) {
+    return "Updating the Microsoft Edge WebView2 Runtime should fix it.";
+  }
+  if (/Linux|X11/i.test(ua)) {
+    return "This is your distribution's WebKitGTK; updating the webkit2gtk package should fix it.";
+  }
+  if (/Mac OS X|Macintosh/i.test(ua)) {
+    return "Updating macOS should fix it, since the webview ships with the system.";
+  }
+  return "Updating the system webview should fix it.";
+}
+
 /** The constraint solver's WASM could not be instantiated. Carries the
- *  underlying cause, and a message worth showing a user: the only occurrence in
- *  the field was a Windows WebView2 whose CSP refused to compile the module
- *  (reported as a code-generation-from-strings violation, because V8 checks
- *  WASM compilation through the same hook as `eval`). */
+ *  underlying cause, and a message worth showing a user: the webview refused to
+ *  compile the module (reported as a code-generation-from-strings violation,
+ *  because WASM compilation is checked through the same hook as `eval`). */
 export class SolverUnavailable extends Error {
   constructor(readonly cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(
       /content security policy|unsafe-eval|code generation/i.test(detail)
-        ? "The 2D constraint solver could not start: this WebView2 runtime refuses to compile WebAssembly. Updating the Microsoft Edge WebView2 Runtime should fix it. Sketching still works without constraints."
+        ? "The 2D constraint solver could not start: this webview refuses to compile "
+          + `WebAssembly. ${wasmBlockedRemedy()} Sketching still works without constraints.`
         : `The 2D constraint solver could not start: ${detail}`,
     );
     this.name = "SolverUnavailable";

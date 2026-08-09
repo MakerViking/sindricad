@@ -24,7 +24,7 @@ import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
 import { createBugReporter } from "./ui/bugReporter";
 import "./diagnostics/breadcrumbs"; // installs window error listeners (bug-report trail)
-import { stickyFact, crumb } from "./diagnostics/breadcrumbs";
+import { stickyFact, crumb, isBenignBrowserNoise } from "./diagnostics/breadcrumbs";
 import { installAutosave, checkRecovery } from "./io/recovery";
 import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
 import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
@@ -61,11 +61,19 @@ import type { Feature, PlaneDef } from "./types";
 
 // Last-resort net: an uncaught error/rejection anywhere shouldn't fail silently
 // with just a blank viewport — log it and tell the user something broke.
+//
+// Benign browser noise is filtered out first. Without that, a ResizeObserver
+// loop notification (harmless, and emitted by anything that resizes a canvas)
+// reaches the user as "Something went wrong": a 0.1.111 report from someone who
+// had just opened the app and done nothing carried seven of them.
 window.addEventListener("unhandledrejection", (e) => {
-  console.error("Unhandled rejection:", e.reason);
+  const reason = e.reason;
+  if (isBenignBrowserNoise(reason instanceof Error ? reason.message : reason)) return;
+  console.error("Unhandled rejection:", reason);
   toast("Something went wrong — check the console for details", { kind: "error" });
 });
 window.onerror = (message, source, lineno, colno, error) => {
+  if (isBenignBrowserNoise(message)) return;
   console.error("Uncaught error:", error ?? message, source, lineno, colno);
   toast("Something went wrong — check the console for details", { kind: "error" });
 };
@@ -1357,7 +1365,19 @@ window.addEventListener("keydown", (e) => {
 });
 
 // --- helpers ---
+let lastStatusCrumb = "";
 function setStatus(text: string, cls: "" | "connected" | "error") {
   statusEl.textContent = text;
   statusEl.className = `status ${cls}`;
+  // Breadcrumb the failures. Breadcrumbs used to cover toasts and window errors
+  // only, and this banner is neither — so the 0.1.111 stall report ("one
+  // operation stalled for over 60 s") arrived with no trace of the very message
+  // that made the user file it. Errors only, and not the same one twice in a
+  // row: "ready" fires on every rebuild and would flood a capped ring.
+  if (cls === "error" && text && text !== lastStatusCrumb) {
+    lastStatusCrumb = text;
+    crumb(`[status] ${text}`);
+  } else if (cls !== "error") {
+    lastStatusCrumb = "";
+  }
 }

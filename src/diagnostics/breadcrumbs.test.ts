@@ -3,7 +3,7 @@
 // the report after the user has done a pile of things.
 
 import { describe, it, expect } from "vitest";
-import { crumb, stickyFact, breadcrumbs } from "./breadcrumbs";
+import { crumb, stickyFact, breadcrumbs, isBenignBrowserNoise } from "./breadcrumbs";
 
 describe("breadcrumbs", () => {
   it("evicts ordinary crumbs past the ring size", () => {
@@ -22,5 +22,25 @@ describe("breadcrumbs", () => {
     // silent about the SpaceMouse — which is the failure we set out to fix.
     expect(out.some((l) => l.includes("26 HID interfaces"))).toBe(true);
     expect(out[0]).toContain("[spacemouse]");
+  });
+});
+
+// A 0.1.111 report from a user who opened the app and did nothing carried seven
+// ResizeObserver notifications, each paired with a "Something went wrong" toast.
+// They are not errors, they told the user nothing, and in a capped ring they
+// push out the entries a triager needs.
+describe("isBenignBrowserNoise", () => {
+  it("recognises the ResizeObserver notifications that are not errors", () => {
+    expect(
+      isBenignBrowserNoise("ResizeObserver loop completed with undelivered notifications."),
+    ).toBe(true);
+    expect(isBenignBrowserNoise("ResizeObserver loop limit exceeded")).toBe(true);
+  });
+
+  it("does not swallow anything that is a real error", () => {
+    expect(isBenignBrowserNoise("TypeError: x is not a function")).toBe(false);
+    expect(isBenignBrowserNoise("ResizeObserver is not defined")).toBe(false);
+    expect(isBenignBrowserNoise(undefined)).toBe(false);
+    expect(isBenignBrowserNoise("")).toBe(false);
   });
 });
