@@ -237,6 +237,19 @@ export class TextureTool {
       this.raf = requestAnimationFrame(this.boundTick);
       return;
     }
+    // A rebuild in flight is not the user's doing, so the selection must not be
+    // read as intent until it lands. The progressive renderer installs a FRESH
+    // Highlighter per installment (adoptProgressiveView, once at stream begin and
+    // again for EVERY appended chunk), and a new Highlighter starts with an empty
+    // selectedFaces — so the ambient selection is dropped several times before
+    // `onBuild` ever fires. `rebuildLanded` cannot cover that on its own: it is
+    // set only on a COMPLETED build, i.e. after a tick has already seen the empty
+    // selection, concluded the user deselected, and thrown away lastFaceIds. That
+    // is the "click a face, it highlights for a frame, then clears itself" bug.
+    if (this.store.buildState.building) {
+      this.raf = requestAnimationFrame(this.boundTick);
+      return;
+    }
     if (this.mode === "faces") {
       const cur = this.viewport.getSelectedFaceIds();
       // a rebuild (our own preview landing, usually) wiped the selection — the
