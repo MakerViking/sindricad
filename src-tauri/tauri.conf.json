@@ -28,8 +28,8 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Parametric CAD",
-    "longDescription": "SindriCAD, a parametric CAD app for 3D printing.",
+    "shortDescription": "Parametric CAD for 3D printing",
+    "longDescription": "SindriCAD is a history-based parametric CAD application aimed at 3D printing. Sketch with constraints, build solids with extrude, revolve, loft, fillet and chamfer, apply surface textures and text, then export STEP, STL or 3MF — or send a job straight to a printer. Geometry is computed by OpenCASCADE via build123d.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -40,9 +40,7 @@
     "linux": {
       "deb": {
         "depends": [
-          "libc6 (>= 2.34)",
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0"
+          "libc6 (>= 2.34)"
         ],
         "files": {
           "/usr/lib/udev/rules.d/99-sindricad-spacemouse.rules": "../packaging/99-spacemouse.rules"
