@@ -778,6 +778,13 @@ let lastCommittedId: string | null = null;
 function noteCommitted(id: string | null) {
   if (id) lastCommittedId = id;
 }
+// Breadcrumb state for setStatus, which lives down in the helpers. It has to be
+// declared UP HERE: setStatus is a hoisted function declaration, so the
+// subscribers registered just below can call it long before module evaluation
+// reaches the helpers. As a `let` down there it sat in the temporal dead zone,
+// and the first status of a run is "connecting to sidecar…" from
+// geometry.onStatus — which threw, aborting the rest of main.ts with it.
+let lastStatusCrumb = "";
 
 // --- progressive display -------------------------------------------------
 // The ONLY subscriber to the chunk channel. A chunked reply reaches the viewport
@@ -1375,7 +1382,6 @@ window.addEventListener("keydown", (e) => {
 });
 
 // --- helpers ---
-let lastStatusCrumb = "";
 function setStatus(text: string, cls: "" | "connected" | "error") {
   statusEl.textContent = text;
   statusEl.className = `status ${cls}`;
