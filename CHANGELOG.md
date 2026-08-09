@@ -18,6 +18,32 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Changed
+
+- **Texture cells no longer break up around embossed text, or against any
+  edge.** Two separate faults, both in the band where the pattern is stitched to
+  the edge of a face. Text sitting on a textured face puts one such edge around
+  every letter, which is where it showed: a ring of shattered, half-melted cells
+  hugging the lettering while the rest of the pattern was clean.
+
+  The pattern now runs at full height right up to the boundary, with a vertical
+  wall closing the step, so a partial cell looks like a cell that has simply been
+  cut rather than one that has been dragged down into the surface. And the
+  honeycomb pattern now places its own corner points where its creases meet an
+  edge, so the cells beside a letter follow the pattern instead of being
+  triangulated across it. Measured on a real document: cells that fail to follow
+  the pattern fell from 35% of the band to 1.7%, and the worst deviation nearly
+  halved. Small enclosed shapes — the middle of an "A" or a "D" — carry the
+  pattern properly now instead of coming out as noise.
+
+  Textures still meet neighbouring untextured faces exactly, so nothing leaks and
+  exports stay watertight. Big textured faces take a little longer to build than
+  before, which is the repair pass now having real work to do.
+
+  If you preferred the old softened edge, the Edge blend setting under Advanced
+  still does it — it now means what it says, rather than 0 producing a hard step
+  the pattern could not absorb.
+
 ### Added
 
 - **Text on a face.** Click any face of a body, type, and the text is embossed

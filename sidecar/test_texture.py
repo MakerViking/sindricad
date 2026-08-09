@@ -118,12 +118,69 @@ def test_boundary_taper_to_zero_at_edge():
             tris.append((a, b, c))
             tris.append((a, c, d))
 
-    taper, edge_count = texture._boundary_taper(pts_arr, tris, inset_mm=1.0)
+    taper, edge_count, _boundary = texture._boundary_taper(pts_arr, tris, inset_mm=1.0)
     for idx in (vid(0, 0), vid(n - 1, 0), vid(0, n - 1), vid(n - 1, n - 1)):
         assert taper[idx] < 1e-9, f"boundary vertex {idx} should taper to exactly 0, got {taper[idx]}"
     center = vid(n // 2, n // 2)
     assert taper[center] > 0.99, f"interior vertex 2mm from every edge should reach full height, got {taper[center]}"
     print(PASS, "boundary taper is exactly zero at face-boundary vertices, full height in the interior")
+
+
+def test_a_face_only_a_cell_or_two_across_still_carries_the_pattern():
+    """Text on a face leaves the ENCLOSED part of an 'A' or a 'D' as its own
+    small face — 3.9 mm² and 8.5 mm² on the test7 document, about one and two
+    cells at the default scale. Under the old PINNED boundary those came out as
+    stitching: 40% and 29% of their vertices sat on the boundary and were held
+    at zero, so only 27% and 31% of the face reached the pattern's flat top
+    against 44% on the big face around them, and each cell read as shattered.
+
+    A guard that left such a face smooth was tried and REVERTED. It silently
+    overrode a face the user had explicitly clicked — the tool looked like it
+    was ignoring the click — and it was fixing a symptom of the pinned boundary
+    that `_skirt` had already removed in the same change. With the boundary at
+    full height the same two faces reach 42% and 46% plateau, i.e. the same
+    balance as the 9,210 mm² face they sit in. So: no size gate. Every face the
+    user selects gets the pattern.
+
+    This asserts the invariant on a 4x2mm top face — 8 mm², the size of the 'D'
+    counter — measured against a 20x20 one built the same way, because the
+    absolute plateau fraction depends on where the honeycomb happens to land and
+    only the COMPARISON is meaningful."""
+
+    def plateau_of(w, h):
+        _s, feats = _box(1, w, h, 5)
+        feats += [{"id": "tex", "type": "texture", "kind": "hex", "faces": {"by": "all"},
+                   "depth": 0.4, "scale": 2.0}]
+        _part, errors, bodies = rebuild({"parameters": {}, "features": feats})
+        assert not errors, errors
+        b = bodies[0]
+        faces = list(b["shape"].faces())
+        spec = texture.resolve_body_textures(b)[0][0]
+        top = max(range(len(faces)), key=lambda i: faces[i].center().Z)
+        pos, idx, fids = tessellate(b["shape"], 0.1, textures=[(spec, faces)])
+        P = np.asarray(pos).reshape(-1, 3)
+        I = np.asarray(idx).reshape(-1, 3)
+        mine = I[np.asarray(fids) == top]
+        z = P[np.unique(mine.ravel())][:, 2] - 5.0  # box height; 'out' displaces +Z
+        return faces[top].area, len(mine), z
+
+    area, ntri, z = plateau_of(4, 2)
+    assert 7.0 < area < 9.0, f"expected a ~8 mm2 top face, got {area}"
+    assert ntri > 50, \
+        f"a two-cell face must still be retessellated for the pattern, got {ntri} triangles"
+    assert z.max() > 0.39, f"the pattern must reach full depth, got {z.max():.4f}"
+    assert z.min() > -1e-6, f"an 'out' pattern must not cut in, got {z.min():.4f}"
+
+    small = float(np.mean(z > 0.36))
+    _a, _n, zbig = plateau_of(20, 20)
+    big = float(np.mean(zbig > 0.36))
+    # THE regression guard. Pinning the boundary dragged the small face's flat
+    # top to well under a third of the big face's; leaving it at full height
+    # keeps the two within ~15% of each other.
+    assert small > 0.6 * big, \
+        f"the cell's flat top is being dragged to the floor: {small:.2f} against {big:.2f} on a big face"
+    print(PASS, f"an 8 mm2 face carries the pattern like a 400 mm2 one "
+                f"({small:.2f} vs {big:.2f} at the flat top)")
 
 
 def test_manifold_check_flags_bad_edge_count():
@@ -373,12 +430,20 @@ def test_trapezoid_land_widens_the_flat_top():
     print(PASS, "trapezoid land widens the crest without leaving [0,1]")
 
 
-def test_hard_edge_keeps_boundary_pinned_but_full_depth_inside():
-    """The crack-free invariant under the new inset=0 default. Boundary vertices
-    MUST stay at exactly zero displacement (a neighbouring untextured face meets
-    them, and any drift is a visible crack / broken export) while the first
-    interior sample already carries full depth — that is the machined cut-off
-    look, as opposed to the old 1mm fade."""
+def test_hard_edge_keeps_full_depth_to_the_boundary():
+    """At inset=0 the boundary is NO LONGER pinned to zero.
+
+    It used to be, to guarantee a crack-free seam, and this test asserted it.
+    But pinning the boundary while the vertex one step inside carried full depth
+    put a one-triangle cliff around every boundary — so a cell cut by a face
+    edge, or by the outline of embossed text, had its flat top dragged down on
+    one side and read as a mangled cell rather than part of the pattern. The
+    pattern now runs at full height right up to the boundary and `_skirt` closes
+    the step with a wall, which is what keeps the seam crack-free (see
+    test_skirt_closes_the_step_without_moving_the_rim).
+
+    `boundaryInset > 0` still selects the old smooth fade, and
+    test_boundary_taper_to_zero_at_edge still covers it."""
     n = 5
     pts_arr = np.array([(i, j, 0.0) for j in range(n) for i in range(n)], dtype=float)
     vid = lambda i, j: j * n + i
@@ -387,11 +452,51 @@ def test_hard_edge_keeps_boundary_pinned_but_full_depth_inside():
         for i in range(n - 1):
             a, b, c, d = vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1)
             tris += [(a, b, c), (a, c, d)]
-    taper, _ = texture._boundary_taper(pts_arr, tris, inset_mm=0.0)
+    taper, _counts, boundary = texture._boundary_taper(pts_arr, tris, inset_mm=0.0)
     for idx in (vid(0, 0), vid(n - 1, 0), vid(0, n - 1), vid(2, 0)):
-        assert taper[idx] == 0.0, f"boundary vertex {idx} must be EXACTLY 0, got {taper[idx]}"
+        assert taper[idx] == 1.0, f"boundary vertex {idx} must carry full depth, got {taper[idx]}"
     assert taper[vid(1, 1)] == 1.0, "the first interior sample should be at full depth, not faded"
-    print(PASS, "hard edge: boundary pinned at exactly zero, full depth one sample in")
+    assert len(boundary) == 4 * (n - 1), f"expected the full rim, got {len(boundary)} edges"
+    print(PASS, "hard edge: full depth right up to the boundary, no cliff")
+
+
+def test_skirt_closes_the_step_without_moving_the_rim():
+    """The crack-free invariant, now carried by the wall instead of by pinning.
+
+    Two things must hold together: the wall's FOOT lands exactly on the original
+    boundary (so a neighbouring untextured face still meets it bit-identically),
+    and the wall's top reuses the displaced surface vertices (so no unshared
+    edge is introduced — geometrically watertight but index-non-manifold is
+    exactly what breaks a 3MF in some slicers)."""
+    n = 5
+    pts = np.array([(float(i), float(j), 0.0) for j in range(n) for i in range(n)])
+    vid = lambda i, j: j * n + i
+    tris = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a, b, c, d = vid(i, j), vid(i + 1, j), vid(i + 1, j + 1), vid(i, j + 1)
+            tris += [(a, b, c), (a, c, d)]
+    _t, _c, boundary = texture._boundary_taper(pts, tris, inset_mm=0.0)
+    disp = pts.copy()
+    disp[:, 2] += 0.4  # the whole patch lifted, as a full-height pattern would
+    out = texture._skirt(pts, disp, boundary)
+    assert out is not None, "a lifted boundary must produce a wall"
+    feet, _norms, wall = out
+
+    assert np.abs(feet[:, 2]).max() < 1e-15, "the wall's foot must sit exactly on the rim"
+    rim = {v for e in boundary for v in e}
+    assert len(feet) == len(rim), f"one foot per rim vertex: {len(feet)} vs {len(rim)}"
+
+    # every wall edge shared, except the new outer boundary (the feet ring)
+    combined = np.concatenate([disp, feet])
+    counts = texture._boundary_edges([tuple(t) for t in np.concatenate([np.asarray(tris), wall])])
+    unshared = [k for k, c in counts.items() if c == 1]
+    assert unshared, "the mesh must still have an outer boundary"
+    for a, b in unshared:
+        assert a >= len(disp) and b >= len(disp), \
+            "the only unshared edges may be the feet ring — a displaced vertex is exposed"
+        assert abs(combined[a][2]) < 1e-15 and abs(combined[b][2]) < 1e-15
+    print(PASS, f"skirt: {len(wall)} wall triangles, rim exact, no exposed displaced edge")
 
 
 def test_faceted_display_splits_creases_but_export_stays_indexed():
@@ -503,6 +608,7 @@ def main():
     test_whole_body_knurl_increases_triangles_and_bounds_displacement()
     test_selected_face_only_leaves_other_faces_unchanged()
     test_boundary_taper_to_zero_at_edge()
+    test_a_face_only_a_cell_or_two_across_still_carries_the_pattern()
     test_manifold_check_flags_bad_edge_count()
     test_manifold_diagnostic_surfaces_from_displace_face()
     test_cache_key_changes_with_texture_params()
@@ -515,7 +621,8 @@ def main():
     test_knurl_facet_is_min_of_grooves_not_bilinear_product()
     test_terrace_quantises_into_flat_levels()
     test_trapezoid_land_widens_the_flat_top()
-    test_hard_edge_keeps_boundary_pinned_but_full_depth_inside()
+    test_hard_edge_keeps_full_depth_to_the_boundary()
+    test_skirt_closes_the_step_without_moving_the_rim()
     test_faceted_display_splits_creases_but_export_stays_indexed()
     test_every_kind_meshes_cleanly_at_the_faceted_default()
     test_boundary_ring_is_dense_enough_to_carry_the_pattern()

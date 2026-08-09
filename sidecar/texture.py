@@ -49,7 +49,31 @@ _DEFAULT_DENSITY_CAP = 2_000_000
 #    returned the same _trapezoid as ribs, so the two kinds were byte-identical
 #    for every user on the default profile; `sharpness` now picks its facet
 #    count instead of a land width. Existing waves documents change shape.
-CODE_VERSION = 8
+# 9: texture cells are no longer flattened where they meet a boundary. The
+#    boundary used to be pinned to zero height while the vertex one step inside
+#    got the full pattern, so every cell cut by a face edge — or by the outline
+#    of embossed text — had its flat top dragged down on one side and read as a
+#    mangled cell rather than part of the pattern. The boundary now keeps full
+#    height and a vertical skirt closes the step, so cells stay flat and the mesh
+#    stays watertight. `boundaryInset` > 0 still selects the old soft fade.
+#    Existing documents on the default inset (0) gain the skirt and change shape.
+# 10: the band of mesh stitching a hex pattern to a face BOUNDARY is now
+#    triangulated along the creases like the rest of it. Two things blinded it:
+#    the honeycomb's creases are not a parallel line family, so nothing planted a
+#    ring vertex where one met the boundary, and the crease-repair pass still
+#    skipped every triangle touching the ring on the pre-9 assumption that the
+#    taper pinned it flat. Both showed as shattered cells in a band around
+#    embossed text, whose glyph outlines are internal rings of the textured face.
+# 11: no size gate. A face only a cell or two across — the enclosed counter of
+#    an "A" or a "D" — was briefly left SMOOTH, because under the pre-9 pinned
+#    boundary it came out as stitching. That silently overrode a face the user
+#    had clicked (the Texture tool simply looked like it was ignoring the
+#    click), and 9's skirt had already fixed the stitching it was written for:
+#    the same two counters now reach 42% and 46% of their area at the pattern's
+#    flat top, against 44% on the 9,210 mm2 face around them. The gate is gone;
+#    this version exists so meshes displaced by the interim build are not served
+#    from the disk cache.
+CODE_VERSION = 11
 
 
 def validate_texture_spec(f):
@@ -668,16 +692,15 @@ def _points_in_polygon(pts, ring_a, ring_b, chunk=4096):
     return inside
 
 
-def _cell_lattice_points(kind, spec, scale, lo_u, hi_u, lo_v, hi_v, wrap_u=None):
-    """Explicit vertex set for the CELLULAR kinds, whose creases do not lie on
-    families of parallel lines and so cannot be expressed as a line grid.
+def _hex_rings(spec, a, lo_u, hi_u, lo_v, hi_v):
+    """The honeycomb's two corner rings over a padded bbox, as (outer, inner),
+    each (S, 6, 2) in mm-chart coordinates.
 
-    Returned in mm-chart coordinates (the offset shift already applied by the
-    caller's bbox), because hex and voronoi ignore `angle` — their lattice has
-    its own orientation and `height_field` never rotates their input."""
-    if kind != "hex":
-        return None
-    a = scale
+    `outer` is the cell boundary (h = 0, the groove) and `inner` the flat top
+    (h = 1); the wall between a matching pair is one planar facet, and the spoke
+    joining them is the crease where two walls meet. Sites are the triangular
+    lattice site(i,j) = (i·a + j·a/2, j·a·√3/2), whose Voronoi cells ARE the
+    honeycomb."""
     root3 = math.sqrt(3.0)
     w = _hex_wall_width(a, spec.get("sharpness", 0.5))
     r_out = a / root3                      # circumradius of the cell
@@ -698,11 +721,77 @@ def _cell_lattice_points(kind, spec, scale, lo_u, hi_u, lo_v, hi_v, wrap_u=None)
     if not rows:
         return None
     sites = np.concatenate(rows)
-    # cell corners (h = 0, the groove) and flat-top corners (h = 1); the wall
-    # between a matching pair is one planar facet, and the spoke joining them is
-    # the crease where two walls meet
-    outer = sites[:, None, :] + r_out * _HEX_CORNERS[None, :, :]
-    inner = sites[:, None, :] + r_in * _HEX_CORNERS[None, :, :]
+    return (sites[:, None, :] + r_out * _HEX_CORNERS[None, :, :],
+            sites[:, None, :] + r_in * _HEX_CORNERS[None, :, :])
+
+
+def _cell_crease_segments(kind, spec, scale, lo_u, hi_u, lo_v, hi_v):
+    """Every crease of a CELLULAR kind as an explicit segment set (S0, S1), each
+    (E, 2) in mm-chart coordinates.
+
+    `_cell_lattice_points` plants the vertices these segments run between, which
+    is enough in the face's interior. It is NOT enough at a boundary: the ring is
+    densified on its own uniform step, so a crease reaching the rim (or the
+    outline of embossed text) generally meets it BETWEEN two ring vertices, and
+    the band stitching the ring to the lattice then has no vertex to run the
+    crease along. `_segment_crossings` solves exactly this for the kinds whose
+    creases are parallel line families; a honeycomb's are not, so intersect the
+    segments directly instead."""
+    if kind != "hex":
+        return None
+    rings = _hex_rings(spec, scale, lo_u, hi_u, lo_v, hi_v)
+    if rings is None:
+        return None
+    outer, inner = rings
+    # cell edges (the groove), flat-top edges (the top of the wall), and the six
+    # spokes joining them — the complete breakline set of `_height_hex`
+    S0 = np.concatenate([outer.reshape(-1, 2), inner.reshape(-1, 2), outer.reshape(-1, 2)])
+    S1 = np.concatenate([np.roll(outer, -1, axis=1).reshape(-1, 2),
+                         np.roll(inner, -1, axis=1).reshape(-1, 2),
+                         inner.reshape(-1, 2)])
+    return S0, S1
+
+
+def _cell_segment_crossings(p0, p1, creases, tree, radius):
+    """Parameters t in (0,1) at which a boundary segment p0-p1 crosses a cellular
+    crease. `tree`/`radius` prefilter the crease set by midpoint proximity, which
+    is what keeps this near-linear in the number of boundary segments."""
+    S0, S1 = creases
+    near = tree.query_ball_point((p0 + p1) * 0.5,
+                                 radius + float(np.hypot(*(p1 - p0))) * 0.5)
+    if not near:
+        return []
+    S0, S1 = S0[near], S1[near]
+    r, s = p1 - p0, S1 - S0
+    den = r[0] * s[:, 1] - r[1] * s[:, 0]
+    ok = np.abs(den) > 1e-12                 # parallel: no single crossing point
+    if not ok.any():
+        return []
+    q, d, s = S0[ok] - p0, den[ok], s[ok]
+    t = (q[:, 0] * s[:, 1] - q[:, 1] * s[:, 0]) / d
+    on_crease = (q[:, 0] * r[1] - q[:, 1] * r[0]) / d
+    hit = ((t > 1e-9) & (t < 1.0 - 1e-9)
+           & (on_crease >= -1e-9) & (on_crease <= 1.0 + 1e-9))
+    return list(t[hit])
+
+
+def _cell_lattice_points(kind, spec, scale, lo_u, hi_u, lo_v, hi_v, wrap_u=None):
+    """Explicit vertex set for the CELLULAR kinds, whose creases do not lie on
+    families of parallel lines and so cannot be expressed as a line grid.
+
+    Returned in mm-chart coordinates (the offset shift already applied by the
+    caller's bbox), because hex and voronoi ignore `angle` — their lattice has
+    its own orientation and `height_field` never rotates their input."""
+    if kind != "hex":
+        return None
+    a = scale
+    root3 = math.sqrt(3.0)
+    w = _hex_wall_width(a, spec.get("sharpness", 0.5))
+    r_out = a / root3                      # circumradius of the cell
+    rings = _hex_rings(spec, a, lo_u, hi_u, lo_v, hi_v)
+    if rings is None:
+        return None
+    outer, inner = rings
     outer_next = np.roll(outer, -1, axis=1)
     # POINTS ALONG EVERY CELL EDGE. The groove along a shared edge is the
     # sharpest crease in the pattern (h drops to 0 and rises again), and with
@@ -972,7 +1061,8 @@ def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8,
 def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
                                 angle_deg, target_edge_mm, max_tris,
                                 pattern_period=0.0, phases=None, offset=0.0, field=None,
-                                unchart=None, cell_points=None, wrap_u=None):
+                                unchart=None, cell_points=None, wrap_u=None,
+                                cell_creases=None, pin_ring=True):
     """PLANAR faces: retessellate with a regular sample grid ROTATED to the
     pattern angle, instead of subdividing the axis-aligned base triangulation.
     A diagonal pattern sampled on an axis-aligned grid beats against it — the
@@ -1072,6 +1162,14 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
         on_cut = (np.abs(cp[:, 0]) < 1e-9) | (np.abs(cp[:, 0] - wrap_u) < 1e-9)
         if on_cut.any():
             seam_vs = np.unique(cp[on_cut][:, 1])
+    # Crease crossings for the CELLULAR kinds, whose creases are not a parallel
+    # line family — prefilter tree over the segment midpoints, since every
+    # boundary segment would otherwise be tested against the whole honeycomb.
+    crease_tree = crease_radius = None
+    if lattice and phases is None and cell_creases is not None:
+        crease_tree = cKDTree((cell_creases[0] + cell_creases[1]) * 0.5)
+        crease_radius = float(
+            np.linalg.norm(cell_creases[1] - cell_creases[0], axis=1).max()) * 0.5
     for i0, i1 in boundary:
         u0p, u1p = P_mm[i0, 0], P_mm[i1, 0]
         seam_seg = (seam_vs is not None
@@ -1089,6 +1187,9 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
             if lattice and phases is not None:
                 ts += _segment_crossings(rp_u[i0], rp_u[i1], phases[0], period)
                 ts += _segment_crossings(rp_v[i0], rp_v[i1], phases[1], period)
+            elif crease_tree is not None:
+                ts += _cell_segment_crossings(P_mm[i0], P_mm[i1], cell_creases,
+                                              crease_tree, crease_radius)
         if not ts:
             continue  # already shorter than a sample step, and no crease crosses
         t = np.unique(np.round(np.asarray(ts, dtype=np.float64), 12))
@@ -1229,11 +1330,17 @@ def _aligned_grid_triangulation(base_pts, base_uv, base_tris, u_mm, v_mm,
         # mop up the rim band, where the stitching can still bridge a crease.
         # Seam ring vertices displace with the field (taper-exempt), so the
         # seam strip is scored and repaired too — see _flip_to_creases.
+        #
+        # `pin_ring` is false whenever `boundaryInset` is 0 (the DEFAULT), which
+        # since the boundary skirt leaves EVERY ring vertex at full height. The
+        # exclusion then has nothing left to protect and only blinds the pass to
+        # the band it exists for — measured on a hex cylinder carrying embossed
+        # text, whose eleven glyph outlines are all internal rings.
         tris = _flip_to_creases(
-            tris, V_mm, field, n_ring=n_ring,
+            tris, V_mm, field, n_ring=n_ring if pin_ring else 0,
             ring_fixable=((np.abs(ring_mm[:, 0]) < 1e-6)
                           | (np.abs(ring_mm[:, 0] - wrap_u) < 1e-6))
-            if wrap_u else None)
+            if (wrap_u and pin_ring) else None)
     else:
         # STRUCTURED interior triangulation with one consistent diagonal per
         # cell. (Delaunay on a regular grid is co-circular — its arbitrary
@@ -1451,10 +1558,20 @@ def _boundary_edges(tris):
 
 
 def _boundary_taper(pts_arr, tris, inset_mm, exempt=None):
-    """0 at the face boundary, smoothstepping to 1 over `inset_mm` — this is what
-    keeps boundary vertices bit-identical to the untextured mesh (zero
-    displacement) so a neighboring untextured face needs no special handling and
-    no crack can form at the seam.
+    """How much of the pattern's height each vertex is allowed, 0..1.
+
+    `inset_mm > 0` smoothsteps from 0 at the face boundary to 1 over that
+    distance, which keeps boundary vertices bit-identical to the untextured mesh
+    so a neighbouring untextured face needs no special handling and no crack can
+    form at the seam.
+
+    `inset_mm == 0` (the DEFAULT) no longer pins the boundary. Pinning it while
+    the vertex one step inside got full height put a one-triangle cliff around
+    every boundary — so a cell cut by a face edge, or by the outline of embossed
+    text, had its flat top dragged down to the base surface on one side and read
+    as a mangled, stretched cell rather than part of the pattern. The boundary is
+    now left at full height and `_skirt` closes the resulting step with a
+    vertical wall, which keeps the cells flat AND the mesh watertight.
 
     Distance is to the nearest boundary-edge ENDPOINT (cKDTree), not the exact
     segment: boundary edges are subdivided to ~the texture sample length, so the
@@ -1474,15 +1591,75 @@ def _boundary_taper(pts_arr, tris, inset_mm, exempt=None):
         # triangulation alone is what keeps the crease-exactness intact; welding
         # after the flip repair instead broke 1-5% of the triangles near the seam.
         boundary = [k for k in boundary if not (exempt[k[0]] and exempt[k[1]])]
-    if not boundary:
-        return np.ones(len(pts_arr)), edge_count
+    if not boundary or inset_mm <= 1e-9:
+        return np.ones(len(pts_arr)), edge_count, boundary
     from scipy.spatial import cKDTree
 
     endpoints = pts_arr[np.unique(np.asarray(boundary, dtype=np.int64).ravel())]
     d, _ = cKDTree(endpoints).query(pts_arr, workers=-1)  # exact same results, all cores
-    if inset_mm <= 1e-9:
-        return (d > 1e-9).astype(np.float64), edge_count
-    return _smoothstep(np.clip(d / inset_mm, 0.0, 1.0)), edge_count
+    return _smoothstep(np.clip(d / inset_mm, 0.0, 1.0)), edge_count, boundary
+
+
+def _skirt(base_pts, disp_pts, boundary):
+    """Vertical wall closing the step between the DISPLACED pattern and the
+    face's true, undisplaced boundary.
+
+    Without it, leaving the boundary at full height would lift the edge of the
+    textured face clear of its untextured neighbour and open a crack.
+
+    The wall SHARES the surface mesh's boundary vertices for its top edge and
+    one ring of new vertices for its foot, rather than emitting four fresh
+    corners per quad. Fresh corners would shade a crisper rim, but they leave
+    every wall edge unshared by index — geometrically watertight, and flagged
+    non-manifold by some slicers, which is the same trade this file already
+    resolves in favour of printing at the split_creases return. Measured: fresh
+    corners added ~4,500 unshared edges to one textured cylinder. The viewport
+    gets its crisp rim anyway, because split_creases de-indexes and re-derives
+    per-triangle normals downstream.
+
+    The foot ring lands exactly on the original boundary, so the face's outer
+    edge stays bit-identical to the untextured mesh and neighbours still match.
+
+    Returns (extra_pts, extra_normals, tris) with `tris` already indexed into the
+    concatenation of the displaced vertices and `extra_pts`, or None if nothing
+    moved."""
+    if not boundary:
+        return None
+    e = np.asarray(boundary, dtype=np.int64)
+    moved = np.linalg.norm(disp_pts - base_pts, axis=1) > 1e-6
+    # A boundary vertex the pattern barely lifts gets no wall, so it must sit
+    # EXACTLY on the polyline the neighbouring untextured face uses. Evaluating
+    # the field there returns ~1e-9 rather than a true zero, and the old pinned
+    # path hid that by multiplying the displacement by 0.0. Snap it back: every
+    # boundary vertex is now either walled or bit-identical to the shared
+    # polyline, with no third case that could leak a seam.
+    still = np.unique(e)[~moved[np.unique(e)]]
+    disp_pts[still] = base_pts[still]
+    keep = moved[e[:, 0]] | moved[e[:, 1]]
+    if not keep.any():
+        return None
+    e = e[keep]
+    ring = np.unique(e)                      # boundary vertices needing a foot
+    foot = {v: k for k, v in enumerate(ring)}  # original index -> foot slot
+    n_disp = len(disp_pts)
+    i, j = e[:, 0], e[:, 1]
+    fi = np.array([foot[v] for v in i], dtype=np.int64) + n_disp
+    fj = np.array([foot[v] for v in j], dtype=np.int64) + n_disp
+    tris = np.concatenate([
+        np.stack([i, j, fj], axis=1),
+        np.stack([i, fj, fi], axis=1),
+    ])
+    # wall normal: along the edge x down the step, accumulated onto the feet it
+    # touches. _orient_windings fixes winding afterwards, so only the AXIS matters.
+    wn = np.cross(disp_pts[j] - disp_pts[i], base_pts[i] - disp_pts[i])
+    acc = np.zeros((len(ring), 3))
+    np.add.at(acc, fi - n_disp, wn)
+    np.add.at(acc, fj - n_disp, wn)
+    ln = np.linalg.norm(acc, axis=1)
+    ln[ln < 1e-12] = 1.0
+    return base_pts[ring], acc / ln[:, None], tris
+
+
 
 
 def _manifold_check(edge_count):
@@ -1674,17 +1851,23 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
             if abs(span - 2.0 * math.pi) < 1e-6:
                 wrap_u = _turn_mm(surf, u_period)
         cell_points = None
+        cell_creases = None
         if phases == "cells":
             # cellular kinds place their own vertices, in mm coordinates; the
             # offset shifts u exactly as it does for the field
             phases = None
             pad = max(scale, target_edge_mm)
-            cell_points = _cell_lattice_points(
-                spec["kind"], spec, scale,
-                float(bu_mm.min()) + tex_offset - pad, float(bu_mm.max()) + tex_offset + pad,
-                float(bv_mm.min()) - pad, float(bv_mm.max()) + pad, wrap_u=wrap_u)
+            bbox = (float(bu_mm.min()) + tex_offset - pad,
+                    float(bu_mm.max()) + tex_offset + pad,
+                    float(bv_mm.min()) - pad, float(bv_mm.max()) + pad)
+            cell_points = _cell_lattice_points(spec["kind"], spec, scale, *bbox,
+                                               wrap_u=wrap_u)
+            cell_creases = _cell_crease_segments(spec["kind"], spec, scale, *bbox)
+            shift = np.array([tex_offset, 0.0])
             if cell_points is not None:
-                cell_points = cell_points - np.array([tex_offset, 0.0])
+                cell_points = cell_points - shift
+            if cell_creases is not None:
+                cell_creases = (cell_creases[0] - shift, cell_creases[1] - shift)
 
         def _field(pts_mm):
             # the same field displace_face will evaluate, offset included, so a
@@ -1703,6 +1886,10 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
                     offset=tex_offset, field=_field if is_lattice else None,
                     unchart=_uncharter(surf, u_period), cell_points=want_cells,
                     wrap_u=wrap_u,
+                    cell_creases=cell_creases if is_lattice else None,
+                    # the skirt leaves the ring at full height unless an inset
+                    # tapers it — see the _flip_to_creases call
+                    pin_ring=float(spec.get("boundaryInset", 0.0)) > 1e-9,
                 )
                 lattice_used = is_lattice
                 break
@@ -1730,7 +1917,7 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
         if abs(span - 2.0 * math.pi) < 1e-6:
             turn = _turn_mm(surf, _u_period(spec, scale))
             seam = (np.abs(u_mm) < 1e-6) | (np.abs(u_mm - turn) < 1e-6)
-    taper, edge_count = _boundary_taper(pts_arr, tris, inset_mm, exempt=seam)
+    taper, edge_count, boundary = _boundary_taper(pts_arr, tris, inset_mm, exempt=seam)
     manifold_ok, manifold_bad = _manifold_check(edge_count)
 
     normals, t_u, t_v = _face_frame(surf, uv_arr, flip)
@@ -1746,6 +1933,7 @@ def _displacement_geometry(face, tri, loc, ident, spec, scale, target_edge_mm, c
         "mean_edge": mean_edge, "u_mm": u_mm, "v_mm": v_mm,
         "lattice": lattice_used,
         "taper": taper, "manifold_ok": manifold_ok, "manifold_bad": manifold_bad,
+        "boundary": boundary,
         "normals": normals, "t_u": t_u, "t_v": t_v,
     }
 
@@ -1789,9 +1977,9 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
     reads as hard surface instead of being smoothed across its creases."""
     from OCP.TopAbs import TopAbs_Orientation
 
-    flip = face.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED
     kind = spec["kind"]
     scale = max(float(spec.get("scale", 2.0)), 0.05)
+    flip = face.wrapped.Orientation() == TopAbs_Orientation.TopAbs_REVERSED
     target_edge_mm = max(scale / 4.0, 0.05)  # ~4 samples per pattern wavelength
     cap = density_cap if density_cap else _DEFAULT_DENSITY_CAP
     inset_mm = max(float(spec.get("boundaryInset", 0.0)), 0.0)
@@ -1876,6 +2064,10 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
             "reason": f"{geom['manifold_bad']} non-manifold edge(s) in textured region (mesh crack risk)",
         })
 
+    # The wall that lets the pattern keep full height at the boundary. Only
+    # needed when the taper isn't already easing it to zero there.
+    skirt = _skirt(pts_arr, disp, geom["boundary"]) if inset_mm <= 1e-9 else None
+
     if split_creases and _is_facet(spec):
         # HARD-SURFACE SHADING. A shared vertex can carry only ONE normal, so on
         # a creased surface it is forced to average the two facets that meet
@@ -1891,6 +2083,11 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
         idx = _orient_windings(disp, np.asarray(geom["flat_indices"], dtype=np.int64).reshape(-1, 3),
                                disp_normals)
         tri_pts = disp[idx]  # (T, 3, 3)
+        if skirt is not None:
+            s_pts, s_norm, s_tris = skirt
+            all_p = np.concatenate([disp, s_pts])
+            all_n = np.concatenate([disp_normals, s_norm])
+            tri_pts = np.concatenate([tri_pts, all_p[_orient_windings(all_p, s_tris, all_n)]])
         fn = np.cross(tri_pts[:, 1] - tri_pts[:, 0], tri_pts[:, 2] - tri_pts[:, 0])
         ln = np.linalg.norm(fn, axis=1)
         ln[ln < 1e-12] = 1.0
@@ -1904,4 +2101,9 @@ def displace_face(face, tri, loc, ident, spec, density_cap, diag=None, feature_i
 
     idx = _orient_windings(disp, np.asarray(geom["flat_indices"], dtype=np.int64).reshape(-1, 3),
                            disp_normals)
+    if skirt is not None:
+        s_pts, s_norm, s_tris = skirt
+        disp = np.concatenate([disp, s_pts])
+        disp_normals = np.concatenate([disp_normals, s_norm])
+        idx = np.concatenate([idx, _orient_windings(disp, s_tris, disp_normals)])
     return disp.ravel().tolist(), idx.ravel().tolist(), disp_normals.ravel().tolist()

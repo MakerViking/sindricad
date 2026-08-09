@@ -194,9 +194,14 @@ def test_lattice_reproduces_the_height_field_exactly():
             for angle in (0.0, 17.0, 45.0):
                 spec = _spec(kind, sharp, angle)
                 P, I = _displaced(face, spec)
-                bnd, _c = _boundary(I)
-                on_bnd = np.zeros(len(P), dtype=bool)
-                on_bnd[bnd] = True
+                # "Interior" means strictly inside the FACE OUTLINE, which is
+                # what this oracle has always measured. It used to be derived
+                # from unshared mesh edges, but the boundary skirt (CODE_VERSION
+                # 9) shares those edges with its wall, so the mesh no longer
+                # reports the outline as its own boundary. Test the outline
+                # directly: exact, and independent of how it happens to be meshed.
+                half = PLATE / 2.0
+                on_bnd = (np.abs(P[:, 0]) > half - 1e-9) | (np.abs(P[:, 1]) > half - 1e-9)
                 interior = I[~on_bnd[I].any(axis=1)]
                 assert len(interior) > 100, (kind, sharp, angle, len(interior))
                 corners = P[interior]
@@ -273,7 +278,17 @@ def test_lattice_costs_no_more_than_the_pattern_demands():
                 ("hex", 0.0): 48, ("hex", 0.5): 48, ("hex", 1.0): 48}
     for (kind, sharp), ceiling in ceilings.items():
         _P, I = _displaced(face, _spec(kind, sharp))
-        per_cell = len(I) / cells
+        # The boundary skirt (CODE_VERSION 9) is not lattice: its cost tracks the
+        # face's PERIMETER, so counting it here would make this budget depend on
+        # the fixture's perimeter-to-area ratio instead of on the pattern, which
+        # is the one thing the test exists to measure. Wall triangles are exactly
+        # vertical, so they project to zero area in xy; every lattice triangle is
+        # part of a heightfield over the plate and projects to a positive area.
+        T = _P[I]
+        plan = np.abs((T[:, 1, 0] - T[:, 0, 0]) * (T[:, 2, 1] - T[:, 0, 1])
+                      - (T[:, 1, 1] - T[:, 0, 1]) * (T[:, 2, 0] - T[:, 0, 0]))
+        lattice = I[plan > 1e-12]
+        per_cell = len(lattice) / cells
         assert per_cell < ceiling, f"{kind} sharp={sharp}: {per_cell:.1f} tris/cell"
     # and the sampled path it replaced really is ~32 for a one-axis pattern
     _P, I = _displaced(face, _spec("noise", 0.5))
@@ -318,9 +333,10 @@ def test_offset_phase_locks_the_lattice():
     face = _plate_top_face()
     spec = _spec("ribs", 0.5, offset=0.317)
     P, I = _displaced(face, spec)
-    bnd, _c = _boundary(I)
-    on_bnd = np.zeros(len(P), dtype=bool)
-    on_bnd[bnd] = True
+    # strictly inside the plate outline — see the note in
+    # test_lattice_reproduces_the_height_field_exactly
+    half = PLATE / 2.0
+    on_bnd = (np.abs(P[:, 0]) > half - 1e-9) | (np.abs(P[:, 1]) > half - 1e-9)
     interior = I[~on_bnd[I].any(axis=1)]
     s = np.einsum("sb,tbc->tsc", _BARY, P[interior]).reshape(-1, 3)
     h = texture.height_field("ribs", spec, s[:, 0] + 0.317, s[:, 1])
@@ -392,9 +408,16 @@ def test_lattice_is_exact_on_a_cylinder():
                 spec = _spec(kind, sharp, angle)
                 P, I = _displaced(face, spec)
                 u_mm, v_mm, circ = _cyl_chart(face, P, spec)
+                # Strictly inside the face outline. Two sources, because neither
+                # alone is complete since the boundary skirt (CODE_VERSION 9):
+                # the mesh's own unshared edges still catch the u=0 SEAM (never
+                # skirted, and carrying a phase joint), while the end circles are
+                # now shared with the wall and have to be read off the chart.
                 bnd, _c = _boundary(I)
                 on_bnd = np.zeros(len(P), dtype=bool)
                 on_bnd[bnd] = True
+                vlo, vhi = v_mm.min(), v_mm.max()
+                on_bnd |= (v_mm - vlo < 1e-9) | (vhi - v_mm < 1e-9)
                 interior = I[~on_bnd[I].any(axis=1)]
                 assert len(interior) > 100, (kind, sharp, angle, len(interior))
                 chart = np.stack([u_mm, v_mm], axis=1)[interior].copy()
@@ -424,15 +447,29 @@ def test_curved_faces_keep_the_boundary_on_the_shared_polyline():
     base = _base_boundary_segments(face)
     for kind in LATTICE_KINDS + ("noise",):
         P, I = _displaced(face, _spec(kind, 0.5))
-        bnd, _c = _boundary(I)
-        B = P[bnd]
+        _bnd, counts = _boundary(I)
         # Only vertices on a boundary SHARED with a neighbouring face have to
         # stay put. The UV seam is an artificial cut with no neighbour, and it is
         # deliberately displaced now (pinning it left a flat stripe up every
         # cylinder). Its two sides carry the same field value, so they move
         # together and stay coincident.
-        on_cap = (np.abs(B[:, 2]) < 1e-6) | (np.abs(B[:, 2] - CYL_H) < 1e-6)
-        worst = _max_distance_to_segments(B[on_cap], base)
+        #
+        # Take the cap ring as the unshared EDGES with both ends on a cap plane.
+        # Testing vertices alone is no longer enough: since the boundary skirt
+        # (CODE_VERSION 9) the cap ring is the wall's foot, and the one vertex
+        # where the seam meets a cap is unshared via its VERTICAL seam edge while
+        # being legitimately displaced — its cap side is sealed by the wall.
+        on_cap_v = (np.abs(P[:, 2]) < 1e-6) | (np.abs(P[:, 2] - CYL_H) < 1e-6)
+        # ...and not ON the seam. The wall stops at the seam (seam edges are
+        # never skirted), leaving one open vertical edge where it meets each
+        # cap. Those four corner vertices are displaced by design and close
+        # against their coincident twin on the other side of the cut, exactly as
+        # the seam itself does. The seam here is the +X meridian.
+        seam_v = (np.abs(P[:, 1]) < 1e-6) & (P[:, 0] > 0)
+        ring = {v for (a, b), n in counts.items() if n == 1 and on_cap_v[a] and on_cap_v[b]
+                for v in (a, b) if not seam_v[v]}
+        assert ring, f"{kind}: no cap boundary ring found"
+        worst = _max_distance_to_segments(P[sorted(ring)], base)
         assert worst < 1e-9, f"{kind}: cap boundary vertex {worst:.6f}mm off the shared polyline"
     print(PASS, "curved-face boundaries stay on the shared polyline (chord fix holds)")
 
