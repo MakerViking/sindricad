@@ -174,6 +174,27 @@ export class ExtrudeTool {
       if (!additive && this.selected.length) this.beginDrag();
     } else {
       e.preventDefault();
+      // A modifier-held click means "change the area set", not "commit". Edit mode
+      // is otherwise a trap: startEdit restores the saved areas and goes straight
+      // to drag, so beginDrag's "Ctrl-click areas to add/remove" prompt had no
+      // reachable handler and every attempt to drop an area committed instead.
+      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+        const r = this.regionUnder(e.clientX, e.clientY);
+        if (!r) return; // modifier on empty space: do nothing rather than commit
+        this.overlay.toggleRegionSelection(r, true);
+        this.selected = this.overlay.selectedRegions();
+        if (!this.selected.length) {
+          // emptied: updatePreview early-returns without disposing, so the old
+          // preview would hang in the scene. Drop it and go back to picking.
+          this.phase = "pick";
+          this.disposePreviewGeom();
+          this.previewKey = "";
+          setPrompt("Select a profile to extrude · Ctrl-click adds areas · Enter to confirm");
+          return;
+        }
+        this.updatePreview();
+        return;
+      }
       void this.commit();
     }
   }
