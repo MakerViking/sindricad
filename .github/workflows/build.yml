@@ -353,7 +353,7 @@ jobs:
   # (tauri-plugin-updater): per-platform updater-bundle URL + minisign signature.
   # Job-level concurrency serializes racing main pushes.
   release:
-    needs: build
+    needs: [build, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     permissions:
@@ -494,10 +494,14 @@ jobs:
   # gets promoted off the experimental-spike path.
   # Browser end-to-end checks for the imported-assembly Browser tree.
   #
-  # Deliberately NON-GATING: nothing `needs:` this job, exactly like
-  # rust-geom-check below, so a browser flake can never block a beta publish.
-  # That matters here because a green `build` auto-publishes to users who
-  # auto-update, and browser e2e is the classic flaky surface.
+  # GATES THE RELEASE (`release` needs it). It used to be deliberately
+  # non-gating, on the reasoning that browser e2e is the classic flaky surface
+  # and a flake must never block a beta publish. That reasoning cost more than it
+  # saved: 8dc2f87 went red here with a real load-time crash (a `setStatus` call
+  # during module evaluation hitting the temporal dead zone of a `let` declared
+  # 700 lines further down), `build` was green, and the rolling beta published
+  # anyway. A red e2e is now assumed real until someone looks at it. If a genuine
+  # flake ever does block a publish, re-run the job — do not un-gate it again.
   #
   # These exist because everything else about the assembly tree is unit tests and
   # row counts. The render-signature bug (a document whose product NAMES changed
