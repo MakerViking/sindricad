@@ -213,6 +213,24 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Shell now asks for the wall thickness instead of choosing it for you.**
+  Picking a face to open committed the shell immediately with a 2 mm wall, and
+  nothing on screen ever said so — the only way to find the number, let alone
+  change it, was to select the feature afterwards and look in the inspector.
+  Shell now shows the same thickness box every other tool that takes a value
+  uses, seeded at 2 mm so pressing Enter straight away does what it always did.
+  Type a value, or press Escape to back out without creating anything.
+
+- **A few refused connections no longer wedge the geometry engine for good.**
+  Every connection the sidecar rejected leaked one slot of its concurrent
+  connection limit, because the cleanup that releases the slot sat below a line
+  that raised on the reject path and never ran. Eight rejects and the sidecar
+  turned away everything that followed, the real app included, with "geometry
+  engine connection lost" until it was restarted. Nothing an ordinary session
+  does reaches this, since the app holds one connection and presents a valid
+  token; it took a stale token retrying to burn through the limit. Rejected
+  connections now release their slot.
+
 - **An empty document now shows the grid and the origin instead of nothing.**
   With no geometry to frame, the view was pointed away from the scene entirely,
   so a new document looked like a black window with no way to tell what had

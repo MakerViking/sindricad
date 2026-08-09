@@ -17,6 +17,7 @@ import type { PlaneOffsetTool } from "./planeOffsetTool";
 import type { TextureTool } from "./textureTool";
 import { choose } from "../ui/choice";
 import { setPrompt } from "../ui/prompt";
+import { DimInput } from "../sketch/dimInput";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
 import { findSelectorAt, replaceSelectorAt } from "./repickReference";
 
@@ -500,7 +501,12 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
 
   // One-shot face picker: highlight the face under the cursor, return its selector
   // on click (Esc cancels). Reused by Shell (open face) and Draft (taper face).
-  function pickFaceInteractive(promptText: string, onPick: (sel: Selector) => void) {
+  // The click position rides along so a caller that opens an input next can put
+  // it where the user just clicked.
+  function pickFaceInteractive(
+    promptText: string,
+    onPick: (sel: Selector, at: { x: number; y: number }) => void,
+  ) {
     if (toolBusy()) return;
     if (!hasBody()) {
       setStatus("Create or import a body first", "");
@@ -522,7 +528,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       // against the wrong shape — so on a multi-body model the shell/draft would
       // land on a body the user never touched (same fault as the texture bug).
       const sel: Selector = hit.bodyId ? { ...hit.selector, body: hit.bodyId } : hit.selector;
-      requestAnimationFrame(() => onPick(sel));
+      const at = { x: e.clientX, y: e.clientY };
+      requestAnimationFrame(() => onPick(sel, at));
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") cleanup();
@@ -571,12 +578,69 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     });
   }
 
-  // Shell: pick a face to open, hollow the body to a 2mm wall (edit thickness in
-  // the inspector).
+  // Shell: pick a face to open, then set the wall thickness before anything is
+  // committed.
+  //
+  // It used to add the feature with a hardcoded `thickness: 2` the instant the
+  // face was picked, and the only way to see or change that number was to find
+  // the feature in the inspector afterwards. So the tool silently chose a
+  // dimension for you, and nothing on screen ever said what it was — every other
+  // tool that takes a value (fillet, chamfer, press/pull, face offset) asks for
+  // it with a DimInput first.
+  const SHELL_THICKNESS_MM = 2;
+  let shellDim: DimInput | null = null;
+
   function startShell() {
-    pickFaceInteractive("Select a face to open for the shell · Esc to cancel", (faces) => {
-      store.addFeature({ id: store.nextId(), type: "shell", thickness: 2, faces } as Feature);
+    pickFaceInteractive("Select a face to open for the shell · Esc to cancel", (faces, at) => {
+      askShellThickness(faces, at);
     });
+  }
+
+  function askShellThickness(faces: Selector, at: { x: number; y: number }) {
+    const dim = (shellDim ??= new DimInput());
+    // Hold the busy flag across the prompt, the same one the face pick held, so
+    // no other tool can start underneath an open box. EVERY exit path has to
+    // clear it: a planePick left set disables the whole toolbar silently, which
+    // has already been shipped once.
+    setPlanePick(true);
+    setPrompt("Wall thickness · Enter to apply · Esc to cancel");
+
+    const close = () => {
+      setPlanePick(false);
+      setPrompt(null);
+      dim.hide();
+      window.removeEventListener("keydown", onEsc, true);
+    };
+    // DimInput deliberately leaves Escape to the owning tool, so without this
+    // the box has no way out except committing. Deliberately NOT gated on the
+    // box owning the event target: if focus has wandered, Esc must still be able
+    // to release the tool rather than stranding it.
+    function onEsc(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      close();
+    }
+    window.addEventListener("keydown", onEsc, true);
+
+    dim.show(
+      [{ name: "thickness", label: "T", kind: "length" }],
+      () => {
+        const t = dim.getValue("thickness");
+        close();
+        if (t === null || !(t > 0)) {
+          setStatus("Wall thickness must be more than zero", "");
+          return;
+        }
+        store.addFeature({ id: store.nextId(), type: "shell", thickness: t, faces } as Feature);
+      },
+      close,
+    );
+    dim.position(at.x, at.y);
+    // Seed the old default so pressing Enter straight away behaves exactly as
+    // before; focus() re-selects it so typing replaces the value, not appends.
+    dim.seed("thickness", SHELL_THICKNESS_MM);
+    dim.focus();
   }
 
   // Draft: pick a face to taper by 5° about the body's base (pull +Z; edit the

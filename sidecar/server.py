@@ -2428,6 +2428,15 @@ async def handle(ws):
             await ws.close(code=1008, reason="too many connections")
             return
         _ip_conns[peer] = _ip_conns.get(peer, 0) + 1
+    # Bound BEFORE the try: the finally below iterates `tasks`, and the
+    # unauthorized path returns before any assignment inside the try. Leaving
+    # these to be assigned later made that finally raise UnboundLocalError
+    # *before* the _ip_conns decrement, so every rejected connection burned a
+    # slot permanently — MAX_CONNS_PER_IP bad tokens and the sidecar refuses
+    # everyone, including the real webview, until it is restarted.
+    lock = asyncio.Lock()
+    running: dict = {"id": None, "token": None}
+    tasks: set = set()
     try:
         if not _authorized(ws.request):
             await ws.close(code=1008, reason="unauthorized")
@@ -2436,9 +2445,6 @@ async def handle(ws):
         # Heavy ops stay STRICTLY serialized (the shared heartbeat counter and
         # the rebuild cache both assume one job at a time) — the lock preserves
         # that, while dispatching as tasks keeps the read loop free.
-        lock = asyncio.Lock()
-        running: dict = {"id": None, "token": None}
-        tasks: set = set()
         async for raw in ws:
             try:
                 req = json.loads(raw)
