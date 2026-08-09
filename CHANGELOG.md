@@ -20,6 +20,31 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Text on a face.** Click any face of a body, type, and the text is embossed
+  (raised) or engraved (cut) straight into it — no sketch step. Pick the font,
+  size, depth, alignment and angle, with bold and italic and optional word
+  wrapping, and edit any of it later from the timeline.
+
+  Curved faces work too: text wraps onto cylinders, cones and spheres, not just
+  flat faces.
+
+  Letters can be given a bevelled edge — rounded, chamfered or sloped-wall —
+  sized in millimetres rather than degrees, so changing the depth never changes
+  how the bevel looks. Not every font can bevel every letter at every size, and
+  where one can't, SindriCAD says so and leaves the text alone rather than
+  quietly shipping a word with three rounded letters and two sharp ones.
+
+  The text lands where you click, and it stays put: the reference is stored as a
+  queryable face selector, so upstream edits that renumber the model don't move
+  it. If an edit actually moves the face out from under the text, the feature
+  says so and offers a re-pick instead of quietly leaving the letters floating
+  in mid-air. And if the text runs off the edge of the face it tells you, rather
+  than silently shearing off the letters that didn't fit.
+
+  Engraving deeper than the material is allowed and cuts clean through, which is
+  how you get stencil lettering. What it refuses is a cut that would break the
+  body into loose pieces.
+
 - **Model size is no longer a hard limit on what you can open.** Until now the
   finished geometry had to reach the 3D view as one piece, and there was a
   ceiling on how big that piece could be — about 128 MB. The 356 MB reference

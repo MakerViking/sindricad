@@ -488,6 +488,32 @@ async def check_texture(ws):
     # volume would let the weak one grant credit whenever the strong one broke.
 
 
+async def check_text_on_face(ws):
+    # Glyph area is HOST-dependent (this is why tessellateText/listFonts are
+    # exempted below — a hardcoded glyph count read 23 on one machine and 21 on
+    # another), so this check may not hardcode a volume.
+    #
+    # Instead: one string, one depth, one face, embossed and engraved. The
+    # material added must equal the material removed, exactly. That is
+    # font-independent, and it CANNOT be satisfied by a feature that silently
+    # resolved to nothing — two no-ops make `expected` 0, and _judge refuses a
+    # volume assertion whose expected is not strictly positive.
+    #
+    # No bbox assertion here on purpose. The one that would be meaningful (an
+    # emboss stands the text exactly `depth` proud) is measured on the MESH, and
+    # at FINE_TOL the box's own corners jitter by ~3e-4 — past BBOX_ABS_TOL, the
+    # same reason check_loft's bbox is refused. A volume pair is the honest
+    # invariant at this tolerance.
+    text = {"type": "textOnFace", "text": "Ag", "height": 6, "align": "center",
+            "depth": 0.6, "pick": [0, 0, 10],
+            "plane": {"origin": [0, 0, 10], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+            "face": {"kind": "face", "by": "nearest", "point": [0, 0, 10], "body": "body1"}}
+    base = _total_volume(await _rebuild(ws, [_box("b", 20, 20, 20)]))
+    up = await _rebuild(ws, [_box("b", 20, 20, 20), dict(text, id="t", operation="emboss")])
+    down = await _rebuild(ws, [_box("b", 20, 20, 20), dict(text, id="t", operation="engrave")])
+    register("textOnFace", "volume", base - _total_volume(down), _total_volume(up) - base)
+
+
 async def check_project_geometry(ws):
     # The top-face boundary of a 20x20x10 extrusion projected onto XY: four exact
     # lines on the +-10 footprint. Asserted as a bbox in PLANE coordinates, with
@@ -574,7 +600,8 @@ EXPLICIT_CHECKS = [
     check_fillet, check_chamfer, check_draft, check_sweep, check_simplify_mesh,
     check_datum_split,
     check_sketch, check_combine, check_press_pull, check_offset_face,
-    check_thicken, check_delete_face, check_texture, check_project_geometry,
+    check_thicken, check_delete_face, check_texture, check_text_on_face,
+    check_project_geometry,
     check_migrate_geometry,
 ]
 

@@ -448,9 +448,18 @@ fn build(doc: &Document, diags: &mut Vec<ResolveDiag>) -> Result<Shape, String> 
                 let s = Shape::sphere(num_field(f, "radius", params)).build();
                 part = Some(merge_body(part, s));
             }
-            // Defer/skip every other feature type so the model still renders.
+            // An unimplemented feature type must FAIL, not vanish. This arm used
+            // to `eprintln!` and carry on, so a document using anything this
+            // spike doesn't cover rendered as if those features were never
+            // there — no toast, no red chip, no status line, just quietly wrong
+            // geometry. That is the one failure mode the project forbids
+            // outright, and it is worse here than a hard error: the user has no
+            // way to tell a model that built from a model that half-built.
             other => {
-                eprintln!("geom: skipping unsupported feature type '{other}'");
+                return Err(format!(
+                    "the Rust geometry backend doesn't implement '{other}' yet — \
+                     use the Python sidecar for this document"
+                ));
             }
         }
     }

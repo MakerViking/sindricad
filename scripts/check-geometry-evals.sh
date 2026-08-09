@@ -17,16 +17,21 @@ cd "$(dirname "$0")/.."/sidecar
 PY="${PY:-uv run python}"
 
 # Coverage RATCHET, not a target: real-server op coverage may never drop below
-# what it is today. It is currently 32 of 32 — every unit in the universe is
+# what it is today. It is currently 33 of 33 — every unit in the universe is
 # covered by an EXPLICIT check that asserts a precomputed numeric geometric
 # invariant against a real spawned server.
 #
 # VERIFIED REACHABLE ON A CLEAN CHECKOUT: with corpus credit disabled entirely,
-# coverage still reads 32/32, so not one counted unit depends on a fixture
+# coverage still reads 33/33, so not one counted unit depends on a fixture
 # document. That check is not optional ceremony — this floor was once set to 23
 # from a machine where two ops were credited only by a corpus document whose
 # import source lived in the developer's home directory, and every other
 # checkout scored 21. Re-run that way before raising this number again.
+#
+# textOnFace is counted but its invariant is a VOLUME PAIR, not a constant:
+# glyph area is font-dependent, so it emboss/engraves one string on one face and
+# asserts the material added equals the material removed. Two no-ops can't earn
+# credit that way — _judge refuses a volume assertion whose expected is 0.
 #
 # Four ops are excluded in e2e_coverage.py rather than counted, because no
 # numeric geometric invariant exists for them and the only way to make them
@@ -36,7 +41,7 @@ PY="${PY:-uv run python}"
 # best-effort-no-op by design and is the one ACKNOWLEDGED remaining gap.
 #
 # Raise this number when you cover more; never lower it to make a build pass.
-COVERAGE_FLOOR=32
+COVERAGE_FLOOR=33
 
 # The fillet/chamfer corpus was driven to zero failures by the Norn loop
 # (149/500 -> 0/500, holdout-verified). Any regression is a real one.

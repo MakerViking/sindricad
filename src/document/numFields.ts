@@ -34,6 +34,7 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], [string, string
   scale: [["factor", "Factor", "count"]],
   move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
   texture: [["depth", "Depth", "length"], ["scale", "Scale", "length"], ["angle", "Angle", "angle"], ["offset", "Offset", "length"], ["sharpness", "Sharpness", "count"], ["boundaryInset", "Edge blend", "length"], ["seed", "Seed", "count"]],
+  textOnFace: [["height", "Text size", "length"], ["depth", "Depth", "length"], ["bevel", "Bevel", "length"], ["angle", "Angle", "angle"], ["boxWidth", "Box width", "length"], ["u", "Across", "length"], ["v", "Up", "length"]],
 };
 
 /** Numeric fields on the solver-RIGID parametric shapes (the solver never writes
@@ -79,6 +80,7 @@ export const INT_FIELDS: Record<string, number> = {
 export const NON_NUM_STRING_FIELDS = new Set([
   "id", "type", "name", "operation", "font", "style", "align", "text", "pathRef",
   "plane", "sketch", "axis", "profile", "path", "direction", "body", "imagePath", "solid",
+  "bevelStyle",
 ]);
 
 /** A parameter target resolved to the live object holding the number. */

@@ -15,6 +15,7 @@ import type { LoftTool } from "./loftTool";
 import type { MoveTool } from "./moveTool";
 import type { PlaneOffsetTool } from "./planeOffsetTool";
 import type { TextureTool } from "./textureTool";
+import type { TextOnFaceTool } from "./textOnFaceTool";
 import { choose } from "../ui/choice";
 import { setPrompt } from "../ui/prompt";
 import { DimInput } from "../sketch/dimInput";
@@ -33,6 +34,7 @@ export interface FeatureStartersDeps {
   moveTool: MoveTool;
   planeOffset: PlaneOffsetTool;
   texture: TextureTool;
+  textOnFace: TextOnFaceTool;
   canvas: HTMLCanvasElement;
   toolBusy: () => boolean;
   hasBody: () => boolean;
@@ -57,6 +59,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     moveTool,
     planeOffset,
     texture,
+    textOnFace,
     canvas,
     toolBusy,
     hasBody,
@@ -665,6 +668,19 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     texture.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
+  // Text on Face: click a face, type, and the text is embossed or engraved into
+  // it. Owns its own face pick (like Press/Pull) rather than riding the ambient
+  // selection, because the CLICK POINT — not just which face — decides where the
+  // glyphs land.
+  function startTextOnFace() {
+    if (toolBusy()) return;
+    if (!hasBody()) {
+      setStatus("Text on Face: create or import a body first", "");
+      return;
+    }
+    textOnFace.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+  }
+
   // Pattern: replicate the active body — rectangular grid or circular array. Edit
   // counts / spacing / angle in the inspector.
   async function startPattern() {
@@ -739,6 +755,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     startShell,
     startDraft,
     startTexture,
+    startTextOnFace,
     startPattern,
     startExtrude,
     repickReference,

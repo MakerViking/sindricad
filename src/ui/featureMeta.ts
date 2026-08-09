@@ -32,4 +32,5 @@ export const FEATURE_META: Record<FeatureType, { glyph: string; label: string }>
   move: { glyph: "✥", label: "Move" },
   removeBody: { glyph: "🗑", label: "Remove Body" },
   texture: { glyph: "▦", label: "Texture" },
+  textOnFace: { glyph: "T", label: "Text on Face" },
 };

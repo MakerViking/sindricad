@@ -507,6 +507,59 @@ export type Feature =
   | { id: string; type: "thicken"; faces?: Selector | Selector[]; thickness: Num; symmetric?: boolean; operation?: "join" | "new"; body?: string }
   // Taper the selected faces by an angle about a neutral plane (pull axis).
   | { id: string; type: "draft"; faces: Selector | Selector[]; angle: Num; axis: Axis3 }
+  // Text embossed (raised) or engraved (cut) directly on a solid face — the
+  // click-a-face counterpart to the sketch `text` entity, which it shares a font
+  // engine with, so both produce identical glyphs.
+  //
+  // `plane` is the glyph LAYOUT frame, captured from the picked face when the
+  // tool ran; `u`/`v` place the text within it. The sidecar re-checks on every
+  // rebuild that the face is still coplanar with it, so an upstream edit that
+  // moves the face raises instead of leaving the glyphs floating.
+  //
+  // The selector field is named `face` on purpose: SELECTOR_FIELDS in
+  // features/repickReference.ts already lists that name, so the shipped
+  // "Re-pick face" repair covers this feature with no extra wiring.
+  //
+  // `pick` is the 3D point the user clicked. Unused while this is planar-only,
+  // but it is what disambiguates WHICH projected face a glyph belongs to on a
+  // curved or overhung body — neither nearest-hit nor face-normal sign is
+  // correct there, so the point has to be stored at pick time or it is lost.
+  | {
+      id: string;
+      type: "textOnFace";
+      face: Selector;
+      body?: string;
+      pick: Vec3;
+      plane: PlaneDef;
+      text: string;
+      height: Num;
+      depth: Num;
+      operation: "emboss" | "engrave";
+      font?: string;
+      style?: "regular" | "bold" | "italic" | "bolditalic";
+      align?: "left" | "center" | "right";
+      angle?: Num;
+      boxWidth?: Num;
+      u?: Num;
+      v?: Num;
+      // Bevel on the letter rim, as a WIDTH in mm — never an angle. With an
+      // angle the offset would be depth*tan(angle), so editing the separately
+      // editable depth would silently walk the bevel across the size at which
+      // the kernel stops coping.
+      //
+      // "auto" picks the operator that clears every glyph of the string in this
+      // font, preferring chamfer for an emboss and fillet for an engrave.
+      // Neither is hard-coded: measured per-font success spans 11%-89% and the
+      // winner flips by family, and the choice is per GLYPH, because insisting
+      // on one operator refuses strings that mixing completes.
+      //
+      // "taper" is a different shape entirely — sloping walls rather than a
+      // blended rim — and is flat-faces-only. It is also the least reliable
+      // path in the feature (45 of 62 glyphs succeed, and 2 return silently
+      // corrupt geometry), so every result is validated and a bad one refuses.
+      bevel?: Num;
+      bevelStyle?: "auto" | "chamfer" | "fillet" | "taper";
+    }
   // Replicate the active body on a grid / around an axis (copies are unioned).
   | { id: string; type: "patternRect"; countX: Num; countY: Num; spacingX: Num; spacingY: Num }
   | { id: string; type: "patternCircular"; count: Num; angle: Num; axis: Axis3 }

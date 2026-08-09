@@ -2452,6 +2452,329 @@ def _handle_draft(f, ctx):
         body["shape"] = shape
 
 
+def _thicken_patches(patches, depth, op, part):
+    """Give each projected surface patch its depth, growing OUTWARD for an emboss
+    and INWARD for an engrave.
+
+    `thicken` follows the patch's own normal, which it inherits from the target
+    shell's orientation. That points outward on everything modelled here, but an
+    imported STEP face can carry a reversed orientation — in which case an emboss
+    would burrow inward and an engrave would raise a scar, both silently. So the
+    sign is MEASURED once, by asking whether a point half a depth along the
+    patch normal is inside the part, rather than assumed.
+    """
+    probe = patches[0].faces()[0]
+    c = probe.center()
+    n = probe.normal_at(c)
+    sign = 1.0 if op == "emboss" else -1.0
+    try:
+        step = max(depth * 0.5, 1e-3)
+        outside = not part.is_inside(Vector(c.X + n.X * step, c.Y + n.Y * step, c.Z + n.Z * step))
+        if not outside:
+            sign = -sign  # this face's normal points INTO the part
+    except Exception:
+        # An unmeasurable orientation is not a reason to guess silently.
+        raise ValueError("Text: couldn't tell which way is out of this face — re-pick it")
+    tools = []
+    for p in patches:
+        t = Solid.thicken(p, depth * sign)
+        if t is None:
+            raise ValueError("Text: couldn't give the text depth on this face")
+        tools.append(t)
+    return tools
+
+
+def _guard_text_plane(plane, face):
+    """The text's layout plane was captured from the picked face when the tool
+    ran. If an upstream edit has since moved or tilted that face, the glyphs
+    would silently float off it (or sink into it) while the timeline stayed
+    green — so check and raise instead.
+
+    A planar face tessellates exactly, so the client's raycast hit lies exactly
+    on the B-rep plane and a tight tolerance is safe here."""
+    n = face.normal_at()
+    if abs(abs(plane.z_dir.dot(n)) - 1.0) > 1e-3:
+        raise ValueError("Text: the face this text sits on has tilted — re-pick the face")
+    if abs(n.dot(face.center() - plane.origin)) > 1e-3:
+        raise ValueError("Text: the face this text sits on has moved — re-pick the face")
+
+
+def _taper_glyph_prisms(glyphs, plane, depth, bevel, f, ctx):
+    """Sloped-wall glyph prisms, or none of them.
+
+    Routed through the SAME sacrificial probe as the rim blends, for a different
+    reason: this path does not only crash, it HANGS. One glyph at 40 degrees was
+    still running after 30 seconds and another consumed 600 s, and OCCT holds
+    the GIL throughout, so no in-worker deadline can fire — a SIGALRM armed for
+    1.0 s was measured arriving at 10.39 s, exactly when the kernel returned.
+    A subprocess with a timeout is the only guard that works.
+    """
+    angle = _taper_angle(bevel, abs(depth))
+    cleared = _probe_bevels(_bevel_recipe(f, ctx, bevel, ("taper",)))
+    bad = [i for i in range(len(glyphs)) if not cleared.get((i, "taper"), False)]
+    if bad:
+        raise ValueError(
+            f"Text: sloped walls at {angle:.0f}° don't work on {len(bad)} of the "
+            f"{len(glyphs)} letters in this font. Use a rounded or chamfered "
+            "bevel, a smaller bevel, or a different font."
+        )
+    out = []
+    for g in glyphs:
+        prism = _taper_prism(plane * g, depth, angle)
+        if prism is None:
+            raise ValueError(
+                f"Text: sloped walls at {angle:.0f}° failed on one of the letters. "
+                "Use a rounded or chamfered bevel, or a smaller bevel."
+            )
+        out.append(prism)
+    return out
+
+
+def _bevel_glyph_prisms(prisms, glyphs, direction, radius, f, ctx):
+    """Bevel every glyph prism's rim, or none of them.
+
+    ALL-OR-NOTHING is not fastidiousness, it is the measured shape of the
+    problem. Best-effort bevelling produced "SindriCAD Emboss 24" with 2 of 19
+    letters bevelled and 17 sharp — one valid solid, BRepCheck clean, nothing
+    downstream able to flag it. Only 7 of 20 real strings came out uniformly
+    bevelled, so a warning would fire on two uses in three, which is not a
+    diagnostic, it is the normal state.
+
+    The operator is chosen PER GLYPH, not once for the string. That looks like
+    it would produce a mongrel — rounded R's beside chamfered A's — but at the
+    sizes a text bevel uses the two are visually indistinguishable, and the
+    measured alternative is far worse: on "SindriCAD" at 0.1 mm, chamfer fails
+    on 'S' and fillet fails on 'r', so insisting on one operator refuses a job
+    that mixing completes. "Chamfer wins for emboss" is refuted across fonts
+    anyway (Nimbus Roman chamfer 2/19 vs fillet 15/19; Cantarell the reverse;
+    per-font success spans 11%-89%), so only the ORDER of preference is kept.
+    """
+    order = ("fillet", "chamfer") if f.get("operation") == "engrave" else ("chamfer", "fillet")
+    if f.get("bevelStyle") in ("chamfer", "fillet"):
+        order = (f["bevelStyle"],)
+
+    # A bevel eating `radius` from both sides of a stroke of width w collides at
+    # w/2 — and OCCT agreed, raising in 568 of 568 operations at that ratio.
+    # Refusing here costs nothing and saves a process fork.
+    narrowest = min((w for w in (_min_stroke_width(g) for g in glyphs) if w > 0), default=0.0)
+    if narrowest and radius >= narrowest * _BEVEL_MIN_STROKE_RATIO:
+        raise ValueError(
+            f"Text: a {radius:g} mm bevel is too big for this text — the thinnest "
+            f"stroke is about {narrowest:.2f} mm. Use under "
+            f"{narrowest * _BEVEL_MIN_STROKE_RATIO:.2f} mm, or make the text larger."
+        )
+
+    cleared = _probe_bevels(_bevel_recipe(f, ctx, radius, order))
+    out, unbevelable = [], 0
+    for i, prism in enumerate(prisms):
+        edges = _rim_edges(prism, direction)
+        done = None
+        for kind in order:
+            if not cleared.get((i, kind), False):
+                continue  # this one either kills the kernel or can't do it
+            done = _blend_rim(prism, edges, radius, kind)
+            if done is not None:
+                break
+        if done is None:
+            unbevelable += 1
+        else:
+            out.append(done)
+    if unbevelable:
+        # Never forward OCCT's own "try a smaller length value(s)": success is
+        # NON-MONOTONE in bevel size (6 of 92 glyph tracks failed at a smaller
+        # bevel and succeeded at a larger one), so that advice is not true. Some
+        # raises also arrive with an EMPTY message body
+        # (gp_VectorWithNullMagnitude), so the kernel's text is not passed
+        # through either.
+        raise ValueError(
+            f"Text: this font can't take a {radius:g} mm bevel on "
+            f"{unbevelable} of its {len(prisms)} letters. Try a different bevel "
+            "size or font, or turn the bevel off."
+        )
+    return out
+
+
+def _edge_sig(e):
+    """A rebuild-stable identity for an edge: rounded midpoint + length. Used to
+    tell which edges a boolean CREATED — TShape identity doesn't survive one."""
+    try:
+        m = e.center()
+        return (round(m.X, 5), round(m.Y, 5), round(m.Z, 5), round(e.length, 5))
+    except Exception:
+        return None
+
+
+def _bevel_pocket_mouth(before, after, face, radius, f, ctx, glyphs):
+    """Bevel the opening of an engraved pocket.
+
+    An engrave can't be bevelled the way an emboss is: the rim the user means is
+    the pocket MOUTH, and that edge does not exist until the cut has happened.
+    So the new edges lying on the picked face's own surface are found after the
+    boolean and blended there.
+
+    Blended PER GLYPH rather than in one call: a single whole-rim fillet was
+    measured raising on 5 of 12 real strings, once after burning 8.9 seconds.
+    Note the engrave direction is also the SAFE one — of 89 SIGSEGVs recorded
+    across 4,883 glyph blends, every single one was in the emboss path and none
+    in 1,710 engrave cells — so this side does not need the probe.
+    """
+    old = {_edge_sig(e) for e in before.edges()}
+    surf = face.geom_type == GeomType.PLANE
+    n = face.normal_at()
+    origin = face.center()
+    mouth = []
+    for e in after.edges():
+        if _edge_sig(e) in old:
+            continue
+        try:
+            m = e.center()
+            on_face = (
+                abs(n.dot(m - origin)) < 1e-4
+                if surf
+                else _distance_to_surface(m, face) < 1e-4
+            )
+        except Exception:
+            on_face = False
+        if on_face:
+            mouth.append(e)
+    if not mouth:
+        raise ValueError(
+            "Text: couldn't find the engraved edges to bevel — turn the bevel off, "
+            "or use a smaller depth."
+        )
+    kind = f.get("bevelStyle") if f.get("bevelStyle") in ("chamfer", "fillet") else "fillet"
+    for attempt in ((kind,) if f.get("bevelStyle") else ("fillet", "chamfer")):
+        try:
+            out = chamfer(mouth, length=radius) if attempt == "chamfer" else fillet(mouth, radius=radius)
+        except Exception:
+            continue
+        if _blend_is_sane(after, out):
+            return out
+    raise ValueError(
+        f"Text: this font can't take a {radius:g} mm bevel on an engrave. Try a "
+        "different bevel size or font, or turn the bevel off."
+    )
+
+
+def _distance_to_surface(pt, face):
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt
+
+    v = BRepBuilderAPI_MakeVertex(gp_Pnt(pt.X, pt.Y, pt.Z)).Vertex()
+    d = BRepExtrema_DistShapeShape(v, face.wrapped)
+    d.Perform()
+    return d.Value() if d.IsDone() else 1e9
+
+
+def _handle_text_on_face(f, ctx):
+    """Emboss (raise) or engrave (cut) text directly on a solid face.
+
+    Glyphs come from the SAME `_text_faces` the sketch Text tool uses, so face
+    text and sketch text of one string are identical geometry out of one font
+    engine. They are laid out on the feature's own `plane` — captured from the
+    picked face when the tool ran — extruded into per-glyph prisms, and
+    booleaned in ONE `_serial_bool` call (a chained per-glyph boolean redoes the
+    whole op + clean per step, O(n²), and measured 5x slower on a 17-glyph word).
+
+    Deliberately NOT built on `_press_pull`, despite the shape of the two being
+    identical: its mesh-facet guard rejects any face under 1.0 mm² once a body
+    passes 300 faces, and glyph faces measure 0.368 mm² at font_size 6 — every
+    dot, period and comma on any imported part would be refused. It also
+    silently clamps an inward push, which would quietly shorten an engrave.
+
+    An engrave deeper than the material is ALLOWED and cuts through: stencil
+    lettering is a real use. What is refused is a cut that breaks the body into
+    pieces, which is never what someone typing a word meant.
+    """
+    op = f.get("operation", "emboss")
+    if op not in ("emboss", "engrave"):
+        raise ValueError(f"Text: unknown operation {op!r}")
+    depth = ctx.val(f["depth"])
+    if not (depth > 0):
+        raise ValueError(f"Text: depth must be greater than 0 (got {depth:g})")
+
+    groups = _group_sels_by_body(f["face"], ctx, "Text")
+    if len(groups) != 1:
+        raise ValueError("Text: sits on one face of one body")
+    body, sels = groups[0]
+    faces = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not faces:
+        raise ValueError(f"Text: no face found on {body['name']} — re-pick the face")
+    face = faces[0]
+    planar = face.geom_type == GeomType.PLANE
+
+    plane = _plane_of(f["plane"], ctx.datums)
+    if planar:
+        _guard_text_plane(plane, face)
+
+    # `_text_faces` is best-effort by design — one bad font must not fail a whole
+    # rebuild — so it returns [] for a missing font just as it does for empty
+    # text. Unguarded, that ships a green timeline chip and no geometry.
+    glyphs = _text_faces(_text_entity_of(f), ctx.val)
+    if not glyphs:
+        font = f.get("font") or "the default font"
+        raise ValueError(
+            f"Text: produced no glyphs — check the text isn't blank and that "
+            f"{font} is installed"
+        )
+
+    sign = 1.0 if op == "emboss" else -1.0
+    bevel = ctx.val(f["bevel"]) if f.get("bevel") else 0.0
+    if bevel < 0:
+        raise ValueError(f"Text: bevel can't be negative (got {bevel:g})")
+    if bevel and bevel >= depth:
+        raise ValueError(
+            f"Text: a {bevel:g} mm bevel needs more than {depth:g} mm of depth to "
+            "sit in — deepen the text or reduce the bevel."
+        )
+
+    tapered = bevel > 0 and f.get("bevelStyle") == "taper"
+    if planar:
+        if tapered:
+            tools = _taper_glyph_prisms(glyphs, plane, depth * sign, bevel, f, ctx)
+        else:
+            tools = [extrude(plane * g, depth * sign) for g in glyphs]
+    else:
+        if tapered:
+            raise ValueError(
+                "Text: sloped walls only work on a flat face. Use a rounded or "
+                "chamfered bevel here, or pick a flat face."
+            )
+        # Project along the face's inward normal at the pick point — i.e. the
+        # layout plane's own -Z, since that plane was built from the face there.
+        direction = (-plane.z_dir.X, -plane.z_dir.Y, -plane.z_dir.Z)
+        extent = body["shape"].bounding_box().diagonal
+        patches = _text_patches_on_curved(
+            [plane * g for g in glyphs], face, direction, f["pick"], extent
+        )
+        tools = _thicken_patches(patches, depth, op, body["shape"])
+    # An emboss tool always ends up OUTSIDE the body (_thicken_patches measures
+    # the sign rather than trusting the face orientation), so its rim is the face
+    # furthest along the outward normal — the layout plane's +Z either way.
+    rim_dir = (plane.z_dir.X, plane.z_dir.Y, plane.z_dir.Z)
+
+    if bevel and not tapered and op == "emboss":
+        # Bevel the free-standing prisms BEFORE the fuse. Measured: per-glyph,
+        # 20/20 real strings produced a result against 4/20 for one whole-rim
+        # call over the fused body, where "SindriCAD" and "The quick brown fox"
+        # failed at every radius tried.
+        tools = _bevel_glyph_prisms(tools, glyphs, rim_dir, bevel, f, ctx)
+
+    before = max(1, len(body["shape"].solids()))
+    result = _serial_bool(body["shape"], tools, "fuse" if op == "emboss" else "cut")
+    if len(result.solids()) > before:
+        raise ValueError(
+            "Text: the text isn't sitting on the face — it ended up as loose "
+            "solids. Re-pick the face."
+            if op == "emboss"
+            else "Text: this engrave cuts the body into pieces — use a smaller depth."
+        )
+    if bevel and op == "engrave":
+        result = _bevel_pocket_mouth(body["shape"], result, face, bevel, f, ctx, glyphs)
+    body["shape"] = result
+
+
 def _handle_texture(f, ctx):
     # Two-phase, like every other selector feature but lazier: validate NOW
     # (so a bad kind/param/image path shows red on the timeline immediately)
@@ -2583,6 +2906,7 @@ _FEATURE_HANDLERS = {
     "offsetFace": _handle_offset_face,
     "thicken": _handle_thicken,
     "draft": _handle_draft,
+    "textOnFace": _handle_text_on_face,
     "texture": _handle_texture,
     "patternRect": _handle_pattern_rect,
     "patternCircular": _handle_pattern_circular,
@@ -5468,6 +5792,416 @@ def _text_faces(e, val, path_edge=None):
         return list(located.faces())
     except Exception:
         return []
+
+
+def _text_entity_of(f):
+    """The `text` sketch-entity dict a `textOnFace` feature is equivalent to.
+
+    Lets `_text_faces` be reused verbatim, so sketch text, face text and the 2D
+    typing preview all come out of ONE font engine — a face emboss can never
+    drift from the outline the user was shown while typing. `u`/`v` are the
+    in-plane anchor (the feature's own frame), which is `_text_faces`' `x`/`y`.
+    Values stay unresolved so parameter-driven fields still work."""
+    ent = {
+        "text": f.get("text") or "",
+        "height": f["height"],
+        "style": f.get("style", "regular"),
+        "align": f.get("align", "left"),
+        "angle": f.get("angle", 0) or 0,
+        "x": f.get("u", 0) or 0,
+        "y": f.get("v", 0) or 0,
+    }
+    if f.get("font"):
+        ent["font"] = f["font"]
+    if f.get("boxWidth"):
+        ent["boxWidth"] = f["boxWidth"]
+    return ent
+
+
+# --- text bevel ---------------------------------------------------------------
+# Rounding or chamfering the rim of embossed/engraved letters. Every constant and
+# every guard below exists because of a measured failure — 4,883 glyph blends
+# across 9 font families produced 89 SIGSEGVs, 2.2% silently-corrupt solids, and
+# a best-effort mode that left up to 17 of 19 letters sharp while returning a
+# perfectly valid single solid.
+
+_BEVEL_MIN_STROKE_RATIO = 0.5  # bevel must stay under half the glyph stroke width
+# Cache of which (font, style, char, operator, radius) combinations survive the
+# kernel, filled by the out-of-process probe. Radius is quantised because a user
+# dragging the value would otherwise miss on every keystroke; it is IN the key
+# rather than assumed irrelevant, even though every crash measured was radius-
+# independent (Nimbus Roman 'B' cored at every radius from 0.2 mm to 0.001 mm).
+_BEVEL_PROBE_CACHE: dict = {}
+_BEVEL_PROBE_TIMEOUT = 30.0
+
+
+def _bbox_of(shape):
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.AddOptimal_s(shape.wrapped, box)
+    return box.Get()
+
+
+def _blend_is_sane(before, after, tol=1e-6):
+    """Did this blend produce real geometry, or a self-intersecting lie?
+
+    Per-glyph fillet returns corrupt solids in 2.2% of operations that pass
+    EVERY conventional check — BRepCheck_Analyzer.IsValid() true, one solid,
+    face-count delta equal to the rim-edge count, volume inside the normal band
+    (and always LOWER, so a volume-sign test catches none of them).
+
+    The one signal that separated all 7 known-bad from all 313 known-good, with
+    no false positives, is the OPTIMAL bounding box growing: a blend only ever
+    removes material from a convex rim, so a box that grew means the trimmed
+    surfaces blew up. BRepBndLib.Add — the triangulation-based variant — is
+    useless here (222 false positives out of 313), and a vertex-only box misses
+    every case, because the vertices never move; it is the surfaces that do.
+    """
+    try:
+        if len(after.solids()) != 1 or after.volume <= 0:
+            return False
+        a = _bbox_of(before)
+        b = _bbox_of(after)
+        for i in range(3):  # mins may not go lower
+            if b[i] < a[i] - tol:
+                return False
+        for i in range(3, 6):  # maxes may not go higher
+            if b[i] > a[i] + tol:
+                return False
+        return True
+    except Exception:
+        return False  # an unmeasurable blend is not an acceptable one
+
+
+def _rim_edges(prism, direction):
+    """The edges of `prism`'s far face along `direction` — the rim an emboss
+    stands proud on."""
+    d = Vector(*direction)
+    faces = sorted(prism.faces(), key=lambda f: f.center().dot(d))
+    return list(faces[-1].edges())
+
+
+def _blend_rim(prism, edges, radius, kind):
+    """One rim blend, validated. Returns the new solid, or None if this operator
+    can't do it (raised, or returned something corrupt)."""
+    try:
+        out = chamfer(edges, length=radius) if kind == "chamfer" else fillet(edges, radius=radius)
+    except Exception:
+        return None
+    return out if _blend_is_sane(prism, out) else None
+
+
+def _taper_prism(glyph, depth, angle_deg):
+    """A glyph prism whose walls slope — the classic embossed-lettering look,
+    as opposed to a blended rim.
+
+    Validated hard, because this is the one path in the feature that returns
+    CORRUPT GEOMETRY WITHOUT RAISING. Measured over 62 glyphs: 45 succeed, 15
+    raise, and 2 come back silently wrong — Text('g') at 25 degrees returns
+    volume 0.0 with IsValid() false, and Text('Q') returns a NEGATIVE volume.
+    Separately, 'S', 'M' and 'W' at 20 degrees and up return entirely plausible
+    volumes on self-intersected sidewalls, which only BRepCheck catches.
+
+    A positive angle narrows the prism away from the face, which is what both
+    directions want: a raised letter that slopes in toward its top, and an
+    engraved one that opens out toward its mouth.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    try:
+        out = extrude(glyph, depth, taper=angle_deg)
+    except Exception:
+        return None
+    try:
+        if len(out.solids()) != 1:
+            return None
+        v = out.volume
+        flat = glyph.area * abs(depth)
+        # A taper only ever removes material from the straight prism, so a
+        # volume outside (0, flat] is proof the walls self-intersected.
+        if not (0 < v <= flat * 1.001):
+            return None
+        return out if BRepCheck_Analyzer(out.wrapped).IsValid() else None
+    except Exception:
+        return None
+
+
+def _taper_angle(bevel, depth):
+    """The wall angle that moves the top edge in by `bevel` millimetres over
+    `depth` of rise — so the control stays a WIDTH whichever style is chosen."""
+    return math.degrees(math.atan2(bevel, depth))
+
+
+def _bevel_recipe(f, ctx, radius, kinds):
+    return {
+        "text": f.get("text") or "", "font": f.get("font"),
+        "style": f.get("style", "regular"), "align": f.get("align", "left"),
+        "height": ctx.val(f["height"]), "depth": ctx.val(f["depth"]),
+        "radius": round(radius, 4), "kinds": list(kinds),
+    }
+
+
+def _recipe_key(r):
+    return (r["text"], r["font"] or "", r["style"], r["align"],
+            round(r["height"], 4), round(r["depth"], 4), r["radius"], tuple(r["kinds"]))
+
+
+def _probe_glyphs(recipe):
+    ent = {"text": recipe["text"], "height": recipe["height"], "style": recipe["style"],
+           "align": recipe["align"], "x": 0, "y": 0}
+    if recipe.get("font"):
+        ent["font"] = recipe["font"]
+    return _text_faces(ent, lambda v: v)
+
+
+def _bevel_probe_main():
+    """Entry point of the probe subprocess: `python -c "import builder;
+    builder._bevel_probe_main()"` with the recipe as JSON on stdin.
+
+    Prints a `try` line BEFORE each attempt and a `done` line after. That
+    ordering is the whole mechanism: when the kernel takes the process down
+    there is no exception and no traceback, so the last unmatched `try` is the
+    only evidence of which glyph did it.
+
+    Probes by glyph INDEX over the whole string rather than by character.
+    Character would be the natural key — the crash signature is (font, style,
+    glyph, operator, radius) — but a laid-out string cannot be mapped back to
+    its characters reliably: an "i" is two disjoint faces, a space is none, and
+    a wrapped line breaks any positional guess. Index needs no mapping and is
+    exactly what the caller has in hand.
+    """
+    recipe = json.load(sys.stdin)
+    glyphs = _probe_glyphs(recipe)
+    angle = _taper_angle(recipe["radius"], recipe["depth"])
+    for i, g in enumerate(glyphs):
+        prism = extrude(g, recipe["depth"])
+        edges = _rim_edges(prism, (0, 0, 1))
+        for kind in recipe["kinds"]:
+            print(json.dumps({"try": [i, kind]}), flush=True)
+            try:
+                if kind == "taper":
+                    ok = _taper_prism(g, recipe["depth"], angle) is not None
+                else:
+                    ok = _blend_rim(prism, edges, recipe["radius"], kind) is not None
+            except Exception:
+                ok = False
+            print(json.dumps({"done": [i, kind], "ok": ok}), flush=True)
+
+
+def _probe_bevels(recipe):
+    """Clear every (glyph, operator) of this text through a throwaway process
+    before the real worker touches it.
+
+    A glyph rim blend does not always raise: measured over 4,883 attempts, 1.8%
+    took the process down with SIGSEGV — no exception, no traceback, nothing
+    Python can catch. Geometry runs in a max_workers=1 pool, so that costs the
+    user their whole rebuild and surfaces as "crashed the geometry kernel".
+    Spending one fork to find out first turns it into a sentence they can act on.
+
+    Returns {(index, kind): bool}. Anything the probe did not report on — it
+    cored, or ran past the timeout — is False. Never True by default.
+
+    CAVEAT, stated rather than hidden: the probe blends the glyph flat at the
+    origin, which is congruent to the planar path (a rigid transform cannot
+    change the outcome) but only an approximation of the curved one, where the
+    real rim comes from a projected patch. Curved bevels are therefore
+    best-effort protected, not proven.
+    """
+    key = _recipe_key(recipe)
+    if key in _BEVEL_PROBE_CACHE:
+        return _BEVEL_PROBE_CACHE[key]
+    import subprocess
+
+    verdicts = {}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import builder; builder._bevel_probe_main()"],
+            input=json.dumps(recipe), capture_output=True, text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=_BEVEL_PROBE_TIMEOUT,
+        )
+        for line in proc.stdout.splitlines():
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue  # font-subsystem chatter, not our protocol
+            if "done" in rec:
+                verdicts[(rec["done"][0], rec["done"][1])] = bool(rec["ok"])
+    except subprocess.TimeoutExpired:
+        pass  # everything unreported is treated as unusable, which is right
+    _BEVEL_PROBE_CACHE[key] = verdicts
+    return verdicts
+
+
+
+def _min_stroke_width(glyph):
+    """A cheap proxy for the thinnest stroke of a glyph: 2*area/perimeter, the
+    width of the equivalent long thin rectangle."""
+    try:
+        per = sum(e.length for e in glyph.edges())
+        return (2.0 * glyph.area / per) if per > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+# --- text on a curved face ----------------------------------------------------
+
+
+
+
+# A planar face just extrudes the glyph. A curved one has to PROJECT it onto the
+# surface first, and every cheap way of doing that is wrong in a way that ships
+# silently — hence the three constants below, each guarding a measured failure.
+
+_TEXT_PROJ_DEFLECTION = 0.005  # meshing tolerance for the shadow integral
+# A glyph must land essentially whole on the picked face. MEASURED on a R=20
+# cylinder with "SindriCAD": a glyph that fits reads 0.9993 at this deflection
+# (1.0 in the limit — the shortfall is pure mesh error, and it converges:
+# 0.9935 at deflection 0.05, 0.9998 at 0.002). Text overflowing the silhouette
+# reads 0.3216 while STILL reporting one valid solid and a plausible volume, so
+# this integral is the only thing standing between the user and a word with two
+# letters silently sheared off.
+_TEXT_MIN_COVERAGE = 0.99
+# Projected area / flat area. The projection direction is fixed (build123d's
+# Face.project_to_shape takes no radial option), so a glyph on a steeply
+# turning-away surface gets smeared rather than wrapped — up to 6.7x on a torus
+# throat, producing exact, valid, unreadable geometry. 2.0 is ~60 degrees of
+# obliquity. A cylinder/cone/sphere at sane text sizes measures 1.01-1.12.
+_TEXT_MAX_SMEAR = 2.0
+
+
+def _shadow_area(shape, direction):
+    """Area of `shape` seen along `direction` — the shadow it casts.
+
+    Integrated over a fine triangulation because OCCT has no B-rep API for it.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.gp import gp_Vec
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    BRepMesh_IncrementalMesh(shape.wrapped, _TEXT_PROJ_DEFLECTION, False, 0.5, True)
+    d = gp_Vec(*direction)
+    total = 0.0
+    exp = TopExp_Explorer(shape.wrapped, TopAbs_FACE)
+    while exp.More():
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(TopoDS.Face_s(exp.Current()), loc)
+        if tri is not None:
+            trsf = loc.Transformation()
+            for i in range(1, tri.NbTriangles() + 1):
+                a, b, c = tri.Triangle(i).Get()
+                p1 = tri.Node(a).Transformed(trsf)
+                p2 = tri.Node(b).Transformed(trsf)
+                p3 = tri.Node(c).Transformed(trsf)
+                total += abs(gp_Vec(p1, p2).Crossed(gp_Vec(p1, p3)).Dot(d)) / 2.0
+        exp.Next()
+    return total
+
+
+def _project_glyph(glyph, target_face, direction, extent):
+    """Cut `target_face` down to the shadow `glyph` casts along `direction`.
+
+    Hand-rolled rather than `Face.project_to_shape`, for two measured reasons.
+    Its Face-target branch raises `TypeError: Surface_s(): incompatible function
+    arguments` on EVERY curved face, and its Shape-target branch projects onto
+    the whole solid — which runs one boolean per glyph against every face of the
+    body, measured at 43 ms/glyph on a 6-face box but 378 ms/glyph on a 104-face
+    one (~38 s for a word on a 1,000-face import).
+
+    Returns the CONNECTED patches, because a two-sided prism through a cylinder
+    legitimately hits the near wall and the far wall, and those must stay
+    separate for the caller to choose between. A glyph straddling a surface seam
+    is the opposite case — several faces that are really one patch — so the
+    pieces are sewn before being handed back.
+    """
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCP.gp import gp_Vec
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    # two-sided: the glyph must reach the surface whichever side of it the
+    # layout plane ended up on
+    back = Pos(*[-x * extent for x in direction]) * glyph
+    prism = BRepPrimAPI_MakePrism(back.wrapped, gp_Vec(*[x * 2 * extent for x in direction])).Shape()
+    com = BRepAlgoAPI_Common(target_face.wrapped, prism)
+    com.Build()
+    if not com.IsDone():
+        return []
+    faces = []
+    exp = TopExp_Explorer(com.Shape(), TopAbs_FACE)
+    while exp.More():
+        faces.append(Face(TopoDS.Face_s(exp.Current())))
+        exp.Next()
+    if len(faces) <= 1:
+        return faces
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    for f in faces:
+        sew.Add(f.wrapped)
+    sew.Perform()
+    patches, seen = [], set()
+    exp = TopExp_Explorer(sew.SewedShape(), TopAbs_SHELL)
+    while exp.More():
+        sh = Shell(TopoDS.Shell_s(exp.Current()))
+        patches.append(sh)
+        for f in sh.faces():
+            seen.add(f.wrapped.TShape())
+        exp.Next()
+    patches.extend(f for f in faces if f.wrapped.TShape() not in seen)
+    return patches
+
+
+def _text_patches_on_curved(glyphs, face, direction, pick, extent):
+    """One surface patch per glyph, projected onto `face` and gated.
+
+    Raises rather than dropping anything: every failure mode here is silent by
+    default — a missing glyph comes back as an empty list, a truncated one as a
+    perfectly valid smaller patch."""
+    pick_t = sum(p * q for p, q in zip(pick, direction))
+    patches, missing, worst_cov, worst_smear = [], [], 1.0, 1.0
+    for g in glyphs:
+        cands = _project_glyph(g, face, direction, extent)
+        if not cands:
+            missing.append(g)
+            continue
+        # Choose by RAY PARAMETER against the point the user actually clicked.
+        # Nearest-hit, face-centre sign and surface-normal sign were each
+        # measured wrong on realistic bodies — on an overhang channel,
+        # nearest-hit picks the block top instead of the channel floor, putting
+        # the text on a completely different surface.
+        best = min(
+            cands,
+            key=lambda c: abs(
+                sum(p * q for p, q in zip((c.center().X, c.center().Y, c.center().Z), direction)) - pick_t
+            ),
+        )
+        worst_cov = min(worst_cov, _shadow_area(best, direction) / g.area)
+        worst_smear = max(worst_smear, best.area / g.area)
+        patches.append(best)
+    if missing or not patches:
+        raise ValueError(
+            "Text: the text runs off this face — make it smaller, or move it away "
+            "from the edge"
+        )
+    if worst_cov < _TEXT_MIN_COVERAGE:
+        raise ValueError(
+            f"Text: the text runs off this face (one letter only {worst_cov * 100:.0f}% "
+            "on it) — make it smaller, or move it away from the edge"
+        )
+    if worst_smear > _TEXT_MAX_SMEAR:
+        raise ValueError(
+            "Text: this part of the face curves too steeply away — the text would "
+            "be stretched unreadably. Move it to a flatter spot or make it smaller."
+        )
+    return patches
 
 
 def _wire_polyline(wire):
