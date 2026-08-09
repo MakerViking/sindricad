@@ -26,6 +26,13 @@ This file starts on 2026-08-03. For anything before that, see the
   every letter, which is where it showed: a ring of shattered, half-melted cells
   hugging the lettering while the rest of the pattern was clean.
 
+  **This changes how existing documents look.** Any texture left at the default
+  Edge blend of 0 now meets the edge of its face cleanly instead of sagging into
+  it, so a model you saved before this build will rebuild slightly differently
+  around every textured boundary. That is the fix working, but it is a visible
+  change to work you have already done, so it is worth knowing before you open
+  an old file.
+
   The pattern now runs at full height right up to the boundary, with a vertical
   wall closing the step, so a partial cell looks like a cell that has simply been
   cut rather than one that has been dragged down into the surface. And the
