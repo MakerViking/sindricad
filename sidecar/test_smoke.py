@@ -686,6 +686,53 @@ def test_loft_profiles_keeps_holes_as_tube():
     print(f"  loft profiles OK: two rings -> hollow tube vol {vol:.0f} (hole kept)")
 
 
+def test_region_stale_diagnostic():
+    """A stored region point that lands inside NO cell falls back to the nearest
+    one. That fallback exists for tessellation drift, so a hair-off point stays
+    silent — but a point nowhere near any profile is a stale reference, and
+    silently extruding a different area is how a user cuts geometry they never
+    selected. It must announce itself as `regionStale` while still building.
+
+    The control matters as much as the case: field report a20cca53 (drag a
+    circle, the extrude jumps to the surrounding rectangle) does NOT come through
+    here. There the stale point lands INSIDE a genuinely different cell, so
+    containment succeeds and this fallback never runs. Entity-anchored regions
+    are what fix that one; this only stops the no-containing-cell case being
+    silent. If this control ever starts emitting a diagnostic, the two failures
+    have been conflated again."""
+    circles = [{"id": "cA", "type": "circle", "radius": 4, "x": 10, "y": 10},
+               {"id": "cB", "type": "circle", "radius": 4, "x": 30, "y": 14}]
+
+    def run(pt, ents):
+        diag = []
+        doc = {"parameters": {}, "features": [
+            {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents},
+            {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
+             "operation": "new", "regions": [pt]}]}
+        _p, err, bodies = rebuild(doc, diagnostics=diag)
+        return err, bodies, [d for d in diag if d.get("kind") == "regionStale"]
+
+    err, bodies, stale = run([500, 500, 0], circles)
+    assert not err, f"a stale region must still build (nearest cell): {err}"
+    assert bodies, "stale region should still produce a body"
+    assert len(stale) == 1, f"far-outside point must warn, got {stale}"
+    assert stale[0]["feature_id"] == "ex" and stale[0]["lossy"] is True, stale[0]
+    assert len(stale[0]["at"]) == 3 and stale[0]["offBy"] > 1, stale[0]
+
+    _err, _b, stale = run([10, 10 + 1e-7, 0], circles)
+    assert not stale, f"tessellation drift is what the fallback is for: {stale}"
+
+    # control: a20cca53's shape — the point lands in the rectangle's cell
+    rect = [{"id": f"l{i}", "type": "line", "x1": a, "y1": b, "x2": c, "y2": d}
+            for i, (a, b, c, d) in enumerate(
+                [(0, 0, 40, 0), (40, 0, 40, 20), (40, 20, 0, 20), (0, 20, 0, 0)])]
+    _err, _b, stale = run([10, 10, 0], rect + circles)
+    assert not stale, \
+        f"containment succeeded on a different cell — not this code path: {stale}"
+    print("  region-stale OK: far point warns + still builds; drift silent; "
+          "a20cca53's wrong-cell hit is a different path")
+
+
 def test_fillet_failure_diagnostics():
     """When a fillet/chamfer fails, the per-edge probe names the offending
     edges' midpoints in an `edgeOpFailed` diagnostic (so the UI can paint
@@ -1625,6 +1672,7 @@ if __name__ == "__main__":
     test_revolve_loft_operation()
     test_loft_profiles_keeps_holes_as_tube()
     test_boolean_guards_combine_sweep()
+    test_region_stale_diagnostic()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()

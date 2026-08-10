@@ -1670,7 +1670,7 @@ def _handle_extrude(f, ctx):
         cells = [(fc, fc.bounding_box()) for fc in entry["faces"]]
         sel = []
         for p in pts:
-            rf = _region_face_at(cells, Vector(*p))
+            rf = _region_face_at(cells, Vector(*p), ctx.diagnostics, f.get("id"))
             if rf is not None:
                 sel.append(rf)
         if not sel:
@@ -2062,7 +2062,7 @@ def _handle_loft(f, ctx):
             if entry is None or not entry.get("faces"):
                 raise ValueError("a loft profile's sketch has no closed area")
             cells = [(fc, fc.bounding_box()) for fc in entry["faces"]]
-            rf = _region_face_at(cells, Vector(*pr["region"]))
+            rf = _region_face_at(cells, Vector(*pr["region"]), ctx.diagnostics, f.get("id"))
             if rf is None:
                 raise ValueError("no profile found under a selected loft area")
             sections.append(rf)
@@ -6411,7 +6411,7 @@ def _path_wire(edges, plane):
     return plane * longest
 
 
-def _region_face_at(cells, P):
+def _region_face_at(cells, P, diag=None, feature_id=None):
     """Pick the planar arrangement cell whose material contains point P.
 
     `cells` is a list of (face, bounding_box) pairs — the caller precomputes the
@@ -6423,7 +6423,17 @@ def _region_face_at(cells, P):
     Arrangement cells (from `_subdivide_faces`) already carry their holes natively, so
     the smallest containing cell IS the region — no nested-hole subtraction needed.
     Falls back to the nearest cell by center when P isn't inside any (tessellation
-    drift / degenerate geometry)."""
+    drift / degenerate geometry).
+
+    That fallback is for DRIFT — a point that should still be on its cell and is off
+    by a rounding-scale amount. When the nearest cell is nowhere near P the reference
+    is stale, not drifted, and silently extruding a different area is how a user ends
+    up cutting geometry they never selected. Push a `regionStale` diagnostic in that
+    case so the UI can offer a re-pick, and keep returning the nearest cell so the
+    build still completes. Note this is NOT the mechanism behind field report
+    a20cca53: there the stale point lands INSIDE a genuinely different cell, so
+    containment succeeds and this fallback never runs. Entity-anchored regions are
+    what fixes that; this only stops the no-containing-cell case being silent."""
     if not cells:
         return None
     best = None
@@ -6436,7 +6446,28 @@ def _region_face_at(cells, P):
             best = fc
     if best is not None:
         return best
-    return min((fc for fc, _ in cells), key=lambda fc: (fc.center() - P).length)
+    near = min((fc for fc, _ in cells), key=lambda fc: (fc.center() - P).length)
+    if diag is not None:
+        # distance from P to the chosen cell's BOX (0 when inside it) — a truer
+        # "is P even near this cell" test than centre distance, which the ranking
+        # above uses only to order candidates.
+        bb = near.bounding_box()
+        dx = max(bb.min.X - P.X, 0.0, P.X - bb.max.X)
+        dy = max(bb.min.Y - P.Y, 0.0, P.Y - bb.max.Y)
+        dz = max(bb.min.Z - P.Z, 0.0, P.Z - bb.max.Z)
+        off = (dx * dx + dy * dy + dz * dz) ** 0.5
+        if off > POS_DRIFT + REL_DRIFT * _bbox_diag(near):
+            diag.append({
+                "feature_id": feature_id,
+                "kind": "regionStale",
+                "resolved": 1,
+                "confidence": 0.0,
+                "lossy": True,
+                "reason": "no profile contains the stored region point",
+                "at": [round(float(P.X), 6), round(float(P.Y), 6), round(float(P.Z), 6)],
+                "offBy": round(float(off), 4),
+            })
+    return near
 
 
 def _face_contains(face, p):
