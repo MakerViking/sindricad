@@ -14,6 +14,14 @@ export interface Region {
   holes: THREE.Vector2[][]; // inner boundaries (directly-nested loops) cut out of the material
   centroid: THREE.Vector2; // outer-loop centroid (label placement; may sit in a hole)
   interior: THREE.Vector2; // a point inside the material (outside all holes) — selection anchor
+  /** ids of the entities whose curves bound this region's OUTER loop, sorted.
+   *  This is what lets a stored region reference survive the user moving the
+   *  entity (field report a20cca53): `interior` is a world point, so once the
+   *  circle moves the point stays behind and resolves to whatever cell now
+   *  contains it — the surrounding rectangle, in the reported case. Empty when
+   *  provenance is not recoverable (a cell bounded by geometry the tracer
+   *  deduped away); callers must fall back to the point rather than guess. */
+  entityIds: string[];
 }
 
 const EPS = 1e-4;
@@ -149,7 +157,7 @@ export function detectRegions(
   // Per-entity polyline segments + bbox, for cheap crossing detection and tracing.
   const perEntity = entities.map((e) => {
     const segs = entitySegments(e).map(
-      ([a, b]) => ({ x1: a.x, y1: a.y, x2: b.x, y2: b.y }) as Seg,
+      ([a, b]) => ({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, eid: e.id }) as Seg,
     );
     return { e, segs, box: segsBBox(segs) };
   });
@@ -158,33 +166,37 @@ export function detectRegions(
   //    an interior point (not merely meet at shared endpoints)? A crossing means
   //    simple whole-shape / shared-vertex detection would miss a sub-region — or
   //    emit a self-touching phantom (an "X" in a square) — so we planarize.
-  let loops: THREE.Vector2[][];
+  let traced: TracedLoop[];
   if (anyCrossing(perEntity)) {
     // Split every segment at all pairwise interior intersections, then extract the
     // planar arrangement's minimal faces. This is what lets a line crossing a
     // profile carve it into separately-selectable sub-areas (MCAD parity); it
     // mirrors the sidecar's OCCT arrangement (builder.py _subdivide_faces).
-    loops = traceLoops(planarize(perEntity));
+    traced = traceLoops(planarize(perEntity));
   } else {
     // Fast path (unchanged for non-crossing sketches): rectangles + circles are
     // their own loops; free line/arc/spline geometry is chained into closed loops
-    // by shared endpoints.
-    loops = [];
+    // by shared endpoints. The first three are 1:1 with an entity, so provenance
+    // is exact; the chained loops get theirs from the tracer.
+    traced = [];
     for (const { e } of perEntity) {
-      if (e.type === "rectangle") loops.push(rectCorners(e.x, e.y, e.width, e.height));
-      else if (e.type === "circle") loops.push(circleLoop(e.x, e.y, e.radius));
+      if (e.type === "rectangle")
+        traced.push({ loop: rectCorners(e.x, e.y, e.width, e.height), eids: [e.id] });
+      else if (e.type === "circle")
+        traced.push({ loop: circleLoop(e.x, e.y, e.radius), eids: [e.id] });
       // a projected CIRCLE is a closed loop of its own, like a native circle —
       // its polyline has no free endpoints for the chain tracer to join
       else if (e.type === "projected" && e.curve.kind === "circle")
-        loops.push(circleLoop(e.curve.x, e.curve.y, e.curve.r));
+        traced.push({ loop: circleLoop(e.curve.x, e.curve.y, e.curve.r), eids: [e.id] });
     }
     const free: Seg[] = [];
     for (const { e, segs } of perEntity)
       if (e.type === "line" || e.type === "arc" || e.type === "spline" ||
           (e.type === "projected" && e.curve.kind !== "circle"))
         free.push(...segs);
-    loops.push(...traceLoops(free));
+    traced.push(...traceLoops(free));
   }
+  const loops = traced.map((t) => t.loop);
 
   // 2. each loop becomes a region; its DIRECTLY-nested loops become holes — so
   //    two concentric circles yield a ring (outer, hole=inner) AND a disk (inner).
@@ -216,7 +228,7 @@ export function detectRegions(
     const loop = loops[i];
     if (!loop) continue;
     const holes = loops.filter((_, j) => parent[j] === i);
-    regions.push(mkRegion(sketchId, loop, holes));
+    regions.push(mkRegion(sketchId, loop, holes, traced[i]?.eids ?? []));
   }
   return regions;
 }
@@ -225,9 +237,14 @@ function mkRegion(
   sketchId: string,
   loop: THREE.Vector2[],
   holes: THREE.Vector2[][],
+  entityIds: string[],
 ): Region {
   const centroid = centroidOf(loop);
-  return { sketchId, loop, holes, centroid, interior: interiorPoint(loop, holes, centroid) };
+  return {
+    sketchId, loop, holes, centroid,
+    interior: interiorPoint(loop, holes, centroid),
+    entityIds,
+  };
 }
 
 /** Build a selectable Region from one tessellated glyph face (outer boundary +
@@ -238,10 +255,11 @@ export function glyphRegion(
   sketchId: string,
   outer: [number, number][],
   holes: [number, number][][],
+  entityId?: string,
 ): Region {
   const loop = outer.map(([x, y]) => new THREE.Vector2(x, y));
   const holeLoops = holes.map((h) => h.map(([x, y]) => new THREE.Vector2(x, y)));
-  return mkRegion(sketchId, loop, holeLoops);
+  return mkRegion(sketchId, loop, holeLoops, entityId === undefined ? [] : [entityId]);
 }
 
 function centroidOf(loop: THREE.Vector2[]): THREE.Vector2 {
@@ -354,7 +372,7 @@ function interiorPoint(
 }
 
 // --- line-chain loop tracing ---
-type Seg = { x1: number; y1: number; x2: number; y2: number };
+type Seg = { x1: number; y1: number; x2: number; y2: number; eid?: string | undefined };
 type Box = { minx: number; miny: number; maxx: number; maxy: number };
 
 function segsBBox(segs: Seg[]): Box {
@@ -464,18 +482,21 @@ function planarize(per: EntSegs[]): Seg[] {
       let px = a.x1, py = a.y1;
       for (const c of cuts) {
         if (Math.abs(c.x - px) > EPS || Math.abs(c.y - py) > EPS)
-          out.push({ x1: px, y1: py, x2: c.x, y2: c.y });
+          out.push({ x1: px, y1: py, x2: c.x, y2: c.y, eid: a.eid });
         px = c.x; py = c.y;
       }
       if (Math.abs(a.x2 - px) > EPS || Math.abs(a.y2 - py) > EPS)
-        out.push({ x1: px, y1: py, x2: a.x2, y2: a.y2 });
+        out.push({ x1: px, y1: py, x2: a.x2, y2: a.y2, eid: a.eid });
     }
   }
   return out;
 }
 
 
-function traceLoops(segs: Seg[]): THREE.Vector2[][] {
+/** One minimal face of the planar arrangement, plus the entities that bound it. */
+type TracedLoop = { loop: THREE.Vector2[]; eids: string[] };
+
+function traceLoops(segs: Seg[]): TracedLoop[] {
   if (segs.length < 3) return [];
   const key = (x: number, y: number) =>
     `${Math.round(x / EPS)},${Math.round(y / EPS)}`;
@@ -492,7 +513,10 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   };
   // one undirected edge per coincident segment (dedupe shared edges), as 2 half-edges
   // pushed as adjacent pairs (2k = a→b, 2k+1 = b→a) so the twin is just `i ^ 1`.
-  const he: { from: string; to: string; angle: number }[] = [];
+  // `eid` rides along so a traced face can name the entities that bound it. Where
+  // two entities lay down a coincident edge the dedupe keeps the first — a shared
+  // boundary genuinely belongs to both, and either id re-derives the same point.
+  const he: { from: string; to: string; angle: number; eid?: string | undefined }[] = [];
   const seen = new Set<string>();
   for (const s of segs) {
     const a = nodeKey(s.x1, s.y1), b = nodeKey(s.x2, s.y2);
@@ -501,8 +525,8 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
     if (seen.has(ek)) continue;
     seen.add(ek);
     const pa = nodes.get(a)!, pb = nodes.get(b)!;
-    he.push({ from: a, to: b, angle: Math.atan2(pb.y - pa.y, pb.x - pa.x) });
-    he.push({ from: b, to: a, angle: Math.atan2(pa.y - pb.y, pa.x - pb.x) });
+    he.push({ from: a, to: b, angle: Math.atan2(pb.y - pa.y, pb.x - pa.x), eid: s.eid });
+    he.push({ from: b, to: a, angle: Math.atan2(pa.y - pb.y, pa.x - pb.x), eid: s.eid });
   }
   if (he.length < 6) return [];
 
@@ -522,7 +546,7 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
   };
 
   const visited = new Set<number>();
-  const loops: THREE.Vector2[][] = [];
+  const loops: TracedLoop[] = [];
   for (let s = 0; s < he.length; s++) {
     if (visited.has(s)) continue;
     const faceHE: number[] = [];
@@ -535,12 +559,15 @@ function traceLoops(segs: Seg[]): THREE.Vector2[][] {
     }
     if (cur !== s || faceHE.length < 3) continue;
     const pts: THREE.Vector2[] = [];
+    const eids = new Set<string>();
     for (const hi of faceHE) {
       const h = he[hi];
-      if (h) pts.push(nodes.get(h.from)!);
+      if (!h) continue;
+      pts.push(nodes.get(h.from)!);
+      if (h.eid !== undefined) eids.add(h.eid);
     }
     // keep CCW (interior) faces; the outer/unbounded face is CW (negative area)
-    if (signedLoopArea(pts) > EPS) loops.push(pts);
+    if (signedLoopArea(pts) > EPS) loops.push({ loop: pts, eids: [...eids].sort() });
   }
   return loops;
 }
