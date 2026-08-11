@@ -88,6 +88,7 @@ jobs:
           uv run python test_val_guard.py
           uv run python test_body_binding.py
           uv run python test_selector_ambiguity.py
+          uv run python test_error_codes.py
           uv run python test_assembly.py
           uv run python test_cancel.py
           uv run python test_blobstore.py

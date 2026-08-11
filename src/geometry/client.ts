@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, ImportFormat, ImportReply, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
+import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, GeomErrorCode, ImportFormat, ImportReply, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
 import { RebuildAssembly, manifestFromBodies } from "./assembly";
 import type {
   WireBody, WireBodyFull, WireEdgeList, WireManifestEntry, WireRebuildResult,
@@ -14,6 +14,10 @@ import type {
 interface WireError {
   message: string;
   feature_id?: string;
+  /** Machine-readable classification (sidecar/errors.py). Optional: an older
+   *  sidecar omits it, and an unrecognised value is expected to degrade to
+   *  "unclassified" rather than break. */
+  code?: GeomErrorCode;
 }
 type RawReply<T> =
   | { id: string; ok: true; result: T }

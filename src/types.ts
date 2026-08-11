@@ -702,6 +702,29 @@ export interface CadDocument {
   bodyColors?: Record<string, number>;
 }
 
+// A machine-readable classification on an error or a diagnostic. Prose is for
+// the user; this is what code branches on — the Re-pick affordance used to match
+// the exact string "ambiguous nearest pick", so rewording a Python message
+// silently disabled a TypeScript feature.
+//
+// The `(string & {})` member is load-bearing: it keeps autocomplete for the known
+// codes while letting an UNRECOGNISED one type-check, so a newer sidecar emitting
+// a code this build has never heard of degrades to "unclassified" instead of
+// failing to compile. Adding a code is a pure addition; renaming one is breaking.
+export type GeomErrorCode =
+  | "ambiguousReference"
+  | "referenceNotFound"
+  | "cancelled"
+  | "timedOut"
+  | "stalled"
+  | "kernelCrashed"
+  | "engineUnavailable"
+  | "replyTooLarge"
+  | "bodyTooLarge"
+  | "unknownOp"
+  | "badRequest"
+  | (string & {});
+
 // Optional per-selector resolution diagnostic (selector v2). Lets a rebuild surface
 // a low-confidence / best-effort match WITHOUT failing the build; downstream tooling
 // (e.g. an importer deciding parametric-vs-captured) reads it. Code that ignores
@@ -717,6 +740,8 @@ export interface ResolveDiag {
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
   reason?: string;
+  /** Machine-readable classification; prefer this over matching `reason`. */
+  code?: GeomErrorCode;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
   // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the
   // SELECTOR's own stored point — not the geometry that was found — which is what
@@ -749,8 +774,8 @@ export interface RebuildResult {
   // is the LAST (most downstream) failure — the one closest to the user's
   // latest action; featureErrors lists them all, timeline order. The reply is
   // still ok:true so the model renders alongside the error banner.
-  featureError?: { feature_id?: string; message: string };
-  featureErrors?: { feature_id?: string; message: string }[];
+  featureError?: { feature_id?: string; message: string; code?: GeomErrorCode };
+  featureErrors?: { feature_id?: string; message: string; code?: GeomErrorCode }[];
   // projected-curve refresh entries from this rebuild (absent at steady state);
   // the store lands them via a derived, no-undo commit — see
   // DocumentStore.commitProjectionRefresh.

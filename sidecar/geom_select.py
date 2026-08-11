@@ -53,6 +53,8 @@ import os
 
 import font_guard  # noqa: F401  MUST precede build123d — see font_guard.py
 
+import errors
+
 from build123d import Axis, Vector, GeomType
 
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
@@ -474,7 +476,14 @@ def _resolve_one(cands, cost_fn, key_fn, nth):
     return best, margin, lossy, ("marginal match" if lossy else None)
 
 
-def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=None, candidates=None):
+def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=None,
+               candidates=None, code=None):
+    # HEAD GATE, load-bearing: a confident, unambiguous resolution records
+    # NOTHING. `diag` means "resolutions worth acting on", and callers rely on
+    # that — builder._project_source refuses on a lossy entry, and keying on
+    # "diag is non-empty" instead once turned a perfectly good cylinder-rim pick
+    # into a hard failure. Asserted by test_selector_ambiguity. Do not relax it
+    # to carry informational entries; add a separate channel instead.
     if diag is None or not (lossy or confidence < 0.5):
         return
     entry = {
@@ -493,6 +502,11 @@ def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=N
         entry["at"] = [round(float(v), 6) for v in at]
     if candidates:
         entry["candidates"] = list(candidates)
+    # The code belongs on the DIAGNOSTIC as well as the error: the Re-pick UI
+    # reads RebuildResult.diagnostics, never `error`, so a code that lives only
+    # on the fatal is invisible to the one consumer that most wants it.
+    if code:
+        entry["code"] = code
     diag.append(entry)
 
 
@@ -523,7 +537,7 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
     """
     cands = list(cands)
     if not cands:
-        raise ValueError(f"no {kind} to select from")
+        raise errors.GeomError(f"no {kind} to select from", errors.REFERENCE_NOT_FOUND)
     scored = sorted(((dist_of(c), c) for c in cands), key=lambda t: t[0])
     best_d, best = scored[0]
     runner = scored[1][0] if len(scored) > 1 else math.inf
@@ -553,12 +567,13 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
     where = ", ".join(f"{float(v):.2f}" for v in pt)
     described = [describe(c) for c in tied[:3]]
     _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick",
-               at=pt, candidates=described)
-    raise ValueError(
+               at=pt, candidates=described, code=errors.AMBIGUOUS_REFERENCE)
+    raise errors.GeomError(
         f"ambiguous {kind} reference at ({where}): "
         + " and ".join(described)
         + f" are equally close ({best_d:.3f}mm vs {runner:.3f}mm) — re-pick the {kind}, "
-        f"the saved reference no longer identifies one"
+        f"the saved reference no longer identifies one",
+        errors.AMBIGUOUS_REFERENCE,
     )
 
 
@@ -583,7 +598,7 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
     append a ResolveDiag dict for the rebuild to surface.
     """
     if part is None:
-        raise ValueError("no part to select edges from")
+        raise errors.GeomError("no part to select edges from", errors.REFERENCE_NOT_FOUND)
 
     # a list of selectors (multi-edge fillet/chamfer): union, de-duplicated.
     if isinstance(sel, list):
@@ -641,13 +656,13 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         chain = _tangent_chain(part, seed)
         _push_diag(diag, feature_id, "edge", len(chain), conf, lossy, reason)
         return chain
-    raise ValueError(f"unknown edge selector: {by}")
+    raise errors.GeomError(f"unknown edge selector: {by}", errors.BAD_REQUEST)
 
 
 def resolve_faces(part, sel, diag=None, feature_id=None):
     """Resolve a face selector — or a LIST of selectors — to build123d faces."""
     if part is None:
-        raise ValueError("no part to select faces from")
+        raise errors.GeomError("no part to select faces from", errors.REFERENCE_NOT_FOUND)
 
     # a list of selectors (multi-face offset/thicken/shell/draft): union,
     # de-duplicated — mirrors resolve_edges. Without this branch a list reaches
@@ -691,7 +706,7 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
         return list(part.faces())
     if by == "match":
         return _faces_matching(part, sel["fp"], diag, feature_id, nth=sel.get("nth"))
-    raise ValueError(f"unknown face selector: {by}")
+    raise errors.GeomError(f"unknown face selector: {by}", errors.BAD_REQUEST)
 
 
 def _faces_matching(part, fp, diag, feature_id, nth=None):

@@ -3154,7 +3154,18 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             # executed.) Owner attribution is skipped for the failed feature.
             # ValueErrors are hand-authored for users ("no edge found to
             # fillet", …) — surface them verbatim.
-            errors.append({"feature_id": f.get("id"), "message": str(ex)})
+            #
+            # This is THE choke point for per-feature failures: it feeds both
+            # `featureErrors` on an ok:true rebuild AND, via server._fatal_from,
+            # the whole-job error. A fillet whose reference went ambiguous
+            # reports through the ok:true path, which is precisely where a code
+            # is most useful and where a code applied only to `_err` would never
+            # appear. GeomError subclasses ValueError so it lands here unchanged.
+            entry = {"feature_id": f.get("id"), "message": str(ex)}
+            _code = getattr(ex, "code", None)
+            if _code:
+                entry["code"] = _code
+            errors.append(entry)
         except Exception as ex:
             # Anything NOT a hand-authored ValueError is an unexpected internal
             # failure (OCCT crash, KeyError, …) — the raw message is meaningless
