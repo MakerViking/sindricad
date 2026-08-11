@@ -358,7 +358,16 @@ export class BrowserTree {
     const head = document.createElement("div");
     head.className = "tree-folder";
     const stale = this.printerOnline === true && this.staleSlots.size > 0;
-    const dotColor = this.printerOnline == null ? "#888" : !this.printerOnline ? "#d23b30" : stale ? "#d2a83b" : "#3ba55d";
+    // Status tokens, not ad-hoc hex: the offline red used to be the filament
+    // palette's "Red" borrowed by accident, so recolouring a filament would have
+    // silently moved the printer indicator with it.
+    const dotColor = this.printerOnline == null
+      ? "var(--text-mute)"
+      : !this.printerOnline
+        ? "var(--error)"
+        : stale
+          ? "var(--warn)"
+          : "var(--ok)";
     const dotTitle = stale
       ? `Printer filaments changed since sync (slot${this.staleSlots.size > 1 ? "s" : ""} ${[...this.staleSlots].map((i) => i + 1).join(", ")}) — click the sync button to re-sync`
       : "Printer connection";
@@ -684,7 +693,7 @@ export class BrowserTree {
       if (it.title) row.title = it.title;
       const hidden = it.onToggleVis && it.visible === false;
       const swatch = it.swatch
-        ? `<span class="tree-swatch" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${esc(it.swatch)};border:1px solid #0007;margin-right:5px;vertical-align:middle"></span>`
+        ? `<span class="tree-swatch" style="background:${esc(it.swatch)}"></span>`
         : "";
       row.innerHTML =
         `<span class="feature-icon">${icon(it.icon)}</span>` +

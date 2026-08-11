@@ -1,11 +1,14 @@
 // Floating HTML panel for the printed-Texture tool (knurl/hex/waves/ribs/voronoi/
 // noise/image heightmap). Unlike TextPanel (cursor-anchored, one text object) this
 // is DOCKED top-right: the tool can span a whole body, not one clicked point, so
-// there's no natural anchor to follow. Mirrors TextPanel's row()/inputStyle()/
-// emit() conventions otherwise. Every edit fires onChange for a live preview;
-// ✓ Add/Apply commits, ✕ cancels. The preview is always approximate (GPU bump for
+// there's no natural anchor to follow. Mirrors TextPanel's row()/emit()
+// conventions otherwise; shared chrome comes from the `.tool-panel` CSS class.
+// Every edit fires onChange for a live preview;
+// Add/Apply commits, Cancel dismisses. The preview is always approximate (GPU bump for
 // procedural kinds, or nothing) — a note says so, permanently, so nobody mistakes
 // it for the real geometry.
+
+import { icon, type IconName } from "../ui/icons";
 
 export type TextureKind = "knurl" | "hex" | "waves" | "ribs" | "voronoi" | "noise" | "image";
 export type TextureMode = "faces" | "body";
@@ -65,13 +68,11 @@ export class TexturePanel {
 
   constructor() {
     this.root = document.createElement("div");
+    this.root.className = "tool-panel";
     Object.assign(this.root.style, {
-      position: "fixed", top: "60px", right: "16px", zIndex: "50", display: "none",
-      padding: "8px", background: "#20242c", border: "1px solid #3a4150", borderRadius: "6px",
-      boxShadow: "0 6px 20px rgba(0,0,0,0.4)", font: "12px system-ui, sans-serif",
-      color: "#dce3ee", width: "270px", maxWidth: "calc(100vw - 24px)", boxSizing: "border-box",
+      top: "60px", right: "16px", display: "none",
+      width: "270px", maxWidth: "calc(100vw - 24px)",
       maxHeight: "calc(100vh - 80px)", overflowY: "auto",
-      colorScheme: "dark", // native <select>/checkbox/number-spinner render dark
     } as CSSStyleDeclaration);
     document.body.appendChild(this.root);
   }
@@ -111,16 +112,15 @@ export class TexturePanel {
       this.root.appendChild(d);
       return d;
     };
-    const inputStyle = (el: HTMLElement) =>
-      Object.assign(el.style, { background: "#161a20", color: "#dce3ee", border: "1px solid #3a4150", borderRadius: "3px", padding: "3px 5px", font: "inherit" });
 
     const title = document.createElement("div");
+    title.className = "tool-panel-title";
     title.textContent = "Texture";
-    Object.assign(title.style, { fontWeight: "600", marginBottom: "6px" });
     this.root.appendChild(title);
 
     this.summaryEl = document.createElement("div");
-    Object.assign(this.summaryEl.style, { color: "#8b93a3", marginBottom: "6px" });
+    this.summaryEl.className = "tool-panel-hint";
+    this.summaryEl.style.marginBottom = "6px";
     this.summaryEl.textContent = opts.summary;
     this.root.appendChild(this.summaryEl);
 
@@ -128,7 +128,8 @@ export class TexturePanel {
     const modeBtn = (label: string, m: TextureMode) => {
       const b = document.createElement("button");
       b.textContent = label;
-      Object.assign(b.style, { flex: "1", border: "1px solid #3a4150", borderRadius: "3px", padding: "4px 6px", cursor: "pointer", font: "inherit" });
+      b.className = "tool-chip";
+      b.style.flex = "1";
       b.addEventListener("click", () => {
         this.setMode(m);
         this.onModeChange?.(m);
@@ -142,7 +143,6 @@ export class TexturePanel {
     this.setMode(opts.mode);
 
     const kind = document.createElement("select");
-    inputStyle(kind);
     Object.assign(kind.style, { flex: "1" });
     for (const [v, label] of KIND_OPTIONS) kind.appendChild(new Option(label, v));
     kind.value = opts.initial.kind ?? "knurl";
@@ -151,7 +151,6 @@ export class TexturePanel {
     // Hard surface is the default: planar facets and real creases are what a
     // printer can actually reproduce. "Smooth" restores the original fields.
     const profile = document.createElement("select");
-    inputStyle(profile);
     Object.assign(profile.style, { flex: "1" });
     profile.appendChild(new Option("Faceted (hard surface)", "facet"));
     profile.appendChild(new Option("Smooth", "round"));
@@ -159,18 +158,14 @@ export class TexturePanel {
     row(label("Profile"), profile);
 
     const depth = numberInput(opts.initial.depth ?? 0.4, "0.01");
-    inputStyle(depth);
     const scale = numberInput(opts.initial.scale ?? 2, "0.01");
-    inputStyle(scale);
     row(label("Depth"), depth, label("Scale"), scale);
 
     // --- conditional: angle/sharpness/direction (lattice + wave kinds) ---
     const angle = numberInput(opts.initial.angle ?? 0, "1");
-    inputStyle(angle);
     const sharpness = numberInput(opts.initial.sharpness ?? 0.5, "0.05");
     sharpness.min = "0";
     sharpness.max = "1";
-    inputStyle(sharpness);
     // the same slider means different things per profile, so it says which —
     // and for one combination it means nothing at all, so it goes away rather
     // than sitting there dead: a FACETED wave is a fixed 8-join sine polyline
@@ -191,7 +186,6 @@ export class TexturePanel {
     profile.addEventListener("change", syncSharpLabel);
     const angleRow = row(label("Angle°"), angle, sharpLabel, sharpness);
     const direction = document.createElement("select");
-    inputStyle(direction);
     Object.assign(direction.style, { flex: "1" });
     direction.appendChild(new Option("Out (emboss)", "out"));
     direction.appendChild(new Option("In (deboss)", "in"));
@@ -201,10 +195,9 @@ export class TexturePanel {
 
     // --- conditional: seed + randomize (voronoi/noise) ---
     const seed = numberInput(opts.initial.seed ?? 1, "1");
-    inputStyle(seed);
     const randomize = document.createElement("button");
-    randomize.textContent = "🎲 Randomize";
-    Object.assign(randomize.style, { border: "1px solid #3a4150", borderRadius: "3px", padding: "3px 8px", cursor: "pointer", font: "inherit" });
+    randomize.className = "panel-btn panel-btn-ghost";
+    randomize.innerHTML = `${icon("randomize")}<span>Randomize</span>`;
     randomize.addEventListener("click", () => {
       seed.value = String(Math.floor(Math.random() * 1_000_000));
       emit();
@@ -214,11 +207,12 @@ export class TexturePanel {
     // --- conditional: image path + invert ---
     const imagePathLabel = document.createElement("span");
     imagePathLabel.textContent = opts.initial.imagePath ? basename(opts.initial.imagePath) : "No file chosen";
-    Object.assign(imagePathLabel.style, { flex: "1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#8b93a3" });
+    imagePathLabel.className = "tool-panel-hint";
+    Object.assign(imagePathLabel.style, { flex: "1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
     let imagePath = opts.initial.imagePath;
     const browse = document.createElement("button");
     browse.textContent = "Browse…";
-    Object.assign(browse.style, { border: "1px solid #3a4150", borderRadius: "3px", padding: "3px 8px", cursor: "pointer", font: "inherit" });
+    browse.className = "tool-chip";
     browse.addEventListener("click", async () => {
       if (!isTauri()) {
         console.warn("texture image needs the native app (a real filesystem path)");
@@ -257,7 +251,6 @@ export class TexturePanel {
     // --- Inlay color: which palette slot the textured faces print in (two-tone).
     // Only shown when the caller passed a palette (i.e. in a doc with bodies).
     const colorSlot = document.createElement("select");
-    inputStyle(colorSlot);
     Object.assign(colorSlot.style, { flex: "1" });
     colorSlot.appendChild(new Option("Body color", ""));
     (opts.palette ?? []).forEach((s, i) => colorSlot.appendChild(new Option(`${s.name} (slot ${i + 1})`, String(i))));
@@ -273,12 +266,10 @@ export class TexturePanel {
     details.appendChild(summary);
     this.root.appendChild(details);
     const offset = numberInput(opts.initial.offset ?? 0, "0.01");
-    inputStyle(offset);
     const offsetRow = document.createElement("div");
     Object.assign(offsetRow.style, { display: "flex", gap: "6px", alignItems: "center" });
     const edgeBlend = numberInput(opts.initial.boundaryInset ?? 0, "0.05");
     edgeBlend.min = "0";
-    inputStyle(edgeBlend);
     offsetRow.append(label("Offset"), offset, label("Edge blend"), edgeBlend);
     offsetRow.title =
       "Edge blend: mm the pattern fades over at a face boundary. 0 = a clean machined cut-off.";
@@ -286,7 +277,7 @@ export class TexturePanel {
 
     const note = document.createElement("div");
     note.textContent = "Preview is real geometry at display resolution — exports keep full detail.";
-    Object.assign(note.style, { color: "#8b93a3", fontStyle: "italic", margin: "8px 0" });
+    note.className = "tool-panel-note";
     this.root.appendChild(note);
 
     this.read = (): TextureValues => ({
@@ -311,9 +302,9 @@ export class TexturePanel {
       el.addEventListener("change", emit);
     }
 
-    const ok = button(opts.editing ? "✓ Apply" : "✓ Add", "#2b6");
+    const ok = button(opts.editing ? "Apply" : "Add", "confirm", "check");
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });
-    const no = button("✕ Cancel", "#555");
+    const no = button("Cancel", "cancel", "close");
     no.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.cancel(); });
     const btns = row(ok, no);
     btns.style.marginBottom = "0";
@@ -331,10 +322,9 @@ export class TexturePanel {
    *  button click and when the tool switches mode some other way). */
   setMode(mode: TextureMode) {
     if (!this.modeBtns) return;
-    const on = { background: "#2b6", borderColor: "#2b6", color: "#fff" };
-    const off = { background: "transparent", borderColor: "#3a4150", color: "#dce3ee" };
-    Object.assign(this.modeBtns.faces.style, mode === "faces" ? on : off);
-    Object.assign(this.modeBtns.body.style, mode === "body" ? on : off);
+    // `.tool-chip.on` carries the selected look.
+    this.modeBtns.faces.classList.toggle("on", mode === "faces");
+    this.modeBtns.body.classList.toggle("on", mode === "body");
   }
 
   private commit() {
@@ -387,9 +377,14 @@ function checkbox(checked: boolean): HTMLInputElement {
   return c;
 }
 
-function button(text: string, bg: string): HTMLButtonElement {
+function button(text: string, variant: "confirm" | "cancel", iconName?: IconName): HTMLButtonElement {
   const b = document.createElement("button");
-  b.textContent = text;
-  Object.assign(b.style, { background: bg, color: "#fff", border: "none", borderRadius: "4px", padding: "4px 10px", cursor: "pointer", font: "inherit" });
+  if (iconName) {
+    b.innerHTML = `${icon(iconName)}<span></span>`;
+    b.querySelector("span")!.textContent = text;
+  } else {
+    b.textContent = text;
+  }
+  b.className = `panel-btn panel-btn-${variant}`;
   return b;
 }

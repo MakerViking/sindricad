@@ -9,16 +9,19 @@
 import * as THREE from "three";
 import { bodyOfFace, edgeObjects, type BodyMesh, type ModelView } from "./render";
 import type { EdgeRef } from "./edgeLines";
+import * as C from "./colors3d";
 
-const EDGE_BASE = new THREE.Color(0x1b1f24);
-const HOVER = new THREE.Color(0xffd089); // pale hot amber (under cursor)
+// Values live in ./colors3d; the rationale for each stays here, next to the
+// code that paints with it.
+const EDGE_BASE = new THREE.Color(C.EDGE_IDLE);
+const HOVER = new THREE.Color(C.EDGE_HOVER); // pale hot amber (under cursor)
 // molten amber for SELECTED (the Forge accent) — distinct from the paler hover
 // and the muted-ember "pickable" emphasis; reads as forged/locked-in.
-const SELECT = new THREE.Color(0xff7a3c);
+const SELECT = new THREE.Color(C.SELECT);
 // ERROR: the edge a fillet/chamfer failed on. Highest paint precedence — hover
 // and select must never overwrite it, or the "which edge is the problem" signal
 // disappears the moment the user mouses over it.
-const ERROR = new THREE.Color(0xe23b3b);
+const ERROR = new THREE.Color(C.ERROR);
 
 /** Recolor one edge through the merged object that draws it. */
 function paint(e: EdgeRef, color: THREE.Color) {

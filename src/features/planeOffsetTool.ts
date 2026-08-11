@@ -13,10 +13,9 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
+import { HANDLE_IDLE, HANDLE_HOT } from "../viewport/colors3d";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const HANDLE_IDLE = 0xffc83d; // amber
-const HANDLE_HOT = 0xffe9a8;
 
 export class PlaneOffsetTool {
   active = false;

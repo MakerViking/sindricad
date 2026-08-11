@@ -38,8 +38,8 @@ import { setPrompt } from "../ui/prompt";
 import type { DocumentStore } from "../document/store";
 import type { ViewCubeSide } from "../types";
 
-const EDGE_IDLE = new THREE.Color(0x1b1f24); // normal dark edge
-const EDGE_PICKABLE = new THREE.Color(0xd98a4a); // muted ember "selectable" edge (fillet/chamfer mode)
+const EDGE_IDLE = new THREE.Color(C.EDGE_IDLE);
+const EDGE_PICKABLE = new THREE.Color(C.EDGE_PICKABLE);
 
 // Flush-seam hiding is SUPERLINEAR in edge count — it builds a per-face map over
 // every triangle in the model and then scans candidate faces per edge. Measured
@@ -62,6 +62,7 @@ import { ProgressiveModel } from "./progressive";
 import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
+import * as C from "./colors3d";
 
 /** Shallow equality for the flat id→hex paint maps. Cheap enough to run on every
  *  build (microseconds at 3,000 entries) and it saves a full GPU colour upload
@@ -537,7 +538,7 @@ export class Viewport {
       this.highlighter.setBase((fid) => hue.get(this.faceIdToBodyId(fid) ?? "") ?? BASE_COLOR, only);
     } else if (this.analysis === "draft") {
       const B = this.draftDir;
-      const OVERHANG = new THREE.Color(0xe24a3b); // unsupported overhang (red)
+      const OVERHANG = new THREE.Color(C.OVERHANG); // unsupported overhang (red)
       const TOP = new THREE.Color(0x49c46a); // up-facing
       const WALL = new THREE.Color(0x4aa3e2); // wall / steep-enough downward
       // a downward face is an overhang when its angle from straight-down (β) is
@@ -1872,7 +1873,7 @@ export class Viewport {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(out, 3));
     const mat = new THREE.MeshBasicMaterial({
-      color: distance >= 0 ? 0xffc83d : 0xff6b5c, // amber = add, red = cut
+      color: distance >= 0 ? C.HANDLE_IDLE : C.HANDLE_CUT, // amber = add, red = cut
       transparent: true,
       opacity: 0.4,
       side: THREE.DoubleSide,

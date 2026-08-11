@@ -20,6 +20,7 @@ import type { Feature, PlaneDef, Selector } from "../types";
 import { setPrompt } from "../ui/prompt";
 import { fetchFonts } from "../sketch/textCache";
 import { TextOnFacePanel, type TextOnFaceValues } from "./textOnFacePanel";
+import { HANDLE_IDLE as OUTLINE_COLOR } from "../viewport/colors3d";
 
 type Phase = "pick" | "edit";
 
@@ -31,7 +32,6 @@ type Phase = "pick" | "edit";
 const OUTLINE_DEBOUNCE_MS = 40;
 const SOLID_DEBOUNCE_MS = 400;
 
-const OUTLINE_COLOR = 0xffc83d;
 
 export class TextOnFaceTool {
   active = false;

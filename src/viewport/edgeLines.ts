@@ -20,6 +20,7 @@ import { LineSegments2 } from "three/examples/jsm/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { RebuildResult } from "../types";
+import * as C from "./colors3d";
 
 export type EdgePt = [number, number, number];
 
@@ -35,7 +36,9 @@ export interface EdgeRef {
   readonly slot: number;
 }
 
-export const EDGE_IDLE_COLOR = 0x1b1f24;
+/** Re-exported under its long-standing name; the value lives in ./colors3d,
+ *  which is also where highlight.ts and viewport.ts read it from. */
+export const EDGE_IDLE_COLOR = C.EDGE_IDLE;
 export const EDGE_IDLE_WIDTH = 1.6;
 
 /** Every edge of ONE body, merged into a single LineSegments2. */

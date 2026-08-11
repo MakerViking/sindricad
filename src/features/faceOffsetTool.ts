@@ -20,15 +20,13 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
+import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT as HANDLE_IN } from "../viewport/colors3d";
 
 export type FaceOffsetMode = "offsetFace" | "thicken";
 
 type Phase = "pick" | "drag";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const HANDLE_IDLE = 0xffc83d;
-const HANDLE_HOT = 0xffe9a8;
-const HANDLE_IN = 0xff6b5c; // pushing inward
 
 const LABEL: Record<FaceOffsetMode, string> = { offsetFace: "Offset Face", thicken: "Thicken" };
 

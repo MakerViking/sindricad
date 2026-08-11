@@ -17,13 +17,11 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
+import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT } from "../viewport/colors3d";
 
 type Phase = "pick" | "drag";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const HANDLE_IDLE = 0xffc83d; // amber (pull / add)
-const HANDLE_HOT = 0xffe9a8; // brighter when hovered/grabbed
-const HANDLE_CUT = 0xff6b5c; // red when pushing in (cut)
 
 export class PressPullTool {
   active = false;

@@ -166,7 +166,7 @@ export function createPanels(deps: PanelsDeps) {
         .map((d) => `<option${d === dir ? " selected" : ""}>${d}</option>`)
         .join("")}</select></div>` +
       `<div class="measure-row"><span class="measure-k">Threshold</span><span><input class="oh-thr" type="range" min="0" max="90" step="1" value="${threshold}" style="width:96px;vertical-align:middle"> <span class="oh-val">${threshold}°</span></span></div>` +
-      `<div class="measure-row"><span class="measure-v" style="color:#e24a3b">red = unsupported overhang</span></div>` +
+      `<div class="measure-row"><span class="measure-v" style="color:var(--danger-action)">red = unsupported overhang</span></div>` +
       `<div class="measure-hint">Faces past this angle from horizontal need support · toggle Draft to close</div>`;
     const el = overhangPanel.open(html);
     const dirSel = el.querySelector(".oh-dir") as HTMLSelectElement;
@@ -189,7 +189,7 @@ export function createPanels(deps: PanelsDeps) {
     const html =
       `<div class="measure-title">Camera — ${esc(printerId)}</div>` +
       `<img class="camera-frame" alt="printer camera" style="display:block;max-width:480px;min-width:320px;min-height:180px;background:#111">` +
-      `<div class="camera-offline" style="display:none;padding:8px;color:#e24a3b">camera unavailable <button class="camera-retry">Retry</button></div>` +
+      `<div class="camera-offline" style="display:none;padding:8px;color:var(--danger-action)">camera unavailable <button class="camera-retry">Retry</button></div>` +
       `<div class="measure-hint">~1 frame/s · Esc to close</div>`;
     let unlistenFrame: (() => void) | null = null;
     let unlistenOffline: (() => void) | null = null;

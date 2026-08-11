@@ -13,9 +13,9 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
+import { HANDLE_HOT as HOT } from "../viewport/colors3d";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const HOT = 0xffe9a8; // hovered / grabbed arrow
 const AXES = [
   { dir: new THREE.Vector3(1, 0, 0), color: 0xff5a5a }, // X red
   { dir: new THREE.Vector3(0, 1, 0), color: 0x5ad15a }, // Y green

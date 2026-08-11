@@ -1,7 +1,9 @@
 // Floating HTML panel for the sketch Text tool. DimInput is numeric-only, so text
 // gets its own small panel: a multi-line string, a system-font picker (fonts come
 // from the sidecar's listFonts op), size, bold/italic, alignment and rotation. On
-// every edit it fires onChange for a live preview; ✓/Enter commits, ✕/Esc cancels.
+// every edit it fires onChange for a live preview; Add/Enter commits, Cancel/Esc dismisses.
+
+import { icon, type IconName } from "../ui/icons";
 
 export interface TextValues {
   text: string;
@@ -34,12 +36,9 @@ export class TextPanel {
 
   constructor() {
     this.root = document.createElement("div");
+    this.root.className = "tool-panel";
     Object.assign(this.root.style, {
-      position: "fixed", zIndex: "50", display: "none", padding: "8px",
-      background: "#20242c", border: "1px solid #3a4150", borderRadius: "6px",
-      boxShadow: "0 6px 20px rgba(0,0,0,0.4)", font: "12px system-ui, sans-serif",
-      color: "#dce3ee", width: "300px", maxWidth: "calc(100vw - 24px)", boxSizing: "border-box",
-      colorScheme: "dark", // native <select> dropdown + number spinners render dark
+      display: "none", width: "300px", maxWidth: "calc(100vw - 24px)",
     } as CSSStyleDeclaration);
     document.body.appendChild(this.root);
   }
@@ -71,20 +70,16 @@ export class TextPanel {
       this.root.appendChild(d);
       return d;
     };
-    const inputStyle = (el: HTMLElement) =>
-      Object.assign(el.style, { background: "#161a20", color: "#dce3ee", border: "1px solid #3a4150", borderRadius: "3px", padding: "3px 5px", font: "inherit" });
 
     const ta = document.createElement("textarea");
     ta.value = initial.text ?? "";
     ta.rows = 2;
     ta.placeholder = "Text…";
     Object.assign(ta.style, { width: "100%", resize: "vertical" });
-    inputStyle(ta);
     this.root.appendChild(ta);
     this.root.appendChild(Object.assign(document.createElement("div"), { style: "height:6px" }));
 
     const font = document.createElement("select");
-    inputStyle(font);
     Object.assign(font.style, { flex: "1", minWidth: "0", maxWidth: "100%" });
     const def = new Option("Default font", "");
     font.appendChild(def);
@@ -97,18 +92,15 @@ export class TextPanel {
     size.value = String(initial.height ?? 10);
     size.min = "0.1";
     Object.assign(size.style, { width: "56px" });
-    inputStyle(size);
     const angle = document.createElement("input");
     angle.type = "number";
     angle.value = String(initial.angle ?? 0);
     Object.assign(angle.style, { width: "56px" });
-    inputStyle(angle);
     row(label("Size"), size, label("Angle°"), angle);
 
     const bold = checkbox(String(initial.style ?? "regular").includes("bold"));
     const italic = checkbox(String(initial.style ?? "regular").includes("italic"));
     const align = document.createElement("select");
-    inputStyle(align);
     for (const a of ["left", "center", "right"]) align.appendChild(new Option(a, a));
     align.value = initial.align ?? "left";
     row(label("B", bold), bold, label("I", italic), italic, align);
@@ -120,7 +112,6 @@ export class TextPanel {
     boxW.value = initial.boxWidth ? String(initial.boxWidth) : "";
     boxW.placeholder = "0 = no box";
     Object.assign(boxW.style, { flex: "1", minWidth: "0" });
-    inputStyle(boxW);
     row(label("Box width (mm)"), boxW);
 
     this.read = (): TextValues => ({
@@ -139,9 +130,9 @@ export class TextPanel {
       el.addEventListener("change", emit);
     }
 
-    const ok = button("✓ Add", "#2b6");
+    const ok = button("Add", "confirm", "check");
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });
-    const no = button("✕", "#555");
+    const no = button("Cancel", "cancel", "close");
     no.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.cancel(); });
     const btns = row(ok, no);
     btns.style.marginBottom = "0";
@@ -192,9 +183,14 @@ function checkbox(checked: boolean): HTMLInputElement {
   return c;
 }
 
-function button(text: string, bg: string): HTMLButtonElement {
+function button(text: string, variant: "confirm" | "cancel", iconName?: IconName): HTMLButtonElement {
   const b = document.createElement("button");
-  b.textContent = text;
-  Object.assign(b.style, { background: bg, color: "#fff", border: "none", borderRadius: "4px", padding: "4px 10px", cursor: "pointer", font: "inherit" });
+  if (iconName) {
+    b.innerHTML = `${icon(iconName)}<span></span>`;
+    b.querySelector("span")!.textContent = text;
+  } else {
+    b.textContent = text;
+  }
+  b.className = `panel-btn panel-btn-${variant}`;
   return b;
 }

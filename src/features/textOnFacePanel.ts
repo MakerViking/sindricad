@@ -6,6 +6,8 @@
 // not the panel — the tool is alive from before the panel exists until cleanup,
 // and a refused commit must leave the panel up and recoverable.
 
+import { icon, type IconName } from "../ui/icons";
+
 export interface TextOnFaceValues {
   text: string;
   font?: string;
@@ -55,12 +57,9 @@ export class TextOnFacePanel {
 
     const root = document.createElement("div");
     this.root = root;
+    root.className = "tool-panel";
     Object.assign(root.style, {
-      position: "fixed", top: "60px", right: "16px", width: "270px",
-      background: "#20242c", color: "#dce3ee", border: "1px solid #3a4150",
-      borderRadius: "6px", padding: "8px", zIndex: "60",
-      font: "12px/1.4 system-ui, sans-serif", colorScheme: "dark",
-      boxShadow: "0 6px 20px rgba(0,0,0,.45)",
+      top: "60px", right: "16px", width: "270px", zIndex: "60",
     });
     document.body.appendChild(root);
 
@@ -71,11 +70,6 @@ export class TextOnFacePanel {
       root.appendChild(d);
       return d;
     };
-    const style = (el: HTMLElement) =>
-      Object.assign(el.style, {
-        background: "#161a20", color: "#dce3ee", border: "1px solid #3a4150",
-        borderRadius: "3px", padding: "3px 5px", font: "inherit",
-      });
     const label = (t: string) => {
       const l = document.createElement("label");
       l.textContent = t;
@@ -86,7 +80,7 @@ export class TextOnFacePanel {
       const i = document.createElement("input");
       i.type = "number"; i.value = String(v); i.step = step;
       if (min !== undefined) i.min = min;
-      style(i); i.style.width = "70px";
+      i.style.width = "70px";
       return i;
     };
 
@@ -99,13 +93,12 @@ export class TextOnFacePanel {
     text.value = init.text ?? "";
     text.rows = 2;
     text.placeholder = "Type your text";
-    style(text);
     Object.assign(text.style, { width: "100%", resize: "vertical", boxSizing: "border-box" });
     root.appendChild(text);
     root.appendChild(document.createElement("div")).style.height = "6px";
 
     const font = document.createElement("select");
-    style(font); font.style.flex = "1";
+    font.style.flex = "1";
     const def = document.createElement("option");
     def.value = ""; def.textContent = "Default font";
     font.appendChild(def);
@@ -122,7 +115,7 @@ export class TextOnFacePanel {
     row(label("Size mm"), height, label("Depth"), depth);
 
     const op = document.createElement("select");
-    style(op); op.style.flex = "1";
+    op.style.flex = "1";
     for (const [v, t] of [["emboss", "Emboss (raised)"], ["engrave", "Engrave (cut)"]] as const) {
       const o = document.createElement("option");
       o.value = v; o.textContent = t;
@@ -138,7 +131,6 @@ export class TextOnFacePanel {
     italic.type = "checkbox";
     italic.checked = (init.style ?? "regular").includes("italic");
     const align = document.createElement("select");
-    style(align);
     for (const a of ["left", "center", "right"] as const) {
       const o = document.createElement("option");
       o.value = a; o.textContent = a;
@@ -155,7 +147,6 @@ export class TextOnFacePanel {
     const bevel = num(init.bevel ?? 0, "0.05", "0");
     bevel.title = "0 = sharp edges. Measured in mm, not degrees.";
     const bevelStyle = document.createElement("select");
-    style(bevelStyle);
     for (const [v, t] of [["auto", "auto"], ["chamfer", "chamfer"], ["fillet", "round"], ["taper", "sloped"]] as const) {
       const o = document.createElement("option");
       o.value = v; o.textContent = t;
@@ -206,18 +197,16 @@ export class TextOnFacePanel {
       }
     });
 
-    const btn = (t: string, bg: string) => {
+    const btn = (t: string, variant: "confirm" | "cancel", iconName: IconName) => {
       const b = document.createElement("button");
-      b.textContent = t;
-      Object.assign(b.style, {
-        flex: "1", border: "1px solid #3a4150", borderRadius: "3px",
-        padding: "4px 6px", cursor: "pointer", font: "inherit", background: bg, color: "#0f1216",
-      });
+      b.className = `panel-btn panel-btn-${variant}`;
+      b.innerHTML = `${icon(iconName)}<span></span>`;
+      b.querySelector("span")!.textContent = t;
+      b.style.flex = "1";
       return b;
     };
-    const ok = btn(opts.editing ? "✓ Apply" : "✓ Add", "#7fd18a");
-    const no = btn("✕ Cancel", "#3a4150");
-    no.style.color = "#dce3ee";
+    const ok = btn(opts.editing ? "Apply" : "Add", "confirm", "check");
+    const no = btn("Cancel", "cancel", "close");
     // pointerdown + preventDefault so the button never blurs the field being
     // typed into, and never reaches the canvas underneath
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });

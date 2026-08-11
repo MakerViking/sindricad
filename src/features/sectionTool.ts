@@ -10,6 +10,7 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
+import { HANDLE_HOT as HOT } from "../viewport/colors3d";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const AXES: Record<string, THREE.Vector3> = {
@@ -18,7 +19,6 @@ const AXES: Record<string, THREE.Vector3> = {
   Z: new THREE.Vector3(0, 0, 1),
 };
 const IDLE = 0x6fc3ff;
-const HOT = 0xffe9a8;
 
 export class SectionTool {
   active = false;

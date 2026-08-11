@@ -19,6 +19,7 @@
 import * as THREE from "three";
 import type { StandardView } from "./cameras";
 import type { ViewCubeSide, ViewOverride } from "../types";
+import * as C from "./colors3d";
 
 const SIZE = 120; // corner viewport, CSS px
 const MARGIN = 14; // gap from the top-right edge
@@ -40,10 +41,13 @@ export const FACE_VIEWS: Record<
   bottom: { view: "bottom", normal: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, -1, 0), label: "BOTTOM" },
 };
 
+// The cube's own surfaces are local; the two HOVER colours are the shared
+// selection accent, so hovering a cube face reads the same as selecting anything
+// else in the viewport.
 const COLOR_FACE = 0x2b313c;
-const COLOR_FACE_HOVER = 0xff7a3c; // accent
+const COLOR_FACE_HOVER = C.SELECT;
 const COLOR_EDGE = 0x3a4250;
-const COLOR_EDGE_HOVER = 0xff9a5c;
+const COLOR_EDGE_HOVER = C.SELECT_HOT;
 const COLOR_OUTLINE = 0x161a20;
 
 type PartKind = "face" | "edge" | "corner";
@@ -203,7 +207,7 @@ export class ViewCube {
     if (redefined) {
       // small accent dot marking a user-redefined side
       ctx.beginPath();
-      ctx.fillStyle = "#ff7a3c";
+      ctx.fillStyle = C.hex(C.SELECT);
       ctx.arc(W / 2, W * 0.78, 9, 0, Math.PI * 2);
       ctx.fill();
     }

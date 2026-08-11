@@ -16,7 +16,11 @@
 
   /* --- surfaces (dark → light, back → front) --- */
   --bg: #0e0f12;          /* app background, deepest */
+  --bg-deep: #0b0d10;     /* inset well, deeper than bg (remote/empty states) */
+  --bg-vignette: #15171c; /* centre of the viewport radial vignette */
+  --panel-hi: #181a20;    /* gradient stop ABOVE panel (titlebar top) */
   --panel: #16181d;       /* docked panels (browser/inspector/ribbon/timeline) */
+  --panel-lo: #131519;    /* gradient stop BELOW panel (ribbon/timeline edge) */
   --panel-2: #1c1f26;     /* nested surfaces, inputs, popups */
   --raised: #22262e;      /* hover / raised interactive surface */
   --raised-2: #2a2f38;    /* pressed / stronger hover */
@@ -24,6 +28,8 @@
   /* --- borders --- */
   --line: #262a31;        /* hairline divider */
   --line-strong: #323843; /* stronger border (focusable controls) */
+  --line-hover: #3d4452;  /* border under the pointer (one step above line-strong) */
+  --swatch-line: #0007;   /* outline around a filament colour chip */
 
   /* --- text --- */
   --text: #e6e8ec;        /* primary */
@@ -40,12 +46,21 @@
 
   /* --- semantic --- */
   --ok: #4ad07d;
-  --warn: #ffd24a;
-  --error: #ff5c5c;
+  --ok-text: #b6f3cf;     /* pale green foreground on a dark surface */
+  --ok-strong: #7fe08a;   /* a solved/driven dimension */
+  --ok-line: #3f7a48;     /* its border */
+  /* The warning amber. Deliberately ONE value: the solver's over-defined flag and
+     a stale parameter mean the same thing to the user, and used to be two
+     near-identical ambers that read as sloppiness rather than as a distinction. */
+  --warn: #e0a020;
+  --error: #ff5c5c;       /* form validation, failed ops, toasts */
   --error-tint: rgba(255, 92, 92, 0.14);
-
-  /* legacy alias (kept so any stray reference still resolves) */
-  --accent-blue: var(--accent);
+  /* Solver conflict specifically — kept distinct from --error because the 3D
+     sketch curve turns this exact colour (see viewport/colors3d.ts CONFLICT). */
+  --flag-conflict: #ff4444;
+  /* Destructive action / unsupported overhang. Also mirrored in 3D. */
+  --danger-action: #e24a3b;
+  --danger-action-hot: #ff7a66;
 
   /* --- radii --- */
   --r-sm: 6px;
@@ -141,7 +156,7 @@ body {
   border-radius: var(--r-pill);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3d4452;
+  background: var(--line-hover);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-corner {
@@ -156,7 +171,7 @@ body {
   align-items: center;
   gap: var(--s-4);
   padding: 0 var(--s-4);
-  background: linear-gradient(180deg, #181a20 0%, var(--panel) 100%);
+  background: linear-gradient(180deg, var(--panel-hi) 0%, var(--panel) 100%);
   border-bottom: 1px solid var(--line);
   /* Let the row be narrower than its content (see #app). Deliberately NOT
      `overflow: hidden`: .menu-popup is absolutely positioned at top:100%, i.e.
@@ -377,7 +392,7 @@ body {
    RIBBON  (the most visible element — icon-forward, grouped, amber-accented)
    ============================================================================ */
 #ribbon {
-  background: linear-gradient(180deg, var(--panel) 0%, #131519 100%);
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-lo) 100%);
   border-bottom: 1px solid var(--line);
   /* The auto row above is not enough on its own: #ribbon scrolls horizontally,
      and a scroll container's automatic minimum size is ZERO in both axes, so a
@@ -408,16 +423,16 @@ body {
   min-width: 30px;
   margin: 0 4px;
   background: none;
-  border: 1px solid var(--line, #23272e);
-  border-radius: var(--r-md, 8px);
-  color: var(--text, #e6e9ee);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
   font-size: 18px;
   line-height: 1;
   cursor: pointer;
 }
 .ribbon-overflow:hover {
-  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
-  border-color: var(--accent, #ff7a3c);
+  background: var(--accent-tint);
+  border-color: var(--accent);
 }
 .ribbon-overflow.hidden {
   display: none;
@@ -427,19 +442,19 @@ body {
   min-width: 180px;
   max-height: 60vh;
   overflow-y: auto;
-  background: var(--panel-2, #1b1f24);
-  border: 1px solid var(--line-strong, #3a4048);
-  border-radius: var(--r-md, 8px);
-  box-shadow: var(--shadow-3, 0 16px 48px rgba(0, 0, 0, 0.5));
-  padding: var(--s-1, 4px);
-  animation: pop-in var(--t-fast, 0.12s) var(--ease, ease);
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  padding: var(--s-1);
+  animation: pop-in var(--t-fast) var(--ease);
 }
 .ribbon-overflow-label {
   padding: 8px 10px 4px;
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
 }
 .ribbon-overflow-item {
   display: flex;
@@ -449,15 +464,15 @@ body {
   padding: 7px 10px;
   background: none;
   border: none;
-  border-radius: var(--r-sm, 6px);
-  color: var(--text, #e6e9ee);
+  border-radius: var(--r-sm);
+  color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 .ribbon-overflow-item:hover {
-  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
-  color: var(--accent-hot, #ff9a5c);
+  background: var(--accent-tint);
+  color: var(--accent-hot);
 }
 .ribbon-overflow-item svg {
   width: 18px;
@@ -580,10 +595,10 @@ body {
 .ribbon-btn.finish:hover {
   background: rgba(74, 208, 125, 0.14);
   border-color: rgba(74, 208, 125, 0.55);
-  color: #b6f3cf;
+  color: var(--ok-text);
 }
 .ribbon-btn.finish:hover svg {
-  color: #b6f3cf;
+  color: var(--ok-text);
 }
 
 /* ============================================================================
@@ -752,7 +767,7 @@ body {
   position: relative;
   min-width: 0;
   background:
-    radial-gradient(120% 120% at 50% 0%, #15171c 0%, var(--bg) 60%);
+    radial-gradient(120% 120% at 50% 0%, var(--bg-vignette) 0%, var(--bg) 60%);
 }
 
 #canvas {
@@ -793,7 +808,7 @@ body {
   color: var(--text-mute);
   background: rgba(22, 24, 29, 0.55);
   border: 1px solid var(--line);
-  border-radius: var(--r-sm, 4px);
+  border-radius: var(--r-sm);
   cursor: default;
   user-select: none;
   z-index: 15;
@@ -848,7 +863,7 @@ button {
 }
 button:hover {
   background: var(--raised);
-  border-color: #3d4452;
+  border-color: var(--line-hover);
 }
 button.active {
   border-color: var(--accent);
@@ -860,7 +875,7 @@ button.active {
    TIMELINE  (slimmer; modern feature chips)
    ============================================================================ */
 #timeline {
-  background: linear-gradient(180deg, #131519 0%, var(--panel) 100%);
+  background: linear-gradient(180deg, var(--panel-lo) 0%, var(--panel) 100%);
   border-top: 1px solid var(--line);
   padding: 0 var(--s-3);
   display: flex;
@@ -945,7 +960,7 @@ button.active {
 .timeline-busy {
   flex: 0 0 auto;
   padding: 3px 8px;
-  color: var(--fg-dim);
+  color: var(--text-dim);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1180,18 +1195,18 @@ button.active {
   width: 10px;
   height: 10px;
   border-radius: 2px;
-  border: 1px solid #0007;
+  border: 1px solid var(--swatch-line);
 }
 .ctx-item.disabled {
   opacity: 0.45;
   pointer-events: none;
 }
 .ctx-item.danger {
-  color: #e24a3b;
+  color: var(--danger-action);
 }
 .ctx-item.danger:hover {
   background: rgba(226, 74, 59, 0.14);
-  color: #ff7a66;
+  color: var(--danger-action-hot);
 }
 .ctx-sep {
   height: 1px;
@@ -1230,7 +1245,7 @@ button.active {
     box-shadow var(--t-fast) var(--ease);
 }
 .param-row input:hover {
-  border-color: #3d4452;
+  border-color: var(--line-hover);
 }
 .param-row input:focus {
   outline: none;
@@ -1240,7 +1255,7 @@ button.active {
 }
 /* rejected expression (kept in the field so the user can fix it) */
 .param-row input.input-error {
-  border-color: #ff6b6b;
+  border-color: var(--error);
   box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
 }
 /* field driven by a non-literal expression (Fusion's fx: convention) */
@@ -1253,7 +1268,7 @@ button.active {
 /* parameter whose cached value is stale (cycle / missing ref / non-finite) —
    same amber as the solver's over-defined flag */
 .param-stale input {
-  border-color: #e0a020;
+  border-color: var(--warn);
   box-shadow: 0 0 0 3px rgba(224, 160, 32, 0.15);
 }
 
@@ -1302,7 +1317,7 @@ button.active {
   border-color: var(--accent);
 }
 .params-row input.input-error {
-  border-color: #ff6b6b;
+  border-color: var(--error);
   box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
 }
 .params-value,
@@ -1325,7 +1340,7 @@ button.active {
   padding: 2px 6px;
 }
 .params-del:hover {
-  color: #ff6b6b;
+  color: var(--error);
   background: rgba(255, 107, 107, 0.12);
 }
 .params-add button {
@@ -1342,11 +1357,11 @@ button.active {
   border-color: var(--accent);
 }
 .params-add button.input-error {
-  border-color: #ff6b6b;
+  border-color: var(--error);
 }
 /* stale row inside the dialog: badge the whole row, not just inputs */
 .params-row.param-stale .params-value {
-  color: #e0a020;
+  color: var(--warn);
 }
 /* sketch dim driven by a non-literal expression (fx: prefix in the text) */
 .sketch-dim-fx {
@@ -1354,7 +1369,7 @@ button.active {
   font-style: italic;
 }
 .sketch-dim input.input-error {
-  border-color: #ff6b6b;
+  border-color: var(--error);
   outline: none;
 }
 
@@ -1406,7 +1421,7 @@ button.active {
 button.finish {
   background: rgba(74, 208, 125, 0.16);
   border-color: rgba(74, 208, 125, 0.5);
-  color: #c5f6da;
+  color: var(--ok-text);
   font-weight: 600;
 }
 button.finish:hover {
@@ -1504,8 +1519,8 @@ button.finish:hover {
   box-shadow: var(--shadow-2);
 }
 .dim-ok {
-  color: #7fe08a;
-  border-color: #3f7a48;
+  color: var(--ok-strong);
+  border-color: var(--ok-line);
 }
 .dim-ok:hover {
   background: rgba(66, 130, 78, 0.25);
@@ -1551,7 +1566,7 @@ button.finish:hover {
   background: linear-gradient(180deg, rgba(80, 24, 24, 0.55), var(--panel-2));
 }
 .toast-warning {
-  border-color: #d2a83b;
+  border-color: var(--warn);
   background: linear-gradient(180deg, rgba(80, 62, 16, 0.5), var(--panel-2));
 }
 .toast-msg {
@@ -1629,7 +1644,7 @@ button.finish:hover {
   transition: border-color var(--t-fast) var(--ease);
 }
 .units select:hover {
-  border-color: #3d4452;
+  border-color: var(--line-hover);
 }
 .units select:focus {
   outline: none;
@@ -1737,20 +1752,20 @@ button.finish:hover {
 /* driven (reference) dimension: measured-only, shown bracketed + muted, read-only */
 .sketch-dim-driven {
   border-style: dashed;
-  border-color: var(--text-dim, #8a90a0);
-  color: var(--text-dim, #8a90a0);
+  border-color: var(--text-dim);
+  color: var(--text-dim);
   cursor: default;
 }
 .sketch-dim-driven:hover {
   background: rgba(18, 20, 25, 0.92);
-  border-color: var(--text-dim, #8a90a0);
-  color: var(--text-dim, #8a90a0);
+  border-color: var(--text-dim);
+  color: var(--text-dim);
 }
 /* solver-flagged dimensions: red = conflicting, amber = redundant/over-defined */
-.sketch-dim.conflict { border-color: #ff4444; color: #ff4444; }
-.sketch-dim.over { border-color: #e0a020; color: #e0a020; }
+.sketch-dim.conflict { border-color: var(--flag-conflict); color: var(--flag-conflict); }
+.sketch-dim.over { border-color: var(--warn); color: var(--warn); }
 /* the dimension the Delete key will remove (set by a click or a right-click) */
-.sketch-dim.is-selected { outline: 2px solid var(--accent, #4a9eff); outline-offset: 1px; }
+.sketch-dim.is-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* non-select tools: labels visible but click-through (a label floating over a
    circle center must not swallow the dimension/draw pick underneath) */
 .sketch-dims.dims-passive .sketch-dim {
@@ -1780,8 +1795,8 @@ button.finish:hover {
   box-shadow: var(--shadow-1);
 }
 .sketch-glyph:hover { border-color: var(--accent-hot); color: var(--accent-hot); }
-.sketch-glyph.conflict { border-color: #ff4444; color: #ff4444; }
-.sketch-glyph.over { border-color: #e0a020; color: #e0a020; }
+.sketch-glyph.conflict { border-color: var(--flag-conflict); color: var(--flag-conflict); }
+.sketch-glyph.over { border-color: var(--warn); color: var(--warn); }
 .sketch-glyphs.glyphs-passive .sketch-glyph { pointer-events: none; cursor: default; }
 .sketch-dim input {
   width: 52px;
@@ -1809,22 +1824,22 @@ button.finish:hover {
   z-index: 1000;
 }
 .modal-panel {
-  background: var(--panel, #16181d);
-  border: 1px solid var(--line, #262a31);
-  border-radius: var(--r-lg, 10px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
   width: min(720px, 92vw);
   max-height: 88vh;
   display: flex;
   flex-direction: column;
-  color: var(--text, #e6e8ec);
+  color: var(--text);
 }
 .modal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--line, #262a31);
+  border-bottom: 1px solid var(--line);
 }
 .modal-head h2 {
   margin: 0;
@@ -1840,15 +1855,15 @@ button.finish:hover {
 .modal-close {
   background: transparent;
   border: none;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   font-size: 15px;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: var(--r-sm, 6px);
+  border-radius: var(--r-sm);
 }
 .modal-close:hover {
-  background: var(--raised, #22262e);
-  color: var(--text, #e6e8ec);
+  background: var(--raised);
+  color: var(--text);
 }
 .modal-body {
   padding: 14px 16px;
@@ -1859,28 +1874,28 @@ button.finish:hover {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid var(--line, #262a31);
+  border-top: 1px solid var(--line);
 }
 .btn {
-  background: var(--raised, #22262e);
-  color: var(--text, #e6e8ec);
-  border: 1px solid var(--line-strong, #323843);
-  border-radius: var(--r-sm, 6px);
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
   padding: 6px 14px;
   font-size: 12px;
   cursor: pointer;
 }
 .btn:hover {
-  background: var(--raised-2, #2a2f38);
+  background: var(--raised-2);
 }
 .btn-primary {
-  background: var(--accent, #ff7a3c);
-  border-color: var(--accent, #ff7a3c);
-  color: var(--on-accent, #160a04);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
   font-weight: 600;
 }
 .btn-primary:hover {
-  background: var(--accent-hot, #ff9a5c);
+  background: var(--accent-hot);
 }
 
 /* ---- 3D mouse settings ---- */
@@ -1898,7 +1913,7 @@ button.finish:hover {
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.7px;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
   margin-top: 8px;
 }
 .sm-section:first-child {
@@ -1906,7 +1921,7 @@ button.finish:hover {
 }
 .sm-hint {
   font-size: 11px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
 }
 .sm-axis-row {
   display: grid;
@@ -1916,12 +1931,12 @@ button.finish:hover {
 }
 .sm-axis-label {
   font-size: 11px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
 }
 .sm-axis-track {
   position: relative;
   height: 8px;
-  background: var(--panel-2, #1c1f26);
+  background: var(--panel-2);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -1932,7 +1947,7 @@ button.finish:hover {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: var(--line-strong, #323843);
+  background: var(--line-strong);
 }
 .sm-axis-bar {
   position: absolute;
@@ -1940,15 +1955,15 @@ button.finish:hover {
   bottom: 0;
   left: 50%;
   width: 0;
-  background: var(--accent, #ff7a3c);
+  background: var(--accent);
   border-radius: 4px;
 }
 .sm-test {
   width: 240px;
   height: 170px;
-  border: 1px solid var(--line, #262a31);
-  border-radius: var(--r-md, 8px);
-  background: var(--bg, #0e0f12);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
 }
 .sm-row {
   display: grid;
@@ -1958,15 +1973,15 @@ button.finish:hover {
 }
 .sm-row input[type="range"] {
   width: 100%;
-  accent-color: var(--accent, #ff7a3c);
+  accent-color: var(--accent);
 }
 .sm-slabel {
   font-size: 11px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
 }
 .sm-sval {
   font-size: 11px;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -1983,40 +1998,40 @@ button.finish:hover {
 }
 .sm-map-label {
   font-size: 11px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
 }
 .sm-select {
   appearance: none;
   -webkit-appearance: none;
-  background-color: var(--panel-2, #1c1f26);
+  background-color: var(--panel-2);
   /* custom caret since we removed the native one */
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim, #9aa3af) 50%),
-    linear-gradient(135deg, var(--text-dim, #9aa3af) 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
   background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
-  color: var(--text, #e6e8ec);
-  border: 1px solid var(--line-strong, #323843);
-  border-radius: var(--r-sm, 6px);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
   padding: 5px 26px 5px 8px;
   font-size: 11px;
   cursor: pointer;
 }
 .sm-select:hover {
-  border-color: #3d4452;
+  border-color: var(--line-hover);
 }
 .sm-select:focus {
   outline: none;
-  border-color: var(--accent, #ff7a3c);
+  border-color: var(--accent);
 }
 /* darken the native option popup (WebKitGTK renders it light by default) */
 .sm-select option {
-  background-color: var(--panel-2, #1c1f26);
-  color: var(--text, #e6e8ec);
+  background-color: var(--panel-2);
+  color: var(--text);
 }
 .sm-inv {
   font-size: 11px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   display: flex;
   align-items: center;
   gap: 3px;
@@ -2036,22 +2051,22 @@ button.finish:hover {
           backdrop-filter: blur(2px);
 }
 .choice-card {
-  background: var(--panel-2, #1c1f26);
-  border: 1px solid var(--line-strong, #323843);
-  border-radius: var(--r-lg, 10px);
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-3);
-  padding: var(--s-5, 16px);
+  padding: var(--s-5);
   min-width: 280px;
 }
 .choice-title {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text, #e6e8ec);
-  margin-bottom: var(--s-4, 12px);
+  color: var(--text);
+  margin-bottom: var(--s-4);
 }
 .choice-row {
   display: flex;
-  gap: var(--s-3, 8px);
+  gap: var(--s-3);
 }
 .choice-btn {
   flex: 1;
@@ -2060,26 +2075,26 @@ button.finish:hover {
   align-items: center;
   gap: 2px;
   padding: 10px 8px;
-  background: var(--raised, #22262e);
-  border: 1px solid var(--line, #262a31);
-  border-radius: var(--r-md, 8px);
-  color: var(--text, #e6e8ec);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  transition: background var(--t-fast, 120ms) var(--ease), border-color var(--t-fast, 120ms) var(--ease);
+  transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
 }
 .choice-btn:hover {
-  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
-  border-color: var(--accent, #ff7a3c);
+  background: var(--accent-tint);
+  border-color: var(--accent);
 }
 .choice-btn small {
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
   font-size: 10px;
 }
 .choice-btn.choice-primary {
-  background: var(--accent, #ff7a3c);
-  border-color: var(--accent, #ff7a3c);
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
 }
 .choice-btn.choice-primary:disabled {
   opacity: 0.4;
@@ -2092,45 +2107,45 @@ button.finish:hover {
   gap: 2px;
   max-height: 260px;
   overflow: auto;
-  margin-bottom: var(--s-4, 12px);
+  margin-bottom: var(--s-4);
 }
 .choice-check {
   display: flex;
   align-items: center;
-  gap: var(--s-3, 8px);
+  gap: var(--s-3);
   padding: 7px 8px;
-  border-radius: var(--r-md, 8px);
-  color: var(--text, #e6e8ec);
+  border-radius: var(--r-md);
+  color: var(--text);
   font-size: 12px;
   cursor: pointer;
 }
 .choice-check:hover {
-  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
+  background: var(--accent-tint);
 }
 .choice-check small {
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
   font-size: 10px;
   margin-left: auto;
 }
 .choice-list {
   list-style: none;
-  margin: 0 0 var(--s-4, 12px);
+  margin: 0 0 var(--s-4);
   padding: 0;
   max-height: 280px;
   overflow: auto;
   font-size: 12px;
-  color: var(--text, #e6e8ec);
+  color: var(--text);
 }
 .choice-list li {
   padding: 5px 8px;
-  border-radius: var(--r-sm, 6px);
-  font-family: var(--mono, ui-monospace, monospace);
+  border-radius: var(--r-sm);
+  font-family: ui-monospace, monospace;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .choice-list li:nth-child(odd) {
-  background: var(--raised, #22262e);
+  background: var(--raised);
 }
 
 /* --- Cmd-K command palette --- */
@@ -2150,22 +2165,22 @@ button.finish:hover {
   max-height: 60vh;
   display: flex;
   flex-direction: column;
-  background: var(--panel-2, #1b1f24);
-  border: 1px solid var(--line-strong, #3a4048);
-  border-radius: var(--r-lg, 12px);
-  box-shadow: var(--shadow-3, 0 16px 48px rgba(0, 0, 0, 0.5));
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   overflow: hidden;
-  animation: pop-in var(--t-fast, 0.12s) var(--ease, ease);
+  animation: pop-in var(--t-fast) var(--ease);
 }
 .cmdk-input {
   border: none;
   outline: none;
   background: transparent;
-  color: var(--text, #e6e9ee);
+  color: var(--text);
   font: inherit;
   font-size: 15px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--line, #23272e);
+  border-bottom: 1px solid var(--line);
 }
 .cmdk-list {
   overflow-y: auto;
@@ -2176,32 +2191,32 @@ button.finish:hover {
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border-radius: var(--r-sm, 6px);
+  border-radius: var(--r-sm);
   cursor: pointer;
-  color: var(--text, #e6e9ee);
+  color: var(--text);
 }
 .cmdk-item.active {
-  background: var(--accent-tint, rgba(255, 122, 60, 0.14));
-  color: var(--accent-hot, #ff9a5c);
+  background: var(--accent-tint);
+  color: var(--accent-hot);
 }
 .cmdk-label {
   flex: 1;
 }
 .cmdk-group {
   font-size: 11px;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .cmdk-key {
   font-size: 11px;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
   font-variant-numeric: tabular-nums;
 }
 .cmdk-empty {
   padding: 16px;
   text-align: center;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
 }
 
 /* --- Measure (Inspect) readout panel --- */
@@ -2211,18 +2226,18 @@ button.finish:hover {
   right: 268px;
   z-index: 1500;
   min-width: 180px;
-  background: var(--panel-2, #1b1f24);
-  border: 1px solid var(--line-strong, #3a4048);
-  border-radius: var(--r-md, 8px);
-  box-shadow: var(--shadow-3, 0 16px 48px rgba(0, 0, 0, 0.5));
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
   padding: 10px 12px;
   font-size: 12px;
-  color: var(--text, #e6e9ee);
+  color: var(--text);
 }
 .measure-title {
   font-weight: 600;
   margin-bottom: 6px;
-  color: var(--accent-hot, #ff9a5c);
+  color: var(--accent-hot);
 }
 .measure-row {
   display: flex;
@@ -2231,7 +2246,7 @@ button.finish:hover {
   padding: 2px 0;
 }
 .measure-k {
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
 }
 .measure-v {
   font-variant-numeric: tabular-nums;
@@ -2239,7 +2254,7 @@ button.finish:hover {
 .measure-hint {
   margin-top: 6px;
   font-size: 10px;
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
 }
 
 /* --- print pipeline: filament-mapping dialog + live status pill --- */
@@ -2250,12 +2265,12 @@ button.finish:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-bottom: var(--s-4, 12px);
+  margin-bottom: var(--s-4);
 }
 .print-map-row {
   display: flex;
   align-items: center;
-  gap: var(--s-3, 8px);
+  gap: var(--s-3);
   padding: 4px 2px;
 }
 .print-map-slot {
@@ -2264,25 +2279,25 @@ button.finish:hover {
   gap: 6px;
   min-width: 130px;
   font-size: 12px;
-  color: var(--text, #e6e8ec);
+  color: var(--text);
 }
 .print-swatch {
   width: 14px;
   height: 14px;
   border-radius: 3px;
-  border: 1px solid var(--line-strong, #323843);
+  border: 1px solid var(--line-strong);
   display: inline-block;
   flex: none;
 }
 .print-map-arrow {
-  color: var(--text-mute, #6b7280);
+  color: var(--text-mute);
 }
 .print-map-select {
   flex: 1;
-  background: var(--raised, #22262e);
-  border: 1px solid var(--line, #262a31);
-  border-radius: var(--r-md, 8px);
-  color: var(--text, #e6e8ec);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
   font-size: 12px;
   padding: 5px 7px;
   cursor: pointer;
@@ -2290,8 +2305,8 @@ button.finish:hover {
 .print-map-opts {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s-3, 8px);
-  margin-bottom: var(--s-4, 12px);
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
 }
 .print-map-opts .choice-check {
   padding: 5px 7px;
@@ -2324,7 +2339,7 @@ button.finish:hover {
   box-sizing: border-box;
   resize: vertical;
   margin: 8px 0;
-  background: var(--panel-1, #161a20);
+  background: var(--panel);
   color: inherit;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
@@ -2356,13 +2371,13 @@ button.finish:hover {
   left: 50%;
   transform: translateX(-50%);
   z-index: 3900;
-  background: var(--panel-2, #1c1f26);
-  border: 1px solid var(--accent, #ff7a3c);
+  background: var(--panel-2);
+  border: 1px solid var(--accent);
   border-radius: 999px;
   padding: 5px 14px;
   font-size: 12px;
-  color: var(--text, #e6e8ec);
-  box-shadow: var(--shadow-2, 0 2px 8px rgba(0, 0, 0, 0.4));
+  color: var(--text);
+  box-shadow: var(--shadow-2);
   pointer-events: none;
 }
 
@@ -2398,7 +2413,7 @@ button.finish:hover {
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
 }
 .welcome-recents {
   display: flex;
@@ -2414,21 +2429,21 @@ button.finish:hover {
   gap: 1px;
   background: transparent;
   border: none;
-  border-radius: var(--r-sm, 6px);
+  border-radius: var(--r-sm);
   padding: 6px 8px;
   cursor: pointer;
   text-align: left;
-  color: var(--text, #e6e8ec);
+  color: var(--text);
 }
 .welcome-recent:hover {
-  background: var(--raised, #22262e);
+  background: var(--raised);
 }
 .welcome-recent-name {
   font-size: 12px;
 }
 .welcome-recent-dir {
   font-size: 10px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2437,7 +2452,7 @@ button.finish:hover {
 .welcome-account {
   margin-top: auto;
   padding-top: 10px;
-  border-top: 1px solid var(--line, #262a31);
+  border-top: 1px solid var(--line);
 }
 .welcome-account .choice-btn {
   width: 100%;
@@ -2452,26 +2467,26 @@ button.finish:hover {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--raised, #22262e);
+  background: var(--raised);
   object-fit: cover;
 }
 .welcome-signout {
   margin-left: auto;
   background: transparent;
   border: none;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   font-size: 11px;
   cursor: pointer;
 }
 .welcome-signout:hover {
-  color: var(--text, #e6e8ec);
+  color: var(--text);
 }
 .welcome-remote {
   min-height: 0;
-  border: 1px solid var(--line, #262a31);
-  border-radius: var(--r-sm, 6px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
   overflow: hidden;
-  background: #0b0d10;
+  background: var(--bg-deep);
 }
 .welcome-frame {
   width: 100%;
@@ -2486,20 +2501,20 @@ button.finish:hover {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   font-size: 13px;
 }
 .welcome-foot {
   display: flex;
   padding: 10px 16px;
-  border-top: 1px solid var(--line, #262a31);
+  border-top: 1px solid var(--line);
 }
 .welcome-startup {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   cursor: pointer;
 }
 
@@ -2510,7 +2525,7 @@ button.finish:hover {
 .ta-signin-hint {
   margin: 0 0 10px;
   font-size: 12px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
 }
 .ta-signin .choice-btn {
   width: 100%;
@@ -2522,10 +2537,10 @@ button.finish:hover {
 .ta-signin-input {
   width: 100%;
   box-sizing: border-box;
-  background: var(--raised, #22262e);
-  border: 1px solid var(--line-strong, #323843);
-  border-radius: var(--r-sm, 6px);
-  color: var(--text, #e6e8ec);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  color: var(--text);
   padding: 8px 10px;
   font-size: 12px;
   font-family: monospace;
@@ -2534,7 +2549,7 @@ button.finish:hover {
   min-height: 16px;
   margin: 6px 0 4px;
   font-size: 11px;
-  color: var(--danger, #ff6b6b);
+  color: var(--error);
 }
 
 /* ---- TinkerAtlas publish ---- */
@@ -2553,7 +2568,7 @@ button.finish:hover {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   margin: 2px 0 6px;
   cursor: pointer;
 }
@@ -2562,14 +2577,14 @@ button.finish:hover {
 .ta-signin-alt {
   background: transparent;
   border: none;
-  color: var(--text-dim, #9aa3af);
+  color: var(--text-dim);
   font-size: 11px;
   text-decoration: underline;
   cursor: pointer;
   padding: 2px 0 8px;
 }
 .ta-signin-alt:hover {
-  color: var(--text, #e6e8ec);
+  color: var(--text);
 }
 .ta-signin-tokenrow {
   display: flex;
@@ -2665,3 +2680,105 @@ button.finish:hover {
 .print-map-arrow svg { width: 14px; height: 14px; display: block; flex: none; }
 .bug-report-btn { display: flex; align-items: center; justify-content: center; }
 .bug-report-btn svg { width: 18px; height: 18px; display: block; flex: none; }
+
+/* Tool panels (texture / text / text-on-face) build their DOM imperatively and
+   used to inline every button style. Confirm and cancel are separate variants
+   because they need different foregrounds: dark text reads on the green confirm
+   fill, light text on the neutral cancel fill. */
+.panel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 4px 10px;
+  background: var(--raised-2);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.panel-btn svg { width: 14px; height: 14px; display: block; flex: none; }
+.panel-btn-confirm {
+  background: var(--ok);
+  border-color: transparent;
+  color: var(--on-accent);
+}
+.panel-btn-confirm:hover { filter: brightness(1.08); }
+.panel-btn-cancel:hover { background: var(--raised); }
+.panel-btn-ghost {
+  background: none;
+  border-color: var(--line);
+  color: var(--text);
+  padding: 3px 8px;
+}
+.panel-btn-ghost:hover { background: var(--raised); }
+
+/* ============================================================================
+   Floating tool panels (texture / sketch text / text-on-face / project filter)
+   These build their DOM imperatively and used to inline a whole parallel
+   palette — a second set of surface/border/text values that had drifted a few
+   units away from the tokens above. Shared chrome lives here now; the panels
+   still set only their own POSITION and width inline, which genuinely differs
+   per panel.
+   ============================================================================ */
+.tool-panel {
+  position: fixed;
+  z-index: 50;
+  padding: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  font: 12px/1.4 system-ui, sans-serif;
+  box-sizing: border-box;
+  /* native <select> popups, checkboxes and number spinners render dark */
+  color-scheme: dark;
+}
+.tool-panel input,
+.tool-panel select,
+.tool-panel textarea {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 3px 5px;
+  font: inherit;
+}
+.tool-panel input:hover,
+.tool-panel select:hover,
+.tool-panel textarea:hover { border-color: var(--line-hover); }
+.tool-panel-title { font-weight: 600; margin-bottom: 6px; }
+.tool-panel-hint { color: var(--text-dim); }
+.tool-panel-note { color: var(--text-dim); font-style: italic; margin: 8px 0; }
+
+/* segmented / chip toggles inside a tool panel */
+.tool-chip {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.tool-chip:hover { border-color: var(--line-hover); background: var(--raised); }
+.tool-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.tool-chip-pill { border-radius: var(--r-pill); padding: 3px 10px; }
+
+/* filament colour chip in a browser-tree body row */
+.tree-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--swatch-line);
+  margin-right: 5px;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}

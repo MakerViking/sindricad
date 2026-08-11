@@ -19,14 +19,13 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
+import { HANDLE_IDLE, HANDLE_HOT } from "../viewport/colors3d";
 
 type Phase = "pick" | "drag";
 type Kind = "fillet" | "chamfer";
 type Vec3 = [number, number, number];
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const HANDLE_IDLE = 0xffc83d; // amber
-const HANDLE_HOT = 0xffe9a8; // brighter when hovered/grabbed
 // Ghost member lines (edit mode): drawn on top of the live preview, where the
 // member edges themselves have been consumed into rounded faces. Colors match
 // the Highlighter's SELECT / ERROR tiers so the language stays consistent.

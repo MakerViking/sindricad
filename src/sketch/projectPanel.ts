@@ -19,18 +19,14 @@ export class ProjectPanel {
 
   constructor() {
     this.root = document.createElement("div");
+    this.root.className = "tool-panel";
     Object.assign(this.root.style, {
-      position: "fixed", zIndex: "40", display: "none", gap: "6px", padding: "6px 8px",
-      background: "#20242c", border: "1px solid #3a4150", borderRadius: "6px",
-      boxShadow: "0 4px 14px rgba(0,0,0,0.35)", font: "12px system-ui, sans-serif",
+      zIndex: "40", display: "none", gap: "6px", padding: "6px 8px",
     } as CSSStyleDeclaration);
     for (const c of CHIPS) {
       const b = document.createElement("button");
       b.textContent = c.label;
-      Object.assign(b.style, {
-        border: "1px solid #3a4150", borderRadius: "12px", padding: "3px 10px",
-        font: "inherit", cursor: "pointer",
-      } as CSSStyleDeclaration);
+      b.className = "tool-chip tool-chip-pill";
       b.addEventListener("click", () => {
         this.filter = c.key;
         this.paint();
@@ -45,9 +41,7 @@ export class ProjectPanel {
 
   private paint() {
     for (const [key, b] of this.buttons) {
-      const on = key === this.filter;
-      b.style.background = on ? "#2f6fd0" : "#161a20";
-      b.style.color = on ? "#ffffff" : "#aab4c4";
+      b.classList.toggle("on", key === this.filter);
     }
   }
 

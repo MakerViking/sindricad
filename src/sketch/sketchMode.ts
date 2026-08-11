@@ -45,6 +45,7 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
+import { CONFLICT } from "../viewport/colors3d";
 
 export type SketchTool =
   | "select"
@@ -2598,7 +2599,7 @@ export class SketchMode {
    * constrained (dof 0) = white ("fully defined"), under-constrained = blue.
    * dof < 0 means no solve has run yet (treat as under-constrained). */
   private activeColor(): number {
-    return this.conflict ? 0xff4444 : this.lastDof === 0 ? 0xffffff : CURVE_COLOR;
+    return this.conflict ? CONFLICT : this.lastDof === 0 ? 0xffffff : CURVE_COLOR;
   }
 
   /** All pattern definitions including the one being placed (for live preview). */
