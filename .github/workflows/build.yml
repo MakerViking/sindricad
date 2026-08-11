@@ -104,6 +104,7 @@ jobs:
           # the list_fonts / tessellate_text paths at any layer.
           uv run python test_glb.py
           uv run python test_project_op.py
+          uv run python test_project_cache.py
           uv run python test_refresh.py
           uv run python test_silhouette.py
           uv run python test_text.py

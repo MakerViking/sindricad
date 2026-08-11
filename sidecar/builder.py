@@ -3700,14 +3700,38 @@ def _restore_from_disk(store, chain_keys):
 _RAM_SNAP_WINDOW = int(os.environ.get("SINDRI_RAM_SNAP_WINDOW", "300"))
 
 
-def rebuild_cached(document, diagnostics=None, projections=None):
+def rebuild_cached(document, diagnostics=None, projections=None, readonly=False):
     """Incremental rebuild: reuse cached per-feature state for the unchanged document
     PREFIX and re-run only from the first changed feature. Resume sources, deepest
     wins: (1) in-RAM per-feature snapshots from the previous build in this worker,
     (2) durable disk checkpoints (geomstore) that survive worker restarts, crashes
     and timeouts. Falls back to a full rebuild when params/visibility change or both
     caches miss. Same return as rebuild(); geometrically identical to a full rebuild
-    (verified by the incremental-vs-full smoke test + the differential harness)."""
+    (verified by the incremental-vs-full smoke test + the differential harness).
+
+    `readonly=True` READS both resume tiers exactly as normal but writes NOTHING
+    BACK — neither `_CACHE` nor a disk checkpoint. It exists for callers that
+    build a TRUNCATED document (a timeline prefix) alongside the human's own
+    editing: `_CACHE` is module state keyed on the last document built, so a
+    prefix build leaves it describing only that prefix, and the human's next
+    rebuild of their UNCHANGED full document then resumes from the cut point
+    instead of the tip. Measured over a real socket on a 46-feature document:
+    0.121 s -> 3.173 s, a 26x penalty on a build with nothing to do.
+
+    Two separate mechanisms, both closed by writing nothing. The obvious one is
+    the truncated `feature_sigs`, which bounds the next prefix-match loop. The
+    second is `proj_quiet`: it is written from `projections`, and an aux caller
+    passes none, so it lands False and falsifies the quiet-proof — which pulls
+    the NEXT build's resume down to `proj_cap`, i.e. to the EARLIEST projected
+    sketch in the whole timeline rather than to the cut point. On one measured
+    document that was resume 5 rather than 19, and it accounted for essentially
+    the whole penalty on its own.
+
+    Note this leaves a shallow-RAM-beats-deep-disk asymmetry untouched: the disk
+    tier is consulted only `if resume is None`, so any shallow `_CACHE` still
+    vetoes a deeper valid checkpoint (measured 2.550 s vs 0.022 s). Writing
+    nothing avoids CREATING that state; it does not fix the preference order.
+    """
     global _CACHE
     features = document.get("features", [])
     new_sigs = _feature_sigs(features)
@@ -3771,7 +3795,7 @@ def rebuild_cached(document, diagnostics=None, projections=None):
             from_disk = True
 
     persist = None
-    if store is not None and features:
+    if store is not None and features and not readonly:
         persist = {"store": store, "keys": keys, "mod": dict(disk_mod),
                    "acc_ms": 0.0, "budget_ms": 1000.0}
         if resume is not None and not from_disk:
@@ -3815,11 +3839,12 @@ def rebuild_cached(document, diagnostics=None, projections=None):
     merged.extend(snap for (_i, snap) in snaps_out)  # freshly built tail
     for j in range(0, max(0, len(merged) - _RAM_SNAP_WINDOW)):
         merged[j] = None  # bound RAM; disk checkpoints cover the deep prefix
-    _CACHE = {"feature_sigs": new_sigs, "snaps": merged, "global_sig": gsig,
-              # quiet-proof for the next build's resume-cap decision (see above);
-              # missing key (worker restart, Compute All reset) reads falsy =
-              # conservative
-              "proj_quiet": projections is not None and not projections}
+    if not readonly:
+        _CACHE = {"feature_sigs": new_sigs, "snaps": merged, "global_sig": gsig,
+                  # quiet-proof for the next build's resume-cap decision (see above);
+                  # missing key (worker restart, Compute All reset) reads falsy =
+                  # conservative
+                  "proj_quiet": projections is not None and not projections}
 
     # Tip checkpoint: make the just-built state instantly restorable by the next
     # process (app restart, worker respawn). The final snapshot carries exactly
@@ -7086,13 +7111,17 @@ def project_geometry(document, plane_spec, sources):
     resolved edges onto the target plane. Resolution is STRICT — a missing body/
     sketch/entity, a zero-edge or low-confidence selector match all produce a
     per-source error entry (pick time wants a clear refusal; the lenient
-    keep-last-shape path is the rebuild refresh handler's job). Read-only:
-    rebuild_cached gives warm prefix bodies without mutating anything.
+    keep-last-shape path is the rebuild refresh handler's job). Read-only: the
+    `readonly=True` below is what MAKES that true — this call builds a truncated
+    timeline prefix beside the human's own editing, and without it the prefix
+    became the cached document and cost the human's next rebuild 3.173 s instead
+    of 0.121 s. Note the poisoning happened even when the pick itself FAILED, so
+    the flag belongs on the call, not on the success path.
 
     Returns {"results": [{source_index, ok, curves: [{fp?, curve}], error?}]}
     — `fp` (a sidecar-authored edge fingerprint for a by:"match" selector) only
     for body-edge sources; sketch curves are tracked by stable ids."""
-    _part, _errors, bodies = rebuild_cached(document)
+    _part, _errors, bodies = rebuild_cached(document, readonly=True)
     datums = _collect_datums(document)
     plane = _plane_of(plane_spec, datums)
     results = []
