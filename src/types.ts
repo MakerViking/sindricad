@@ -396,6 +396,16 @@ export type Feature =
       // face, with holes, and unions them). `region` is the legacy single-area form.
       regions?: [number, number, number][];
       region?: [number, number, number];
+      // The sketch entities bounding each entry in `regions`, in the same order.
+      // A point does not survive the geometry moving: drag the circle you extruded
+      // and the stored point stays behind, lands inside the profile that now covers
+      // it, and THAT is extruded instead — silently, because containment succeeds
+      // (field report a20cca53). The ids do survive, so the sidecar re-derives the
+      // anchor from them and only falls back to the point when they cannot name one
+      // profile on their own (two halves of a split square share an entity set).
+      // Absent on documents written before this existed; those keep point-only
+      // behaviour exactly.
+      regionEntities?: string[][];
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display

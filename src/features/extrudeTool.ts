@@ -393,6 +393,11 @@ export class ExtrudeTool {
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
       regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
+      // The entities that bound each area, recorded so the reference survives the
+      // user moving the geometry it was picked on. `regions` alone is a world
+      // point, and a point does not move with the circle it was inside — it ends
+      // up in whatever profile now covers it (field report a20cca53).
+      regionEntities: this.selected.map((wr) => wr.region.entityIds),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let

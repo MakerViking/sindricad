@@ -733,6 +733,61 @@ def test_region_stale_diagnostic():
           "a20cca53's wrong-cell hit is a different path")
 
 
+def test_region_follows_a_moved_entity():
+    """Field report a20cca53, end to end: extrude one of two circles sitting in a
+    rectangle, then drag that circle elsewhere in the sketch. The extrude must
+    stay on the circle.
+
+    Without `regionEntities` the stored point stays where the circle used to be,
+    lands inside the rectangle's cell, and the rectangle is extruded — a block
+    with holes instead of a peg. That is the reported bug, and it is asserted
+    here as the LEGACY control so the fallback is not quietly changed: every
+    document written before this field existed still resolves that way."""
+    rect = [(0, 0, 40, 0), (40, 0, 40, 20), (40, 20, 0, 20), (0, 20, 0, 0)]
+    R = 4.0
+    disc = math.pi * R * R * 5              # the peg
+    block = (40 * 20 - 2 * math.pi * R * R) * 5   # the plate, two holes
+
+    def run(cx, cy, with_entities):
+        ents = [{"id": f"l{i}", "type": "line", "x1": a, "y1": b, "x2": c, "y2": d}
+                for i, (a, b, c, d) in enumerate(rect)] + [
+            {"id": "cA", "type": "circle", "radius": R, "x": cx, "y": cy},
+            {"id": "cB", "type": "circle", "radius": R, "x": 30, "y": 14}]
+        ex = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
+              "operation": "new", "regions": [[10, 10, 0]]}  # picked on cA at (10,10)
+        if with_entities:
+            ex["regionEntities"] = [["cA"]]
+        part, err, _ = rebuild({"parameters": {}, "features": [
+            {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents}, ex]})
+        assert not err, err
+        return part.volume
+
+    assert abs(run(10, 10, True) - disc) < 1, "unmoved: must be the circle"
+    moved = run(25, 6, True)
+    assert abs(moved - disc) < 1, \
+        f"the extrude must follow the circle it was picked on, got {moved:.1f}"
+
+    legacy = run(25, 6, False)
+    assert abs(legacy - block) < 1, \
+        f"legacy point-only docs must keep resolving by point, got {legacy:.1f}"
+
+    # An id naming an entity that no longer exists is stale, not moved: fall back
+    # to the point rather than inventing an anchor.
+    ents = [{"id": f"l{i}", "type": "line", "x1": a, "y1": b, "x2": c, "y2": d}
+            for i, (a, b, c, d) in enumerate(rect)] + [
+        {"id": "cB", "type": "circle", "radius": R, "x": 30, "y": 14}]
+    part, err, _ = rebuild({"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents},
+        {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
+         "operation": "new", "regions": [[10, 10, 0]],
+         "regionEntities": [["cA"]]}]})
+    assert not err, f"a deleted entity must not break the build: {err}"
+    assert part is not None, "a deleted entity must still resolve by point"
+    print("  a20cca53 OK: extrude follows a moved circle; legacy point-only and "
+          "deleted-entity docs both fall back")
+
+
+
 def test_fillet_failure_diagnostics():
     """When a fillet/chamfer fails, the per-edge probe names the offending
     edges' midpoints in an `edgeOpFailed` diagnostic (so the UI can paint
@@ -1673,6 +1728,7 @@ if __name__ == "__main__":
     test_loft_profiles_keeps_holes_as_tube()
     test_boolean_guards_combine_sweep()
     test_region_stale_diagnostic()
+    test_region_follows_a_moved_entity()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()

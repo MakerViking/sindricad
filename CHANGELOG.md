@@ -271,6 +271,23 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Moving a sketched shape no longer moves the extrude onto something else.**
+  Extrude a circle sitting inside a rectangle, go back to the sketch and drag
+  that circle somewhere else, and the extrude jumped to the rectangle: you came
+  back to a block with a hole in it instead of the peg you made. The selected
+  area was remembered as a point in space, and the point stayed behind when the
+  circle moved, landing inside whatever profile then covered it. An extrude now
+  also remembers which sketch shapes formed the area, so it follows them.
+
+  Where the shapes cannot identify one area on their own — the two halves of a
+  square split by a line, for instance — it still uses the point, because a
+  confidently wrong area is worse than the old behaviour. Extrudes made before
+  this build keep working exactly as they did; the new reference is recorded the
+  next time the extrude is created or edited.
+
+  Reopening such an extrude to edit it can still highlight the old area even
+  though the model is now correct. That half is not fixed yet.
+
 - **An extrude covering several areas can be edited down to fewer.** Reopening an
   extrude offered "Ctrl-click areas to add/remove" and then committed the extrude
   on the very first Ctrl-click, so an extrude made across two profiles could not

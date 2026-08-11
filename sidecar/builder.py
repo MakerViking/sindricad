@@ -1668,9 +1668,18 @@ def _handle_extrude(f, ctx):
     if pts:
         # precompute cell bboxes ONCE (region picking is per-point)
         cells = [(fc, fc.bounding_box()) for fc in entry["faces"]]
+        # Entity ids recorded when each area was picked. They outlive the point:
+        # see _region_anchor_from_entities and field report a20cca53. Absent on
+        # every document written before this existed, which is why the point stays
+        # the fallback rather than being replaced.
+        ents = f.get("regionEntities") or []
         sel = []
-        for p in pts:
-            rf = _region_face_at(cells, Vector(*p), ctx.diagnostics, f.get("id"))
+        for i, p in enumerate(pts):
+            anchor = _region_anchor_from_entities(entry, ents[i]) if i < len(ents) else None
+            rf = _region_face_at(
+                cells, anchor if anchor is not None else Vector(*p),
+                ctx.diagnostics, f.get("id"),
+            )
             if rf is not None:
                 sel.append(rf)
         if not sel:
@@ -6276,6 +6285,18 @@ def _build_sketch(f, val, datums=None):
     faces = []
     edges = []  # free-form line + arc edges, assembled into faces below
     all_edges = []  # EVERY entity's boundary as local edges, for planar subdivision
+    # Which entity each arrangement edge came from. A selected region is stored in
+    # the document as an interior POINT, which does not survive the user moving the
+    # geometry that formed it (field report a20cca53) — the ids do, so they let the
+    # anchor be recomputed. See _region_anchor_from_entities.
+    by_ent = {}
+
+    def _own(ent, eds):
+        """tag `eds` as belonging to `ent`, and hand them straight back"""
+        eid = ent.get("id")
+        if eid:
+            by_ent.setdefault(eid, []).extend(eds)
+        return eds
 
     # Associative patterns: expand each definition into its derived entities and
     # append them, so a patterned hole/array builds like hand-drawn geometry. The
@@ -6313,15 +6334,15 @@ def _build_sketch(f, val, datums=None):
                 Pos(val(e.get("x", 0)), val(e.get("y", 0)))
                 * Rectangle(val(e["width"]), val(e["height"]))
             )
-            all_edges.extend(_entity_edges(e, val))
+            all_edges.extend(_own(e, _entity_edges(e, val)))
         elif et == "circle":
             faces.append(Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Circle(val(e["radius"])))
-            all_edges.extend(_entity_edges(e, val))
+            all_edges.extend(_own(e, _entity_edges(e, val)))
         elif et in ("line", "arc", "spline", "polygon", "slot"):
             # free-form curves + parametric outlines: boundary edges join the
             # loop assembly AND the planar arrangement (one construction path —
             # _entity_edges — shared with sketch-curve projection sources)
-            for ed in _entity_edges(e, val):
+            for ed in _own(e, _entity_edges(e, val)):
                 edges.append(ed)
                 all_edges.append(ed)
         elif et == "point":
@@ -6336,9 +6357,9 @@ def _build_sketch(f, val, datums=None):
             if (e.get("curve") or {}).get("kind") == "circle":
                 cv = e["curve"]
                 faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))
-                all_edges.extend(_entity_edges(e, val))
+                all_edges.extend(_own(e, _entity_edges(e, val)))
             else:
-                for ed in _entity_edges(e, val):
+                for ed in _own(e, _entity_edges(e, val)):
                     edges.append(ed)
                     all_edges.append(ed)
         elif et == "text":
@@ -6390,9 +6411,11 @@ def _build_sketch(f, val, datums=None):
         if _wrapped_or_none(sk) is None:
             sk = Compound(list(sk))
     else:
-        return {"sketch": None, "faces": [], "wire": path_wire}
+        return {"sketch": None, "faces": [], "wire": path_wire,
+                "edgesByEntity": by_ent, "plane": plane}
 
-    return {"sketch": sk, "faces": located_faces, "wire": path_wire}
+    return {"sketch": sk, "faces": located_faces, "wire": path_wire,
+            "edgesByEntity": by_ent, "plane": plane}
 
 
 def _path_wire(edges, plane):
@@ -6409,6 +6432,50 @@ def _path_wire(edges, plane):
         return None
     longest = max(wires, key=lambda w: w.length)
     return plane * longest
+
+
+def _region_anchor_from_entities(entry, eids):
+    """A point inside the region bounded by exactly these sketch entities, in the
+    LOCATED frame — the anchor a stored region reference should use once the
+    geometry it was picked on has moved.
+
+    Field report a20cca53: an extrude stores a bare interior POINT per selected
+    area. Move the circle that formed that area and the point stays behind, lands
+    inside whatever cell now covers it — the surrounding rectangle, in the report —
+    and THAT gets extruded. It is silent, because containment succeeds: the point
+    really is inside a profile, just not the one the user chose. The entity ids
+    recorded alongside survive the move; the point does not.
+
+    Returns None whenever the entities do not bound exactly one face, and the
+    caller falls back to the stored point. That covers a line splitting a square
+    (both halves carry the SAME entity set, and nothing here can tell them apart),
+    a ring whose two circles yield two faces, and every document written before
+    this field existed. A wrong anchor is worse than a stale one, so this refuses
+    rather than guesses."""
+    by_ent = entry.get("edgesByEntity") or {}
+    plane = entry.get("plane")
+    if not eids or plane is None:
+        return None
+    eds = []
+    for eid in eids:
+        got = by_ent.get(eid)
+        if not got:
+            return None  # an entity the reference names is gone: stale, not moved
+        eds.extend(got)
+    try:
+        faces = _faces_from_edges(eds)
+    except Exception:
+        return None
+    if len(faces) != 1:
+        return None
+    try:
+        fc = plane * faces[0]
+        c = fc.center()
+        # center() sits outside the material on a non-convex face (a crescent, an
+        # L). Only trust it when it is genuinely inside, else fall back.
+        return c if _face_contains(fc, c) else None
+    except Exception:
+        return None
 
 
 def _region_face_at(cells, P, diag=None, feature_id=None):
