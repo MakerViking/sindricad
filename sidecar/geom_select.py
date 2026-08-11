@@ -150,12 +150,38 @@ def _rel_err(a, b):
     return abs(a - b) / d
 
 
+# One-slot identity memo for _bbox_diag. Mirrors builder.bbox_of's _BBOX_MEMO,
+# including its `is` guard — a different shape object recomputes.
+_DIAG_MEMO = [None, 1.0]
+
+
 def _bbox_diag(part):
+    """Diagonal of `part`'s AABB, the scale that position tolerances ride on
+    (POS_DRIFT + REL_DRIFT * diag).
+
+    MEMOIZED because the underlying `.bounding_box()` is OCCT's AddOptimal_s,
+    whose cost explodes on NON-ANALYTIC surfaces — and this is called once per
+    edge_fingerprint(). Measured: an all-analytic plate 0.0 ms; the same plate
+    with two TORUS faces from a hole-rim fillet 13.8 ms; real imported STEP
+    (nist_ftc_06, 187 faces of which 12 tori) 132.6 ms. That last one made
+    fingerprinting the body's 573 edges cost 37.5 s, essentially all of it this
+    call recomputing the same box.
+
+    Cached on object identity only, and a stale value is BENIGN here: it scales a
+    tolerance, so being a little off widens or narrows the matching band rather
+    than changing which entity is correct. That is the opposite of builder's
+    bbox_of, whose conservatism IS load-bearing (a box tighter than the truth
+    silently drops a real interference), which is why that one is exact and this
+    one may be approximate."""
+    if _DIAG_MEMO[0] is part:
+        return _DIAG_MEMO[1]
     try:
         bb = part.bounding_box()
-        return (bb.max - bb.min).length or 1.0
+        d = (bb.max - bb.min).length or 1.0
     except Exception:
-        return 1.0
+        d = 1.0
+    _DIAG_MEMO[0], _DIAG_MEMO[1] = part, d
+    return d
 
 
 def _edge_curve(e):
