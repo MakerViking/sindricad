@@ -764,6 +764,54 @@ export interface ResolveDiag {
 export type F32Wire = number[] | Float32Array;
 export type U32Wire = number[] | Uint32Array;
 
+/** One body's exact kernel mass properties, or a record of why it has none.
+ *
+ *  A discriminated union on `measured` so `b.volume` cannot be read without
+ *  narrowing first. An unmeasurable body carries NO numeric fields at all rather
+ *  than zeros — zero volume and absent volume mean different things, and the type
+ *  enforces that distinction instead of letting `undefined` reach a formatter. */
+export type BodyMassProperties =
+  | {
+      id: string;
+      name?: string;
+      measured: true;
+      /** mm^3, exact (not from the display mesh) */
+      volume: number;
+      /** mm^2, exact */
+      area: number;
+      com: [number, number, number];
+      bbox: { min: [number, number, number]; max: [number, number, number] };
+      counts: { solids: number; shells: number; faces: number; edges: number; vertices: number };
+      /** present only when the request set `checks` */
+      valid?: boolean;
+      watertight?: boolean;
+    }
+  | { id: string; name?: string; measured: false; reason: string };
+
+/** Reply to the `massProperties` op. `counting` and `bboxSource` pin conventions
+ *  that change what the numbers mean: counts follow the addressable (build123d)
+ *  convention rather than raw topology, and the box comes from the triangulation,
+ *  so it is conservative — never tighter than exact. */
+export interface MassPropertiesResult {
+  units: "mm";
+  counting: string;
+  bboxSource: string;
+  bodies: BodyMassProperties[];
+  total: {
+    /** how many bodies were MEASURED — not how many were asked about */
+    bodies: number;
+    volume: number;
+    area: number;
+    /** null when the total volume is zero (nothing to weight the mean by) */
+    com: [number, number, number] | null;
+    bbox: { min: [number, number, number]; max: [number, number, number] } | null;
+    counts: Partial<Record<"solids" | "shells" | "faces" | "edges" | "vertices", number>>;
+  };
+  /** requested ids that matched no live body — reported, never silently dropped */
+  unknown?: string[];
+  warnings?: { message: string; feature_id?: string; code?: GeomErrorCode }[];
+}
+
 export interface RebuildResult {
   mesh: { positions: F32Wire; indices: U32Wire; faceIds: U32Wire; normals?: F32Wire };
   edges: { id: string; points: [number, number, number][]; body?: string }[];
