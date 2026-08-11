@@ -7447,13 +7447,15 @@ def query_geometry(document, items):
     """
     import time
 
+    import errors as ERR
+    from errors import GeomError
     from geom_select import (edge_fingerprint, face_fingerprint, query_entities,
                              resolve_edges, resolve_faces)
 
     if not isinstance(items, list):
-        raise ValueError("query: items must be a list")
+        raise GeomError("query: items must be a list", ERR.BAD_REQUEST)
     if len(items) > _QUERY_MAX_ITEMS:
-        raise ValueError(f"query: at most {_QUERY_MAX_ITEMS} items per request")
+        raise GeomError(f"query: at most {_QUERY_MAX_ITEMS} items per request", ERR.BAD_REQUEST)
 
     _part, _errors, bodies = rebuild_cached(document, readonly=True)
     live = [b for b in bodies if b.get("shape") is not None]
@@ -7474,16 +7476,17 @@ def query_geometry(document, items):
 
             kind = item.get("kind")
             if kind not in ("face", "edge"):
-                raise ValueError('query: kind must be "face" or "edge"')
+                raise GeomError('query: kind must be "face" or "edge"', ERR.BAD_REQUEST)
             limit = int(item.get("limit") or 200)
             if limit < 1 or limit > _QUERY_MAX_LIMIT:
-                raise ValueError(f"query: limit must be 1..{_QUERY_MAX_LIMIT}")
+                raise GeomError(f"query: limit must be 1..{_QUERY_MAX_LIMIT}", ERR.BAD_REQUEST)
 
             body = _require_body(bodies, item["body"]) if item.get("body") else None
             if body is None:
                 if len(live) != 1:
-                    raise ValueError("query: `body` is required when the document "
-                                     "has more than one body")
+                    raise GeomError(
+                        f"query: this document has {len(live)} bodies — name one in `body`",
+                        ERR.BAD_REQUEST)
                 body = live[0]
             shape = body["shape"]
 
