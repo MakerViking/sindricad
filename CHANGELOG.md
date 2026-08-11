@@ -20,6 +20,34 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Shell, Draft, Offset face and Texture no longer grab a rounded face you did
+  not pick.** Picking a flat face records it by its direction, and that test was
+  being applied to curved faces too, where a single direction does not mean
+  anything. A cylinder lying on its side reports "up" at one point on its
+  barrel, so selecting the flat top of a bracket with a horizontal boss quietly
+  selected both boss barrels as well. On a real machined part in the test
+  corpus, asking for the upward faces returned two flat faces and a 587 mm²
+  cylinder, and handing that to Shell failed with nothing more than "offset
+  Error".
+
+  **This changes what some existing documents select.** The direction test now
+  only applies to flat faces. Almost every model is unaffected. But if a feature
+  in an older document was reaching a rounded face this way, that face is no
+  longer included, so the feature either starts working (it was probably failing
+  before) or reports "no face found" and asks you to pick again. In that case
+  you will need to delete and redo the feature. Selecting a curved face by
+  clicking it still works as it always did.
+
+  Two things that used to happen quietly now speak up. A Shell whose opening no
+  longer resolves refuses, instead of returning a sealed solid that exports and
+  prints with no hint anything was lost. And a texture whose face has been
+  consumed by a later feature reports that it was dropped, instead of leaving a
+  smooth surface you would only find after slicing.
+
+  **The first time you open each saved document after this update it will
+  rebuild from scratch.** That is a one-off and has nothing to do with the
+  document.
+
 - **Texture cells no longer break up around embossed text, or against any
   edge.** Two separate faults, both in the band where the pattern is stitched to
   the edge of a face. Text sitting on a textured face puts one such edge around

@@ -2382,6 +2382,13 @@ def _handle_shell(f, ctx):
     staged = []
     for body, sels in _group_sels_by_body(f["faces"], ctx, "Shell"):
         openings = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
+        # An empty `faces` on the FEATURE means "hollow it closed" and is handled
+        # above. Getting here with nothing RESOLVED is the opposite: the user
+        # picked an opening and it no longer lands. _shell treats [] as "closed",
+        # so without this the body comes back SEALED — it exports, it prints, and
+        # nothing ever said the opening was lost. Refuse instead, like draft.
+        if not openings:
+            raise ValueError(f"no face found to shell on {body['name']}")
         staged.append((body, _shell(body["shape"], t, openings)))
     for body, shape in staged:
         body["shape"] = shape

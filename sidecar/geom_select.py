@@ -12,7 +12,7 @@ Edge selectors:
   {"kind":"edge", "by":"ofFace",  "face":{...}}        all edges bounding a face
 
 Face selectors:
-  {"kind":"face", "by":"normal",  "dir":[0,0,1]}       faces whose normal ~ dir (ALL)
+  {"kind":"face", "by":"normal",  "dir":[0,0,1]}       PLANAR faces whose normal ~ dir (ALL)
   {"kind":"face", "by":"nearest", "point":[x,y,z]}     face nearest a 3D point
   {"kind":"face", "by":"match",   "fp":{...}, "nth":k} ONE face by scored fingerprint
   {"kind":"face", "by":"all"}                          every face
@@ -66,7 +66,7 @@ AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
 # to module globals so the resolver body can keep referencing them by name; the
 # oracle overrides them per-experiment via configure().
 #
-#   ANG_TOL      ~1.1deg of slack on (1 - |dot|) for dir/normal
+#   ANG_TOL      ~11.5deg of slack on (1 - |dot|) for dir/normal
 #   POS_DRIFT    mm of absolute positional drift budget (kernel disagreement)
 #   REL_DRIFT    + this * bbox diagonal (position tol scales with the part)
 #   LEN_REL_TOL  2% on length / radius
@@ -239,10 +239,35 @@ def _face_centroid(f):
 
 
 def _face_normal(f):
+    # NOTE: this is an ON-DISK FORMAT, not just a helper. face_fingerprint()
+    # stores its output in every saved `by:"match"` face selector, and
+    # _face_cost() compares live faces against those stored values. Flipping the
+    # orientation convention here would score every existing selector at
+    # W_DIR * (1 - (-1)) / ANG_TOL = 200 against ACCEPT_MAX 2.5 — i.e. every
+    # saved face reference in every .sindri goes lossy at once. The test suite
+    # CANNOT catch that, because it authors and compares through this same
+    # function. Change the convention only with a migration and a tester note.
+    #
+    # It honours TopAbs_REVERSED already: normal_at() bottoms out in
+    # BRepGProp_Face::Normal, which applies the reversal itself, so a face off a
+    # boolean or a shell reports its OUTWARD normal on valid geometry. There is
+    # no inward-twin bug here to fix.
     try:
         return _unit(f.normal_at())
     except Exception:
         return Vector(0, 0, 0)
+
+
+def _is_planar(f):
+    """True when `f` is a planar face. `Face.is_planar` returns a Plane or None,
+    and can raise on a face with a null surface handle — guarded like every other
+    face query in this module. A face that throws is excluded, which matches the
+    behaviour it already had: _face_normal returns (0,0,0) for it, whose dot with
+    any direction is 0 and so never passed the by:"normal" threshold anyway."""
+    try:
+        return f.is_planar is not None
+    except Exception:
+        return False
 
 
 def _face_radius(f):
@@ -611,8 +636,16 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
 
     by = sel.get("by")
     if by == "normal":
+        # PLANAR faces only. A single normal is only meaningful on a plane: on a
+        # cylinder, normal_at() samples one point of the barrel, so a horizontal
+        # boss reports "up" there and joins a selection of the flat top face.
+        # Measured on third_party/.../nist_ftc_06.step, dir=[0,0,1] returned two
+        # planes AND a 586.9mm2 cylinder, and feeding that to Shell raised a bare
+        # OCCT "offset Error". build123d's own filter_by(Axis) gates on planarity
+        # for exactly this reason; this branch never did.
         d = _unit(_v(sel["dir"]))
-        return list(part.faces().filter_by(lambda f: _face_normal(f).dot(d) > 0.99))
+        return list(part.faces().filter_by(
+            lambda f: _is_planar(f) and _face_normal(f).dot(d) > 0.99))
     if by == "nearest":
         p = _v(sel["point"])
         faces = list(part.faces())
