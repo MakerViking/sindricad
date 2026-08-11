@@ -155,6 +155,42 @@ def test_readonly_still_reads_the_disk_tier():
     print(PASS, "readonly withholds `persist` (writes) without gating the disk read")
 
 
+def test_a_read_only_op_warms_the_cache_unless_it_says_it_is_a_prefix():
+    """The other half of readonly, and the one that costs real time when wrong.
+
+    Withholding the cache write protects the human only when the document is a
+    TRUNCATED prefix. On a whole document it just means every read-only op pays
+    its own rebuild with no benefit to the next — measured on the 356 MiB
+    assembly: two consecutive queries with an empty cache took 45.23 s and
+    44.16 s, both logging `resume_from=0 src=full`, so the first did not help the
+    second. After an ordinary rebuild the same query took 0.31 s then 0.10 s at
+    `src=RAM`. About 440x.
+
+    Only the CALLER knows which it holds — the sidecar receives a feature list
+    either way — so this is a flag, not a heuristic."""
+    from builder import query_geometry
+
+    doc = _doc()
+    n = len(doc["features"])
+    item = [{"id": "q", "kind": "face", "body": None, "where": {"surface": "plane"}}]
+
+    # whole document: the query must LEAVE the cache warm for whatever runs next
+    _reset()
+    query_geometry(doc, item)
+    assert len(builder._CACHE["feature_sigs"]) == n, (
+        "a query on a whole document left the cache empty, so the next read-only "
+        "op will rebuild from scratch")
+
+    # prefix: must NOT cache, exactly as before
+    _reset()
+    builder.rebuild_cached(doc)
+    prefix = {"parameters": {}, "features": doc["features"][:8]}
+    query_geometry(prefix, item, prefix=True)
+    assert len(builder._CACHE["feature_sigs"]) == n, (
+        "a query that declared itself a prefix truncated the cache anyway")
+    print(PASS, "a read-only op warms the cache, unless it declares itself a prefix")
+
+
 def main():
     print("Projection cache-poisoning tests")
     test_a_readonly_prefix_build_leaves_the_cache_at_the_tip()
@@ -162,6 +198,7 @@ def main():
     test_the_next_rebuild_is_free_after_a_pick()
     test_a_failed_pick_does_not_poison_either()
     test_readonly_still_reads_the_disk_tier()
+    test_a_read_only_op_warms_the_cache_unless_it_says_it_is_a_prefix()
     print("ALL PASS")
 
 

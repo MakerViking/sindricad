@@ -259,7 +259,8 @@ every curved one — measured at −0.97% on a cylinder and −1.43% on a sphere
 { "op": "massProperties", "id": "...",
   "document": { /* CadDocument */ },
   "bodies": ["body1"],   // optional; omitted = every live body
-  "checks": true }       // optional, default false
+  "checks": true,        // optional, default false
+  "prefix": true }       // optional, default false — see below
 ```
 
 Reply:
@@ -298,6 +299,26 @@ A failed feature does not refuse the call: only a document where **nothing built
 is a hard error. Everything that did build is measured, and the failures appear in
 `warnings`.
 
+### `prefix` — on `massProperties` and `query`
+
+Both ops rebuild the document to answer, and by default they leave that rebuild **cached**,
+so the next call against the same model is nearly free. Set `"prefix": true` when the
+`document` you are sending is a **truncated timeline** rather than the whole thing — say,
+measuring the model as it stood at feature 12.
+
+Caching a truncated document is what makes the *next* full rebuild slow: the cache would
+then describe only the prefix, and a rebuild of the unchanged whole document resumes from
+the cut point instead of the tip.
+
+**Only you know which you are holding** — the sidecar receives a feature list either way and
+cannot tell a prefix from a complete model. Getting this wrong is not corrupting; it costs
+one slower rebuild.
+
+Measured on a 3,066-body assembly: two consecutive queries with a cold cache took 45.2 s and
+44.2 s (the first did not help the second). After the cache was warm, the same query took
+0.31 s and then 0.10 s. **Note this does not speed up `massProperties` itself** — its ~86 s
+is the measurement work, not the rebuild, and caching cannot touch that.
+
 ### `query`
 
 Which faces or edges match a description. Returns references that can be **stored**: each
@@ -316,7 +337,8 @@ carries a `by:"match"` selector the caller can persist verbatim and re-resolve l
                "within": { "min": [-10,-10,0], "max": [10,10,20] },
                "createdBy": "f7" },
     // EDGE keys instead: curve | length | dir | radius | within
-    "limit": 200, "expect": 4 } ] }
+    "limit": 200, "expect": 4 } ],
+  "prefix": false }               // optional — see `prefix` under massProperties
 ```
 
 Reply:

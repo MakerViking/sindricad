@@ -7434,7 +7434,7 @@ _QUERY_MAX_TOTAL = 5000
 _QUERY_BUDGET_S = 20.0
 
 
-def query_geometry(document, items):
+def query_geometry(document, items, prefix=False):
     """Resolve selectors and/or match predicates, returning storable references.
 
     Per-item containment, like project_geometry: one bad item never fails the
@@ -7442,8 +7442,18 @@ def query_geometry(document, items):
     count > len(entities) is itself the truncation signal) and a `sel` the caller
     can persist verbatim.
 
-    Read-only in every sense: `readonly=True` keeps a caller measuring a timeline
-    prefix from costing the human their warm cache.
+    Read-only in the sense that matters: it never mutates the document. It DOES
+    populate the rebuild cache, because a caller issuing many queries against an
+    unchanging model would otherwise pay a full rebuild on every one of them.
+    Measured on the 356 MiB assembly: two consecutive queries with an empty cache
+    took 45.23 s and 44.16 s, both logging `resume_from=0 src=full` — the first
+    did not help the second. After one ordinary rebuild populated the cache the
+    same query took 0.31 s, then 0.10 s, logging `src=RAM`. About 440x.
+
+    Pass `prefix=True` when the document is a TRUNCATED timeline rather than the
+    whole thing. Caching a prefix is what poisons the human's warm cache (see
+    rebuild_cached's own docstring), and only the caller knows which it is
+    holding — the sidecar receives a feature list either way and cannot tell.
     """
     import time
 
@@ -7457,7 +7467,7 @@ def query_geometry(document, items):
     if len(items) > _QUERY_MAX_ITEMS:
         raise GeomError(f"query: at most {_QUERY_MAX_ITEMS} items per request", ERR.BAD_REQUEST)
 
-    _part, _errors, bodies = rebuild_cached(document, readonly=True)
+    _part, _errors, bodies = rebuild_cached(document, readonly=prefix)
     live = [b for b in bodies if b.get("shape") is not None]
     by_id = {b["id"]: b for b in live}
 

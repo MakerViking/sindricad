@@ -1291,27 +1291,28 @@ def _migrate_geometry_job(items):
     return {"items": out, "failed": failed}
 
 
-def _query_job(document, items):
+def _query_job(document, items, prefix=False):
     """Worker: resolve selectors / match predicates, returning storable refs."""
     from builder import query_geometry
 
     try:
-        return query_geometry(document, items)
+        return query_geometry(document, items, prefix=prefix)
     except Exception as ex:
         return _error_from(ex, errors_mod.BAD_REQUEST)
 
 
-def _mass_properties_job(document, body_ids, checks):
+def _mass_properties_job(document, body_ids, checks, prefix=False):
     """Worker: exact kernel mass properties for the document's live bodies.
 
-    `readonly=True` on the rebuild for the same reason project_geometry needs it:
-    a caller measuring a timeline PREFIX would otherwise leave the module cache
-    describing only that prefix and drop the human's tail snapshots to a disk
-    restore. Measuring must not cost the person a rebuild.
+    Caches by default. Withholding the cache write protects the human only when
+    the document is a truncated PREFIX; on a whole document it just means every
+    read-only op pays its own rebuild, measured at ~44 s each on the reference
+    assembly with no benefit to the next one. `prefix=True` restores the
+    protection for a caller that really did truncate.
     """
     from builder import rebuild_cached, mass_properties, progress_tick
 
-    part, errors, bodies = rebuild_cached(document, readonly=True)
+    part, errors, bodies = rebuild_cached(document, readonly=prefix)
     live = [b for b in bodies if b.get("shape") is not None]
     # Same condition as _interference_job, and deliberately NOT "nothing is
     # measurable": those differ on the reference assembly's 8 empty compounds,
@@ -2416,7 +2417,8 @@ async def _dispatch(ws, loop, req, req_id, op):
                 pass  # a dropped progress frame must never fail the work
 
         res = await _run_stall(loop, _mass_properties_job, req["document"], ids,
-                               bool(req.get("checks")), on_progress=_measuring)
+                               bool(req.get("checks")), bool(req.get("prefix")),
+                               on_progress=_measuring)
         await ws.send(_reply_for(req_id, res))
 
     elif op == "query":
@@ -2429,7 +2431,8 @@ async def _dispatch(ws, loop, req, req_id, op):
         ):
             await ws.send(_err(req_id, "query: bad items", code=errors_mod.BAD_REQUEST))
             return
-        res = await _run_stall(loop, _query_job, req["document"], items)
+        res = await _run_stall(loop, _query_job, req["document"], items,
+                               bool(req.get("prefix")))
         await ws.send(_reply_for(req_id, res))
 
     elif op == "interference":
