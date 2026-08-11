@@ -1291,6 +1291,52 @@ def _migrate_geometry_job(items):
     return {"items": out, "failed": failed}
 
 
+def _mass_properties_job(document, body_ids, checks):
+    """Worker: exact kernel mass properties for the document's live bodies.
+
+    `readonly=True` on the rebuild for the same reason project_geometry needs it:
+    a caller measuring a timeline PREFIX would otherwise leave the module cache
+    describing only that prefix and drop the human's tail snapshots to a disk
+    restore. Measuring must not cost the person a rebuild.
+    """
+    from builder import rebuild_cached, mass_properties, progress_tick
+
+    part, errors, bodies = rebuild_cached(document, readonly=True)
+    live = [b for b in bodies if b.get("shape") is not None]
+    # Same condition as _interference_job, and deliberately NOT "nothing is
+    # measurable": those differ on the reference assembly's 8 empty compounds,
+    # which build fine and simply have nothing to measure. One red feature must
+    # not refuse to measure the rest of an otherwise-good document.
+    if errors and not live:
+        return _fatal_from(errors)
+
+    wanted = live
+    unknown = []
+    if body_ids:
+        by_id = {b["id"]: b for b in live}
+        wanted = [by_id[i] for i in body_ids if i in by_id]
+        # Report ids that matched nothing rather than dropping them: body ids are
+        # regenerated per rebuild, so "you asked about a body that no longer
+        # exists" is the single most likely mistake a caller makes here.
+        unknown = [i for i in body_ids if i not in by_id]
+
+    res = mass_properties(wanted, checks=checks, tick=progress_tick)
+    res["units"] = "mm"
+    # Pin the conventions ON THE DATA. Neither is guessable, and both change what
+    # a number means: counts through build123d exclude degenerate edges (and match
+    # what selectors can address), and the box comes from the triangulation, so it
+    # is conservative rather than exact.
+    res["counting"] = "build123d"
+    res["bboxSource"] = "mesh"
+    if unknown:
+        res["unknown"] = unknown
+    if errors:
+        res["warnings"] = [
+            {k: e[k] for k in ("message", "feature_id", "code") if k in e} for e in errors
+        ]
+    return res
+
+
 def _interference_job(document):
     """Worker: rebuild + pairwise interference check among live bodies. Returns
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
@@ -2333,6 +2379,34 @@ async def _dispatch(ws, loop, req, req_id, op):
             req.get("bodyNames") or {}, settings,
             stall=_export_stall_budget(req["document"]),
         )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "massProperties":
+        # Validate BEFORE the job, like exportProject's settings guard: this is a
+        # trust boundary, and a rebuild is far too expensive to spend on input
+        # that was never going to be usable.
+        ids = req.get("bodies")
+        if ids is not None and (
+            not isinstance(ids, list)
+            or len(ids) > 20000
+            or not all(isinstance(i, str) and len(i) <= 128 for i in ids)
+        ):
+            await ws.send(_err(req_id, "massProperties: bad bodies",
+                               code=errors_mod.BAD_REQUEST))
+            return
+        # A whole-document measure with checks on runs for minutes on a large
+        # assembly while holding the dispatch lock. Without a progress frame that
+        # is total silence, which reads as a hang.
+        async def _measuring(idx, *_m, _rid=req_id):
+            try:
+                await ws.send(json.dumps({
+                    "id": _rid, "status": "measuring", "feature": idx,
+                }))
+            except Exception:
+                pass  # a dropped progress frame must never fail the work
+
+        res = await _run_stall(loop, _mass_properties_job, req["document"], ids,
+                               bool(req.get("checks")), on_progress=_measuring)
         await ws.send(_reply_for(req_id, res))
 
     elif op == "interference":

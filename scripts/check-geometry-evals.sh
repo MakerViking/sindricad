@@ -41,7 +41,7 @@ PY="${PY:-uv run python}"
 # best-effort-no-op by design and is the one ACKNOWLEDGED remaining gap.
 #
 # Raise this number when you cover more; never lower it to make a build pass.
-COVERAGE_FLOOR=33
+COVERAGE_FLOOR=34
 
 # The fillet/chamfer corpus was driven to zero failures by the Norn loop
 # (149/500 -> 0/500, holdout-verified). Any regression is a real one.
