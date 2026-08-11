@@ -38,12 +38,44 @@ A **terminal** reply always has the same top-level shape:
 // success
 { "id": "<matching id>", "ok": true, "result": { /* op-specific */ } }
 // failure
-{ "id": "<matching id>", "ok": false, "error": { "message": "...", "feature_id": "..." /* optional */ } }
+{ "id": "<matching id>", "ok": false,
+  "error": { "message": "...", "feature_id": "..." /* optional */,
+             "code": "ambiguousReference" /* optional */ } }
 ```
 
 `rebuild` and `computeAll` additionally stream **non-terminal progress frames** with no
 `ok` field - see "Progress frames" below; a client must not resolve a pending call on
 one of those.
+
+### Error codes
+
+`code` is an optional machine-readable classification beside the prose. Prefer it over
+matching on `message`, which is free to be reworded. It appears on the error object, on
+`featureError`/`featureErrors` entries (a feature can fail inside an `ok: true` rebuild),
+and on `ResolveDiag` entries.
+
+| code | meaning |
+|---|---|
+| `ambiguousReference` | a selector matched several candidates and refused to guess |
+| `referenceNotFound` | a selector matched nothing |
+| `cancelled` | the user cancelled; rides beside the `cancelled: true` sibling |
+| `timedOut` | a hard wall-clock job timeout |
+| `stalled` | no worker heartbeat; the kernel was restarted |
+| `kernelCrashed` | the geometry worker died |
+| `engineUnavailable` | the worker pool could not be started |
+| `replyTooLarge` / `bodyTooLarge` | the whole reply, or one body, exceeded the frame cap |
+| `unknownOp` | no such op — this is the capability-probe answer |
+| `badRequest` | malformed or oversized input, refused before any work |
+
+**Treat an unrecognised code as unclassified, never as an error.** The set only grows, and
+a newer sidecar may emit one this client has not heard of. Codes are added freely; renaming
+or removing one is a breaking change.
+
+Not every failure carries a code. An absent `code` means "unclassified", not "fine".
+
+**A trap on the chunked path:** `featureError`, `featureErrors` and `diagnostics` ride in
+frame 0 of a chunked reply, which carries `"status": "chunk"` and **no `ok` field** — so a
+code can arrive on a frame that is neither a success nor a failure.
 
 ## Ops
 
@@ -217,13 +249,199 @@ Reply: `{ "brep": "...", "name": "...", "solid": true, "faces": [...] }` (the ex
 fields the frontend embeds as an `import` feature), or `{ "error": { "message": "..." } }`.
 Given a longer budget than a normal rebuild (mesh read + B-rep build can run longer).
 
+### `massProperties`
+
+Exact kernel mass properties per body plus a document total. **Not the same numbers the
+viewport can derive:** the display tessellation is exact on planar bodies and under-reports
+every curved one — measured at −0.97% on a cylinder and −1.43% on a sphere.
+
+```jsonc
+{ "op": "massProperties", "id": "...",
+  "document": { /* CadDocument */ },
+  "bodies": ["body1"],   // optional; omitted = every live body
+  "checks": true }       // optional, default false
+```
+
+Reply:
+```jsonc
+{ "units": "mm", "counting": "build123d", "bboxSource": "mesh",
+  "bodies": [
+    { "id": "body1", "name": "Sphere", "measured": true,
+      "volume": 4188.79, "area": 1256.64, "com": [0,0,0],
+      "bbox": { "min": [x,y,z], "max": [x,y,z] },
+      "counts": { "solids":1, "shells":1, "faces":1, "edges":1, "vertices":2 },
+      "valid": true, "watertight": true },        // ONLY when checks:true
+    { "id": "body4", "measured": false, "reason": "no solid" }
+  ],
+  "total": { "bodies": 1, "volume": 0, "area": 0, "com": null, "bbox": null, "counts": {} },
+  "unknown": ["bodyNope"],   // requested ids that matched nothing — reported, not fatal
+  "warnings": [ { "message": "...", "feature_id": "...", "code": "..." } ] }
+```
+
+Things that are **not guessable** and that change what the numbers mean:
+
+- **An unmeasurable body carries no numeric fields at all**, not zeros. `reason` is one of
+  `feature failed`, `empty`, `no solid`. Absent and zero are different answers.
+- `total.bodies` counts only the bodies that were **measured**, so it can be lower than
+  the number asked about.
+- `total.com` is **null** when the total volume is zero — there is nothing to weight the
+  mean by. It is a volume-weighted mean, not an average of the per-body centres.
+- `counting: "build123d"` — counts follow what a **selector can address**, which excludes
+  degenerate edges. A sphere is 1 face and 1 edge here; raw topology would say 3 edges.
+- `bboxSource: "mesh"` — the box comes from the triangulation, so it is **conservative:
+  never tighter than exact**, and it agrees with the rebuild's own bbox. It falls back to
+  a looser box on a body with no triangulation in the current worker.
+- `checks` also buys `watertight`, which is a computed answer (every face in a shell, no
+  free edges), not the stored closed-flag — that flag goes stale on imported STEP.
+
+A failed feature does not refuse the call: only a document where **nothing built at all**
+is a hard error. Everything that did build is measured, and the failures appear in
+`warnings`.
+
+### `query`
+
+Which faces or edges match a description. Returns references that can be **stored**: each
+carries a `by:"match"` selector the caller can persist verbatim and re-resolve later.
+
+```jsonc
+{ "op": "query", "id": "...", "document": { /* CadDocument */ },
+  "items": [ {
+    "id": "q1",
+    "kind": "face",                 // REQUIRED: "face" | "edge"
+    "body": "body1",                // optional when the document has one body
+    "sel": { /* Selector | Selector[] */ },   // optional: resolve first
+    "where": { "surface": "plane", "area": { "min": 50, "max": 400 },
+               "normal": { "dir": [0,0,1], "tol": 0.02 },
+               "radius": { "min": 2, "max": 6 },
+               "within": { "min": [-10,-10,0], "max": [10,10,20] },
+               "createdBy": "f7" },
+    // EDGE keys instead: curve | length | dir | radius | within
+    "limit": 200, "expect": 4 } ] }
+```
+
+Reply:
+```jsonc
+{ "results": [
+  { "index": 0, "id": "q1", "ok": true, "count": 6,
+    "entities": [ { "body": "body1",
+                    "sel": { "kind": "face", "by": "match", "fp": { /* ... */ } },
+                    "createdBy": "f7" } ],
+    "diagnostics": [] },
+  { "index": 1, "id": "q2", "ok": false, "code": "expectFailed",
+    "error": "expected exactly 4 faces, matched 6", "count": 6, "entities": [] }
+] } }
+```
+
+- **`count` is the TRUE pre-limit total.** `count > entities.length` is itself the
+  truncation signal; there is no separate flag.
+- `where` keys combine as **AND**. `sel` is applied **before** `where`.
+- **`normal` matches PLANAR faces only**, and its tolerance defaults to the resolver's
+  tuned `ANG_TOL`. A single direction is meaningless on a curved face.
+- Edge `dir` is **sign-normalised**: `[0,0,1]` and `[0,0,-1]` select the same edges.
+- `createdBy` is **faces only** (refused for edges), and is **last-modifier, not creator** —
+  any re-keyed face is attributed to the feature that last touched it.
+- An empty `diagnostics` means the resolution was **unambiguous**. A lossy match is passed
+  through WITH its diagnostic rather than refused: this op is read-only inspection, so
+  "this reference went ambiguous, show me the candidates" is a supported use.
+- **One bad item never fails the call.** Indices stay aligned with the request.
+- `expect` is judged on `count`; a miss returns `ok:false` with `code:"expectFailed"` and
+  still reports what it found.
+- Bounded: at most 64 items, `limit` at most 5000, and a **total of 5000 entities across
+  the whole request** — per-item limits multiply, and this op replies on a path with no
+  outbound frame-size guard. There is also a wall-clock budget; items that run past it
+  return `code:"budgetExhausted"` with their partial results.
+
+### `projectGeometry`
+
+Projects 3D sources (body edges, face boundaries, cross-sketch curves, whole-body
+silhouettes) onto a sketch plane. `document` is the frontend-truncated timeline **prefix**
+for that sketch.
+
+```jsonc
+{ "op": "projectGeometry", "id": "...", "document": {...}, "plane": {...},
+  "sources": [ /* ProjectedSource */ ] }
+```
+
+Reply: `{ "results": [ { "source_index": 0, "ok": true,
+                         "curves": [ { "fp": {...}, "curve": {...} } ] } ] }`.
+Per-source containment; resolution is **strict** (a missing body, a zero-edge or
+low-confidence match is a per-source error, because this authors a persistent reference).
+Read-only: it never disturbs the rebuild cache.
+
+### `listFonts`
+
+`{ "op": "listFonts", "id": "..." }` → `{ "families": ["DejaVu Sans", ...] }`. The sidecar
+owns fonts so that preview outlines match the extruded solid exactly.
+
+### `tessellateText`
+
+Per-glyph 2D outlines for a sketch text entity, for preview.
+
+```jsonc
+{ "op": "tessellateText", "id": "...", "entity": {...}, "pathEntity": {...} }
+```
+Reply: `{ "faces": [ { "outer": [[x,y], ...], "holes": [[[x,y], ...]] } ] }`.
+
+### `migrateGeometry`
+
+One-way v4 → v5: turns a pre-container document's inline base64 BREP into blobs in the
+durable store.
+
+```jsonc
+{ "op": "migrateGeometry", "id": "...", "items": [ { "id": "im", "brep": "..." } ] }
+```
+Reply: `{ "items": [ { "id": "im", "geom": "<content hash>" } ], "failed": [...] }`.
+**Best-effort by design** — the document keeps its inline copy, so a failure costs nothing.
+
+### `cancel`
+
+`{ "op": "cancel", "id": "...", "target": "<request id>" }`. Answered on the read path, so
+it is never queued behind the job it is cancelling.
+
+Two replies are involved, and they are easy to confuse:
+
+- **The cancel call itself** replies `ok: true` with
+  `{ "cancelled": <bool> }` — whether it actually found a running job with that id. `false`
+  is not an error; it usually means the job had already finished.
+- **The cancelled op** replies `ok: false` with **both** `"cancelled": true` and
+  `code: "cancelled"`. The boolean is a shipped contract and stays; the code rides beside it
+  so a caller can branch on one vocabulary for everything.
+
+**Cancelling kills the geometry worker**, and with it the rebuild cache and every memo. It
+is the right thing for a long job the user genuinely wants stopped, and the wrong thing for
+a cheap one — prefer dropping an unwanted reply over cancelling it.
+
 ### `ping`
 
 Liveness check with no side effects: `{ "op": "ping", "id": "..." }` -> `{ "pong": true }`.
 
 ### Unknown op
 
-Any other `op` value replies `{ "error": { "message": "unknown op: <op>" } }`.
+Any other `op` value replies
+`{ "error": { "message": "unknown op: <op>", "code": "unknownOp" } }`. This is the
+capability probe: a client can ask for an op it is not sure the sidecar has and branch on
+`unknownOp` rather than on message text.
+
+## Selector fingerprints
+
+`by:"match"` selectors carry a geometric fingerprint. `query` and `projectGeometry` author
+them; a caller **stores them verbatim** and hands them back unchanged. They are not a
+stable schema to reconstruct field by field — drop a field and the reference silently gets
+weaker rather than failing.
+
+**Edge:** `mid` (midpoint at curve parameter 0.5), `dir` (unit tangent, **sign-normalised**,
+since edges are unoriented), `length`, `curve`, and for circles `radius`, `center`,
+`radius_rank`, `radius_group`.
+
+**`radius_rank` / `radius_group` are the load-bearing pair.** They give a circle's position
+within the set of circles sharing its centre — rank in ascending-radius order, and how many
+share that centre. They are what makes a concentric reference survive a **scale change**: a
+tube's outer rim stays the outer rim. Without them the match falls back to absolute radius
+and, on a resized model, resolves to the *inner* rim instead — a wrong reference written
+into the document with no error anywhere. Never drop them when passing a fingerprint on.
+
+**Face:** `centroid`, `normal` (unit, oriented), `area`, `surface`, and `radius` where the
+surface has one.
 
 ## Progress frames
 
