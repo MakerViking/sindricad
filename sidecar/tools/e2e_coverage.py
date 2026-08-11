@@ -315,6 +315,29 @@ async def check_compute_all(ws):
     register("computeAll", "volume", 8000.0, _total_volume(r))
 
 
+async def check_query(ws):
+    # A COUNT earns no geometric credit — six faces is six faces whether or not
+    # the right ones were found. So gate on the BOX OF THE MATCHED CENTROIDS:
+    # a 20-cube's four side faces sit at (+-10,0,0) and (0,+-10,0), all at z=0,
+    # which is exact and derivable. Match anything else and the box moves.
+    doc = {"parameters": {}, "features": [_box("b1", 20, 20, 20)]}
+    reply = await H.ws_call(ws, "query", "c", document=doc, items=[{
+        "id": "sides", "kind": "face",
+        "where": {"surface": "plane", "within": {"min": [-11, -11, -1], "max": [11, 11, 1]}},
+    }])
+    if not reply.get("ok"):
+        print(f"  REFUSE query            — op not ok: {reply.get('error')}")
+        return
+    res = (reply["result"].get("results") or [{}])[0]
+    cents = [e["sel"]["fp"]["centroid"] for e in (res.get("entities") or [])]
+    if not cents:
+        print("  REFUSE query            — no entities returned")
+        return
+    lo = [min(c[i] for c in cents) for i in range(3)]
+    hi = [max(c[i] for c in cents) for i in range(3)]
+    register("query", "bbox", [-10, -10, 0, 10, 10, 0], [*lo, *hi])
+
+
 async def check_mass_properties(ws):
     # A CYLINDER, not a box, and that is the whole point: the app's existing
     # Properties panel derives volume from the display mesh, which on a box agrees
@@ -615,7 +638,7 @@ EXPLICIT_CHECKS = [
     check_loft, check_shell, check_mirror, check_pattern_rect,
     check_pattern_circular, check_scale, check_move, check_remove_body,
     check_compute_all, check_interference, check_export,
-    check_mass_properties,
+    check_mass_properties, check_query,
     check_fillet, check_chamfer, check_draft, check_sweep, check_simplify_mesh,
     check_datum_split,
     check_sketch, check_combine, check_press_pull, check_offset_face,

@@ -7416,3 +7416,128 @@ def mass_properties(bodies, checks=False, tick=None):
         hi = [max(r["bbox"]["max"][i] for r in measured) for i in range(3)]
         total["bbox"] = {"min": lo, "max": hi}
     return {"bodies": out, "total": total}
+
+
+# --- query -------------------------------------------------------------------
+
+_QUERY_MAX_ITEMS = 64
+_QUERY_MAX_LIMIT = 5000
+# A TOTAL cap, not just a per-item one. Per-item caps MULTIPLY: 64 items at 5,000
+# entities each is ~173 MiB, over the frame cap — and this op replies through the
+# plain `ws.send` path, which has no outbound size guard at all. Blowing the cap
+# closes the socket with 1009, which reaches the user as the app dying mid-op.
+_QUERY_MAX_TOTAL = 5000
+# `limit` bounds RECORDS, not scan, and the stall supervisor never reaps a job
+# that keeps ticking — so a correctly-ticked query over a large assembly could
+# hold the dispatch lock for minutes and be unkillable. This is the ceiling that
+# actually stops it.
+_QUERY_BUDGET_S = 20.0
+
+
+def query_geometry(document, items):
+    """Resolve selectors and/or match predicates, returning storable references.
+
+    Per-item containment, like project_geometry: one bad item never fails the
+    call. Each result carries `count` (the TRUE pre-limit total, so
+    count > len(entities) is itself the truncation signal) and a `sel` the caller
+    can persist verbatim.
+
+    Read-only in every sense: `readonly=True` keeps a caller measuring a timeline
+    prefix from costing the human their warm cache.
+    """
+    import time
+
+    from geom_select import (edge_fingerprint, face_fingerprint, query_entities,
+                             resolve_edges, resolve_faces)
+
+    if not isinstance(items, list):
+        raise ValueError("query: items must be a list")
+    if len(items) > _QUERY_MAX_ITEMS:
+        raise ValueError(f"query: at most {_QUERY_MAX_ITEMS} items per request")
+
+    _part, _errors, bodies = rebuild_cached(document, readonly=True)
+    live = [b for b in bodies if b.get("shape") is not None]
+    by_id = {b["id"]: b for b in live}
+
+    t0 = time.monotonic()
+    budget_left = [_QUERY_MAX_TOTAL]
+    results = []
+    for i, item in enumerate(items):
+        rec = {"index": i, "id": item.get("id"), "ok": False,
+               "count": 0, "entities": [], "diagnostics": []}
+        try:
+            if time.monotonic() - t0 > _QUERY_BUDGET_S:
+                rec["error"] = "the query ran out of its time budget"
+                rec["code"] = "budgetExhausted"
+                results.append(rec)
+                continue
+
+            kind = item.get("kind")
+            if kind not in ("face", "edge"):
+                raise ValueError('query: kind must be "face" or "edge"')
+            limit = int(item.get("limit") or 200)
+            if limit < 1 or limit > _QUERY_MAX_LIMIT:
+                raise ValueError(f"query: limit must be 1..{_QUERY_MAX_LIMIT}")
+
+            body = _require_body(bodies, item["body"]) if item.get("body") else None
+            if body is None:
+                if len(live) != 1:
+                    raise ValueError("query: `body` is required when the document "
+                                     "has more than one body")
+                body = live[0]
+            shape = body["shape"]
+
+            diag = []
+            cands = None
+            if item.get("sel") is not None:
+                # sel BEFORE where, always. Resolving first and filtering after is
+                # not just an ordering preference: the resolver's concentric-rank
+                # scoring is computed over the candidate set it is given, so
+                # pre-filtering the edges would change a rim's group size and
+                # silently drop the match to the scale-stale absolute radius.
+                resolve = resolve_faces if kind == "face" else resolve_edges
+                cands = resolve(shape, item["sel"], diag=diag, feature_id=item.get("id"))
+
+            # A lossy match is passed THROUGH with its diagnostic rather than
+            # refused. project_geometry refuses because it is authoring a
+            # persistent reference at pick time; query is read-only inspection,
+            # and "this reference went ambiguous, show me what it could mean" is
+            # one of the things it is for.
+            hits = query_entities(shape, kind, item.get("where"), cands,
+                                  owners=body.get("owners"), tick=progress_tick)
+
+            rec["count"] = len(hits)
+            rec["diagnostics"] = diag
+            take = min(limit, budget_left[0])
+            fp_of = face_fingerprint if kind == "face" else edge_fingerprint
+            ents = []
+            for e in hits[:take]:
+                fp = fp_of(e, shape)
+                ent = {"body": body["id"],
+                       "sel": {"kind": kind, "by": "match", "fp": fp}}
+                if kind == "face":
+                    # last-modifier, not creator — documented on the wire
+                    owners = body.get("owners") or {}
+                    from geom_select import _owner_key
+
+                    ent["createdBy"] = owners.get(_owner_key(e))
+                ents.append(ent)
+            budget_left[0] -= len(ents)
+            rec["entities"] = ents
+
+            expect = item.get("expect")
+            if isinstance(expect, int) and expect != rec["count"]:
+                # judged on count, not on the truncated list: a caller that sets
+                # `expect` is asserting, and an assertion should be branchable.
+                rec["error"] = (f"expected exactly {expect} {kind}s, matched {rec['count']}")
+                rec["code"] = "expectFailed"
+                results.append(rec)
+                continue
+            rec["ok"] = True
+        except Exception as ex:
+            rec["error"] = str(ex) or type(ex).__name__
+            code = getattr(ex, "code", None)
+            if code:
+                rec["code"] = code
+        results.append(rec)
+    return {"results": results}

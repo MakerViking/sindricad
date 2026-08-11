@@ -1291,6 +1291,16 @@ def _migrate_geometry_job(items):
     return {"items": out, "failed": failed}
 
 
+def _query_job(document, items):
+    """Worker: resolve selectors / match predicates, returning storable refs."""
+    from builder import query_geometry
+
+    try:
+        return query_geometry(document, items)
+    except Exception as ex:
+        return _error_from(ex, errors_mod.BAD_REQUEST)
+
+
 def _mass_properties_job(document, body_ids, checks):
     """Worker: exact kernel mass properties for the document's live bodies.
 
@@ -2407,6 +2417,19 @@ async def _dispatch(ws, loop, req, req_id, op):
 
         res = await _run_stall(loop, _mass_properties_job, req["document"], ids,
                                bool(req.get("checks")), on_progress=_measuring)
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "query":
+        # Trust boundary, refused BEFORE any rebuild — the same reasoning as
+        # massProperties: a rebuild is far too expensive to spend on input that
+        # was never going to be usable.
+        items = req.get("items")
+        if not isinstance(items, list) or len(items) > 64 or not all(
+            isinstance(it, dict) for it in items
+        ):
+            await ws.send(_err(req_id, "query: bad items", code=errors_mod.BAD_REQUEST))
+            return
+        res = await _run_stall(loop, _query_job, req["document"], items)
         await ws.send(_reply_for(req_id, res))
 
     elif op == "interference":

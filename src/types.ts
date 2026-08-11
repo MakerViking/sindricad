@@ -18,6 +18,17 @@ export interface EdgeFingerprint {
   curve?: "line" | "circle" | "ellipse" | "bspline" | "other";
   radius?: number; // circle/arc radius, mm — disambiguates concentric arcs
   center?: Vec3; // arc/circle center, mm
+  // Position within a group of circles sharing a centre: rank is the index in
+  // ascending-radius order, group is how many share that centre. THIS PAIR IS
+  // WHAT MAKES A CONCENTRIC REFERENCE SURVIVE A SCALE CHANGE — with it, a tube's
+  // outer rim stays the outer rim; without it the match falls back to absolute
+  // radius and lands on the inner one. The sidecar has always authored them;
+  // they were simply never declared, and they survived only because the reply
+  // object is passed through by reference. Reconstruct a fingerprint field by
+  // field against the old type and TypeScript silently hides both, downgrading
+  // the reference with no error anywhere.
+  radius_rank?: number;
+  radius_group?: number;
 }
 export interface FaceFingerprint {
   centroid: Vec3; // area centroid, world mm
@@ -42,6 +53,8 @@ export type Selector = (
   | { kind: "edge"; by: "axis"; axis: "X" | "Y" | "Z" }
   | { kind: "edge"; by: "nearest"; point: [number, number, number] }
   | { kind: "edge"; by: "all" }
+  // Both backends have always implemented this; only the type omitted it.
+  | { kind: "face"; by: "all" }
   | { kind: "face"; by: "normal"; dir: [number, number, number] }
   | { kind: "face"; by: "nearest"; point: [number, number, number] }
   // --- v2: discriminating, drift-robust selection ---
