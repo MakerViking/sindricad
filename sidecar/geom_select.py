@@ -477,7 +477,7 @@ def _resolve_one(cands, cost_fn, key_fn, nth):
 
 
 def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=None,
-               candidates=None, code=None):
+               candidates=None, code=None, candidate_fps=None):
     # HEAD GATE, load-bearing: a confident, unambiguous resolution records
     # NOTHING. `diag` means "resolutions worth acting on", and callers rely on
     # that — builder._project_source refuses on a lossy entry, and keying on
@@ -502,6 +502,14 @@ def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=N
         entry["at"] = [round(float(v), 6) for v in at]
     if candidates:
         entry["candidates"] = list(candidates)
+    # `candidates` is PROSE for a human and is frozen as string[] permanently —
+    # it is a shipped TS interface member and changing its element type is a hard
+    # compile break at three call sites. `candidateFps` is the structured twin:
+    # each entry is a real fingerprint, so a caller can turn the one it wants
+    # into a {by:"match", fp} selector and repair the reference without a human
+    # picking in the viewport.
+    if candidate_fps:
+        entry["candidateFps"] = list(candidate_fps)
     # The code belongs on the DIAGNOSTIC as well as the error: the Re-pick UI
     # reads RebuildResult.diagnostics, never `error`, so a code that lives only
     # on the fatal is invisible to the one consumer that most wants it.
@@ -513,7 +521,8 @@ def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=N
 # --- public API --------------------------------------------------------------
 
 
-def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
+def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id,
+                 fp_of=None):
     """Resolve a `by:"nearest"` selector — or REFUSE, when the pick is ambiguous.
 
     A bare `min()` over the candidates cannot fail. It returns the closest entity
@@ -566,8 +575,22 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
     pt = sel.get("point") or []
     where = ", ".join(f"{float(v):.2f}" for v in pt)
     described = [describe(c) for c in tied[:3]]
+    # Structured twin of `described`, same tied[:3] bound. The cap is not
+    # cosmetic: `tied` scales the band by the RUNNER-UP DISTANCE, so a stale
+    # selector sitting 500 mm off the body admits everything within ~10 mm of
+    # the winner, and an uncapped list would put an unbounded payload on an
+    # error path. `dist` is what the entity was actually scored on, so a caller
+    # can rank the candidates it is offered.
+    fps = []
+    if fp_of is not None:
+        for d, c in [(dd, cc) for dd, cc in scored if cc in tied][:3]:
+            try:
+                fps.append({"fp": fp_of(c), "dist": round(float(d), 6)})
+            except Exception:
+                pass  # a candidate we cannot fingerprint must not break the refusal
     _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick",
-               at=pt, candidates=described, code=errors.AMBIGUOUS_REFERENCE)
+               at=pt, candidates=described, code=errors.AMBIGUOUS_REFERENCE,
+               candidate_fps=fps)
     raise errors.GeomError(
         f"ambiguous {kind} reference at ({where}): "
         + " and ".join(described)
@@ -616,7 +639,8 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
     if by == "nearest":
         p = _v(sel["point"])
         return [_nearest_one(part.edges(), lambda e: _dist(e.center(), p),
-                             _canonical_key_edge, _describe_edge, "edge", sel, diag, feature_id)]
+                             _canonical_key_edge, _describe_edge, "edge", sel, diag, feature_id,
+                             fp_of=lambda e: edge_fingerprint(e, part))]
     if by == "match":
         fp = sel["fp"]
         edges = list(part.edges())
@@ -701,7 +725,8 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
         except Exception:
             dist_of = lambda f: _dist(f.center(), p)
         return [_nearest_one(faces, dist_of, _canonical_key_face, _describe_face,
-                             "face", sel, diag, feature_id)]
+                             "face", sel, diag, feature_id,
+                             fp_of=lambda f: face_fingerprint(f, part))]
     if by == "all":
         return list(part.faces())
     if by == "match":

@@ -749,6 +749,13 @@ export interface ResolveDiag {
   // are the tied entities, already human-readable, for the message shown to the user.
   at?: [number, number, number];
   candidates?: string[];
+  /** Structured twin of `candidates`: each tied entity's real fingerprint, with
+   *  the distance it was scored on. `candidates` is PROSE for a human and stays
+   *  `string[]`; these are what a caller turns into a `{by:"match", fp}` selector
+   *  to repair the reference without a viewport pick. Bounded to 3, same as
+   *  `candidates` — an ambiguity band scales with the runner-up distance, so a
+   *  badly stale selector can tie against a great many entities. */
+  candidateFps?: { fp: EdgeFingerprint | FaceFingerprint; dist: number }[];
 }
 
 // Mesh wire arrays arrive either as plain JSON number arrays (text replies,

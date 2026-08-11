@@ -207,6 +207,22 @@ def test_every_diagnostic_shape_is_json_safe():
         {"feature_id": "a", "kind": "face", "resolved": 0, "confidence": 0.0,
          "lossy": True, "reason": "ambiguous nearest pick",
          "at": [1.0, 2.0, 3.0], "candidates": ["a face at (0,0,0) area 1.0"]},
+        # ...the same refusal with its machine-readable code and the structured
+        # candidate fingerprints. These are AUTHORED FROM LIVE GEOMETRY, so this
+        # is the shape most at risk of carrying an OCCT handle or a numpy scalar
+        # that json cannot encode — which would not raise, it would silently
+        # stop every checkpoint write and make every later rebuild cold.
+        {"feature_id": "a2", "kind": "edge", "resolved": 0, "confidence": 0.01,
+         "lossy": True, "reason": "ambiguous nearest pick",
+         "code": "ambiguousReference", "at": [1.0, 2.0, 3.0],
+         "candidates": ["an edge at (0,0,0) length 1.0"],
+         "candidateFps": [
+             {"fp": {"mid": [0.0, 0.0, 0.0], "dir": [0.0, 0.0, 1.0], "length": 20.0,
+                     "curve": "line"}, "dist": 10.0},
+             {"fp": {"mid": [1.0, 0.0, 0.0], "dir": [0.0, 0.0, 1.0], "length": 20.0,
+                     "curve": "circle", "radius": 5.0, "center": [0.0, 0.0, 0.0],
+                     "radius_rank": 0, "radius_group": 2}, "dist": 10.0},
+         ]},
         # geom_select._push_diag, a plain low-confidence resolution
         {"feature_id": "b", "kind": "edge", "resolved": 1, "confidence": 0.4,
          "lossy": False, "reason": None},
@@ -228,6 +244,29 @@ def test_every_diagnostic_shape_is_json_safe():
     builder.rebuild(DIAG_DOC, diagnostics=real)
     assert real, "DIAG_DOC should produce at least one diagnostic"
     json.dumps(real)
+
+    # DIAG_DOC cannot reach the ambiguity refusal (that path raises, so the
+    # feature errors instead), and that is the one diagnostic whose payload is
+    # authored FROM LIVE GEOMETRY — fingerprint floats straight off OCCT. A
+    # hand-written copy of the shape proves nothing about the real thing's types.
+    from build123d import Box
+    from geom_select import resolve_faces
+
+    live = []
+    try:
+        resolve_faces(Box(20, 20, 20), {"kind": "face", "by": "nearest", "point": [0, 0, 0]},
+                      diag=live, feature_id="amb")
+    except ValueError:
+        pass
+    amb = [d for d in live if d.get("candidateFps")]
+    assert amb, "expected a live ambiguity diagnostic carrying candidateFps"
+    json.dumps(amb)
+    for rec in amb[0]["candidateFps"]:
+        for v in rec["fp"].values():
+            vals = v if isinstance(v, list) else [v]
+            for x in vals:
+                assert type(x) in (float, int, str), \
+                    f"fingerprint carries a {type(x).__name__}, which json may not encode: {x!r}"
     print(PASS, "every diagnostic shape survives json.dumps (disk cache stays alive)")
 
 
