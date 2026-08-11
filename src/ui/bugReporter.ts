@@ -7,6 +7,7 @@
 // clipboard so it is never lost.
 
 import type { DocumentStore } from "../document/store";
+import { icon } from "./icons";
 import type { GeometryBackend } from "../geometry/client";
 import { esc } from "./escape";
 import { toast } from "./toast";
@@ -57,7 +58,7 @@ export function createBugReporter(deps: {
   btn.className = "bug-report-btn";
   btn.title = "Report a bug";
   btn.setAttribute("aria-label", "Report a bug");
-  btn.textContent = "🐞";
+  btn.innerHTML = icon("bug");
   document.body.appendChild(btn);
   btn.addEventListener("click", () => void openDialog());
 

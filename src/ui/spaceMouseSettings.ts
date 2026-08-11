@@ -5,6 +5,7 @@
 // you can confirm the feel. All edits apply live and persist.
 
 import * as THREE from "three";
+import { icon } from "./icons";
 import {
   AXIS_LABELS,
   AXIS_NAMES,
@@ -78,7 +79,8 @@ export class SpaceMouseSettings {
     const head = el("div", "modal-head");
     head.appendChild(text("h2", "3D Mouse Settings"));
     const x = el("button", "modal-close") as HTMLButtonElement;
-    x.textContent = "✕";
+    x.setAttribute("aria-label", "Close");
+    x.innerHTML = icon("close");
     x.onclick = () => this.close();
     head.appendChild(x);
     panel.appendChild(head);

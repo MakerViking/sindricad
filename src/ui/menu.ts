@@ -2,13 +2,15 @@
 // opens a popup of items; clicking an item runs it and closes the popup, and
 // clicking anywhere else closes it. Disabled items are skipped.
 
+import { icon } from "./icons";
+
 export interface MenuItem {
   label: string;
   shortcut?: string; // display hint, e.g. "Ctrl+S"
   onClick?: () => void;
   separator?: boolean;
   disabled?: () => boolean;
-  checked?: () => boolean; // shows a ✓ when true (re-evaluated each time the menu opens)
+  checked?: () => boolean; // shows a check mark when true (re-evaluated each time the menu opens)
 }
 
 export interface MenuDef {
@@ -62,6 +64,12 @@ export class Menubar {
   private buildItem(item: MenuItem): HTMLElement {
     const el = document.createElement("button");
     el.className = "menu-item";
+    // Checkable items get a fixed-width leading slot rather than padding the label
+    // text — that kept the check mark and the label from ever aligning, since a
+    // check glyph is not four spaces wide.
+    const check = document.createElement("span");
+    check.className = "menu-check";
+    el.appendChild(check);
     const label = document.createElement("span");
     label.textContent = item.label;
     el.appendChild(label);
@@ -80,8 +88,7 @@ export class Menubar {
     el.dataset.dynDisabled = item.disabled ? "1" : "";
     (el as any)._isDisabled = item.disabled;
     (el as any)._isChecked = item.checked;
-    (el as any)._labelEl = label;
-    (el as any)._baseLabel = item.label;
+    (el as any)._checkEl = check;
     return el;
   }
 
@@ -92,9 +99,8 @@ export class Menubar {
       el.toggleAttribute("disabled", !!fn?.());
       const chk = (el as any)._isChecked as (() => boolean) | undefined;
       if (chk) {
-        const labelEl = (el as any)._labelEl as HTMLElement;
-        const base = (el as any)._baseLabel as string;
-        labelEl.textContent = (chk() ? "✓ " : "    ") + base;
+        const checkEl = (el as any)._checkEl as HTMLElement;
+        checkEl.innerHTML = chk() ? icon("check") : "";
       }
     });
     popup.classList.remove("hidden");
@@ -214,7 +220,7 @@ export function contextMenu(x: number, y: number, items: CtxItem[]): void {
     if (it.children) {
       const caret = document.createElement("span");
       caret.className = "ctx-caret";
-      caret.textContent = "▸";
+      caret.innerHTML = icon("caretRight");
       el.appendChild(caret);
     }
     if (it.disabled) return el;

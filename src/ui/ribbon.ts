@@ -2,7 +2,7 @@
 // grouped icon buttons (CREATE / MODIFY / …) with the group name underneath.
 // The sketch context ends with the green Finish Sketch + a Sketch Palette toggle.
 
-import { icon } from "./icons";
+import { icon, type IconName } from "./icons";
 import { esc } from "./escape";
 
 export type RibbonContext = "model" | "sketch";
@@ -10,7 +10,7 @@ export type RibbonContext = "model" | "sketch";
 interface ToolItem {
   action: string;
   label: string;
-  iconName: string;
+  iconName: IconName;
   key?: string;
   kind?: "finish" | "toggle";
 }
@@ -282,7 +282,8 @@ export class Ribbon {
     const overflowBtn = document.createElement("button");
     overflowBtn.className = "ribbon-overflow hidden";
     overflowBtn.title = "More tools";
-    overflowBtn.textContent = "⋯";
+    overflowBtn.setAttribute("aria-label", "More tools");
+    overflowBtn.innerHTML = icon("overflow");
     overflowBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       this.toggleOverflow();
@@ -355,7 +356,8 @@ export class Ribbon {
     const arrow = document.createElement("button");
     arrow.className = "ribbon-split-arrow";
     arrow.title = `More ${it.label} tools`;
-    arrow.textContent = "▾";
+    arrow.setAttribute("aria-label", `More ${it.label} tools`);
+    arrow.innerHTML = icon("caretDown");
     arrow.addEventListener("click", (e) => {
       e.stopPropagation();
       const wasMine = this.popupAnchor === arrow;

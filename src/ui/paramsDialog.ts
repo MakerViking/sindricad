@@ -5,6 +5,7 @@
 // same rule as every other expression surface.
 
 import type { DocumentStore } from "../document/store";
+import { icon } from "./icons";
 import type { CadDocument, ParamDef, ParamTarget, ParamUnit } from "../types";
 import { FloatingPanel } from "./panels";
 import { FEATURE_META } from "./featureMeta";
@@ -101,7 +102,8 @@ function paramRow(store: DocumentStore, doc: CadDocument, name: string, def: Par
     row.appendChild(validatedInput(def.comment ?? "", (raw) => (store.setParamComment(name, raw), null)));
     const del = document.createElement("button");
     del.className = "params-del";
-    del.textContent = "×";
+    del.setAttribute("aria-label", `Delete ${name}`);
+    del.innerHTML = icon("close");
     del.title = `Delete ${name}`;
     del.addEventListener("click", () => {
       const err = store.deleteParam(name);

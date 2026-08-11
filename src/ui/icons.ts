@@ -1,7 +1,14 @@
-// Minimal stroke icons (24×24, currentColor) for the MCAD-style ribbon.
-// Each entry is the inner SVG markup; icon() wraps it.
+// Minimal stroke icons (24×24, currentColor) for the whole UI — ribbon, timeline,
+// browser tree, and the window chrome. Each entry is the inner SVG markup; icon()
+// wraps it.
+//
+// House style, hold to it when adding entries: 24×24 viewBox with a ~20×20 live
+// area, stroke-width 1.6 (set once on the wrapper), round caps and joins, fill="none"
+// with fill="currentColor" only for solid dots, and NO colour values anywhere — every
+// icon takes its colour from the parent's `color`, which is what makes hover/selected
+// states work without touching the markup.
 
-const PATHS: Record<string, string> = {
+const PATHS = {
   // sketch create
   line: `<line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="1.6" fill="currentColor"/><circle cx="20" cy="4" r="1.6" fill="currentColor"/>`,
   rectangle: `<rect x="4" y="6" width="16" height="12" rx="0.5"/>`,
@@ -47,7 +54,9 @@ const PATHS: Record<string, string> = {
   sketch: `<path d="M14 4l6 6L9 21l-6 1 1-6z"/><line x1="13" y1="5" x2="19" y2="11"/>`,
   extrude: `<rect x="4" y="13" width="10" height="7"/><path d="M9 11V4m0 0l-3 3m3-3l3 3"/>`,
   revolve: `<path d="M12 4v16"/><ellipse cx="12" cy="12" rx="7" ry="3"/><path d="M5 12a7 3 0 0 0 14 0"/>`,
-  loft: `<path d="M4 18h16M7 8h10M4 18l3-10M20 18L17 8"/>`,
+  // Loft: two profiles of different size joined by ruled lines — the ruling is what
+  // distinguishes it from a plain tapered solid.
+  loft: `<ellipse cx="12" cy="5.5" rx="4.5" ry="1.8"/><ellipse cx="12" cy="18.5" rx="8" ry="2.6"/><path d="M7.5 5.5L4 18.5M16.5 5.5L20 18.5"/>`,
   sweep: `<circle cx="5" cy="18" r="2.4"/><path d="M5 18 C 5 9, 12 6, 20 6" fill="none"/><path d="M16 3l4 3-4 3"/>`,
 
   // modeling modify
@@ -58,9 +67,11 @@ const PATHS: Record<string, string> = {
   split: `<rect x="4" y="7" width="16" height="10" rx="0.5"/><line x1="12" y1="3" x2="12" y2="21" stroke-dasharray="2 2"/>`,
   combine: `<circle cx="9.5" cy="12" r="6"/><circle cx="14.5" cy="12" r="6"/>`,
   shell: `<rect x="4" y="4" width="16" height="16" rx="1"/><rect x="8" y="8" width="8" height="8" rx="0.5" stroke-dasharray="2 2"/>`,
-  draft: `<path d="M7 20l4-16h2l4 16z" fill="none"/><line x1="5" y1="20" x2="19" y2="20"/>`,
+  // Draft: the dashed vertical is the untilted reference the angle is measured from.
+  // Without it a lone trapezoid reads as a generic taper, not a draft angle.
+  draft: `<line x1="7" y1="4" x2="7" y2="20" stroke-dasharray="2 2"/><path d="M7 20L13 4"/><line x1="4" y1="20" x2="20" y2="20"/><path d="M7 9.5a4.5 4.5 0 0 0 2.1-3.9"/>`,
   offsetFace: `<rect x="4" y="8" width="12" height="12" rx="1"/><path d="M8 4h12v12" stroke-dasharray="2 2"/><line x1="16" y1="8" x2="20" y2="4"/>`,
-  thicken: `<path d="M4 14c4-6 12-6 16 0" fill="none"/><path d="M4 18c4-6 12-6 16 0" fill="none"/><line x1="4" y1="14" x2="4" y2="18"/><line x1="20" y1="14" x2="20" y2="18"/>`,
+  thicken: `<path d="M4 12c4-6 12-6 16 0" fill="none"/><path d="M4 17c4-6 12-6 16 0" fill="none"/><line x1="4" y1="12" x2="4" y2="17"/><line x1="20" y1="12" x2="20" y2="17"/>`,
   texture: `<rect x="4" y="4" width="16" height="16" rx="1"/><line x1="4" y1="9.3" x2="20" y2="9.3"/><line x1="4" y1="14.7" x2="20" y2="14.7"/><line x1="9.3" y1="4" x2="9.3" y2="20"/><line x1="14.7" y1="4" x2="14.7" y2="20"/>`,
   pattern: `<rect x="4" y="4" width="5" height="5"/><rect x="15" y="4" width="5" height="5"/><rect x="4" y="15" width="5" height="5"/><rect x="15" y="15" width="5" height="5"/>`,
   simplifyMesh: `<polygon points="12,3 21,8 21,16 12,21 3,16 3,8"/><path d="M3 8l9 5 9-5M12 13v8"/>`,
@@ -101,9 +112,59 @@ const PATHS: Record<string, string> = {
   midpoint: `<line x1="3" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="2" fill="currentColor"/>`,
   collinear: `<line x1="3" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="21" y2="12"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/>`,
   fix: `<line x1="12" y1="4" x2="12" y2="14"/><path d="M8 4h8"/><path d="M9 14h6l-3 6z" fill="currentColor"/>`,
+
+  // --- solid primitives (timeline / browser tree) ---
+  // `primitive` above is the generic insert-menu cube; these three are the specific
+  // feature types, drawn so they stay distinguishable at 16px in the timeline.
+  box: `<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4"/><line x1="12" y1="12" x2="12" y2="20"/>`,
+  cylinder: `<ellipse cx="12" cy="6.5" rx="7" ry="3"/><path d="M5 6.5v11a7 3 0 0 0 14 0v-11" fill="none"/>`,
+  sphere: `<circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="8.5" ry="3.4"/>`,
+  body: `<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/>`,
+
+  // --- destructive / removal ---
+  deleteFace: `<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M9 10.5l6 6M15 10.5l-6 6"/>`,
+  removeBody: `<path d="M5 7h14"/><path d="M10 7V5h4v2"/><path d="M6.5 7l1 13h9l1-13"/>`,
+
+  // Text driven onto a face: the plane carries the glyph, which is what separates it
+  // from `text` (sketch text, no face involved).
+  textOnFace: `<path d="M3 16l9-4.5 9 4.5-9 4.5z"/><path d="M8.5 5h7M12 5v6"/>`,
+
+  // --- browser tree ---
+  origin: `<circle cx="12" cy="12" r="1.7" fill="currentColor"/><path d="M12 3v5.5M12 15.5V21M3 12h5.5M15.5 12H21"/>`,
+  plane: `<path d="M3 9l9-4 9 4-9 4z"/>`,
+  assembly: `<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/><path d="M11 7h4a2 2 0 0 1 2 2v4"/>`,
+  printerSync: `<path d="M4 10a8 8 0 0 1 13.2-3.4" fill="none"/><path d="M20 14a8 8 0 0 1-13.2 3.4" fill="none"/><path d="M17.5 3v4h-4M6.5 21v-4h4"/>`,
+  eyeOpen: `<path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12z" fill="none"/><circle cx="12" cy="12" r="2.6"/>`,
+  eyeClosed: `<path d="M3 7c2.8 4.2 6.2 6 9 6s6.2-1.8 9-6" fill="none"/><path d="M5 14.2L3.4 16.6M12 15.4V18.2M19 14.2l1.6 2.4"/>`,
+
+  // --- window chrome / controls ---
+  close: `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>`,
+  undo: `<path d="M4.5 10.5h11a5 5 0 0 1 0 10H9" fill="none"/><path d="M8.5 6.5l-4 4 4 4"/>`,
+  redo: `<path d="M19.5 10.5h-11a5 5 0 0 0 0 10H15" fill="none"/><path d="M15.5 6.5l4 4-4 4"/>`,
+  stepFirst: `<line x1="6" y1="5" x2="6" y2="19"/><path d="M19 5.5L9.5 12l9.5 6.5z"/>`,
+  stepBack: `<path d="M16.5 5.5L7 12l9.5 6.5z"/>`,
+  stepFwd: `<path d="M7.5 5.5L17 12l-9.5 6.5z"/>`,
+  stepLast: `<line x1="18" y1="5" x2="18" y2="19"/><path d="M5 5.5L14.5 12 5 18.5z"/>`,
+  overflow: `<circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/>`,
+  caretDown: `<path d="M6.5 9.5l5.5 5.5 5.5-5.5"/>`,
+  caretRight: `<path d="M9.5 6.5l5.5 5.5-5.5 5.5"/>`,
+  arrowRight: `<path d="M4 12h14.5"/><path d="M13.5 7l5 5-5 5"/>`,
+  warning: `<path d="M12 3.8L21.2 20H2.8z"/><line x1="12" y1="10" x2="12" y2="14.4"/><circle cx="12" cy="17.3" r="1.1" fill="currentColor"/>`,
+  bug: `<path d="M7 11a5 5 0 0 1 10 0v3a5 5 0 0 1-10 0z" fill="none"/><path d="M9 6.8a3 3 0 0 1 6 0"/><path d="M2.5 12H7M17 12h4.5M3.5 7l3 2M20.5 7l-3 2M3.5 18l3-2M20.5 18l-3-2"/>`,
+  randomize: `<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><circle cx="8.4" cy="8.4" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="15.6" cy="15.6" r="1.5" fill="currentColor"/>`,
 };
 
-export function icon(name: string): string {
-  const p = PATHS[name] ?? "";
-  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+/**
+ * Every valid icon name. Typing call sites against this turns a misspelled icon —
+ * which used to render as a silent empty <svg> — into a compile error, and keeps
+ * untrusted strings (STEP product names) from ever reaching icon().
+ */
+export type IconName = keyof typeof PATHS;
+
+export function icon(name: IconName): string {
+  // aria-hidden + focusable="false": an icon is decorative, and the accessible
+  // name belongs to the CONTROL around it. Icon-only controls therefore carry
+  // their own aria-label — without one they announce as an empty button, which
+  // is exactly what happens if you drop a glyph and add nothing back.
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${PATHS[name]}</svg>`;
 }

@@ -8,6 +8,7 @@
 
 import type { DocumentStore } from "../document/store";
 import { FEATURE_META } from "./featureMeta";
+import { icon, type IconName } from "./icons";
 import { contextMenu } from "./menu";
 import { esc } from "./escape";
 
@@ -201,7 +202,7 @@ export class Timeline {
 
     // error badge: count + jump
     if (errors.size > 0) {
-      this.errBadge.textContent = `⚠ ${errors.size}`;
+      this.errBadge.innerHTML = `${icon("warning")}<span>${errors.size}</span>`;
       this.errBadge.classList.remove("hidden");
     } else {
       this.errBadge.classList.add("hidden");
@@ -219,21 +220,22 @@ export class Timeline {
 
   private renderTransport(rollback: number, count: number) {
     this.transport.innerHTML = "";
-    const btn = (glyph: string, title: string, disabled: boolean, go: () => void) => {
+    const btn = (name: IconName, title: string, disabled: boolean, go: () => void) => {
       const b = document.createElement("button");
       b.className = "tl-btn";
-      b.textContent = glyph;
+      b.innerHTML = icon(name);
       b.title = title;
+      b.setAttribute("aria-label", title);
       b.disabled = disabled;
       b.addEventListener("click", go);
       this.transport.appendChild(b);
     };
-    btn("⏮", "Roll back to the start", rollback <= 0, () => this.store.setRollback(0));
-    btn("◂", "Step one feature back", rollback <= 0, () =>
+    btn("stepFirst", "Roll back to the start", rollback <= 0, () => this.store.setRollback(0));
+    btn("stepBack", "Step one feature back", rollback <= 0, () =>
       this.store.setRollback(Math.max(0, rollback - 1)));
-    btn("▸", "Step one feature forward", rollback >= count, () =>
+    btn("stepFwd", "Step one feature forward", rollback >= count, () =>
       this.store.setRollback(Math.min(count, rollback + 1)));
-    btn("⏭", "Roll forward to the end", rollback >= count, () =>
+    btn("stepLast", "Roll forward to the end", rollback >= count, () =>
       this.store.setRollback(count));
   }
 
@@ -258,7 +260,7 @@ export class Timeline {
     // version (or a migration tool) with a type this build doesn't know would
     // otherwise throw mid-render and make File→Open silently do nothing.
     const meta = FEATURE_META[f.type as keyof typeof FEATURE_META] ?? {
-      glyph: "•",
+      iconName: "point" as IconName,
       label: f.type,
     };
     const suppressed = this.store.isSuppressed(f.id);
@@ -273,7 +275,9 @@ export class Timeline {
       `${i + 1} · ${meta.label}` +
       (errMsg ? `\n⚠ ${errMsg}` : "") +
       "\ndouble-click to edit · right-click for more";
-    node.innerHTML = `<span class="glyph">${esc(meta.glyph)}</span>`;
+    // icon() returns trusted markup built from a fixed table — it must NOT go through
+    // esc(), which would render the SVG source as visible text.
+    node.innerHTML = `<span class="glyph">${icon(meta.iconName)}</span>`;
 
     node.addEventListener("click", () => this.onSelect?.(f.id));
     node.addEventListener("dblclick", () => this.onEdit?.(f.id));

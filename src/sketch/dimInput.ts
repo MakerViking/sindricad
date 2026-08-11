@@ -7,6 +7,7 @@
 // fields are shown/parsed in the user's display unit, angles always in degrees.
 
 import { getUnit, displayValue, parseField } from "../ui/units";
+import { icon } from "../ui/icons";
 
 export interface DimFieldDef {
   name: string;
@@ -91,7 +92,8 @@ export class DimInput {
     const ok = document.createElement("button");
     ok.className = "dim-btn dim-ok";
     ok.title = "Confirm (Enter)";
-    ok.textContent = "✓";
+    ok.setAttribute("aria-label", "Confirm");
+    ok.innerHTML = icon("check");
     ok.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -102,7 +104,8 @@ export class DimInput {
       const no = document.createElement("button");
       no.className = "dim-btn dim-no";
       no.title = "Cancel (Esc)";
-      no.textContent = "✕";
+      no.setAttribute("aria-label", "Cancel");
+      no.innerHTML = icon("close");
       no.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         e.stopPropagation();

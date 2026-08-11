@@ -7,6 +7,7 @@
 import type { DocumentStore } from "../document/store";
 import type { Plane3 } from "../types";
 import { contextMenu, type CtxItem } from "./menu";
+import { icon, type IconName } from "./icons";
 import { esc } from "./escape";
 
 /** Palette → menu items for assigning a body's color slot. Shared by the
@@ -263,10 +264,10 @@ export class BrowserTree {
     this.el.innerHTML = `<div class="panel-title">Browser</div>`;
 
     // --- Origin ---
-    this.folder("Origin", "⌖", [
+    this.folder("Origin", "origin", [
       ...(["XY", "XZ", "YZ"] as Plane3[]).map((p) => ({
         label: `${p} plane`,
-        icon: "▱",
+        icon: "plane" as const,
         dim: true,
         onClick: () => this.onSketchOnPlane?.(p),
         title: `Start a sketch on the ${p} plane`,
@@ -277,10 +278,10 @@ export class BrowserTree {
     if (datums.length) {
       this.folder(
         "Planes",
-        "▱",
+        "plane",
         datums.map((f, i) => ({
           label: planeLabel(f as { name?: string }, i),
-          icon: "▱",
+          icon: "plane" as const,
           selected: this.selectedId === f.id,
           error: errId === f.id,
           visible: this.isPlaneVisible?.(f.id) ?? true,
@@ -302,7 +303,7 @@ export class BrowserTree {
       return {
         id: b.id,
         label: bodyLabel(b),
-        icon: "◆",
+        icon: "body" as const,
         swatch: slot != null && pal[slot] ? pal[slot].color : undefined,
         selected: selectedIds ? selectedIds.has(b.id) : (this.isBodySelected?.(b.id) ?? false),
         visible: this.isBodyVisible?.(b.id) ?? true,
@@ -318,8 +319,8 @@ export class BrowserTree {
     const groups = this.assemblyGroups(bodies, doc);
     if (!groups) {
       // no imported assembly tree in this document — exactly the flat list as before
-      this.folder("Bodies", "◆", bodies.map(bodyItem));
-    } else if (!this.renderHead("f:Bodies", "Bodies", "◆", bodies.length, 0)) {
+      this.folder("Bodies", "body", bodies.map(bodyItem));
+    } else if (!this.renderHead("f:Bodies", "Bodies", "body", bodies.length, 0)) {
       for (const b of groups.loose) this.renderRow(bodyItem(b), 0);
       for (const n of groups.roots) this.renderAssemblyNode(n, 0, bodyItem);
     }
@@ -327,10 +328,10 @@ export class BrowserTree {
     // --- Sketches ---
     this.folder(
       "Sketches",
-      "✎",
+      "sketch",
       sketches.map((f, i) => ({
         label: sketchLabel(f as { name?: string }, i),
-        icon: "✎",
+        icon: "sketch" as const,
         selected: this.selectedId === f.id,
         error: errId === f.id,
         visible: this.isSketchVisible?.(f.id) ?? true,
@@ -359,13 +360,13 @@ export class BrowserTree {
     const stale = this.printerOnline === true && this.staleSlots.size > 0;
     const dotColor = this.printerOnline == null ? "#888" : !this.printerOnline ? "#d23b30" : stale ? "#d2a83b" : "#3ba55d";
     const dotTitle = stale
-      ? `Printer filaments changed since sync (slot${this.staleSlots.size > 1 ? "s" : ""} ${[...this.staleSlots].map((i) => i + 1).join(", ")}) — click ⇅ to re-sync`
+      ? `Printer filaments changed since sync (slot${this.staleSlots.size > 1 ? "s" : ""} ${[...this.staleSlots].map((i) => i + 1).join(", ")}) — click the sync button to re-sync`
       : "Printer connection";
     head.innerHTML =
-      `<span class="tree-caret">${collapsed ? "▸" : "▾"}</span><span class="feature-icon">◳</span><span>Palette</span>` +
+      `<span class="tree-caret">${icon(collapsed ? "caretRight" : "caretDown")}</span><span class="feature-icon">${icon("palette")}</span><span>Palette</span>` +
       `<span style="flex:1"></span>` +
       `<span class="pal-dot" title="${esc(dotTitle)}" style="width:8px;height:8px;border-radius:50%;background:${dotColor};display:inline-block;margin-right:6px"></span>` +
-      `<button class="pal-sync" title="Sync filaments from printer" style="background:none;border:none;color:inherit;cursor:pointer;font-size:13px;padding:0 4px;margin-right:6px">⇅</button>` +
+      `<button class="pal-sync" title="Sync filaments from printer">${icon("printerSync")}</button>` +
       `<span class="tree-count">${pal.length}</span>`;
     head.addEventListener("click", (e) => {
       // the sync button lives in the header but must not also toggle the folder
@@ -506,11 +507,11 @@ export class BrowserTree {
 
   private folder(
     name: string,
-    icon: string,
+    folderIcon: IconName,
     items: {
       id?: string; // stable id — registers a programmatic-rename hook (beginRename)
       label: string;
-      icon: string;
+      icon: IconName;
       swatch?: string | undefined; // a small colored chip before the label (assigned body color)
       dim?: boolean;
       selected?: boolean;
@@ -526,7 +527,7 @@ export class BrowserTree {
     }[],
   ) {
     const key = `f:${name}`;
-    if (this.renderHead(key, name, icon, items.length, 0)) return;
+    if (this.renderHead(key, name, folderIcon, items.length, 0)) return;
     if (items.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty-state tree-child";
@@ -597,7 +598,7 @@ export class BrowserTree {
           this.refresh();
         }
       : undefined;
-    if (this.renderHead(g.key, g.label, "▣", g.total, depth, toggle, anyVisible)) return;
+    if (this.renderHead(g.key, g.label, "assembly", g.total, depth, toggle, anyVisible)) return;
     for (const child of g.children) this.renderAssemblyNode(child, depth + 1, bodyItem);
     for (const b of g.bodies) this.renderRow(bodyItem(b), depth + 1);
   }
@@ -607,7 +608,7 @@ export class BrowserTree {
   private renderHead(
     key: string,
     label: string,
-    icon: string,
+    headIcon: IconName,
     count: number,
     depth: number,
     onToggleVis?: (() => void) | undefined,
@@ -617,16 +618,25 @@ export class BrowserTree {
     const collapsed = this.collapsed.has(key);
     const head = document.createElement("div");
     head.className = "tree-folder";
+    // Collapse state as a real attribute, not something you infer from which
+    // caret glyph is drawn. Screen readers need it, and so does anything that
+    // inspects the tree — reading it off the caret's text broke the moment the
+    // caret became an icon.
+    head.setAttribute("role", "button");
+    head.setAttribute("aria-expanded", String(!collapsed));
     if (depth > 0) head.style.paddingLeft = `${BrowserTree.indent(depth, 8)}px`;
-    // esc() on BOTH label and icon: assembly node labels are product names read
-    // straight out of an untrusted STEP file.
+    // esc() on the LABEL: assembly node labels are product names read straight out
+    // of an untrusted STEP file. The icon needs no escaping — it is trusted markup
+    // built from a fixed table, and escaping it would show the SVG source as text.
     head.innerHTML =
-      `<span class="tree-caret">${collapsed ? "▸" : "▾"}</span>` +
-      `<span class="feature-icon">${esc(icon)}</span>` +
+      `<span class="tree-caret">${icon(collapsed ? "caretRight" : "caretDown")}</span>` +
+      `<span class="feature-icon">${icon(headIcon)}</span>` +
       `<span class="tree-label">${esc(label)}</span>` +
       `<span style="flex:1"></span>` +
       `<span class="tree-count">${count || ""}</span>` +
-      (onToggleVis ? `<span class="tree-eye" title="Show/hide">${visible === false ? "○" : "◉"}</span>` : "");
+      (onToggleVis
+        ? `<span class="tree-eye" role="button" aria-label="${visible === false ? "Show" : "Hide"}" aria-pressed="${visible === false}" title="Show/hide">${icon(visible === false ? "eyeClosed" : "eyeOpen")}</span>`
+        : "");
     head.addEventListener("click", () => this.toggle(key));
     if (onToggleVis) {
       head.querySelector(".tree-eye")!.addEventListener("click", (e) => {
@@ -648,7 +658,7 @@ export class BrowserTree {
     it: {
       id?: string;
       label: string;
-      icon: string;
+      icon: IconName;
       swatch?: string | undefined;
       dim?: boolean;
       selected?: boolean;
@@ -677,11 +687,11 @@ export class BrowserTree {
         ? `<span class="tree-swatch" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${esc(it.swatch)};border:1px solid #0007;margin-right:5px;vertical-align:middle"></span>`
         : "";
       row.innerHTML =
-        `<span class="feature-icon">${esc(it.icon)}</span>` +
+        `<span class="feature-icon">${icon(it.icon)}</span>` +
         swatch +
         `<span class="tree-label"${hidden ? ' style="opacity:.45"' : ""}>${esc(it.label)}</span>` +
         `<span style="flex:1"></span>` +
-        (it.onToggleVis ? `<span class="tree-eye" title="Show/hide">${it.visible === false ? "○" : "◉"}</span>` : "");
+        (it.onToggleVis ? `<span class="tree-eye" role="button" aria-label="${it.visible === false ? "Show" : "Hide"} ${esc(it.label)}" aria-pressed="${it.visible === false}" title="Show/hide">${icon(it.visible === false ? "eyeClosed" : "eyeOpen")}</span>` : "");
 
       // inline rename bound to THIS row's label element
       const labelEl = row.querySelector(".tree-label") as HTMLElement;

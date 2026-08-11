@@ -12,6 +12,7 @@ export interface ToastOptions {
 }
 
 import { crumb } from "../diagnostics/breadcrumbs";
+import { icon } from "./icons";
 
 let stack: HTMLDivElement | null = null;
 
@@ -57,7 +58,8 @@ export function toast(message: string, opts: ToastOptions = {}) {
   }
   const close = document.createElement("button");
   close.className = "toast-close";
-  close.textContent = "✕";
+  close.setAttribute("aria-label", "Dismiss");
+  close.innerHTML = icon("close");
   close.addEventListener("click", dismiss);
   el.appendChild(close);
 

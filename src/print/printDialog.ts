@@ -7,6 +7,7 @@
 // modal built on the shared .choice-* styles.
 
 import { esc } from "../ui/escape";
+import { icon } from "../ui/icons";
 import type { StartOpts, ToolheadFilament } from "./printerClient";
 
 export interface LogicalSlot {
@@ -79,7 +80,7 @@ export function filamentMappingDialog(
         .join("");
       row.innerHTML =
         `<span class="print-map-slot">${swatch(slot.color)}<span>${esc(slot.name || `Filament ${slot.index + 1}`)}</span></span>` +
-        `<span class="print-map-arrow">→</span>` +
+        `<span class="print-map-arrow">${icon("arrowRight")}</span>` +
         `<select class="print-map-select" data-logical="${slot.index}">${optionsHtml}</select>`;
       const sel = row.querySelector("select")!;
       selects.push(sel);

@@ -6,6 +6,7 @@
 // stays localhost-only, so reachability is probed through Rust's ta_ping).
 
 import { pushModal, popModal } from "./choice";
+import { icon } from "./icons";
 import { esc } from "./escape";
 import { getRecentFiles, forgetRecent } from "../io/recentFiles";
 import type { OpenOutcome } from "../io/files";
@@ -112,7 +113,8 @@ export class WelcomeScreen {
     head.appendChild(h2);
     const x = document.createElement("button");
     x.className = "modal-close";
-    x.textContent = "✕";
+    x.setAttribute("aria-label", "Close");
+    x.innerHTML = icon("close");
     x.onclick = () => this.close();
     head.appendChild(x);
     panel.appendChild(head);
