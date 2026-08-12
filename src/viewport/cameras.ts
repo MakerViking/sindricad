@@ -269,30 +269,50 @@ export function createCameraRig(
         }
         controls.zoomTo(newZoom, false);
       } else if (pivot) {
-        // Dolly at the CURSOR'S DEPTH, but strictly along the view axis. Scaling
-        // about the raw cursor point also slides the camera sideways, and in
-        // perspective any lateral camera move re-angles the model — one wheel click
-        // visibly tilted a straight-on view. Projecting the pivot onto the view
-        // axis keeps the viewing angle exactly fixed while zoom speed still tracks
-        // the surface under the cursor. Clamp the final distance to MIN_PERSP_DIST
-        // so it can't cross the near plane.
+        // Dolly TOWARD THE CURSOR: scale the camera AND the orbit target about
+        // the cursor point. That is a similarity about that point, so the point
+        // under the cursor is pinned to its pixel by construction and cannot
+        // drift away.
+        //
+        // This restores the behaviour that ef432dc (2026-07-12) replaced with an
+        // axial dolly. Projecting the pivot onto the view axis threw its LATERAL
+        // component away, so the camera dived forward while nothing tracked
+        // sideways: whatever you aimed at slid off screen within ~7 notches and
+        // the view filled with unrelated geometry. Field reports 9f62a2ac
+        // ("camera teleports somewhere else") and db83c26e ("center point is
+        // getting out of focus when scrolling in"), and plausibly 411082f2.
+        //
+        // ef432dc's justification — "in perspective any lateral camera move
+        // re-angles the model" — is false for THIS branch: the camera→target
+        // offset is (cam-target)*ff in both forms, so setLookAt receives
+        // identical spherical angles and only a translated target. The
+        // ~3°/click tilt it was chasing lived in the ORTHO branch and was fixed
+        // separately, 55 minutes later, in a056aca.
         const cam = controls.getPosition(new THREE.Vector3());
         const target = controls.getTarget(new THREE.Vector3());
-        const dist = cam.distanceTo(target);
-        let ff = f;
-        if (dist * ff < MIN_PERSP_DIST) {
-          if (dist <= MIN_PERSP_DIST) return; // already as close as we allow
-          ff = MIN_PERSP_DIST / dist; // land exactly at the limit this step
-        }
         const forward = target.clone().sub(cam).normalize();
         const depth = pivot.clone().sub(cam).dot(forward);
         // cursor point at/behind the camera (degenerate raycast) → dolly to target
-        const axisPivot =
-          depth > MIN_PERSP_DIST
-            ? cam.clone().add(forward.multiplyScalar(depth))
-            : target.clone();
-        const nc = axisPivot.clone().add(cam.sub(axisPivot).multiplyScalar(ff));
-        const nt = axisPivot.clone().add(target.sub(axisPivot).multiplyScalar(ff));
+        const anchor = depth > MIN_PERSP_DIST ? pivot : target;
+        let ff = f;
+        if (ff < 1) {
+          // Zooming IN only. Clamp against whichever is nearer — the orbit
+          // target or the surface under the cursor — because the surface is
+          // often much closer than the target, and guarding only the target let
+          // an extreme zoom push the surface through the near plane.
+          //
+          // The `ff < 1` gate is load-bearing: |cam-pivot| is routinely already
+          // inside MIN_PERSP_DIST when the cursor sits on a near face, so an
+          // ungated clamp would hit the early `return` and refuse to zoom OUT,
+          // wedging the view.
+          const near = Math.min(cam.distanceTo(target), cam.distanceTo(anchor));
+          if (near * ff < MIN_PERSP_DIST) {
+            if (near <= MIN_PERSP_DIST) return; // already as close as we allow
+            ff = MIN_PERSP_DIST / near; // land exactly at the limit this step
+          }
+        }
+        const nc = anchor.clone().add(cam.clone().sub(anchor).multiplyScalar(ff));
+        const nt = anchor.clone().add(target.clone().sub(anchor).multiplyScalar(ff));
         controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
       } else {
         // no pivot (programmatic): plain dolly toward the orbit target
