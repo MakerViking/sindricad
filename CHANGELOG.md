@@ -18,6 +18,8 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+## 0.1.128 (2026-08-12)
+
 ### Changed
 
 - **Texture cells no longer break up around embossed text, or against any
