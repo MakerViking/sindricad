@@ -359,6 +359,16 @@ Reply:
 - `where` keys combine as **AND**. `sel` is applied **before** `where`.
 - **`normal` matches PLANAR faces only**, and its tolerance defaults to the resolver's
   tuned `ANG_TOL`. A single direction is meaningless on a curved face.
+- **Combine `normal` with `area` on any part carrying text or texture.** Those features
+  produce hundreds of tiny faces, and a bare direction query drowns in them. Measured on a
+  real 158-face part: asking for upward planar faces returned **13, of which 11 were
+  0.33–0.36 mm² glyph faces**, with the one that mattered at 1661 mm² buried among them.
+  Adding `"area": {"min": 1.0}` cut it to 3, significant face first. This is not a defect in
+  the predicate — it is what a model with text on it genuinely looks like.
+- **Two faces can legitimately share a direction.** On a hollowed part the outer rim and the
+  inner cavity floor both face up, and no direction predicate separates them — a real limit,
+  not a bug. Separate them by `area`, by `within` on the centroid, or by `createdBy` (the
+  shell feature owns the inner face).
 - Edge `dir` is **sign-normalised**: `[0,0,1]` and `[0,0,-1]` select the same edges.
 - `createdBy` is **faces only** (refused for edges), and is **last-modifier, not creator** —
   any re-keyed face is attributed to the feature that last touched it.
