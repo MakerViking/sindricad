@@ -15,9 +15,15 @@ declare const process: { env: Record<string, string | undefined> };
 // whichever stack happened to start first, which is a genuinely confusing way
 // to lose an afternoon. Fail loudly instead.
 //
-// Use `npm run dev:alt` (5174 + sidecar 8766) rather than remembering three
+// Use `npm run dev:alt` (5174 + sidecar 8766) rather than remembering four
 // variables. The sidecar half already read SINDRI_SIDECAR_PORT; only the
 // frontend was pinned.
+//
+// The fourth variable is the one that is easy to miss: the sidecar rejects a
+// WebSocket handshake from any origin not on its allowlist, and that list names
+// 5173. Without SINDRI_EXTRA_ORIGINS the alt app starts, looks completely
+// normal, and has no geometry engine — every handshake is refused. Found by
+// running it; no unit test reaches that far.
 const PORT = Number(process.env.SINDRI_VITE_PORT ?? 5173);
 
 export default defineConfig({
