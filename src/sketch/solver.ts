@@ -89,10 +89,10 @@ function getWrapper(): Promise<GcsWrapper> {
       return new GcsWrapper(new mod.GcsSystem());
     })().catch((err) => {
       // Do NOT keep a rejected promise in the cache. It would poison every
-      // later solve with the same stale failure and never retry — and the one
-      // failure we have seen in the field is environmental (a WebView2 that
-      // refuses to instantiate the WASM), so a retry can legitimately succeed
-      // after the runtime is updated, without restarting the app.
+      // later solve with the same stale failure and never retry — and a
+      // failure here can be transient (a fetch that did not land, an
+      // instantiate that raced startup), so a retry can legitimately succeed
+      // without restarting the app.
       wrapperPromise = null;
       throw new SolverUnavailable(err);
     });
@@ -100,39 +100,31 @@ function getWrapper(): Promise<GcsWrapper> {
   return wrapperPromise;
 }
 
-/** Which engine is refusing, so the remedy names something the reader can
- *  actually do.
+/** The constraint solver's WASM could not be instantiated.
  *
- *  The first field report of this was a Windows WebView2, so the message said
- *  so unconditionally. WebKitGTK then threw the same shape (blocked WASM
- *  compilation surfaces through the same code-generation-from-strings hook) and
- *  a Linux user on 0.1.111 was told to update Microsoft Edge, which is not a
- *  thing that exists on his machine. Name the engine that is actually running. */
-function wasmBlockedRemedy(): string {
-  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  if (/Edg\/|Windows/i.test(ua)) {
-    return "Updating the Microsoft Edge WebView2 Runtime should fix it.";
-  }
-  if (/Linux|X11/i.test(ua)) {
-    return "This is your distribution's WebKitGTK; updating the webkit2gtk package should fix it.";
-  }
-  if (/Mac OS X|Macintosh/i.test(ua)) {
-    return "Updating macOS should fix it, since the webview ships with the system.";
-  }
-  return "Updating the system webview should fix it.";
-}
-
-/** The constraint solver's WASM could not be instantiated. Carries the
- *  underlying cause, and a message worth showing a user: the webview refused to
- *  compile the module (reported as a code-generation-from-strings violation,
- *  because WASM compilation is checked through the same hook as `eval`). */
+ *  The CSP branch was misdiagnosed for a long time, so it is worth stating
+ *  plainly. planegcs is an emscripten/embind module, and embind builds each
+ *  invoker by handing a SOURCE STRING to the `Function` constructor
+ *  (`craftInvokerFunction` -> `new_`). `'wasm-unsafe-eval'` permits WebAssembly
+ *  COMPILATION only; it does not permit the Function constructor, which needs
+ *  `'unsafe-eval'`. So the failure was never about WebAssembly and never about
+ *  the user's webview: it was our own Content-Security-Policy, in every
+ *  packaged build (`tauri dev` serves from vite without the CSP, which is why
+ *  it never reproduced locally). Three Windows reporters and one Linux reporter
+ *  were told to update a runtime that was not the problem; one of them
+ *  reinstalled WebView2 for nothing.
+ *
+ *  Keep the message blaming the build, not the machine. If this fires again it
+ *  means the policy regressed — not that someone needs a driver update. */
 export class SolverUnavailable extends Error {
   constructor(readonly cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(
       /content security policy|unsafe-eval|code generation/i.test(detail)
-        ? "The 2D constraint solver could not start: this webview refuses to compile "
-          + `WebAssembly. ${wasmBlockedRemedy()} Sketching still works without constraints.`
+        ? "The 2D constraint solver could not start: this build's security policy blocks the "
+          + "code it needs to initialise. That is a bug in SindriCAD, not a problem with your "
+          + "system, so updating your webview or graphics drivers will not help. Sketching "
+          + "still works, but without constraints, dimensions or point dragging."
         : `The 2D constraint solver could not start: ${detail}`,
     );
     this.name = "SolverUnavailable";

@@ -3,14 +3,20 @@
 // Field report, SindriCAD 0.1.73 on Windows (bug eec3752a): every startup showed
 // "Something went wrong — check the console for details" and named nothing. The
 // breadcrumb behind it was an unhandledrejection carrying a Content Security
-// Policy violation — that WebView2 refused to compile the module, and V8 reports
-// blocked WASM compilation through the same code-generation-from-strings hook it
-// uses for `eval`, which is why the message talks about evaluating a string.
-// `main.ts` called `void initSolver()` with no catch, so the rejection hit the
-// global unhandledrejection net.
+// Policy violation. `main.ts` called `void initSolver()` with no catch, so the
+// rejection hit the global unhandledrejection net.
 //
-// These tests pin the contract that makes that impossible, without needing a
-// WebView2: initSolver never rejects, and a failure is not cached forever.
+// The CAUSE of that violation was misdiagnosed for weeks as "this webview
+// refuses to compile WebAssembly, update your runtime". It is not. planegcs is
+// an emscripten/embind module, and embind hands a SOURCE STRING to the
+// `Function` constructor to build each invoker. `'wasm-unsafe-eval'` allows
+// WASM compilation but NOT the Function constructor, so the shipping CSP killed
+// the solver in every packaged build (never in `tauri dev`, which serves from
+// vite with no CSP). Reporters ffff5144 / 9042ea56 / cdf4c0f7 on Windows and one
+// on Linux were all sent to update a runtime that was never the problem.
+//
+// These tests pin the contract that makes the startup failure impossible, and
+// pin the message AWAY from blaming the user's machine.
 //
 // Each test builds its OWN mock with vi.doMock (NOT hoisted, applies to the next
 // dynamic import) and its own module instance. A single shared vi.fn() reset in
@@ -18,7 +24,7 @@
 // the reset, so the mock lifecycle and the module cache end up disagreeing.
 import { describe, it, expect, vi } from "vitest";
 
-// what a WebView2 that refuses to compile WebAssembly actually throws
+// what the blocked Function constructor actually throws, verbatim from Chromium
 const CSP_MESSAGE =
   "Evaluating a string as JavaScript violates the following Content Security Policy directive " +
   "because 'unsafe-eval' is not an allowed source of script: script-src 'self' 'wasm-unsafe-eval'";
@@ -79,47 +85,33 @@ describe("constraint solver warm-up", () => {
 });
 
 describe("SolverUnavailable", () => {
-  /** Swap the user agent for one test. The remedy is chosen from it, so this is
-   *  the only way to prove a Linux user is not sent to update Microsoft Edge. */
-  function withUserAgent<T>(ua: string, fn: () => T): T {
-    const original = Object.getOwnPropertyDescriptor(navigator, "userAgent");
-    Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true });
-    try {
-      return fn();
-    } finally {
-      if (original) Object.defineProperty(navigator, "userAgent", original);
-    }
-  }
-
-  const WINDOWS_UA =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36 Edg/120";
-  const LINUX_UA =
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15";
-
-  it("turns a CSP refusal into something a user can act on", async () => {
+  it("blames the build, not the user's machine", async () => {
     const { SolverUnavailable } = await solverWith(works);
     const cause = new EvalError(CSP_MESSAGE);
-    const e = withUserAgent(WINDOWS_UA, () => new SolverUnavailable(cause));
-    expect(e.message).toMatch(/refuses to compile WebAssembly/);
-    expect(e.message).toMatch(/WebView2/);
-    expect(e.message).toMatch(/Sketching still works without constraints/);
+    const e = new SolverUnavailable(cause);
+    // The whole point of this test: three Windows reporters and one Linux
+    // reporter were sent to update a runtime that was never the problem, and at
+    // least one reinstalled WebView2 for nothing. The CSP is ours.
+    expect(e.message).toMatch(/bug in SindriCAD/);
+    expect(e.message).toMatch(/security policy/i);
+    expect(e.message).not.toMatch(/WebView2|Microsoft Edge|WebKitGTK|update/i);
+    // it must still say what the user CAN do, i.e. keep sketching
+    expect(e.message).toMatch(/without constraints, dimensions or point dragging/);
     expect(e.cause).toBe(cause);
   });
 
-  // 0.1.111, DragonOS Noble: WebKitGTK threw the same CSP shape and the user was
-  // told to update Microsoft Edge WebView2, which does not exist on Linux.
-  it("names the engine that is actually running, not the one from the first report", async () => {
+  it("says the same thing on every platform — the cause is not environmental", async () => {
     const { SolverUnavailable } = await solverWith(works);
-    const e = withUserAgent(LINUX_UA, () => new SolverUnavailable(new EvalError(CSP_MESSAGE)));
-    expect(e.message).toMatch(/WebKitGTK/);
-    expect(e.message).not.toMatch(/WebView2|Microsoft Edge/);
-    expect(e.message).toMatch(/Sketching still works without constraints/);
+    // no user-agent sniffing left: one policy bug, one message
+    const a = new SolverUnavailable(new EvalError(CSP_MESSAGE));
+    const b = new SolverUnavailable(new EvalError(CSP_MESSAGE.replace("wasm-unsafe-eval", "self")));
+    expect(a.message).toBe(b.message);
   });
 
   it("passes any other cause through rather than guessing", async () => {
     const { SolverUnavailable } = await solverWith(works);
     const e = new SolverUnavailable(new Error("fetch failed: 404 planegcs.wasm"));
     expect(e.message).toContain("404 planegcs.wasm");
-    expect(e.message).not.toMatch(/WebView2/);
+    expect(e.message).not.toMatch(/security policy/i);
   });
 });
