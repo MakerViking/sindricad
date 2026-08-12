@@ -18,6 +18,23 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Added
+
+- **Option/Alt + left-drag now orbits, for mice and trackballs with no middle
+  button.** Reported on a Mac trackball. Panning was fine, because that is
+  right-drag, but nothing could free-orbit: the view could only ever jump between
+  the standard views on the ViewCube, which is not a way to model.
+
+  Holding Option (Alt on Windows and Linux) makes the left button behave exactly
+  like the middle one, Shift-to-pan and the sketch's lock-to-plane included, so
+  there is one rule to remember rather than a second set of gestures. It is the
+  same combination Blender and FreeCAD use for the same hardware.
+
+  Left-click still selects whenever Option is not held, and the mouse map is now
+  worked out from the click itself rather than tracked as you press and release
+  the key, so switching away from the app mid-drag cannot leave the button stuck
+  in a mode where clicking no longer selects anything.
+
 ## 0.1.128 (2026-08-12)
 
 ### Changed

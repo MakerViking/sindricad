@@ -74,6 +74,29 @@ export type StandardView =
 
 export type ProjectionMode = "persp" | "ortho" | "auto";
 
+/** What the LEFT mouse button should do for one press, given the modifiers held
+ *  at that instant.
+ *
+ *  Pure and derived per-press on purpose. Without Alt the answer is always NONE,
+ *  so left-click selection cannot be left broken by a modifier state that got out
+ *  of sync — which is the failure the keydown/keyup Shift swap in createCameraRig
+ *  is still exposed to. With Alt held it mirrors the middle button exactly,
+ *  Shift-to-pan and sketch lock included, so the rule to teach is simply
+ *  "Option+left-drag IS middle-drag". */
+export function leftButtonAction(
+  altKey: boolean,
+  shiftKey: boolean,
+  orbitLocked: boolean,
+):
+  | typeof CameraControls.ACTION.NONE
+  | typeof CameraControls.ACTION.ROTATE
+  | typeof CameraControls.ACTION.TRUCK {
+  const A = CameraControls.ACTION;
+  if (!altKey) return A.NONE; // left belongs to selection
+  return orbitLocked || shiftKey ? A.TRUCK : A.ROTATE;
+}
+
+
 export function createCameraRig(
   dom: HTMLElement,
   aspect: number,
@@ -124,6 +147,35 @@ export function createCameraRig(
   window.addEventListener("keyup", (e) => {
     if (e.key === "Shift" && !orbitLocked) controls.mouseButtons.middle = A.ROTATE;
   });
+
+  // Alt/Option + left-drag behaves EXACTLY like a middle-drag, for the many mice
+  // and trackballs that have no middle button at all (a Mac trackball user could
+  // otherwise only reach standard views: right-drag pans, but nothing free-orbits).
+  // Same convention as Blender's "Emulate 3 Button Mouse" and FreeCAD's Blender
+  // navigation, so the people who own this hardware already know the gesture.
+  //
+  // Alt is the ONLY modifier free to take: Shift and Ctrl/Cmd are both additive
+  // selection here, and on macOS Ctrl+click is an OS-level secondary click that
+  // never arrives as a left button anyway.
+  //
+  // Read from the EVENT, in the CAPTURE phase, rather than tracking Alt through
+  // keydown/keyup the way the Shift swap above does. Two reasons, and the first
+  // is the important one:
+  //   1. A missed keyup (Cmd-Tab away with Option held, focus loss, a window
+  //      manager grabbing Alt+drag) would leave `left` stuck on ROTATE and kill
+  //      left-click SELECTION until Alt was tapped again. Trading "cannot orbit"
+  //      for "cannot select" is a bad deal. Deriving it per-press cannot desync.
+  //   2. camera-controls binds its own pointerdown to this same element and is
+  //      constructed first, so a bubble-phase listener would run too late to
+  //      change the mapping it is about to read.
+  dom.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!(e instanceof PointerEvent)) return;
+      controls.mouseButtons.left = leftButtonAction(e.altKey, e.shiftKey, orbitLocked);
+    },
+    { capture: true },
+  );
 
   controls.dollyToCursor = true;
   controls.setTarget(0, 0, 0, false);

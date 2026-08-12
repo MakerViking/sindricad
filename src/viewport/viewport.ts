@@ -239,6 +239,11 @@ export class Viewport {
       // instead of waiting for the next mouse twitch.
       if (e.buttons === 0) this.queueHover(e);
       if (e.button !== 0 || this.dragMoved) return;
+      // Alt+left is the no-middle-button orbit (see cameras.ts). A drag already
+      // suppresses the click via dragMoved, but an Alt+press that never moves
+      // would otherwise fall through and SELECT, which is a surprising way to
+      // lose your selection while reaching for the view.
+      if (e.altKey) return;
       // 1) a click landing on the ViewCube corner orients the view (and never
       //    falls through to model picking).
       if (this.cube.handleLeftClick(e.clientX, e.clientY)) return;

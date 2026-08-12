@@ -100,6 +100,19 @@ appear on the release itself.
 
 Press `?` in the app for the full keyboard shortcut list.
 
+### Getting around the view
+
+| | |
+|---|---|
+| Orbit | middle-drag, or **Option/Alt + left-drag** |
+| Pan | right-drag, or Shift + middle-drag |
+| Zoom | scroll wheel, toward the cursor |
+| Snap to a view | click a face, edge or corner of the ViewCube |
+
+Option/Alt + left-drag does exactly what middle-drag does, Shift-to-pan included,
+so plenty of trackballs and low-profile mice with no middle button can still
+orbit. It is the same gesture Blender and FreeCAD use for the same reason.
+
 <p align="center">
   <img src="assets/readme/history-buildup.gif" alt="A part built up feature by feature: sketch, extrude, fillet, two cuts, then a surface texture" width="640"><br>
   <em>A part is its history: sketch, extrude, fillet, cut, texture, and every step stays editable.</em>
