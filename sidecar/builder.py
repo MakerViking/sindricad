@@ -1165,6 +1165,14 @@ def _sew_mesh_file(path):
     if not shapes:
         raise ValueError("no geometry found in the mesh file")
     shape = shapes[0] if len(shapes) == 1 else Compound(list(shapes))
+    # Publish the same two phases the STEP branch does. The mesh path published
+    # NOTHING, so _HB_IDX stayed at phase 0 for the whole import — and phase 0's
+    # share is 0.47 with frac capped at 0.95, i.e. a hard ceiling of 44%. That is
+    # the "immer bei 44%" in field report b78de7ed: the bar was not stopping at a
+    # stage boundary, it had simply run out of phase 0 and had no phase 1 to move
+    # into. It also gives sew+unify+refacet its own stall budget instead of
+    # sharing a deadline sized from the file's byte count.
+    _import_phase(IMPORT_PHASE_CANONICALIZE)
     shape = _maybe_unify(shape)
     # collapse facet debris (slivers + near-coplanar staircases) so the
     # import is genuinely editable — crisp faces, crisp edges (best-effort;
@@ -1251,6 +1259,61 @@ def _sew_obj_file(path):
     if ntri > MAX_IMPORT_TRIANGLES:
         raise _too_dense_error(ntri)
     return _sew_triangles(pos, idx)
+
+
+def _is_ascii_stl(path):
+    """True for an ASCII STL, False for binary (or anything unreadable).
+
+    The SIZE IDENTITY is what discriminates, not the leading keyword: a binary
+    STL's 80-byte header is free-form and legally may also begin with "solid",
+    which is why the naive check misfires. Binary is exactly 84 + 50*n bytes with
+    n at byte 80; anything else that starts with "solid" is ASCII."""
+    try:
+        size = os.path.getsize(path)
+        if size < 15:
+            return False
+        with open(path, "rb") as fh:
+            head = fh.read(84)
+        if head[:5].lower() != b"solid":
+            return False
+        if len(head) < 84:
+            return True  # too short to be binary at all
+        import struct
+
+        ntri = int(struct.unpack("<I", head[80:84])[0])
+        return not (ntri and size == 84 + 50 * ntri)
+    except OSError:
+        return False
+
+
+def _read_ascii_stl_triangles(path):
+    """(positions, indices) from an ASCII STL, read by OCCT.
+
+    build123d's Mesher is lib3mf, and lib3mf cannot read ASCII STL AT ALL: it
+    raises "Lib3MFException 5: Reading from a stream was not possible" (verified
+    against a 2-facet file). So every ASCII STL import failed outright, which is
+    field report b78de7ed, "Import von STL Dateien nicht moeglich". Many
+    exporters still default to ASCII, so this was not a rare corner.
+
+    OCCT's RWStl reads BOTH encodings and is already linked in, so this needs no
+    new dependency and no hand-written parser. Hand the triangles to
+    _sew_triangles like OBJ and glTF do: it writes a temporary BINARY STL and
+    re-enters _sew_mesh_file, so ASCII files also pick up the organic-mesh gate
+    that _stl_distinct_normals can only apply to binary."""
+    from OCP.RWStl import RWStl
+
+    poly = RWStl.ReadFile_s(path)
+    if poly is None or poly.NbTriangles() == 0:
+        raise ValueError("no geometry found in the mesh file")
+    pos = []
+    for i in range(1, poly.NbNodes() + 1):
+        p = poly.Node(i)
+        pos.extend((p.X(), p.Y(), p.Z()))
+    idx = []
+    for i in range(1, poly.NbTriangles() + 1):
+        a, b, c = poly.Triangle(i).Get()
+        idx.extend((a - 1, b - 1, c - 1))  # OCCT indices are 1-based
+    return pos, idx
 
 
 def _glb_dominant_color(path):
@@ -1488,6 +1551,12 @@ def import_geometry(path, fmt):
             # does, so OBJ inherits the same sew + unify + refacet recovery
             # instead of a second copy of it.
             shape = _sew_obj_file(path)
+        elif fmt == "stl" and _is_ascii_stl(path):
+            # lib3mf (build123d's Mesher) cannot read ASCII STL, so this used to
+            # fail 100% of the time. Read it with OCCT and round-trip the
+            # triangles through the shared recovery path.
+            pos, idx = _read_ascii_stl_triangles(path)
+            shape = _sew_triangles(pos, idx)
         else:
             shape = _sew_mesh_file(path)
     elif fmt == "glb":

@@ -2332,17 +2332,34 @@ async def _dispatch(ws, loop, req, req_id, op):
         # "nearly there" rather than "stuck at 6%".
         eta = max(3.0, 0.5 * _sz)
 
-        async def _importing(code, *_mesh, _rid=req_id, _t0=loop.time(), _b=eta):
+        # The progress origin has to be PER PHASE, not per request. `_t0` used to
+        # be bound once as a default argument, so `frac` measured total elapsed
+        # time: by the time a later phase started, frac was already pinned at its
+        # 0.95 cap and the bar jumped straight to that phase's ceiling instead of
+        # creeping through it. Publishing phases on the mesh path without fixing
+        # this would have moved the STL freeze from 44% to 93% — which reads
+        # worse, because 93% looks nearly done. The same discontinuity was
+        # visible on the STEP path.
+        _ph = {"i": -1, "t": loop.time()}
+
+        async def _importing(code, *_mesh, _rid=req_id, _b=eta):
             # *_mesh swallows the meshing counters _run_stall passes positionally
-            # (an import does not mesh). Without it they would bind to _rid/_t0
+            # (an import does not mesh). Without it they would bind to _rid/_b
             # and corrupt every import frame.
             i = code if 0 <= code < len(_IMPORT_PHASES) else 0
+            if i != _ph["i"]:
+                _ph["i"], _ph["t"] = i, loop.time()
             base = sum(w for _, w in _IMPORT_PHASES[:i])
             label, w = _IMPORT_PHASES[i]
-            # Nothing is observable INSIDE a phase (the GIL is held), so creep
-            # on elapsed time within that phase's share and never let it reach
-            # the next phase's floor.
-            frac = min(0.95, max(0.0, (loop.time() - _t0) / _b))
+            # Nothing is observable INSIDE a phase (the GIL is held), so creep on
+            # time elapsed SINCE THIS PHASE BEGAN and never let it reach the next
+            # phase's floor. The denominator stays the whole-import estimate
+            # rather than this phase's share: dividing by `_b * w` makes a phase
+            # that overruns its share hit the 0.95 cap early and then sit there
+            # (measured: a 12 s phase against a 4.9 s share plateaus at 93% for
+            # 7 s), which is the frozen-bar complaint again. Under-shooting keeps
+            # it moving.
+            frac = min(0.95, max(0.0, (loop.time() - _ph["t"]) / _b))
             await ws.send(json.dumps({
                 "id": _rid, "status": "importing",
                 "phase": i, "label": label,
