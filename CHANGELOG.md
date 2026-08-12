@@ -271,6 +271,39 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Sketch constraints, dimensions and point dragging work again.** In every
+  installed build, the constraint solver never started. Constraint tools did
+  nothing, a typed dimension was applied once rather than staying live, and an
+  unconstrained point or line could not be dragged at all. The app blamed your
+  webview and told you to update it. That was wrong, and I am sorry: the fault
+  was SindriCAD's own security policy blocking the code the solver needs to
+  start. Nothing on your machine ever needed changing, and at least one person
+  reinstalled the Microsoft Edge WebView2 runtime for nothing.
+
+  This only ever affected installed builds and never a development run, which is
+  why it lasted as long as it did.
+
+- **Zooming no longer throws the view somewhere else.** The wheel dived the
+  camera straight down the middle of the screen instead of moving toward
+  whatever the pointer was over, so the thing you were aiming at drifted
+  outward, left the viewport after a few notches, and the view filled with
+  unrelated geometry. The point under the cursor now stays under the cursor.
+
+- **STL files saved in the text format import.** ASCII STL could not be read at
+  all, and the progress bar stopped at 44% on the way to failing. Both are
+  fixed, and the bar now moves through the whole import instead of parking at
+  44% whatever happens.
+
+- **Taking the last area off an extrude no longer discards it.** Ctrl-clicking
+  areas off an extrude in progress until none were left kept the depth box on
+  screen, and pressing Enter there quietly threw the whole extrude away. That
+  step also never mentioned that Ctrl-click adds and removes areas, so the other
+  closed shapes in a sketch looked as though they simply could not be chosen.
+
+- **The Linux AppImage installs with desktop integration tools again.** Its icon
+  was a link pointing into a directory on the machine that built it, so it
+  resolved nowhere else and AppImage managers refused to install it.
+
 - **Moving a sketched shape no longer moves the extrude onto something else.**
   Extrude a circle sitting inside a rectangle, go back to the sketch and drag
   that circle somewhere else, and the extrude jumped to the rectangle: you came
