@@ -189,6 +189,13 @@ export class ExtrudeTool {
           this.phase = "pick";
           this.disposePreviewGeom();
           this.previewKey = "";
+          // Hide the depth box too. Leaving it up was a trap: its Enter/✓
+          // callback still points at commit(), whose first guard bails to
+          // cancel() on an empty selection — so typing Enter after removing the
+          // last area silently threw the whole extrude away, while the prompt
+          // said "select a profile". onKey defers to the input while it has
+          // focus, so nothing else intercepted it. (GitHub issue #14.)
+          this.dim.hide();
           setPrompt("Select a profile to extrude · Ctrl-click adds areas · Enter to confirm");
           return;
         }
@@ -225,8 +232,15 @@ export class ExtrudeTool {
       );
     } else {
       this.distance = 10;
+      // Advertise the area toggle here too. The pick-phase prompt says
+      // "Ctrl-click adds areas", but a plain click jumps straight to drag, so a
+      // user who picked one of several profiles landed here and was told only
+      // how to set depth — the reporter of issue #14 concluded the other closed
+      // sections simply could not be selected. The handler existed; nothing
+      // said so.
       setPrompt(
-        "Move to set depth · type a value + Enter · negative = cut · click to commit · Esc to cancel",
+        "Move to set depth · Ctrl-click areas to add/remove · type a value + Enter · " +
+          "negative = cut · click to commit · Esc to cancel",
       );
     }
     this.positionDim();
