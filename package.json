@@ -26,7 +26,7 @@
     "three-mesh-bvh": "^0.9.14"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/three": "^0.180.0",
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^5.6.0",

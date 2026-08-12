@@ -312,6 +312,15 @@ jobs:
           # the geometry engine must still be there, or we just shipped a dead app
           test -d "$root/usr/lib/SindriCAD/sidecar-runtime"
 
+          # tauri-bundler before 2.11.4 wrote .DirIcon as an ABSOLUTE symlink into
+          # the runner's build directory, so it dangled everywhere else and
+          # AppImage installers refused to install (issue #13, upstream #15596).
+          # `test -e` follows the link, so this fails on a dangling target rather
+          # than shipping a broken icon again. Do NOT "fix" a failure here by
+          # rewriting the link — that hides a bundler regression.
+          echo ".DirIcon -> $(readlink "$root/.DirIcon" || echo '(not a symlink)')"
+          test -e "$root/.DirIcon"
+
           wget -qO "$work/appimagetool" \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x "$work/appimagetool"
