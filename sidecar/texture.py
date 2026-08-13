@@ -156,7 +156,10 @@ def resolve_body_textures(body, diag=None):
     """Lazily resolve every texture spec on `body` against its FINAL shape. Returns
     [(spec, [Face, ...]), ...] — specs whose selector now matches zero faces (the
     targeted face was fully consumed downstream) are dropped, same best-effort
-    behavior as every other selector-based feature."""
+    behavior as every other selector-based feature, but they now SAY SO via a
+    lossy diagnostic. Dropping silently means a narrowed selector loses the
+    texture entirely: green timeline, no error, and a smooth STL that the user
+    only discovers after slicing it."""
     specs = body.get("_textures") or []
     if not specs:
         return []
@@ -170,6 +173,11 @@ def resolve_body_textures(body, diag=None):
         )
         if faces:
             out.append((spec, faces))
+        else:
+            from geom_select import _push_diag
+
+            _push_diag(diag, spec.get("feature_id"), "face", 0, 0.0, True,
+                       "the textured face no longer resolves — re-pick the face")
     return out
 
 

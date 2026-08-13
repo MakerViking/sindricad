@@ -104,10 +104,15 @@ jobs:
           # the list_fonts / tessellate_text paths at any layer.
           uv run python test_glb.py
           uv run python test_project_op.py
+          uv run python test_project_cache.py
           uv run python test_refresh.py
           uv run python test_silhouette.py
           uv run python test_text.py
           uv run python test_texture_cells.py
+          # test_text_on_face.py consumes resolve_faces, so the selector work
+          # lands directly on it — and it had never been listed here, which is
+          # the same "inert regression protection" hole as the five below.
+          uv run python test_text_on_face.py
           # Was never in CI and was quietly rotting: it is the only suite that
           # drives ops over the real socket end to end, including the v4 -> v5
           # geometry migration.

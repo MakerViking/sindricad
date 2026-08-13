@@ -9,7 +9,7 @@ de-dup keeps concentric edges, and that a poor match still resolves best-effort 
 recording a diagnostic.
 """
 
-from build123d import Box, Cylinder
+from build123d import Axis, Box, Cylinder, Rot, Sphere, offset
 
 from geom_select import (
     resolve_edges,
@@ -22,6 +22,7 @@ from geom_select import (
     _edge_center,
     _face_centroid,
     _face_normal,
+    _face_surface,
 )
 
 PASS = "  ok"
@@ -161,6 +162,93 @@ def test_single_hole_group1_uses_abs_radius():
     print(PASS, "single-hole rim: group=1, legacy abs-radius path intact")
 
 
+def test_normal_is_planar_only():
+    """by:"normal" must not return CURVED faces. A single normal only means
+    something on a plane: normal_at() samples one point of a cylinder's barrel,
+    so a horizontal boss reports "up" there and joins a selection of the flat
+    top. Feeding that to Shell raises a bare OCCT "offset Error".
+
+    The REAL-CAD case is the one that matters — a synthetic boss is a shape I
+    chose because it fails, while nist_ftc_06.step is machined CAD nobody
+    authored for this test."""
+    import os
+
+    step = os.path.join(os.path.dirname(__file__), "..", "third_party",
+                        "opencascade-rs", "crates", "viewer", "models", "nist_ftc_06.step")
+    if os.path.exists(step):
+        from build123d import import_step
+
+        part = import_step(step)
+        hits = resolve_faces(part, {"kind": "face", "by": "normal", "dir": [0, 0, 1]})
+        # 3 before the planarity gate: two planes plus a 586.888mm2 cylinder
+        # centred (114.30, 43.10, -96.52).
+        assert len(hits) == 2, f"nist_ftc_06 +Z must be 2 planes, got {len(hits)}"
+        assert all(_face_surface(f) == "plane" for f in hits), \
+            f"a curved face survived: {[_face_surface(f) for f in hits]}"
+        assert not any(_approx(f.area, 586.888, 0.01) for f in hits), \
+            "the 586.888mm2 cylinder must be gone"
+        print(PASS, "real CAD (nist_ftc_06): +Z is 2 planes, the cylinder is dropped")
+
+    # synthetic: a bracket with a horizontal boss through it
+    boss = Box(40, 20, 20) + Rot(0, 90, 0) * Cylinder(6, 60)
+    hits = resolve_faces(boss, {"kind": "face", "by": "normal", "dir": [0, 0, 1]})
+    assert len(hits) == 1, f"boss +Z must be the flat top alone, got {len(hits)}"
+    assert _face_surface(hits[0]) == "plane" and _approx(hits[0].area, 800.0, 0.1), \
+        f"expected the 800mm2 top plane, got {_face_surface(hits[0])} area {hits[0].area}"
+    # ...and the whole point: Shell now works on it. With the two barrels
+    # included this raises RuntimeError("offset Error").
+    shelled = offset(boss, -2, openings=hits)
+    assert _approx(shelled.volume, 6840.7, 1.0), f"shell volume {shelled.volume}"
+    print(PASS, "boss: +Z is the top plane alone, and Shell succeeds on it")
+
+
+def test_normal_group_selection_did_not_narrow():
+    """The planarity gate must remove ONLY curved faces. A shelled box genuinely
+    has two +Z planes — the outer rim and the inner cavity floor — and that
+    multi-hit group is the contract by:"normal" exists for. (It is also proof
+    that _face_normal already honours TopAbs_REVERSED: the inner floor of a
+    shell reports +Z, outward from the material.)"""
+    b = Box(20, 20, 20)
+    shelled = offset(b, -2, openings=b.faces().sort_by(Axis.Z)[-1])
+    hits = resolve_faces(shelled, {"kind": "face", "by": "normal", "dir": [0, 0, 1]})
+    areas = sorted(round(f.area, 1) for f in hits)
+    assert areas == [144.0, 256.0], f"shelled box +Z must be rim+floor, got {areas}"
+
+    for name, part, want in (
+        ("plain box", Box(20, 20, 20), 1),
+        ("box + through hole", Box(20, 20, 20) - Cylinder(4, 40), 1),
+        ("vertical cylinder", Cylinder(5, 20), 1),
+        ("sphere", Sphere(10), 0),
+    ):
+        got = len(resolve_faces(part, {"kind": "face", "by": "normal", "dir": [0, 0, 1]}))
+        assert got == want, f"{name}: expected {want} +Z faces, got {got}"
+    print(PASS, "planarity gate drops only curved faces; the rim+floor group survives")
+
+
+def test_shell_refuses_when_the_opening_stops_resolving():
+    """A narrowed selector that resolves to NOTHING must raise, not silently seal
+    the body. `_shell(shape, t, [])` means "hollow it closed", so without the
+    guard the user gets a sealed solid that exports and prints, with a green
+    timeline and nothing said."""
+    from builder import rebuild
+
+    # a half-round trough: its only +Z face is the curved inner surface, which
+    # the planarity gate now (correctly) refuses to call a flat opening.
+    doc = {
+        "parameters": {},
+        "features": [
+            {"id": "im", "type": "box", "length": 40, "width": 40, "height": 10},
+            {"id": "sh", "type": "shell", "thickness": 2,
+             "faces": [{"kind": "face", "by": "normal", "dir": [1, 1, 1]}]},
+        ],
+    }
+    _part, errors, _bodies = rebuild(doc)
+    assert errors, "a shell whose opening resolves to nothing must report an error"
+    assert "no face found to shell" in errors[0]["message"], errors[0]["message"]
+    assert errors[0].get("feature_id") == "sh", errors[0]
+    print(PASS, "shell refuses an opening that no longer resolves, instead of sealing")
+
+
 def main():
     print("Selector v2 resolver tests")
     test_match_picks_one_edge_where_axis_grabs_all()
@@ -171,6 +259,9 @@ def main():
     test_face_match_picks_top()
     test_tangentchain_on_box_is_single_edge()
     test_bad_match_is_best_effort_with_diagnostic()
+    test_normal_is_planar_only()
+    test_normal_group_selection_did_not_narrow()
+    test_shell_refuses_when_the_opening_stops_resolving()
     print("ALL PASS")
 
 

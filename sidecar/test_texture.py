@@ -602,6 +602,36 @@ def test_boundary_ring_is_dense_enough_to_carry_the_pattern():
     print(PASS, f"boundary ring subdivided to {max(seg):.2f}mm (period {scale}), still exactly on the face")
 
 
+def test_a_vanished_texture_face_says_so():
+    """A texture spec whose selector stops resolving is still DROPPED — that is
+    the same best-effort rule every selector feature follows — but it must now
+    announce itself. Dropping it silently means the user gets a green timeline,
+    no error, and a smooth STL they only discover after slicing.
+
+    The control is the point: a spec that DOES resolve must record nothing, or
+    the _push_diag head gate ("only lossy or low-confidence") has been weakened
+    and every confident rebuild starts emitting noise."""
+    from build123d import Box
+    from texture import resolve_body_textures
+
+    gone = {"feature_id": "tx1", "kind": "knurl",
+            "faces": {"kind": "face", "by": "normal", "dir": [0.577, 0.577, 0.577]}}
+    diag = []
+    out = resolve_body_textures({"shape": Box(20, 20, 20), "name": "B", "_textures": [gone]}, diag)
+    assert out == [], "an unresolvable spec is still dropped"
+    assert len(diag) == 1, f"the drop must be recorded, got {diag}"
+    assert diag[0]["feature_id"] == "tx1" and diag[0]["lossy"] is True, diag[0]
+    assert diag[0]["resolved"] == 0, diag[0]
+
+    live = {"feature_id": "tx2", "kind": "knurl",
+            "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}}
+    diag2 = []
+    out2 = resolve_body_textures({"shape": Box(20, 20, 20), "name": "B", "_textures": [live]}, diag2)
+    assert len(out2) == 1, "a resolving spec must survive"
+    assert diag2 == [], f"a resolving spec must stay silent, got {diag2}"
+    print(PASS, "a texture whose face vanished records a diagnostic; a live one stays silent")
+
+
 def main():
     print("Surface-texture tests")
     test_validate_texture_spec_rejects_bad_input()
@@ -626,6 +656,7 @@ def main():
     test_faceted_display_splits_creases_but_export_stays_indexed()
     test_every_kind_meshes_cleanly_at_the_faceted_default()
     test_boundary_ring_is_dense_enough_to_carry_the_pattern()
+    test_a_vanished_texture_face_says_so()
     print("ALL PASS")
 
 
