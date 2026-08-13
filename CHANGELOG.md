@@ -59,6 +59,16 @@ This file starts on 2026-08-03. For anything before that, see the
   a whole pass at once: **10.2 seconds down to 4.2 seconds** on the same plate,
   with the same result.
 
+- **Edges on the far side of a model no longer steal clicks from the face in
+  front of them.** Selecting a small face was unreliable, and it got worse the
+  more the view was tilted: an edge you could not see, on the back of the body,
+  could still take the click. It was never drawn where it was winning, so there
+  was nothing on screen to explain why the click missed.
+
+  Edges hidden behind the surface are now ignored when selecting, which is
+  exactly how they already behave when drawn. Edges you can see are unaffected,
+  including the ones lying on the face they bound.
+
 - **"Open in Orca" now finds OrcaSlicer when it is installed as a Flatpak.**
   Reported on Fedora 44. There were two reasons it found nothing, and the second
   one mattered more: only the system-wide Flatpak location was checked, and

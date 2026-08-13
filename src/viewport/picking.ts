@@ -74,9 +74,11 @@ export class Picker {
     // would otherwise fall back to a brute-force scan of every triangle. Free
     // once the queue has drained, which is the normal case.
     flushRaycastIndex();
-    const edge = this.pickEdge(clientX, clientY, rect, camera, view);
-
-    this.raycaster.setFromCamera(this.ndc, camera); // ndc set by pickEdge
+    this.ndc.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.ndc, camera);
     // one Mesh per visible body now (not caching this list like visibleEdges —
     // body counts are small, unlike edge counts, so a per-move filter is cheap).
     const fHits = this.raycaster.intersectObjects(visibleBodyMeshes(view), false);
@@ -90,6 +92,25 @@ export class Picker {
         new THREE.Vector3(0, 0, 1);
       face = { kind: "face", faceId, selector: faceSelector(normal, point), point: [point.x, point.y, point.z] };
     }
+
+    // Edges BEHIND the surface must not win. pickEdge deliberately ranks by
+    // screen distance rather than depth, which is right for choosing between
+    // edges you can see, but it also let an edge on the FAR side of the body
+    // take the click: the raycaster reports it, and it can easily be nearer the
+    // cursor in screen space than any visible edge. Edge materials are
+    // depthTest:true, so that edge is not even drawn where it wins.
+    //
+    // This is why small faces got dramatically worse at shallow angles: tilting
+    // the view projects the far-side edges right next to the near-side ones, so
+    // a letter counter that merely loses SOME pixels head-on can lose all of
+    // them at 60 degrees.
+    //
+    // The cutoff has to be tight. A percentage of the view distance is useless
+    // on a thin part, where the far edge of a 2mm plate is only 2mm behind the
+    // face. Two pixels' worth of world size AT THAT DEPTH is scale-free and
+    // still comfortably admits an edge lying on the surface it bounds.
+    const maxDepth = fHit ? fHit.distance + 2 * worldPerPixel(camera, fHit.distance, rect.height) : undefined;
+    const edge = this.pickEdge(clientX, clientY, rect, camera, view, maxDepth);
 
     // edge only when on the line (or there's no face under the cursor at all)
     if (edge && (this.edgeScreenDist <= EDGE_NEAR_PX || !face)) return edge;
@@ -105,6 +126,7 @@ export class Picker {
     rect: DOMRect,
     camera: THREE.Camera,
     view: ModelView,
+    maxDepth?: number,
   ): EdgeHit | null {
     this.ndc.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -129,6 +151,9 @@ export class Picker {
     if (!best) return null;
     let bestD = Infinity;
     for (const h of eHits) {
+      // an edge behind the surface at this pixel is not drawn there, so it must
+      // not be pickable there either (see pick())
+      if (maxDepth !== undefined && h.distance > maxDepth) continue;
       const p = (h as any).pointOnLine ?? h.point;
       this.scratch.copy(p).project(camera);
       const sx = (this.scratch.x * 0.5 + 0.5) * rect.width + rect.left;
@@ -136,6 +161,7 @@ export class Picker {
       const d = Math.hypot(sx - clientX, sy - clientY);
       if (d < bestD) { bestD = d; best = h; }
     }
+    if (bestD === Infinity) return null; // every candidate was occluded
     this.edgeScreenDist = bestD; // used by pick() to decide edge vs face
 
     // three reports the instance (segment) index as `faceIndex` on a
@@ -153,6 +179,26 @@ export class Picker {
 // gives a comfortable ~13px grab radius. Candidates are then narrowed by screen
 // distance (see pickEdge), so a wide value stays precise.
 const EDGE_PICK_THRESHOLD = 26;
+
+/** World size of one screen pixel at `dist` from the camera.
+ *
+ *  Used to turn "a couple of pixels behind the surface" into a world distance,
+ *  which is the only occlusion tolerance that behaves on both a 2mm plate and a
+ *  300mm assembly. A tolerance expressed as a FRACTION of the view distance
+ *  fails exactly where it matters most: the far edge of a thin plate sits well
+ *  inside any sane percentage, and thin plates are where small faces live. */
+export function worldPerPixel(camera: THREE.Camera, dist: number, heightPx: number): number {
+  if (heightPx <= 0) return 0;
+  const persp = camera as THREE.PerspectiveCamera;
+  if (persp.isPerspectiveCamera) {
+    return (2 * Math.tan((persp.fov * Math.PI) / 360) * Math.abs(dist)) / heightPx;
+  }
+  const ortho = camera as THREE.OrthographicCamera;
+  if (ortho.isOrthographicCamera) {
+    return (ortho.top - ortho.bottom) / (ortho.zoom || 1) / heightPx;
+  }
+  return 0;
+}
 // In general selection, only treat a click as an edge when the cursor is within
 // this many screen px of the edge line; otherwise a face under the cursor wins.
 // Kept TIGHT: on an edge-dense model (faceted imports) a generous radius put
