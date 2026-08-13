@@ -150,6 +150,86 @@ def test_a_confident_pick_records_no_diagnostic():
     print(PASS, "a confident pick records no diagnostic (advisory entries stay out)")
 
 
+def test_candidate_fps_resolve_back_to_the_very_entities_that_tied():
+    """The structured candidates must be USABLE, which is a stronger claim than
+    "present". Feed each one back as a {by:"match", fp} selector and require it
+    to land on the entity it was authored from.
+
+    Asserting the list is non-empty would be VACUOUS: _resolve_one returns
+    scored[0] whenever there is any candidate at all, so a degraded or even
+    empty fingerprint still "resolves". Identity is the only assertion that can
+    fail, and the negative control below proves it can."""
+    from geom_select import _canonical_key_face, _canonical_key_edge
+
+    # faces: a point equidistant from two opposite faces of a box
+    part = Box(20, 20, 20)
+    diag = []
+    try:
+        resolve_faces(part, {"kind": "face", "by": "nearest", "point": [0, 0, 0]},
+                      diag=diag, feature_id="f1")
+        raise AssertionError("an equidistant face pick must refuse")
+    except ValueError:
+        pass
+    entry = next(d for d in diag if d.get("reason") == "ambiguous nearest pick")
+    fps = entry.get("candidateFps")
+    assert fps and len(fps) >= 2, f"expected tied face fingerprints, got {fps}"
+    assert len(fps) <= 3, f"must be bounded at 3, got {len(fps)}"
+
+    keys = set()
+    for rec in fps:
+        assert "fp" in rec and isinstance(rec.get("dist"), float), rec
+        got = resolve_faces(part, {"kind": "face", "by": "match", "fp": rec["fp"]})
+        assert len(got) == 1, f"a candidate fingerprint must resolve to one face: {rec}"
+        keys.add(_canonical_key_face(got[0]))
+    assert len(keys) == len(fps), \
+        f"each candidate must resolve to a DISTINCT face; got {len(keys)} for {len(fps)}"
+
+    # CONTROL — proof that the distinct-keys assertion above can actually fail.
+    # It is the real discriminator here: a degraded fingerprint (missing its
+    # discriminating fields, or duplicated) makes every candidate score the same
+    # and collapse onto one entity, because by:"match" is best-effort and always
+    # returns SOMETHING. Feeding the same fingerprint twice must collapse to one
+    # key; if this ever stops collapsing, the assertion above has gone blind.
+    duped = {
+        _canonical_key_face(resolve_faces(part, {"kind": "face", "by": "match", "fp": r["fp"]})[0])
+        for r in (fps[0], fps[0])
+    }
+    assert len(duped) == 1, \
+        "control failed: two identical fingerprints resolved differently, so the " \
+        "distinct-keys assertion above cannot be trusted"
+
+    # edges: the same, on the edge path
+    diag = []
+    try:
+        resolve_edges(part, {"kind": "edge", "by": "nearest", "point": [0, 0, 0]},
+                      diag=diag, feature_id="e1")
+        raise AssertionError("an equidistant edge pick must refuse")
+    except ValueError:
+        pass
+    entry = next(d for d in diag if d.get("reason") == "ambiguous nearest pick")
+    efps = entry.get("candidateFps")
+    assert efps and len(efps) >= 2, f"expected tied edge fingerprints, got {efps}"
+    ekeys = set()
+    for rec in efps:
+        got = resolve_edges(part, {"kind": "edge", "by": "match", "fp": rec["fp"]})
+        assert len(got) == 1, f"a candidate fingerprint must resolve to one edge: {rec}"
+        ekeys.add(_canonical_key_edge(got[0]))
+    assert len(ekeys) == len(efps), "each edge candidate must resolve distinctly"
+    print(PASS, "candidateFps resolve back to the tied entities (with a negative control)")
+
+
+def test_a_confident_pick_carries_no_candidate_fps():
+    """The head gate again, from the other side: the fingerprint work must sit
+    on the REFUSAL path only. Authoring fingerprints for every resolution would
+    put a per-edge cost on the hot path for something nobody reads."""
+    part = Box(20, 20, 20)
+    diag = []
+    resolve_faces(part, {"kind": "face", "by": "nearest", "point": [0, 0, 30]},
+                  diag=diag, feature_id="f2")
+    assert diag == [], f"a clear winner must record nothing at all, got {diag}"
+    print(PASS, "a confident pick authors no candidate fingerprints")
+
+
 def main():
     test_equidistant_faces_raise_instead_of_guessing()
     test_point_on_a_shared_edge_raises()
@@ -160,6 +240,8 @@ def main():
     test_clear_edge_winner_still_resolves()
     test_ambiguity_is_reported_as_a_diagnostic_too()
     test_a_confident_pick_records_no_diagnostic()
+    test_candidate_fps_resolve_back_to_the_very_entities_that_tied()
+    test_a_confident_pick_carries_no_candidate_fps()
     print("ALL PASS")
 
 

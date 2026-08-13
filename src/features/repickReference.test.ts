@@ -63,4 +63,26 @@ describe("ambiguousDiagFor", () => {
     expect(ambiguousDiagFor(diags, "f1")).toBeUndefined();
     expect(ambiguousDiagFor(undefined, "f73")).toBeUndefined();
   });
+
+  it("matches the machine-readable code, whatever the prose says", () => {
+    // the sidecar is free to reword a message; that must not disable Re-pick
+    const coded = [
+      { feature_id: "f9", code: "ambiguousReference", reason: "some entirely new wording", kind: "edge", at: [4, 5, 6] as [number, number, number] },
+    ];
+    expect(ambiguousDiagFor(coded, "f9")?.at).toEqual([4, 5, 6]);
+  });
+
+  it("still matches a legacy diagnostic that carries only the old prose", () => {
+    // an older sidecar (server.py run by hand from another checkout) emits no
+    // code at all — the fallback is what keeps Re-pick working against it
+    const legacy = [
+      { feature_id: "f7", reason: "ambiguous nearest pick", kind: "face", at: [7, 8, 9] as [number, number, number] },
+    ];
+    expect(ambiguousDiagFor(legacy, "f7")?.at).toEqual([7, 8, 9]);
+  });
+
+  it("ignores a coded diagnostic with no point to re-pick at", () => {
+    const noAt = [{ feature_id: "f5", code: "ambiguousReference", kind: "edge" }];
+    expect(ambiguousDiagFor(noAt, "f5")).toBeUndefined();
+  });
 });

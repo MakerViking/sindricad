@@ -74,12 +74,23 @@ export function replaceSelectorAt(
   return { [site.field]: arr } as Partial<Feature>;
 }
 
-/** The ambiguous-reference diagnostic for a feature, if this build reported one. */
+/** The ambiguous-reference diagnostic for a feature, if this build reported one.
+ *
+ *  Matches the machine-readable `code` first. The prose fallback is DELIBERATE
+ *  and stays: matching `reason === "ambiguous nearest pick"` across the language
+ *  boundary is what this used to do, so a sidecar older than the code field —
+ *  most commonly `server.py` run by hand from another checkout, which is a
+ *  routine workflow here — would otherwise silently lose the Re-pick affordance
+ *  with no error to explain it. Drop the fallback only once the bundled sidecar
+ *  is version-locked to the app. */
 export function ambiguousDiagFor(
-  diagnostics: { feature_id?: string; reason?: string; at?: [number, number, number]; kind?: string; candidates?: string[] }[] | undefined,
+  diagnostics: { feature_id?: string; reason?: string; code?: string; at?: [number, number, number]; kind?: string; candidates?: string[] }[] | undefined,
   featureId: string,
 ) {
   return (diagnostics ?? []).find(
-    (d) => d.feature_id === featureId && d.reason === "ambiguous nearest pick" && Array.isArray(d.at),
+    (d) =>
+      d.feature_id === featureId &&
+      (d.code === "ambiguousReference" || d.reason === "ambiguous nearest pick") &&
+      Array.isArray(d.at),
   );
 }

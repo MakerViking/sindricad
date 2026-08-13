@@ -76,6 +76,19 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Properties measures the model, not its picture.** Volume, area and centre of
+  mass were read off the on-screen triangles, which under-report anything curved:
+  a sphere by about 1.4%, a cylinder by about 1%. The figures still appear
+  instantly, then settle to the exact answer from the geometry kernel. Flat parts
+  never differed; curved ones were quietly wrong every time.
+- **A body that is not closed no longer reports a volume of zero.** An imported
+  part whose surfaces do not seal into a solid has no volume to measure, but the
+  Properties figures showed `0` for it — and a centre of mass at the origin, which
+  on one real part sat 36 mm outside the part itself. Such a body now says it
+  could not be measured, and why, instead of showing numbers that look real.
+  A part with no measurable extent no longer drags the model's overall size to a
+  nonsense value either.
+
 - **Shell, Draft, Offset face and Texture no longer grab a rounded face you did
   not pick.** Picking a flat face records it by its direction, and that test was
   being applied to curved faces too, where a single direction does not mean

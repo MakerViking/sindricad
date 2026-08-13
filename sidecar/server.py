@@ -49,6 +49,11 @@ import numpy as np
 
 import websockets
 
+# Aliased: `errors` is used as a LOCAL name for feature-error lists all over this
+# file (`part, errors, bodies = rebuild(...)`), so importing the module under its
+# own name would be shadowed at almost every call site.
+import errors as errors_mod
+
 import occt_smp
 import sysmem
 
@@ -136,7 +141,8 @@ def _cancelled_result():
     """The result shape for a cancelled op. `ok:false` keeps older clients
     treating it as a (harmless) failure; the `cancelled` flag lets a current one
     tell 'you stopped it' apart from 'it broke'."""
-    return {"cancelled": True, "error": {"message": "cancelled"}}
+    return {"cancelled": True,
+            "error": {"message": "cancelled", "code": errors_mod.CANCELLED}}
 # Rebuilds are supervised by PROGRESS, not wall clock: the worker bumps a shared
 # heartbeat once per feature (and per tessellated body), and the supervisor kills
 # only when no progress is made for STALL_TIMEOUT — a legitimately long resumed
@@ -882,8 +888,7 @@ def _rebuild_job(document, tolerance, known=None):
     t_rebuild = time.monotonic() - t0
     if errors and part is None and not bodies:
         # nothing built at all — the document is unusable, surface as fatal
-        e = errors[0]
-        return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+        return _fatal_from(errors)
     if part is None:
         # no solid yet (e.g. only sketches exist) — not an error; the frontend
         # still renders sketch overlays. Projection refresh entries still ride
@@ -1033,8 +1038,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
     # import-repair→print loop (one stubborn face held nine good bodies
     # hostage). Only a document where nothing built at all is a hard error.
     if errors and part is None and not live:
-        e = errors[0]
-        return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+        return _fatal_from(errors)
     if part is None and not live:
         return {"error": {"message": "nothing to export — no bodies built yet"}}
     warnings = [
@@ -1230,8 +1234,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     _prune_export_cache(live)
     if not live:
         if errors:
-            e = errors[0]
-            return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+            return _fatal_from(errors)
         return {"error": {"message": "nothing to export — no bodies built yet"}}
 
     palette, body_colors, body_names = sanitize_inputs(palette, body_colors, body_names)
@@ -1288,6 +1291,63 @@ def _migrate_geometry_job(items):
     return {"items": out, "failed": failed}
 
 
+def _query_job(document, items, prefix=False, strict=True):
+    """Worker: resolve selectors / match predicates, returning storable refs."""
+    from builder import query_geometry
+
+    try:
+        return query_geometry(document, items, prefix=prefix, strict=strict)
+    except Exception as ex:
+        return _error_from(ex, errors_mod.BAD_REQUEST)
+
+
+def _mass_properties_job(document, body_ids, checks, prefix=False):
+    """Worker: exact kernel mass properties for the document's live bodies.
+
+    Caches by default. Withholding the cache write protects the human only when
+    the document is a truncated PREFIX; on a whole document it just means every
+    read-only op pays its own rebuild, measured at ~44 s each on the reference
+    assembly with no benefit to the next one. `prefix=True` restores the
+    protection for a caller that really did truncate.
+    """
+    from builder import rebuild_cached, mass_properties, progress_tick
+
+    part, errors, bodies = rebuild_cached(document, readonly=prefix)
+    live = [b for b in bodies if b.get("shape") is not None]
+    # Same condition as _interference_job, and deliberately NOT "nothing is
+    # measurable": those differ on the reference assembly's 8 empty compounds,
+    # which build fine and simply have nothing to measure. One red feature must
+    # not refuse to measure the rest of an otherwise-good document.
+    if errors and not live:
+        return _fatal_from(errors)
+
+    wanted = live
+    unknown = []
+    if body_ids:
+        by_id = {b["id"]: b for b in live}
+        wanted = [by_id[i] for i in body_ids if i in by_id]
+        # Report ids that matched nothing rather than dropping them: body ids are
+        # regenerated per rebuild, so "you asked about a body that no longer
+        # exists" is the single most likely mistake a caller makes here.
+        unknown = [i for i in body_ids if i not in by_id]
+
+    res = mass_properties(wanted, checks=checks, tick=progress_tick)
+    res["units"] = "mm"
+    # Pin the conventions ON THE DATA. Neither is guessable, and both change what
+    # a number means: counts through build123d exclude degenerate edges (and match
+    # what selectors can address), and the box comes from the triangulation, so it
+    # is conservative rather than exact.
+    res["counting"] = "build123d"
+    res["bboxSource"] = "mesh"
+    if unknown:
+        res["unknown"] = unknown
+    if errors:
+        res["warnings"] = [
+            {k: e[k] for k in ("message", "feature_id", "code") if k in e} for e in errors
+        ]
+    return res
+
+
 def _interference_job(document):
     """Worker: rebuild + pairwise interference check among live bodies. Returns
     {"pairs": [...]} — one entry per pair of solids that actually overlap (boolean
@@ -1301,8 +1361,7 @@ def _interference_job(document):
     # like export: check the bodies that BUILT, warn about what didn't — one red
     # feature must not block clash-checking an otherwise-valid assembly
     if errors and not live:
-        e = errors[0]
-        return {"error": {"message": e["message"], "feature_id": e.get("feature_id")}}
+        return _fatal_from(errors)
     # ONE bbox per body, not one per pair. The sweep is quadratic in pairs but
     # linear in distinct shapes, so computing the box inside the pair test did
     # 9,360,540 OCCT bounding-box walks at 3,060 bodies to learn 3,060 things.
@@ -1355,7 +1414,7 @@ def _import_job(path, fmt):
     try:
         return import_geometry(path, fmt)
     except Exception as ex:
-        return {"error": {"message": str(ex)}}
+        return _error_from(ex)
 
 
 def _list_fonts_job():
@@ -1365,7 +1424,7 @@ def _list_fonts_job():
     try:
         return list_fonts()
     except Exception as ex:
-        return {"error": {"message": str(ex)}}
+        return _error_from(ex)
 
 
 def _tessellate_text_job(entity, path_entity):
@@ -1375,7 +1434,7 @@ def _tessellate_text_job(entity, path_entity):
     try:
         return tessellate_text(entity, path_entity)
     except Exception as ex:
-        return {"error": {"message": str(ex)}}
+        return _error_from(ex)
 
 
 def _project_geometry_job(document, plane, sources):
@@ -1388,7 +1447,7 @@ def _project_geometry_job(document, plane, sources):
     try:
         return project_geometry(document, plane, sources)
     except Exception as ex:
-        return {"error": {"message": str(ex)}}
+        return _error_from(ex)
 
 
 # --- server process ---------------------------------------------------------
@@ -1429,11 +1488,33 @@ def _ok(req_id, result):
     return json.dumps({"id": req_id, "ok": True, "result": result})
 
 
-def _err(req_id, message, feature_id=None):
+def _err(req_id, message, feature_id=None, code=None):
     error = {"message": message or "internal error (no message)"}
     if feature_id is not None:
         error["feature_id"] = feature_id
+    if code:
+        error["code"] = code
     return json.dumps({"id": req_id, "ok": False, "error": error})
+
+
+def _fatal_from(errors):
+    """The first feature error as a WHOLE-JOB failure dict.
+
+    Four byte-identical copies of `e = errors[0]; return {"error": {...}}` used
+    to spell this out field by field, which is exactly how `code` gets dropped on
+    three paths while looking correct on the fourth. Copy the dict; do not
+    re-enumerate its keys."""
+    e = dict(errors[0])
+    return {"error": {k: e[k] for k in ("message", "feature_id", "code") if k in e}}
+
+
+def _error_from(ex, code=None):
+    """A caught exception as a job-result error dict, preserving any code it
+    carries. Job functions that end in a blanket `except Exception` are the last
+    place a code can be lost before the wire — an ambiguousReference raised deep
+    inside _project_source reaches the client through one of these."""
+    return {"error": {"message": str(ex) or type(ex).__name__,
+                      **({"code": c} if (c := errors_mod.code_of(ex, code)) else {})}}
 
 
 def _reply_for(req_id, res):
@@ -1441,10 +1522,16 @@ def _reply_for(req_id, res):
     if res.get("cancelled"):
         return json.dumps({
             "id": req_id, "ok": False, "cancelled": True,
-            "error": {"message": "cancelled"},
+            # `cancelled: true` is a shipped contract and stays; the code rides
+            # BESIDE it so a caller can branch on one vocabulary for everything.
+            "error": {"message": "cancelled", "code": errors_mod.CANCELLED},
         })
     if "error" in res:
-        return _err(req_id, res["error"]["message"], res["error"].get("feature_id"))
+        # NOTE: forward `code` by name. Anything this function does not name is
+        # silently dropped, which is what made the field inert on its first
+        # three attempts.
+        return _err(req_id, res["error"]["message"], res["error"].get("feature_id"),
+                    res["error"].get("code"))
     return _ok(req_id, res)
 
 
@@ -1598,6 +1685,7 @@ def _too_large_error(req_id, size, n_bodies):
         f"{sysmem.describe(size)} across {n_bodies:,} bodies, over the "
         f"{sysmem.describe(_MAX_FRAME)} limit. Hide some bodies or simplify "
         "the model.",
+        code=errors_mod.REPLY_TOO_LARGE,
     )
 
 
@@ -1720,6 +1808,7 @@ def _body_too_large_error(req_id, chunk, size):
         f"came to {sysmem.describe(size)}, over the "
         f"{sysmem.describe(_MAX_FRAME)} limit for a single body. Simplify or "
         "re-import that body at a lower resolution.",
+        code=errors_mod.BODY_TOO_LARGE,
     )
 
 
@@ -1783,7 +1872,10 @@ async def _stream_binary_reply(ws, req_id, res, cancelled=None):
             # out the whole reply, after the worker has already been killed.
             await ws.send(json.dumps({
                 "id": req_id, "ok": False, "cancelled": True,
-                "error": {"message": "cancelled"},
+                # Same shape as _reply_for's. A cancel landing MID-STREAM is
+                # exactly the large-assembly case where cancel matters most, so
+                # this hand-built copy must carry the code too.
+                "error": {"message": "cancelled", "code": errors_mod.CANCELLED},
             }))
             return True
         take, buffers, buf_meta = _taker()
@@ -1965,11 +2057,11 @@ def _pool_available():
     session with the retry budget unspent."""
     global _pool
     if _env_broken:
-        return {"error": {"message": _INIT_FAIL_MSG}}
+        return {"error": {"message": _INIT_FAIL_MSG, "code": errors_mod.ENGINE_UNAVAILABLE}}
     if _pool is None:
         _pool = _new_pool()
     if _pool is None:
-        return {"error": {"message": _INIT_FAIL_MSG}}
+        return {"error": {"message": _INIT_FAIL_MSG, "code": errors_mod.ENGINE_UNAVAILABLE}}
     return None
 
 
@@ -1990,7 +2082,7 @@ def _on_broken(gen):
         return {"error": {"message": "the geometry kernel crashed on this operation"}}
     _note_init_failure(gen)
     _pool = _new_pool()
-    return {"error": {"message": _INIT_FAIL_MSG}}
+    return {"error": {"message": _INIT_FAIL_MSG, "code": errors_mod.ENGINE_UNAVAILABLE}}
 
 
 def _kill_pool(pool):
@@ -2161,7 +2253,7 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                 return {"error": {"message": (
                     "one operation stalled for over %d s — the geometry kernel was "
                     "restarted; progress up to the last checkpoint is kept"
-                ) % int(stall)}}
+                ) % int(stall), "code": errors_mod.STALLED}}
         except BrokenProcessPool:
             if cancelled():
                 return _cancelled_result()  # the pool was killed BY the cancel
@@ -2300,6 +2392,52 @@ async def _dispatch(ws, loop, req, req_id, op):
         )
         await ws.send(_reply_for(req_id, res))
 
+    elif op == "massProperties":
+        # Validate BEFORE the job, like exportProject's settings guard: this is a
+        # trust boundary, and a rebuild is far too expensive to spend on input
+        # that was never going to be usable.
+        ids = req.get("bodies")
+        if ids is not None and (
+            not isinstance(ids, list)
+            or len(ids) > 20000
+            or not all(isinstance(i, str) and len(i) <= 128 for i in ids)
+        ):
+            await ws.send(_err(req_id, "massProperties: bad bodies",
+                               code=errors_mod.BAD_REQUEST))
+            return
+        # A whole-document measure with checks on runs for minutes on a large
+        # assembly while holding the dispatch lock. Without a progress frame that
+        # is total silence, which reads as a hang.
+        async def _measuring(idx, *_m, _rid=req_id):
+            try:
+                await ws.send(json.dumps({
+                    "id": _rid, "status": "measuring", "feature": idx,
+                }))
+            except Exception:
+                pass  # a dropped progress frame must never fail the work
+
+        res = await _run_stall(loop, _mass_properties_job, req["document"], ids,
+                               bool(req.get("checks")), bool(req.get("prefix")),
+                               on_progress=_measuring)
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "query":
+        # Trust boundary, refused BEFORE any rebuild — the same reasoning as
+        # massProperties: a rebuild is far too expensive to spend on input that
+        # was never going to be usable.
+        items = req.get("items")
+        if not isinstance(items, list) or len(items) > 64 or not all(
+            isinstance(it, dict) for it in items
+        ):
+            await ws.send(_err(req_id, "query: bad items", code=errors_mod.BAD_REQUEST))
+            return
+        res = await _run_stall(loop, _query_job, req["document"], items,
+                               bool(req.get("prefix")),
+                               # strict is ON unless the caller opts out: the
+                               # lazy reading of a reply must be the correct one.
+                               req.get("strict", True) is not False)
+        await ws.send(_reply_for(req_id, res))
+
     elif op == "interference":
         res = await _run_stall(loop, _interference_job, req["document"])
         await ws.send(_reply_for(req_id, res))
@@ -2402,7 +2540,7 @@ async def _dispatch(ws, loop, req, req_id, op):
         await ws.send(_ok(req_id, {"pong": True}))
 
     else:
-        await ws.send(_err(req_id, f"unknown op: {op}"))
+        await ws.send(_err(req_id, f"unknown op: {op}", code=errors_mod.UNKNOWN_OP))
 
 
 async def _serialized(ws, loop, req, req_id, op, lock, running):

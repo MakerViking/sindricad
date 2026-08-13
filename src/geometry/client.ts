@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, ImportFormat, ImportReply, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
+import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, GeomErrorCode, ImportFormat, ImportReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
 import { RebuildAssembly, manifestFromBodies } from "./assembly";
 import type {
   WireBody, WireBodyFull, WireEdgeList, WireManifestEntry, WireRebuildResult,
@@ -14,6 +14,10 @@ import type {
 interface WireError {
   message: string;
   feature_id?: string;
+  /** Machine-readable classification (sidecar/errors.py). Optional: an older
+   *  sidecar omits it, and an unrecognised value is expected to degrade to
+   *  "unclassified" rather than break. */
+  code?: GeomErrorCode;
 }
 type RawReply<T> =
   | { id: string; ok: true; result: T }
@@ -110,6 +114,20 @@ export interface GeometryBackend {
   importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply>;
   // Pairwise interference (clash) check among the document's bodies.
   interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }>;
+  /** Exact kernel mass properties per body plus a document total. OPTIONAL, and
+   *  deliberately so: the in-process Rust backend does not implement it, and an
+   *  optional member lets a caller guard the call instead of forcing a stub that
+   *  always fails. `checks` adds validity and watertightness, which cost far more
+   *  than everything else combined — leave it off unless something reads them.
+   *
+   *  `doc` must be the BUILT document (store.buildDocument()), never the raw one:
+   *  body ids are positional per rebuild, so measuring the wrong feature list
+   *  returns exact-looking numbers for the wrong body. */
+  massProperties?(
+    doc: CadDocument,
+    opts?: { bodies?: string[]; checks?: boolean },
+    onStarted?: (id: string) => void,
+  ): Promise<{ ok: boolean; result?: MassPropertiesResult; message?: string }>;
   /** Colored multi-material 3MF PROJECT export (Orca format: one object per body,
    *  palette slot → extruder). Optional — only the Python sidecar authors it; the
    *  Rust spike backend omits it. Palette/bodyColors/bodyNames live in store
@@ -1040,6 +1058,27 @@ export class Geometry implements GeometryBackend {
       return { ok: true, ...(r.pairs !== undefined ? { pairs: r.pairs } : {}) };
     }
     return { ok: false, message: msg.error?.message };
+  }
+
+  /** Exact kernel mass properties. Uses the shared `call<T>` like every other aux
+   *  op — no bespoke plumbing. `onStarted` hands back the request id so a caller
+   *  that wraps this in a busy state can target THIS op with a cancel rather than
+   *  whatever ran most recently. */
+  async massProperties(
+    doc: CadDocument,
+    opts?: { bodies?: string[]; checks?: boolean },
+    onStarted?: (id: string) => void,
+  ): Promise<{ ok: boolean; result?: MassPropertiesResult; message?: string }> {
+    const msg = await this.call<MassPropertiesResult>(
+      "massProperties",
+      {
+        document: doc,
+        ...(opts?.bodies ? { bodies: opts.bodies } : {}),
+        ...(opts?.checks ? { checks: true } : {}),
+      },
+      onStarted,
+    );
+    return msg.ok ? { ok: true, result: msg.result } : { ok: false, message: msg.error?.message };
   }
 
   async tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]> {

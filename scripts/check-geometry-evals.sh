@@ -17,9 +17,15 @@ cd "$(dirname "$0")/.."/sidecar
 PY="${PY:-uv run python}"
 
 # Coverage RATCHET, not a target: real-server op coverage may never drop below
-# what it is today. It is currently 33 of 33 — every unit in the universe is
+# what it is today. It is currently 35 of 35 — every unit in the universe is
 # covered by an EXPLICIT check that asserts a precomputed numeric geometric
 # invariant against a real spawned server.
+#
+# massProperties and query were added at 34 and 35. Both are gated on geometry,
+# not on a bare count: massProperties asserts a CYLINDER's volume, whose
+# tessellated approximation is 0.97% out and therefore OUTSIDE the 0.5% band —
+# so a mesh-backed implementation fails rather than passes. query asserts the
+# BOX OF THE MATCHED CENTROIDS, so finding the wrong faces moves it.
 #
 # VERIFIED REACHABLE ON A CLEAN CHECKOUT: with corpus credit disabled entirely,
 # coverage still reads 33/33, so not one counted unit depends on a fixture
@@ -41,7 +47,7 @@ PY="${PY:-uv run python}"
 # best-effort-no-op by design and is the one ACKNOWLEDGED remaining gap.
 #
 # Raise this number when you cover more; never lower it to make a build pass.
-COVERAGE_FLOOR=33
+COVERAGE_FLOOR=35
 
 # The fillet/chamfer corpus was driven to zero failures by the Norn loop
 # (149/500 -> 0/500, holdout-verified). Any regression is a real one.

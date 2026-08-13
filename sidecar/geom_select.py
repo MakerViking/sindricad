@@ -53,6 +53,8 @@ import os
 
 import font_guard  # noqa: F401  MUST precede build123d — see font_guard.py
 
+import errors
+
 from build123d import Axis, Vector, GeomType
 
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
@@ -366,9 +368,27 @@ def edge_fingerprint(e, part):
 
 def face_fingerprint(f, part):
     """Author a face selector fingerprint. `part` is accepted for symmetry with
-    edge_fingerprint and future concentric-face rank support (unused today)."""
+    edge_fingerprint and future concentric-face rank support (unused today).
+
+    `area` is OMITTED when the integration yields zero (or worse) on a face that
+    plainly has extent — which happens on damaged imports, whose faces can carry
+    broken parametric domains that BRepGProp bounds to nothing. Storing that 0.0
+    is not merely uninformative, it is corrosive: _rel_err against 0.0 is 1.0 for
+    EVERY candidate, so the area term contributes a flat W_AREA/AREA_REL_TOL =
+    +20 against an ACCEPT_MAX of 2.5. The reference is then permanently lossy,
+    and its area discriminator is flattened to a constant, so ties fall through
+    to position and normal alone. _face_cost already guards with `if "area" in
+    fp`, so an absent key degrades cleanly to the remaining terms.
+    """
     c, n = _face_centroid(f), _face_normal(f)
-    fp = {"centroid": [c.X, c.Y, c.Z], "normal": [n.X, n.Y, n.Z], "area": f.area, "surface": _face_surface(f)}
+    fp = {"centroid": [c.X, c.Y, c.Z], "normal": [n.X, n.Y, n.Z]}
+    try:
+        a = f.area
+    except Exception:
+        a = None
+    if a is not None and math.isfinite(a) and a > 0.0:
+        fp["area"] = a  # kept in its historical position in the key order
+    fp["surface"] = _face_surface(f)
     r = _face_radius(f)
     if r is not None:
         fp["radius"] = r
@@ -474,7 +494,14 @@ def _resolve_one(cands, cost_fn, key_fn, nth):
     return best, margin, lossy, ("marginal match" if lossy else None)
 
 
-def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=None, candidates=None):
+def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=None,
+               candidates=None, code=None, candidate_fps=None):
+    # HEAD GATE, load-bearing: a confident, unambiguous resolution records
+    # NOTHING. `diag` means "resolutions worth acting on", and callers rely on
+    # that — builder._project_source refuses on a lossy entry, and keying on
+    # "diag is non-empty" instead once turned a perfectly good cylinder-rim pick
+    # into a hard failure. Asserted by test_selector_ambiguity. Do not relax it
+    # to carry informational entries; add a separate channel instead.
     if diag is None or not (lossy or confidence < 0.5):
         return
     entry = {
@@ -493,13 +520,27 @@ def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=N
         entry["at"] = [round(float(v), 6) for v in at]
     if candidates:
         entry["candidates"] = list(candidates)
+    # `candidates` is PROSE for a human and is frozen as string[] permanently —
+    # it is a shipped TS interface member and changing its element type is a hard
+    # compile break at three call sites. `candidateFps` is the structured twin:
+    # each entry is a real fingerprint, so a caller can turn the one it wants
+    # into a {by:"match", fp} selector and repair the reference without a human
+    # picking in the viewport.
+    if candidate_fps:
+        entry["candidateFps"] = list(candidate_fps)
+    # The code belongs on the DIAGNOSTIC as well as the error: the Re-pick UI
+    # reads RebuildResult.diagnostics, never `error`, so a code that lives only
+    # on the fatal is invisible to the one consumer that most wants it.
+    if code:
+        entry["code"] = code
     diag.append(entry)
 
 
 # --- public API --------------------------------------------------------------
 
 
-def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
+def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id,
+                 fp_of=None):
     """Resolve a `by:"nearest"` selector — or REFUSE, when the pick is ambiguous.
 
     A bare `min()` over the candidates cannot fail. It returns the closest entity
@@ -523,7 +564,7 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
     """
     cands = list(cands)
     if not cands:
-        raise ValueError(f"no {kind} to select from")
+        raise errors.GeomError(f"no {kind} to select from", errors.REFERENCE_NOT_FOUND)
     scored = sorted(((dist_of(c), c) for c in cands), key=lambda t: t[0])
     best_d, best = scored[0]
     runner = scored[1][0] if len(scored) > 1 else math.inf
@@ -552,13 +593,28 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id):
     pt = sel.get("point") or []
     where = ", ".join(f"{float(v):.2f}" for v in pt)
     described = [describe(c) for c in tied[:3]]
+    # Structured twin of `described`, same tied[:3] bound. The cap is not
+    # cosmetic: `tied` scales the band by the RUNNER-UP DISTANCE, so a stale
+    # selector sitting 500 mm off the body admits everything within ~10 mm of
+    # the winner, and an uncapped list would put an unbounded payload on an
+    # error path. `dist` is what the entity was actually scored on, so a caller
+    # can rank the candidates it is offered.
+    fps = []
+    if fp_of is not None:
+        for d, c in [(dd, cc) for dd, cc in scored if cc in tied][:3]:
+            try:
+                fps.append({"fp": fp_of(c), "dist": round(float(d), 6)})
+            except Exception:
+                pass  # a candidate we cannot fingerprint must not break the refusal
     _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick",
-               at=pt, candidates=described)
-    raise ValueError(
+               at=pt, candidates=described, code=errors.AMBIGUOUS_REFERENCE,
+               candidate_fps=fps)
+    raise errors.GeomError(
         f"ambiguous {kind} reference at ({where}): "
         + " and ".join(described)
         + f" are equally close ({best_d:.3f}mm vs {runner:.3f}mm) — re-pick the {kind}, "
-        f"the saved reference no longer identifies one"
+        f"the saved reference no longer identifies one",
+        errors.AMBIGUOUS_REFERENCE,
     )
 
 
@@ -583,7 +639,7 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
     append a ResolveDiag dict for the rebuild to surface.
     """
     if part is None:
-        raise ValueError("no part to select edges from")
+        raise errors.GeomError("no part to select edges from", errors.REFERENCE_NOT_FOUND)
 
     # a list of selectors (multi-edge fillet/chamfer): union, de-duplicated.
     if isinstance(sel, list):
@@ -601,7 +657,8 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
     if by == "nearest":
         p = _v(sel["point"])
         return [_nearest_one(part.edges(), lambda e: _dist(e.center(), p),
-                             _canonical_key_edge, _describe_edge, "edge", sel, diag, feature_id)]
+                             _canonical_key_edge, _describe_edge, "edge", sel, diag, feature_id,
+                             fp_of=lambda e: edge_fingerprint(e, part))]
     if by == "match":
         fp = sel["fp"]
         edges = list(part.edges())
@@ -641,13 +698,13 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         chain = _tangent_chain(part, seed)
         _push_diag(diag, feature_id, "edge", len(chain), conf, lossy, reason)
         return chain
-    raise ValueError(f"unknown edge selector: {by}")
+    raise errors.GeomError(f"unknown edge selector: {by}", errors.BAD_REQUEST)
 
 
 def resolve_faces(part, sel, diag=None, feature_id=None):
     """Resolve a face selector — or a LIST of selectors — to build123d faces."""
     if part is None:
-        raise ValueError("no part to select faces from")
+        raise errors.GeomError("no part to select faces from", errors.REFERENCE_NOT_FOUND)
 
     # a list of selectors (multi-face offset/thicken/shell/draft): union,
     # de-duplicated — mirrors resolve_edges. Without this branch a list reaches
@@ -686,12 +743,13 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
         except Exception:
             dist_of = lambda f: _dist(f.center(), p)
         return [_nearest_one(faces, dist_of, _canonical_key_face, _describe_face,
-                             "face", sel, diag, feature_id)]
+                             "face", sel, diag, feature_id,
+                             fp_of=lambda f: face_fingerprint(f, part))]
     if by == "all":
         return list(part.faces())
     if by == "match":
         return _faces_matching(part, sel["fp"], diag, feature_id, nth=sel.get("nth"))
-    raise ValueError(f"unknown face selector: {by}")
+    raise errors.GeomError(f"unknown face selector: {by}", errors.BAD_REQUEST)
 
 
 def _faces_matching(part, fp, diag, feature_id, nth=None):
@@ -777,3 +835,188 @@ def _tangent_chain(part, seed):
                         frontier.append(e)
                     break
     return chain
+
+
+# --- predicate queries -------------------------------------------------------
+# `query` asks "which entities look like THIS", where the legacy selectors ask
+# "which entity IS this". The vocabulary is deliberately the SAME functions the
+# fingerprints are authored from (_face_surface, _edge_curve, _face_centroid, …),
+# so a predicate's `surface` matches an fp's `surface` exactly rather than
+# approximately — one vocabulary, not two that drift.
+
+
+_FACE_KEYS = {"surface", "area", "normal", "radius", "within", "createdBy"}
+_EDGE_KEYS = {"curve", "length", "dir", "radius", "within"}
+
+
+def _in_range(v, spec):
+    if v is None:
+        return False
+    lo, hi = spec.get("min"), spec.get("max")
+    if lo is not None and v < float(lo):
+        return False
+    if hi is not None and v > float(hi):
+        return False
+    return True
+
+
+def _within(pt, spec):
+    """AABB test on the entity's CENTROID (not its extent), so `within` means
+    "centred in this box". build123d's filter_by_position was measured 5.1x
+    slower than this for the same answer."""
+    lo, hi = spec.get("min") or [], spec.get("max") or []
+    for i, v in enumerate((pt.X, pt.Y, pt.Z)):
+        if i < len(lo) and v < float(lo[i]) - 1e-9:
+            return False
+        if i < len(hi) and v > float(hi[i]) + 1e-9:
+            return False
+    return True
+
+
+_FACE_SURFACES = {"plane", "cylinder", "cone", "sphere", "torus", "bspline", "other"}
+_EDGE_CURVES = {"line", "circle", "ellipse", "bspline", "other"}
+
+
+def _cos_slack(spec, what):
+    """The `1 - dot` slack a direction predicate accepts.
+
+    `tol` is a COSINE deviation, not an angle, and that is not guessable: it was
+    read as degrees in the field, where `tol: 5` means "accept everything" —
+    `1 - dot` never exceeds 2, so the threshold admits the ANTIPODAL face and
+    "facing up" and "facing down" return the same set. `deg` states the same
+    threshold as a half-angle, which is what a caller almost always means.
+
+    A tol above 1.0 already accepts a full hemisphere, so it is far more likely
+    to be degrees than a deliberate choice. Refuse it rather than honour it.
+    """
+    if not isinstance(spec, dict):
+        return ANG_TOL
+    if "deg" in spec:
+        if "tol" in spec:
+            raise errors.GeomError(
+                f"{what}: give either `deg` (an angle) or `tol` (a cosine "
+                f"deviation), not both", errors.BAD_REQUEST)
+        deg = float(spec["deg"])
+        if not 0.0 <= deg <= 180.0:
+            raise errors.GeomError(f"{what}: deg must be 0..180", errors.BAD_REQUEST)
+        return 1.0 - math.cos(math.radians(deg))
+    if "tol" in spec:
+        tol = float(spec["tol"])
+        if tol < 0.0:
+            raise errors.GeomError(f"{what}: tol must be >= 0", errors.BAD_REQUEST)
+        if tol > 1.0:
+            raise errors.GeomError(
+                f"{what}: tol is a COSINE deviation (1 - dot), not an angle — "
+                f"{tol:g} accepts a hemisphere or more, so every face matches. "
+                f"Use `deg` for an angle (deg 5 == tol 0.0038), or a tol <= 1.0.",
+                errors.BAD_REQUEST)
+        return tol
+    return ANG_TOL
+
+
+def query_entities(part, kind, where, cands=None, owners=None, tick=None):
+    """Entities of `kind` matching every key in `where` (AND).
+
+    Cheapest test first, so the expensive ones only ever see survivors: type,
+    then the centroid box, then direction, then area — `f.area` is a GProp
+    surface integration measured at 137 us on the reference assembly's faces,
+    three times what a naive estimate assumes, and it dominates any mixed
+    predicate. `tick` is a PARAMETER because this module cannot import builder
+    (builder imports it), and an unticked scan over a dense imported body is
+    exactly what the stall supervisor reaps.
+    """
+    tick = tick or (lambda: None)
+    where = where or {}
+    keys = _FACE_KEYS if kind == "face" else _EDGE_KEYS
+    unknown = set(where) - keys
+    if unknown:
+        raise errors.GeomError(
+            f"unknown {kind} predicate: {', '.join(sorted(unknown))}", errors.BAD_REQUEST)
+    if kind == "edge" and "createdBy" in where:
+        # _owners is a FACE map; an edge has two adjacent faces and no single
+        # owner, so answering would mean inventing a rule.
+        raise errors.GeomError("createdBy is not available for edges", errors.BAD_REQUEST)
+
+    # Predicate VALUES are checked here, not per candidate. Both alphabets are
+    # closed (they are what _face_surface/_edge_curve can return), so a value
+    # outside them cannot match anything — and returning ok:true count:0 for
+    # `surface: "Plane"` reads as "no such face exists", which is a wrong answer
+    # to a question that was never asked. An unknown KEY was already refused
+    # above; an unknown VALUE was not.
+    if kind == "face" and "surface" in where and where["surface"] not in _FACE_SURFACES:
+        raise errors.GeomError(
+            f"unknown surface {where['surface']!r} — one of "
+            f"{', '.join(sorted(_FACE_SURFACES))}", errors.BAD_REQUEST)
+    if kind == "edge" and "curve" in where and where["curve"] not in _EDGE_CURVES:
+        raise errors.GeomError(
+            f"unknown curve {where['curve']!r} — one of "
+            f"{', '.join(sorted(_EDGE_CURVES))}", errors.BAD_REQUEST)
+
+    # Direction predicates are resolved ONCE, outside the loop: the threshold is
+    # the same for every candidate, and parsing it inside means a malformed one
+    # is swallowed by the per-candidate `except Exception: continue` and reported
+    # as "nothing matched" instead of as a bad request.
+    ndir = nslack = None
+    if kind == "face" and "normal" in where:
+        spec = where["normal"]
+        ndir = _unit(_v(spec["dir"] if isinstance(spec, dict) else spec))
+        nslack = _cos_slack(spec, "normal")
+    edir = None
+    if kind == "edge" and "dir" in where:
+        # Edge `dir` keeps its hardcoded ANG_TOL — it takes a bare vector and has
+        # never accepted a tolerance. Only the parse moves out of the loop.
+        edir = _unit(_sign_normalize(_v(where["dir"])))
+
+    if cands is None:
+        cands = list(part.faces() if kind == "face" else part.edges())
+    out = []
+    for i, c in enumerate(cands):
+        if (i & 0x1FF) == 0:
+            tick()  # every 512 candidates: one dense body is still one body
+        try:
+            if kind == "face":
+                if "surface" in where and _face_surface(c) != where["surface"]:
+                    continue
+                if "within" in where and not _within(_face_centroid(c), where["within"]):
+                    continue
+                if ndir is not None:
+                    # PLANAR only, and the tolerance comes from the tuning file —
+                    # never a hardcoded 0.99. This is the same defect the
+                    # by:"normal" selector had; a new surface must not reintroduce it.
+                    if not _is_planar(c):
+                        continue
+                    if 1.0 - _face_normal(c).dot(ndir) > nslack:
+                        continue
+                if "radius" in where and not _in_range(_face_radius(c), where["radius"]):
+                    continue
+                if "area" in where and not _in_range(c.area, where["area"]):
+                    continue
+                if "createdBy" in where:
+                    if not owners or owners.get(_owner_key(c)) != where["createdBy"]:
+                        continue
+            else:
+                if "curve" in where and _edge_curve(c) != where["curve"]:
+                    continue
+                if "within" in where and not _within(_edge_mid(c), where["within"]):
+                    continue
+                if edir is not None:
+                    # _edge_dir is sign-normalized, so +dir and -dir select the
+                    # same set. That is the existing convention, not a new one.
+                    if 1.0 - abs(_edge_dir(c).dot(edir)) > ANG_TOL:
+                        continue
+                if "radius" in where and not _in_range(_edge_radius(c), where["radius"]):
+                    continue
+                if "length" in where and not _in_range(c.length, where["length"]):
+                    continue
+        except Exception:
+            continue  # a candidate we cannot measure simply does not match
+        out.append(c)
+    return out
+
+
+def _owner_key(face):
+    """The quantized key builder._owners is indexed by. Imported here rather than
+    from builder (which imports this module) — the rounding must stay in step
+    with builder._face_fp, so it is asserted by a test rather than trusted."""
+    c = _face_centroid(face)
+    return (round(face.area, 2), round(c.X, 1), round(c.Y, 1), round(c.Z, 1))

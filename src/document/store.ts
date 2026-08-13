@@ -255,6 +255,22 @@ export class DocumentStore {
   get document(): CadDocument {
     return this.doc;
   }
+  /** The document as it is actually BUILT — the same reduction the rebuild path
+   *  uses. Any read-only op that measures or inspects geometry must send this,
+   *  never `document`.
+   *
+   *  `document` is the raw saved file: it carries features past the rollback
+   *  marker and suppressed ones, and no `bodyVisibility`. Sending it to an
+   *  analysis op means measuring features the app never built and letting hidden
+   *  bodies back into extrude booleans, so the SOLID differs. Worse, body ids are
+   *  positional and regenerated per rebuild, so a body id captured from the
+   *  viewport resolves against a different body list — and the caller gets
+   *  confident, exact-looking numbers for the wrong body with ok:true and no
+   *  warning. The sidecar's own golden-corpus harness performs precisely this
+   *  reduction before rebuilding a saved document. */
+  buildDocument(): CadDocument {
+    return this.effectiveDoc();
+  }
   get buildState(): RebuildState {
     return this.build;
   }

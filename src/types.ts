@@ -18,6 +18,17 @@ export interface EdgeFingerprint {
   curve?: "line" | "circle" | "ellipse" | "bspline" | "other";
   radius?: number; // circle/arc radius, mm — disambiguates concentric arcs
   center?: Vec3; // arc/circle center, mm
+  // Position within a group of circles sharing a centre: rank is the index in
+  // ascending-radius order, group is how many share that centre. THIS PAIR IS
+  // WHAT MAKES A CONCENTRIC REFERENCE SURVIVE A SCALE CHANGE — with it, a tube's
+  // outer rim stays the outer rim; without it the match falls back to absolute
+  // radius and lands on the inner one. The sidecar has always authored them;
+  // they were simply never declared, and they survived only because the reply
+  // object is passed through by reference. Reconstruct a fingerprint field by
+  // field against the old type and TypeScript silently hides both, downgrading
+  // the reference with no error anywhere.
+  radius_rank?: number;
+  radius_group?: number;
 }
 export interface FaceFingerprint {
   centroid: Vec3; // area centroid, world mm
@@ -42,6 +53,8 @@ export type Selector = (
   | { kind: "edge"; by: "axis"; axis: "X" | "Y" | "Z" }
   | { kind: "edge"; by: "nearest"; point: [number, number, number] }
   | { kind: "edge"; by: "all" }
+  // Both backends have always implemented this; only the type omitted it.
+  | { kind: "face"; by: "all" }
   | { kind: "face"; by: "normal"; dir: [number, number, number] }
   | { kind: "face"; by: "nearest"; point: [number, number, number] }
   // --- v2: discriminating, drift-robust selection ---
@@ -702,6 +715,32 @@ export interface CadDocument {
   bodyColors?: Record<string, number>;
 }
 
+// A machine-readable classification on an error or a diagnostic. Prose is for
+// the user; this is what code branches on — the Re-pick affordance used to match
+// the exact string "ambiguous nearest pick", so rewording a Python message
+// silently disabled a TypeScript feature.
+//
+// The `(string & {})` member is load-bearing: it keeps autocomplete for the known
+// codes while letting an UNRECOGNISED one type-check, so a newer sidecar emitting
+// a code this build has never heard of degrades to "unclassified" instead of
+// failing to compile. Adding a code is a pure addition; renaming one is breaking.
+export type GeomErrorCode =
+  | "ambiguousReference"
+  | "referenceNotFound"
+  | "cancelled"
+  | "timedOut"
+  | "stalled"
+  | "kernelCrashed"
+  | "engineUnavailable"
+  | "replyTooLarge"
+  | "bodyTooLarge"
+  | "unknownOp"
+  | "badRequest"
+  | "expectFailed"
+  | "budgetExhausted"
+  | "matchImplausible"
+  | (string & {});
+
 // Optional per-selector resolution diagnostic (selector v2). Lets a rebuild surface
 // a low-confidence / best-effort match WITHOUT failing the build; downstream tooling
 // (e.g. an importer deciding parametric-vs-captured) reads it. Code that ignores
@@ -717,6 +756,8 @@ export interface ResolveDiag {
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
   reason?: string;
+  /** Machine-readable classification; prefer this over matching `reason`. */
+  code?: GeomErrorCode;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
   // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the
   // SELECTOR's own stored point — not the geometry that was found — which is what
@@ -724,6 +765,13 @@ export interface ResolveDiag {
   // are the tied entities, already human-readable, for the message shown to the user.
   at?: [number, number, number];
   candidates?: string[];
+  /** Structured twin of `candidates`: each tied entity's real fingerprint, with
+   *  the distance it was scored on. `candidates` is PROSE for a human and stays
+   *  `string[]`; these are what a caller turns into a `{by:"match", fp}` selector
+   *  to repair the reference without a viewport pick. Bounded to 3, same as
+   *  `candidates` — an ambiguity band scales with the runner-up distance, so a
+   *  badly stale selector can tie against a great many entities. */
+  candidateFps?: { fp: EdgeFingerprint | FaceFingerprint; dist: number }[];
 }
 
 // Mesh wire arrays arrive either as plain JSON number arrays (text replies,
@@ -731,6 +779,57 @@ export interface ResolveDiag {
 // — every consumer only indexes / reads .length, valid on both members.
 export type F32Wire = number[] | Float32Array;
 export type U32Wire = number[] | Uint32Array;
+
+/** One body's exact kernel mass properties, or a record of why it has none.
+ *
+ *  A discriminated union on `measured` so `b.volume` cannot be read without
+ *  narrowing first. An unmeasurable body carries NO numeric fields at all rather
+ *  than zeros — zero volume and absent volume mean different things, and the type
+ *  enforces that distinction instead of letting `undefined` reach a formatter. */
+export type BodyMassProperties =
+  | {
+      id: string;
+      name?: string;
+      measured: true;
+      /** mm^3, exact (not from the display mesh) */
+      volume: number;
+      /** mm^2, exact */
+      area: number;
+      com: [number, number, number];
+      /** null when the body has no publishable extent: no triangulation, or
+       *  unbounded geometry (OCCT reports +/-1e100, which reads as a real
+       *  number and would poison total.bbox). */
+      bbox: { min: [number, number, number]; max: [number, number, number] } | null;
+      counts: { solids: number; shells: number; faces: number; edges: number; vertices: number };
+      /** present only when the request set `checks` */
+      valid?: boolean;
+      watertight?: boolean;
+    }
+  | { id: string; name?: string; measured: false; reason: string };
+
+/** Reply to the `massProperties` op. `counting` and `bboxSource` pin conventions
+ *  that change what the numbers mean: counts follow the addressable (build123d)
+ *  convention rather than raw topology, and the box comes from the triangulation,
+ *  so it is conservative — never tighter than exact. */
+export interface MassPropertiesResult {
+  units: "mm";
+  counting: string;
+  bboxSource: string;
+  bodies: BodyMassProperties[];
+  total: {
+    /** how many bodies were MEASURED — not how many were asked about */
+    bodies: number;
+    volume: number;
+    area: number;
+    /** null when the total volume is zero (nothing to weight the mean by) */
+    com: [number, number, number] | null;
+    bbox: { min: [number, number, number]; max: [number, number, number] } | null;
+    counts: Partial<Record<"solids" | "shells" | "faces" | "edges" | "vertices", number>>;
+  };
+  /** requested ids that matched no live body — reported, never silently dropped */
+  unknown?: string[];
+  warnings?: { message: string; feature_id?: string; code?: GeomErrorCode }[];
+}
 
 export interface RebuildResult {
   mesh: { positions: F32Wire; indices: U32Wire; faceIds: U32Wire; normals?: F32Wire };
@@ -749,8 +848,8 @@ export interface RebuildResult {
   // is the LAST (most downstream) failure — the one closest to the user's
   // latest action; featureErrors lists them all, timeline order. The reply is
   // still ok:true so the model renders alongside the error banner.
-  featureError?: { feature_id?: string; message: string };
-  featureErrors?: { feature_id?: string; message: string }[];
+  featureError?: { feature_id?: string; message: string; code?: GeomErrorCode };
+  featureErrors?: { feature_id?: string; message: string; code?: GeomErrorCode }[];
   // projected-curve refresh entries from this rebuild (absent at steady state);
   // the store lands them via a derived, no-undo commit — see
   // DocumentStore.commitProjectionRefresh.
