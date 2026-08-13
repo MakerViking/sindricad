@@ -20,6 +20,27 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Serialise per ref, so two pushes to `main` cannot both reach `release` and race
+# for the rolling `beta` tag. The rolling tag is deleted and recreated on every
+# release, so the LAST upload wins regardless of which commit it came from: two
+# overlapping runs meant a build from the OLDER commit could replace the newer
+# one's assets. On 2026-08-08 a fast-forward merge and a PR merge landed 20
+# seconds apart and the superseded run had to be cancelled by hand to prevent it.
+#
+# Runs QUEUE rather than cancel, deliberately. Cancelling a run already inside
+# `release` would interrupt it partway through replacing the assets and leave the
+# tag holding a half-updated set, which is a worse failure than the race. Queued,
+# the older run finishes cleanly and the newer one overwrites it in full, so the
+# published state always ends up being the newest commit's build.
+#
+# That is also why `cancel-in-progress` is not conditional. Cancelling superseded
+# PR runs would save runner time, but it needs an expression, and an expression
+# here would apply to `main` too unless it is exactly right. Queueing everywhere
+# is the boring choice that cannot corrupt a release.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Gates the build matrix: sidecar tests, Rust unit tests, and the (new) vitest
   # frontend tests all run BEFORE any installer is built. Runs once on Linux only —
