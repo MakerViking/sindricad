@@ -249,6 +249,43 @@ def test_shell_refuses_when_the_opening_stops_resolving():
     print(PASS, "shell refuses an opening that no longer resolves, instead of sealing")
 
 
+def test_a_meaningless_area_is_omitted_not_stored_as_zero():
+    """Damaged imports carry faces whose parametric domain BRepGProp bounds to
+    nothing, so `f.area` integrates to 0.0. Storing that is corrosive, not merely
+    uninformative: _rel_err against 0.0 is 1.0 for EVERY candidate, so the area
+    term adds a flat W_AREA/AREA_REL_TOL = +20 against an ACCEPT_MAX of 2.5 —
+    the reference is permanently lossy and its area discriminator is flat.
+
+    The omission is authoring-side only. An ALREADY-STORED zero must keep
+    resolving exactly as it does today, or saved documents move."""
+    from geom_select import ACCEPT_MAX, _face_cost, face_fingerprint
+
+    box = Box(20, 20, 20)
+    top = max(box.faces(), key=lambda f: _face_centroid(f).Z)
+
+    healthy = face_fingerprint(top, box)
+    assert healthy["area"] == top.area, healthy  # control: a real area is kept
+
+    zeroed = dict(healthy, area=0.0)
+    omitted = {k: v for k, v in healthy.items() if k != "area"}
+
+    tol_pos = 1.0
+    c_zero = _face_cost(top, zeroed, tol_pos)
+    c_omit = _face_cost(top, omitted, tol_pos)
+    assert c_zero > ACCEPT_MAX, \
+        f"a stored 0.0 should already be lossy; cost {c_zero} <= {ACCEPT_MAX}"
+    assert c_omit < c_zero, f"omitting area did not help: {c_omit} vs {c_zero}"
+    assert c_omit <= ACCEPT_MAX, f"an omitted area should resolve cleanly: {c_omit}"
+
+    # an existing stored zero still resolves, and to the SAME face as before
+    got = resolve_faces(box, {"kind": "face", "by": "match", "fp": zeroed})
+    assert len(got) == 1, got
+    assert abs(_face_centroid(got[0]).Z - _face_centroid(top).Z) < 1e-9, \
+        "a stored zero-area fingerprint changed which face it resolves to"
+    print(PASS, f"a zero area is omitted (cost {c_omit:.2f} vs {c_zero:.2f}); "
+                f"stored zeros resolve unchanged")
+
+
 def main():
     print("Selector v2 resolver tests")
     test_match_picks_one_edge_where_axis_grabs_all()
@@ -259,6 +296,7 @@ def main():
     test_face_match_picks_top()
     test_tangentchain_on_box_is_single_edge()
     test_bad_match_is_best_effort_with_diagnostic()
+    test_a_meaningless_area_is_omitted_not_stored_as_zero()
     test_normal_is_planar_only()
     test_normal_group_selection_did_not_narrow()
     test_shell_refuses_when_the_opening_stops_resolving()

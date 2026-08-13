@@ -19,7 +19,7 @@ import os
 
 os.environ.setdefault("SINDRI_DISK_CACHE", "0")
 
-from build123d import Box, Compound, Cone, Cylinder, Pos, Shell, Sphere  # noqa: E402
+from build123d import Box, Compound, Cone, Cylinder, Pos, Shell, Solid, Sphere  # noqa: E402
 
 from builder import mass_properties, rebuild  # noqa: E402
 
@@ -158,6 +158,54 @@ def test_zero_total_volume_is_not_a_crash():
     print(PASS, "a document with nothing measurable totals to zero, com None, no crash")
 
 
+def test_a_solid_whose_shell_never_closes_is_refused_not_zeroed():
+    """The gate the other four could not see. `len(s.solids()) == 0` runs BEFORE
+    the integration, and an open shell wrapped in a TopoDS_SOLID passes it — it
+    IS a solid by topology. OnlyClosed=True then integrates nothing, so Mass()
+    stays 0.0 and CentreOfMass() returns its untouched reference point, the
+    ORIGIN. That shipped as `measured: true, volume: 0.0, com: [0,0,0]` on a body
+    sitting 36 mm away (Fenrir body2), i.e. a centre of mass outside its own box.
+
+    Curved on purpose, and positioned away from the origin so that a regression
+    reproduces the exact symptom: com [0,0,0] lying outside the bbox."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
+
+    cyl = Pos(40, 0, 0) * Cylinder(5, 20)
+    faces = cyl.faces()
+    # the barrel plus ONE cap: a cup, which sews into a single open shell.
+    # (faces()[1:] on a cylinder leaves two disjoint discs and will not sew.)
+    barrel = [f for f in faces if f.geom_type.name != "PLANE"]
+    caps = [f for f in faces if f.geom_type.name == "PLANE"]
+    open_shell = Shell(barrel + caps[:1])
+    mk = BRepBuilderAPI_MakeSolid(open_shell.wrapped)
+    rec = _one(Solid(mk.Solid()))
+
+    assert rec["measured"] is False, \
+        f"a solid with no closed shell was measured anyway: {rec}"
+    assert rec["reason"] == "open shell", rec
+    for k in ("volume", "com", "area", "bbox", "counts"):
+        assert k not in rec, f"{k} present on an unmeasurable body: {rec}"
+    print(PASS, "a solid whose shell never closes is refused, not zeroed")
+
+
+def test_an_unpublishable_bbox_is_null_and_skews_no_total():
+    """mesh_bbox returns None for a void box, and OCCT hands back +/-1e100 for
+    unbounded geometry. The 1e100 is the dangerous one: it reads as an ordinary
+    number and drags total.bbox to the edge of the universe. The None used to
+    crash the union outright (r["bbox"]["min"][i] on a None)."""
+    from builder import _publishable_bbox
+
+    good = {"min": [-1.0, -2.0, -3.0], "max": [1.0, 2.0, 3.0]}
+    assert _publishable_bbox(good) is True
+    assert _publishable_bbox(None) is False, "a void box must not be published"
+    assert _publishable_bbox({"min": [-1e100] * 3, "max": [1e100] * 3}) is False, \
+        "OCCT's infinite box must not be published as numbers"
+    assert _publishable_bbox({"min": [0.0, 0.0, float("nan")],
+                              "max": [1.0, 1.0, 1.0]}) is False
+    assert _publishable_bbox({"min": [0.0, 0.0], "max": [1.0, 1.0, 1.0]}) is False
+    print(PASS, "void, infinite and malformed boxes are all refused publication")
+
+
 def test_checks_are_opt_in_and_watertightness_is_real():
     plain = _one(Box(10, 10, 10))
     assert "valid" not in plain and "watertight" not in plain, \
@@ -216,6 +264,8 @@ def main():
     test_nested_compounds_are_summed_not_read_off_the_top_level()
     test_unmeasurable_bodies_report_why_and_stay_out_of_the_total()
     test_zero_total_volume_is_not_a_crash()
+    test_a_solid_whose_shell_never_closes_is_refused_not_zeroed()
+    test_an_unpublishable_bbox_is_null_and_skews_no_total()
     test_checks_are_opt_in_and_watertightness_is_real()
     test_bbox_is_conservative_on_curved_bodies()
     test_it_measures_what_the_document_actually_builds()

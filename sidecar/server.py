@@ -1291,12 +1291,12 @@ def _migrate_geometry_job(items):
     return {"items": out, "failed": failed}
 
 
-def _query_job(document, items, prefix=False):
+def _query_job(document, items, prefix=False, strict=True):
     """Worker: resolve selectors / match predicates, returning storable refs."""
     from builder import query_geometry
 
     try:
-        return query_geometry(document, items, prefix=prefix)
+        return query_geometry(document, items, prefix=prefix, strict=strict)
     except Exception as ex:
         return _error_from(ex, errors_mod.BAD_REQUEST)
 
@@ -2432,7 +2432,10 @@ async def _dispatch(ws, loop, req, req_id, op):
             await ws.send(_err(req_id, "query: bad items", code=errors_mod.BAD_REQUEST))
             return
         res = await _run_stall(loop, _query_job, req["document"], items,
-                               bool(req.get("prefix")))
+                               bool(req.get("prefix")),
+                               # strict is ON unless the caller opts out: the
+                               # lazy reading of a reply must be the correct one.
+                               req.get("strict", True) is not False)
         await ws.send(_reply_for(req_id, res))
 
     elif op == "interference":

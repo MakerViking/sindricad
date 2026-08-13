@@ -736,6 +736,9 @@ export type GeomErrorCode =
   | "bodyTooLarge"
   | "unknownOp"
   | "badRequest"
+  | "expectFailed"
+  | "budgetExhausted"
+  | "matchImplausible"
   | (string & {});
 
 // Optional per-selector resolution diagnostic (selector v2). Lets a rebuild surface
@@ -793,7 +796,10 @@ export type BodyMassProperties =
       /** mm^2, exact */
       area: number;
       com: [number, number, number];
-      bbox: { min: [number, number, number]; max: [number, number, number] };
+      /** null when the body has no publishable extent: no triangulation, or
+       *  unbounded geometry (OCCT reports +/-1e100, which reads as a real
+       *  number and would poison total.bbox). */
+      bbox: { min: [number, number, number]; max: [number, number, number] } | null;
       counts: { solids: number; shells: number; faces: number; edges: number; vertices: number };
       /** present only when the request set `checks` */
       valid?: boolean;

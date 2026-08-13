@@ -282,11 +282,20 @@ Reply:
 Things that are **not guessable** and that change what the numbers mean:
 
 - **An unmeasurable body carries no numeric fields at all**, not zeros. `reason` is one of
-  `feature failed`, `empty`, `no solid`. Absent and zero are different answers.
+  `feature failed`, `empty`, `no solid`, `open shell`. Absent and zero are different answers.
+- `open shell` means the body IS a solid by topology but no shell of it closes, so there is
+  no volume to integrate. It is reported rather than measured because the alternative was a
+  fabricated `volume: 0.0` with a centre of mass outside the body's own bounding box — the
+  volume integration skips non-closed shells, leaving the centre at its untouched reference
+  point, the origin. Common on imported STEP; such a body's surface **area** is real but is
+  not reported, because a partially-numeric record is worse than an honest refusal.
 - `total.bodies` counts only the bodies that were **measured**, so it can be lower than
   the number asked about.
 - `total.com` is **null** when the total volume is zero — there is nothing to weight the
   mean by. It is a volume-weighted mean, not an average of the per-body centres.
+- A per-body `bbox` is **null** when the body has no publishable extent: no triangulation,
+  or unbounded geometry. Such bodies are left out of the `total.bbox` union rather than
+  dragging it to OCCT's 1e100.
 - `counting: "build123d"` — counts follow what a **selector can address**, which excludes
   degenerate edges. A sphere is 1 face and 1 edge here; raw topology would say 3 edges.
 - `bboxSource: "mesh"` — the box comes from the triangulation, so it is **conservative:
@@ -356,28 +365,82 @@ Reply:
 
 - **`count` is the TRUE pre-limit total.** `count > entities.length` is itself the
   truncation signal; there is no separate flag.
+- **`strict` (default TRUE) judges what a `by:"match"` selector resolved to.** That
+  selector is a nearest-neighbour search that always returns its best candidate, so
+  without this it cannot fail — a fingerprint for a 394 mm² face sent with the wrong body
+  came back as a 14 mm² face 30 mm away, `ok:true`, `expect:1` satisfied. An implausible
+  answer is now refused with `code:"matchImplausible"` and a `candidateFps` entry showing
+  what it would have returned. Send `"strict": false` for the old behaviour.
+- **Every result carries `match`**, on success too, so the judgement is legible either
+  way: `{judged: true, dist, posRel, sizeRatio, classMismatch?, tied?, implausible?}`.
+  `{judged: false}` means no identity was claimed — a `where`-only item, or
+  `by:"normal"|"axis"|"all"`, which return a SET with an honest `count` and have no single
+  entity to be wrong about. Under `strict: false` an implausible answer still reports
+  `implausible`; it just is not acted on.
+- The invariants are **scale-relative**, not a threshold on match cost: a wrong surface
+  class, a centroid more than **2× the part's own bbox diagonal** away, a size differing by
+  **10× on a match that ALSO moved**, or a tie that nothing disambiguated. The size rule is
+  a conjunction on purpose — area is a squared quantity, so 10× area is only 3.16× linear
+  (a rib going 2 mm → 7 mm), and judging size alone refused ordinary in-place resizes that
+  had resolved perfectly. Cost is deliberately not used: over the frozen selector corpus,
+  refusing above the resolver's `ACCEPT_MAX` would reject **79.4% of correct resolutions**,
+  and the known-bad cases score *below* the median correct one.
+- **`by:"ofFace"` and `by:"tangentChain"` are judged too**, on their INNER reference (the
+  face whose edges are wanted, the seed edge of the chain), and report `match.via`. Without
+  that, rewriting `by:"match"` as `by:"ofFace"` turned the gate off.
+- **Known limits of the judgement, stated so you do not over-trust it:** it compares the
+  fingerprint you sent against the one that came back, so it cannot see that a *better*
+  candidate existed. A self-contradictory fingerprint — a centroid belonging to one face
+  with the normal of another — resolves to a third face and passes with a clean `match`.
+  `by:"nearest"` is not judged at all. And on a tie, `candidateFps` carries only the winner;
+  the losing candidates are not enumerable at this layer.
 - `where` keys combine as **AND**. `sel` is applied **before** `where`.
-- **`normal` matches PLANAR faces only**, and its tolerance defaults to the resolver's
-  tuned `ANG_TOL`. A single direction is meaningless on a curved face.
+- **`normal` matches PLANAR faces only.** A single direction is meaningless on a curved
+  face — a cylinder lying on its side reports "up" at one point of its surface, which is
+  why a part whose text sits on a barrel cannot be found by any direction query at all.
+- **`normal` tolerance: use `deg`.** `{"dir": [0,0,1], "deg": 5}` is a half-angle, which is
+  what a caller almost always means. The older `{"tol": ...}` is a **cosine deviation**
+  (`1 - dot`), not an angle: `deg 5` is `tol 0.0038`. Because `1 - dot` never exceeds 2, a
+  degree-shaped `tol: 5` used to accept the ANTIPODAL face — "facing up" and "facing down"
+  returned the same set. A `tol` above 1.0 is now refused with `badRequest` for that reason.
+  Give one or the other, never both. Omitting both uses the resolver's tuned `ANG_TOL`
+  (0.02, ~11.5°).
 - **Combine `normal` with `area` on any part carrying text or texture.** Those features
   produce hundreds of tiny faces, and a bare direction query drowns in them. Measured on a
   real 158-face part: asking for upward planar faces returned **13, of which 11 were
-  0.33–0.36 mm² glyph faces**, with the one that mattered at 1661 mm² buried among them.
-  Adding `"area": {"min": 1.0}` cut it to 3, significant face first. This is not a defect in
-  the predicate — it is what a model with text on it genuinely looks like.
+  0.33–0.36 mm² glyph faces**. Adding `"area": {"min": 1.0}` cut it to 3, significant face
+  first. This is not a defect in the predicate — it is what a model with text on it
+  genuinely looks like. Note the 1661 mm² face in that example is the part's **cavity
+  floor**, not its lettering: this filter makes a flooded part readable, it does not find
+  text. (That part's text is on a cylinder, so no `normal` query reaches it.)
 - **Two faces can legitimately share a direction.** On a hollowed part the outer rim and the
   inner cavity floor both face up, and no direction predicate separates them — a real limit,
-  not a bug. Separate them by `area`, by `within` on the centroid, or by `createdBy` (the
-  shell feature owns the inner face).
-- Edge `dir` is **sign-normalised**: `[0,0,1]` and `[0,0,-1]` select the same edges.
+  not a bug. Separate them by `area`, by `within` on the centroid, or by `createdBy` — but
+  note `createdBy` is the LAST MODIFIER, so on a part edited after shelling the inner face
+  belongs to that later feature, not to the shell.
+- Edge `dir` is **sign-normalised**: `[0,0,1]` and `[0,0,-1]` select the same edges. It
+  takes a bare vector and has no tolerance of its own.
 - `createdBy` is **faces only** (refused for edges), and is **last-modifier, not creator** —
   any re-keyed face is attributed to the feature that last touched it.
-- An empty `diagnostics` means the resolution was **unambiguous**. A lossy match is passed
-  through WITH its diagnostic rather than refused: this op is read-only inspection, so
-  "this reference went ambiguous, show me the candidates" is a supported use.
+- **Unknown predicate values are refused**, not answered with zero. `surface` and `curve`
+  have closed alphabets (see above); `surface: "Plane"` is a `badRequest`, because
+  `ok:true, count:0` would read as "no such face exists".
+- **`diagnostics` is only as good as what the resolver chose to record**, and it is empty in
+  two very different situations: a confident resolution, and a resolution nothing thought to
+  question. For `by:"match"` in particular an empty `diagnostics` is NOT a guarantee that
+  the right entity was found — that selector always returns its best candidate. A lossy
+  match is passed through WITH its diagnostic rather than refused: this op is read-only
+  inspection, so "this reference went ambiguous, show me the candidates" is a supported use.
+  When a resolution IS refused, the diagnostics still ride along, carrying `candidateFps`
+  to re-pick from.
 - **One bad item never fails the call.** Indices stay aligned with the request.
-- `expect` is judged on `count`; a miss returns `ok:false` with `code:"expectFailed"` and
-  still reports what it found.
+- **`expect` takes an integer or an object.** `expect: 6` asserts the count.
+  `expect: {count: 1, area: {min: 390, max: 410}}` asserts the count AND requires every
+  returned entity to satisfy the remaining keys, which are ordinary `where` predicates.
+  Prefer the object form for an identity claim: `expect: 1` against a `by:"match"` is a
+  **tautology**, because that selector always resolves exactly one — it asserts cardinality
+  and is silent about which entity you got. A miss returns `ok:false` with
+  `code:"expectFailed"` and still reports what it found.
 - Bounded: at most 64 items, `limit` at most 5000, and a **total of 5000 entities across
   the whole request** — per-item limits multiply, and this op replies on a path with no
   outbound frame-size guard. There is also a wall-clock budget; items that run past it

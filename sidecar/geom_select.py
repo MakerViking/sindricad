@@ -368,9 +368,27 @@ def edge_fingerprint(e, part):
 
 def face_fingerprint(f, part):
     """Author a face selector fingerprint. `part` is accepted for symmetry with
-    edge_fingerprint and future concentric-face rank support (unused today)."""
+    edge_fingerprint and future concentric-face rank support (unused today).
+
+    `area` is OMITTED when the integration yields zero (or worse) on a face that
+    plainly has extent — which happens on damaged imports, whose faces can carry
+    broken parametric domains that BRepGProp bounds to nothing. Storing that 0.0
+    is not merely uninformative, it is corrosive: _rel_err against 0.0 is 1.0 for
+    EVERY candidate, so the area term contributes a flat W_AREA/AREA_REL_TOL =
+    +20 against an ACCEPT_MAX of 2.5. The reference is then permanently lossy,
+    and its area discriminator is flattened to a constant, so ties fall through
+    to position and normal alone. _face_cost already guards with `if "area" in
+    fp`, so an absent key degrades cleanly to the remaining terms.
+    """
     c, n = _face_centroid(f), _face_normal(f)
-    fp = {"centroid": [c.X, c.Y, c.Z], "normal": [n.X, n.Y, n.Z], "area": f.area, "surface": _face_surface(f)}
+    fp = {"centroid": [c.X, c.Y, c.Z], "normal": [n.X, n.Y, n.Z]}
+    try:
+        a = f.area
+    except Exception:
+        a = None
+    if a is not None and math.isfinite(a) and a > 0.0:
+        fp["area"] = a  # kept in its historical position in the key order
+    fp["surface"] = _face_surface(f)
     r = _face_radius(f)
     if r is not None:
         fp["radius"] = r
@@ -855,6 +873,47 @@ def _within(pt, spec):
     return True
 
 
+_FACE_SURFACES = {"plane", "cylinder", "cone", "sphere", "torus", "bspline", "other"}
+_EDGE_CURVES = {"line", "circle", "ellipse", "bspline", "other"}
+
+
+def _cos_slack(spec, what):
+    """The `1 - dot` slack a direction predicate accepts.
+
+    `tol` is a COSINE deviation, not an angle, and that is not guessable: it was
+    read as degrees in the field, where `tol: 5` means "accept everything" —
+    `1 - dot` never exceeds 2, so the threshold admits the ANTIPODAL face and
+    "facing up" and "facing down" return the same set. `deg` states the same
+    threshold as a half-angle, which is what a caller almost always means.
+
+    A tol above 1.0 already accepts a full hemisphere, so it is far more likely
+    to be degrees than a deliberate choice. Refuse it rather than honour it.
+    """
+    if not isinstance(spec, dict):
+        return ANG_TOL
+    if "deg" in spec:
+        if "tol" in spec:
+            raise errors.GeomError(
+                f"{what}: give either `deg` (an angle) or `tol` (a cosine "
+                f"deviation), not both", errors.BAD_REQUEST)
+        deg = float(spec["deg"])
+        if not 0.0 <= deg <= 180.0:
+            raise errors.GeomError(f"{what}: deg must be 0..180", errors.BAD_REQUEST)
+        return 1.0 - math.cos(math.radians(deg))
+    if "tol" in spec:
+        tol = float(spec["tol"])
+        if tol < 0.0:
+            raise errors.GeomError(f"{what}: tol must be >= 0", errors.BAD_REQUEST)
+        if tol > 1.0:
+            raise errors.GeomError(
+                f"{what}: tol is a COSINE deviation (1 - dot), not an angle — "
+                f"{tol:g} accepts a hemisphere or more, so every face matches. "
+                f"Use `deg` for an angle (deg 5 == tol 0.0038), or a tol <= 1.0.",
+                errors.BAD_REQUEST)
+        return tol
+    return ANG_TOL
+
+
 def query_entities(part, kind, where, cands=None, owners=None, tick=None):
     """Entities of `kind` matching every key in `where` (AND).
 
@@ -878,6 +937,36 @@ def query_entities(part, kind, where, cands=None, owners=None, tick=None):
         # owner, so answering would mean inventing a rule.
         raise errors.GeomError("createdBy is not available for edges", errors.BAD_REQUEST)
 
+    # Predicate VALUES are checked here, not per candidate. Both alphabets are
+    # closed (they are what _face_surface/_edge_curve can return), so a value
+    # outside them cannot match anything — and returning ok:true count:0 for
+    # `surface: "Plane"` reads as "no such face exists", which is a wrong answer
+    # to a question that was never asked. An unknown KEY was already refused
+    # above; an unknown VALUE was not.
+    if kind == "face" and "surface" in where and where["surface"] not in _FACE_SURFACES:
+        raise errors.GeomError(
+            f"unknown surface {where['surface']!r} — one of "
+            f"{', '.join(sorted(_FACE_SURFACES))}", errors.BAD_REQUEST)
+    if kind == "edge" and "curve" in where and where["curve"] not in _EDGE_CURVES:
+        raise errors.GeomError(
+            f"unknown curve {where['curve']!r} — one of "
+            f"{', '.join(sorted(_EDGE_CURVES))}", errors.BAD_REQUEST)
+
+    # Direction predicates are resolved ONCE, outside the loop: the threshold is
+    # the same for every candidate, and parsing it inside means a malformed one
+    # is swallowed by the per-candidate `except Exception: continue` and reported
+    # as "nothing matched" instead of as a bad request.
+    ndir = nslack = None
+    if kind == "face" and "normal" in where:
+        spec = where["normal"]
+        ndir = _unit(_v(spec["dir"] if isinstance(spec, dict) else spec))
+        nslack = _cos_slack(spec, "normal")
+    edir = None
+    if kind == "edge" and "dir" in where:
+        # Edge `dir` keeps its hardcoded ANG_TOL — it takes a bare vector and has
+        # never accepted a tolerance. Only the parse moves out of the loop.
+        edir = _unit(_sign_normalize(_v(where["dir"])))
+
     if cands is None:
         cands = list(part.faces() if kind == "face" else part.edges())
     out = []
@@ -890,16 +979,13 @@ def query_entities(part, kind, where, cands=None, owners=None, tick=None):
                     continue
                 if "within" in where and not _within(_face_centroid(c), where["within"]):
                     continue
-                if "normal" in where:
-                    spec = where["normal"]
+                if ndir is not None:
                     # PLANAR only, and the tolerance comes from the tuning file —
                     # never a hardcoded 0.99. This is the same defect the
                     # by:"normal" selector had; a new surface must not reintroduce it.
                     if not _is_planar(c):
                         continue
-                    d = _unit(_v(spec["dir"] if isinstance(spec, dict) else spec))
-                    tol = float(spec.get("tol", ANG_TOL)) if isinstance(spec, dict) else ANG_TOL
-                    if 1.0 - _face_normal(c).dot(d) > tol:
+                    if 1.0 - _face_normal(c).dot(ndir) > nslack:
                         continue
                 if "radius" in where and not _in_range(_face_radius(c), where["radius"]):
                     continue
@@ -913,11 +999,10 @@ def query_entities(part, kind, where, cands=None, owners=None, tick=None):
                     continue
                 if "within" in where and not _within(_edge_mid(c), where["within"]):
                     continue
-                if "dir" in where:
+                if edir is not None:
                     # _edge_dir is sign-normalized, so +dir and -dir select the
                     # same set. That is the existing convention, not a new one.
-                    d = _unit(_sign_normalize(_v(where["dir"])))
-                    if 1.0 - abs(_edge_dir(c).dot(d)) > ANG_TOL:
+                    if 1.0 - abs(_edge_dir(c).dot(edir)) > ANG_TOL:
                         continue
                 if "radius" in where and not _in_range(_edge_radius(c), where["radius"]):
                     continue

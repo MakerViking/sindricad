@@ -41,14 +41,31 @@ def test_geom_error_survives_a_pickle_round_trip():
     print(PASS, "GeomError pickles round trip with its code, and is still a ValueError")
 
 
+def _literal_codes(src):
+    """Bare string codes assigned to a `code` key, which the constant walk below
+    cannot see. Kept as a function so the scan itself can be tested."""
+    import re
+
+    return (set(re.findall(r'\["code"\]\s*=\s*"([A-Za-z]+)"', src))
+            | set(re.findall(r'"code":\s*"([A-Za-z]+)"', src)))
+
+
 def test_every_code_raised_in_the_tree_is_in_the_vocabulary():
     """Guards against a typo'd literal at a raise site: a code that is not in
     errors.ALL reaches the client as an unrecognised string and silently
-    degrades to 'unclassified' rather than failing loudly."""
+    degrades to 'unclassified' rather than failing loudly.
+
+    Two scans, because the first one alone validated the module against ITSELF.
+    Walking `errors.NAME` references can only ever find codes that already went
+    through errors.py — it was structurally blind to a bare string literal, and
+    two of them ("expectFailed", "budgetExhausted") lived in query_geometry for
+    exactly that reason, documented on the wire and absent from the vocabulary.
+    """
     import re
 
+    files = ("geom_select.py", "server.py", "builder.py")
     seen = set()
-    for path in ("geom_select.py", "server.py", "builder.py"):
+    for path in files:
         src = open(os.path.join(os.path.dirname(__file__), path)).read()
         seen |= set(re.findall(r"errors(?:_mod)?\.([A-Z][A-Z_]+)", src))
     seen -= {"ALL"}
@@ -56,7 +73,24 @@ def test_every_code_raised_in_the_tree_is_in_the_vocabulary():
         assert hasattr(errors, name), f"{name} is not defined in errors.py"
         assert getattr(errors, name) in errors.ALL, f"{name} is missing from errors.ALL"
     assert seen, "found no code constants at all — the regex or the wiring is wrong"
-    print(PASS, f"all {len(seen)} code constants used in the tree are in errors.ALL")
+
+    literals = set()
+    for path in files:
+        src = open(os.path.join(os.path.dirname(__file__), path)).read()
+        literals |= _literal_codes(src)
+    for lit in literals:
+        assert lit in errors.ALL, (
+            f'the literal code "{lit}" is not in errors.ALL — add a constant for '
+            f"it, or the client sees an unclassified string")
+
+    # A CONTROL. The tree currently contains no bare literal, so the loop above
+    # is vacuously true and would keep passing if the regex rotted. Prove the
+    # scan still catches the exact shape that got past the constant walk.
+    planted = _literal_codes('rec["code"] = "expectFailed"\n    x = {"code": "wibble"}')
+    assert planted == {"expectFailed", "wibble"}, planted
+    assert "wibble" not in errors.ALL
+    print(PASS, f"all {len(seen)} constants and {len(literals)} literal codes are in "
+                f"errors.ALL (scan verified against a planted literal)")
 
 
 def test_reply_for_forwards_the_code():

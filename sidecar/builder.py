@@ -7283,10 +7283,34 @@ def _watertight(shape):
     return in_shells.Extent() == all_faces.Extent()
 
 
+_BBOX_LIMIT = 1e99
+
+
+def _publishable_bbox(bb):
+    """Is this mesh box something we can hand to a caller as a measurement?
+
+    Two ways it is not. `tessellate.mesh_bbox` returns None for a VOID box (a
+    body with no triangulation), and OCCT hands back a box of +/-1e100 for a
+    shape with unbounded geometry — seen on damaged STEP imports. 1e100 is the
+    dangerous one: it reads as an ordinary number, so it silently drags
+    total.bbox out to the edge of the universe. The None used to crash the
+    union outright.
+    """
+    if not bb:
+        return False
+    try:
+        vals = list(bb["min"]) + list(bb["max"])
+    except (KeyError, TypeError, IndexError):
+        return False
+    return len(vals) == 6 and all(
+        isinstance(v, (int, float)) and math.isfinite(v) and abs(v) < _BBOX_LIMIT
+        for v in vals)
+
+
 def _measure_one(body, checks, tick):
     """One body's mass properties, or a `measured: false` record saying why.
 
-    The four gates run BEFORE anything touches .wrapped / volume / a bounding box,
+    Four gates run BEFORE anything touches .wrapped / volume / a bounding box,
     because each of those has a way of lying or throwing on a degenerate body:
       - build123d >=0.11 makes `.wrapped` a property that ASSERTS on an empty shape
       - an empty compound has a .wrapped, reports area 0.0, and yields a degenerate
@@ -7294,6 +7318,8 @@ def _measure_one(body, checks, tick):
         (0,0,0); bbox_of's docstring records 8 such bodies in the reference assembly
       - a shell-only body has no volume to speak of, and integrating it as though it
         were closed produces a NEGATIVE mass and a meaningless centre
+    A FIFTH gate runs after the integration, because it is the only place the
+    condition is visible: see the comment on `vol == 0.0` below.
     An unmeasurable body carries NO numeric keys at all, rather than zeros: a zero
     volume and an absent volume mean different things, and a formatter downstream
     cannot tell them apart after the fact.
@@ -7327,6 +7353,20 @@ def _measure_one(body, checks, tick):
     vol = abs(props.Mass())
     tick()
 
+    # The gates above ran BEFORE the integration and so cannot see this one. An
+    # open shell wrapped in a TopoDS_SOLID passes `len(s.solids()) == 0` — it IS
+    # a solid by topology — and then OnlyClosed=True makes it contribute NOTHING:
+    # Mass() stays 0.0 and CentreOfMass() hands back its untouched reference
+    # point, the origin. abs() launders that into a clean zero, which is how a
+    # body shipped `measured: true, volume: 0.0, com: [0,0,0]` with a centre of
+    # mass 36 mm OUTSIDE its own bounding box (Fenrir body2 — the box comes from
+    # the triangulation, a different path, and was right all along).
+    # A closed solid cannot enclose zero volume, so past those gates vol == 0.0
+    # means no shell closed. Both values are already computed; this costs nothing
+    # on a path where the measurement itself is 86 s on the reference assembly.
+    if vol == 0.0:
+        return {**out, "measured": False, "reason": "open shell"}
+
     # `Shape.area` recurses into nested compounds correctly (unlike .volume, which
     # sums one level and returns 0 on a nested one), so area stays on build123d.
     area = s.area
@@ -7352,6 +7392,8 @@ def _measure_one(body, checks, tick):
     import tessellate
 
     bb = tessellate.mesh_bbox(s)
+    if not _publishable_bbox(bb):
+        bb = None
     tick()
 
     rec = {**out, "measured": True, "volume": vol, "area": area,
@@ -7412,9 +7454,14 @@ def mass_properties(bodies, checks=False, tick=None):
         # bounding_box() over everything is a single UNTICKABLE OCCT walk, measured
         # at 95.3 s on the reference assembly against a 60 s stall budget, and it
         # was reaped every time. Four lines here, and no import from server.
-        lo = [min(r["bbox"]["min"][i] for r in measured) for i in range(3)]
-        hi = [max(r["bbox"]["max"][i] for r in measured) for i in range(3)]
-        total["bbox"] = {"min": lo, "max": hi}
+        # Only over bodies that HAVE a publishable box: an unbounded or
+        # untriangulated one is null, and including it would either crash on the
+        # subscript or push the union to 1e100.
+        boxed = [r for r in measured if r.get("bbox")]
+        if boxed:
+            lo = [min(r["bbox"]["min"][i] for r in boxed) for i in range(3)]
+            hi = [max(r["bbox"]["max"][i] for r in boxed) for i in range(3)]
+            total["bbox"] = {"min": lo, "max": hi}
     return {"bodies": out, "total": total}
 
 
@@ -7434,7 +7481,110 @@ _QUERY_MAX_TOTAL = 5000
 _QUERY_BUDGET_S = 20.0
 
 
-def query_geometry(document, items, prefix=False):
+# The strict gate for by:"match". Three SCALE-RELATIVE invariants, ORed — not a
+# threshold on the resolver's cost, which was measured useless for this: over the
+# frozen 220-case corpus, refusing above ACCEPT_MAX (2.5) would reject 79.4% of
+# CORRECT resolutions, and the specification failures score BELOW the median
+# correct answer (65.11 against a p50 of 22.74). cost measures drift, not
+# correctness, which is why ACCEPT_MAX only ever set an advisory flag.
+#
+# Calibration over the corpus's 218 correct resolutions:
+#   class mismatch     0/218          a plane does not become a cylinder under an edit
+#   positional drift   max 0.541      of the part's own bbox diagonal
+#   size ratio         max ~1.75
+# The size rule is a CONJUNCTION — a big size change AND a centroid that moved —
+# because size alone was measured wrong in both directions. Loose (50x) accepted
+# the real wrong-body defect (28.18x at drift 0.308). Tight (10x alone) refused
+# ordinary resizes that resolved PERFECTLY: area is a squared quantity, so 10x
+# area is only 3.16x linear, and a rib growing 2mm -> 7mm tripped it at
+# dist 1.9e-16 — the tool refusing an answer it was simultaneously certain of.
+# Every false refusal measured had the centroid dead still; every true catch had
+# it moved. Requiring both separates them with no overlap.
+_MATCH_MAX_DRIFT = 2.0
+_MATCH_MAX_SIZE_RATIO = 10.0
+_MATCH_SIZE_NEEDS_DRIFT = 0.1
+
+
+def _ratio(a, b):
+    """max/min, the way to say "grossly different". _rel_err saturates at 1.0
+    (measured 0.996 for a 250x mismatch) and so cannot express it at all."""
+    if a is None or b is None:
+        return None
+    a, b = abs(float(a)), abs(float(b))
+    lo, hi = min(a, b), max(a, b)
+    if lo <= 1e-12:
+        return math.inf if hi > 1e-12 else 1.0
+    return hi / lo
+
+
+def _judge_match(want, got, kind, diag_span, bbox_diag):
+    """Is the entity `got` a plausible answer to the fingerprint `want`?
+
+    Compares two fingerprints — the one asked for and the one re-authored from
+    what came back — so it needs nothing from the resolver's internals and
+    cannot perturb resolution. by:"match" is a nearest-neighbour search that
+    always returns its best candidate; this is the check it never had.
+    """
+    m = {"judged": True}
+    reasons = []
+
+    wk, gk = ("surface", "surface") if kind == "face" else ("curve", "curve")
+    if want.get(wk) and got.get(gk) and want[wk] != got[gk]:
+        m["classMismatch"] = f"{want[wk]} != {got[gk]}"
+        reasons.append(f"asked for a {want[wk]}, found a {got[gk]}")
+
+    wc = want.get("centroid") if kind == "face" else want.get("mid")
+    gc = got.get("centroid") if kind == "face" else got.get("mid")
+    if wc and gc:
+        d = math.dist(wc[:3], gc[:3])
+        m["dist"] = d
+        if bbox_diag and bbox_diag > 0:
+            m["posRel"] = d / bbox_diag
+            if m["posRel"] > _MATCH_MAX_DRIFT:
+                reasons.append(
+                    f"it sits {m['posRel']:.1f}x the part's own size away "
+                    f"({d:.3f}mm)")
+
+    sk = "area" if kind == "face" else "length"
+    ratio = _ratio(want.get(sk), got.get(sk))
+    if ratio is not None:
+        m["sizeRatio"] = ratio
+        moved = m.get("posRel")
+        if ratio >= _MATCH_MAX_SIZE_RATIO and (moved is None
+                                               or moved >= _MATCH_SIZE_NEEDS_DRIFT):
+            reasons.append(f"its {sk} differs by {ratio:.0f}x and it moved")
+
+    # A coin-flip is not a match. The resolver breaks a tie by canonical order
+    # when no `nth` says which one is meant, and records it — the same shape as
+    # an already-shipped wrong press/pull.
+    for d in diag_span or ():
+        if d.get("reason") == "tie; canonical-first":
+            m["tied"] = True
+            reasons.append("several candidates tied and nothing said which")
+
+    if reasons:
+        m["implausible"] = reasons
+    return m
+
+
+def _bbox_diag_of(shape):
+    """The part's own diagonal, so the drift gate is SCALE-RELATIVE. An absolute
+    millimetre gate is exactly what _nearest_one's docstring rules out: ordinary
+    parametric motion moves a face far from its stored point while it remains the
+    right face. Uses the mesh box (0.053 ms) rather than the exact one (44.84 ms,
+    846x, and it discards the triangulation)."""
+    try:
+        import tessellate
+
+        bb = tessellate.mesh_bbox(shape)
+        if not _publishable_bbox(bb):
+            return None
+        return math.dist(bb["min"], bb["max"])
+    except Exception:
+        return None
+
+
+def query_geometry(document, items, prefix=False, strict=True):
     """Resolve selectors and/or match predicates, returning storable references.
 
     Per-item containment, like project_geometry: one bad item never fails the
@@ -7454,6 +7604,17 @@ def query_geometry(document, items, prefix=False):
     whole thing. Caching a prefix is what poisons the human's warm cache (see
     rebuild_cached's own docstring), and only the caller knows which it is
     holding — the sidecar receives a feature list either way and cannot tell.
+
+    `strict` (ON by default) judges what a by:"match" selector resolved to and
+    REFUSES an implausible answer with code matchImplausible, instead of handing
+    back a confident wrong entity. That selector is a nearest-neighbour search
+    that always returns its best candidate, so without this it cannot fail: a
+    fingerprint for a 394 mm2 face, sent with the wrong body id, came back as a
+    14 mm2 face 30 mm away with ok:true and expect:1 satisfied. Every result
+    carries `match`, on success too, so the judgement is legible either way;
+    `match: {judged: false}` means no identity was claimed (a where-only item, or
+    by:"normal"/"axis"/"all", which return a SET with an honest count and have no
+    single entity to be wrong about). `strict: false` restores the old bytes.
     """
     import time
 
@@ -7477,10 +7638,16 @@ def query_geometry(document, items, prefix=False):
     for i, item in enumerate(items):
         rec = {"index": i, "id": item.get("id"), "ok": False,
                "count": 0, "entities": [], "diagnostics": []}
+        # Bound BEFORE the try, and copied out again in the except. A refusal
+        # from the resolver (an ambiguous by:"nearest" pick) raises AFTER
+        # _push_diag has written its candidateFps repair payload, so assigning
+        # diagnostics only on the success path threw away the one thing that
+        # lets the caller repair the selector it just asked about.
+        diag = []
         try:
             if time.monotonic() - t0 > _QUERY_BUDGET_S:
                 rec["error"] = "the query ran out of its time budget"
-                rec["code"] = "budgetExhausted"
+                rec["code"] = ERR.BUDGET_EXHAUSTED
                 results.append(rec)
                 continue
 
@@ -7500,7 +7667,6 @@ def query_geometry(document, items, prefix=False):
                 body = live[0]
             shape = body["shape"]
 
-            diag = []
             cands = None
             if item.get("sel") is not None:
                 # sel BEFORE where, always. Resolving first and filtering after is
@@ -7511,6 +7677,58 @@ def query_geometry(document, items, prefix=False):
                 resolve = resolve_faces if kind == "face" else resolve_edges
                 cands = resolve(shape, item["sel"], diag=diag, feature_id=item.get("id"))
 
+            # Judge the RESOLUTION, before `where` can filter the result away: a
+            # caller whose stored reference now points at the wrong entity needs
+            # to hear that, not "nothing matched".
+            sel = item.get("sel")
+            fp_of = face_fingerprint if kind == "face" else edge_fingerprint
+            match = {"judged": False}
+            # by:"ofFace" and by:"tangentChain" claim an identity too — with an
+            # INNER fingerprint (the face whose edges are wanted, the seed edge of
+            # the chain). Judging only by:"match" left the gate one field name
+            # from off: a fingerprint refused standalone sailed through ofFace and
+            # reported judged:false, which the schema defines as "no identity was
+            # claimed". Resolve that inner reference and judge it the same way.
+            inner = None
+            if isinstance(sel, dict):
+                if sel.get("by") == "ofFace":
+                    inner = ("face", sel.get("face"))
+                elif sel.get("by") == "tangentChain":
+                    inner = ("edge", sel.get("seed"))
+
+            if (isinstance(sel, dict) and sel.get("by") == "match"
+                    and isinstance(sel.get("fp"), dict) and cands):
+                got = fp_of(cands[0], shape)
+                match = _judge_match(sel["fp"], got, kind, diag,
+                                     _bbox_diag_of(shape))
+            elif inner and isinstance(inner[1], dict):
+                ikind, ifp = inner
+                iresolve = resolve_faces if ikind == "face" else resolve_edges
+                ifp_of = face_fingerprint if ikind == "face" else edge_fingerprint
+                idiag = []
+                ihit = iresolve(shape, {"kind": ikind, "by": "match", "fp": ifp},
+                                diag=idiag, feature_id=item.get("id"))
+                if ihit:
+                    match = _judge_match(ifp, ifp_of(ihit[0], shape), ikind, idiag,
+                                         _bbox_diag_of(shape))
+                    match["via"] = sel["by"]
+
+            if strict and match.get("implausible"):
+                rec["match"] = match
+                rec["diagnostics"] = diag
+                rec["error"] = (
+                    "the stored reference does not plausibly identify what it "
+                    "resolved to: " + "; ".join(match["implausible"]))
+                rec["code"] = ERR.MATCH_IMPLAUSIBLE
+                # what it WOULD have handed back, so the caller can re-pick or
+                # confirm — the repair role candidateFps plays on the
+                # ambiguous-nearest path. On a TIE this is only the winner; the
+                # losing candidates are not enumerable here (see PROTOCOL).
+                if match.get("via") is None and cands:
+                    rec["candidateFps"] = [{"fp": fp_of(cands[0], shape)}]
+                results.append(rec)
+                continue
+
             # A lossy match is passed THROUGH with its diagnostic rather than
             # refused. project_geometry refuses because it is authoring a
             # persistent reference at pick time; query is read-only inspection,
@@ -7520,9 +7738,9 @@ def query_geometry(document, items, prefix=False):
                                   owners=body.get("owners"), tick=progress_tick)
 
             rec["count"] = len(hits)
+            rec["match"] = match
             rec["diagnostics"] = diag
             take = min(limit, budget_left[0])
-            fp_of = face_fingerprint if kind == "face" else edge_fingerprint
             ents = []
             for e in hits[:take]:
                 fp = fp_of(e, shape)
@@ -7539,18 +7757,50 @@ def query_geometry(document, items, prefix=False):
             rec["entities"] = ents
 
             expect = item.get("expect")
-            if isinstance(expect, int) and expect != rec["count"]:
+            if isinstance(expect, dict):
+                # The object form: the CALLER supplies the discriminator, which
+                # is the only assertion here that no calibration of mine can get
+                # wrong. `count` is judged as before; every other key is a `where`
+                # predicate that EVERY hit must satisfy — so "exactly one face,
+                # and it is the ~400 mm2 one" becomes expressible. `expect: 1`
+                # alone cannot say that: by:"match" always resolves exactly one,
+                # so it asserts cardinality and is silent about identity.
+                want_n = expect.get("count")
+                cond = {k: v for k, v in expect.items() if k != "count"}
+                if want_n is not None and want_n != rec["count"]:
+                    rec["error"] = (f"expected exactly {want_n} {kind}s, "
+                                    f"matched {rec['count']}")
+                    rec["code"] = ERR.EXPECT_FAILED
+                    results.append(rec)
+                    continue
+                if cond:
+                    kept = query_entities(shape, kind, cond, hits[:take],
+                                          owners=body.get("owners"),
+                                          tick=progress_tick)
+                    if len(kept) != len(hits[:take]):
+                        bad = len(hits[:take]) - len(kept)
+                        rec["error"] = (
+                            f"{bad} of {len(hits[:take])} {kind}s failed "
+                            f"{json.dumps(cond, sort_keys=True)}")
+                        rec["code"] = ERR.EXPECT_FAILED
+                        results.append(rec)
+                        continue
+            elif isinstance(expect, int) and expect != rec["count"]:
                 # judged on count, not on the truncated list: a caller that sets
                 # `expect` is asserting, and an assertion should be branchable.
                 rec["error"] = (f"expected exactly {expect} {kind}s, matched {rec['count']}")
-                rec["code"] = "expectFailed"
+                rec["code"] = ERR.EXPECT_FAILED
                 results.append(rec)
                 continue
             rec["ok"] = True
         except Exception as ex:
             rec["error"] = str(ex) or type(ex).__name__
-            code = getattr(ex, "code", None)
-            if code:
-                rec["code"] = code
+            rec["diagnostics"] = diag
+            # Default to badRequest rather than shipping prose with no code. Only
+            # GeomError carries one, so every Python-native exception raised by a
+            # malformed item — `sel: "all"` reaching sel.get("by"), a non-numeric
+            # limit, a missing `body` key — arrived uncoded and unbranchable. The
+            # job level already defaults this way (server._error_from).
+            rec["code"] = ERR.code_of(ex, ERR.BAD_REQUEST)
         results.append(rec)
     return {"results": results}

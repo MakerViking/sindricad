@@ -176,6 +176,232 @@ def test_a_lossy_match_is_reported_not_refused():
     print(PASS, "a resolved selector answers, with any diagnostic alongside")
 
 
+def test_a_refusal_still_carries_its_repair_payload():
+    """The resolver writes candidateFps into `diag` and THEN raises. Assigning
+    rec["diagnostics"] only on the success path threw that payload away with the
+    exception — so the caller was told "ambiguous" and given nothing to re-pick
+    from, which is the one case where the repair data matters most."""
+    res = _q(BOX, {"id": "tie", "kind": "face",
+                   "sel": {"kind": "face", "by": "nearest",
+                           "point": [15.0, 15.0, 0.0]}})[0]
+    assert not res["ok"] and res["code"] == "ambiguousReference", res
+    assert res["diagnostics"], "the refusal discarded its diagnostics"
+    fps = res["diagnostics"][0].get("candidateFps") or []
+    assert len(fps) >= 2, fps
+    # and a confident pick is unchanged: still ok, still no advisory noise
+    clear = _q(BOX, {"id": "clear", "kind": "face",
+                     "sel": {"kind": "face", "by": "nearest",
+                             "point": [30.0, 0.0, 0.0]}})[0]
+    assert clear["ok"] and clear["count"] == 1 and clear["diagnostics"] == [], clear
+    print(PASS, f"a refusal keeps its {len(fps)} candidateFps; a clear pick stays clean")
+
+
+def test_normal_takes_an_angle_and_refuses_a_degree_shaped_tol():
+    """`tol` is a COSINE deviation (1 - dot), which is not guessable and was read
+    as degrees in the field. `1 - dot` never exceeds 2, so `tol: 5` accepts the
+    ANTIPODAL face — "facing up" and "facing down" return the same set. `deg` is
+    the same threshold as a half-angle, which is what a caller means."""
+    plain = _q(BOX, {"id": "q", "kind": "face",
+                     "where": {"normal": {"dir": [0, 0, 1]}}})[0]
+    assert plain["count"] == 1, plain
+
+    # a half-angle either side of the sides, which sit exactly 90 deg away
+    tight = _q(BOX, {"id": "q", "kind": "face",
+                     "where": {"normal": {"dir": [0, 0, 1], "deg": 89}}})[0]
+    wide = _q(BOX, {"id": "q", "kind": "face",
+                    "where": {"normal": {"dir": [0, 0, 1], "deg": 91}}})[0]
+    assert tight["count"] == 1, tight
+    assert wide["count"] == 5, wide  # top + four sides, still not the bottom
+
+    bad = _q(BOX, {"id": "q", "kind": "face",
+                   "where": {"normal": {"dir": [0, 0, 1], "tol": 5}}})[0]
+    assert not bad["ok"] and bad["code"] == "badRequest", bad
+    assert "cosine" in bad["error"].lower(), bad["error"]
+
+    both = _q(BOX, {"id": "q", "kind": "face",
+                    "where": {"normal": {"dir": [0, 0, 1], "deg": 5, "tol": 0.1}}})[0]
+    assert not both["ok"] and both["code"] == "badRequest", both
+
+    # a legitimate cosine tol keeps working unchanged: deg 5 == tol 0.0038
+    same = _q(BOX, {"id": "q", "kind": "face",
+                    "where": {"normal": {"dir": [0, 0, 1], "tol": 0.0038}}})[0]
+    assert same["ok"] and same["count"] == 1, same
+    print(PASS, "normal takes deg, and a degree-shaped tol is refused not honoured")
+
+
+def test_unknown_predicate_VALUES_are_refused_like_unknown_keys():
+    """An unknown KEY was already a badRequest; an unknown VALUE returned
+    ok:true count:0, which reads as "no such face exists" — a wrong answer to a
+    question that was never asked. Both alphabets are closed."""
+    for bad in ("banana", "Plane"):
+        r = _q(BOX, {"id": "q", "kind": "face", "where": {"surface": bad}})[0]
+        assert not r["ok"] and r["code"] == "badRequest", (bad, r)
+    r = _q(BOX, {"id": "q", "kind": "edge", "where": {"curve": "straight"}})[0]
+    assert not r["ok"] and r["code"] == "badRequest", r
+
+    ok = _q(BOX, {"id": "q", "kind": "face", "where": {"surface": "plane"}})[0]
+    assert ok["ok"] and ok["count"] == 6, ok
+    print(PASS, "a misspelt surface or curve is refused, not answered with zero")
+
+
+def test_a_malformed_item_carries_a_code_not_just_prose():
+    """`sel` as a bare string reaches sel.get("by") and dies with an
+    AttributeError, which has no .code — so the record shipped raw Python prose
+    that no caller can branch on. The list form of this was already fixed."""
+    r = _q(BOX, {"id": "q", "kind": "face", "sel": "all"})[0]
+    assert not r["ok"], r
+    assert r["code"] == "badRequest", r
+    print(PASS, "a malformed sel is coded badRequest, not bare prose")
+
+
+TWO_BODIES = _doc(
+    {"id": "s1", "type": "sketch", "plane": "XY",
+     "entities": [{"id": "k1", "type": "circle", "radius": 10, "x": 0, "y": 0}]},
+    {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 20, "operation": "new"},
+    {"id": "s2", "type": "sketch", "plane": "XY",
+     "entities": [{"id": "k2", "type": "circle", "radius": 3, "x": 200, "y": 0}]},
+    {"id": "e2", "type": "extrude", "sketch": "s2", "distance": 6, "operation": "new"},
+)
+
+
+def _top_fp(doc, body=None):
+    """The fingerprint of a body's top face, as a caller would have stored it."""
+    item = {"id": "t", "kind": "face",
+            "where": {"normal": {"dir": [0, 0, 1]}, "area": {"min": 1.0}}}
+    if body:
+        item["body"] = body
+    r = _q(doc, item)[0]
+    assert r["ok"] and r["count"] == 1, r
+    return r["entities"][0]["sel"]["fp"]
+
+
+def test_strict_refuses_the_three_ways_a_match_was_confidently_wrong():
+    """by:"match" is a nearest-neighbour search that ALWAYS returns its best
+    candidate — it cannot fail, so every one of these came back ok:true with
+    expect:1 satisfied. Each case trips exactly one invariant."""
+    fp = _top_fp(TWO_BODIES, "body1")
+
+    # 1. the right fingerprint, the WRONG BODY: 30mm away on a part 6mm across
+    wrong_body = _q(TWO_BODIES, {"id": "q", "kind": "face", "body": "body2", "expect": 1,
+                                 "sel": {"kind": "face", "by": "match", "fp": fp}})[0]
+    assert not wrong_body["ok"], f"a wrong-body match was accepted: {wrong_body}"
+    assert wrong_body["code"] == "matchImplausible", wrong_body
+    assert wrong_body["match"]["posRel"] > 2.0, wrong_body["match"]
+    assert wrong_body["candidateFps"], "no repair payload on the refusal"
+
+    # 2. ask for a CYLINDER, get a plane
+    as_cyl = dict(fp, surface="cylinder", radius=12.5)
+    typed = _q(BOX, {"id": "q", "kind": "face",
+                     "sel": {"kind": "face", "by": "match", "fp": as_cyl}})[0]
+    assert not typed["ok"] and typed["code"] == "matchImplausible", typed
+    assert "classMismatch" in typed["match"], typed["match"]
+
+    # 3. a fingerprint for a face 250x the size AND in the wrong place — the
+    #    shape of the real defect. Size alone is deliberately not enough: see
+    #    test_a_big_resize_that_did_not_move_is_accepted.
+    huge = dict(_top_fp(BOX), area=99999.0, centroid=[0, 0, 0])
+    fiction = _q(BOX, {"id": "q", "kind": "face",
+                       "sel": {"kind": "face", "by": "match", "fp": huge}})[0]
+    assert not fiction["ok"] and fiction["code"] == "matchImplausible", fiction
+    assert fiction["match"]["sizeRatio"] >= 50.0, fiction["match"]
+    print(PASS, "wrong body, wrong surface class and a 250x area are all refused")
+
+
+def test_a_big_resize_that_did_not_move_is_accepted():
+    """The size test is a CONJUNCTION, and this is why. Area is a SQUARED
+    quantity, so a 10x area change is only 3.16x linear — a rib going 2mm -> 7mm.
+    Judged on size alone, such a reference was refused while resolving perfectly:
+    same centroid to 16 significant figures, same normal, same surface class.
+    Refusing an answer you are simultaneously certain of breaks working
+    documents, so a size change only counts against a match that also MOVED."""
+    fp = _top_fp(BOX)
+    resized = dict(fp, area=fp["area"] / 12.0)  # the face shrank 12x in place
+    got = _q(BOX, {"id": "q", "kind": "face",
+                   "sel": {"kind": "face", "by": "match", "fp": resized}})[0]
+    assert got["ok"], f"a 12x in-place resize was refused: {got}"
+    assert got["match"]["sizeRatio"] > 10.0, got["match"]
+    assert got["match"]["posRel"] < 1e-6, got["match"]
+    print(PASS, "a big resize that did not move is accepted, not refused")
+
+
+def test_offace_and_tangentchain_cannot_bypass_the_gate():
+    """Those selectors claim an identity too — with an INNER fingerprint. Judging
+    only by:"match" left the gate one field name from off: a fingerprint refused
+    standalone sailed through ofFace reporting judged:false, which the schema
+    defines as "no identity was claimed"."""
+    fp = _top_fp(TWO_BODIES, "body1")
+
+    direct = _q(TWO_BODIES, {"id": "q", "kind": "face", "body": "body2",
+                             "sel": {"kind": "face", "by": "match", "fp": fp}})[0]
+    assert not direct["ok"] and direct["code"] == "matchImplausible", direct
+
+    via = _q(TWO_BODIES, {"id": "q", "kind": "edge", "body": "body2",
+                          "sel": {"kind": "edge", "by": "ofFace", "face": fp}})[0]
+    assert not via["ok"], f"ofFace bypassed the gate: {via}"
+    assert via["code"] == "matchImplausible", via
+    assert via["match"].get("via") == "ofFace", via["match"]
+
+    # and a legitimate ofFace still works
+    own = _top_fp(TWO_BODIES, "body2")
+    fine = _q(TWO_BODIES, {"id": "q", "kind": "edge", "body": "body2",
+                           "sel": {"kind": "edge", "by": "ofFace", "face": own}})[0]
+    assert fine["ok"] and fine["count"] >= 1, fine
+    print(PASS, "ofFace judges its inner reference; a good one still resolves")
+
+
+def test_a_good_match_is_untouched_and_says_it_was_judged():
+    """The gate must not cost a correct answer. THE risk here is a false refusal,
+    so this is the test that matters more than the three above."""
+    fp = _top_fp(BOX)
+    good = _q(BOX, {"id": "q", "kind": "face", "expect": 1,
+                    "sel": {"kind": "face", "by": "match", "fp": fp}})[0]
+    assert good["ok"] and good["count"] == 1, good
+    assert good["match"]["judged"] is True, good["match"]
+    assert "implausible" not in good["match"], good["match"]
+    assert good["match"]["sizeRatio"] < 1.01 and good["match"]["posRel"] < 0.01, good["match"]
+
+    # a set-returning item claims no identity, so there is nothing to judge
+    setwise = _q(BOX, {"id": "q", "kind": "face", "where": {"surface": "plane"}})[0]
+    assert setwise["ok"] and setwise["count"] == 6, setwise
+    assert setwise["match"] == {"judged": False}, setwise["match"]
+    print(PASS, "a correct match passes and is marked judged; a set item is not judged")
+
+
+def test_strict_false_restores_the_old_confident_wrong_answer():
+    """The escape hatch has to actually work, or `strict` is a one-way door."""
+    fp = _top_fp(TWO_BODIES, "body1")
+    item = {"id": "q", "kind": "face", "body": "body2", "expect": 1,
+            "sel": {"kind": "face", "by": "match", "fp": fp}}
+    loose = query_geometry(TWO_BODIES, [item], strict=False)["results"][0]
+    assert loose["ok"] and loose["count"] == 1, loose
+    assert loose["match"].get("implausible"), \
+        "strict:false must still REPORT the judgement, just not act on it"
+    print(PASS, "strict:false answers as before, with the judgement still visible")
+
+
+def test_expect_can_assert_identity_not_just_cardinality():
+    """`expect: 1` on a by:"match" is a tautology — that selector always resolves
+    exactly one. The object form lets the CALLER supply the discriminator, which
+    is the one assertion here that no calibration of mine can get wrong."""
+    fp = _top_fp(BOX)
+    sel = {"kind": "face", "by": "match", "fp": fp}
+
+    ok = _q(BOX, {"id": "q", "kind": "face", "sel": sel,
+                  "expect": {"count": 1, "area": {"min": 390, "max": 410}}})[0]
+    assert ok["ok"], ok
+
+    miss = _q(BOX, {"id": "q", "kind": "face", "sel": sel,
+                    "expect": {"count": 1, "area": {"min": 1000}}})[0]
+    assert not miss["ok"] and miss["code"] == "expectFailed", miss
+    assert "area" in miss["error"], miss["error"]
+
+    # the plain integer form is untouched
+    n = _q(BOX, {"id": "q", "kind": "face", "where": {"surface": "plane"},
+                 "expect": 6})[0]
+    assert n["ok"], n
+    print(PASS, "expect takes an object and asserts what was found, not just how many")
+
+
 def test_totals_cap_bounds_the_whole_reply():
     """Per-item limits MULTIPLY. The total cap is what keeps a 64-item request
     from building a reply past the frame cap, which would close the socket."""
@@ -200,6 +426,16 @@ def main():
     test_edge_direction_is_sign_normalised()
     test_unknown_predicates_and_edge_createdBy_are_refused()
     test_a_lossy_match_is_reported_not_refused()
+    test_a_refusal_still_carries_its_repair_payload()
+    test_normal_takes_an_angle_and_refuses_a_degree_shaped_tol()
+    test_unknown_predicate_VALUES_are_refused_like_unknown_keys()
+    test_a_malformed_item_carries_a_code_not_just_prose()
+    test_strict_refuses_the_three_ways_a_match_was_confidently_wrong()
+    test_a_big_resize_that_did_not_move_is_accepted()
+    test_offace_and_tangentchain_cannot_bypass_the_gate()
+    test_a_good_match_is_untouched_and_says_it_was_judged()
+    test_strict_false_restores_the_old_confident_wrong_answer()
+    test_expect_can_assert_identity_not_just_cardinality()
     test_totals_cap_bounds_the_whole_reply()
     print("ALL PASS")
 

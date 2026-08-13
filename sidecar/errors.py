@@ -37,11 +37,14 @@ REPLY_TOO_LARGE = "replyTooLarge"           # the whole reply exceeded the frame
 BODY_TOO_LARGE = "bodyTooLarge"             # one body exceeded the frame cap
 UNKNOWN_OP = "unknownOp"                    # no such op (the capability-probe answer)
 BAD_REQUEST = "badRequest"                  # malformed/oversized input, refused up front
+EXPECT_FAILED = "expectFailed"              # a query item's `expect` assertion did not hold
+BUDGET_EXHAUSTED = "budgetExhausted"        # a query ran out of its time budget
+MATCH_IMPLAUSIBLE = "matchImplausible"      # a by:"match" resolved to something it cannot be
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
     KERNEL_CRASHED, ENGINE_UNAVAILABLE, REPLY_TOO_LARGE, BODY_TOO_LARGE,
-    UNKNOWN_OP, BAD_REQUEST,
+    UNKNOWN_OP, BAD_REQUEST, EXPECT_FAILED, BUDGET_EXHAUSTED, MATCH_IMPLAUSIBLE,
 })
 
 
