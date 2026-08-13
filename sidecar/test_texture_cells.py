@@ -326,6 +326,83 @@ def test_geometry_cache_key_separates_lattices():
     print(PASS, "geometry cache key separates kind/sharpness/profile/offset")
 
 
+def test_no_degenerate_triangles_reach_the_mesh():
+    """A zero-area triangle is not cosmetic here. It made the mesh NON-MANIFOLD
+    (measured 458 non-manifold edges on a 110mm hex plate, 220 on ribs, one per
+    degenerate), and it rounds to exactly zero in the float32 that STL and 3MF
+    store, so it travels all the way into a slicer.
+
+    Two independent sources, both fixed:
+      * the SKIRT gave every boundary vertex a foot, including ones that never
+        moved and had just been snapped back onto themselves, so the wall quad
+        collapsed to a triangle with a zero-length edge;
+      * `_segments_cross` used a STRICT sign test, so it accepted a flip whose
+        two output triangles were collinear to within 1e-11. The flip pass then
+        always took it, because a collinear triangle interpolates the field
+        perfectly and scores zero error, while changing nothing about the
+        surface (9,906 such triangles on the same plate, 1,450 of them exactly
+        zero once in float32).
+
+    test_lattice_meshes_stay_manifold cannot see either: it counts edges by
+    INDEX, and a skirt foot carries a DIFFERENT index at the same position, so
+    the overlap is invisible to it. Area is index-independent, which is why this
+    test measures area."""
+    face = _plate_top_face()
+    for kind in LATTICE_KINDS:
+        for sharp in (0.0, 0.5, 1.0):
+            for angle in (0.0, 17.0, 45.0):
+                P, I = _displaced(face, _spec(kind, sharp, angle))
+                a, b, c = P[I[:, 0]], P[I[:, 1]], P[I[:, 2]]
+                area = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
+                where = f"{kind} sharp={sharp} angle={angle}"
+                assert not (area == 0.0).any(), \
+                    f"{where}: {int((area == 0.0).sum())} exactly-zero-area triangles"
+                # and none that survive float64 only to vanish in what we export
+                a32, b32, c32 = a.astype(np.float32), b.astype(np.float32), c.astype(np.float32)
+                a32 = 0.5 * np.linalg.norm(np.cross(b32 - a32, c32 - a32), axis=1)
+                assert not (a32 == 0.0).any(), \
+                    f"{where}: {int((a32 == 0.0).sum())} triangles collapse in float32"
+    print(PASS, "no degenerate triangles across kinds, sharpness and angle")
+
+
+def test_crease_repair_scores_the_whole_pass_at_once():
+    """The repair pass must evaluate the height field per PASS, not per
+    candidate flip.
+
+    It used to score each candidate with two `err_of` calls of two triangles
+    each: 181,224 field calls on a 110mm hex plate, 5.4s of them inside
+    `_hex_nearest_site` alone, and 96% of the entire texture build. The field
+    cost is dominated by per-call overhead rather than by the number of points,
+    so the granularity IS the cost. Batching took that plate from 10.2s to 4.2s.
+
+    Pinning points-per-call rather than wall time keeps this from being a flaky
+    timing test."""
+    n = 24
+    gx, gy = np.meshgrid(np.arange(n, dtype=np.float64), np.arange(n, dtype=np.float64))
+    V = np.stack([gx.ravel(), gy.ravel()], axis=1)
+    quads = [(r * n + c, r * n + c + 1, (r + 1) * n + c + 1, (r + 1) * n + c)
+             for r in range(n - 1) for c in range(n - 1)]
+    # the diagonal that cuts ACROSS the crease, so the pass has work to do
+    tris = np.array([t for (a, b, c, d) in quads for t in ((a, b, c), (a, c, d))],
+                    dtype=np.int64)
+
+    calls = []
+
+    def field(pts):
+        pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+        calls.append(len(pts))
+        return np.abs(((pts[:, 0] + pts[:, 1]) % 4.0) - 2.0)  # ridges at 45 degrees
+
+    texture._flip_to_creases(tris, V, field)
+    assert calls, "the repair pass never evaluated the field"
+    per_call = sum(calls) / len(calls)
+    assert per_call >= 1000, (
+        f"the field is being scored {per_call:.0f} points at a time over "
+        f"{len(calls)} calls — the pass is back to per-candidate scoring"
+    )
+    print(PASS, f"crease repair scores in batches ({per_call:.0f} points/call)")
+
+
 def test_offset_phase_locks_the_lattice():
     """`offset` shifts the field displace_face evaluates, so the lines have to
     shift with it. If they did not, the crests would drift off the vertices and
@@ -690,6 +767,8 @@ def main():
     test_curved_faces_keep_the_boundary_on_the_shared_polyline()
     test_the_uv_seam_is_textured_like_any_other_line()
     test_geometry_cache_key_separates_lattices()
+    test_no_degenerate_triangles_reach_the_mesh()
+    test_crease_repair_scores_the_whole_pass_at_once()
     test_offset_phase_locks_the_lattice()
     print("ALL PASS")
 

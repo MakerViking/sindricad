@@ -73,7 +73,7 @@ _DEFAULT_DENSITY_CAP = 2_000_000
 #    flat top, against 44% on the 9,210 mm2 face around them. The gate is gone;
 #    this version exists so meshes displaced by the interim build are not served
 #    from the disk cache.
-CODE_VERSION = 11
+CODE_VERSION = 12
 
 
 def validate_texture_spec(f):
@@ -967,13 +967,36 @@ def _force_cell_diagonals(tris, V_mm, quads, want_main):
     return tris
 
 
-def _segments_cross(P, p, q, r, s):
+def _segments_cross(P, p, q, r, s, rel=1e-6):
     """True when segment p-q properly crosses segment r-s, i.e. the quad p-r-q-s
-    is convex and swapping its diagonal is a legal flip."""
+    is convex and swapping its diagonal is a legal flip.
+
+    `rel` is a relative margin, and it is load-bearing. The two `side(r, s, ...)`
+    values are exactly twice the areas of the two triangles a flip would emit, so
+    a STRICT sign test accepts the flip as soon as floating point leaves 1e-11
+    where an exact zero belongs. _flip_to_creases then takes that flip every
+    time, because a collinear triangle interpolates the height field perfectly
+    and so scores zero error — and it gains nothing, since a vertex lying on the
+    opposite diagonal makes both triangulations the SAME piecewise-linear
+    surface. Measured on a 110mm hex plate: 9,906 of 121,739 triangles came out
+    at ~1e-11 mm2, invisible in the viewport, and 1,450 of them round to exactly
+    zero area in the float32 that STL and 3MF store.
+
+    Normalising by the two segment lengths makes this "the crossing angle is not
+    zero", which needs no length scale passed in."""
     def side(a, b, c):
         return ((P[b][0] - P[a][0]) * (P[c][1] - P[a][1])
                 - (P[b][1] - P[a][1]) * (P[c][0] - P[a][0]))
-    return (side(p, q, r) * side(p, q, s) < 0) and (side(r, s, p) * side(r, s, q) < 0)
+    s1, s2 = side(p, q, r), side(p, q, s)
+    if not s1 * s2 < 0:
+        return False
+    s3, s4 = side(r, s, p), side(r, s, q)
+    if not s3 * s4 < 0:
+        return False
+    # only reached once both sign tests pass, so it stays off the hot path
+    scale = (math.hypot(P[q][0] - P[p][0], P[q][1] - P[p][1])
+             * math.hypot(P[s][0] - P[r][0], P[s][1] - P[r][1]))
+    return min(abs(s1), abs(s2), abs(s3), abs(s4)) > rel * scale
 
 
 def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8,
@@ -1018,7 +1041,8 @@ def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8,
         return np.abs(interp - field(pts).reshape(len(t), -1)).max(axis=1)
 
     for _ in range(max_passes):
-        scored = err_of(tris)
+        raw = err_of(tris)
+        scored = raw.copy()
         excluded = tris < n_ring  # pinned by the taper, not fixable
         if fixable_full is not None:
             excluded &= ~fixable_full[tris]
@@ -1030,29 +1054,50 @@ def _flip_to_creases(tris, V_mm, field, n_ring=0, tol=1e-9, max_passes=8,
         for ti, (a, b, c) in enumerate(tris):
             for i, j in ((a, b), (b, c), (c, a)):
                 edges.setdefault((i, j) if i < j else (j, i), []).append(ti)
-        settled = set()
-        flipped = False
+
+        # Collect every candidate flip first, then score them all in ONE call.
+        # err_of used to run twice per candidate on two triangles each, which is
+        # a field evaluation of 28 points at a time: measured 181,224 such calls
+        # on a 110mm hex plate, 5.4s of it inside _hex_nearest_site alone, for
+        # 96% of the whole texture build. The field cost is dominated by per-call
+        # overhead, not by the points, so batching is the entire win.
+        #
+        # The decisions are unchanged, which is what makes this safe: a pair is
+        # only ever considered when NEITHER triangle is settled, and a triangle
+        # becomes settled exactly when it is rewritten, so no candidate's input
+        # rows can have been modified earlier in the same pass.
+        cands = []  # (ti, tj, replacement for ti, replacement for tj)
         for ti in bad:
-            if ti in settled:
-                continue
             a, b, c = tris[ti]
             for i, j, opp in ((a, b, c), (b, c, a), (c, a, b)):
                 share = edges.get((i, j) if i < j else (j, i), ())
                 if len(share) != 2:
                     continue  # a boundary edge has nothing to flip against
                 tj = share[0] if share[1] == ti else share[1]
-                if tj in settled:
-                    continue
                 rest = [v for v in tris[tj] if v not in (i, j)]
                 if len(rest) != 1 or not _segments_cross(V_mm, i, j, opp, rest[0]):
                     continue
-                cand = np.array([[opp, rest[0], i], [rest[0], opp, j]], dtype=np.int64)
-                if err_of(cand).sum() < err_of(tris[[ti, tj]]).sum() - 1e-15:
-                    tris[ti], tris[tj] = cand[0], cand[1]
-                    settled.add(ti)
-                    settled.add(tj)
-                    flipped = True
-                    break
+                cands.append((int(ti), int(tj),
+                              (opp, rest[0], i), (rest[0], opp, j)))
+        if not cands:
+            break
+        cand_err = err_of(
+            np.array([t for c in cands for t in (c[2], c[3])], dtype=np.int64)
+        ).reshape(-1, 2).sum(axis=1)
+
+        settled = set()
+        flipped = False
+        for k, (ti, tj, c0, c1) in enumerate(cands):
+            if ti in settled or tj in settled:
+                continue
+            # compared against `raw`, not `scored`: the exclusion zeroing is a
+            # scoring filter for picking WHICH triangles to repair, never a
+            # claim that an excluded triangle has no error
+            if cand_err[k] < raw[ti] + raw[tj] - 1e-15:
+                tris[ti], tris[tj] = c0, c1
+                settled.add(ti)
+                settled.add(tj)
+                flipped = True
         if not flipped:
             break
     return tris
@@ -1639,22 +1684,34 @@ def _skirt(base_pts, disp_pts, boundary):
     if not keep.any():
         return None
     e = e[keep]
-    ring = np.unique(e)                      # boundary vertices needing a foot
-    foot = {v: k for k, v in enumerate(ring)}  # original index -> foot slot
+    # Only a MOVED vertex needs a foot. An unmoved one was snapped back onto
+    # base_pts just above, so it already IS its own foot, and giving it a second
+    # index at the same position emitted a wall triangle with a zero-length edge:
+    # exactly one per boundary edge with a single moved end. Those are the
+    # triangles that come out at EXACTLY zero area rather than merely tiny
+    # (measured: 458 on a 110mm hex plate, 220 on ribs).
+    ring = np.unique(e[moved[e]])            # moved boundary vertices need a foot
+    foot = {int(v): k for k, v in enumerate(ring)}  # original index -> foot slot
     n_disp = len(disp_pts)
     i, j = e[:, 0], e[:, 1]
-    fi = np.array([foot[v] for v in i], dtype=np.int64) + n_disp
-    fj = np.array([foot[v] for v in j], dtype=np.int64) + n_disp
+    # an unmoved end maps to ITSELF, so the quad collapses to one triangle
+    fi = np.array([foot[int(v)] + n_disp if int(v) in foot else int(v) for v in i],
+                  dtype=np.int64)
+    fj = np.array([foot[int(v)] + n_disp if int(v) in foot else int(v) for v in j],
+                  dtype=np.int64)
     tris = np.concatenate([
-        np.stack([i, j, fj], axis=1),
-        np.stack([i, fj, fi], axis=1),
+        np.stack([i, j, fj], axis=1)[fj != j],
+        np.stack([i, fj, fi], axis=1)[fi != i],
     ])
     # wall normal: along the edge x down the step, accumulated onto the feet it
     # touches. _orient_windings fixes winding afterwards, so only the AXIS matters.
     wn = np.cross(disp_pts[j] - disp_pts[i], base_pts[i] - disp_pts[i])
     acc = np.zeros((len(ring), 3))
-    np.add.at(acc, fi - n_disp, wn)
-    np.add.at(acc, fj - n_disp, wn)
+    # fi/fj now hold a FOOT index only where that end moved; an unmoved end maps
+    # to itself and has no row in `acc` to accumulate onto.
+    mi, mj = fi >= n_disp, fj >= n_disp
+    np.add.at(acc, fi[mi] - n_disp, wn[mi])
+    np.add.at(acc, fj[mj] - n_disp, wn[mj])
     ln = np.linalg.norm(acc, axis=1)
     ln[ln < 1e-12] = 1.0
     return base_pts[ring], acc / ln[:, None], tris

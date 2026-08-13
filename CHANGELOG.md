@@ -37,6 +37,28 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Textured surfaces no longer export broken geometry, and build twice as
+  fast.** Two faults, both in the mesh a texture produces.
+
+  The mesh contained triangles with no area at all: 458 on a 110mm hexagon-
+  textured plate, 220 on ribs. They were invisible on screen, but each one made
+  the mesh **non-manifold**, which is the kind of defect a slicer is entitled to
+  refuse. A further 9,906 triangles on the same plate were not quite flat, and
+  1,450 of those collapsed to nothing anyway once written into an STL or 3MF,
+  because those formats store less precision than SindriCAD works in. Both
+  sources are gone: the mesh now measures zero degenerate triangles across every
+  pattern, sharpness and angle.
+
+  **This changes the exported mesh for any document with a texture**, which is
+  the point, and it means the first rebuild after updating is a slow one for
+  those documents while the texture cache refills.
+
+  The same work made large textures much faster. Repairing the pattern across a
+  crease was measuring the surface one candidate at a time, which on that plate
+  meant 181,224 separate measurements and 96% of the whole build. It now measures
+  a whole pass at once: **10.2 seconds down to 4.2 seconds** on the same plate,
+  with the same result.
+
 - **"Open in Orca" now finds OrcaSlicer when it is installed as a Flatpak.**
   Reported on Fedora 44. There were two reasons it found nothing, and the second
   one mattered more: only the system-wide Flatpak location was checked, and
