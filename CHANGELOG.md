@@ -35,6 +35,21 @@ This file starts on 2026-08-03. For anything before that, see the
   the key, so switching away from the app mid-drag cannot leave the button stuck
   in a mode where clicking no longer selects anything.
 
+### Fixed
+
+- **"Open in Orca" now finds OrcaSlicer when it is installed as a Flatpak.**
+  Reported on Fedora 44. There were two reasons it found nothing, and the second
+  one mattered more: only the system-wide Flatpak location was checked, and
+  Fedora's Software app installs per-user by default; and the app id being looked
+  for was OrcaSlicer's old one, retired before 2.3.2, so an Orca installed today
+  was missed in both locations. All four combinations are checked now, and a
+  Flatpak found this way also has its presets read from the right place, so the
+  handoff opens on your own printer instead of on nothing.
+
+  If Orca still is not found, the message now names the settings file you can put
+  a path in, rather than quoting one specific AppImage you have probably never
+  heard of.
+
 ## 0.1.128 (2026-08-12)
 
 ### Changed

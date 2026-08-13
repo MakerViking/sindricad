@@ -9,12 +9,39 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct AppSettings {
     /// path to the OrcaSlicer binary/AppImage used to open exported projects.
     pub slicer_path: String,
     /// the user's Orca datadir (their presets) — used by the future CLI path.
     pub orca_datadir: String,
+}
+
+/// OrcaSlicer's flatpak app ids, current first. `io.github.softfever.OrcaSlicer`
+/// is the pre-2.3.2 id: it is gone from Flathub, but it is still installed on
+/// machines that never rebased, and the current manifest grants itself read
+/// access to that id's config directory precisely so it can migrate from it.
+/// Listing ONLY the legacy id is why a flatpak Orca installed today was found in
+/// no scope at all (GitHub #17).
+const ORCA_FLATPAK_IDS: [&str; 2] = ["com.orcaslicer.OrcaSlicer", "io.github.softfever.OrcaSlicer"];
+
+/// `$XDG_DATA_HOME`, falling back to `~/.local/share`. This is where flatpak puts
+/// a `--user` installation, and Fedora's GNOME Software installs per-user by
+/// DEFAULT, so the system-wide export on its own finds nothing. A relative or
+/// empty value is ignored rather than joined onto, which would otherwise produce
+/// a relative candidate that `is_file()` resolves against the process cwd.
+fn xdg_data_home(home: Option<&PathBuf>, env: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    env("XDG_DATA_HOME")
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| h.join(".local/share")))
+}
+
+/// The OrcaSlicer flatpak app id a resolved binary belongs to, if that binary is
+/// a flatpak export wrapper (`…/exports/bin/<app-id>`).
+fn orca_flatpak_id(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    ORCA_FLATPAK_IDS.iter().copied().find(|id| *id == name)
 }
 
 /// Where OrcaSlicer usually installs, most likely first. `default_settings` takes
@@ -43,23 +70,50 @@ fn slicer_candidates_for(
             Some(PathBuf::from("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")),
             under_home("Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer"),
         ],
-        _ => vec![
-            under_home("Applications/OrcaSlicer_V2.4.0-alpha.AppImage"),
-            under_home("Applications/OrcaSlicer.AppImage"),
-            Some(PathBuf::from("/usr/bin/orca-slicer")),
-            Some(PathBuf::from("/usr/local/bin/orca-slicer")),
-            Some(PathBuf::from("/var/lib/flatpak/exports/bin/io.github.softfever.OrcaSlicer")),
-        ],
+        _ => {
+            let mut linux = vec![
+                under_home("Applications/OrcaSlicer_V2.4.0-alpha.AppImage"),
+                under_home("Applications/OrcaSlicer.AppImage"),
+                Some(PathBuf::from("/usr/bin/orca-slicer")),
+                Some(PathBuf::from("/usr/local/bin/orca-slicer")),
+            ];
+            // Flatpak exports, after the native installs. Per-user scope first
+            // (GNOME Software's default on Fedora, which is the reported miss),
+            // then system-wide, current app id before the legacy one in both.
+            // The export is a `#!/bin/sh` wrapper that execs `flatpak run … "$@"`,
+            // so spawning it with the .3mf path is enough: no `flatpak run`
+            // special-casing here, and no scope for us to guess wrong.
+            let user_bin = xdg_data_home(home, env).map(|d| d.join("flatpak/exports/bin"));
+            for id in ORCA_FLATPAK_IDS {
+                linux.push(user_bin.as_ref().map(|d| d.join(id)));
+            }
+            for id in ORCA_FLATPAK_IDS {
+                linux.push(Some(PathBuf::from("/var/lib/flatpak/exports/bin").join(id)));
+            }
+            linux
+        }
     };
     candidates.into_iter().flatten().collect()
 }
 
 /// OrcaSlicer's own data directory (where its presets live), per platform.
+///
+/// A flatpak Orca never reads `~/.config/OrcaSlicer`: inside the sandbox
+/// `XDG_CONFIG_HOME` is `~/.var/app/<app-id>/config`, so on the host its presets
+/// sit at `~/.var/app/<app-id>/config/OrcaSlicer`. `slicer` is the binary we
+/// actually resolved, so the datadir follows the install we are about to launch.
+/// Getting this wrong is quiet rather than loud: `slicer_project_settings`
+/// errors, printFlow swallows it into a console warning, and the handoff opens
+/// with no printer preset bound at all.
 fn orca_datadir_for(
     os: &str,
     home: Option<&PathBuf>,
     env: &dyn Fn(&str) -> Option<PathBuf>,
+    slicer: Option<&Path>,
 ) -> Option<PathBuf> {
+    if let Some(id) = slicer.and_then(orca_flatpak_id) {
+        return home.map(|h| h.join(".var/app").join(id).join("config/OrcaSlicer"));
+    }
     match os {
         "windows" => env("APPDATA").map(|v| v.join("OrcaSlicer")),
         "macos" => home.map(|h| h.join("Library/Application Support/OrcaSlicer")),
@@ -78,15 +132,10 @@ fn default_settings(app: &AppHandle) -> AppSettings {
     // The first that exists; failing that the most likely one, so `slicer_open`'s
     // "slicer not found at ..." names a real install path instead of an empty
     // string or a path from the wrong operating system.
-    let slicer_path = candidates
-        .iter()
-        .find(|p| p.is_file())
-        .or_else(|| candidates.first())
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let slicer = candidates.iter().find(|p| p.is_file()).or_else(|| candidates.first());
     AppSettings {
-        slicer_path,
-        orca_datadir: orca_datadir_for(os, home.as_ref(), &real_env)
+        slicer_path: slicer.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        orca_datadir: orca_datadir_for(os, home.as_ref(), &real_env, slicer.map(|p| p.as_path()))
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
     }
@@ -144,7 +193,16 @@ pub fn slicer_open(app: AppHandle, path: String) -> Result<(), String> {
     }
     let bin = PathBuf::from(&slicer);
     if !bin.is_file() {
-        return Err(format!("slicer not found at {slicer}"));
+        // Nothing in the UI writes a settings file yet, so name the file the user
+        // can edit. Otherwise the toast cites a path they have never heard of:
+        // with nothing installed, `default_settings` falls back to the FIRST
+        // candidate, which on Linux is a specific alpha AppImage.
+        let cfg = settings_path(&app)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "settings.json".into());
+        return Err(format!(
+            "OrcaSlicer not found at {slicer} — if it is installed elsewhere, set \"slicer_path\" in {cfg}"
+        ));
     }
     if PathBuf::from(&path).extension().and_then(|e| e.to_str()) != Some("3mf") {
         return Err("expected a .3mf project".into());
@@ -408,12 +466,113 @@ mod tests {
     fn orca_datadir_matches_the_platform() {
         let home = PathBuf::from("/home/tester");
         let env = |k: &str| (k == "APPDATA").then(|| PathBuf::from("C:\\Users\\tester\\AppData\\Roaming"));
-        let dir = |os: &str| orca_datadir_for(os, Some(&home), &env).unwrap().to_string_lossy().into_owned();
+        let dir = |os: &str| orca_datadir_for(os, Some(&home), &env, None).unwrap().to_string_lossy().into_owned();
 
         assert!(dir("windows").contains("AppData"), "got {}", dir("windows"));
         assert!(!dir("windows").contains(".config"), "got {}", dir("windows"));
         assert!(dir("macos").contains("Library/Application Support"), "got {}", dir("macos"));
         assert!(dir("linux").ends_with(".config/OrcaSlicer"), "got {}", dir("linux"));
+    }
+
+    /// GitHub #17 (Fedora 44, 0.1.128): "Open in Orca" found nothing with Orca
+    /// installed as a flatpak. TWO independent causes, and the reported one was
+    /// not the decisive one: only the SYSTEM export was listed (GNOME Software
+    /// installs per-user by default), AND the id listed was the retired pre-2.3.2
+    /// one, so a current install missed in BOTH scopes. Adding the per-user path
+    /// alone would not have fixed the reporter.
+    ///
+    /// The homes here are `/home/user`, not a plausible-looking developer name:
+    /// scripts/check-repo-hygiene.sh reds the build on `/home/<name>/` unless the
+    /// name is allowlisted, and it is the first step of the `test` job.
+    #[test]
+    fn linux_finds_flatpak_orca_in_both_scopes_and_both_ids() {
+        let home = PathBuf::from("/home/user");
+        let none = |_: &str| -> Option<PathBuf> { None };
+        let names: Vec<String> = slicer_candidates_for("linux", Some(&home), &none)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            ORCA_FLATPAK_IDS.contains(&"com.orcaslicer.OrcaSlicer"),
+            "the CURRENT Flathub id must be listed, not just the retired one",
+        );
+        for scope in ["/home/user/.local/share/flatpak/exports/bin", "/var/lib/flatpak/exports/bin"] {
+            for id in ORCA_FLATPAK_IDS {
+                let want = format!("{scope}/{id}");
+                assert!(names.contains(&want), "missing flatpak candidate {want}: {names:?}");
+            }
+        }
+        // a native install still wins over any flatpak export
+        let native = names.iter().position(|n| n == "/usr/bin/orca-slicer").unwrap();
+        let flatpak = names.iter().position(|n| n.contains("flatpak")).unwrap();
+        assert!(native < flatpak, "native install must be preferred: {names:?}");
+    }
+
+    /// The per-user flatpak install follows $XDG_DATA_HOME, so hardcoding
+    /// ~/.local/share misses anyone who has moved it.
+    #[test]
+    fn per_user_flatpak_candidate_honours_xdg_data_home() {
+        let home = PathBuf::from("/home/user");
+        let env = |k: &str| (k == "XDG_DATA_HOME").then(|| PathBuf::from("/home/user/data"));
+        let names: Vec<String> = slicer_candidates_for("linux", Some(&home), &env)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.contains(&"/home/user/data/flatpak/exports/bin/com.orcaslicer.OrcaSlicer".to_string()),
+            "XDG_DATA_HOME ignored: {names:?}",
+        );
+        assert!(!names.iter().any(|n| n.contains(".local/share/flatpak")), "stale hardcoded path: {names:?}");
+
+        // An empty or relative XDG_DATA_HOME must not produce a relative
+        // candidate, which `is_file()` would resolve against the process cwd.
+        let bad = |k: &str| (k == "XDG_DATA_HOME").then(PathBuf::new);
+        let rel: Vec<String> = slicer_candidates_for("linux", Some(&home), &bad)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(rel.iter().all(|n| n.starts_with('/')), "relative candidate: {rel:?}");
+    }
+
+    /// A flatpak Orca's presets live in its sandbox home, not ~/.config. Without
+    /// this, slicer_project_settings errors, printFlow swallows it into a console
+    /// warning, and the handoff opens with NO printer preset bound — the user
+    /// sees Orca come up on "-" instead of their U1.
+    #[test]
+    fn flatpak_orca_datadir_points_into_the_sandbox_home() {
+        let home = PathBuf::from("/home/user");
+        let none = |_: &str| -> Option<PathBuf> { None };
+        let flatpak =
+            PathBuf::from("/home/user/.local/share/flatpak/exports/bin/com.orcaslicer.OrcaSlicer");
+        assert_eq!(
+            orca_datadir_for("linux", Some(&home), &none, Some(&flatpak)),
+            Some(PathBuf::from("/home/user/.var/app/com.orcaslicer.OrcaSlicer/config/OrcaSlicer")),
+        );
+        // the legacy id resolves to its own sandbox home, not the current one
+        let legacy =
+            PathBuf::from("/var/lib/flatpak/exports/bin/io.github.softfever.OrcaSlicer");
+        assert_eq!(
+            orca_datadir_for("linux", Some(&home), &none, Some(&legacy)),
+            Some(PathBuf::from("/home/user/.var/app/io.github.softfever.OrcaSlicer/config/OrcaSlicer")),
+        );
+        // a native install is unchanged
+        let native = PathBuf::from("/usr/bin/orca-slicer");
+        assert_eq!(
+            orca_datadir_for("linux", Some(&home), &none, Some(&native)),
+            Some(PathBuf::from("/home/user/.config/OrcaSlicer")),
+        );
+    }
+
+    /// A hand-written settings.json that sets only `slicer_path` must still
+    /// parse. Without #[serde(default)] it fails with "missing field
+    /// orca_datadir" — which would make the advice in slicer_open's own error
+    /// message produce a broken settings file.
+    #[test]
+    fn partial_settings_json_parses() {
+        let s: AppSettings = serde_json::from_str(r#"{"slicer_path":"/usr/bin/orca-slicer"}"#).unwrap();
+        assert_eq!(s.slicer_path, "/usr/bin/orca-slicer");
+        assert_eq!(s.orca_datadir, "");
     }
 
     /// The old test was `path.contains("/user/")`, which is false for every
