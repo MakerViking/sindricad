@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:alt": "SINDRI_VITE_PORT=5174 VITE_SINDRI_WS=ws://127.0.0.1:8766 vite",
+    "tauri:alt": "SINDRI_VITE_PORT=5174 VITE_SINDRI_WS=ws://127.0.0.1:8766 SINDRI_SIDECAR_PORT=8766 SINDRI_EXTRA_ORIGINS=http://localhost:5174,http://127.0.0.1:5174 tauri dev --config src-tauri/tauri.alt-ports.conf.json",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

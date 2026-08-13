@@ -391,7 +391,13 @@ export class Geometry implements GeometryBackend {
   private lastSent: { features: Feature[]; parameters: string; bodyVisibility: string } | null = null;
   private revision = 0;
 
-  constructor(url = "ws://127.0.0.1:8765") {
+  // The sidecar's address. Overridable so a SECOND stack can run beside the
+  // first — a bug-fix session in one worktree while a feature session builds in
+  // another. The sidecar half already honoured SINDRI_SIDECAR_PORT on both the
+  // Python and the Rust side; this was the one place still pinned, which is why
+  // running two stacks used to need an uncommitted local edit. Set
+  // VITE_SINDRI_WS (see `npm run dev:alt`).
+  constructor(url = import.meta.env.VITE_SINDRI_WS || "ws://127.0.0.1:8765") {
     this.url = url;
     // Does NOT connect — call init() once so the per-launch auth token is
     // fetched from the Rust shell before the first socket open.
