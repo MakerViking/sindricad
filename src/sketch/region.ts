@@ -22,6 +22,15 @@ export interface Region {
    *  provenance is not recoverable (a cell bounded by geometry the tracer
    *  deduped away); callers must fall back to the point rather than guess. */
   entityIds: string[];
+  /** ids bounding each HOLE loop, parallel to `holes`.
+   *
+   *  Without these, `entityIds` names the outer loop ONLY, and a face rebuilt
+   *  from it has no hole — so its centre lands INSIDE the hole and resolves to
+   *  the wrong cell. That shipped: field report 19314fdc, "extrude the shell
+   *  wall... the result is never the shell, but the inside loop extrusion".
+   *  The sidecar's `len(faces) != 1` guard does not catch it, because a
+   *  rectangle's outer loop alone bounds exactly one (solid) face. */
+  holeEntityIds: string[][];
 }
 
 const EPS = 1e-4;
@@ -227,8 +236,12 @@ export function detectRegions(
   for (let i = 0; i < loops.length; i++) {
     const loop = loops[i];
     if (!loop) continue;
-    const holes = loops.filter((_, j) => parent[j] === i);
-    regions.push(mkRegion(sketchId, loop, holes, traced[i]?.eids ?? []));
+    const holeIdx = loops.map((_, j) => j).filter((j) => parent[j] === i);
+    const holes = holeIdx.map((j) => loops[j]!);
+    // the holes' OWN bounding entities, so a stored reference can rebuild the
+    // face WITH its holes — see holeEntityIds
+    const holeEntityIds = holeIdx.map((j) => traced[j]?.eids ?? []);
+    regions.push(mkRegion(sketchId, loop, holes, traced[i]?.eids ?? [], holeEntityIds));
   }
   return regions;
 }
@@ -238,12 +251,13 @@ function mkRegion(
   loop: THREE.Vector2[],
   holes: THREE.Vector2[][],
   entityIds: string[],
+  holeEntityIds: string[][] = [],
 ): Region {
   const centroid = centroidOf(loop);
   return {
     sketchId, loop, holes, centroid,
     interior: interiorPoint(loop, holes, centroid),
-    entityIds,
+    entityIds, holeEntityIds,
   };
 }
 

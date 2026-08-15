@@ -419,6 +419,11 @@ export type Feature =
       // Absent on documents written before this existed; those keep point-only
       // behaviour exactly.
       regionEntities?: string[][];
+  /** entities bounding each selected region's HOLE loops, parallel to
+   *  `regionEntities`. The sidecar refuses an entity-derived anchor when a region
+   *  has holes, because the outer loop alone rebuilds a SOLID face whose centre
+   *  lands in the hole (field 19314fdc). */
+  regionHoleEntities?: string[][][];
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display

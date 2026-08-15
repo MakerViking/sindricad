@@ -1742,9 +1742,20 @@ def _handle_extrude(f, ctx):
         # every document written before this existed, which is why the point stays
         # the fallback rather than being replaced.
         ents = f.get("regionEntities") or []
+        # Each area's HOLE loops, parallel to `ents`. Without them the anchor is
+        # derived from the outer loop alone, which rebuilds a SOLID face whose
+        # centre sits inside the hole — field report 19314fdc, "extrude the shell
+        # wall ... the result is never the shell, but the inside loop extrusion".
+        hole_ents = f.get("regionHoleEntities") or []
         sel = []
         for i, p in enumerate(pts):
-            anchor = _region_anchor_from_entities(entry, ents[i]) if i < len(ents) else None
+            anchor = (
+                _region_anchor_from_entities(
+                    entry, ents[i], hole_ents[i] if i < len(hole_ents) else None
+                )
+                if i < len(ents)
+                else None
+            )
             rf = _region_face_at(
                 cells, anchor if anchor is not None else Vector(*p),
                 ctx.diagnostics, f.get("id"),
@@ -6546,7 +6557,7 @@ def _path_wire(edges, plane):
     return plane * longest
 
 
-def _region_anchor_from_entities(entry, eids):
+def _region_anchor_from_entities(entry, eids, hole_eids=None):
     """A point inside the region bounded by exactly these sketch entities, in the
     LOCATED frame — the anchor a stored region reference should use once the
     geometry it was picked on has moved.
@@ -6557,6 +6568,15 @@ def _region_anchor_from_entities(entry, eids):
     and THAT gets extruded. It is silent, because containment succeeds: the point
     really is inside a profile, just not the one the user chose. The entity ids
     recorded alongside survive the move; the point does not.
+
+    `hole_eids` names the entities bounding each HOLE of the region. They are
+    load-bearing on any profile with a hole: without them this rebuilds the OUTER
+    loop alone, which for a rectangle is exactly ONE solid face, so the face-count
+    guard below passes and `center()` is returned from inside the hole. The caller
+    then resolves that to the inner cell. That is field report 19314fdc — the wall
+    of a shell cross-section extruding as its inner loop — and it shipped in
+    0.1.123. The guard was written around the CIRCLE ring, where two circles give
+    two faces and it refuses correctly; an outer rectangle alone gives one.
 
     Returns None whenever the entities do not bound exactly one face, and the
     caller falls back to the stored point. That covers a line splitting a square
@@ -6574,6 +6594,24 @@ def _region_anchor_from_entities(entry, eids):
         if not got:
             return None  # an entity the reference names is gone: stale, not moved
         eds.extend(got)
+    # A region WITH HOLES cannot be anchored from its outer loop, so refuse and
+    # let the caller use the stored point — which is correct by construction here:
+    # Region.interior is "a point inside the material, outside all holes".
+    #
+    # This is the field-19314fdc fix. Deriving the anchor from the outer loop
+    # alone rebuilt a SOLID face whose centre sits in the hole, and the caller
+    # resolved that to the inner cell: the wall of a shell cross-section extruded
+    # as its inner loop. The face-count guard below never caught it because a
+    # rectangle's outer loop bounds exactly one face.
+    #
+    # Refusing costs holed regions their drift-protection (the a20cca53 benefit),
+    # which is the honest trade until the anchor is derived from the outer face
+    # with its holes CUT OUT. Picking a face by area does NOT work: an outer
+    # 100x100 with an inner 80x80 leaves a 3600mm2 wall against a 6400mm2 hole,
+    # so the largest face is the hole. See task #60 — the proper fix belongs with
+    # the edit-path re-anchoring, which is blocked on the same defect.
+    if any(grp for grp in (hole_eids or [])):
+        return None
     try:
         faces = _faces_from_edges(eds)
     except Exception:

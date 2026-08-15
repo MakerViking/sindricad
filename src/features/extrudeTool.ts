@@ -412,6 +412,10 @@ export class ExtrudeTool {
       // point, and a point does not move with the circle it was inside — it ends
       // up in whatever profile now covers it (field report a20cca53).
       regionEntities: this.selected.map((wr) => wr.region.entityIds),
+      // the holes' own bounding entities, so the sidecar can rebuild the face
+      // WITH its holes. Without these it rebuilds a SOLID face whose centre sits
+      // inside the hole and resolves to the wrong cell (field 19314fdc).
+      regionHoleEntities: this.selected.map((wr) => wr.region.holeEntityIds ?? []),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
