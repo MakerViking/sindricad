@@ -23,6 +23,11 @@ import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entity
 import type { SketchConstraint } from "../types";
 import { isDriven, projEndSamples } from "../types";
 
+// Below this a line has no usable direction, so any angular constraint on it is
+// vacuously satisfiable — which is how a conflicting sketch "solves" by folding
+// flat instead of reporting that it cannot be solved.
+const LINE_COLLAPSE_EPS = 1e-7;
+
 export interface SolvePass {
   entities: ResolvedEntity[];
   dof: number;
@@ -589,6 +594,29 @@ export async function compileAndSolve(
   }
   for (const [eid, a] of Object.entries(r.arcs)) {
     if (!(a.radius > 0) || !Number.isFinite(a.radius)) badGeom.add(eid);
+  }
+  // A LINE that collapses to nothing is the same class of broken geometry as a
+  // zero-radius circle, and it was not covered here. Applying `collinear` to two
+  // lines already pinned horizontal and vertical is satisfiable ONLY by shrinking
+  // one of them to zero length — at zero length a line has no direction, so
+  // "parallel" becomes vacuous and planegcs duly reports success on that branch.
+  // Seen in the app 2026-08-15: a 65mm edge became 0mm and the L folded flat.
+  // The conflict WAS detected (conflicts named both dims and the parallel); the
+  // broken geometry was simply applied anyway.
+  //
+  // Judged only against lines that HAD length, so a degenerate line already in
+  // the sketch is not newly refused, and only the collapse itself is caught.
+  const lineLen = (e: { x1: number; y1: number; x2: number; y2: number }) =>
+    Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+  const solvedById = new Map(out.map((e) => [e.id, e]));
+  for (const before of entities) {
+    if (before.type !== "line") continue;
+    const after = solvedById.get(before.id);
+    if (!after || after.type !== "line") continue;
+    const la = lineLen(after);
+    if (!Number.isFinite(la) || (lineLen(before) > LINE_COLLAPSE_EPS && la <= LINE_COLLAPSE_EPS)) {
+      badGeom.add(before.id);
+    }
   }
   const guardIds = new Set<string>();
   if (badGeom.size) {

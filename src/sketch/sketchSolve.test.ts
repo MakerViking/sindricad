@@ -11,6 +11,7 @@ vi.mock("@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url", () => ({
 }));
 
 import { compileAndSolve, constraintIndexOf } from "./sketchSolve";
+import { expectSaneGeometry, expectUnchangedOnFailure } from "./solveInvariants";
 import { breakLink } from "./modify";
 import type { ResolvedEntity } from "./snap";
 import type { ProjectedCurve, SketchConstraint } from "../types";
@@ -352,5 +353,40 @@ describe("offset constraint — the copy stays tied to its source", () => {
     const b = r.entities.find((e) => e.id === "c2");
     if (b?.type !== "circle") throw new Error("circle lost");
     expect(b.radius).toBeCloseTo(8, 5); // the live pair still holds
+  });
+});
+
+// Applying Collinear to two lines that are already Horizontal and Vertical is
+// only satisfiable by shrinking one to ZERO LENGTH: at zero length a line has no
+// direction, so `parallel` goes vacuous and planegcs reports that branch solved.
+//
+// Reported in the app on 2026-08-15 — a 65mm edge became 0mm and the L folded
+// flat. The conflict WAS detected (both dims and the parallel were named); the
+// broken geometry was applied anyway, because badGeom only screened zero-radius
+// circles and arcs and never a collapsed line.
+describe("a line that collapses to nothing is refused, like a zero-radius circle", () => {
+  it("keeps the pre-solve geometry and reports the conflict", async () => {
+    const entities: any[] = [
+      { type: "line", id: "A", x1: 0, y1: 0, x2: 70, y2: 0 },
+      { type: "line", id: "B", x1: 0, y1: 0, x2: 0, y2: -65 },
+    ];
+    const constraints: any[] = [
+      { type: "coincident", e1: "A", p1: 0, e2: "B", p2: 0 },
+      { type: "horizontal", line: "A" },
+      { type: "vertical", line: "B" },
+      { type: "collinear", l1: "A", l2: "B" }, // the destructive one
+    ];
+    const r = await compileAndSolve(entities, constraints);
+    const len = (e: any) => Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+    const B = r.entities.find((e: any) => e.id === "B")!;
+    // refused rather than applied: H + V + collinear cannot all hold on two real
+    // lines, so the only "solution" is a degenerate one and it must not land
+    expect(r.ok).toBe(false);
+    // the whole point: the 65mm edge is still 65mm, not 0
+    expect(len(B)).toBeCloseTo(65, 6);
+    // and the universal post-conditions, which would have caught this class on
+    // their own without anyone predicting collinear specifically
+    expectSaneGeometry(r.entities, "collinear on H+V", entities);
+    expectUnchangedOnFailure(r, entities, r.entities, "collinear on H+V");
   });
 });

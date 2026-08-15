@@ -53,7 +53,40 @@ export interface ConstraintHost {
   /** surface a user-facing warning (SketchMode routes it to the toast layer —
    *  kept an accessor so these flows stay DOM-free/unit-testable) */
   warn(msg: string): void;
+  /** Show (or clear) the endpoint this flow is holding, so the user can see that
+   *  a first pick landed. Coincident's first click used to leave NO trace at all
+   *  — the tool looked broken until the second click happened to work. */
+  setPendingPoint(p: { x: number; y: number } | null): void;
+  /** Push a constraint and solve. The host REMOVES it again if that solve turns
+   *  out to conflict: an unsatisfiable constraint left sitting in the sketch
+   *  poisons every later one, because the whole system stops solving and nothing
+   *  moves. Reported in the app 2026-08-15 — after one bad Collinear, a perfectly
+   *  good Parallel on other lines also appeared to do nothing. */
+  addConstraint(c: SketchConstraint): void;
 }
+
+
+/** What each tool needs under the cursor. Used only for the "nothing here"
+ *  message, so a miss names the target instead of looking like a dead tool. */
+const WANTS: Partial<Record<SketchTool, string>> = {
+  horizontal: "a line",
+  vertical: "a line",
+  parallel: "two lines",
+  perpendicular: "two lines",
+  collinear: "two lines",
+  equal: "two lines, or two circles/arcs",
+  tangent: "a circle or arc, then the line or curve it should touch",
+  concentric: "two circles or arcs",
+  coincident: "two endpoints",
+  midpoint: "an endpoint, then the line to centre it on",
+  symmetric: "two endpoints, then the axis line",
+  fix: "a point, an endpoint or a centre",
+};
+
+const COINCIDENT_MISS =
+  "Coincident joins two ENDPOINTS — click the ends of the lines, not their middles. "
+  + "To make two lines lie along each other, use Collinear.";
+
 
 export class ConstraintTools {
   constructor(private host: ConstraintHost) {}
@@ -71,6 +104,15 @@ export class ConstraintTools {
   resetPending() {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
+    this.host.setPendingPoint(null); // the marker must not outlive the pick
+  }
+
+  /** Report a click that found no usable target. Every tool routes misses here:
+   *  a constraint tool that does nothing and says nothing is indistinguishable
+   *  from a broken one, which is exactly how Coincident read (GitHub #17). */
+  private missed() {
+    const t = this.host.tool();
+    this.host.warn(`Nothing to constrain there — ${t} needs ${WANTS[t] ?? "a target"}.`);
   }
 
   /** add a persistent geometric constraint and re-solve (the solver maintains
@@ -90,7 +132,7 @@ export class ConstraintTools {
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, this.host.pickTol());
     const ent = idx >= 0 ? entities[idx] : undefined;
-    if (!ent || curveKind(ent) !== "line") return;
+    if (!ent || curveKind(ent) !== "line") return this.missed();
     if (t === "horizontal" || t === "vertical") {
       // constraining the projected line ITSELF is meaningless — it's fixed
       if (ent.type !== "line") return this.host.warn(PROJECTED_FIXED_MSG);
@@ -105,7 +147,7 @@ export class ConstraintTools {
       }
       const a = entities[this.host.getFilletFirst()!]?.id;
       this.host.setFilletFirst(null);
-      if (!a || a === id) return;
+      if (!a || a === id) return this.missed();
       if (t === "parallel") this.addConstraint({ type: "parallel", l1: a, l2: id });
       else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a, l2: id });
       else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a, l2: id });
@@ -144,6 +186,32 @@ export class ConstraintTools {
     return best;
   }
 
+  /** Plane coordinates of an endpoint reference, so the host can mark it on
+   *  screen. Mirrors pickEndpoint's own idea of which points are addressable —
+   *  if a point can be picked it can be shown, and vice versa. */
+  private endpointXY(ep: { id: string; idx: number }): { x: number; y: number } | null {
+    const e = this.host.entities().find((x) => x.id === ep.id);
+    if (!e) return null;
+    if (e.type === "point") return { x: e.x, y: e.y };
+    if (e.type === "line" || e.type === "arc") {
+      return ep.idx === 0 ? { x: e.x1, y: e.y1 } : { x: e.x2, y: e.y2 };
+    }
+    if (e.type === "spline") {
+      const pt = ep.idx === 0 ? e.points[0] : e.points[e.points.length - 1];
+      return pt ? { x: pt.x, y: pt.y } : null;
+    }
+    if (e.type === "projected") {
+      const cv = (e as any).curve;
+      if (!cv) return null;
+      if (cv.kind === "line" || cv.kind === "arc") {
+        return ep.idx === 0 ? { x: cv.x1, y: cv.y1 } : { x: cv.x2, y: cv.y2 };
+      }
+      const s = projEndSamples(cv)[ep.idx];
+      return s ? { x: s[0], y: s[1] } : null;
+    }
+    return null;
+  }
+
   private pointConstraintClick(p: THREE.Vector2) {
     const t = this.host.tool();
     const entities = this.host.entities();
@@ -151,33 +219,80 @@ export class ConstraintTools {
       // pick a point/endpoint, then a line
       if (!this.pendingEndpoint) {
         const ep = this.pickEndpoint(p);
-        if (ep) this.pendingEndpoint = ep;
+        if (!ep) return this.missed();
+        this.pendingEndpoint = ep;
+        this.host.setPendingPoint(this.endpointXY(ep));
         return;
       }
       const idx = pickEntity(entities, p, this.host.pickTol());
       const e = idx >= 0 ? entities[idx] : null;
       const ep = this.pendingEndpoint;
       this.pendingEndpoint = null;
+      this.host.setPendingPoint(null);
       if (e && curveKind(e) === "line" && e.id !== ep.id) this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: e.id });
+      else this.missed();
       return;
     }
     if (t === "coincident") {
       const ep = this.pickEndpoint(p);
-      if (!ep) return;
-      if (!this.pendingEndpoint) { this.pendingEndpoint = ep; return; }
-      const a = this.pendingEndpoint;
-      this.pendingEndpoint = null;
-      if (a.id !== ep.id) this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
+      if (ep) {
+        // An endpoint pick is the primary flow and wins over any line held for
+        // the collinear fallback below.
+        this.host.setFilletFirst(null);
+        if (!this.pendingEndpoint) {
+          this.pendingEndpoint = ep;
+          this.host.setPendingPoint(this.endpointXY(ep));
+          return;
+        }
+        const a = this.pendingEndpoint;
+        this.pendingEndpoint = null;
+        this.host.setPendingPoint(null);
+        if (a.id !== ep.id) this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
+        return;
+      }
+
+      // No endpoint under the cursor. This used to be a bare `return`: no
+      // constraint, no message, no highlight — indistinguishable from a broken
+      // tool, and the reason both a field reporter and the author concluded
+      // sketch lines were not selectable at all.
+      const ents = this.host.entities();
+      const idx = pickEntity(ents, p, this.host.pickTol());
+      const ent = idx >= 0 ? ents[idx] : undefined;
+      if (!ent || curveKind(ent) !== "line") {
+        this.host.warn(COINCIDENT_MISS);
+        return; // keep any pending endpoint: a stray click must not lose the first pick
+      }
+      if (this.pendingEndpoint) {
+        // half-way through the endpoint pair — say so rather than silently
+        // switching them into a different constraint
+        this.host.warn("Click the second ENDPOINT to finish this coincident, or press Esc to start over.");
+        return;
+      }
+      // Two line BODIES: apply collinear, the way SolidWorks and Fusion do,
+      // instead of doing nothing.
+      const first = this.host.getFilletFirst();
+      if (first == null) {
+        this.host.setFilletFirst(idx);
+        return;
+      }
+      const a = ents[first]?.id;
+      this.host.setFilletFirst(null);
+      if (!a || a === ent.id) return;
+      this.addConstraint({ type: "collinear", l1: a, l2: ent.id });
+      this.host.warn("Two lines: applied Collinear (Coincident joins endpoints).");
       return;
     }
     // symmetric: pick endpoint A, endpoint B, then the axis line
     if (!this.pendingEndpoint) {
       const ep = this.pickEndpoint(p);
-      if (ep) this.pendingEndpoint = ep;
+      if (!ep) return this.missed();
+      this.pendingEndpoint = ep;
+      this.host.setPendingPoint(this.endpointXY(ep));
       return;
     }
     if (!this.pendingEndpoint2) {
       const ep = this.pickEndpoint(p);
+      if (!ep) return this.missed();
       if (ep && ep.id !== this.pendingEndpoint.id) this.pendingEndpoint2 = ep;
       return;
     }
@@ -209,16 +324,17 @@ export class ConstraintTools {
    *  Emits the general `tangent2`; the compiler picks the right planegcs variant. */
   private tangentClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, isCurve);
-    if (!pair) return;
+    if (!pair) return this.missed();
     const [first, e] = pair;
-    if (curveKind(first) === "line" && curveKind(e) === "line") return; // two lines can't be tangent
+    // two lines cannot be tangent — say so rather than swallowing the pick
+    if (curveKind(first) === "line" && curveKind(e) === "line") return this.missed();
     this.addConstraint({ type: "tangent2", a: first.id, b: e.id });
   }
 
   /** equal: two lines share length, or two circles/arcs share radius. */
   private equalClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, isCurve);
-    if (!pair) return;
+    if (!pair) return this.missed();
     const [first, e] = pair;
     if (curveKind(first) === "line" && curveKind(e) === "line") {
       this.addConstraint({ type: "equal", l1: first.id, l2: e.id });
@@ -229,7 +345,7 @@ export class ConstraintTools {
 
   private concentricClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, isRound); // circles and arcs both carry a center
-    if (!pair) return;
+    if (!pair) return this.missed();
     this.addConstraint({ type: "concentric", c1: pair[0].id, c2: pair[1].id });
   }
 
@@ -249,14 +365,15 @@ export class ConstraintTools {
     }
     if (best) return this.addConstraint({ type: "fix", e: best.id, p: best.p });
     // no addressable point — explain a click on projected geometry (skipped
-    // above: it is already fixed) instead of silently doing nothing
+    // above: it is already fixed) instead of silently doing nothing. This
+    // specific message beats the generic one, so it goes first.
     const entities = this.host.entities();
     const idx = pickEntity(entities, p, tol);
-    if (entities[idx]?.type === "projected") this.host.warn(PROJECTED_FIXED_MSG);
+    if (entities[idx]?.type === "projected") return this.host.warn(PROJECTED_FIXED_MSG);
+    return this.missed();
   }
 
   private addConstraint(c: SketchConstraint) {
-    this.host.constraints().push(c);
-    this.host.requestSolve();
+    this.host.addConstraint(c);
   }
 }

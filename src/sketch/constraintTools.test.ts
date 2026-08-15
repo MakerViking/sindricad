@@ -22,6 +22,10 @@ class MockHost implements ConstraintHost {
   requestSolve() { this.solves++; }
   warnings: string[] = [];
   warn(msg: string) { this.warnings.push(msg); }
+  pending: { x: number; y: number } | null = null;
+  pendingSets = 0;
+  setPendingPoint(p: { x: number; y: number } | null) { this.pending = p; this.pendingSets++; }
+  addConstraint(c: SketchConstraint) { this._cons.push(c); this.solves++; }
 }
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -136,5 +140,80 @@ describe("constraintTools click flows (Tier 1 additions)", () => {
     expect(h._cons).toEqual([]);
     expect(h.warnings).toHaveLength(1);
     expect(h.warnings[0]).toMatch(/Break Link/);
+  });
+});
+
+// Coincident is point-to-point, so clicking a line BODY used to hit a bare
+// `return`: no constraint, no message, no marker. Thomas hit it in the app on
+// 2026-08-15 and GitHub #17 reported it as "sketch lines aren't selectable" —
+// the tool is indistinguishable from a broken one. These pin the three ways out.
+describe("coincident: the silent-miss fixes", () => {
+  const twoLines = (): ResolvedEntity[] => [
+    { type: "line", id: "l1", x1: 0, y1: 0, x2: 10, y2: 0 },
+    { type: "line", id: "l2", x1: 0, y1: 5, x2: 10, y2: 5 },
+  ];
+
+  it("marks the endpoint it is holding after the first pick", () => {
+    const h = new MockHost();
+    h._ents = twoLines();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, 0)); // endpoint of l1
+    expect(h.pending).toEqual({ x: 0, y: 0 });
+    expect(h._cons).toEqual([]); // nothing applied yet — it is a two-click flow
+  });
+
+  it("clears the marker once the pair completes", () => {
+    const h = new MockHost();
+    h._ents = twoLines();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, 0));
+    ct.click(v(0, 5));
+    expect(h._cons).toEqual([{ type: "coincident", e1: "l1", p1: 0, e2: "l2", p2: 0 }]);
+    expect(h.pending).toBeNull();
+  });
+
+  it("clears the marker when the pick is abandoned", () => {
+    const h = new MockHost();
+    h._ents = twoLines();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, 0));
+    ct.resetPending();
+    expect(h.pending).toBeNull();
+  });
+
+  it("applies COLLINEAR when two line bodies are picked, as SolidWorks and Fusion do", () => {
+    const h = new MockHost();
+    h._ents = twoLines();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(5, 0)); // middle of l1 — no endpoint here
+    ct.click(v(5, 5)); // middle of l2
+    expect(h._cons).toEqual([{ type: "collinear", l1: "l1", l2: "l2" }]);
+  });
+
+  it("says something when the click hits nothing at all", () => {
+    const h = new MockHost();
+    h._ents = twoLines();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(50, 50)); // empty space
+    expect(h._cons).toEqual([]);
+    expect(h.warnings.join(" ")).toMatch(/ENDPOINTS/);
+    expect(h.warnings.join(" ")).toMatch(/Collinear/);
+  });
+
+  it("does not throw away a first endpoint pick on a stray click", () => {
+    const h = new MockHost();
+    h._ents = twoLines();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, 0));      // good first pick
+    ct.click(v(50, 50));    // stray
+    expect(h.pending).toEqual({ x: 0, y: 0 }); // still held
+    ct.click(v(0, 5));      // second endpoint still completes it
+    expect(h._cons).toEqual([{ type: "coincident", e1: "l1", p1: 0, e2: "l2", p2: 0 }]);
   });
 });

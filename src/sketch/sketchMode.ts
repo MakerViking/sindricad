@@ -160,6 +160,10 @@ export class SketchMode {
   private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants)
   private polygonSides = 6; // n for the polygon tool
   private filletFirst: number | null = null; // first line picked for a sketch fillet
+  /** world position of the endpoint a constraint flow is holding, if any */
+  private pendingConstraintPoint: THREE.Vector3 | null = null;
+  /** the constraint just added by a tool, on trial until its solve comes back */
+  private trialConstraint: SketchConstraint | null = null;
   private selected = new Set<string>(); // selected entity ids (select tool)
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
@@ -324,7 +328,25 @@ export class SketchMode {
       getFilletFirst: () => this.filletFirst,
       setFilletFirst: (v) => { this.filletFirst = v; },
       requestSolve: () => this.requestSolve(),
+      addConstraint: (c) => {
+        this.constraints.push(c);
+        this.trialConstraint = c; // withdrawn again if this solve conflicts
+        this.requestSolve();
+      },
       warn: (msg) => toast(msg),
+      // Mark the endpoint a constraint flow is holding. Coincident's first click
+      // used to leave no trace at all, so the tool looked dead until the second
+      // click happened to land on an endpoint.
+      setPendingPoint: (p) => {
+        this.pendingConstraintPoint = p ? this.plane.to3D(p.x, p.y) : null;
+        this.overlay.setPendingPoint(this.pendingConstraintPoint, this.viewport.camera);
+        if (this.pendingConstraintPoint) {
+          this.overlay.setPendingPointScale(
+            this.viewport.pixelWorldSize(this.pendingConstraintPoint) * 6,
+          );
+        }
+        this.viewport.requestRender();
+      },
     };
     this.constraintTools = new ConstraintTools(constraintHost);
     const patternHost: PatternHost = {
@@ -595,7 +617,9 @@ export class SketchMode {
    * dimension-label DOM teardown/rebuild. refreshActive() restores both on end. */
   private refreshDragGeometry() {
     this.entityVersion++;
-    this.overlay.setActiveSketch(curveObjects(this.entities, this.plane, this.activeColor()));
+    this.overlay.setActiveSketch(
+      curveObjects(this.entities, this.plane, this.activeColor(), false, this.endpointDotRadius()),
+    );
   }
 
   // --- Sketch Palette options ---
@@ -2620,15 +2644,27 @@ export class SketchMode {
     return out;
   }
 
+  /** Endpoint dot radius in plane units, held at a constant ~5px across.
+   *  Recomputed per refresh rather than per frame: the sketch re-emits on
+   *  practically every interaction, and a per-frame rescale would mean another
+   *  group to keep in sync for a dot. */
+  private endpointDotRadius(): number {
+    return this.viewport.pixelWorldSize(this.plane.origin) * 2.5;
+  }
+
   private activeCurves(derived: ResolvedEntity[]): THREE.Object3D[] {
     const objs: THREE.Object3D[] = [];
+    // ~5px across at the current zoom. Endpoints are only drawn on the ACTIVE
+    // sketch: they are click targets for the constraint tools, and putting a dot
+    // on every committed sketch in the document would be noise.
+    const epR = this.endpointDotRadius();
     if (this.selected.size) {
       const normal = this.entities.filter((e) => !this.selected.has(e.id));
       const chosen = this.entities.filter((e) => this.selected.has(e.id));
-      if (normal.length) objs.push(...curveObjects(normal, this.plane, this.activeColor()));
+      if (normal.length) objs.push(...curveObjects(normal, this.plane, this.activeColor(), false, epR));
       if (chosen.length) objs.push(...curveObjects(chosen, this.plane, SELECT_COLOR, true));
     } else {
-      objs.push(...curveObjects(this.entities, this.plane, this.activeColor()));
+      objs.push(...curveObjects(this.entities, this.plane, this.activeColor(), false, epR));
     }
     if (this.dimsVisible) {
       this.cdims = constraintDims(this.entities, this.constraints);
@@ -3532,6 +3568,18 @@ export class SketchMode {
           // geometry changed mid-solve (a draw committed): discard, re-solve
           if (this.entityVersion !== ver) { this.solveDirty = true; continue; }
           this.conflict = r.conflicts.length > 0;
+          // A constraint that cannot be satisfied must not stay in the sketch.
+          // Keeping it leaves the whole system unsolvable, so every LATER
+          // constraint silently does nothing and the tools look broken.
+          if (this.trialConstraint && (this.conflict || !r.ok)) {
+            const i = this.constraints.lastIndexOf(this.trialConstraint);
+            if (i >= 0) this.constraints.splice(i, 1);
+            this.trialConstraint = null;
+            toast("That constraint conflicts with the ones already on this sketch, so it was not applied.");
+            this.solveDirty = true; // re-solve without it, back to the last good state
+            continue;
+          }
+          this.trialConstraint = null;
           this.conflictIdx = parseConflictIdx(r.conflicts);
           this.overIdx = parseConflictIdx(r.overDefined);
           if (!this.conflict) this.entities = r.entities; // keep last good on conflict

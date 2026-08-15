@@ -40,6 +40,7 @@ export interface WorldRegion {
 export const CURVE_COLOR = 0x5b9bff; // under-constrained blue
 export const PREVIEW_COLOR = 0xffffff;
 export const SELECT_COLOR = 0xff9d3b; // selected sketch entity (orange)
+export const ENDPOINT_COLOR = 0x9ec5ff; // addressable endpoint dot (lighter than the curve)
 export const DIM_COLOR = 0x8fa4bd; // muted blue-gray for dimension annotations
 const FILL_COLOR = 0x3a7bd5;
 
@@ -100,6 +101,7 @@ export class SketchOverlay {
   private activeSketch = new THREE.Group(); // active sketch's committed curves
   private previewGroup = new THREE.Group(); // the rubber-band, rebuilt per move
   private snapMarker: THREE.Mesh;
+  private pendingMarker: THREE.Mesh;
   private planeCache = new Map<string, SketchPlane>();
   regions: WorldRegion[] = []; // committed-sketch regions
   private activeRegions: WorldRegion[] = []; // active-sketch regions (sketch mode)
@@ -125,6 +127,17 @@ export class SketchOverlay {
     this.snapMarker.renderOrder = 30;
     this.snapMarker.visible = false;
     this.group.add(this.snapMarker);
+
+    // The endpoint a constraint flow is currently holding. A filled disc rather
+    // than the snap ring, so "I have this point" never reads as "you could snap
+    // here": the two can be on screen at once and mean different things.
+    this.pendingMarker = new THREE.Mesh(
+      new THREE.CircleGeometry(1.0, 20),
+      new THREE.MeshBasicMaterial({ color: 0x35d07f, depthTest: false }),
+    );
+    this.pendingMarker.renderOrder = 31; // above the snap ring
+    this.pendingMarker.visible = false;
+    this.group.add(this.pendingMarker);
   }
 
   planeFor(spec: PlaneSpec): SketchPlane {
@@ -438,6 +451,21 @@ export class SketchOverlay {
     this.snapMarker.scale.setScalar(s);
   }
 
+  /** Show the endpoint a constraint flow is holding, or clear it with null. */
+  setPendingPoint(world: THREE.Vector3 | null, camera?: THREE.Camera) {
+    if (!world) {
+      this.pendingMarker.visible = false;
+      return;
+    }
+    this.pendingMarker.visible = true;
+    this.pendingMarker.position.copy(world);
+    if (camera) this.pendingMarker.quaternion.copy(camera.quaternion); // face camera
+  }
+
+  setPendingPointScale(s: number) {
+    this.pendingMarker.scale.setScalar(s);
+  }
+
   /** Show/hide the translucent profile region fills (Sketch Palette toggle). */
   setFillsVisible(on: boolean) {
     this.fills.visible = on;
@@ -457,6 +485,7 @@ export function curveObjects(
   plane: SketchPlane,
   color: number,
   highlight = false, // emphasis pass (selection / modify hover): color wins even on projected
+  endpointR = 0, // >0 draws a dot at every addressable endpoint (see endpointDot)
 ): THREE.Object3D[] {
   warmText(ents); // fetch glyph outlines for any text entities; repaints when they land
   const out: THREE.Object3D[] = [];
@@ -475,6 +504,17 @@ export function curveObjects(
       const faces = getCachedText(e);
       if (faces && faces.length) add(textObjects(faces, plane, color, !!e.construction));
       continue;
+    }
+    if (endpointR > 0 && !highlight) {
+      // the same points pickEndpoint addresses, so what you see is what you can hit
+      if (e.type === "line" || e.type === "arc") {
+        add(endpointDot(plane, e.x1, e.y1, ENDPOINT_COLOR, endpointR));
+        add(endpointDot(plane, e.x2, e.y2, ENDPOINT_COLOR, endpointR));
+      } else if (e.type === "spline" && e.points.length) {
+        const a = e.points[0], b = e.points[e.points.length - 1];
+        if (a) add(endpointDot(plane, a.x, a.y, ENDPOINT_COLOR, endpointR));
+        if (b) add(endpointDot(plane, b.x, b.y, ENDPOINT_COLOR, endpointR));
+      }
     }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
     // projected geometry keeps its link color (purple; amber when stale) even
@@ -531,6 +571,26 @@ function textObjects(
 /** a small "+" glyph (two short crossed segments) marking a sketch point.
  *  Built in PLANE coordinates — world-axis offsets would push strokes out of
  *  the plane on XZ/YZ sketches (edge-on, half the cross vanished). */
+/** Small square dot at an addressable endpoint.
+ *
+ *  Endpoints were drawn nowhere: only standalone POINT entities got a marker, so
+ *  the ends of a line were invisible until you happened to hover them. That is
+ *  most of why Coincident felt broken — its targets are endpoints, and you could
+ *  not see where they were (GitHub #17; confirmed in the app 2026-08-15).
+ *
+ *  Sized by the caller in world units derived from screen pixels, so it stays a
+ *  dot rather than growing into a blob when you zoom in. */
+function endpointDot(plane: SketchPlane, x: number, y: number, color: number, r: number): THREE.Object3D {
+  const pts = [
+    plane.to3D(x - r, y - r), plane.to3D(x + r, y - r),
+    plane.to3D(x + r, y + r), plane.to3D(x - r, y + r),
+    plane.to3D(x - r, y - r),
+  ];
+  const seg = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat(color));
+  seg.renderOrder = 14; // above the curves themselves
+  return seg;
+}
+
 function pointMarker(plane: SketchPlane, x: number, y: number, color: number): THREE.Object3D {
   const s = 0.9;
   const pts = [
