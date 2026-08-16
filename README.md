@@ -80,6 +80,9 @@ appear on the release itself.
 - **Features**: Extrude (new body, join, cut, intersect, per region), Revolve, Loft,
   Sweep, Press/Pull (multi-face, and extrude up to a target surface), Fillet, Chamfer,
   Shell, Draft, Scale, Mirror, and patterns.
+- **Press/Pull dispatches on what you click**: a body face is pushed or pulled
+  along its normal, a sketch profile goes to Extrude, an edge goes to Fillet. One
+  key for the three things you reach for most.
 - **Offset Face and Thicken**: push selected faces along their own normals with the
   surrounding walls following, or give surface geometry a wall. Thicken is what turns
   a non-watertight mesh import, which arrives as read-only reference geometry, into a

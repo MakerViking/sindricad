@@ -82,9 +82,44 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   };
   // Interactive Press/Pull: pick a solid face, then drag an arrow along its normal
   // to add/cut material (planar) or offset a curved face — with a live preview.
+  //
+  // It is also a DISPATCHER, the mirror of startExtrude below: in Fusion, Press
+  // Pull sends a profile to Extrude, a face to Offset Face and an edge to
+  // Fillet. A field reporter asked for exactly that ("press/pull just the bolt
+  // hole"), which was impossible while the tool only understood faces. The
+  // dispatch lives HERE, before any tool is active — a tool that is already
+  // `active` cannot start another, since every start() self-guards on it.
   const startPressPull = () => {
     if (toolBusy()) return;
-    pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+    const done = (id: string | null) => { noteCommitted(id); if (id) selectFeature(id); };
+    // A selected FACE is Press/Pull's own job and wins. The right-click
+    // "Press/Pull face" menu selects a face and then dispatches through here,
+    // and viewport.selectOnlyFace clears only the highlighter — NOT the
+    // overlay's region selection — so checking regions first would break it
+    // for anyone with a sketch profile still selected.
+    if (!viewport.selectedFacesForPressPull()) {
+      if (viewport.selectedEdgeSelectors().length) {
+        edgeFeature.start("fillet", done);
+        return;
+      }
+      if (overlay.selectedRegions().length) {
+        extrude.start(done);
+        return;
+      }
+    }
+    // Nothing pre-selected: arm the face tool, but let it hand the click back
+    // if what the user clicks turns out to be an edge or a sketch profile.
+    // Region picking cannot cover for this — viewport.regionPickAt bails on
+    // toolBusy(), which includes pressPull.active.
+    pressPull.start(done, (h) => {
+      if (h.kind === "region") {
+        overlay.toggleRegionSelection(h.region, false);
+        extrude.start(done);
+      } else {
+        viewport.selectOnlyEdge(h.edge);
+        edgeFeature.start("fillet", done);
+      }
+    });
   };
 
   /** Abort an in-flight interactive plane pick, if any.

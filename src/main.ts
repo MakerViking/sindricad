@@ -146,7 +146,7 @@ setTextBackend(geometry, () => {
 });
 const extrude = new ExtrudeTool(viewport, overlay, store);
 const edgeFeature = new EdgeFeatureTool(viewport, store);
-const pressPull = new PressPullTool(viewport, store);
+const pressPull = new PressPullTool(viewport, store, overlay);
 const faceOffset = new FaceOffsetTool(viewport, store);
 const loftTool = new LoftTool(viewport, overlay, store);
 const moveTool = new MoveTool(viewport, store);

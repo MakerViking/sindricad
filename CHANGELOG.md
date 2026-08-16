@@ -20,6 +20,21 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Press/Pull now acts on whatever you click, not just a body face.** Reported
+  by a field tester who wanted to press/pull a single hole in a bolt circle and
+  found it impossible: the tool understood faces and nothing else, so a click on
+  a sketch profile fell straight through and orbited the camera instead.
+
+  Press/Pull is now a dispatcher. A body face is pushed or pulled along its
+  normal exactly as before, a sketch profile opens Extrude on that profile, and
+  an edge opens Fillet on it. The same holds for a selection made before
+  reaching for the tool, so both routes agree.
+
+  Which one a click means follows the ordinary selection rule already used
+  everywhere else in the model view: an edge wins when the cursor is on the
+  line, then a visible sketch profile, then the face behind it. Nothing about
+  pushing a face changed.
+
 - **Option/Alt + left-drag now orbits, for mice and trackballs with no middle
   button.** Reported on a Mac trackball. Panning was fine, because that is
   right-drag, but nothing could free-orbit: the view could only ever jump between

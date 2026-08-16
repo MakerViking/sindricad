@@ -13,6 +13,8 @@ import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
 import type { Feature, Selector } from "../types";
+import type { SketchOverlay, WorldRegion } from "../sketch/overlay";
+import type { EdgeRef } from "../viewport/edgeLines";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
@@ -20,6 +22,17 @@ import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT } from "../viewport/colors3d";
 
 type Phase = "pick" | "drag";
+
+/** What the pick phase found that ISN'T this tool's job.
+ *
+ *  Fusion's Press Pull is a dispatcher — a profile goes to Extrude, a face to
+ *  Offset Face, an edge to Fillet — and a field reporter asked for exactly that
+ *  ("press/pull just the bolt hole"). The tool reports what was under the
+ *  cursor rather than starting anything: `featureStarters` owns tool launching,
+ *  and nothing in this codebase has one tool call another's start(). */
+export type PressPullHandoff =
+  | { kind: "region"; region: WorldRegion }
+  | { kind: "edge"; edge: EdgeRef };
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
@@ -49,6 +62,7 @@ export class PressPullTool {
 
   private dim = new DimInput();
   private onDone: ((id: string | null) => void) | null = null;
+  private onHandoff: ((h: PressPullHandoff) => void) | null = null;
 
   private boundMove: (e: PointerEvent) => void;
   private boundDown: (e: PointerEvent) => void;
@@ -59,6 +73,7 @@ export class PressPullTool {
   constructor(
     private viewport: Viewport,
     private store: DocumentStore,
+    private overlay: SketchOverlay,
   ) {
     this.boundMove = (e) => this.onMove(e);
     this.boundDown = (e) => this.onDown(e);
@@ -67,11 +82,12 @@ export class PressPullTool {
     this.boundTick = () => this.tick();
   }
 
-  start(onDone: (id: string | null) => void) {
+  start(onDone: (id: string | null) => void, onHandoff?: (h: PressPullHandoff) => void) {
     if (this.active) return;
     this.active = true;
     this.phase = "pick";
     this.onDone = onDone;
+    this.onHandoff = onHandoff ?? null;
     this.viewport.suspendPicking = true; // we drive our own face picking
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
@@ -84,7 +100,7 @@ export class PressPullTool {
     if (pre) {
       this.beginDrag(pre.selectors, pre.faceIds, pre.anchor, pre.normal, pre.bodyId);
     } else {
-      setPrompt("Select a face to Press/Pull (Ctrl+click adds more)");
+      setPrompt("Click a face to Press/Pull · a sketch profile to Extrude · an edge to Fillet");
     }
   }
 
@@ -113,6 +129,24 @@ export class PressPullTool {
   private onDown(e: PointerEvent) {
     if (e.button !== 0) return;
     if (this.phase === "pick") {
+      // Dispatch first: an EDGE is Fillet's job and a sketch PROFILE is
+      // Extrude's. pickEntity() is the same gated pick the model view uses, so
+      // this reproduces the standing EDGE > sketch REGION > body FACE priority
+      // (viewport.handleClick) instead of inventing a second one. Deliberately
+      // NOT pickEdgeAt(): that keeps the wide grab radius meant for the
+      // dedicated edge tools, and here it would steal clicks aimed at faces.
+      const entity = this.viewport.pickEntity(e.clientX, e.clientY);
+      if (entity?.kind === "edge") {
+        this.handOff(e, { kind: "edge", edge: entity.edge });
+        return;
+      }
+      const region = this.overlay.committedRegionAtRay(
+        this.viewport.rayFrom(e.clientX, e.clientY).ray,
+      );
+      if (region) {
+        this.handOff(e, { kind: "region", region });
+        return;
+      }
       const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
       if (!hit) return; // missed the body — let the click orbit
       e.preventDefault();
@@ -342,6 +376,21 @@ export class PressPullTool {
   cancel() {
     this.cleanup();
     this.onDone?.(null);
+  }
+
+  /** Stand down so another tool can take this click.
+   *
+   *  Tears down through cleanup() and NOT cancel(): cancel() reports
+   *  `onDone(null)`, and the starter's callback would then record a committed
+   *  feature id of null for a press/pull the user never began. cleanup() also
+   *  restores `viewport.suspendPicking = false` and clears `active`, both of
+   *  which must happen BEFORE the receiving tool's start() sets them again. */
+  private handOff(e: PointerEvent, h: PressPullHandoff) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const handoff = this.onHandoff;
+    this.cleanup();
+    handoff?.(h);
   }
 
   private cleanup() {
