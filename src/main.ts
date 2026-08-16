@@ -50,7 +50,7 @@ import { SectionTool } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
-import { createFeatureStarters } from "./features/featureStarters";
+import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStarters";
 import { ambiguousDiagFor } from "./features/repickReference";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
@@ -496,7 +496,10 @@ function deleteSelectedFace(): boolean {
 // its normal → commit), with a real sidecar preview since neither can be faked
 // client-side.
 function startFaceOffset(mode: "offsetFace" | "thicken") {
-  if (toolBusy()) return;
+  // Speaks, like every starter in featureStarters.ts: these two are ribbon
+  // buttons two lines away from Shell in the same group, and a silent refusal
+  // here is the same dead click the toolBusy() outage produced everywhere else.
+  if (toolBusy()) { setStatus(TOOL_BUSY_MESSAGE, ""); return; }
   if (!hasBody()) {
     setStatus("Create or import a body first", "");
     return;
@@ -1000,7 +1003,10 @@ setPrinterPillClick(() => void panels.showCameraPanel(activePrinterId()));
 
 function editFeature(id: string) {
   selectFeature(id);
-  if (toolBusy()) return; // never open a second interactive tool on top of one
+  // never open a second interactive tool on top of one — and say so: this is
+  // reached by double-clicking a timeline feature and by the tree's edit-sketch,
+  // both deliberate clicks that otherwise looked like the row was broken.
+  if (toolBusy()) { setStatus(TOOL_BUSY_MESSAGE, ""); return; }
   const f = store.document.features.find((x) => x.id === id);
   if (!f) return;
   if (store.isSuppressed(id)) {
@@ -1361,8 +1367,11 @@ installKeymap(
 // selected timeline feature.
 window.addEventListener("keydown", (e) => {
   if (isEditableTarget(e.target)) return; // typing in a field, not a shortcut
-  if (toolBusy()) return;
+  // The key test comes FIRST on purpose: this listener sees every keystroke, so
+  // refusing before it knows the key was Delete would have meant either silence
+  // (what it did) or a status message on every letter typed.
   if (e.key !== "Delete" && e.key !== "Backspace") return;
+  if (toolBusy()) { setStatus(TOOL_BUSY_MESSAGE, ""); return; }
   if (deleteSelectedFace()) return;
   if (selectedFeature) {
     store.removeFeature(selectedFeature);

@@ -22,6 +22,13 @@ import { DimInput } from "../sketch/dimInput";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
 import { findSelectorAt, replaceSelectorAt } from "./repickReference";
 
+/** The one wording for "another tool owns the app right now", shared by every
+ *  surface that can refuse for that reason — the starters below, the ribbon
+ *  paths that live in main.ts, and contextMenus' unlessBusy. There used to be
+ *  two: right-clicking an edge and picking Fillet said one thing, clicking the
+ *  Fillet button beside it said another, for the identical state. */
+export const TOOL_BUSY_MESSAGE = "Finish or cancel the current tool first (Esc)";
+
 export interface FeatureStartersDeps {
   store: DocumentStore;
   viewport: Viewport;
@@ -81,7 +88,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
    *  breadcrumbs every error, which repeated clicks would flood. */
   const busy = () => {
     if (!toolBusy()) return false;
-    setStatus("Finish or cancel the current tool first (Esc)", "");
+    setStatus(TOOL_BUSY_MESSAGE, "");
     return true;
   };
 

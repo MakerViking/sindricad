@@ -24,11 +24,28 @@
 // SCOPE, stated rather than implied: the ratchet ends AT the starter. Calling
 // `edgeFeature.start()` counts as beginning something; whether EdgeFeatureTool
 // then puts anything on screen is that tool's own contract, tested elsewhere.
-// It also does not cover the KEYBOARD path: main.ts has its own silent
-// `if (toolBusy()) return;` guards (lines 470, 499, 710, 728, 1003, 1364) that
-// fire before a starter is ever reached, so "e" can still be mute where the
-// ribbon button now speaks. That is a separate fix.
+//
+// WHERE THE BOUNDARY IS, and why. `createFeatureStarters` is not quite the whole
+// set of model-view feature entry points: Offset Face, Thicken, edit-feature and
+// the Delete key are wired directly in main.ts, and the first version of this
+// file left them out — so Shell spoke when busy while the Offset Face button two
+// lines away in the same ribbon group stayed a dead click. An enumerated source
+// of truth that does not enumerate everything is the exact failure this file
+// exists to prevent, so the second describe block below reads main.ts as TEXT
+// and holds ITS toolBusy() guards to the same property, with every silent one
+// named and argued for. The two blocks together cover every way a model-view
+// feature can be started.
+//
+// KEYBOARD is not a gap, and an earlier version of this comment said it was.
+// Verified path: shortcuts.ts `{ key: "e", action: "extrude" }` -> keymap.ts
+// `onAction(action)` (no busy guard anywhere in keymap.ts) -> main.ts
+// `handleAction(a)` -> `starters.startExtrude()` -> busy(). The "e" key and the
+// ribbon button reach the same starter and both speak.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+// `?raw` rather than fs, and TEXT rather than an import, for the reasons
+// ribbonActions.test.ts gives: importing main.ts boots the whole app, and this
+// tsconfig has no @types/node.
+import mainSrc from "../main.ts?raw";
 
 // The two modal helpers are mocked, not stubbed at the DOM level, for one
 // reason each: `choose` resolves only when the user clicks a button, so a real
@@ -39,11 +56,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const spoke: string[] = [];
 vi.mock("../ui/choice", () => ({
   choose: (title: string) => {
-    spoke.push(`choose(${title})`);
+    if (title) spoke.push(`choose(${title})`);
     return Promise.resolve(null);
   },
   chooseMulti: (title: string) => {
-    spoke.push(`chooseMulti(${title})`);
+    if (title) spoke.push(`chooseMulti(${title})`);
     return Promise.resolve(null);
   },
 }));
@@ -177,7 +194,12 @@ function harness(world: World) {
     },
     toolBusy: () => world.busy,
     hasBody: () => world.bodies.length > 0,
-    setStatus: (t: string) => act(`status(${t})`),
+    // Only a NON-EMPTY message counts as speaking. main.ts:1386 is
+    // `statusEl.textContent = text`, so setStatus("") CLEARS the bar — a starter
+    // that "refuses with a message" of "" tells the user exactly as much as the
+    // silent `return` this whole file exists to outlaw, and the first version of
+    // this harness scored it as a pass.
+    setStatus: (t: string) => { if (t.trim()) act(`status(${t})`); },
     selectFeature: () => {},
     noteCommitted: () => {},
     isSketchConsumed: () => false,
@@ -223,6 +245,101 @@ describe("every feature-tool entry point acts or speaks", () => {
       ).toBe(true);
     });
   }
+});
+
+describe("the feature entry points that live in main.ts, not in featureStarters", () => {
+  // main.ts wires four model-view entry points itself — Offset Face, Thicken
+  // (one function), edit-feature, and the Delete key — and they are invisible to
+  // the matrix above because they never appear in the object createFeatureStarters
+  // returns. Same property, read off the source: a toolBusy() EARLY RETURN either
+  // says something, or it is named here with a reason.
+  //
+  // The cost of reading source is that this must know how the guard is spelled,
+  // so it also asserts the mechanism is still there (below). Rename toolBusy and
+  // this fails loudly instead of passing with a hole in it.
+  const GUARD = /if \(([^)]*\btoolBusy\(\)[^)]*)\)\s*(\{[^{}]*\}|return[^;]*;)/g;
+  const OWNER = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)|^([\w.]+)\s*=|^(window\.addEventListener\("\w+")/;
+
+  /** Guards that refuse and stay silent are only allowed here, with a reason.
+   *  Keyed by the enclosing handler, which is what a reader greps for. */
+  const SILENT_BY_DESIGN: Record<string, string> = {
+    "viewport.onHit":
+      "a hover/hit handler: it only sets the passive 'Del deletes this face' hint, " +
+      "and a status line on every pointer move while a tool runs would flood the bar",
+    "viewport.onSelectionChange":
+      "same — a passive 'n edges selected' hint, fired by selection changes, not by a click on a command",
+    "viewport.onBodySelectionChange":
+      "same, for body selection",
+    "viewport.regionHoverAt":
+      "a hover PREDICATE whose false return means 'not my hit'; it starts nothing",
+    "viewport.regionPickAt":
+      "a pick PREDICATE: false hands the click to the next picker rather than refusing a command, " +
+      "and the tool that IS running already owns the prompt",
+  };
+
+  /** The handler each guard sits in — the nearest preceding top-level binding. */
+  function ownerOf(src: string, index: number): string {
+    const before = src.slice(0, index).split("\n");
+    for (let i = before.length - 1; i >= 0; i--) {
+      const m = OWNER.exec(before[i] ?? "");
+      if (m) return m[1] ?? m[2] ?? m[3] ?? "?";
+    }
+    return "?";
+  }
+
+  const guards = [...mainSrc.matchAll(GUARD)]
+    // `!toolBusy()` is the opposite shape: it ACTS when nothing is running, so
+    // there is no refusal to voice.
+    .filter((m) => !(m[1] ?? "").includes("!toolBusy()"))
+    .map((m) => ({
+      owner: ownerOf(mainSrc, m.index ?? 0),
+      speaks: (m[2] ?? "").includes("setStatus("),
+    }));
+
+  it("still finds the guard it is written to check", () => {
+    // A rename or a reformat that stops this regex matching would silently
+    // disable everything below, which is the standard failure of a source-reading
+    // test. 8 sites at the time of writing; the floor is deliberately lower.
+    expect(guards.length).toBeGreaterThanOrEqual(6);
+    expect(mainSrc).toContain("function toolBusy(");
+    expect(mainSrc).toContain("TOOL_BUSY_MESSAGE");
+    expect(guards.every((g) => g.owner !== "?")).toBe(true);
+  });
+
+  it("has no silent toolBusy() refusal that is not argued for", () => {
+    const silent = guards.filter((g) => !g.speaks).map((g) => g.owner);
+    const undocumented = silent.filter((o) => !(o in SILENT_BY_DESIGN));
+    expect(
+      undocumented,
+      `main.ts refuses silently in ${undocumented.join(", ")} — either say why ` +
+        `it refused (setStatus(TOOL_BUSY_MESSAGE, "")) or add it to ` +
+        `SILENT_BY_DESIGN with a reason`,
+    ).toEqual([]);
+  });
+
+  it("has no stale exemption", () => {
+    // An exemption naming a handler that no longer exists is a hole that reads
+    // like coverage — the same reason the sidecar checks PAYLOAD_FREE.
+    const owners = new Set(guards.map((g) => g.owner));
+    const stale = Object.keys(SILENT_BY_DESIGN).filter((o) => !owners.has(o));
+    expect(stale, `SILENT_BY_DESIGN names guards main.ts no longer has: ${stale.join(", ")}`)
+      .toEqual([]);
+  });
+
+  it("makes Offset Face, Thicken, edit-feature and Delete speak", () => {
+    // The three that were mute, named: a regression here is a dead click on a
+    // ribbon button, and the generic assertion above would only say "undocumented".
+    for (const owner of ["startFaceOffset", "editFeature"]) {
+      const g = guards.filter((x) => x.owner === owner);
+      expect(g.length, `no toolBusy() guard found in ${owner}`).toBeGreaterThan(0);
+      expect(g.every((x) => x.speaks), `${owner} refuses silently`).toBe(true);
+    }
+    // The Delete key's guard sits in an anonymous keydown listener, so it is
+    // identified by its owner prefix rather than a function name.
+    const keydown = guards.filter((g) => g.owner.startsWith("window.addEventListener"));
+    expect(keydown.length).toBeGreaterThan(0);
+    expect(keydown.every((g) => g.speaks), "the Delete key refuses silently").toBe(true);
+  });
 });
 
 describe("the ratchet itself", () => {

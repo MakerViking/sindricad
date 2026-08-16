@@ -14,6 +14,7 @@ import { isInspectorEditable } from "./inspector";
 import { allCommands } from "./commands";
 import { FEATURE_META } from "./featureMeta";
 import { keyHint } from "../input/shortcuts";
+import { TOOL_BUSY_MESSAGE } from "../features/featureStarters";
 import type { Feature, PlaneDef } from "../types";
 import type { EdgeHit, FaceHit } from "../viewport/picking";
 
@@ -68,7 +69,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
   function unlessBusy(fn: () => void): () => void {
     return () => {
       if (toolBusy()) {
-        setStatus("Finish the active tool first (Esc cancels it)", "");
+        setStatus(TOOL_BUSY_MESSAGE, "");
         return;
       }
       fn();

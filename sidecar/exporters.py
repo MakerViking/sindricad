@@ -26,5 +26,11 @@ def export(part, fmt, path):
         m.add_shape(part)
         m.write(path)
     else:
-        raise ValueError(f"unknown export format: {fmt}")
+        # Coded, like import_geometry's twin refusal: an unknown format string
+        # is purely about the REQUEST, and a caller has to be able to tell it
+        # from a real export failure without matching prose. _malformed cannot
+        # catch it — the format is a legal str, just not one of ours.
+        from errors import GeomError, BAD_REQUEST
+
+        raise GeomError(f"unknown export format: {fmt}", BAD_REQUEST)
     return path

@@ -11,6 +11,7 @@ Run headless with sidecar/.venv/bin/python from the sidecar/ directory.
 """
 
 import asyncio
+import ast
 import json
 import os
 import re
@@ -199,6 +200,55 @@ def parse_server_ops():
     branches AT RUNTIME."""
     src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
     return set(re.findall(r'op\s*==\s*"([^"]+)"', src))
+
+
+def parse_request_fields():
+    """Every REQUEST FIELD server.py reads — scraped from its `req["x"]` and
+    `req.get("x")` sites AT RUNTIME, so a field a new op starts reading is
+    malformable by test_malformed_ops.py the day it lands.
+
+    Returns the raw scrape including the transport envelope (`id`, `op`,
+    `binary`, `chunked`); the caller decides what to exclude and must say why."""
+    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
+    return set(re.findall(r'req\["([A-Za-z_]+)"\]', src)) | set(
+        re.findall(r'req\.get\("([A-Za-z_]+)"', src)
+    )
+
+
+def parse_required_fields():
+    """server.py's `_REQUIRED_FIELDS` table, read from its SOURCE at runtime.
+
+    Returns {op: ((field, (type-name, ...), required), ...)}. Parsed with `ast`
+    rather than imported, because importing server.py pulls in OCCT and starts
+    a worker pool; the types come back as NAMES ("dict", "str") for the same
+    reason. A test can then derive its malformed payloads from the very table
+    the production guard validates against, instead of hand-copying field names
+    that drift the moment an op grows one."""
+    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(getattr(t, "id", None) == "_REQUIRED_FIELDS" for t in node.targets):
+            continue
+        table = {}
+        for key, val in zip(node.value.keys, node.value.values):
+            rows = []
+            for row in val.elts:
+                field, types, required = row.elts
+                names = (
+                    tuple(e.id for e in types.elts)
+                    if isinstance(types, ast.Tuple)
+                    else (types.id,)
+                )
+                rows.append((field.value, names, required.value))
+            table[key.value] = tuple(rows)
+        return table
+    # An ABSENT table is a state worth measuring, not a crash: that is exactly
+    # what a server predating the guard looks like, and a harness that cannot
+    # even import against it cannot show a test going red on unpatched code.
+    # Callers that need the table assert on the result — loudly, where the
+    # missing rows actually matter.
+    return {}
 
 
 def run(coro):

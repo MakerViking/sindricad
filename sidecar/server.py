@@ -2387,26 +2387,58 @@ def _malformed(op, req):
     if spec is None:
         return None
     for field, types, required in spec:
-        if field not in req or req[field] is None:
+        if field not in req:
             if required:
                 return f"{op}: missing {field}"
             continue
         value = req[field]
+        # ABSENT and PRESENT-BUT-NULL are different, and conflating them is what
+        # let `{"op":"rebuild","document":null}` through: this function skipped
+        # it as "not supplied", but _dispatch builds its payload with
+        # `if k in req`, so the null reached _apply_doc_ops and overwrote the
+        # retained delta document with None — the same wipe-the-state-from-a-
+        # malformed-request class the features guard below exists to close.
+        # Both notions of "present" must agree, so null is refused here.
+        if value is None:
+            return f"{op}: {field} must not be null"
         if not isinstance(value, types):
             names = getattr(types, "__name__", None) or "/".join(t.__name__ for t in types)
             return f"{op}: {field} must be {names}"
+        # A NUL can never be part of a filename or a format id, and it does not
+        # fail politely: os.stat raises ValueError("embedded null character"),
+        # which is NOT the OSError the import path catches, so it escaped to the
+        # catch-all and reached the client as raw CPython prose.
+        if isinstance(value, str) and "\x00" in value:
+            return f"{op}: {field} must not contain a null character"
+        # Every list field on the wire today (query/migrateGeometry `items`) is a
+        # list of OBJECTS, and every reader starts with `.get(...)` on the
+        # element. A list of scalars therefore dies exactly the way a document
+        # full of scalars did.
+        if isinstance(value, list):
+            bad = next((i for i, e in enumerate(value) if not isinstance(e, dict)), None)
+            if bad is not None:
+                return f"{op}: {field}[{bad}] must be an object"
         if field == "document":
             # A document whose `features` is not a list used to be ACCEPTED into
             # the retained delta state (_apply_doc_ops stores payload["document"]
             # unconditionally), so the next rebuild sent WITHOUT a document —
             # the normal delta path — replayed the poison and failed the same
             # way. Refusing up front keeps a rejected document out of that state.
-            feats = value.get("features")
-            if feats is not None and not isinstance(feats, list):
-                return f"{op}: document.features must be a list"
-            params = value.get("parameters")
-            if params is not None and not isinstance(params, dict):
-                return f"{op}: document.parameters must be an object"
+            #
+            # The ELEMENTS are checked too, not just the outer list: a
+            # `{"features": [7]}` is a list, passed the first version of this
+            # guard, and then poisoned the delta state identically — every
+            # feature reader in builder.py starts with `f.get("type")`.
+            if "features" in value:
+                feats = value["features"]
+                if not isinstance(feats, list):
+                    return f"{op}: document.features must be a list"
+                bad = next((i for i, f in enumerate(feats) if not isinstance(f, dict)), None)
+                if bad is not None:
+                    return f"{op}: document.features[{bad}] must be an object"
+            if "parameters" in value:
+                if not isinstance(value["parameters"], dict):
+                    return f"{op}: document.parameters must be an object"
     return None
 
 
@@ -2458,7 +2490,8 @@ async def _dispatch(ws, loop, req, req_id, op):
         # the slicer); cap its size like any untrusted request field.
         settings = req.get("settings") or {}
         if not isinstance(settings, dict) or len(json.dumps(settings)) > 262144:
-            await ws.send(_err(req_id, "exportProject: bad settings"))
+            await ws.send(_err(req_id, "exportProject: bad settings",
+                                code=errors_mod.BAD_REQUEST))
             return
         res = await _run_stall(
             loop, _export_project_job, req["document"], req["path"],
@@ -2637,7 +2670,15 @@ async def _serialized(ws, loop, req, req_id, op, lock, running):
         raise
     except Exception as ex:
         try:
-            await ws.send(_err(req_id, str(ex) or type(ex).__name__))
+            # Preserve a code the exception already carries. This catch-all is
+            # the LAST place one can be lost, and it was losing them: a job that
+            # raises rather than returning an error dict (exporters' unknown
+            # format, builder's unsupported import format — both raise a coded
+            # GeomError) came out the other side as uncoded prose, which made
+            # coding those raise sites inert. Same rule as _error_from, which
+            # covers the jobs that catch instead of raising.
+            await ws.send(_err(req_id, str(ex) or type(ex).__name__,
+                               code=errors_mod.code_of(ex)))
         except Exception:
             pass
 
