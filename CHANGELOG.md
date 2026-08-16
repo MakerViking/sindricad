@@ -53,10 +53,23 @@ This file starts on 2026-08-03. For anything before that, see the
   wall, so a document that was quietly wrong comes back right on the first
   rebuild after updating. Nothing needs re-picking.
 
-  Reopening such an extrude to edit it still highlights the old area rather than
-  the wall, and committing that edit, even just a new depth, moves the extrude
-  onto the hole for good. Change the depth from the timeline instead until that
-  half is fixed.
+  **Only half of this is fixed, and reopening the extrude is the unfixed half.**
+  Building the feature now finds the wall, but the edit tool still finds the area
+  by the point that was clicked when it was made, so on a holed area that has
+  since been moved it reopens on the hole instead of the wall. Committing that
+  edit, even just a new depth, writes the hole back as the stored area, and from
+  then on the feature really does extrude the hole. There is no confirmation
+  step: it looks like an ordinary depth change.
+
+  That applies to every way of reopening it, because they are all the same tool:
+  double-clicking the feature in the timeline, and Edit on its right-click menu.
+  Avoid both on a holed extrude whose sketch has moved.
+
+  To change the depth safely, select the feature with a single click and edit
+  Distance in the inspector on the right. That writes the one number and leaves
+  the stored area alone, so the feature keeps building the wall. Reopening the
+  edit tool is the thing to avoid until its half lands, which is tracked as the
+  rest of this fix.
 
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.

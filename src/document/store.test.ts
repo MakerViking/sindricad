@@ -182,3 +182,48 @@ describe("prefixFeatures (Project tool's prefix-document rule)", () => {
     expect(prefixFeatures(feats(), 2, none, "s2").map((f) => f.id)).toEqual(["s1", "e1"]);
   });
 });
+
+// The CHANGELOG for the holed-region fix (field 19314fdc) names the inspector as
+// the ONE surface that can change a holed extrude's depth without re-targeting
+// it. That is only true while a numeric field edit writes the named field and
+// nothing else: the timeline's Edit re-derives `regions`/`regionEntities`/
+// `regionHoleEntities` from a fresh pick (extrudeTool.ts:410-418), so if the
+// inspector ever grew the same habit the release note would be sending users
+// into the exact trap it warns about. Lock the note's claim down here.
+describe("inspector numeric edit leaves an extrude's region anchors alone", () => {
+  const holedExtrude = (): CadDocument => ({
+    parameters: {},
+    features: [
+      { id: "s1", type: "sketch", plane: "XY", entities: [] },
+      {
+        id: "e1", type: "extrude", sketch: "s1", distance: 10, operation: "new",
+        regions: [[5, 5, 0]],
+        regionEntities: [["l1", "l2", "l3", "l4"]],
+        regionHoleEntities: [[["c1"]]],
+      },
+    ] as Feature[],
+  });
+
+  it("writes distance only", async () => {
+    vi.useFakeTimers();
+    // this store path schedules its rebuild off `window` (store.ts:1203) and the
+    // suite runs in node with no jsdom, so hand it the timers vitest is faking
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    try {
+      const store = new DocumentStore(stubBackend([]), holedExtrude());
+      // exactly what inspector.ts does for a plain number in FEATURE_NUM_FIELDS
+      store.setTargetValue({ kind: "feature", feature: "e1", field: "distance" }, 25, "length");
+      await vi.runAllTimersAsync();
+
+      const before = holedExtrude().features[1] as any;
+      const after = store.document.features.find((f) => f.id === "e1") as any;
+      expect(after.distance).toBe(25);
+      expect(after.regions).toEqual(before.regions);
+      expect(after.regionEntities).toEqual(before.regionEntities);
+      expect(after.regionHoleEntities).toEqual(before.regionHoleEntities);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
