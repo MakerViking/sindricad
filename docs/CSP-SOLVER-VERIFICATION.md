@@ -31,6 +31,11 @@ turns `custom-protocol` on for **every `tauri build`, including `--debug`** — 
 `--debug` build gets the *packaged* policy while still being a debug binary with
 devtools. That is the vehicle this procedure uses.
 
+That last claim is read from tauri's source and the CLI's behaviour, not measured here —
+but it cannot change the outcome, because `src/security/csp.test.ts` holds `csp` and
+`devCsp` identical on `script-src`. Whichever of the two a build picks, the policy under
+test is the same one. §3 shows you which it actually was.
+
 Whichever policy is chosen is injected as a `<meta http-equiv="Content-Security-Policy">`
 into the HTML **served by tauri's asset protocol** (`tauri_utils::html::inject_csp`), plus
 a matching response header. Under `tauri dev` the page comes from the vite dev server
