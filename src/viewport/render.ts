@@ -399,6 +399,15 @@ export function faceIdOfHit(hit: THREE.Intersection): number {
   return owner?.faceIds[hit.faceIndex ?? 0] ?? 0;
 }
 
+/** The BodyMesh a raycast Intersection landed on — companion to faceIdOfHit,
+ *  which resolves the faceId through the same `userData.owner` back-reference.
+ *  Preferred over bodyOfFace() when you already have the hit: it names the mesh
+ *  that was ACTUALLY intersected, so it cannot disagree with the pick the way a
+ *  faceId range lookup could after a rebuild. */
+export function bodyOfHit(hit: THREE.Intersection): BodyMesh | undefined {
+  return hit.object.userData.owner as BodyMesh | undefined;
+}
+
 /** faceId -> owning body, built lazily per ModelView and thrown away with it
  *  (a new reply always makes a new ModelView, so this can never go stale).
  *  Bodies own contiguous faceId ranges, so a sorted range table + binary search

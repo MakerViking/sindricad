@@ -5,7 +5,8 @@
 import * as THREE from "three";
 import type { Selector } from "../types";
 import type { ModelView } from "./render";
-import { edgeObjects, faceIdOfHit, visibleBodyMeshes } from "./render";
+import type { BodyMesh } from "./render";
+import { bodyOfHit, edgeObjects, faceIdOfHit, visibleBodyMeshes } from "./render";
 import type { BodyEdges, EdgeRef } from "./edgeLines";
 import { edgeSelectorFrom } from "./edgeMatch";
 import { flushRaycastIndex } from "./raycastIndex";
@@ -60,8 +61,24 @@ export class Picker {
   }
 
   /** General selection: a face wins over an edge unless the cursor is right on
-   *  the edge line (within EDGE_NEAR_PX). The dedicated edge tools call
-   *  pickEdgeAt() directly and keep the generous EDGE_PICK_THRESHOLD radius. */
+   *  the edge line — within edgeBandPx(), which is EDGE_NEAR_PX on ordinary
+   *  geometry and shrinks to a fifth of the face on a SMALL one (task #56: a
+   *  3mm face at 300mm is ~11px, so a fixed 3px halo eats all of it). The
+   *  dedicated edge tools call pickEdgeAt() directly and keep the generous
+   *  EDGE_PICK_THRESHOLD radius.
+   *
+   *  Knock-on, deliberate: viewport.ts consults the sketch REGION only when the
+   *  hit is not an edge (handleHover/handleClick), so on a small face under a
+   *  visible sketch a near-border click that used to be an EDGE now resolves as
+   *  a face and the region wins. The documented EDGE > sketch REGION > body FACE
+   *  order is untouched — only the "is this an edge" boundary moved, and it
+   *  moves identically for every pick() consumer: left-click select, the
+   *  feature-selection hook (viewport.onHit -> main.ts's featureForFace, which
+   *  now fires on near-border clicks where nothing used to happen), Measure, the
+   *  right-click canvas menu, and the Project tool's hover. Press/Pull's
+   *  dispatcher joins that list on feat/presspull-dispatch, where it picks with
+   *  pickEntity() — this file's own pick() — rather than the plain
+   *  pickFaceForPressPull raycast it still uses here. */
   pick(
     clientX: number,
     clientY: number,
@@ -112,8 +129,17 @@ export class Picker {
     const maxDepth = fHit ? fHit.distance + 2 * worldPerPixel(camera, fHit.distance, rect.height) : undefined;
     const edge = this.pickEdge(clientX, clientY, rect, camera, view, maxDepth);
 
-    // edge only when on the line (or there's no face under the cursor at all)
-    if (edge && (this.edgeScreenDist <= EDGE_NEAR_PX || !face)) return edge;
+    // edge only when on the line (or there's no face under the cursor at all).
+    // The band depends on the face being competed for, so measure it — but only
+    // when an edge is already inside the WIDEST band the policy can produce.
+    // edgeBandPx() never exceeds EDGE_NEAR_PX, so beyond that the face has
+    // already won and projecting its triangles on every pointermove would be
+    // pure cost on a hover path that runs per rAF over thousands of bodies.
+    if (edge && !face) return edge;
+    if (edge && face && fHit && this.edgeScreenDist <= EDGE_NEAR_PX) {
+      const extent = faceScreenExtentPx(bodyOfHit(fHit), face.faceId, camera, rect);
+      if (this.edgeScreenDist <= edgeBandPx(extent)) return edge;
+    }
     return face;
   }
 
@@ -205,7 +231,140 @@ export function worldPerPixel(camera: THREE.Camera, dist: number, heightPx: numb
 // most of every face inside some edge's halo, so faces only highlighted in
 // "sweet spots" between edges. 3 px = you're visibly ON the line. Fillet/
 // Chamfer (pickEdgeAt) ignore this and keep the wide grab radius.
-const EDGE_NEAR_PX = 3;
+export const EDGE_NEAR_PX = 3;
+
+// The band is a FRACTION of the face, capped at EDGE_NEAR_PX (see edgeBandPx).
+const BAND_EXTENT_FRACTION = 0.2;
+// ...but never smaller than this, or a face a few px across would have no edge
+// halo at all and its bounding edges would stop being selectable entirely.
+const MIN_EDGE_BAND_PX = 0.75;
+// Min screen extent at which the cap takes over and the band is EDGE_NEAR_PX
+// again: 3 / 0.2 = 15 px. This is the SAFETY THRESHOLD — at or above it the
+// pick is bit-identical to before this change.
+const EXTENT_CAP_PX = EDGE_NEAR_PX / BAND_EXTENT_FRACTION;
+
+/** Edge-priority band for a face whose smaller on-screen dimension is
+ *  `minScreenExtentPx`, in CSS px.
+ *
+ *  Task #56, measured at 45deg fov / 900px high / face at 300mm: a 3mm face is
+ *  ~10.9 x 10.9 px head-on and ~10.9 x 5.4 px at 60 degrees. A FIXED 3px halo
+ *  on all four borders leaves 20% of the first clickable and 0% of the second —
+ *  the field report verbatim, "the face cannot be selected at all". Occluded
+ *  edges (see picking.test.ts) were the other half of that cause and are
+ *  already fixed; this is the half that survives a depth test.
+ *
+ *  Scaling the band by the face's own screen size makes it a constant FRACTION
+ *  of the face instead of a constant number of pixels. The min() cap is the
+ *  safety property, and the reason ordinary parts do not shift under you: at a
+ *  minimum screen extent of EXTENT_CAP_PX (15px) or more the band is 3px again,
+ *  so every face that is comfortably clickable today behaves EXACTLY as it did
+ *  and edges keep winning everywhere they win now. Only the faces that were
+ *  unusable get a smaller halo. */
+export function edgeBandPx(minScreenExtentPx: number): number {
+  return Math.max(MIN_EDGE_BAND_PX, Math.min(EDGE_NEAR_PX, minScreenExtentPx * BAND_EXTENT_FRACTION));
+}
+
+/** Enough of a face to know how big it is — deliberately structural, so the
+ *  extent can be measured (and tested) without a whole ModelView. */
+type FaceGeometry = Pick<BodyMesh, "mesh" | "faceTriangles">;
+
+// A long thin face (a fillet band 5px x 900px) never satisfies the early exit
+// below, so the number of triangles read is also capped.
+//
+// The cap SAMPLES ACROSS THE WHOLE LIST rather than taking the first N, and
+// that is load-bearing, not tidiness. Review found the first-N version breaking
+// the change's headline safety property outright: triangle order out of a
+// UV-grid tessellator (and out of OCCT's BRepMesh) is spatially coherent, so
+// the first 256 triangles of a densely tessellated face are a couple of ROWS of
+// it. A 100mm face at 300mm — 362 x 362 px, nowhere near small — measured 9.05px
+// at an 80x80 grid and 2.29px at 158x158, i.e. it got a 1.81px or 0.75px band
+// instead of 3px and its bounding edges stopped winning picks. render.ts:277
+// records 50,074 triangles on ONE hex-textured face and textureTool applies to
+// a FACE selector, so the flagship feature lands squarely on this.
+//
+// Truncation and sampling are NOT the same error. Both can only ever
+// under-estimate, but a truncated walk under-estimates by the whole unwalked
+// part of the face, while a spread sample is wrong only by the geometry between
+// two neighbouring samples. Sampling also makes the early exit fire SOONER on a
+// big face — consecutive samples are far apart on it — so this is cheaper than
+// the first-N walk it replaces, not dearer.
+//
+// The index is a low-discrepancy (Weyl / golden-ratio) sequence rather than a
+// constant stride, because a constant stride aliases against exactly the
+// tessellation this exists for. On a grid whose row is R triangles, a stride
+// that is a multiple of R samples one COLUMN of it and re-creates the bug in
+// the other axis — measured, not hypothesised: a 40 x 400 px face at 4 x 256
+// cells is 2048 triangles, 2048/256 = a stride of 8, and its row is 8
+// triangles, so it measured 10px and got a 2px band. A fractional stride does
+// not save it either; 2048/256 is exact. An irrational step cannot be periodic
+// with any R.
+const EXTENT_TRI_SAMPLES = 256;
+// 2/(1+sqrt(5)). Irrational, so `i * GOLDEN mod 1` never repeats a column.
+const GOLDEN = 0.6180339887498949;
+
+const extentScratch = new THREE.Vector3();
+
+/** The face's SMALLER on-screen dimension in CSS px, or Infinity when it cannot
+ *  be measured. Infinity is the "behave exactly as before" sentinel: it makes
+ *  edgeBandPx() return EDGE_NEAR_PX, so every bail-out here is fail-safe rather
+ *  than a silent behaviour change (pinned as a behaviour in picking.test.ts).
+ *
+ *  The smaller dimension, not the area: the case that motivated task #56 is a
+ *  face that projects to an 11 x 5 px sliver, and an area — or the extent of
+ *  the single hit triangle on a finely tessellated cylinder — cannot see it. */
+export function faceScreenExtentPx(
+  body: FaceGeometry | undefined,
+  faceId: number,
+  camera: THREE.Camera,
+  size: { width: number; height: number },
+): number {
+  const tris = body?.faceTriangles.get(faceId);
+  if (!body || !tris?.length) return Infinity;
+  const pos = body.mesh.geometry.getAttribute("position");
+  const index = body.mesh.geometry.getIndex();
+  if (!pos || !index) return Infinity;
+  const mw = body.mesh.matrixWorld;
+  const persp = camera as THREE.PerspectiveCamera;
+  const v = extentScratch;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  const n = Math.min(tris.length, EXTENT_TRI_SAMPLES);
+  const sampled = n < tris.length;
+  for (let i = 0; i < n; i++) {
+    // spread over the WHOLE face, never its first n triangles — see
+    // EXTENT_TRI_SAMPLES. A face small enough to read whole is still read
+    // whole, in order, so nothing about the ordinary case changes.
+    const t = tris[sampled ? Math.floor(((i * GOLDEN) % 1) * tris.length) : i]!;
+    for (let k = 0; k < 3; k++) {
+      v.fromBufferAttribute(pos, index.getX(t * 3 + k)).applyMatrix4(mw).applyMatrix4(camera.matrixWorldInverse);
+      // A vertex at or behind the near plane projects to garbage (the
+      // perspective divide flips sign through it), so one such vertex poisons
+      // the whole bounding box. Such a face fills the screen anyway, so the
+      // unknown sentinel is both safe and correct here. PERSPECTIVE ONLY, and
+      // deliberately expressed against `near` rather than as `v.z >= 0`: the
+      // ortho camera (cameras.ts builds it with near = -10000) legitimately
+      // renders geometry at POSITIVE view-space z, so a sign test — the obvious
+      // way to write "behind the camera" — would return the sentinel for
+      // roughly half of every ortho pick and quietly revert this fix there.
+      if (persp.isPerspectiveCamera && -v.z <= persp.near) return Infinity;
+      v.applyMatrix4(camera.projectionMatrix); // Vector3 does the perspective divide
+      const sx = (v.x * 0.5 + 0.5) * size.width;
+      const sy = (-v.y * 0.5 + 0.5) * size.height;
+      if (sx < minX) minX = sx;
+      if (sx > maxX) maxX = sx;
+      if (sy < minY) minY = sy;
+      if (sy > maxY) maxY = sy;
+    }
+    // Both dimensions only ever GROW as vertices are added, so once both clear
+    // the cap the band is pinned at EDGE_NEAR_PX whatever the rest do. Because
+    // the samples are spread over the whole face rather than taken in order,
+    // consecutive ones are far apart on a big face and this fires within a few
+    // of them — which is what keeps a per-pointermove path affordable. (Under
+    // the first-N walk it did NOT: a dense grid face walked all 256 without
+    // ever exiting, which is how the under-measurement above went unnoticed.)
+    if (maxX - minX > EXTENT_CAP_PX && maxY - minY > EXTENT_CAP_PX) return Infinity;
+  }
+  return Math.min(maxX - minX, maxY - minY);
+}
 
 function faceSelector(normal: THREE.Vector3, hit: THREE.Vector3): Selector {
   const n = normal.clone().normalize();
