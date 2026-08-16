@@ -787,6 +787,94 @@ def test_region_follows_a_moved_entity():
           "deleted-entity docs both fall back")
 
 
+def test_holed_region_anchors_in_the_wall():
+    """Field report 19314fdc: "Two rectangles like a shell cross-section. Extrude
+    the shell wall. The result is never the shell, but the inside loop extrusion."
+
+    `regionEntities` names the region's OUTER loop only, so the wall rebuilt as a
+    SOLID 100x100 and the point taken from it sat in the 80x80 hole. Cutting the
+    holes out is what fixes it, and it has to be a real boolean: the wall is
+    3600mm2 against a 6400mm2 hole, so "the region is the biggest face" picks the
+    HOLE and reproduces the bug with more code behind it. That number is asserted
+    by name below so a future area heuristic fails here loudly.
+
+    The two LEGACY cases are the teeth. 0.1.123 through 0.1.144 shipped
+    `regionEntities` WITHOUT `regionHoleEntities`, so no "does this region have
+    holes" test can see those documents — the outer loop rebuilds solid, the
+    anchor lands in the hole, and the reported bug is still live on every file
+    they saved even with nothing moved. Comparing the rebuilt profile's area
+    against the cell it resolved to is what catches that, because a correct anchor
+    matches its cell exactly (measured bit-equal, curved boundaries included)."""
+    def shell(x, y, hole_ids, pt=(45, 0, 0)):
+        """100x100 outer, 80x80 inner, both centred on (x,y). Wall 3600mm2."""
+        ents = [{"id": "outer", "type": "rectangle", "width": 100, "height": 100,
+                 "x": x, "y": y},
+                {"id": "inner", "type": "rectangle", "width": 80, "height": 80,
+                 "x": x, "y": y}]
+        ex = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
+              "operation": "new", "regions": [list(pt)],   # picked in the wall
+              "regionEntities": [["outer"]]}
+        if hole_ids is not None:
+            ex["regionHoleEntities"] = [hole_ids]
+        part, err, _ = rebuild({"parameters": {}, "features": [
+            {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents}, ex]})
+        assert not err, err
+        return part.volume
+
+    WALL, HOLE = 3600 * 5, 6400 * 5
+    got = shell(0, 0, [["inner"]])
+    assert abs(got - WALL) < 1, \
+        f"the shell wall must extrude, got {got:.1f} ({HOLE} would be its hole)"
+
+    # The whole point of anchoring: move BOTH rectangles and leave the stored
+    # point behind. (45,0) is now inside the hole, so the point alone extrudes it.
+    moved = shell(30, 20, [["inner"]])
+    assert abs(moved - WALL) < 1, \
+        f"a moved shell must still extrude its wall, got {moved:.1f}"
+
+    # LEGACY, and NOT moved: this is the shipped-beta document, and the anchor it
+    # produces is inside the hole with no drift involved at all.
+    legacy = shell(0, 0, None)
+    assert abs(legacy - WALL) < 1, \
+        f"a document with no hole ids must fall back to the stored point, " \
+        f"got {legacy:.1f} — {HOLE} is field 19314fdc, still extruding the hole"
+
+    # A centred hole: the outer loop's centre IS the hole's centre, so an
+    # outer-loop-only anchor extrudes a peg instead of a plate.
+    def plate(x, y, hole_ids, pt=(25, 0, 0)):
+        ents = [{"id": "p", "type": "rectangle", "width": 60, "height": 60,
+                 "x": x, "y": y},
+                {"id": "h", "type": "circle", "radius": 10, "x": x, "y": y}]
+        ex = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
+              "operation": "new", "regions": [list(pt)],
+              "regionEntities": [["p"]]}
+        if hole_ids is not None:
+            ex["regionHoleEntities"] = [hole_ids]
+        part, err, _ = rebuild({"parameters": {}, "features": [
+            {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents}, ex]})
+        assert not err, err
+        return part.volume
+
+    PLATE, PEG = (3600 - math.pi * 100) * 5, math.pi * 100 * 5
+    for label, args in (("unmoved", (0, 0)), ("moved", (25, 15))):
+        got = plate(*args, [["h"]])
+        assert abs(got - PLATE) < 1, \
+            f"{label} centred-hole plate: got {got:.1f}, want {PLATE:.1f} " \
+            f"({PEG:.1f} is the peg — the anchor fell into the hole)"
+    legacy = plate(0, 0, None)
+    assert abs(legacy - PLATE) < 1, \
+        f"legacy centred-hole plate must resolve by point, got {legacy:.1f}"
+
+    # A hole id naming an entity that is gone is stale, not moved: refuse the
+    # anchor rather than derive one from the outer loop and land in the hole.
+    gone = shell(0, 0, [["deleted"]])
+    assert abs(gone - WALL) < 1, \
+        f"a deleted hole entity must fall back, not anchor in the hole: {gone:.1f}"
+
+    print("  19314fdc OK: shell wall 18000 (not the 32000 hole) moved and unmoved; "
+          "centred-hole plate stays a plate; legacy + deleted-hole docs fall back")
+
+
 
 def test_fillet_failure_diagnostics():
     """When a fillet/chamfer fails, the per-edge probe names the offending
@@ -1729,6 +1817,7 @@ if __name__ == "__main__":
     test_boolean_guards_combine_sweep()
     test_region_stale_diagnostic()
     test_region_follows_a_moved_entity()
+    test_holed_region_anchors_in_the_wall()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()

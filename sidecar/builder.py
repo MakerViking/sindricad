@@ -1756,10 +1756,32 @@ def _handle_extrude(f, ctx):
                 if i < len(ents)
                 else None
             )
-            rf = _region_face_at(
-                cells, anchor if anchor is not None else Vector(*p),
-                ctx.diagnostics, f.get("id"),
-            )
+            rf = None
+            if anchor is not None:
+                anchor_pt, anchor_area = anchor
+                # No diagnostics on this attempt: `regionStale` is about the stored
+                # POINT, and if the anchor is not accepted the point is resolved
+                # below and gets to speak for itself.
+                rf = _region_face_at(cells, anchor_pt)
+                # The rebuilt profile must BE the cell it landed in. 0.1.123 through
+                # 0.1.144 wrote `regionEntities` with no `regionHoleEntities`, so a
+                # holed region from one of those documents rebuilds SOLID and its
+                # anchor is inside the hole — field 19314fdc, live on every file
+                # they saved, and no "are hole ids present" test can see it because
+                # they are absent. The areas disagree loudly when it happens (10000
+                # against the 6400 hole cell on the reported shell, 3600 against
+                # 3285.8 on a centred-hole plate) while a correct anchor matches its
+                # cell exactly, so compare them and fall back to the stored point —
+                # which is right by construction: Region.interior is "a point inside
+                # the material, outside all holes".
+                if rf is not None:
+                    off = abs(rf.area - anchor_area)
+                    if off > REGION_AREA_TOL * max(rf.area, anchor_area):
+                        rf = None
+            if rf is None:
+                rf = _region_face_at(
+                    cells, Vector(*p), ctx.diagnostics, f.get("id"),
+                )
             if rf is not None:
                 sel.append(rf)
         if not sel:
@@ -6557,10 +6579,18 @@ def _path_wire(edges, plane):
     return plane * longest
 
 
+# How far a rebuilt region's area may sit from the arrangement cell its anchor
+# landed in before the anchor is thrown away (see _handle_extrude). Both numbers
+# come from the same edges through different code, so a correct pair matches to
+# float noise; the wrong pairs this exists to catch are 9% apart and worse.
+REGION_AREA_TOL = 1e-6
+
+
 def _region_anchor_from_entities(entry, eids, hole_eids=None):
-    """A point inside the region bounded by exactly these sketch entities, in the
-    LOCATED frame — the anchor a stored region reference should use once the
-    geometry it was picked on has moved.
+    """`(point, area)` for the region bounded by exactly these sketch entities, in
+    the LOCATED frame — the anchor a stored region reference should use once the
+    geometry it was picked on has moved, plus the area of the profile it was
+    derived from so the caller can check the anchor resolved to THAT profile.
 
     Field report a20cca53: an extrude stores a bare interior POINT per selected
     area. Move the circle that formed that area and the point stays behind, lands
@@ -6569,63 +6599,108 @@ def _region_anchor_from_entities(entry, eids, hole_eids=None):
     really is inside a profile, just not the one the user chose. The entity ids
     recorded alongside survive the move; the point does not.
 
-    `hole_eids` names the entities bounding each HOLE of the region. They are
-    load-bearing on any profile with a hole: without them this rebuilds the OUTER
-    loop alone, which for a rectangle is exactly ONE solid face, so the face-count
-    guard below passes and `center()` is returned from inside the hole. The caller
-    then resolves that to the inner cell. That is field report 19314fdc — the wall
-    of a shell cross-section extruding as its inner loop — and it shipped in
-    0.1.123. The guard was written around the CIRCLE ring, where two circles give
-    two faces and it refuses correctly; an outer rectangle alone gives one.
+    `hole_eids` names the entities bounding each HOLE of the region, and they are
+    load-bearing on any profile with a hole: the outer loop ALONE rebuilds a SOLID
+    face — for a rectangle exactly ONE face, so the face-count guard below passes —
+    and the point taken from it sits inside the hole. The caller then resolves that
+    to the inner cell. That is field report 19314fdc, the wall of a shell
+    cross-section extruding as its inner loop, shipped in 0.1.123. So the holes are
+    CUT out of the outer face here and the point comes from what is left, which is
+    the region's material by construction: `Region.holes` are the DIRECT children
+    of the loop, so outer-minus-them is exactly what the user picked.
+
+    The point is the centroid of the biggest triangle of that face's own
+    triangulation, NOT `center()`. A shell's centroid is in its hole (measured
+    (0,0,0) for the reported 100x100/80x80, `is_inside` False), and so is a ring's
+    and a crescent's — `center()` is only reliable on a convex face, which is why
+    the pre-hole version of this had to refuse whenever it fell outside.
 
     Returns None whenever the entities do not bound exactly one face, and the
     caller falls back to the stored point. That covers a line splitting a square
     (both halves carry the SAME entity set, and nothing here can tell them apart),
-    a ring whose two circles yield two faces, and every document written before
-    this field existed. A wrong anchor is worse than a stale one, so this refuses
+    a hole that cuts the material into two, and every document written before
+    these fields existed. A wrong anchor is worse than a stale one, so this refuses
     rather than guesses."""
     by_ent = entry.get("edgesByEntity") or {}
     plane = entry.get("plane")
     if not eids or plane is None:
         return None
-    eds = []
-    for eid in eids:
-        got = by_ent.get(eid)
-        if not got:
-            return None  # an entity the reference names is gone: stale, not moved
-        eds.extend(got)
-    # A region WITH HOLES cannot be anchored from its outer loop, so refuse and
-    # let the caller use the stored point — which is correct by construction here:
-    # Region.interior is "a point inside the material, outside all holes".
-    #
-    # This is the field-19314fdc fix. Deriving the anchor from the outer loop
-    # alone rebuilt a SOLID face whose centre sits in the hole, and the caller
-    # resolved that to the inner cell: the wall of a shell cross-section extruded
-    # as its inner loop. The face-count guard below never caught it because a
-    # rectangle's outer loop bounds exactly one face.
-    #
-    # Refusing costs holed regions their drift-protection (the a20cca53 benefit),
-    # which is the honest trade until the anchor is derived from the outer face
-    # with its holes CUT OUT. Picking a face by area does NOT work: an outer
-    # 100x100 with an inner 80x80 leaves a 3600mm2 wall against a 6400mm2 hole,
-    # so the largest face is the hole. See task #60 — the proper fix belongs with
-    # the edit-path re-anchoring, which is blocked on the same defect.
-    if any(grp for grp in (hole_eids or [])):
+
+    def collect(ids):
+        """Every edge those entities contributed, or None if one of them is gone."""
+        eds = []
+        for eid in ids:
+            got = by_ent.get(eid)
+            if not got:
+                return None  # an entity the reference names is gone: stale, not moved
+            eds.extend(got)
+        return eds
+
+    def one_face(ids):
+        """The single face those entities bound, or None — see the refusals above."""
+        eds = collect(ids)
+        if eds is None:
+            return None
+        try:
+            faces = _faces_from_edges(eds)
+        except Exception:
+            return None
+        return faces[0] if len(faces) == 1 else None
+
+    face = one_face(eids)
+    if face is None:
         return None
+    holes = []
+    for grp in (hole_eids or []):
+        if not grp:
+            continue
+        hf = one_face(grp)
+        if hf is None:
+            return None  # a hole we cannot rebuild would leave the anchor in it
+        holes.append(hf)
     try:
-        faces = _faces_from_edges(eds)
+        if holes:
+            # A REAL boolean subtract, not "pick the biggest cell": on an ordinary
+            # shell the hole is the bigger face (6400mm2 against a 3600mm2 wall in
+            # field report 19314fdc), so any area heuristic reproduces that bug.
+            cut = face.cut(*holes)
+            fs = cut.faces()
+            if len(fs) != 1:
+                return None  # a hole that severs the material: no single anchor
+            face = fs[0]
+        fc = plane * face
+        p = _face_interior_point(fc)
+        # Backstop: the triangulation is the mesher's opinion, `is_inside` is the
+        # kernel's. Fall back to the stored point rather than trust a point the
+        # kernel does not agree is in the material.
+        if p is None or not _face_contains(fc, p):
+            return None
+        return p, float(fc.area)
     except Exception:
         return None
-    if len(faces) != 1:
-        return None
+
+
+def _face_interior_point(face):
+    """A point comfortably inside a planar face, holes included: the centroid of
+    the largest triangle of its own triangulation.
+
+    A triangle's centroid is well inside that triangle, so the biggest triangle
+    gives the point the most clearance — measured inside on a 100x100/80x80 shell,
+    a centred-hole plate, an r20/r18 ring whose biggest triangle is only 1mm2, an
+    L, and a plain rectangle. Only ever call this on a face built here: tessellate
+    attaches a triangulation to the shape, and `_body_fingerprint` documents a
+    bbox that MOVES by up to 0.49 mm once a shape carries one."""
     try:
-        fc = plane * faces[0]
-        c = fc.center()
-        # center() sits outside the material on a non-convex face (a crescent, an
-        # L). Only trust it when it is genuinely inside, else fall back.
-        return c if _face_contains(fc, c) else None
+        verts, tris = face.tessellate(0.1)
     except Exception:
         return None
+    best = None
+    for (i, j, k) in tris:
+        a, b, c = verts[i], verts[j], verts[k]
+        area2 = ((b - a).cross(c - a)).length
+        if best is None or area2 > best[0]:
+            best = (area2, (a + b + c) * (1.0 / 3.0))
+    return best[1] if best else None
 
 
 def _region_face_at(cells, P, diag=None, feature_id=None):
