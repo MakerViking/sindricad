@@ -1577,7 +1577,13 @@ def import_geometry(path, fmt):
             )
         shape = _sew_triangles(pos, idx)
     else:
-        raise ValueError(f"unsupported import format: {fmt}")
+        # Coded, not just worded: this is the one refusal on the import path that
+        # is purely about the REQUEST (an unknown format string), so a caller has
+        # to be able to tell it apart from a real geometry failure without
+        # matching prose. Local import, matching the other errors use in here.
+        from errors import GeomError, BAD_REQUEST
+
+        raise GeomError(f"unsupported import format: {fmt}", BAD_REQUEST)
 
     is_solid = len(shape.solids()) > 0
     name = os.path.splitext(os.path.basename(path))[0] or "Imported"

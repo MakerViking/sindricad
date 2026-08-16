@@ -2341,6 +2341,75 @@ def _mint_token() -> str:
     return t
 
 
+# The shape each op's payload must have before ANY work starts. Keyed by op and
+# kept adjacent to _dispatch on purpose, so the two are read together — a field
+# quietly dropped from a row here is the one drift nothing else catches.
+#
+# WHY: every branch of _dispatch below indexes its payload directly (req["document"],
+# req["path"], …) and _serialized's catch-all turns whatever that raises into
+# `_err(req_id, str(ex))`. So nothing hangs and nothing dies — but a malformed
+# request came back as `ok:false` with NO code and a raw CPython internal in the
+# message: "'int' object has no attribute 'get'", "'document'", "stat: path
+# should be string, bytes, os.PathLike or integer". 33 of 56 malformed shapes
+# answered that way. Prose is fine for a human reading a toast and useless to
+# anything that has to branch, which is exactly what errors.BAD_REQUEST exists
+# for — massProperties and query already used it, the other twelve did not.
+#
+# Each row is (field, accepted types, required). `rebuild`'s document MUST stay
+# OPTIONAL: the normal client path sends {baseRevision, revision, ops} with no
+# document at all (client.ts rebuild()), and requiring it would break every
+# incremental rebuild in the app.
+_REQUIRED_FIELDS = {
+    "rebuild": (("document", dict, False),),
+    "computeAll": (("document", dict, True),),
+    "export": (("document", dict, True), ("format", str, True), ("path", str, True)),
+    "exportProject": (("document", dict, True), ("path", str, True)),
+    "massProperties": (("document", dict, True),),
+    "query": (("document", dict, True),),
+    "interference": (("document", dict, True),),
+    # PlaneSpec is Plane3 | PlaneDef (types.ts), so a bare "XY" is legal here
+    "projectGeometry": (("document", dict, True), ("plane", (dict, str), True)),
+    "import": (("path", str, True), ("format", str, True)),
+    "migrateGeometry": (("items", list, False),),
+    "tessellateText": (("entity", dict, True),),
+    "listFonts": (),
+    "ping": (),
+    "cancel": (),
+}
+
+
+def _malformed(op, req):
+    """Prose describing why this payload cannot be served, or None if it can.
+
+    An op with no row is left alone: an unknown op still falls through to the
+    unknownOp answer at the bottom of _dispatch, which is the capability probe."""
+    spec = _REQUIRED_FIELDS.get(op)
+    if spec is None:
+        return None
+    for field, types, required in spec:
+        if field not in req or req[field] is None:
+            if required:
+                return f"{op}: missing {field}"
+            continue
+        value = req[field]
+        if not isinstance(value, types):
+            names = getattr(types, "__name__", None) or "/".join(t.__name__ for t in types)
+            return f"{op}: {field} must be {names}"
+        if field == "document":
+            # A document whose `features` is not a list used to be ACCEPTED into
+            # the retained delta state (_apply_doc_ops stores payload["document"]
+            # unconditionally), so the next rebuild sent WITHOUT a document —
+            # the normal delta path — replayed the poison and failed the same
+            # way. Refusing up front keeps a rejected document out of that state.
+            feats = value.get("features")
+            if feats is not None and not isinstance(feats, list):
+                return f"{op}: document.features must be a list"
+            params = value.get("parameters")
+            if params is not None and not isinstance(params, dict):
+                return f"{op}: document.parameters must be an object"
+    return None
+
+
 async def _dispatch(ws, loop, req, req_id, op):
     """Run one request and send its reply. Split out of handle() so the read
     loop can stay responsive while this is running — see handle().
@@ -2350,6 +2419,13 @@ async def _dispatch(ws, loop, req, req_id, op):
     streamed reply is several frames that must reach the client contiguously,
     so moving a send outside that lock — or letting two heavy ops run
     concurrently — would splice two documents' bodies together."""
+    # Trust boundary: refuse a malformed payload BEFORE any job is scheduled,
+    # the same reason exportProject's settings guard and massProperties' bodies
+    # guard sit ahead of their work.
+    bad = _malformed(op, req)
+    if bad is not None:
+        await ws.send(_err(req_id, bad, code=errors_mod.BAD_REQUEST))
+        return
     if op == "rebuild":
         tol = req.get("tolerance", 0.1)
         payload = {
@@ -2618,6 +2694,16 @@ async def handle(ws):
                 req = json.loads(raw)
             except Exception as ex:
                 await ws.send(_err(None, f"bad JSON: {ex}"))
+                continue
+            # Valid JSON is not necessarily a REQUEST. `req.get("id")` below
+            # raises AttributeError on a list/string/number/null frame, outside
+            # any try, which tore the whole connection down with a bare 1011 and
+            # no reply — taking every other in-flight request on that socket with
+            # it. Measured: `[1,2,3]` closed the socket; the process survived,
+            # the conversation did not.
+            if not isinstance(req, dict):
+                await ws.send(_err(None, "request must be a JSON object",
+                                   code=errors_mod.BAD_REQUEST))
                 continue
 
             req_id = req.get("id")
