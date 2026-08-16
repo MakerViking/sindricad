@@ -72,10 +72,22 @@ fi
 # The decisive artifact: whichever glue vite bundled is what a packaged build
 # runs. `var a=Function` is embind's `new_` helper after closure minification —
 # a grep for "new Function(" finds NOTHING here and is not evidence of absence.
+#
+# POLARITY MATTERS HERE, and an earlier version of this script had it backwards.
+# Finding the string proves the sink IS present. NOT finding it proves only that
+# this one string was not found: vite re-minifies, and a renamed local would make
+# the grep miss a sink that is still there. Reporting that as "patched glue
+# bundled" is a false all-clear on the single question that decides whether a
+# packaged build ships a working solver — so absence is INCONCLUSIVE, and
+# inconclusive + a tightened CSP is a FAILURE, not an OK.
 echo
 echo "built bundle (dist/)"
 if [ ! -d dist ]; then
   echo "  not built — run 'npm run build' first (this check is inconclusive without it)"
+  if [ "$tightened" = yes ]; then
+    note "the CSP is tightened and there is no bundle to check. Build and re-run:
+      shipping on this evidence would be a guess."
+  fi
 else
   hits=$(grep -l 'var a=Function' dist/assets/*.js 2>/dev/null || true)
   if [ -n "$hits" ]; then
@@ -86,8 +98,14 @@ else
       'unsafe-eval' back."
     fi
   else
-    echo "  Function-constructor sink absent (patched glue bundled)"
-    [ "$tightened" = yes ] || echo "  note: 'unsafe-eval' is still granted but nothing in the bundle needs it — it can go"
+    echo "  that sink spelling not found — INCONCLUSIVE, not a pass"
+    echo "  (proves only that one minified spelling is absent, not that the glue is patched)"
+    if [ "$tightened" = yes ]; then
+      note "the CSP is tightened and the bundled glue could not be POSITIVELY identified
+      as the patched build. Confirm by checksum against the artifact from the
+      planegcs-glue workflow, then run the packaged-build check in
+      docs/CSP-SOLVER-VERIFICATION.md. Do not ship on a missing grep."
+    fi
   fi
 fi
 
