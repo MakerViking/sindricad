@@ -595,6 +595,12 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/assembly_tree_e2e.cjs
 
+      - name: Press/Pull dispatch end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/presspull_dispatch_e2e.cjs
+
       - name: Sidecar log on failure
         if: failure()
         run: tail -50 /tmp/ci_sidecar.log /tmp/ci_vite.log || true
