@@ -85,6 +85,40 @@ This file starts on 2026-08-03. For anything before that, see the
   this is what **Help > Check for Updates** answers, and the quiet check at
   startup stays quiet. The AppImage is unaffected and still updates itself in
   place.
+- **Extruding the wall of a shape with a hole in it no longer extrudes the
+  hole.** Reported from the field: "two rectangles like a shell cross-section,
+  extrude the shell wall, and the result is never the shell but the inside loop
+  extrusion." Picking the wall gave a solid block the size of the hole.
+
+  The area was remembered by the shapes that formed it, but only the outer one,
+  so rebuilding it produced a solid face whose middle is inside the hole. The
+  hole's own shapes are now remembered too and cut back out, which leaves exactly
+  the material that was picked.
+
+  **This changes what already-saved documents build.** A holed area saved by any
+  build from 0.1.123 on carries the outer shape only, and those documents have
+  been extruding the hole all along, with nothing moved. They now extrude the
+  wall, so a document that was quietly wrong comes back right on the first
+  rebuild after updating. Nothing needs re-picking.
+
+  **Only half of this is fixed, and reopening the extrude is the unfixed half.**
+  Building the feature now finds the wall, but the edit tool still finds the area
+  by the point that was clicked when it was made, so on a holed area that has
+  since been moved it reopens on the hole instead of the wall. Committing that
+  edit, even just a new depth, writes the hole back as the stored area, and from
+  then on the feature really does extrude the hole. There is no confirmation
+  step: it looks like an ordinary depth change.
+
+  That applies to every way of reopening it, because they are all the same tool:
+  double-clicking the feature in the timeline, Edit on its right-click menu there,
+  and Edit Extrude on the right-click menu of a face in the viewport. Avoid all
+  three on a holed extrude whose sketch has moved.
+
+  To change the depth safely, select the feature with a single click and edit
+  Distance in the inspector on the right. That writes the one number and leaves
+  the stored area alone, so the feature keeps building the wall. Reopening the
+  edit tool is the thing to avoid until its half lands, which is tracked as the
+  rest of this fix.
 
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.
