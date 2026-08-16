@@ -785,6 +785,25 @@ export interface ResolveDiag {
 export type F32Wire = number[] | Float32Array;
 export type U32Wire = number[] | Uint32Array;
 
+/** One feature that failed while the rest of the timeline still built.
+ *
+ *  `message` may contain the literal `{body}` where a body's name belongs. The
+ *  sidecar deliberately does NOT interpolate the name: it came out of the
+ *  document, and on an imported assembly that means out of the STEP file, so it
+ *  is untrusted text that must stay in a field of its own rather than dissolve
+ *  into prose (sidecar/untrusted.py). Fill the slot with
+ *  `featureErrorText(e, bodies)` — never by hand, and never by appending. */
+export interface FeatureError {
+  feature_id?: string;
+  message: string;
+  code?: GeomErrorCode;
+  /** The sidecar's id for the body the failure is about. Safe to branch on. */
+  body_id?: string;
+  /** UNTRUSTED: that body's (or feature's) name as it stood when the build
+   *  failed, already capped and control-stripped by the sidecar. Display only. */
+  subject?: string;
+}
+
 /** One body's exact kernel mass properties, or a record of why it has none.
  *
  *  A discriminated union on `measured` so `b.volume` cannot be read without
@@ -853,8 +872,13 @@ export interface RebuildResult {
   // is the LAST (most downstream) failure — the one closest to the user's
   // latest action; featureErrors lists them all, timeline order. The reply is
   // still ok:true so the model renders alongside the error banner.
-  featureError?: { feature_id?: string; message: string; code?: GeomErrorCode };
-  featureErrors?: { feature_id?: string; message: string; code?: GeomErrorCode }[];
+  //
+  // `message` may carry a `{body}` slot where a body's name belongs — the
+  // sidecar does not interpolate document text into prose. `body_id` is the
+  // sidecar's own id; `subject` is the UNTRUSTED name it stood for, capped and
+  // control-stripped. Render with featureErrorText(), never by hand.
+  featureError?: FeatureError;
+  featureErrors?: FeatureError[];
   // projected-curve refresh entries from this rebuild (absent at steady state);
   // the store lands them via a derived, no-undo commit — see
   // DocumentStore.commitProjectionRefresh.
@@ -863,7 +887,7 @@ export interface RebuildResult {
 
 export type RebuildReply =
   | { ok: true; result: RebuildResult }
-  | { ok: false; error: { feature_id?: string; message: string } };
+  | { ok: false; error: FeatureError };
 
 export type ExportFormat = "step" | "stl" | "3mf" | "glb";
 

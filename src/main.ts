@@ -2,6 +2,7 @@ import "./styles.css";
 import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
+import { featureErrorText } from "./geometry/featureErrorText";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -866,7 +867,7 @@ store.onBuild((s) => {
         const action = amb?.at
           ? { label: "Re-pick face", onClick: () => starters.repickReference(id, amb.at!) }
           : { label: "Show", onClick: () => selectFeature(id) };
-        toast(`⚠ ${label} failed: ${e.message}`, { kind: "error", action });
+        toast(`⚠ ${label} failed: ${featureErrorText(e, s.result.bodies)}`, { kind: "error", action });
         if (id === lastCommittedId) selectFeature(id);
       }
       prevErrorIds = ids;

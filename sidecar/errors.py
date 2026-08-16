@@ -47,6 +47,23 @@ ALL = frozenset({
     UNKNOWN_OP, BAD_REQUEST, EXPECT_FAILED, BUDGET_EXHAUSTED, MATCH_IMPLAUSIBLE,
 })
 
+# --- the body slot -----------------------------------------------------------
+
+# A message that is ABOUT a body no longer interpolates that body's name: the
+# name came out of the document (on an import, out of the STEP file), and prose
+# is the one place untrusted text cannot be told apart from the sidecar's own
+# words. The message carries this slot instead, and rides beside `body_id` (ours,
+# safe) and `subject` (the name, sanitised).
+#
+# Word order is why this is a slot and not a suffix the reader appends: "Fillet
+# failed on {body}: BOPAlgo_Alert..." puts the name mid-sentence, and no
+# append-the-name rule reproduces that.
+#
+# A consumer that does not substitute shows the literal "{body}", which is
+# honest — for an agent it is arguably better than a name, because it is
+# obviously a slot and not something to act on. Contract lives in PROTOCOL.md.
+BODY_SLOT = "{body}"
+
 
 class GeomError(ValueError):
     """A geometry error carrying a machine-readable `code` beside its prose.
@@ -55,16 +72,29 @@ class GeomError(ValueError):
     `except ValueError` keeps catching it unchanged — every raise site can be
     upgraded in place without touching the handler.
 
-    `code` MUST keep its None default. These cross a ProcessPoolExecutor
-    boundary, and `BaseException.__reduce__` returns `(cls, self.args)` — so an
-    exception whose __init__ requires a second positional raises TypeError while
-    being UNPICKLED in the parent, replacing a clear geometry message with
-    CPython noise at the worst possible moment. Covered by a round-trip test.
+    `code`, `body_id` and `subject` MUST keep their None defaults. These cross a
+    ProcessPoolExecutor boundary, and `BaseException.__reduce__` returns
+    `(cls, self.args)` — so an exception whose __init__ requires a second
+    positional raises TypeError while being UNPICKLED in the parent, replacing a
+    clear geometry message with CPython noise at the worst possible moment.
+    Covered by a round-trip test.
+
+    They survive that boundary all the same, and it is worth knowing why rather
+    than trusting it: CPython's reduce returns a THREE-tuple
+    `(cls, self.args, self.__dict__)` when the instance dict is non-empty, so
+    plain attributes ride along while a required constructor argument would not.
+
+    `subject` is UNTRUSTED DOCUMENT TEXT — a body or feature name, which on an
+    imported assembly is whatever the STEP file's author called it. It is a
+    separate field precisely so it never has to be dug back out of a sentence:
+    see untrusted.py. `body_id` is ours and is safe to branch on.
     """
 
-    def __init__(self, message, code=None):
+    def __init__(self, message, code=None, body_id=None, subject=None):
         super().__init__(message)
         self.code = code
+        self.body_id = body_id
+        self.subject = subject
 
 
 def code_of(ex, default=None):
@@ -72,3 +102,18 @@ def code_of(ex, default=None):
     type, so callers do not have to know whether a raise site was upgraded."""
     c = getattr(ex, "code", None)
     return c if c else default
+
+
+def body_id_of(ex, default=None):
+    """The body id an exception is about, or `default`."""
+    b = getattr(ex, "body_id", None)
+    return b if b else default
+
+
+def subject_of(ex, default=None):
+    """The untrusted document text an exception is about, or `default`.
+
+    Sanitise before it reaches a reply — `untrusted.clean(subject_of(ex))`.
+    """
+    s = getattr(ex, "subject", None)
+    return s if s else default

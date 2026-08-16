@@ -77,6 +77,48 @@ Not every failure carries a code. An absent `code` means "unclassified", not "fi
 frame 0 of a chunked reply, which carries `"status": "chunk"` and **no `ok` field** — so a
 code can arrive on a frame that is neither a success nor a failure.
 
+### Untrusted text
+
+A document is user data, but not all of it was typed by the user: on an import, body names
+come from the STEP file's product names, which is to say from whoever made the file. That is
+attacker-influenced text the moment someone opens a file they were sent.
+
+**No reply field interpolates document text into prose.** A message that is about a body
+carries the literal slot `{body}` where the name would go, and the name rides beside it:
+
+```jsonc
+{
+  "feature_id": "sh",
+  "message": "no face found to shell on {body}",
+  "code": "referenceNotFound",
+  "body_id": "body3",          // OURS — safe to branch on
+  "subject": "Bracket Left"    // UNTRUSTED — the name, display only
+}
+```
+
+The reader substitutes: resolve `body_id` against the reply's own `bodies`, fall back to
+`subject`, then to a neutral phrase. A message with no slot is not about a body and must be
+left alone. The frontend's implementation is `src/geometry/featureErrorText.ts`. A consumer
+that does not substitute shows the literal `{body}`, which is honest.
+
+Every document-derived string is **control-stripped, whitespace-collapsed and length-capped**
+before it leaves (`sidecar/untrusted.py`; 120 chars for a name, 2000 for a message). That
+removes bidi overrides and zero-width characters, and guarantees a message is one line.
+
+The fields that carry untrusted text, in full:
+
+| field | source |
+|---|---|
+| `bodies[].name` | STEP product name, or the document's own assembly node name |
+| `featureErrors[].subject`, `featureError.subject`, `error.subject` | a body's or feature's name |
+| assembly tree labels (`exportProject`) | STEP product names |
+
+**Contract for an agent-facing consumer** (the read-only MCP layer): wrap each of those in
+`untrusted.envelope()` before it reaches a model's context, and never merge one into a
+sentence. Sanitising bounds the text; enveloping is what marks where the document's words
+start and stop. Note this does not *hide* names from a model — a document reader exposes them
+by definition — it makes every occurrence identifiable in one place.
+
 ## Ops
 
 ### `rebuild`
@@ -124,7 +166,8 @@ Reply `result` is one of:
   `featureError`/`featureErrors` are present only when one or more features failed and
   were recorded as no-ops; the geometry that *did* build is still returned (a failing
   feature never blanks the whole model). `featureError` is the most-downstream failure,
-  for a single-line banner; `featureErrors` carries all of them.
+  for a single-line banner; `featureErrors` carries all of them. Each entry may also
+  carry `code`, `body_id` and `subject` — see **Untrusted text** below.
 
   `diagnostics` is omitted when empty, but when present it is **complete for the whole
   document** — an incrementally-resumed rebuild replays the diagnostics of its cached

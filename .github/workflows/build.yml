@@ -110,6 +110,7 @@ jobs:
           uv run python test_body_binding.py
           uv run python test_selector_ambiguity.py
           uv run python test_error_codes.py
+          uv run python test_untrusted.py
           uv run python test_mass_properties.py
           uv run python test_query_op.py
           uv run python test_assembly.py

@@ -109,7 +109,14 @@ def test_partial_failure_leaves_every_body_untouched():
     vols, errors = build({"id": "f1", "type": "fillet", "radius": 7.0,
                           "edges": [edge_sel(B1_CORNER, "body1"), edge_sel(B2_CORNER, "body2")]})
     assert errors, "an impossible fillet reported no error"
-    assert "Body2" in errors[0]["message"], f"the error should name the failing body: {errors}"
+    # The error must still identify WHICH body failed — but the name no longer
+    # lives in the prose. It came from the document, and on an import that means
+    # from the STEP file, so it rides in `subject` with the sidecar's own id
+    # beside it and the message carrying a `{body}` slot. See untrusted.py.
+    assert errors[0]["body_id"] == "body2", f"the error should name the failing body: {errors}"
+    assert errors[0]["subject"] == "Body2", errors[0]
+    assert "Body2" not in errors[0]["message"], (
+        f"document text must not be interpolated into the message: {errors[0]}")
     assert vols["body1"] == BASE["body1"], "body1 was left modified by a failed feature"
     assert vols["body2"] == BASE["body2"], "body2 was left modified by a failed feature"
     print(PASS, "a failing multi-body fillet is a clean no-op on every body")

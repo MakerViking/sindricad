@@ -6,6 +6,7 @@
 import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import { applyProjectionUpdate } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
+import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
@@ -1269,7 +1270,10 @@ export class DocumentStore {
         ...done,
         result: this.build.result,
         errorFeatureId: reply.error.feature_id ?? null,
-        errorMessage: reply.error.message,
+        // The bodies of the LAST good build: a fatal reply carries none of its
+        // own, and a failure is usually about a body that was there a moment
+        // ago. `subject` covers the case where it wasn't.
+        errorMessage: featureErrorText(reply.error, this.build.result?.bodies),
       };
     }
     const fe = reply.result.featureError;
@@ -1277,7 +1281,7 @@ export class DocumentStore {
       ...done,
       result: reply.result,
       errorFeatureId: fe?.feature_id ?? null,
-      errorMessage: fe?.message ?? null,
+      errorMessage: fe ? featureErrorText(fe, reply.result.bodies) : null,
     };
   }
 
