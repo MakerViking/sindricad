@@ -43,10 +43,13 @@ This file starts on 2026-08-03. For anything before that, see the
   repository, so that was advice with nowhere to go: those packages are release
   assets, and the only way forward is to install a newer one.
 
-  It now says so, and offers a button that opens the releases page. One reporter
-  on a package install stayed on 0.1.111 for a week, hitting three bugs that had
-  already been fixed in 0.1.117. The AppImage is unaffected and still updates
-  itself in place.
+  It now says so, and offers a button that opens the releases page — and says
+  where the page is if no browser opens, rather than looking like it worked. One
+  reporter on a package install stayed on 0.1.111 for a week, hitting three bugs
+  that had already been fixed in 0.1.117. He would still have had to go and ask:
+  this is what **Help > Check for Updates** answers, and the quiet check at
+  startup stays quiet. The AppImage is unaffected and still updates itself in
+  place.
 
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.

@@ -337,7 +337,8 @@ restart-and-update.
 
 Grab the `.AppImage` (`chmod +x`, updates itself in place), or the `.deb` / `.rpm`
 (`sudo dpkg -i` / `sudo rpm -i`; no in-app updates and no apt or dnf repository, so
-install the newer package from this same page when one lands).
+install the newer package from the [latest beta](https://github.com/MakerViking/sindricad/releases/tag/beta)
+when one lands).
 
 All three use your distribution's WebKitGTK 4.1 rather than carrying one, so a system
 that does not already have it needs it installed first. See
