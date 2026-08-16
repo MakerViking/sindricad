@@ -149,8 +149,11 @@ fn recovery_clear(app: tauri::AppHandle, slot: String) -> Result<(), String> {
 
 /// In-app updates only apply to formats the Tauri updater can replace: the NSIS
 /// install on Windows, the .app on macOS, and the AppImage on Linux. A deb/rpm
-/// install belongs to the package manager, so the frontend hides the update UI
-/// when this is false.
+/// install cannot be, and there is no apt or dnf repository to hand it off to
+/// either — those packages are release assets and nothing more. So the frontend
+/// does NOT hide the update UI when this is false (Help > Check for Updates is
+/// always there, main.ts): it answers with a link to the releases page. Saying
+/// "use your package manager" here left field report 383e7bfd a week behind.
 #[tauri::command]
 fn updates_supported() -> bool {
     if cfg!(target_os = "linux") {
