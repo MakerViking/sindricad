@@ -838,7 +838,24 @@ _DOC_STATE = {"rev": None, "doc": None}
 
 def _apply_doc_ops(payload):
     """Apply a client delta to the held document, or adopt a full document.
-    Returns the effective document, or None when a resync is needed."""
+    Returns the effective document, or None when a resync is needed.
+
+    TOTAL AND ATOMIC, both by measurement. A reviewer drove `{"ops": {"length":
+    1, "set": [[0, 7]]}}` at this function after the `document` door was closed
+    and it applied happily: the junk feature went into the held document, the
+    revision moved on to the delta's, and the box that WAS at the base revision
+    was gone — the next incremental rebuild could only answer "resync". The
+    build then died in builder.py on `f.get("type")`, so the refusal reached the
+    client as "'int' object has no attribute 'get'".
+    _malformed refuses that shape up front now, but this function must not
+    depend on being called behind it: every op is applied to a COPY, anything
+    the copy cannot take returns None (which is the protocol's own resync
+    recovery, not an exception), and _DOC_STATE is replaced in ONE step at the
+    end. So a rejected delta leaves the held document and revision untouched.
+
+    The index bound is the one check that CANNOT move up into _malformed: the
+    document lives here in the worker, and the process that validates the
+    request has no idea how long it is. An index past the end is a resync."""
     if "document" in payload:
         _DOC_STATE["doc"] = payload["document"]
         _DOC_STATE["rev"] = payload.get("revision")
@@ -847,23 +864,40 @@ def _apply_doc_ops(payload):
         return None
     doc = _DOC_STATE["doc"]
     ops = payload.get("ops") or {}
-    if "parameters" in ops:
-        doc["parameters"] = ops["parameters"]
-    if "bodyVisibility" in ops:
-        doc["bodyVisibility"] = ops["bodyVisibility"]
-    if "length" in ops:
-        feats = doc.get("features", [])
-        del feats[ops["length"]:]
-        while len(feats) < ops["length"]:
-            feats.append(None)  # placeholder — must be covered by "set" below
-        doc["features"] = feats
-    for i, f in ops.get("set", []):
-        doc["features"][i] = f
-    if any(f is None for f in doc.get("features", [])):
-        _DOC_STATE["doc"] = None  # hole the ops didn't fill — force resync
+    if not isinstance(ops, dict):
         return None
+    feats = list(doc.get("features") or [])
+    if "length" in ops:
+        n = ops["length"]
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            return None
+        del feats[n:]
+        while len(feats) < n:
+            feats.append(None)  # placeholder — must be covered by "set" below
+    entries = ops.get("set") or []
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            return None
+        i, f = entry
+        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(feats):
+            return None
+        if not isinstance(f, dict):
+            return None
+        feats[i] = f
+    if any(f is None for f in feats):
+        return None  # hole the ops didn't fill — resync
+    updated = dict(doc)
+    updated["features"] = feats
+    for key in ("parameters", "bodyVisibility"):
+        if key in ops:
+            if not isinstance(ops[key], dict):
+                return None
+            updated[key] = ops[key]
+    _DOC_STATE["doc"] = updated
     _DOC_STATE["rev"] = payload.get("revision")
-    return doc
+    return updated
 
 
 def _rebuild_job(document, tolerance, known=None):
@@ -2358,10 +2392,18 @@ def _mint_token() -> str:
 # Each row is (field, accepted types, required). `rebuild`'s document MUST stay
 # OPTIONAL: the normal client path sends {baseRevision, revision, ops} with no
 # document at all (client.ts rebuild()), and requiring it would break every
-# incremental rebuild in the app.
+# incremental rebuild in the app. Those three fields need rows of their OWN for
+# the same reason — a reviewer measured that closing the `document` door alone
+# left the delta door wide open, and the delta is the door the app uses on every
+# incremental rebuild. See _malformed_ops.
 _REQUIRED_FIELDS = {
-    "rebuild": (("document", dict, False),),
-    "computeAll": (("document", dict, True),),
+    "rebuild": (
+        ("document", dict, False),
+        ("ops", dict, False),
+        ("baseRevision", int, False),
+        ("revision", int, False),
+    ),
+    "computeAll": (("document", dict, True), ("revision", int, False)),
     "export": (("document", dict, True), ("format", str, True), ("path", str, True)),
     "exportProject": (("document", dict, True), ("path", str, True)),
     "massProperties": (("document", dict, True),),
@@ -2376,6 +2418,53 @@ _REQUIRED_FIELDS = {
     "ping": (),
     "cancel": (),
 }
+
+
+def _malformed_ops(op, ops):
+    """Prose describing why this delta `ops` cannot be served, or None.
+
+    Split out of _malformed because the delta is what the app actually sends on
+    EVERY incremental rebuild — client.ts falls back to a whole document only
+    when the delta would be bigger — and because a reviewer measured this door
+    still open after the `document` one was closed. `{"length": 1, "set": [[0,
+    7]]}` passed every check there was, was written into the worker's held
+    document, and took the revision with it: the good document at the good
+    revision was gone, and the refusal came back UNCODED as "'int' object has no
+    attribute 'get'" from builder.py.
+
+    The ops vocabulary is client.ts's RebuildDeltaPayload: {length, set,
+    parameters?, bodyVisibility?}, where `set` is a list of [index, Feature]
+    pairs. Unknown keys are deliberately not rejected — the server ignores them,
+    and refusing them would make an older sidecar refuse a newer client."""
+    if "length" in ops:
+        n = ops["length"]
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            return f"{op}: ops.length must be a non-negative integer"
+    for key in ("parameters", "bodyVisibility"):
+        if key in ops and not isinstance(ops[key], dict):
+            return f"{op}: ops.{key} must be an object"
+    if "set" in ops:
+        entries = ops["set"]
+        if not isinstance(entries, list):
+            return f"{op}: ops.set must be a list"
+        declared = ops.get("length")
+        for k, entry in enumerate(entries):
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                return f"{op}: ops.set[{k}] must be [index, feature]"
+            i, f = entry
+            if not isinstance(i, int) or isinstance(i, bool) or i < 0:
+                return f"{op}: ops.set[{k}][0] must be a non-negative integer"
+            # The only bound checkable HERE is the length the client itself
+            # declared: the document being patched lives in the worker process,
+            # so an index past its real end is caught in _apply_doc_ops and
+            # answered with a resync.
+            if isinstance(declared, int) and not isinstance(declared, bool) and i >= declared:
+                return f"{op}: ops.set[{k}][0] is past ops.length"
+            # Every feature reader in builder.py starts with `f.get("type")`,
+            # which is exactly how a non-object here became CPython prose.
+            if not isinstance(f, dict):
+                return f"{op}: ops.set[{k}][1] must be an object"
+    return None
 
 
 def _malformed(op, req):
@@ -2439,6 +2528,10 @@ def _malformed(op, req):
             if "parameters" in value:
                 if not isinstance(value["parameters"], dict):
                     return f"{op}: document.parameters must be an object"
+        if field == "ops":
+            bad = _malformed_ops(op, value)
+            if bad is not None:
+                return bad
     return None
 
 

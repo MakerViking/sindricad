@@ -15,6 +15,18 @@ character outside the four dicts, both came back as uncoded CPython prose, and
 one of them poisoned the delta state exactly like the defect this file was
 written for. The derived matrix found both on its first run.
 
+A DERIVATION IS ONLY AS HONEST AS ITS SCRAPE, which is the second thing a
+reviewer had to prove here. The field scrape matched literal `req["x"]` forms
+only, so it could not see the fields _dispatch reads through `{k: req[k] for k
+in (...)}`. Two of those, `ops` and `baseRevision`, are read nowhere else in
+server.py, so the matrix had never sent them anything at all — and `ops` is what
+the app sends on every incremental rebuild. The matrix looked complete and had
+never once touched the delta door, and the defect R4 claims to close was still
+live through it, still uncoded, still eating the retained document. The scrape
+parses server.py now and RAISES on a request read it cannot resolve, rather than
+dropping it: silent under-coverage is the failure this whole file exists to
+prevent.
+
 WHY THIS SHAPE. The obvious property, "a malformed payload must not raise, hang
 or kill the worker", ALREADY HELD before this file existed: measured 56/56
 answered with the server still alive after every one, because _serialized wraps
@@ -32,18 +44,22 @@ exists for exactly this ("malformed/oversized input, refused up front") and only
 control surface, a retry, a test — could not tell "you sent nonsense" from "the
 kernel fell over".
 
-Chasing that found a real defect, now R4: a document that FAILED was accepted
-into the RETAINED delta state, so the next rebuild sent with no document at all
-(the normal incremental path) replayed the poison. Three shapes reached it —
-`features` not a list, `features` holding non-objects, and a null document — and
-R4 asserts the STATE (the good document is still there, at its own revision, and
-still builds) rather than merely that the bad one was refused.
+Chasing that found a real defect, now R4: a rebuild that FAILED was allowed to
+replace the RETAINED delta state, so the next rebuild sent with no document at
+all (the normal incremental path) replayed the poison. Both doors into that
+state are covered — a bad `document` (three shapes) and a bad `ops` delta (four,
+two of them the reviewer's verbatim) — and R4 asserts the STATE (the good
+document is still there, at its own revision, and still builds) rather than
+merely that the bad one was refused.
 
 R6 runs the opposite way: a well-formed request for each op must still be
 SERVED, so a validation row that is too strict cannot hide behind a file full of
 refusals. R7 covers what the shape matrix structurally cannot reach: a payload
 whose FIELDS are all well formed but whose VALUE is out of vocabulary, which is
-refused past the field guard and was still answering uncoded.
+refused past the field guard and was still answering uncoded. R8 is R6's
+direction for the delta specifically, and it was missing: the only `ops` any
+sidecar suite had ever put on the wire was `{}`, so the guard in front of the
+app's hottest path had no positive control at all.
 """
 
 import asyncio
@@ -61,8 +77,8 @@ import websockets  # noqa: E402
 
 import errors  # noqa: E402
 from harness_util import (  # noqa: E402
-    SpawnedServer, parse_request_fields, parse_required_fields, parse_server_ops,
-    ws_call, _MAX_WS,
+    SpawnedServer, mesh_volume, parse_request_fields, parse_required_fields,
+    parse_server_ops, ws_call, _MAX_WS,
 )
 
 PASS = "  ok"
@@ -132,25 +148,52 @@ TRANSPORT = {
     "binary": "selects the reply ENCODING, so junk exercises the framing layer",
     "chunked": "same — reply framing, not request validation",
 }
-FIELDS = sorted(parse_request_fields() - set(TRANSPORT))
+# Reads of `req` through a key the scrape cannot resolve. parse_request_fields
+# RAISES on any it is not told about, because the alternative — dropping it —
+# is exactly the hole a reviewer measured a live defect through: `ops` and
+# `baseRevision` are read via `{k: req[k] for k in (...)}` in _dispatch, the
+# regex scrape never saw them, and the delta door they open was still poisoning
+# the retained document long after this file claimed that defect closed. The one
+# read left here is the validator ITSELF walking its own rows, and the assert
+# below turns its "covered another way" into something checked, not asserted.
+DYNAMIC_READS = {
+    "_malformed": "the guard iterating its own _REQUIRED_FIELDS spec; every "
+                  "field it can read is a row in that table, which "
+                  "parse_required_fields() enumerates — asserted below",
+}
+FIELDS = sorted(parse_request_fields(DYNAMIC_READS) - set(TRANSPORT))
 DECLARED = parse_required_fields()
 # field -> its declared type names, e.g. "document" -> ("dict",)
 TYPE_OF = {f: names for rows in DECLARED.values() for f, names, _req in rows}
+# Makes DYNAMIC_READS' exemption honest rather than merely stated: _malformed
+# reads only what its own table declares, so if every declared field is also in
+# the scraped matrix, that exemption costs no coverage.
+_undeclared = set(TYPE_OF) - set(FIELDS) - set(TRANSPORT)
+assert not _undeclared, (
+    "_REQUIRED_FIELDS declares fields the request scrape never found, so the "
+    f"_malformed exemption in DYNAMIC_READS is hiding them: {_undeclared}")
 
 # right OUTER type, wrong one level in
 _INNER_JUNK = {
-    "dict": {"features": "not-a-list", "parameters": 7, "origin": "x", "type": None},
+    "dict": {"features": "not-a-list", "parameters": 7, "origin": "x", "type": None,
+             "set": "not-a-list", "length": "3"},
     "str": "\x00\x01",
     "list": [{"kind": 9}],
+    # A scalar has no "inside", so both junk rows for it are wrong-TYPE
+    # variants: a string here, a float below. `revision`/`baseRevision` are the
+    # only int fields today and both ride on rebuild's delta path.
+    "int": "1",
 }
 # right outer type AND right container type — junk ELEMENTS. This is the shape
 # that found the second delta-state poisoning: `{"features": [7]}` IS a list, so
 # a guard that stops at the container passes it and the build still dies on
 # `f.get("type")`.
 _ELEMENT_JUNK = {
-    "dict": {"features": [7], "parameters": {}, "origin": ["x"], "type": {}},
+    "dict": {"features": [7], "parameters": {}, "origin": ["x"], "type": {},
+             "set": [7], "length": 0},
     "str": "",
     "list": [7],
+    "int": 1.5,
 }
 
 
@@ -195,6 +238,24 @@ async def _probe_every_op():
     # the failure mode a derived set trades for the copied one it replaced.
     missing = {"document", "path", "format", "entity", "plane"} - set(FIELDS)
     assert not missing, f"the request-field scrape lost known fields: {missing}"
+    # The delta fields specifically: these are read through a variable key and
+    # were invisible to the scrape until it learned to resolve one. `ops` is the
+    # field the app sends on EVERY incremental rebuild, so losing it again would
+    # re-open the door this file's R4 exists to keep shut.
+    blind = {"ops", "baseRevision", "revision"} - set(FIELDS)
+    assert not blind, (
+        f"the scrape can no longer see the delta fields {blind} — the matrix "
+        f"below is blind to the path the app actually uses")
+    # And the scrape's own loud failure must still be LIVE. It is the only thing
+    # standing between a future dynamic read and silent under-coverage, so a
+    # guard that has quietly stopped firing is the same hole in a new place.
+    try:
+        parse_request_fields({})
+        raise AssertionError(
+            "parse_request_fields stopped refusing an unresolved request read: "
+            "the loud-failure guard this derived matrix depends on is dead")
+    except RuntimeError as ex:
+        assert "_malformed" in str(ex), ex
     assert "rebuild" in DECLARED and TYPE_OF.get("document") == ("dict",), (
         f"the _REQUIRED_FIELDS parse is broken: {DECLARED}")
     rows = []
@@ -283,7 +344,7 @@ def test_r3_every_op_taking_a_payload_actually_refuses_one(ops, rows):
                 f"{', '.join(sorted(PAYLOAD_FREE))})")
 
 
-async def test_r4_a_refused_document_never_enters_the_retained_state():
+async def test_r4_a_rejected_rebuild_never_costs_the_retained_state():
     """R4, the regression. _apply_doc_ops stores payload["document"] into
     _DOC_STATE unconditionally, so a document that FAILS still becomes the base
     for the next delta. Measured before the fix: a bad rebuild, then a rebuild
@@ -301,20 +362,51 @@ async def test_r4_a_refused_document_never_enters_the_retained_state():
     "resync", which is precisely the wasted round trip the defect costs a real
     client.
 
-    Three poison shapes, because the guard was one shape wide twice over: a
-    `features` that is not a list, a `features` list holding non-objects (both
-    reach `f.get("type")` in the builder), and a document that is null (which
-    _malformed used to skip as "not supplied" while _dispatch, keying on
-    `"document" in req`, passed it straight through to overwrite the state)."""
+    BOTH DOORS, because for one commit this test's name was a lie. It covered
+    only `document`, and a reviewer measured the SAME defect still live through
+    `ops` — which is the door the app uses on every incremental rebuild, since
+    client.ts sends a whole document only when the delta would be bigger.
+    `{"length": 1, "set": [[0, 7]]}` was applied to the held document, moved the
+    revision on with it, and came back "'int' object has no attribute 'get'":
+    uncoded, leaking, and the good document at the good revision gone. That is
+    why the two `ops` shapes below carry the reviewer's exact payloads.
+
+    THE LAST TWO CANNOT BE REFUSED UP FRONT and are not asked to be: the held
+    document lives in the worker, so neither an index past its real end nor a
+    set that leaves a hole is knowable in the process that validates. Their
+    property is the ATOMICITY one — a delta that cannot be applied answers with
+    the protocol's own resync and must leave the retained document exactly where
+    it was. The hole case is the sharper of the two: the old code mutated the
+    held feature list in place and then NULLED the whole held document, so a
+    request that was merely inapplicable destroyed a good base."""
+    good_feature = GOOD_DOC["features"][0]
+    # (label, request from a good base at `base`, must be a CODED refusal)
     poisons = [
-        ("features is a string", {"features": "not-a-list", "parameters": 7}),
-        ("features holds non-objects", {"features": [7], "parameters": {}}),
-        ("the document is null", None),
+        ("features is a string", lambda base, rev: {
+            "revision": rev,
+            "document": {"features": "not-a-list", "parameters": 7}}, True),
+        ("features holds non-objects", lambda base, rev: {
+            "revision": rev,
+            "document": {"features": [7], "parameters": {}}}, True),
+        ("the document is null", lambda base, rev: {
+            "revision": rev, "document": None}, True),
+        ("an ops.set feature is not an object", lambda base, rev: {
+            "baseRevision": base, "revision": rev,
+            "ops": {"length": 1, "set": [[0, 7]]}}, True),
+        ("ops.length is not a number", lambda base, rev: {
+            "baseRevision": base, "revision": rev,
+            "ops": {"length": "1", "set": []}}, True),
+        ("an ops.set index is past the held document", lambda base, rev: {
+            "baseRevision": base, "revision": rev,
+            "ops": {"set": [[99, good_feature]]}}, False),
+        ("the ops leave a hole they never fill", lambda base, rev: {
+            "baseRevision": base, "revision": rev,
+            "ops": {"length": 3, "set": [[0, good_feature]]}}, False),
     ]
     rev = 0
     with SpawnedServer() as srv:
         async with websockets.connect(srv.url, max_size=_MAX_WS) as ws:
-            for label, poison in poisons:
+            for label, make_request, must_code in poisons:
                 rev += 1
                 base = rev
                 good = await ws_call(ws, "rebuild", f"g{rev}",
@@ -325,12 +417,22 @@ async def test_r4_a_refused_document_never_enters_the_retained_state():
                                                  "build one body", good)
 
                 rev += 1
-                bad = await ws_call(ws, "rebuild", f"b{rev}", revision=rev,
-                                    document=poison)
-                assert bad.get("ok") is False, (
-                    f"a document with {label} was ACCEPTED: {bad}")
-                assert (bad.get("error") or {}).get("code") == errors.BAD_REQUEST, \
-                    (label, bad)
+                bad = await ws_call(ws, "rebuild", f"b{rev}",
+                                    **make_request(base, rev))
+                err = bad.get("error") or {}
+                resynced = bool((bad.get("result") or {}).get("resync"))
+                if must_code:
+                    assert bad.get("ok") is False, (
+                        f"a rebuild with {label} was ACCEPTED: {bad}")
+                    assert err.get("code") == errors.BAD_REQUEST, (label, bad)
+                    assert not _leaks(err.get("message") or ""), (label, bad)
+                else:
+                    assert bad.get("ok") is False or resynced, (
+                        f"a rebuild with {label} was applied as if it were "
+                        f"servable: {bad}")
+                    if bad.get("ok") is False:
+                        assert err.get("code") == errors.BAD_REQUEST, (label, bad)
+                        assert not _leaks(err.get("message") or ""), (label, bad)
 
                 # the delta path: no document at all, exactly what client.ts
                 # sends, based on the revision the GOOD document had
@@ -340,14 +442,14 @@ async def test_r4_a_refused_document_never_enters_the_retained_state():
                 res = after.get("result") or {}
                 assert after.get("ok"), (label, after)
                 assert not res.get("resync"), (
-                    f"a REFUSED document ({label}) poisoned the retained delta "
+                    f"a REJECTED rebuild ({label}) cost the retained delta "
                     f"state — the server no longer holds the good document at "
                     f"revision {base} and can only ask for a full resend: {after}")
                 assert len(res.get("bodies") or []) == 1, (
-                    f"the delta after a refused document ({label}) did not "
+                    f"the delta after a rejected rebuild ({label}) did not "
                     f"rebuild the good document: {after}")
-    print(PASS, f"a refused document ({len(poisons)} shapes) never becomes the "
-                f"base for the next delta rebuild")
+    print(PASS, f"a rejected rebuild ({len(poisons)} shapes across both the "
+                f"document and the ops door) never costs the retained state")
 
 
 async def test_r5_a_frame_that_is_not_a_request_object_is_answered_not_fatal():
@@ -480,16 +582,79 @@ async def test_r7_a_refusal_past_the_field_guard_is_coded_too(ops):
     print(PASS, f"{len(cases)} refusals past the field guard still carry a code")
 
 
+async def test_r8_a_real_delta_is_still_applied():
+    """R8, the positive control for the door R4 guards — R6's direction, for the
+    delta. Everything above asks what a REJECTED delta must not cost, and the
+    guard that answers it sits in front of the path the app uses on every single
+    edit. Nothing in any sidecar suite sent a delta that was meant to WORK: the
+    only `ops` on the wire anywhere was `{}`. So the whole of _apply_doc_ops
+    could have been rewritten into "always resync" and every assertion in this
+    file would still have been green, while the app rebuilt the full document on
+    every keystroke and nothing said a word.
+
+    Three shapes, each served from the held document with no resync: an edit
+    (one feature replaced), a growth (`length` up, the new slot filled by `set`)
+    and a shrink (`length` down, `set` empty). The oracle is the mesh VOLUME
+    rather than "a body came back", because a delta that silently dropped its
+    `set` would still answer with one body — the old geometry."""
+    def box(n, ident="b1", **kw):
+        return dict({"id": ident, "type": "box",
+                     "length": n, "width": n, "height": n}, **kw)
+
+    doc = {"features": [box(10)], "parameters": {}}
+    with SpawnedServer() as srv:
+        async with websockets.connect(srv.url, max_size=_MAX_WS) as ws:
+            first = await asyncio.wait_for(
+                ws_call(ws, "rebuild", "s1", document=doc, revision=1),
+                REPLY_TIMEOUT)
+            assert first.get("ok"), first
+            body = first["result"]["bodies"][0]
+            assert abs(mesh_volume(body["positions"], body["indices"])
+                       - 1000.0) < 1.0, body["bbox"]
+
+            steps = [
+                ("an edit", {"length": 1, "set": [[0, box(20)]]}, [8000.0]),
+                ("a growth", {"length": 2,
+                              "set": [[1, box(5, "b2", origin=[40, 0, 0])]]},
+                 [125.0, 8000.0]),
+                ("a shrink", {"length": 1, "set": []}, [8000.0]),
+            ]
+            rev = 1
+            for label, ops_payload, volumes in steps:
+                rev += 1
+                reply = await asyncio.wait_for(
+                    ws_call(ws, "rebuild", f"s{rev}", baseRevision=rev - 1,
+                            revision=rev, ops=ops_payload), REPLY_TIMEOUT)
+                res = reply.get("result") or {}
+                assert reply.get("ok"), (label, reply)
+                assert not res.get("resync"), (
+                    f"{label} through the delta path asked for a full resend — "
+                    f"the incremental rebuild the app does on every edit is "
+                    f"broken: {reply}")
+                # measured per body, not matched by id: the reply names bodies
+                # body1/body2, which is a convention this test has no business
+                # pinning down
+                measured = sorted(mesh_volume(b["positions"], b["indices"])
+                                  for b in res.get("bodies") or [])
+                assert len(measured) == len(volumes) and all(
+                    abs(m - v) < 1.0 for m, v in zip(measured, volumes)), (
+                    f"{label} was answered without applying its ops: the held "
+                    f"document measures {measured}, not {volumes}")
+    print(PASS, f"{len(steps)} real deltas (edit, grow, shrink) are served from "
+                f"the held document without a resync")
+
+
 def main():
     print("Malformed-payload coverage ratchet")
     ops, rows, alive = asyncio.run(_probe_every_op())
     test_r1_every_op_answers_and_the_worker_survives(ops, rows, alive)
     test_r2_a_refusal_is_machine_readable(rows)
     test_r3_every_op_taking_a_payload_actually_refuses_one(ops, rows)
-    asyncio.run(test_r4_a_refused_document_never_enters_the_retained_state())
+    asyncio.run(test_r4_a_rejected_rebuild_never_costs_the_retained_state())
     asyncio.run(test_r5_a_frame_that_is_not_a_request_object_is_answered_not_fatal())
     asyncio.run(test_r6_a_well_formed_request_is_still_served(ops))
     asyncio.run(test_r7_a_refusal_past_the_field_guard_is_coded_too(ops))
+    asyncio.run(test_r8_a_real_delta_is_still_applied())
     print("ALL PASS")
 
 
