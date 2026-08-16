@@ -1749,35 +1749,16 @@ def _handle_extrude(f, ctx):
         hole_ents = f.get("regionHoleEntities") or []
         sel = []
         for i, p in enumerate(pts):
-            anchor = (
-                _region_anchor_from_entities(
-                    entry, ents[i], hole_ents[i] if i < len(hole_ents) else None
+            # `_region_face_from_entities`, never the raw anchor: the check that
+            # the rebuilt profile IS the cell the anchor landed in lives inside it,
+            # and a caller that skips it inherits field 19314fdc.
+            rf = (
+                _region_face_from_entities(
+                    entry, cells, ents[i], hole_ents[i] if i < len(hole_ents) else None
                 )
                 if i < len(ents)
                 else None
             )
-            rf = None
-            if anchor is not None:
-                anchor_pt, anchor_area = anchor
-                # No diagnostics on this attempt: `regionStale` is about the stored
-                # POINT, and if the anchor is not accepted the point is resolved
-                # below and gets to speak for itself.
-                rf = _region_face_at(cells, anchor_pt)
-                # The rebuilt profile must BE the cell it landed in. 0.1.123 through
-                # 0.1.144 wrote `regionEntities` with no `regionHoleEntities`, so a
-                # holed region from one of those documents rebuilds SOLID and its
-                # anchor is inside the hole — field 19314fdc, live on every file
-                # they saved, and no "are hole ids present" test can see it because
-                # they are absent. The areas disagree loudly when it happens (10000
-                # against the 6400 hole cell on the reported shell, 3600 against
-                # 3285.8 on a centred-hole plate) while a correct anchor matches its
-                # cell exactly, so compare them and fall back to the stored point —
-                # which is right by construction: Region.interior is "a point inside
-                # the material, outside all holes".
-                if rf is not None:
-                    off = abs(rf.area - anchor_area)
-                    if off > REGION_AREA_TOL * max(rf.area, anchor_area):
-                        rf = None
             if rf is None:
                 rf = _region_face_at(
                     cells, Vector(*p), ctx.diagnostics, f.get("id"),
@@ -6580,17 +6561,32 @@ def _path_wire(edges, plane):
 
 
 # How far a rebuilt region's area may sit from the arrangement cell its anchor
-# landed in before the anchor is thrown away (see _handle_extrude). Both numbers
-# come from the same edges through different code, so a correct pair matches to
-# float noise; the wrong pairs this exists to catch are 9% apart and worse.
+# landed in before the anchor is thrown away (see _region_face_from_entities).
+# Both numbers come from the same edges through different code, so a correct pair
+# matches to float noise; the wrong pairs this exists to catch are 9% apart.
 REGION_AREA_TOL = 1e-6
+
+# How far inside the rebuilt profile a cell must sit before that area mismatch is
+# allowed to mean "the anchor fell into a hole". A hole clears the profile's
+# boundary by millimetres; a cell that is merely a PIECE of the profile shares
+# that boundary and the gap is exactly 0, so this only has to beat float noise.
+REGION_HOLE_CLEARANCE = 1e-6
 
 
 def _region_anchor_from_entities(entry, eids, hole_eids=None):
-    """`(point, area)` for the region bounded by exactly these sketch entities, in
-    the LOCATED frame — the anchor a stored region reference should use once the
-    geometry it was picked on has moved, plus the area of the profile it was
-    derived from so the caller can check the anchor resolved to THAT profile.
+    """`(point, area, bbox)` for the region bounded by exactly these sketch
+    entities, in the LOCATED frame — the anchor a stored region reference should
+    use once the geometry it was picked on has moved, plus the area and bounding
+    box of the profile it came from.
+
+    Deriving a point is NOT by itself enough to make a stored reference safe, and
+    this is deliberately not the function to call: go through
+    `_region_face_from_entities`, which owns the check that the point resolved to
+    the profile it was derived from. On a document that names a region's outer
+    loop but not its holes — every file betas 0.1.123 to 0.1.144 wrote — the
+    entities here rebuild a SOLID face and the point returned is inside the hole.
+    That is field report 19314fdc and this function cannot see it: the hole ids it
+    would need are simply absent from the document.
 
     Field report a20cca53: an extrude stores a bare interior POINT per selected
     area. Move the circle that formed that area and the point stays behind, lands
@@ -6609,18 +6605,21 @@ def _region_anchor_from_entities(entry, eids, hole_eids=None):
     the region's material by construction: `Region.holes` are the DIRECT children
     of the loop, so outer-minus-them is exactly what the user picked.
 
-    The point is the centroid of the biggest triangle of that face's own
-    triangulation, NOT `center()`. A shell's centroid is in its hole (measured
-    (0,0,0) for the reported 100x100/80x80, `is_inside` False), and so is a ring's
-    and a crescent's — `center()` is only reliable on a convex face, which is why
-    the pre-hole version of this had to refuse whenever it fell outside.
+    The point is `center()` where the kernel agrees that is in the material, and
+    the centroid of the biggest triangle of the face's own triangulation where it
+    does not. A shell's centroid is in its hole (measured (0,0,0) for the reported
+    100x100/80x80, `is_inside` False), and so is a ring's and a crescent's — but
+    `center()` is right for the ordinary convex profile and costs ~0.26 ms against
+    ~2.9 ms to tessellate, so it is tried first and the tessellation is the answer
+    for exactly the faces that need it.
 
     Returns None whenever the entities do not bound exactly one face, and the
     caller falls back to the stored point. That covers a line splitting a square
     (both halves carry the SAME entity set, and nothing here can tell them apart),
-    a hole that cuts the material into two, and every document written before
-    these fields existed. A wrong anchor is worse than a stale one, so this refuses
-    rather than guesses."""
+    a hole that cuts the material into two, a hole loop with no recoverable entity
+    ids, and every document written before these fields existed. A wrong anchor is
+    worse than a stale one, so this refuses rather than guesses — but "refuses when
+    it knows" is not the same as "is safe", which is why the wrapper exists."""
     by_ent = entry.get("edgesByEntity") or {}
     plane = entry.get("plane")
     if not eids or plane is None:
@@ -6653,7 +6652,12 @@ def _region_anchor_from_entities(entry, eids, hole_eids=None):
     holes = []
     for grp in (hole_eids or []):
         if not grp:
-            continue
+            # A hole loop whose provenance the tracer could not recover
+            # (src/sketch/region.ts emits `traced[j]?.eids ?? []`, and Region's own
+            # doc says that list is empty when the tracer deduped the loop away).
+            # Treating it as "no hole" would rebuild the profile SOLID and put the
+            # anchor straight back in the hole — field 19314fdc again, silently.
+            return None
         hf = one_face(grp)
         if hf is None:
             return None  # a hole we cannot rebuild would leave the anchor in it
@@ -6669,15 +6673,98 @@ def _region_anchor_from_entities(entry, eids, hole_eids=None):
                 return None  # a hole that severs the material: no single anchor
             face = fs[0]
         fc = plane * face
-        p = _face_interior_point(fc)
+        # BEFORE `_face_interior_point`: tessellating a shape attaches a
+        # triangulation, and `_body_fingerprint` documents a bbox that MOVES by up
+        # to 0.49 mm once a shape carries one. The wrapper compares this box
+        # against the arrangement's, so it has to be the exact one.
+        bbox = fc.bounding_box()
+        p = fc.center()
+        if not _face_contains(fc, p):
+            p = _face_interior_point(fc)
         # Backstop: the triangulation is the mesher's opinion, `is_inside` is the
         # kernel's. Fall back to the stored point rather than trust a point the
         # kernel does not agree is in the material.
         if p is None or not _face_contains(fc, p):
             return None
-        return p, float(fc.area)
+        return p, float(fc.area), bbox
     except Exception:
         return None
+
+
+def _region_face_from_entities(entry, cells, eids, hole_eids=None):
+    """The arrangement cell a stored region reference means, rebuilt from the
+    sketch ENTITIES it recorded instead of from its interior point — or None, and
+    then the caller must fall back to that point.
+
+    THIS is the function to call. `_region_anchor_from_entities` derives the point;
+    the invariant that makes the point safe to use lives here, because a caller
+    that only derives it inherits field 19314fdc. The rebuilt profile must BE the
+    cell the anchor landed in: 0.1.123 through 0.1.144 wrote `regionEntities` with
+    no `regionHoleEntities`, so a holed region from one of those documents rebuilds
+    SOLID and its anchor is inside the hole — live on every file they saved, with
+    nothing moved, and no "does this region have holes" test can see it because the
+    ids are absent. The areas disagree loudly when it happens (10000 against the
+    6400 hole cell on the reported shell, 3600 against the 1256.6 hole of a
+    centred-hole plate) while a correct anchor matches its cell exactly, curved
+    boundaries included.
+
+    The mismatch alone is not enough to condemn the anchor, though. A reference
+    that names only SOME of its boundary entities also rebuilds bigger than its
+    cell, and there the anchor is right and the stored point is the stale one that
+    field a20cca53 is about — throwing the anchor away would reintroduce that bug
+    to fix this one. What separates them is that a hole is strictly INSIDE the
+    profile, while a cell that is merely a piece of it shares the profile's outer
+    boundary. So the cell must clear the profile's bounding box on every axis that
+    has room (the plane's normal has none) before a mismatch counts."""
+    anchor = _region_anchor_from_entities(entry, eids, hole_eids)
+    if anchor is None:
+        return None
+    pt, area, bbox = anchor
+    # No diagnostics on this attempt: `regionStale` is about the stored POINT, and
+    # if the anchor is not accepted the point is resolved by the caller and gets to
+    # speak for itself.
+    rf = _region_face_at(cells, pt)
+    if rf is None:
+        return None
+    off = abs(rf.area - area)
+    if off > REGION_AREA_TOL * max(rf.area, area) and _bbox_strictly_inside(
+        _cell_bbox(cells, rf), bbox
+    ):
+        return None  # the anchor is in a hole this document never named
+    return rf
+
+
+def _cell_bbox(cells, face):
+    """The bounding box the caller already computed for `face`, so a cell and the
+    profile it is compared against are never measured at different moments — see
+    the tessellation drift note in `_region_anchor_from_entities`."""
+    for fc, bb in cells:
+        if fc is face:
+            return bb
+    return face.bounding_box()
+
+
+def _bbox_strictly_inside(inner, outer):
+    """Is `inner` clear of `outer`'s boundary on every axis that has room?
+
+    Both boxes here are of coplanar faces, so the plane's normal axis is flat in
+    BOTH and can only be required to match, not to clear. Anything that fails to
+    be strictly inside is treated as touching, which keeps the caller's area check
+    from firing on a cell that is merely part of its profile."""
+    if inner is None or outer is None:
+        return False
+    lo_i, hi_i = inner.min, inner.max
+    lo_o, hi_o = outer.min, outer.max
+    c = REGION_HOLE_CLEARANCE
+    for a in ("X", "Y", "Z"):
+        li, hi = getattr(lo_i, a), getattr(hi_i, a)
+        lo, ho = getattr(lo_o, a), getattr(hi_o, a)
+        if ho - lo <= c:  # flat axis: inside means "on the same plane"
+            if li < lo - c or hi > ho + c:
+                return False
+        elif li <= lo + c or hi >= ho - c:
+            return False
+    return True
 
 
 def _face_interior_point(face):

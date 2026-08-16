@@ -37,6 +37,27 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Extruding the wall of a shape with a hole in it no longer extrudes the
+  hole.** Reported from the field: "two rectangles like a shell cross-section,
+  extrude the shell wall, and the result is never the shell but the inside loop
+  extrusion." Picking the wall gave a solid block the size of the hole.
+
+  The area was remembered by the shapes that formed it, but only the outer one,
+  so rebuilding it produced a solid face whose middle is inside the hole. The
+  hole's own shapes are now remembered too and cut back out, which leaves exactly
+  the material that was picked.
+
+  **This changes what already-saved documents build.** A holed area saved by any
+  build from 0.1.123 on carries the outer shape only, and those documents have
+  been extruding the hole all along, with nothing moved. They now extrude the
+  wall, so a document that was quietly wrong comes back right on the first
+  rebuild after updating. Nothing needs re-picking.
+
+  Reopening such an extrude to edit it still highlights the old area rather than
+  the wall, and committing that edit, even just a new depth, moves the extrude
+  onto the hole for good. Change the depth from the timeline instead until that
+  half is fixed.
+
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.
 

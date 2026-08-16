@@ -787,6 +787,25 @@ def test_region_follows_a_moved_entity():
           "deleted-entity docs both fall back")
 
 
+def _holed_sketch(kind, x, y):
+    """The two field-report profiles, centred on (x,y).
+
+    shell: 100x100 outer, 80x80 inner — a 3600mm2 wall around a 6400mm2 hole, so
+    the hole is the BIGGER face and "the region is the biggest cell" picks it.
+    plate: 60x60 outer, r20 hole — a centred hole big enough to swallow the point
+    an outer-loop-only rebuild yields (measured: `center()` of the solid outer
+    face, i.e. dead centre, and the triangle centroid 14.1mm out if that is ever
+    the fallback again). r10 was NOT big enough and made the case theatre."""
+    if kind == "shell":
+        return [{"id": "outer", "type": "rectangle", "width": 100, "height": 100,
+                 "x": x, "y": y},
+                {"id": "inner", "type": "rectangle", "width": 80, "height": 80,
+                 "x": x, "y": y}]
+    return [{"id": "p", "type": "rectangle", "width": 60, "height": 60,
+             "x": x, "y": y},
+            {"id": "h", "type": "circle", "radius": 20, "x": x, "y": y}]
+
+
 def test_holed_region_anchors_in_the_wall():
     """Field report 19314fdc: "Two rectangles like a shell cross-section. Extrude
     the shell wall. The result is never the shell, but the inside loop extrusion."
@@ -798,39 +817,42 @@ def test_holed_region_anchors_in_the_wall():
     HOLE and reproduces the bug with more code behind it. That number is asserted
     by name below so a future area heuristic fails here loudly.
 
-    The two LEGACY cases are the teeth. 0.1.123 through 0.1.144 shipped
+    Every case here is either MOVED or LEGACY, because those are the only two
+    documents where the stored point is not already the right answer — on an
+    unmoved post-0.1.144 document the fallback is correct and NOTHING about this
+    change is observable through the volume. (The unmoved profiles are pinned
+    where they can be: on the anchor itself, in
+    `test_region_anchor_refuses_and_keeps_a_correct_cell`.)
+
+    LEGACY is the case with no drift at all. 0.1.123 through 0.1.144 shipped
     `regionEntities` WITHOUT `regionHoleEntities`, so no "does this region have
     holes" test can see those documents — the outer loop rebuilds solid, the
     anchor lands in the hole, and the reported bug is still live on every file
-    they saved even with nothing moved. Comparing the rebuilt profile's area
-    against the cell it resolved to is what catches that, because a correct anchor
-    matches its cell exactly (measured bit-equal, curved boundaries included)."""
-    def shell(x, y, hole_ids, pt=(45, 0, 0)):
-        """100x100 outer, 80x80 inner, both centred on (x,y). Wall 3600mm2."""
-        ents = [{"id": "outer", "type": "rectangle", "width": 100, "height": 100,
-                 "x": x, "y": y},
-                {"id": "inner", "type": "rectangle", "width": 80, "height": 80,
-                 "x": x, "y": y}]
+    they saved. Comparing the rebuilt profile against the cell it resolved to is
+    what catches that, because a correct anchor matches its cell exactly (measured
+    bit-equal, curved boundaries included)."""
+    def build(kind, x, y, hole_ids, pt):
         ex = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
-              "operation": "new", "regions": [list(pt)],   # picked in the wall
-              "regionEntities": [["outer"]]}
+              "operation": "new", "regions": [list(pt)],   # picked in the material
+              "regionEntities": [["outer" if kind == "shell" else "p"]]}
         if hole_ids is not None:
             ex["regionHoleEntities"] = [hole_ids]
         part, err, _ = rebuild({"parameters": {}, "features": [
-            {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents}, ex]})
+            {"id": "s1", "type": "sketch", "plane": "XY",
+             "entities": _holed_sketch(kind, x, y)}, ex]})
         assert not err, err
         return part.volume
 
-    WALL, HOLE = 3600 * 5, 6400 * 5
-    got = shell(0, 0, [["inner"]])
-    assert abs(got - WALL) < 1, \
-        f"the shell wall must extrude, got {got:.1f} ({HOLE} would be its hole)"
+    def shell(x, y, hole_ids, pt=(45, 0, 0)):
+        return build("shell", x, y, hole_ids, pt)
 
+    WALL, HOLE = 3600 * 5, 6400 * 5
     # The whole point of anchoring: move BOTH rectangles and leave the stored
     # point behind. (45,0) is now inside the hole, so the point alone extrudes it.
     moved = shell(30, 20, [["inner"]])
     assert abs(moved - WALL) < 1, \
-        f"a moved shell must still extrude its wall, got {moved:.1f}"
+        f"a moved shell must still extrude its wall, got {moved:.1f} " \
+        f"({HOLE} is field 19314fdc, the hole)"
 
     # LEGACY, and NOT moved: this is the shipped-beta document, and the anchor it
     # produces is inside the hole with no drift involved at all.
@@ -839,40 +861,126 @@ def test_holed_region_anchors_in_the_wall():
         f"a document with no hole ids must fall back to the stored point, " \
         f"got {legacy:.1f} — {HOLE} is field 19314fdc, still extruding the hole"
 
-    # A centred hole: the outer loop's centre IS the hole's centre, so an
-    # outer-loop-only anchor extrudes a peg instead of a plate.
+    # A centred hole. The point is picked in the rim at (25,0) and the sketch then
+    # moves to (25,15), which leaves it 15mm from the new centre and so INSIDE the
+    # r20 hole: the stored point is genuinely stranded, which is what makes this a
+    # drift test rather than a restatement of the fallback.
     def plate(x, y, hole_ids, pt=(25, 0, 0)):
+        return build("plate", x, y, hole_ids, pt)
+
+    RIM, PEG = (3600 - math.pi * 400) * 5, math.pi * 400 * 5
+    moved = plate(25, 15, [["h"]])
+    assert abs(moved - RIM) < 1, \
+        f"a moved centred-hole plate: got {moved:.1f}, want {RIM:.1f} " \
+        f"({PEG:.1f} is the peg — the stranded point is in the hole)"
+    legacy = plate(0, 0, None)
+    assert abs(legacy - RIM) < 1, \
+        f"legacy centred-hole plate must resolve by point, got {legacy:.1f} " \
+        f"({PEG:.1f} is the hole its outer-loop-only anchor lands in)"
+
+    print("  19314fdc OK: a moved shell extrudes its 18000 wall and not its 32000 "
+          "hole; a moved centred-hole plate stays a rim; shipped-beta documents "
+          "with no hole ids fall back")
+
+
+def test_region_anchor_refuses_and_keeps_a_correct_cell():
+    """The anchor's own refusals, asserted where they happen.
+
+    Through the volume these are indistinguishable from the safety net catching a
+    WRONG anchor downstream — an unmoved document extrudes the right thing either
+    way — so a refusal is asserted as a refusal: `None` out of
+    `_region_anchor_from_entities`, which is the moment the fallback is chosen.
+
+    The last case is the other direction, and it is the one that can bring field
+    a20cca53 back. `_region_face_from_entities` throws an anchor away when the
+    profile it rebuilt is not the cell the anchor landed in, and a reference that
+    names only SOME of its boundary entities rebuilds bigger than its cell while
+    being perfectly correct. Discarding that anchor sends the extrude to the stale
+    point, which is the bug the entity ids exist to fix, so the guard is bounded to
+    cells that lie strictly INSIDE the rebuilt profile (a hole) and this case —
+    whose cell shares the profile's outer boundary — must survive it."""
+    from builder import (_build_sketch, _region_anchor_from_entities,
+                         _region_face_from_entities)
+
+    def entry(ents):
+        return _build_sketch(
+            {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents},
+            lambda v: v)
+
+    # An UNMOVED centred-hole plate — the spec's second case. Its volume cannot
+    # test anything (the stored point is still right), but the anchor can: it must
+    # come out of the rim, not the r20 hole the outer loop alone rebuilds over.
+    plate = entry(_holed_sketch("plate", 0, 0))
+    anchor = _region_anchor_from_entities(plate, ["p"], [["h"]])
+    assert anchor is not None, \
+        "a centred-hole plate is an ordinary profile: it must anchor at all"
+    pt, area, _bb = anchor
+    assert math.hypot(pt.X, pt.Y) > 20, \
+        f"the centred-hole plate's anchor fell in its own hole: {pt} is " \
+        f"{math.hypot(pt.X, pt.Y):.2f}mm from the centre, the hole is r20"
+    assert abs(area - (3600 - math.pi * 400)) < 1e-6, \
+        f"the anchor must be derived from the rim, got area {area:.3f}"
+
+    shell = entry(_holed_sketch("shell", 0, 0))
+    # The reported geometry itself, unmoved: the anchor must be in the 3600mm2
+    # wall, so outside the 80x80 hole on at least one axis.
+    wall_pt, wall_area, _bb = _region_anchor_from_entities(
+        shell, ["outer"], [["inner"]])
+    assert max(abs(wall_pt.X), abs(wall_pt.Y)) > 40, \
+        f"the shell's anchor is in its own hole: {wall_pt} (the hole is +-40)"
+    assert abs(wall_area - 3600) < 1e-6, \
+        f"the anchor must be derived from the wall, got area {wall_area:.3f}"
+    assert _region_anchor_from_entities(shell, ["outer"], [["deleted"]]) is None, \
+        "a hole id naming an entity that is gone is a stale reference: refuse it, " \
+        "do not derive an anchor from the outer loop and land in the hole"
+    assert _region_anchor_from_entities(shell, ["outer"], [[]]) is None, \
+        "an EMPTY hole group is a hole whose entity ids the tracer could not " \
+        "recover (src/sketch/region.ts), not a region without holes"
+    # A hole that severs the material into two pieces: neither is "the" region.
+    sever = entry([{"id": "o", "type": "rectangle", "width": 40, "height": 20,
+                    "x": 0, "y": 0},
+                   {"id": "s", "type": "rectangle", "width": 10, "height": 40,
+                    "x": 0, "y": 0}])
+    assert _region_anchor_from_entities(sever, ["o"], [["s"]]) is None, \
+        "a hole that cuts the material in two leaves no single anchor"
+
+    # The area guard's boundary, in both directions. Same sketch, same stored
+    # point, moved: a 60x60 rectangle with an r10 circle straddling its right edge,
+    # and a reference that names the rectangle only.
+    def straddle(dx, with_ents, pt=(15, 0, 0)):
         ents = [{"id": "p", "type": "rectangle", "width": 60, "height": 60,
-                 "x": x, "y": y},
-                {"id": "h", "type": "circle", "radius": 10, "x": x, "y": y}]
+                 "x": dx, "y": 0},
+                {"id": "c", "type": "circle", "radius": 10, "x": dx + 30, "y": 0}]
         ex = {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 5,
-              "operation": "new", "regions": [list(pt)],
-              "regionEntities": [["p"]]}
-        if hole_ids is not None:
-            ex["regionHoleEntities"] = [hole_ids]
+              "operation": "new", "regions": [list(pt)]}
+        if with_ents:
+            ex["regionEntities"] = [["p"]]
         part, err, _ = rebuild({"parameters": {}, "features": [
             {"id": "s1", "type": "sketch", "plane": "XY", "entities": ents}, ex]})
         assert not err, err
         return part.volume
 
-    PLATE, PEG = (3600 - math.pi * 100) * 5, math.pi * 100 * 5
-    for label, args in (("unmoved", (0, 0)), ("moved", (25, 15))):
-        got = plate(*args, [["h"]])
-        assert abs(got - PLATE) < 1, \
-            f"{label} centred-hole plate: got {got:.1f}, want {PLATE:.1f} " \
-            f"({PEG:.1f} is the peg — the anchor fell into the hole)"
-    legacy = plate(0, 0, None)
-    assert abs(legacy - PLATE) < 1, \
-        f"legacy centred-hole plate must resolve by point, got {legacy:.1f}"
+    BIG, HALF = (3600 - math.pi * 50) * 5, math.pi * 50 * 5
+    assert abs(straddle(-10, False) - HALF) < 1, \
+        "the control is wrong: the moved sketch must strand the stored point in " \
+        "the half-disc, or the case below proves nothing"
+    kept = straddle(-10, True)
+    assert abs(kept - BIG) < 1, \
+        f"the area guard ate a CORRECT anchor: got {kept:.1f}, want {BIG:.1f} " \
+        f"({HALF:.1f} is field a20cca53, the stale point's cell). The rebuilt " \
+        f"profile is 3600mm2 against a 3442.9mm2 cell because the reference names " \
+        f"only the rectangle, but that cell shares the profile's outer boundary — " \
+        f"it is not a hole, so the mismatch must not condemn the anchor"
 
-    # A hole id naming an entity that is gone is stale, not moved: refuse the
-    # anchor rather than derive one from the outer loop and land in the hole.
-    gone = shell(0, 0, [["deleted"]])
-    assert abs(gone - WALL) < 1, \
-        f"a deleted hole entity must fall back, not anchor in the hole: {gone:.1f}"
+    # ...and the guard still fires when the cell IS strictly inside the profile.
+    holed = entry(_holed_sketch("shell", 0, 0))
+    cells = [(fc, fc.bounding_box()) for fc in holed["faces"]]
+    assert _region_face_from_entities(holed, cells, ["outer"], None) is None, \
+        "an outer-loop-only rebuild of a holed region anchors in the hole: the " \
+        "cell is strictly inside the rebuilt profile, so the guard must fire"
 
-    print("  19314fdc OK: shell wall 18000 (not the 32000 hole) moved and unmoved; "
-          "centred-hole plate stays a plate; legacy + deleted-hole docs fall back")
+    print("  anchor refusals OK: deleted, empty and severing hole groups all "
+          "refuse; an under-named reference keeps its cell; a hole is still caught")
 
 
 
@@ -1818,6 +1926,7 @@ if __name__ == "__main__":
     test_region_stale_diagnostic()
     test_region_follows_a_moved_entity()
     test_holed_region_anchors_in_the_wall()
+    test_region_anchor_refuses_and_keeps_a_correct_cell()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()
