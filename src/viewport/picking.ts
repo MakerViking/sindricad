@@ -72,8 +72,13 @@ export class Picker {
    *  visible sketch a near-border click that used to be an EDGE now resolves as
    *  a face and the region wins. The documented EDGE > sketch REGION > body FACE
    *  order is untouched — only the "is this an edge" boundary moved, and it
-   *  moves identically for every pick() consumer (selection, Measure, the
-   *  right-click canvas menu, the Project tool's hover). */
+   *  moves identically for every pick() consumer: left-click select, the
+   *  feature-selection hook (viewport.onHit -> main.ts's featureForFace, which
+   *  now fires on near-border clicks where nothing used to happen), Measure, the
+   *  right-click canvas menu, and the Project tool's hover. Press/Pull's
+   *  dispatcher joins that list on feat/presspull-dispatch, where it picks with
+   *  pickEntity() — this file's own pick() — rather than the plain
+   *  pickFaceForPressPull raycast it still uses here. */
   pick(
     clientX: number,
     clientY: number,
@@ -264,10 +269,38 @@ export function edgeBandPx(minScreenExtentPx: number): number {
 type FaceGeometry = Pick<BodyMesh, "mesh" | "faceTriangles">;
 
 // A long thin face (a fillet band 5px x 900px) never satisfies the early exit
-// below, so the walk is also capped. A truncated walk can only UNDER-estimate
-// the extent, which shrinks the band, which favours the FACE — the direction
-// this change already pushes, never a surprise edge win.
-const EXTENT_TRI_CAP = 256;
+// below, so the number of triangles read is also capped.
+//
+// The cap SAMPLES ACROSS THE WHOLE LIST rather than taking the first N, and
+// that is load-bearing, not tidiness. Review found the first-N version breaking
+// the change's headline safety property outright: triangle order out of a
+// UV-grid tessellator (and out of OCCT's BRepMesh) is spatially coherent, so
+// the first 256 triangles of a densely tessellated face are a couple of ROWS of
+// it. A 100mm face at 300mm — 362 x 362 px, nowhere near small — measured 9.05px
+// at an 80x80 grid and 2.29px at 158x158, i.e. it got a 1.81px or 0.75px band
+// instead of 3px and its bounding edges stopped winning picks. render.ts:277
+// records 50,074 triangles on ONE hex-textured face and textureTool applies to
+// a FACE selector, so the flagship feature lands squarely on this.
+//
+// Truncation and sampling are NOT the same error. Both can only ever
+// under-estimate, but a truncated walk under-estimates by the whole unwalked
+// part of the face, while a spread sample is wrong only by the geometry between
+// two neighbouring samples. Sampling also makes the early exit fire SOONER on a
+// big face — consecutive samples are far apart on it — so this is cheaper than
+// the first-N walk it replaces, not dearer.
+//
+// The index is a low-discrepancy (Weyl / golden-ratio) sequence rather than a
+// constant stride, because a constant stride aliases against exactly the
+// tessellation this exists for. On a grid whose row is R triangles, a stride
+// that is a multiple of R samples one COLUMN of it and re-creates the bug in
+// the other axis — measured, not hypothesised: a 40 x 400 px face at 4 x 256
+// cells is 2048 triangles, 2048/256 = a stride of 8, and its row is 8
+// triangles, so it measured 10px and got a 2px band. A fractional stride does
+// not save it either; 2048/256 is exact. An irrational step cannot be periodic
+// with any R.
+const EXTENT_TRI_SAMPLES = 256;
+// 2/(1+sqrt(5)). Irrational, so `i * GOLDEN mod 1` never repeats a column.
+const GOLDEN = 0.6180339887498949;
 
 const extentScratch = new THREE.Vector3();
 
@@ -294,9 +327,13 @@ export function faceScreenExtentPx(
   const persp = camera as THREE.PerspectiveCamera;
   const v = extentScratch;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const n = Math.min(tris.length, EXTENT_TRI_CAP);
+  const n = Math.min(tris.length, EXTENT_TRI_SAMPLES);
+  const sampled = n < tris.length;
   for (let i = 0; i < n; i++) {
-    const t = tris[i]!;
+    // spread over the WHOLE face, never its first n triangles — see
+    // EXTENT_TRI_SAMPLES. A face small enough to read whole is still read
+    // whole, in order, so nothing about the ordinary case changes.
+    const t = tris[sampled ? Math.floor(((i * GOLDEN) % 1) * tris.length) : i]!;
     for (let k = 0; k < 3; k++) {
       v.fromBufferAttribute(pos, index.getX(t * 3 + k)).applyMatrix4(mw).applyMatrix4(camera.matrixWorldInverse);
       // A vertex at or behind the near plane projects to garbage (the
@@ -318,9 +355,12 @@ export function faceScreenExtentPx(
       if (sy > maxY) maxY = sy;
     }
     // Both dimensions only ever GROW as vertices are added, so once both clear
-    // the cap the band is pinned at EDGE_NEAR_PX whatever the rest do. That
-    // makes the common case — any ordinary face — two or three triangles of
-    // work on a path that runs on every pointermove.
+    // the cap the band is pinned at EDGE_NEAR_PX whatever the rest do. Because
+    // the samples are spread over the whole face rather than taken in order,
+    // consecutive ones are far apart on a big face and this fires within a few
+    // of them — which is what keeps a per-pointermove path affordable. (Under
+    // the first-N walk it did NOT: a dense grid face walked all 256 without
+    // ever exiting, which is how the under-measurement above went unnoticed.)
     if (maxX - minX > EXTENT_CAP_PX && maxY - minY > EXTENT_CAP_PX) return Infinity;
   }
   return Math.min(maxX - minX, maxY - minY);

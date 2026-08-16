@@ -37,6 +37,26 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Small faces can be selected again, and at a shallow angle they can be
+  selected at all.** Reported from the field: a small face is nearly unclickable,
+  and tilting the view takes away the last of it.
+
+  Clicking near a face's border has always been read as clicking its EDGE, within
+  a fixed 3-pixel halo. How much of a face that leaves depends entirely on how
+  big the face is on screen. At a typical working distance a 3mm face is about
+  11 pixels across, so a 3px halo inside each of its four borders eats four
+  fifths of it — and tilting to 60 degrees squashes it to 11 x 5 px, where the
+  halos meet in the middle and not one pixel of it is a face any more.
+
+  The halo is now a fifth of the face rather than a fixed number of pixels, and
+  it is still capped at 3px, so anything comfortably clickable today picks
+  exactly as it does today. The two faces above go from a fifth clickable to a
+  third, and from nothing at all to about half.
+
+  There is a floor of 0.75px as well, because scaling the halo all the way down
+  would leave a very small face's bounding edges unselectable, which is the same
+  complaint from the other side.
+
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.
 

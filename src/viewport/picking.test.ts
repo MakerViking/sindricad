@@ -16,7 +16,10 @@
 // being pickable; too loose and the far side of a thin plate keeps winning.
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { EDGE_NEAR_PX, edgeBandPx, faceScreenExtentPx, worldPerPixel } from "./picking";
+import { EDGE_NEAR_PX, Picker, edgeBandPx, faceScreenExtentPx, worldPerPixel } from "./picking";
+import { buildBodyMesh } from "./render";
+import type { ModelView } from "./render";
+import type { RebuildResult } from "../types";
 
 const HEIGHT_PX = 800;
 
@@ -318,5 +321,181 @@ describe("faceScreenExtentPx", () => {
     const extent = faceScreenExtentPx(quadBody(24, 0), FACE_ID, cam, VIEW);
     expect(extent).toBe(Infinity);
     expect(edgeBandPx(extent)).toBe(EDGE_NEAR_PX);
+  });
+});
+
+// --- A DENSELY tessellated face -------------------------------------------
+//
+// Review found the first cut of the walk cap breaking the very safety property
+// this change is sold on. It read the FIRST 256 triangles of a face, and
+// triangle order out of a UV-grid tessellator — or out of OCCT's BRepMesh — is
+// spatially coherent, so those 256 are a couple of ROWS. A 100mm face at 300mm
+// is 362 x 362 px, nowhere near small, and it measured 9.05px at an 80x80 grid
+// and 2.29px at 158x158: a 1.81px and a 0.75px band instead of 3px, and its
+// bounding edges stopped winning picks.
+//
+// This is not a corner: render.ts records 50,074 triangles on ONE hex-textured
+// face, and textureTool applies to a FACE selector, so one faceId owns them all.
+// Texture is the project's flagship feature.
+//
+// The pair below is what makes this a real oracle rather than a bail-out check:
+// the big dense face must read as the sentinel, AND the dense thin fillet band
+// must still read as 5px. "Return the sentinel whenever the walk is truncated"
+// was the other proposed fix and it satisfies the first while abandoning the
+// second, which is the whole point of the change.
+
+/** A `mmW` x `mmH` face in the XY plane tessellated into an nx by ny grid,
+ *  emitted ROW-MAJOR — the ordering that produced the bug. faceTriangles holds
+ *  local triangle indices, the convention buildBodyMesh produces (render.ts). */
+function gridBody(mmW: number, mmH: number, nx: number, ny: number) {
+  const pos: number[] = [];
+  for (let j = 0; j <= ny; j++)
+    for (let i = 0; i <= nx; i++) pos.push(-mmW / 2 + (i * mmW) / nx, -mmH / 2 + (j * mmH) / ny, 0);
+  const vid = (i: number, j: number) => j * (nx + 1) + i;
+  const idx: number[] = [];
+  for (let j = 0; j < ny; j++)
+    for (let i = 0; i < nx; i++) {
+      idx.push(vid(i, j), vid(i + 1, j), vid(i + 1, j + 1));
+      idx.push(vid(i, j), vid(i + 1, j + 1), vid(i, j + 1));
+    }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  const mesh = new THREE.Mesh(geo);
+  mesh.updateMatrixWorld();
+  return {
+    mesh,
+    faceTriangles: new Map<number, number[]>([
+      [FACE_ID, Array.from({ length: idx.length / 3 }, (_, t) => t)],
+    ]),
+  };
+}
+
+/** screen px -> mm in the measured configuration (the inverse of px()). */
+const worldMm = (screenPx: number) => screenPx * worldPerPixel(bandCam, FACE_DIST, VIEW_H);
+
+const faceCam = () => {
+  const c = new THREE.PerspectiveCamera(FOV, VIEW_W / VIEW_H, 0.1, 10000);
+  c.position.set(0, 0, FACE_DIST);
+  c.updateMatrixWorld();
+  return c;
+};
+
+describe("faceScreenExtentPx on a densely tessellated face", () => {
+  it("reads a BIG face as big however finely it is tessellated", () => {
+    // The reviewer's exact case. 100mm at 300mm is 362 x 362 px; 158x158 is
+    // 49,928 triangles, i.e. the hex-texture density render.ts measured.
+    const cam = faceCam();
+    for (const n of [40, 80, 158, 200]) {
+      const extent = faceScreenExtentPx(gridBody(100, 100, n, n), FACE_ID, cam, VIEW);
+      expect(extent, `${n}x${n} grid`).toBe(Infinity);
+      expect(edgeBandPx(extent), `${n}x${n} grid`).toBe(EDGE_NEAR_PX);
+    }
+  });
+
+  it("still reads a dense THIN face as thin — not a blanket bail-out", () => {
+    // A fillet band, 5 x 900 px, tessellated 2,000 cells down its length. It
+    // can never satisfy the early exit, so this is the case the cap exists for.
+    // Returning the sentinel on truncation would pass the test above and lose
+    // this one.
+    const cam = faceCam();
+    for (const ny of [1, 200, 2000]) {
+      const extent = faceScreenExtentPx(gridBody(worldMm(5), worldMm(900), 1, ny), FACE_ID, cam, VIEW);
+      expect(extent, `1x${ny} band`).toBeCloseTo(5, 5);
+      expect(edgeBandPx(extent), `1x${ny} band`).toBeCloseTo(1, 5);
+    }
+  });
+
+  it("does not ALIAS against the grid it is sampling", () => {
+    // Sampling every k-th triangle is not enough. On a grid whose row is R
+    // triangles, a k that is a multiple of R walks one COLUMN of the face and
+    // re-creates the same under-measurement in the other axis. Each of these
+    // is 2,048 triangles, so a uniform 2048/256 = 8 stride lands on one column
+    // of the 4x256 grid: measured 10px, band 2px, on a 40 x 400 px face. The
+    // shipped sequence is irrational-stepped, which cannot be periodic with R.
+    const cam = faceCam();
+    for (const [nx, ny] of [[4, 256], [8, 128], [2, 512], [16, 64]] as [number, number][]) {
+      const extent = faceScreenExtentPx(gridBody(worldMm(40), worldMm(400), nx, ny), FACE_ID, cam, VIEW);
+      expect(extent, `${nx}x${ny} grid`).toBe(Infinity);
+    }
+  });
+});
+
+// --- The gate in pick() itself ---------------------------------------------
+//
+// Everything above tests the band POLICY. Review then reverted pick()'s gate to
+// the pre-change constant and the whole 702-test suite stayed green, plus tsc —
+// the deliverable ("must FAIL if the band reverts to a constant") held for the
+// helper and not for the code that ships. These drive a real Picker over a real
+// buildBodyMesh/BodyEdges ModelView, so they fail on that revert.
+//
+// The trio is the point. Small-face-at-2px alone would pass a band of zero;
+// on-the-line-at-0.5px alone would pass the old constant; big-face-at-2px is
+// the safety property measured through the actual pick rather than argued.
+
+const RECT = {
+  left: 0, top: 0, width: VIEW_W, height: VIEW_H,
+  right: VIEW_W, bottom: VIEW_H, x: 0, y: 0, toJSON: () => ({}),
+} as DOMRect;
+
+/** One rectangular body `wPx` x `hPx` on screen, centred, with its four border
+ *  edges — built through buildBodyMesh so the faceTriangles convention and the
+ *  BodyEdges pick table come from the producers, not from a hand-rolled copy. */
+function rectView(wPx: number, hPx: number): ModelView {
+  const hw = worldMm(wPx) / 2;
+  const hh = worldMm(hPx) / 2;
+  const meta = { id: "b0", name: "b0", faceStart: 0, faceCount: 1 };
+  const edges: RebuildResult["edges"] = [
+    { id: "L", points: [[-hw, -hh, 0], [-hw, hh, 0]], body: "b0" },
+    { id: "R", points: [[hw, -hh, 0], [hw, hh, 0]], body: "b0" },
+    { id: "B", points: [[-hw, -hh, 0], [hw, -hh, 0]], body: "b0" },
+    { id: "T", points: [[-hw, hh, 0], [hw, hh, 0]], body: "b0" },
+  ];
+  const result = {
+    mesh: {
+      positions: [-hw, -hh, 0, hw, -hh, 0, hw, hh, 0, -hw, hh, 0],
+      indices: [0, 1, 2, 0, 2, 3],
+      faceIds: [0, 0],
+    },
+    edges,
+    bbox: { min: [-hw, -hh, 0], max: [hw, hh, 0] },
+    bodies: [meta],
+  } as RebuildResult;
+  const body = buildBodyMesh(result, meta, edges, new THREE.Vector2(VIEW_W, VIEW_H), undefined);
+  return { bodies: [body], edges: body.edges.refs, orphanEdges: null, box: new THREE.Box3() };
+}
+
+/** Click `offsetPx` inside the LEFT border of a face `wPx` wide, vertically
+ *  centred so the top/bottom edges are far away and the left edge is the only
+ *  candidate at that distance. */
+function pickInsideLeftBorder(view: ModelView, wPx: number, offsetPx: number) {
+  const cam = faceCam();
+  return new Picker().pick(VIEW_W / 2 - wPx / 2 + offsetPx, VIEW_H / 2, RECT, cam, view);
+}
+
+describe("pick() gates on the measured band, not on EDGE_NEAR_PX", () => {
+  // 5 x 100 px: the short side is what the policy reads, so the band is 1px.
+  const small = () => rectView(5, 100);
+  // 200 x 200 px: both sides clear 15px, so the band is EDGE_NEAR_PX.
+  const big = () => rectView(200, 200);
+
+  it("gives a SMALL face a pixel the old 3px band would have taken", () => {
+    // 2px inside the border of a 5px-wide face. Band is 1px, so this is a face
+    // now and was an edge before — the field report, through the real pick.
+    expect(pickInsideLeftBorder(small(), 5, 2)?.kind).toBe("face");
+  });
+
+  it("still gives the EDGE a click that is on the line", () => {
+    // 0.5px from the border is inside even the 1px band. Without this the pair
+    // above is satisfied by a band of zero, which would make a small face's
+    // edges unselectable — the opposite complaint MIN_EDGE_BAND_PX exists for.
+    expect(pickInsideLeftBorder(small(), 5, 0.5)?.kind).toBe("edge");
+  });
+
+  it("leaves an ORDINARY face's edge winning at that same 2px", () => {
+    // The safety property, measured rather than argued: at 200 x 200 px the cap
+    // holds the band at 3px, so 2px from the border is still the edge's.
+    expect(pickInsideLeftBorder(big(), 200, 2)?.kind).toBe("edge");
+    expect(pickInsideLeftBorder(big(), 200, 6)?.kind).toBe("face");
   });
 });
