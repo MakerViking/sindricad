@@ -22,6 +22,13 @@ import { DimInput } from "../sketch/dimInput";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
 import { findSelectorAt, replaceSelectorAt } from "./repickReference";
 
+/** The one wording for "another tool owns the app right now", shared by every
+ *  surface that can refuse for that reason — the starters below, the ribbon
+ *  paths that live in main.ts, and contextMenus' unlessBusy. There used to be
+ *  two: right-clicking an edge and picking Fillet said one thing, clicking the
+ *  Fillet button beside it said another, for the identical state. */
+export const TOOL_BUSY_MESSAGE = "Finish or cancel the current tool first (Esc)";
+
 export interface FeatureStartersDeps {
   store: DocumentStore;
   viewport: Viewport;
@@ -70,14 +77,29 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     setPlanePick,
   } = deps;
 
+  /** The busy guard every entry point below opens with. It used to be a bare
+   *  `if (toolBusy()) return;` at 22 sites, and that silence is the outage the
+   *  cancelPlanePick comment records: a planePick flag left set made extrude,
+   *  fillet, shell, press/pull, measure and section ALL dead — no message, no
+   *  clue, until the app was restarted. A tool that refuses has to say so, even
+   *  when refusing is correct.
+   *
+   *  Not an "error" class: this is a normal modal refusal, and setStatus
+   *  breadcrumbs every error, which repeated clicks would flood. */
+  const busy = () => {
+    if (!toolBusy()) return false;
+    setStatus(TOOL_BUSY_MESSAGE, "");
+    return true;
+  };
+
   // Interactive Fillet / Chamfer: pick an edge (or use a Ctrl-click pre-selection),
   // then drag an arrow to scrub the radius/distance with a live sidecar preview.
   const startFillet = () => {
-    if (toolBusy()) return;
+    if (busy()) return;
     edgeFeature.start("fillet", (id) => { noteCommitted(id); if (id) selectFeature(id); });
   };
   const startChamfer = () => {
-    if (toolBusy()) return;
+    if (busy()) return;
     edgeFeature.start("chamfer", (id) => { noteCommitted(id); if (id) selectFeature(id); });
   };
   // Interactive Press/Pull: pick a solid face, then drag an arrow along its normal
@@ -90,7 +112,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // dispatch lives HERE, before any tool is active — a tool that is already
   // `active` cannot start another, since every start() self-guards on it.
   const startPressPull = () => {
-    if (toolBusy()) return;
+    if (busy()) return;
     const done = (id: string | null) => { noteCommitted(id); if (id) selectFeature(id); };
     // A selected FACE is Press/Pull's own job and wins. The right-click
     // "Press/Pull face" menu selects a face and then dispatches through here,
@@ -137,7 +159,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   let pendingPickCleanup: (() => void) | null = null;
 
   function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
-    if (toolBusy()) return;
+    if (busy()) return;
     setPlanePick(true);
     viewport.showAllPlanes(true);
     viewport.suspendPicking = true;
@@ -234,7 +256,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Right-click → "Offset plane from face": same as Datum Plane but the source is
   // the right-clicked face (no separate pick step).
   function offsetPlaneFromFace(face: PlaneDef) {
-    if (toolBusy()) return;
+    if (busy()) return;
     const src = new SketchPlane(face);
     planeOffset.start(src, (def) => {
       if (!def) return;
@@ -257,7 +279,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Split Body: choose which side(s) to keep, then pick + position a cutting plane.
   // Reuses the plane picker + offset gizmo so the cut lands exactly where you want.
   async function startSplit() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Split: create or import a body first", "");
       return;
@@ -292,7 +314,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // select a plane + Split Body). Reuses the split feature with `planeId` + the list
   // of currently-visible body ids.
   async function startCutByPlane(planeId: string) {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Cut: create or import a body first", "");
       return;
@@ -313,7 +335,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // is the (kept) target and the second the tool; with more, you pick the target
   // and the tool body so cut/intersect direction is unambiguous.
   async function startCombine() {
-    if (toolBusy()) return;
+    if (busy()) return;
     const bodies = store.buildState.result?.bodies ?? [];
     if (bodies.length < 2) {
       setStatus("Combine: needs at least two bodies — model or import another", "");
@@ -378,7 +400,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // fewer, larger faces. Tune the angular tolerance in the inspector (higher =
   // fewer faces, but coarsens curved regions).
   function startSimplifyMesh() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Simplify Mesh: import or create a body first", "");
       return;
@@ -393,7 +415,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Face and downstream booleans reliable. Best-effort in the sidecar: a body it
   // can't confidently clean passes through unchanged.
   function startCleanUp() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Clean Up: import or create a body first", "");
       return;
@@ -405,7 +427,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Scale: resize the active body about the origin (handy for fixing the units of
   // an import). Default factor 1 — set it in the inspector.
   function startScale() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Scale: create or import a body first", "");
       return;
@@ -416,7 +438,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Move: translate / rotate the active body. Defaults to no-op — set the offsets
   // and angles in the inspector.
   function startMove() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Move: create or import a body first", "");
       return;
@@ -437,7 +459,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Mirror: choose the symmetry plane (the backend honors XY/XZ/YZ; the old tool
   // was hard-coded to YZ). Mirrors the active body and unions the reflection.
   async function startMirror() {
-    if (toolBusy()) return;
+    if (busy()) return;
     const hasSolid = hasBody();
     if (!hasSolid) {
       setStatus("Mirror: create a body first", "");
@@ -467,7 +489,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // edit the angle in the inspector for a partial revolve). Uses the selected
   // profile area, or the only one if the sketch has just a single profile.
   async function startRevolve() {
-    if (toolBusy()) return;
+    if (busy()) return;
     const regions = overlay.selectedRegions();
     const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
     if (!wr) {
@@ -489,14 +511,14 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // previews live once two are picked (see LoftTool). Any profiles already
   // selected in the model view seed the tool.
   function startLoft() {
-    if (toolBusy()) return;
+    if (busy()) return;
     loftTool.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
   // Sweep: select a closed profile region, then pick a second (open) sketch as the
   // path. The profile should sit at the start of the path, roughly perpendicular.
   async function startSweep() {
-    if (toolBusy()) return;
+    if (busy()) return;
     const regions = overlay.selectedRegions();
     const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
     if (!wr) {
@@ -524,7 +546,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Primitive: drop a Box / Cylinder / Sphere body at the origin (edit its size in
   // the inspector). Useful as a starting block or as a boolean tool body.
   async function startPrimitive() {
-    if (toolBusy()) return;
+    if (busy()) return;
     const shape = await choose<"box" | "cylinder" | "sphere">("Create primitive", [
       { value: "box", label: "Box", hint: "l×w×h" },
       { value: "cylinder", label: "Cylinder", hint: "r, h" },
@@ -545,7 +567,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     promptText: string,
     onPick: (sel: Selector, at: { x: number; y: number }) => void,
   ) {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Create or import a body first", "");
       return;
@@ -596,7 +618,14 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // an error: say so and do nothing rather than "repairing" the wrong reference.
   function repickReference(featureId: string, at: readonly number[]) {
     const feature = store.document.features.find((f) => f.id === featureId);
-    if (!feature) return;
+    if (!feature) {
+      // The feature itself is gone (undone, or deleted while the "Re-pick face"
+      // toast was still up). Same situation as the missing-site branch below and
+      // it must answer the same way — this used to be a bare `return`, so the
+      // toast's own button did nothing at all.
+      setStatus("That feature is gone — nothing to re-pick", "");
+      return;
+    }
     const site = findSelectorAt(feature, at);
     if (!site) {
       setStatus("That reference has already changed — nothing to re-pick", "");
@@ -695,7 +724,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // (click/Ctrl-click faces, or toggle Whole Body in the panel), so it just
   // hands off to the tool directly.
   function startTexture() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Texture: create or import a body first", "");
       return;
@@ -708,7 +737,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // selection, because the CLICK POINT — not just which face — decides where the
   // glyphs land.
   function startTextOnFace() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Text on Face: create or import a body first", "");
       return;
@@ -719,7 +748,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Pattern: replicate the active body — rectangular grid or circular array. Edit
   // counts / spacing / angle in the inspector.
   async function startPattern() {
-    if (toolBusy()) return;
+    if (busy()) return;
     if (!hasBody()) {
       setStatus("Pattern: create or import a body first", "");
       return;
@@ -738,7 +767,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   }
 
   function startExtrude() {
-    if (toolBusy()) return;
+    if (busy()) return;
     // A SELECTED FACE wins: extrude-a-face = Press/Pull it (drag out to join, in to
     // cut). This takes priority over region extrude so a visible sketch never hijacks
     // "extrude this face" (was: a shown sketch forced region-extrude, so face cut did

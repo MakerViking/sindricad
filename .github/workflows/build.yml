@@ -110,6 +110,13 @@ jobs:
           uv run python test_body_binding.py
           uv run python test_selector_ambiguity.py
           uv run python test_error_codes.py
+          # Ratchet, not cases: it enumerates the ops server.py dispatches and
+          # sends each one every malformed shape it derives from the request
+          # fields server.py reads. An op added without a _REQUIRED_FIELDS row
+          # fails here the day it lands, so this line has to stay — an unlisted
+          # file is invisible to CI, which is how five suites sat inert for
+          # weeks (see below).
+          uv run python test_malformed_ops.py
           uv run python test_mass_properties.py
           uv run python test_query_op.py
           uv run python test_assembly.py

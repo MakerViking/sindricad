@@ -11,6 +11,7 @@ Run headless with sidecar/.venv/bin/python from the sidecar/ directory.
 """
 
 import asyncio
+import ast
 import json
 import os
 import re
@@ -199,6 +200,155 @@ def parse_server_ops():
     branches AT RUNTIME."""
     src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
     return set(re.findall(r'op\s*==\s*"([^"]+)"', src))
+
+
+def _function_owners(tree):
+    """node -> the name of the innermost function containing it ("<module>" for
+    top level). An unresolvable request read is reported by function name, which
+    is what the allow_dynamic exemptions key on: a line number moves with the
+    next edit above it, so it rides along as a convenience only."""
+    owners = {}
+
+    def descend(node, fn):
+        for child in ast.iter_child_nodes(node):
+            name = child.name if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)) else fn
+            owners[child] = name
+            descend(child, name)
+
+    descend(tree, "<module>")
+    return owners
+
+
+def _literal_key_binder(node, name, parents):
+    """The strings `name` can hold at `node`, or None if that isn't knowable.
+
+    Resolution walks OUTWARD from the read to the nearest enclosing `for k in
+    ("a", "b")` or comprehension generator over a literal sequence of strings.
+    It is deliberately not a module-wide name map: server.py binds `k` to
+    ("message", "feature_id", "code") in an unrelated error comprehension, and a
+    map keyed on the bare name attributed those three to `req[k]` in _dispatch —
+    a scrape that INVENTS request fields is its own kind of dishonest."""
+    cur = node
+    while cur is not None:
+        if isinstance(cur, (ast.For, ast.AsyncFor)):
+            generators = [(cur.target, cur.iter)]
+        elif isinstance(cur, (ast.ListComp, ast.SetComp, ast.DictComp,
+                              ast.GeneratorExp)):
+            generators = [(g.target, g.iter) for g in cur.generators]
+        else:
+            generators = []
+        for target, iterable in generators:
+            if not isinstance(target, ast.Name) or target.id != name:
+                continue
+            if not isinstance(iterable, (ast.Tuple, ast.List, ast.Set)):
+                return None  # bound here, but to something we can't read
+            values = [e.value for e in iterable.elts
+                      if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            return set(values) if len(values) == len(iterable.elts) and values else None
+        cur = parents.get(cur)
+    return None
+
+
+def parse_request_fields(allow_dynamic=None):
+    """Every REQUEST FIELD server.py reads — scraped from its `req[...]` and
+    `req.get(...)` sites AT RUNTIME, so a field a new op starts reading is
+    malformable by test_malformed_ops.py the day it lands.
+
+    PARSED, not regexed, because the regex version had a blind spot a reviewer
+    measured a live defect through: it matched only literal `req["x"]` forms, so
+    the four fields _dispatch reads through `{k: req[k] for k in (...)}` were
+    invisible THERE. Two of them — `baseRevision` and `ops` — were read nowhere
+    else either, so the derived matrix had never once sent them anything, and
+    `ops` is what the app sends on every incremental rebuild. (`document` and
+    `revision` were picked up from literal reads elsewhere; measured, not
+    assumed.) A ratchet with a blind spot is worse than no ratchet, because it
+    reports a matrix that looks complete.
+
+    So a variable key is RESOLVED when the enclosing loop or comprehension binds
+    it to a literal sequence, and anything still unresolvable RAISES rather than
+    being silently dropped. `allow_dynamic` is {function name: reason} for reads
+    that genuinely cannot be resolved this way; each one has to be argued for in
+    writing at the call site, and the caller is expected to cover those fields
+    another way.
+
+    Returns the raw scrape including the transport envelope (`id`, `op`,
+    `binary`, `chunked`); the caller decides what to exclude and must say why."""
+    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
+    tree = ast.parse(src)
+    owners = _function_owners(tree)
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    fields, unresolved = set(), []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name) and node.value.id == "req"):
+            key = node.slice
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "req" and node.args):
+            key = node.args[0]
+        else:
+            continue
+        resolved = None
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            resolved = {key.value}
+        elif isinstance(key, ast.Name):
+            resolved = _literal_key_binder(node, key.id, parents)
+        if resolved is None:
+            unresolved.append((owners.get(node, "<module>"),
+                               getattr(node, "lineno", 0), ast.unparse(node)))
+        else:
+            fields |= resolved
+    allowed = dict(allow_dynamic or {})
+    unexplained = [u for u in unresolved if u[0] not in allowed]
+    if unexplained:
+        raise RuntimeError(
+            "server.py reads a request field through a key this scrape cannot "
+            "resolve, so the derived malformed matrix would be silently blind "
+            "to it. Resolve it, or name the function in allow_dynamic with a "
+            "reason and cover those fields another way: "
+            + "; ".join(f"{fn}() line {ln}: {src_}" for fn, ln, src_ in unexplained))
+    return fields
+
+
+def parse_required_fields():
+    """server.py's `_REQUIRED_FIELDS` table, read from its SOURCE at runtime.
+
+    Returns {op: ((field, (type-name, ...), required), ...)}. Parsed with `ast`
+    rather than imported, because importing server.py pulls in OCCT and starts
+    a worker pool; the types come back as NAMES ("dict", "str") for the same
+    reason. A test can then derive its malformed payloads from the very table
+    the production guard validates against, instead of hand-copying field names
+    that drift the moment an op grows one."""
+    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(getattr(t, "id", None) == "_REQUIRED_FIELDS" for t in node.targets):
+            continue
+        table = {}
+        for key, val in zip(node.value.keys, node.value.values):
+            rows = []
+            for row in val.elts:
+                field, types, required = row.elts
+                names = (
+                    tuple(e.id for e in types.elts)
+                    if isinstance(types, ast.Tuple)
+                    else (types.id,)
+                )
+                rows.append((field.value, names, required.value))
+            table[key.value] = tuple(rows)
+        return table
+    # An ABSENT table is a state worth measuring, not a crash: that is exactly
+    # what a server predating the guard looks like, and a harness that cannot
+    # even import against it cannot show a test going red on unpatched code.
+    # Callers that need the table assert on the result — loudly, where the
+    # missing rows actually matter.
+    return {}
 
 
 def run(coro):

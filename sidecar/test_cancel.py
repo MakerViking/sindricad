@@ -34,10 +34,21 @@ URL = f"ws://{HOST}:{PORT}?token=cancel-test-token"
 # A job that simply sleeps in the worker: it stands in for a 90-second STEP
 # read without needing a 356 MiB file. Registered as a module-level function so
 # ProcessPoolExecutor can pickle it.
+#
+# The sleep length rides INSIDE a real document. It used to be sent as the bare
+# `"document": 30`, which server._malformed now refuses up front (a badRequest
+# before any job starts) — so the long job never began, cancel found nothing
+# running, and this file failed on `cancelled is False` with nothing wrong with
+# cancel at all.
 SLEEP_SECONDS = 30
 
 
-def _sleep_job(seconds):
+def _sleep_doc(seconds):
+    return {"features": [], "parameters": {}, "seconds": seconds}
+
+
+def _sleep_job(document):
+    seconds = document["seconds"]
     time.sleep(seconds)
     return {"slept": seconds}
 
@@ -76,7 +87,7 @@ async def test_cancel_stops_a_running_job():
             async with websockets.connect(URL) as ws:
                 t0 = time.monotonic()
                 await ws.send(json.dumps({"id": "long", "op": "interference",
-                                          "document": SLEEP_SECONDS}))
+                                          "document": _sleep_doc(SLEEP_SECONDS)}))
                 await asyncio.sleep(1.5)  # let it get into the worker
 
                 # THE POINT: this must be read and acted on while `long` runs
@@ -114,7 +125,7 @@ async def test_geometry_still_works_after_a_cancel():
     try:
         async with await _serve():
             async with websockets.connect(URL) as ws:
-                await ws.send(json.dumps({"id": "long", "op": "interference", "document": SLEEP_SECONDS}))
+                await ws.send(json.dumps({"id": "long", "op": "interference", "document": _sleep_doc(SLEEP_SECONDS)}))
                 await asyncio.sleep(1.0)
                 await ws.send(json.dumps({"id": "c", "op": "cancel"}))
                 for _ in range(2):
@@ -145,7 +156,7 @@ async def test_cancel_targeting_another_id_leaves_the_job_alone():
     try:
         async with await _serve():
             async with websockets.connect(URL) as ws:
-                await ws.send(json.dumps({"id": "current", "op": "interference", "document": 3}))
+                await ws.send(json.dumps({"id": "current", "op": "interference", "document": _sleep_doc(3)}))
                 await asyncio.sleep(1.0)
                 await ws.send(json.dumps({"id": "c", "op": "cancel", "target": "some-older-op"}))
 
