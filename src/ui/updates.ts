@@ -4,11 +4,31 @@
 // Only meaningful where the updater can actually replace the install — the NSIS
 // install on Windows, the .app on macOS, the AppImage on Linux — so the Rust
 // `updates_supported` command gates deb/rpm installs (and plain-browser dev) out.
+//
+// What the gated-out installs are TOLD matters as much as the gate. This used to
+// say "This install updates through your package manager, not in-app", which is
+// not true: there is no apt or dnf repository. The .deb and .rpm exist only as
+// GitHub release assets, so that advice sent people to a package manager with
+// nothing to offer. Field report 383e7bfd is one of those installs (its sidecar
+// spawns from /usr/lib/SindriCAD/, where an AppImage would run from /tmp/.mount_*)
+// and sat on 0.1.111 for a week hitting three bugs already fixed in 0.1.117.
 
 import { choose } from "./choice";
 import { toast } from "./toast";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
+
+/** The rolling beta release page: the only durable thing to send a human to.
+ *  Asset filenames carry the stamped version (0.1.<run>), so no download link can
+ *  be hardcoded, and the updater's own feed (releases/download/beta/latest.json,
+ *  see tauri.conf.json) can't be read from the webview either because the CSP
+ *  keeps connect-src on localhost. The tag is what stays put.
+ *
+ *  Opening it needs a matching entry in `opener:allow-open-url` in
+ *  src-tauri/capabilities/default.json, or openUrl is refused and the button does
+ *  nothing at all — advice that goes nowhere, one layer down. updates.test.ts
+ *  pins that entry, and pins this repo against the updater endpoint. */
+export const RELEASES_URL = "https://github.com/MakerViking/sindricad/releases/tag/beta";
 
 /** false outside Tauri, and on Linux unless running as an AppImage */
 async function updatesSupported(): Promise<boolean> {
@@ -43,8 +63,27 @@ export async function showAbout(): Promise<void> {
  *  update always prompts; `interactive` additionally surfaces "up to date",
  *  "not applicable here", and failures (the quiet startup check stays silent). */
 export async function checkForUpdates(interactive: boolean): Promise<void> {
+  if (!isTauri()) {
+    if (interactive) toast("Update checks need the packaged app");
+    return;
+  }
   if (!(await updatesSupported())) {
-    if (interactive) toast("This install updates through your package manager, not in-app.");
+    if (interactive) {
+      // Longer than the 3500ms default: two lines to read and a button to reach.
+      toast(
+        "The .deb and .rpm can't update in-app. Download the current build, or switch to the AppImage, which updates itself.",
+        {
+          timeout: 10000,
+          // Imported here rather than at the top so this module keeps loading in
+          // plain node (welcome.ts pulls in the TinkerAtlas client and an SVG at
+          // module scope); that is what lets updates.test.ts import RELEASES_URL.
+          action: {
+            label: "Open downloads",
+            onClick: () => void import("./welcome").then((m) => m.openExternal(RELEASES_URL)),
+          },
+        },
+      );
+    }
     return;
   }
   try {
