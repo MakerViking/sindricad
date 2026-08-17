@@ -5,6 +5,7 @@
     "resources": {
       "sidecar-runtime": "sidecar-runtime",
       "LICENSES": "LICENSES"
-    }
+    },
+    "externalBin": ["binaries/sindri-mcp"]
   }
 }

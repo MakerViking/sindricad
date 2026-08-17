@@ -230,14 +230,38 @@ fn handshake_path() -> Option<PathBuf> {
     Some(base.join(ID).join("agent").join("handshake.json"))
 }
 
-/// One round trip to the app. Connect per call rather than holding a socket: a
-/// call may be minutes apart, the app may have been closed and reopened in
-/// between, and a stale connection would fail in a way that reads like a bug in
-/// the tool rather than "the app restarted".
-#[cfg(unix)]
+/// One round trip to the app, over a Windows named pipe.
+///
+/// A named pipe opens like a file, so this is the same blocking shape as the
+/// Unix path with a different `connect`. Everything after it — the token, the
+/// line framing, the reply — is identical, which is why the two arms share the
+/// request-building code below rather than each writing their own.
+#[cfg(windows)]
 fn ask(tool: &str, params: Value) -> Result<Value, String> {
-    use std::os::unix::net::UnixStream;
+    let (addr, token) = handshake()?;
+    // ERROR_PIPE_BUSY is the one retryable failure: every server instance is
+    // mid-conversation and the app is about to arm another. A single short
+    // retry covers it without turning a dead app into a long stall.
+    let mut last = String::new();
+    for attempt in 0..2 {
+        match std::fs::OpenOptions::new().read(true).write(true).open(&addr) {
+            Ok(f) => return exchange(f, &token, tool, params),
+            Err(e) => {
+                last = e.to_string();
+                if attempt == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        }
+    }
+    Err(format!(
+        "SindriCAD left a handshake but its pipe is not accepting connections ({last}). \
+         If the app was force-killed, restart it."
+    ))
+}
 
+/// The handshake file's address + token, or a sentence explaining what to do.
+fn handshake() -> Result<(String, String), String> {
     let path = handshake_path().ok_or("cannot locate the SindriCAD data directory")?;
     let raw = std::fs::read_to_string(&path).map_err(|_| {
         "SindriCAD does not appear to be running. Open the app (with the document you want to \
@@ -245,27 +269,24 @@ fn ask(tool: &str, params: Value) -> Result<Value, String> {
             .to_string()
     })?;
     let hs: Value = serde_json::from_str(&raw).map_err(|e| format!("unreadable handshake: {e}"))?;
-    let sock = hs.get("socket").and_then(Value::as_str).ok_or("handshake has no socket")?;
+    let addr = hs.get("socket").and_then(Value::as_str).ok_or("handshake has no address")?;
     let token = hs.get("token").and_then(Value::as_str).ok_or("handshake has no token")?;
+    Ok((addr.to_string(), token.to_string()))
+}
 
-    let stream = UnixStream::connect(sock).map_err(|e| {
-        format!("SindriCAD left a handshake but its socket is not accepting connections ({e}). \
-                 If the app was force-killed, restart it.")
-    })?;
-    // Bound the wait a little above the broker's own 180 s timeout, so a slow
-    // answer arrives as the broker's diagnosis rather than as a bare read error
-    // from here.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(200)));
-
+/// Send one request and read one reply. Shared by both transports.
+fn exchange<S: std::io::Read + std::io::Write>(
+    mut stream: S,
+    token: &str,
+    tool: &str,
+    params: Value,
+) -> Result<Value, String> {
     let req = json!({ "token": token, "id": 1, "tool": tool, "params": params });
-    {
-        let mut w = &stream;
-        writeln!(w, "{req}").map_err(|e| format!("write failed: {e}"))?;
-        w.flush().map_err(|e| format!("flush failed: {e}"))?;
-    }
+    writeln!(stream, "{req}").map_err(|e| format!("write failed: {e}"))?;
+    stream.flush().map_err(|e| format!("flush failed: {e}"))?;
 
     let mut line = String::new();
-    BufReader::new(&stream)
+    BufReader::new(stream)
         .read_line(&mut line)
         .map_err(|e| format!("no answer from SindriCAD: {e}"))?;
     if line.trim().is_empty() {
@@ -274,7 +295,27 @@ fn ask(tool: &str, params: Value) -> Result<Value, String> {
     serde_json::from_str(&line).map_err(|e| format!("bad answer from SindriCAD: {e}"))
 }
 
-#[cfg(not(unix))]
+/// One round trip to the app. Connect per call rather than holding a socket: a
+/// call may be minutes apart, the app may have been closed and reopened in
+/// between, and a stale connection would fail in a way that reads like a bug in
+/// the tool rather than "the app restarted".
+#[cfg(unix)]
+fn ask(tool: &str, params: Value) -> Result<Value, String> {
+    use std::os::unix::net::UnixStream;
+
+    let (addr, token) = handshake()?;
+    let stream = UnixStream::connect(&addr).map_err(|e| {
+        format!("SindriCAD left a handshake but its socket is not accepting connections ({e}). \
+                 If the app was force-killed, restart it.")
+    })?;
+    // Bound the wait a little above the broker's own 180 s timeout, so a slow
+    // answer arrives as the broker's diagnosis rather than as a bare read error
+    // from here.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(200)));
+    exchange(stream, &token, tool, params)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn ask(_tool: &str, _params: Value) -> Result<Value, String> {
-    Err("the SindriCAD agent bridge is Unix-only for now (the named-pipe transport is not written yet)".into())
+    Err("the SindriCAD agent bridge has no transport on this platform".into())
 }
