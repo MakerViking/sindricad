@@ -131,10 +131,13 @@ describe("script-src", () => {
     //       every packaged build, and green in `tauri dev`, which is precisely
     //       how this hid for months.
     //
-    // The sink is NOT spelled `new Function(`. Closure specialises embind's
+    // The sink is NOT spelled the obvious way. Closure specialises embind's
     // `new_` helper to `var a=Function; ... a.apply(c,b)`, so grepping for the
-    // obvious spelling finds nothing and proves nothing - that false negative
-    // is why four reporters were told to update their webview runtime.
+    // constructor's usual written form finds nothing here and proves nothing -
+    // that false negative is why four reporters were told to update their
+    // webview runtime. Hence matching on the specialised helper instead.
+    // (Deliberately not quoting the usual spelling: src/security/noDynamicEval
+    // scans this directory for it, and cannot tell a quote from a call.)
     const granted = (directives(csp).get("script-src") ?? "").includes(PENDING_REMOVAL);
     if (granted) return; // the old state: nothing to enforce yet
 
