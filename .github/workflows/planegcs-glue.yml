@@ -1,0 +1,182 @@
+# Build the planegcs WASM glue with -s DYNAMIC_EXECUTION=0, so the 2D constraint
+# solver initialises without 'unsafe-eval' in the Content-Security-Policy.
+#
+# WHY THIS EXISTS. planegcs is an emscripten/embind module. embind's `new_`
+# helper builds each invoker by handing SOURCE TEXT to the Function constructor:
+# in the shipped 1.1.7 glue, closure has specialised it to
+#     function qb(b){var a=Function; ... b=a.apply(c,b); ...}
+# and the call site in craftInvokerFunction concatenates a JS function body into
+# the argument array. 'wasm-unsafe-eval' permits WebAssembly COMPILATION only and
+# does NOT permit that, so the packaged app needs 'unsafe-eval' purely for this.
+# `tauri dev` serves from vite WITHOUT the CSP, which is why it never reproduced
+# locally: three Windows reporters and one Linux reporter were told to update a
+# runtime that was never the problem, and one reinstalled WebView2 for nothing.
+#
+# Upstream PR Salusoft89/planegcs#12 proposes the same one-line flag but is still
+# open, and its branch is based on 1.2.0 - taking it would silently upgrade the
+# solver alongside the CSP fix. So the flag is applied to the EXACT commit that
+# produced the 1.1.7 artifact in package-lock.json instead.
+#
+# THE CONTROL BUILD IS THE POINT. Building with the flag proves nothing on its
+# own. This job FIRST builds the source unmodified and requires the result to be
+# byte-identical to the published npm artifact. That is what establishes that
+# this toolchain is the maintainer's toolchain, and therefore that the flag is
+# the only variable between the two outputs. If the control does not reproduce,
+# the patched artifact is not trustworthy and the job fails without producing one.
+#
+# Manual trigger only. This is an occasional provenance build, not part of CI.
+
+name: planegcs-glue
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "planegcs commit to build (default = the commit that produced 1.1.7)"
+        required: false
+        default: "951ba1a56c7fbae17de05851a221129e185fa92c"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # The same base upstream's own Dockerfile uses. Pinned by digest-bearing tag:
+    # a floating emsdk would change codegen and break the control assertion, which
+    # is the failure mode this whole job is designed to detect rather than hide.
+    container: emscripten/emsdk:3.1.45
+
+    env:
+      # From node_modules/@salusoft89/planegcs/dist/planegcs_dist/, i.e. exactly
+      # what package-lock.json resolves today. Update these ONLY together with the
+      # pinned version in package.json.
+      PUBLISHED_JS_SHA256: 5d5fe10097d757e7b4df2ee65f3804e3b32f9a09459b50634afe9a3bbc6b174d
+      PUBLISHED_WASM_SHA256: 5bec882aa7732943aa3e42003c4fca5896692eabfc25afb0094bf0d54e60fd6d
+
+    steps:
+      - name: Install the C++ dependencies upstream's builder image adds
+        run: |
+          apt-get update
+          apt-get install -qqy libeigen3-dev libboost-system-dev libboost-thread-dev \
+            libboost-program-options-dev libboost-test-dev libboost-filesystem-dev
+          # CMakeLists.txt includes boost from /inc; upstream's Dockerfile does the same.
+          mkdir -p /inc && ln -sf /usr/include/boost /inc
+
+      - name: Clone planegcs at the pinned commit
+        run: |
+          git clone https://github.com/Salusoft89/planegcs /planegcs
+          cd /planegcs
+          git checkout ${{ github.event.inputs.ref }}
+          git log --oneline -1
+
+      # bindings.cpp is GENERATED, not committed - upstream dropped it in 0cc67f3
+      # ("feat(wrapper-rewrite): drop bindings.cpp"). Without this step cmake fails
+      # with "Cannot find source file: bindings.cpp". The generator parses the C++
+      # with tree-sitter, whose native module needs install scripts to build.
+      - name: Generate bindings.cpp
+        run: |
+          cd /planegcs
+          npm install --foreground-scripts
+          cd build-bindings && ./process_all.sh
+          test -f /planegcs/planegcs/bindings.cpp
+
+      - name: Control build, UNPATCHED
+        run: |
+          cd /planegcs/planegcs
+          emcmake cmake . -DCMAKE_BUILD_TYPE=Release
+          emmake make -j "$(nproc)"
+          mkdir -p /out
+          cp bin/planegcs.js   /out/control.planegcs.js
+          cp bin/planegcs.wasm /out/control.planegcs.wasm
+
+      # If this fails, STOP. Either the toolchain differs from the maintainer's or
+      # the pinned commit is not what produced the published package - and in
+      # either case a patched artifact built here cannot be reasoned about.
+      - name: The control MUST reproduce the published artifact byte for byte
+        run: |
+          got=$(sha256sum /out/control.planegcs.js | cut -d' ' -f1)
+          echo "control glue sha256: $got"
+          echo "published  sha256:   $PUBLISHED_JS_SHA256"
+          if [ "$got" != "$PUBLISHED_JS_SHA256" ]; then
+            echo "::error::Control build does NOT reproduce the published planegcs.js."
+            echo "::error::The flag is therefore not the only variable. Refusing to emit a patched artifact."
+            exit 1
+          fi
+          echo "Control reproduces the published glue. The toolchain is the maintainer's."
+
+      - name: Apply the one-line flag and rebuild
+        run: |
+          cd /planegcs/planegcs
+          # -s DYNAMIC_EXECUTION=0 makes emscripten emit invokers without the
+          # Function-constructor sink. Appended to the existing LINK_FLAGS so the
+          # Release flags upstream sets are untouched.
+          sed -i 's/-s STACK_SIZE=5MB"/-s STACK_SIZE=5MB -s DYNAMIC_EXECUTION=0"/' CMakeLists.txt
+          grep -n "DYNAMIC_EXECUTION" CMakeLists.txt
+          rm -rf CMakeCache.txt CMakeFiles bin
+          emcmake cmake . -DCMAKE_BUILD_TYPE=Release
+          emmake make -j "$(nproc)"
+          cp bin/planegcs.js   /out/patched.planegcs.js
+          cp bin/planegcs.wasm /out/patched.planegcs.wasm
+
+      # The claim being tested is "JS glue only, zero solver risk". If the wasm
+      # moved, that claim is void and the change is no longer a drop-in.
+      - name: The wasm MUST be unchanged, or this is not a glue-only change
+        run: |
+          ctl=$(sha256sum /out/control.planegcs.wasm | cut -d' ' -f1)
+          pat=$(sha256sum /out/patched.planegcs.wasm | cut -d' ' -f1)
+          echo "control wasm: $ctl"
+          echo "patched wasm: $pat"
+          echo "published wasm: $PUBLISHED_WASM_SHA256"
+          if [ "$ctl" != "$pat" ]; then
+            echo "::error::The flag changed the WASM, not just the JS glue. This is NOT a drop-in."
+            exit 1
+          fi
+          if [ "$pat" != "$PUBLISHED_WASM_SHA256" ]; then
+            echo "::error::The built wasm does not match the published one."
+            exit 1
+          fi
+          echo "WASM identical to the published binary. The solver itself is untouched."
+
+      - name: The sink MUST be gone from the patched glue
+        run: |
+          cd /out
+          # Grepping for "new Function(" is NOT a valid check: closure specialises
+          # the helper to `var a=Function; ... a.apply(...)`, which is exactly the
+          # false negative that kept this misdiagnosed for months. Count bare
+          # `Function` references instead and require the patched glue to drop them.
+          ctl=$(grep -o "Function" control.planegcs.js | wc -l)
+          pat=$(grep -o "Function" patched.planegcs.js | wc -l)
+          echo "Function references - control: $ctl, patched: $pat"
+          if [ "$pat" -ge "$ctl" ]; then
+            echo "::error::The patched glue still carries as many Function references as the control."
+            echo "::error::DYNAMIC_EXECUTION=0 did not take effect."
+            exit 1
+          fi
+          ls -l control.planegcs.js patched.planegcs.js
+          sha256sum control.planegcs.js patched.planegcs.js control.planegcs.wasm > /out/SHA256SUMS.txt
+          {
+            echo "planegcs glue built with -s DYNAMIC_EXECUTION=0"
+            echo
+            echo "source:    https://github.com/Salusoft89/planegcs"
+            echo "commit:    ${{ github.event.inputs.ref }}"
+            echo "toolchain: emscripten/emsdk:3.1.45 (upstream's own builder base)"
+            echo "patch:     -s DYNAMIC_EXECUTION=0 appended to LINK_FLAGS in planegcs/CMakeLists.txt"
+            echo "run:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "The unpatched control build reproduced the published 1.1.7 planegcs.js"
+            echo "byte for byte, and the wasm is identical with and without the flag."
+            echo
+            cat /out/SHA256SUMS.txt
+          } > /out/PROVENANCE.txt
+          cat /out/PROVENANCE.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: planegcs-glue-dynamic-execution-0
+          path: |
+            /out/patched.planegcs.js
+            /out/control.planegcs.js
+            /out/PROVENANCE.txt
+            /out/SHA256SUMS.txt
+          if-no-files-found: error
