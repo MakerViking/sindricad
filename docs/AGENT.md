@@ -109,6 +109,39 @@ hands back candidate fingerprints to re-pick from, but that gate compares what
 you sent against what came back — it cannot see that a *better* candidate
 existed.
 
+## What happens when a model authors a reference
+
+The arc exists to answer one question: can a model select the right geometry from
+a read-only surface, or does it fail *silently*? Run against `test7.sindri`
+(158 faces, shelled, text on a cylinder, 13 up-facing planar faces of which most
+are sub-mm² text), asking for "the top face" three ways a model plausibly would:
+
+| the model fabricated | outcome |
+|---|---|
+| centroid 5 mm below the real face, **area 2.7× wrong** | `ok`, and it resolved to the **correct** face |
+| centroid at a bbox corner | **refused**, `matchImplausible` |
+| a face that does not exist (mid-height, area 900) | **refused**, `matchImplausible` |
+
+So the strict gate earns its keep: a near-miss still lands (drift tolerance is
+the point — parametric motion moves a face away from its stored point while it
+stays the right face), and a guess that means something else is rejected rather
+than answered. Before that gate, `by:"match"` could not fail at all.
+
+Two things this does *not* say:
+
+- The gate compares the fingerprint you SENT against the one that came back. It
+  cannot see that a better candidate existed, so a self-contradictory fingerprint
+  can still resolve to a third face and pass clean.
+- **A 2.7× area error passed.** Size only counts against a match when the
+  centroid also moved (`posRel >= 0.1`), which is a calibrated, measured rule —
+  10× area alone refused ordinary in-place resizes, because area is a squared
+  quantity. It does mean a model cannot rely on the gate to catch a wrong size.
+
+The practical rule stands: take fingerprints from a `geom_query` result. On this
+part "the top face" was genuinely ambiguous — 13 faces match "planar, facing up"
+— and only a predicate query with a `within` bound picked out the one a human
+means.
+
 ## Status
 
 Verified end to end against a running app with real geometry, on Linux: the
@@ -128,6 +161,6 @@ and unclosed: a named pipe's default DACL is broader than the Unix socket's
 
 Not done:
 
-- a demonstration of a model *authoring* references against this surface. Driving
-  the tools proves they answer; it does not prove an agent can use them to build
-  something, which is the question the whole arc exists to settle.
+- a demonstration of a model *authoring a feature* against this surface. The
+  reference-selection half is measured above; P2 is read-only, so building
+  something with those references is P3's question, not this one.
