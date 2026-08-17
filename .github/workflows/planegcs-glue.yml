@@ -92,11 +92,19 @@ jobs:
           cd build-bindings && ./process_all.sh
           test -f /planegcs/planegcs/bindings.cpp
 
+      # -j 1 EVERYWHERE, deliberately, and it costs build time on purpose.
+      # Two runs of this job at the SAME pinned commit in the SAME container
+      # disagreed about the wasm: run 1 had control == published and patched !=
+      # control; run 2 had the exact opposite. The JS glue reproduced byte for
+      # byte in both, so the non-determinism is in the wasm compile, and
+      # parallel codegen is the prime suspect. A byte comparison across a
+      # non-deterministic build proves nothing in EITHER direction - it reads as
+      # "the flag changed the solver" on one run and "it did not" on the next.
       - name: Control build, UNPATCHED
         run: |
           cd /planegcs/planegcs
           emcmake cmake . -DCMAKE_BUILD_TYPE=Release
-          emmake make -j "$(nproc)"
+          emmake make -j 1   # -j1: see the determinism note above
           mkdir -p /out
           cp bin/planegcs.js   /out/control.planegcs.js
           cp bin/planegcs.wasm /out/control.planegcs.wasm
@@ -126,7 +134,7 @@ jobs:
           grep -n "DYNAMIC_EXECUTION" CMakeLists.txt
           rm -rf CMakeCache.txt CMakeFiles bin
           emcmake cmake . -DCMAKE_BUILD_TYPE=Release
-          emmake make -j "$(nproc)"
+          emmake make -j 1   # -j1: see the determinism note above
           cp bin/planegcs.js   /out/patched.planegcs.js
           cp bin/planegcs.wasm /out/patched.planegcs.wasm
 
