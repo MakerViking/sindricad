@@ -416,6 +416,36 @@ describe("ExtrudeTool edit with a COPLANAR second sketch", () => {
     expect(f.sketch).toBe("own");
   });
 
+  // The fence INSIDE selectRegionsByEntities, which nothing pinned: the id
+  // lookup runs against `this.regions.filter(wr => wr.sketchId === sketchId)`,
+  // not against every region in the document. Without that filter an id the
+  // feature's own sketch no longer has, but a NEIGHBOUR does, resolves to the
+  // neighbour's cell and is committed as the feature's area. Entity ids are only
+  // unique within a sketch, so this is reachable whenever two sketches share an
+  // id — which the tracer's own `e1`, `e2`, … naming makes ordinary, not exotic.
+  it("does not resolve an id that only the OTHER sketch still has", async () => {
+    const d = multiSketchDoc(
+      [
+        // "own" no longer has an `outer` entity at all — only a small square
+        // whose id differs, so the reference cannot resolve inside its own sketch
+        { id: "own", entities: [{ id: "leftover", type: "rectangle", x: 0, y: 0, width: 10, height: 10 }] },
+        // the neighbour DOES carry `outer`, and is coplanar
+        { id: "other", entities: [{ id: "outer", type: "rectangle", x: 0, y: 0, width: 400, height: 400 }] },
+      ],
+      { sketch: "own", regions: [[45, 0, 0]], regionEntities: [["outer"]], regionHoleEntities: [[[]]] },
+    );
+    const { tool, written, commit } = harness(d);
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+
+    // Nothing resolves inside "own", so the tool never reaches a committable
+    // state and writes NOTHING - the feature keeps what the document already
+    // had. Without the fence the id resolves against the neighbour instead and
+    // this commits its 400x400 area (and re-points `sketch` at it), which is
+    // what the mutation check below is for.
+    expect(written.feature).toBeNull();
+  });
+
   it("commits only its OWN sketch's area, with the neighbour EARLIER in the timeline", async () => {
     // document order decides which sketch `first.sketchId` reads, so the same
     // defect re-targets the feature's whole `sketch` field this way round

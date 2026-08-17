@@ -405,9 +405,13 @@ export class SketchOverlay {
           // used to be. The stored point breaks the tie among cells the ids
           // already permit, which is narrower than resolving it against the whole
           // sketch and is the only thing that keeps it out of a hole.
+          // Unconditionally, because the `if (narrowed.length)` this replaces
+          // could not change the outcome: leaving `hits` at length > 1 and
+          // setting it to [] both fail the `=== 1` test below and land the
+          // reference in `unresolved`. Keeping the guard implied a fallback
+          // that was never taken.
           const p = ref.point;
-          const narrowed = hits.filter((wr) => this.pointHitsRegion(p, wr));
-          if (narrowed.length) hits = narrowed;
+          hits = hits.filter((wr) => this.pointHitsRegion(p, wr));
         }
       }
       // One cell or nothing. Several means the ids name a set of cells and the
