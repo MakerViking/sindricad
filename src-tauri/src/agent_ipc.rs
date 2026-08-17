@@ -180,6 +180,10 @@ fn token_eq(a: &str, b: &str) -> bool {
 ///
 /// NOT the system temp dir, which is world-writable — an attacker who can
 /// pre-create our socket path there gets to decide what the shim connects to.
+///
+/// The directory itself is narrowed to 0700 so no other local user can even
+/// traverse to the socket. That is the barrier that does the real work; the
+/// socket's own mode is belt and braces.
 fn agent_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -187,6 +191,11 @@ fn agent_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?
         .join("agent");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    if let Err(e) = restrict(&dir, 0o700) {
+        // Not fatal — the token still stands — but never silent.
+        eprintln!("[agent] WARNING: could not narrow {dir:?} to 0700: {e}");
+    }
     Ok(dir)
 }
 
@@ -215,11 +224,20 @@ fn write_handshake(path: &PathBuf, body: &str) -> std::io::Result<()> {
 }
 
 /// Start the broker. Best-effort: a failure here costs the agent bridge, not the
-/// app, so it logs and returns instead of taking the launch down with it.
+/// app.
+///
+/// `catch_unwind` because that sentence was once FALSE. `setup` panicked on
+/// launch (a tokio bind with no reactor) and took the whole app down with it —
+/// a dead window, from an optional feature. The panic itself is fixed, but the
+/// guarantee is what this function advertises, so it is enforced here rather
+/// than left to every future line inside `setup` being careful.
 pub fn start(app: &AppHandle) {
-    match setup(app) {
-        Ok(path) => println!("[agent] bridge ready — handshake at {}", path.display()),
-        Err(e) => eprintln!("[agent] bridge unavailable: {e}"),
+    let handle = app.clone();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| setup(&handle)));
+    match outcome {
+        Ok(Ok(path)) => println!("[agent] bridge ready — handshake at {}", path.display()),
+        Ok(Err(e)) => eprintln!("[agent] bridge unavailable: {e}"),
+        Err(_) => eprintln!("[agent] bridge PANICKED during setup; the app continues without it"),
     }
 }
 
@@ -229,11 +247,6 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
     let sock = dir.join("sock");
     let handshake = dir.join("handshake.json");
     let token = random_token();
-
-    // Bind fails on an existing path, and a socket file always outlives the
-    // process that made it (there is no unlink-on-close).
-    let _ = std::fs::remove_file(&sock);
-    let listener = tokio::net::UnixListener::bind(&sock).map_err(|e| format!("bind {sock:?}: {e}"))?;
 
     let body = serde_json::to_string_pretty(&json!({
         "version": 1,
@@ -251,8 +264,38 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
         handshake: handshake.clone(),
     });
 
+    // BIND INSIDE THE RUNTIME, not here. `tauri::Builder::setup` runs before the
+    // async runtime is entered on this thread, and `tokio::net::UnixListener::bind`
+    // does not return an error there — it PANICS with "there is no reactor
+    // running", which took the whole app down on launch while `cargo check`,
+    // `cargo test` and the CI gate all stayed green. Nothing but starting the app
+    // catches that.
     let app2 = app.clone();
+    let hs = handshake.clone();
     tauri::async_runtime::spawn(async move {
+        // A socket file always outlives the process that made it (there is no
+        // unlink-on-close), and bind fails on an existing path.
+        let _ = std::fs::remove_file(&sock);
+        let listener = match tokio::net::UnixListener::bind(&sock) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[agent] cannot bind {sock:?}: {e} — bridge unavailable");
+                // Take the handshake back down. Leaving it would advertise a
+                // bridge that is not there, and the shim would report a
+                // connection failure instead of "the app is not running".
+                let _ = std::fs::remove_file(&hs);
+                return;
+            }
+        };
+        // The socket lands at the umask (0755 was observed), which lets any
+        // local user CONNECT and spend the token check. The directory is 0700 so
+        // they cannot traverse to it anyway; this narrows the socket itself as
+        // well, and is checked rather than swallowed — a silent failure here is
+        // the whole tinkeratlas.rs mistake in a different place.
+        if let Err(e) = restrict(&sock, 0o600) {
+            eprintln!("[agent] WARNING: could not narrow {sock:?}: {e} — the token is now the only barrier");
+        }
+        println!("[agent] bridge listening on {}", sock.display());
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
@@ -267,6 +310,13 @@ fn setup(app: &AppHandle) -> Result<PathBuf, String> {
         }
     });
     Ok(handshake)
+}
+
+/// chmod, reported rather than ignored.
+#[cfg(unix)]
+fn restrict(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 /// One connection: newline-delimited JSON in, newline-delimited JSON out.

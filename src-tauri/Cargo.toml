@@ -6,6 +6,11 @@ authors = ["MakerViking"]
 edition = "2021"
 rust-version = "1.77"
 license = "AGPL-3.0-only"
+# REQUIRED once this crate has more than one binary. `tauri dev` shells out to
+# `cargo run`, which refuses to guess between targets — without this the app does
+# not start at all, while `cargo check`, `cargo test` and `cargo build` all stay
+# perfectly green. The second binary is `sindri-mcp`, below.
+default-run = "sindricad"
 
 [lib]
 name = "sindricad_lib"
