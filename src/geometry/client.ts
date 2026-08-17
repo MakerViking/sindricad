@@ -186,6 +186,19 @@ export interface GeometryBackend {
     opts?: { bodies?: string[]; checks?: boolean },
     onStarted?: (id: string) => void,
   ): Promise<{ ok: boolean; result?: MassPropertiesResult; message?: string }>;
+  /** The agent bridge's view of the same `query` op: any item shape the sidecar
+   *  accepts (`sel`, `where`, `limit`), the reply passed through whole and a
+   *  refusal's error CODE kept. OPTIONAL for the same reason as `query`. `doc`
+   *  must be the BUILT document, same trap.
+   *
+   *  `strict` defaults TRUE on the sidecar and should stay that way: it is what
+   *  makes an implausible `by:"match"` refuse with `matchImplausible` instead of
+   *  confidently returning its nearest guess. */
+  queryForAgent?(
+    doc: CadDocument,
+    items: object[],
+    opts?: { strict?: boolean },
+  ): Promise<{ ok: boolean; result?: unknown; message?: string; code?: GeomErrorCode }>;
   /** Colored multi-material 3MF PROJECT export (Orca format: one object per body,
    *  palette slot → extruder). Optional — only the Python sidecar authors it; the
    *  Rust spike backend omits it. Palette/bodyColors/bodyNames live in store
@@ -1229,6 +1242,35 @@ export class Geometry implements GeometryBackend {
       onStarted,
     );
     return msg.ok ? { ok: true, result: msg.result } : { ok: false, message: msg.error?.message };
+  }
+
+  /** The agent bridge's query: generic items (`sel`, `where`, `limit`), and the
+   *  sidecar's reply and error CODE passed through untouched. `query` above is the
+   *  app's own, typed to picks and flattening a failure to [].
+   *
+   *  `strict` is passed through only when
+   *  the caller explicitly turns it OFF — omitting the key leaves the sidecar's
+   *  default (true), which is the refusing behaviour and the one we want.
+   *
+   *  The error `code` is forwarded, not flattened into prose: `matchImplausible`
+   *  is the difference between "your fingerprint is wrong" and "nothing matched",
+   *  and an agent has to branch on it. */
+  async queryForAgent(
+    doc: CadDocument,
+    items: object[],
+    opts?: { strict?: boolean },
+  ): Promise<{ ok: boolean; result?: unknown; message?: string; code?: GeomErrorCode }> {
+    const msg = await this.call<unknown>("query", {
+      document: doc,
+      items,
+      ...(opts?.strict === false ? { strict: false } : {}),
+    });
+    if (msg.ok) return { ok: true, result: msg.result };
+    return {
+      ok: false,
+      ...(msg.error?.message !== undefined ? { message: msg.error.message } : {}),
+      ...(msg.error?.code !== undefined ? { code: msg.error.code } : {}),
+    };
   }
 
   async tessellateText(entity: object, pathEntity?: object): Promise<TextOutlines> {

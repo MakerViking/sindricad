@@ -219,6 +219,41 @@ def test_step_import_names_are_capped():
     print(PASS, "STEP product names are control-stripped AND capped")
 
 
+def test_the_cross_language_contract_still_holds():
+    """`src/agent/untrusted.contract.json` is authored by THIS module and
+    asserted from both sides — here, and in src/agent/untrusted.test.ts.
+
+    Two independent suites can both pass while disagreeing with each other. The
+    TypeScript envelope is a separate implementation over different primitives
+    (JS counts UTF-16 units and matches `\\p{C}`; Python counts characters and
+    Unicode categories), so nothing but a shared fixture catches them drifting.
+
+    A deliberate contract change means regenerating the fixture. An accidental
+    one fails here or in vitest, which is the point.
+    """
+    import json
+
+    path = os.path.join(os.path.dirname(__file__), "..", "src", "agent",
+                        "untrusted.contract.json")
+    with open(path, encoding="utf-8") as fh:
+        contract = json.load(fh)
+
+    cases = contract["cases"]
+    assert len(cases) > 8, "the fixture is too small to be covering anything"
+    for i, c in enumerate(cases):
+        assert untrusted.clean(c["in"], 120) == c["clean120"], f"case {i} clean120"
+        assert untrusted.clean(c["in"], 5) == c["clean5"], f"case {i} clean5"
+        assert untrusted.envelope(c["in"], "name") == c["envelope_name"], f"case {i} envelope"
+
+    # The cases must actually exercise the interesting shapes, or agreeing on
+    # them proves nothing. These are the three places the languages can diverge.
+    joined = " ".join(c["in"] for c in cases)
+    assert "‮" in joined, "no bidi override among the cases"
+    assert "\U0001f642" in joined, "no astral character (the surrogate-pair trap)"
+    assert untrusted._CLOSE in joined, "no delimiter-forgery attempt among the cases"
+    print(PASS, f"the cross-language contract holds over {len(cases)} cases")
+
+
 def main():
     print("Untrusted-text tests")
     test_clean_strips_control_and_format_characters()
@@ -230,6 +265,7 @@ def main():
     test_a_hostile_body_name_never_reaches_the_message()
     test_the_reply_carries_the_new_fields_to_the_wire()
     test_step_import_names_are_capped()
+    test_the_cross_language_contract_still_holds()
     print("ALL PASS")
 
 
