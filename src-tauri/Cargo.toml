@@ -6,23 +6,10 @@ authors = ["MakerViking"]
 edition = "2021"
 rust-version = "1.77"
 license = "AGPL-3.0-only"
-# REQUIRED once this crate has more than one binary. `tauri dev` shells out to
-# `cargo run`, which refuses to guess between targets — without this the app does
-# not start at all, while `cargo check`, `cargo test` and `cargo build` all stay
-# perfectly green. The second binary is `sindri-mcp`, below.
-default-run = "sindricad"
 
 [lib]
 name = "sindricad_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
-
-# The read-only MCP server an agent is pointed at. Named explicitly because
-# Cargo would otherwise derive `sindri_mcp` from the file name, and this is a
-# user-facing command that goes in a client's config file — hyphens, like every
-# other CLI. It links none of the app: no Tauri, no webview, no OCCT.
-[[bin]]
-name = "sindri-mcp"
-path = "src/bin/sindri_mcp.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

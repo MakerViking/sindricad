@@ -159,6 +159,15 @@ jobs:
         working-directory: src-tauri
         run: cargo test --tests
 
+      # Its own crate, so `cargo test` in src-tauri does NOT reach it. These four
+      # drive the real binary over real stdio against a fake broker, and they are
+      # the only thing covering the MCP protocol wiring — a notification that
+      # gets answered, a tool error raised as a JSON-RPC error, garbage on stdin
+      # desynchronising the stream.
+      - name: MCP shim tests
+        working-directory: src-tauri/sindri-mcp
+        run: cargo test --tests
+
   build:
     needs: test
     permissions:
@@ -266,14 +275,16 @@ jobs:
       # `sindri-mcp` is what a user points Claude Code (or any MCP client) at, so
       # it has to be INSTALLED beside the app or the feature is unreachable.
       #
-      # Built explicitly first: `externalBin` resolves its files when tauri-action
-      # bundles, and the binary does not exist until something builds it. The
-      # artifacts are shared with the app build that follows, so this costs far
-      # less than a second full compile.
+      # Built from its OWN crate (src-tauri/sindri-mcp), never as a second binary
+      # of the app package. While it was a `[[bin]]` of `sindricad`, Tauri's
+      # bundler emitted an MSI component for it AND externalBin emitted another,
+      # and WiX refused with ICE30 — "the target file 'sindri-mcp.exe' is
+      # installed by two different components". Linux and macOS bundled fine; only
+      # Windows caught it.
       #
-      # The `-<target triple>` suffix is Tauri's required naming, and it is read
-      # from rustc rather than hardcoded per runner — a wrong guess here fails at
-      # BUNDLE time, minutes into the job.
+      # The `-<target triple>` suffix is Tauri's required naming, read from rustc
+      # rather than hardcoded per runner — a wrong guess fails at BUNDLE time,
+      # minutes into the job.
       #
       # externalBin lives ONLY in the bundle-only config, never in tauri.conf.json:
       # Tauri validates it at config-parse time, so putting it in the base config
@@ -284,13 +295,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --bin sindri-mcp
+          cargo build --release --manifest-path sindri-mcp/Cargo.toml
           triple=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p binaries
           if [ "${RUNNER_OS}" = "Windows" ]; then
-            cp "target/release/sindri-mcp.exe" "binaries/sindri-mcp-${triple}.exe"
+            cp "sindri-mcp/target/release/sindri-mcp.exe" "binaries/sindri-mcp-${triple}.exe"
           else
-            cp "target/release/sindri-mcp" "binaries/sindri-mcp-${triple}"
+            cp "sindri-mcp/target/release/sindri-mcp" "binaries/sindri-mcp-${triple}"
           fi
           ls -la binaries/
 

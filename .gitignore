@@ -45,9 +45,10 @@ proving-ground/
 src-tauri/sidecar-runtime/
 
 # staged externalBin for the bundle: `sindri-mcp-<target-triple>`, copied out of
-# target/release by CI (and by scripts/stage-sindri-mcp.sh locally). A build
-# artifact under a name that varies per platform — never commit it.
+# the shim crate's target/ by CI (and by scripts/stage-sindri-mcp.sh locally). A
+# build artifact under a name that varies per platform — never commit it.
 src-tauri/binaries/
+src-tauri/sindri-mcp/target/
 
 # secrets / local env: never commit
 .env
