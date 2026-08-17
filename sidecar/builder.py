@@ -104,6 +104,8 @@ from geom_select import (
     REL_DRIFT,
 )
 import texture
+import untrusted
+from errors import BODY_SLOT, GeomError
 
 PLANES = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
 AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
@@ -1983,7 +1985,8 @@ def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
     for body, sels in _group_sels_by_body(f["edges"], ctx, label):
         edges = resolve_edges(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
         if not edges:
-            raise ValueError(f"no edge found to {label.lower()} on {body['name']}")
+            raise GeomError(f"no edge found to {label.lower()} on {BODY_SLOT}",
+                            body_id=body["id"], subject=body.get("name"))
         try:
             new_shape = combined(edges)
         except Exception as combined_err:
@@ -1996,7 +1999,9 @@ def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
                 # the feature FAILS — never a partial solid, never a smaller radius.
                 # Paint exactly the offenders red, then re-raise the original error.
                 _report_edge_failures(f, ctx, unresolved, one_edge)
-                raise ValueError(f"{label} failed on {body['name']}: {combined_err}") from combined_err
+                raise GeomError(f"{label} failed on {BODY_SLOT}: {combined_err}",
+                                body_id=body["id"],
+                                subject=body.get("name")) from combined_err
         staged.append((body, new_shape))
     for body, shape in staged:
         body["shape"] = shape
@@ -2477,7 +2482,8 @@ def _handle_shell(f, ctx):
         # so without this the body comes back SEALED — it exports, it prints, and
         # nothing ever said the opening was lost. Refuse instead, like draft.
         if not openings:
-            raise ValueError(f"no face found to shell on {body['name']}")
+            raise GeomError(f"no face found to shell on {BODY_SLOT}",
+                            body_id=body["id"], subject=body.get("name"))
         staged.append((body, _shell(body["shape"], t, openings)))
     for body, shape in staged:
         body["shape"] = shape
@@ -2551,7 +2557,8 @@ def _handle_draft(f, ctx):
     for body, sels in _group_sels_by_body(f["faces"], ctx, "Draft"):
         faces = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
         if not faces:
-            raise ValueError(f"no face found to draft on {body['name']}")
+            raise GeomError(f"no face found to draft on {BODY_SLOT}",
+                            body_id=body["id"], subject=body.get("name"))
         staged.append((body, _draft(body["shape"], faces, angle, axis)))
     for body, shape in staged:
         body["shape"] = shape
@@ -2805,7 +2812,8 @@ def _handle_text_on_face(f, ctx):
     body, sels = groups[0]
     faces = resolve_faces(body["shape"], sels, diag=ctx.diagnostics, feature_id=f.get("id"))
     if not faces:
-        raise ValueError(f"Text: no face found on {body['name']} — re-pick the face")
+        raise GeomError(f"Text: no face found on {BODY_SLOT} — re-pick the face",
+                        body_id=body["id"], subject=body.get("name"))
     face = faces[0]
     planar = face.geom_type == GeomType.PLANE
 
@@ -3099,9 +3107,18 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
 
     def new_body(shape, name=None, node_ref=None):
         counter["n"] += 1
+        # The name is sanitised HERE, not at the importer, because this is the
+        # only choke point every body passes through. `step_assembly._clean`
+        # runs when a STEP file is READ — but a saved document carries its
+        # assembly node names in `features[].nodes[].name`, and a rebuild takes
+        # them straight from there without ever revisiting the file. So a
+        # hostile name survived a save/reload even with the importer clean, and
+        # from here it reached `bodies[].name` on the wire and the DOM.
+        # A name that is nothing BUT control characters cleans to "" and falls
+        # back to the positional default rather than an empty label.
         entry = {
             "id": f"body{counter['n']}",
-            "name": name or f"Body{counter['n']}",
+            "name": untrusted.clean(name, untrusted.MAX_SUBJECT) or f"Body{counter['n']}",
             "shape": shape,
         }
         # Which assembly-tree node this body came from, as "<featureId>/<index>".
@@ -3250,25 +3267,43 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             # reports through the ok:true path, which is precisely where a code
             # is most useful and where a code applied only to `_err` would never
             # appear. GeomError subclasses ValueError so it lands here unchanged.
-            entry = {"feature_id": f.get("id"), "message": str(ex)}
+            #
+            # `subject` is untrusted document text and is capped here, at the one
+            # place every per-feature failure passes through, rather than trusted
+            # to have been capped at each raise site.
+            entry = {"feature_id": f.get("id"),
+                     "message": untrusted.clean(str(ex), untrusted.MAX_MESSAGE)}
             _code = getattr(ex, "code", None)
             if _code:
                 entry["code"] = _code
+            _body_id = getattr(ex, "body_id", None)
+            if _body_id:
+                entry["body_id"] = _body_id
+            _subject = getattr(ex, "subject", None)
+            if _subject:
+                entry["subject"] = untrusted.clean(_subject, untrusted.MAX_SUBJECT)
             errors.append(entry)
         except Exception as ex:
             # Anything NOT a hand-authored ValueError is an unexpected internal
             # failure (OCCT crash, KeyError, …) — the raw message is meaningless
             # to a user, so surface the feature + exception type instead and log
             # the full traceback to stderr for debugging.
-            label = f.get("name") or f.get("type") or "feature"
+            #
+            # The sentence names the feature's TYPE, which is ours. The document's
+            # own name for the feature is untrusted text and rides in `subject`
+            # instead of the prose — a renamed feature is exactly as
+            # attacker-influenced as an imported body name.
+            kind = f.get("type") or "feature"
+            label = f.get("name") or kind
             print(f"feature {f.get('id')} ({label}) failed:", file=sys.stderr)
             traceback.print_exc()
-            errors.append(
-                {
-                    "feature_id": f.get("id"),
-                    "message": f"{label} failed ({type(ex).__name__})",
-                }
-            )
+            entry = {
+                "feature_id": f.get("id"),
+                "message": f"{kind} failed ({type(ex).__name__})",
+            }
+            if f.get("name"):
+                entry["subject"] = untrusted.clean(f["name"], untrusted.MAX_SUBJECT)
+            errors.append(entry)
         else:
             if prov:
                 _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all)
@@ -3403,7 +3438,11 @@ def _env_sig():
             except Exception:
                 pass
             here = os.path.dirname(os.path.abspath(__file__))
-            for name in ("builder.py", "geom_select.py", "tessellate.py", "selector_tuning.json"):
+            # untrusted.py is in here because feature errors are PERSISTED into
+            # checkpoints: without it, editing the sanitiser would leave every
+            # cached document replaying the messages the old one produced.
+            for name in ("builder.py", "geom_select.py", "tessellate.py",
+                         "untrusted.py", "selector_tuning.json"):
                 try:
                     with open(os.path.join(here, name), "rb") as fh:
                         h.update(fh.read())

@@ -7,6 +7,7 @@
 // wheel scrolls horizontally, and dragging a chip near an edge auto-scrolls.
 
 import type { DocumentStore } from "../document/store";
+import { featureErrorText } from "../geometry/featureErrorText";
 import { FEATURE_META } from "./featureMeta";
 import { icon, type IconName } from "./icons";
 import { contextMenu } from "./menu";
@@ -146,12 +147,15 @@ export class Timeline {
   }
 
   /** every failing feature this build: id -> message (continue-past-errors can
-   *  yield several; fall back to the single legacy error field). */
+   *  yield several; fall back to the single legacy error field). The message's
+   *  `{body}` slot is filled from the bodies in the same reply — see
+   *  featureErrorText. */
   private errorMap(): Map<string, string> {
     const b = this.store.buildState;
     const m = new Map<string, string>();
+    const bodies = b.result?.bodies;
     for (const e of b.result?.featureErrors ?? []) {
-      if (e.feature_id) m.set(e.feature_id, e.message);
+      if (e.feature_id) m.set(e.feature_id, featureErrorText(e, bodies));
     }
     if (b.errorFeatureId && !m.has(b.errorFeatureId)) {
       m.set(b.errorFeatureId, b.errorMessage ?? "failed");

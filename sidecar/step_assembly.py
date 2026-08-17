@@ -26,8 +26,9 @@ This module owns no geometry operations; it reads and returns shapes.
 """
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass, field
+
+import untrusted
 
 
 @dataclass
@@ -68,13 +69,18 @@ class Assembly:
 
 
 def _clean(name: str) -> str:
-    """Strip Unicode control characters, and nothing else.
+    """Strip Unicode control characters and bound the length.
 
     Control characters are removed because they can break rendering and are
     never meaningful in a product name. Spaces, dots and brackets are KEPT —
     losing them is the bug this module exists to avoid.
+
+    The rule now lives in `untrusted.clean`, which applies it to every
+    document-derived string rather than only to the ones that arrive via STEP,
+    and adds the length cap this function never had: a product name is
+    attacker-supplied and was previously unbounded.
     """
-    return "".join(ch for ch in name if unicodedata.category(ch)[0] != "C").strip()
+    return untrusted.clean(name, untrusted.MAX_SUBJECT)
 
 
 def _label_name(label) -> str:

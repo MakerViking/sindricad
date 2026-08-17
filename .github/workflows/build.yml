@@ -117,6 +117,7 @@ jobs:
           # file is invisible to CI, which is how five suites sat inert for
           # weeks (see below).
           uv run python test_malformed_ops.py
+          uv run python test_untrusted.py
           uv run python test_mass_properties.py
           uv run python test_query_op.py
           uv run python test_assembly.py

@@ -56,6 +56,7 @@ import errors as errors_mod
 
 import occt_smp
 import sysmem
+import untrusted
 
 HOST = "127.0.0.1"
 # Env-overridable so a test/benchmark instance can run beside the app's own
@@ -1002,13 +1003,8 @@ def _rebuild_job(document, tolerance, known=None):
         # failing feature upstream, the user's newest action is what they need
         # to see, not the same old error masking it. All errors ride along in
         # "featureErrors" for richer UI later.
-        result["featureError"] = {
-            "message": errors[-1]["message"],
-            "feature_id": errors[-1].get("feature_id"),
-        }
-        result["featureErrors"] = [
-            {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
-        ]
+        result["featureError"] = _err_entry(errors[-1])
+        result["featureErrors"] = [_err_entry(e) for e in errors]
     return result
 
 
@@ -1075,9 +1071,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
         return _fatal_from(errors)
     if part is None and not live:
         return {"error": {"message": "nothing to export — no bodies built yet"}}
-    warnings = [
-        {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
-    ]
+    warnings = [_err_entry(e) for e in errors]
     any_textured = any(b.get("_textures") for b in live)
     if fmt == "step" and any_textured:
         warnings.append({"message": "texture is not represented in STEP exports"})
@@ -1218,7 +1212,11 @@ def _export_job(document, fmt, path, body=None, separate=False,
     if body:
         tgt = next((b for b in live if b["id"] == body), None)
         if tgt is None:
-            return {"error": {"message": f"body '{body}' not found to export"}}
+            # `body` is whatever the caller asked for, echoed back so they can see
+            # WHICH id missed. Capped and control-stripped: an echo is a channel
+            # like any other, and this one is reachable from a request.
+            return {"error": {"message": "body not found to export",
+                              "subject": untrusted.clean(body, untrusted.MAX_SUBJECT)}}
         if fmt == "glb":
             return _done({"path": _glb_export([tgt], path)})
         return _done({"path": _write_one_body(tgt, path)})
@@ -1295,9 +1293,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
 
     res = {"path": write_project_3mf(meshed, path, palette, body_colors, body_names, settings)}
     if errors:
-        res["warnings"] = [
-            {"message": e["message"], "feature_id": e.get("feature_id")} for e in errors
-        ]
+        res["warnings"] = [_err_entry(e) for e in errors]
     return res
 
 
@@ -1321,7 +1317,8 @@ def _migrate_geometry_job(items):
         try:
             out.append({"id": it["id"], "geom": _shape_to_blob(_brep_b64_to_shape(it["brep"]))})
         except Exception as e:  # noqa: BLE001
-            failed.append({"id": it.get("id"), "message": str(e)})
+            failed.append({"id": it.get("id"),
+                           "message": untrusted.clean(str(e), untrusted.MAX_MESSAGE)})
     return {"items": out, "failed": failed}
 
 
@@ -1376,9 +1373,7 @@ def _mass_properties_job(document, body_ids, checks, prefix=False):
     if unknown:
         res["unknown"] = unknown
     if errors:
-        res["warnings"] = [
-            {k: e[k] for k in ("message", "feature_id", "code") if k in e} for e in errors
-        ]
+        res["warnings"] = [_err_entry(e) for e in errors]
     return res
 
 
@@ -1522,8 +1517,24 @@ def _ok(req_id, result):
     return json.dumps({"id": req_id, "ok": True, "result": result})
 
 
+# Every field a feature-error entry may carry to the wire, in ONE place. The
+# same lesson as _fatal_from's docstring, one level up: these entries are copied
+# at five sites (rebuild, three export paths, the fatal), and a field added to
+# four of them looks correct until the fifth is the one under test.
+#
+# `subject` is untrusted document text; `body_id` is ours. See untrusted.py for
+# why they are separate fields instead of words in `message`.
+_ERR_FIELDS = ("message", "feature_id", "code", "body_id", "subject")
+
+
+def _err_entry(e):
+    """One feature-error entry, reduced to its wire fields."""
+    return {k: e[k] for k in _ERR_FIELDS if k in e}
+
+
 def _err(req_id, message, feature_id=None, code=None):
-    error = {"message": message or "internal error (no message)"}
+    error = {"message": untrusted.clean(message, untrusted.MAX_MESSAGE)
+             or "internal error (no message)"}
     if feature_id is not None:
         error["feature_id"] = feature_id
     if code:
@@ -1539,16 +1550,26 @@ def _fatal_from(errors):
     three paths while looking correct on the fourth. Copy the dict; do not
     re-enumerate its keys."""
     e = dict(errors[0])
-    return {"error": {k: e[k] for k in ("message", "feature_id", "code") if k in e}}
+    return {"error": {k: e[k] for k in _ERR_FIELDS if k in e}}
 
 
 def _error_from(ex, code=None):
     """A caught exception as a job-result error dict, preserving any code it
     carries. Job functions that end in a blanket `except Exception` are the last
     place a code can be lost before the wire — an ambiguousReference raised deep
-    inside _project_source reaches the client through one of these."""
-    return {"error": {"message": str(ex) or type(ex).__name__,
-                      **({"code": c} if (c := errors_mod.code_of(ex, code)) else {})}}
+    inside _project_source reaches the client through one of these.
+
+    `str(ex)` is unbounded and, on an imported document, partly written by
+    whoever made the file, so it is capped here rather than trusted."""
+    out = {"message": untrusted.clean(str(ex), untrusted.MAX_MESSAGE)
+                      or type(ex).__name__}
+    if (c := errors_mod.code_of(ex, code)):
+        out["code"] = c
+    if (b := errors_mod.body_id_of(ex)):
+        out["body_id"] = b
+    if (s := errors_mod.subject_of(ex)):
+        out["subject"] = untrusted.clean(s, untrusted.MAX_SUBJECT)
+    return {"error": out}
 
 
 def _reply_for(req_id, res):
