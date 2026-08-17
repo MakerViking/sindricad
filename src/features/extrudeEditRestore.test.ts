@@ -84,22 +84,52 @@ function doc(entities: SketchEntity[], extrude: Partial<Feature> & object): CadD
 }
 
 /** The three collaborators startEdit reads, plus the real overlay. `beginDrag`
- *  is replaced so the assertion is about the restored selection alone. */
+ *  is replaced so the assertion is about the restored selection alone.
+ *
+ *  `written` captures what commit() hands to `replaceFeature`, which is the only
+ *  place the document actually changes — the selection is just the tool's opinion
+ *  until then. `buildState` is empty on purpose: with no solid in the model
+ *  commit() skips the operation modal, so it runs to completion unattended. */
 function harness(document_: CadDocument) {
   const overlay = new SketchOverlay();
+  const written: { feature: Feature | null } = { feature: null };
   const store = {
     document: document_,
     isParamBound: () => false,
     beginEditPreview: () => {},
+    endEditPreview: () => {},
+    buildState: {},
+    hiddenBodyIds: () => [],
+    nextId: () => "new1",
+    replaceFeature: (_id: string, f: Feature) => {
+      written.feature = f;
+    },
+    addFeature: (f: Feature) => {
+      written.feature = f;
+    },
   };
   const viewport = {
     suspendPicking: false,
-    domElement: { style: {}, addEventListener() {} },
+    pointInSolid: () => false,
+    addToScene() {},
+    removeFromScene() {},
+    projectToScreen: () => ({ x: 0, y: 0 }),
+    domElement: {
+      style: {},
+      addEventListener() {},
+      removeEventListener() {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 800, bottom: 600 }),
+    },
   };
   const tool = new ExtrudeTool(viewport as never, overlay as never, store as never);
-  (tool as unknown as { beginDrag: () => void }).beginDrag = () => {};
+  // the real beginDrag drives DimInput and the THREE preview; only the phase
+  // it sets is load-bearing here (onDown branches on it)
+  (tool as unknown as { beginDrag: () => void; phase: string }).beginDrag = function () {
+    (this as unknown as { phase: string }).phase = "drag";
+  };
   prompt.text = null;
-  return { tool, overlay };
+  const commit = () => (tool as unknown as { commit: () => Promise<void> }).commit();
+  return { tool, overlay, written, commit };
 }
 
 /** Which of the shell's two cells came back selected, named by the entities that
@@ -214,5 +244,122 @@ describe("ExtrudeTool.startEdit restoring a holed area", () => {
     const sel = overlay.selectedRegions();
     expect(sel).toHaveLength(1);
     expect(sel[0]!.region.interior.y).toBeGreaterThan(0); // the TOP half
+  });
+});
+
+// A committed edit is the only thing that changes the document, so the selection
+// is not the contract — what `replaceFeature` receives is. An area the tool could
+// not resolve is still an area of the feature: the sidecar builds it (its own
+// resolution rule differs, and the stored point is still a valid fallback there),
+// so dropping it because the EDIT TOOL could not draw it deletes geometry the
+// model has. One ordinary depth change must never do that.
+describe("ExtrudeTool commit after a PARTIAL restore", () => {
+  /** shell + a disc off to the side; the disc's area is stored under ids that no
+   *  longer exist, so the tool cannot resolve it while the sidecar still can
+   *  fall back to its point. */
+  const partial = () =>
+    doc([...shell(), { id: "disc", type: "circle", x: 200, y: 0, radius: 10 }], {
+      regions: [
+        [45, 0, 0],
+        [200, 0, 0],
+      ],
+      regionEntities: [["outer"], ["gone"]],
+      regionHoleEntities: [[["inner"]], []],
+    });
+
+  it("keeps the unresolved area instead of deleting it", async () => {
+    const { tool, written, commit } = harness(partial());
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regions).toHaveLength(2);
+    expect(f.regionEntities).toHaveLength(2);
+    expect(f.regionHoleEntities).toHaveLength(2);
+    // the unresolved reference survives EXACTLY as the document had it: the tool
+    // has no opinion about an area it could not find, and inventing one (or
+    // dropping it) is a silent geometry change
+    expect(f.regionEntities).toContainEqual(["gone"]);
+    expect(f.regions).toContainEqual([200, 0, 0]);
+  });
+
+  it("still re-anchors the area it DID resolve", async () => {
+    const { tool, written, commit } = harness(partial());
+    tool.startEdit("ex1", () => {});
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    const wall = f.regionEntities!.findIndex((ids) => ids.includes("outer"));
+    expect(wall).toBeGreaterThanOrEqual(0);
+    expect(f.regionHoleEntities![wall]).toEqual([["inner"]]);
+  });
+
+  it("says the areas are KEPT, not that they need re-picking", () => {
+    const { tool } = harness(partial());
+    tool.startEdit("ex1", () => {});
+    expect(prompt.text).toMatch(/1 of 2/);
+    expect(prompt.text).toMatch(/kept/i);
+  });
+
+  it("drops the carried areas once the user changes the area set, and says so", async () => {
+    const { tool, overlay, written, commit } = harness(partial());
+    tool.startEdit("ex1", () => {});
+    // Ctrl-click the disc: the user is re-stating which areas this feature has,
+    // so the references the tool was holding on their behalf stop applying.
+    // `regionUnder` needs a real camera to ray-cast; the gesture under test is
+    // the modifier branch of onDown, so the hit itself is supplied.
+    const disc = overlay.regions.find((wr) => wr.region.entityIds.includes("disc"))!;
+    expect(disc).toBeDefined();
+    (tool as unknown as { regionUnder: () => unknown }).regionUnder = () => disc;
+    (tool as unknown as { onDown: (e: PointerEvent) => void }).onDown({
+      button: 0,
+      ctrlKey: true,
+      clientX: 0,
+      clientY: 0,
+      preventDefault() {},
+    } as unknown as PointerEvent);
+    expect(prompt.text).toMatch(/no longer kept|dropped/i);
+
+    await commit();
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regionEntities).not.toContainEqual(["gone"]);
+  });
+
+  it("carries nothing when NOTHING resolved — that path re-picks from scratch", () => {
+    const d = doc(shell(), {
+      regions: [[45, 0, 0]],
+      regionEntities: [["gone"]],
+      regionHoleEntities: [[["inner"]]],
+    });
+    const { tool } = harness(d);
+    tool.startEdit("ex1", () => {});
+    expect(prompt.text).toMatch(/not found/);
+    expect((tool as unknown as { editCarried: unknown[] }).editCarried).toEqual([]);
+  });
+});
+
+// Adding geometry that CROSSES a saved profile is not the sketch "changing" for
+// that profile: nothing was moved or deleted, and the sidecar still resolves the
+// reference (its rule is "these edges bound exactly one face", which a reference
+// naming only SOME of a cell's boundary satisfies). Demanding that the traced id
+// set match exactly made the tool refuse to reopen a feature the model still
+// builds, which is a worse disagreement than the one being fixed.
+describe("ExtrudeTool.startEdit after an entity was added across the profile", () => {
+  it("still reopens on the piece the stored point is in", () => {
+    // the shell's wall, then a line laid across the whole thing: every cell is
+    // now bounded by {cross, ...}, so no cell carries {outer} alone any more
+    const d = doc([...shell(), { id: "cross", type: "line", x1: -80, y1: 0, x2: 80, y2: 0 }], {
+      regions: [[45, 0, 0]],
+      regionEntities: [["outer"]],
+      regionHoleEntities: [[["inner"]]],
+    });
+    const { tool, overlay } = harness(d);
+
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    const sel = overlay.selectedRegions();
+    expect(sel).toHaveLength(1);
+    // a WALL piece, not one of the two halves of the hole
+    expect(sel[0]!.region.entityIds).toContain("outer");
+    expect(prompt.text ?? "").not.toMatch(/not found/);
   });
 });

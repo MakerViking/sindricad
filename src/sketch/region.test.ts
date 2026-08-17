@@ -246,10 +246,72 @@ describe("regionsByEntities", () => {
     expect(regionsByEntities(shell(), [])).toEqual([]);
   });
 
-  it("a SUBSET of a region's bounding ids is not a match", () => {
-    // set equality, mirroring the sidecar's "these edges bound exactly one face":
-    // a partial reference must fall back rather than resolve to a bigger cell.
+  it("a reference naming only SOME of a cell's boundary still matches it", () => {
+    // Not set equality: the sidecar's rule is "these edges bound exactly one
+    // face", which a partial reference satisfies, and it says so outright
+    // ("A reference that names only SOME of its boundary entities also rebuilds
+    // bigger than its cell, and there the anchor is right"). Refusing here made
+    // drawing ONE line across a saved profile un-reopenable while the model went
+    // on building it. Both halves qualify, so the caller's point breaks the tie.
     const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100), line("cut", -60, 0, 60, 0)]);
-    expect(regionsByEntities(regions, ["sq"])).toEqual([]);
+    expect(regionsByEntities(regions, ["sq"])).toHaveLength(2);
+  });
+
+  it("an EXACT match wins over cells that merely contain the named ids", () => {
+    // A big square with a smaller one inside it and one line crossing both. The
+    // arrangement traces four cells: two halves of the inner square, bounded by
+    // {cut, sq}, and two pieces of the surrounding ring, bounded by
+    // {big, cut, sq} — the ring pieces CONTAIN the reference's ids too. A
+    // reference saved on the inner square must resolve to the inner square, so
+    // the containment tier is only consulted when nothing matches exactly.
+    // Without that order the reference can land on a piece of the ring, which is
+    // a different profile of a different size.
+    const regions = detectRegions("s1", [
+      rect("big", 0, 0, 300, 300),
+      rect("sq", 0, 0, 100, 100),
+      line("cut", -200, 0, 200, 0),
+    ]);
+    expect(regions.map((r) => r.entityIds)).toEqual([
+      ["big", "cut", "sq"],
+      ["big", "cut", "sq"],
+      ["cut", "sq"],
+      ["cut", "sq"],
+    ]);
+    const hit = regionsByEntities(regions, ["cut", "sq"]);
+    expect(hit).toHaveLength(2);
+    for (const r of hit) expect(r.entityIds).not.toContain("big");
+  });
+
+  it("ids the region no longer carries do NOT match, in either tier", () => {
+    // the stored reference names {sq, cut} but `cut` has since been deleted, so
+    // the one live cell carries {sq} alone. Neither equal (different sets) nor
+    // covering (the cell does not include `cut`), so this refuses — matching a
+    // cell bounded by FEWER entities than the reference names would resolve a
+    // reference to a profile that is no longer the one it described.
+    const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100)]);
+    expect(regions[0]!.entityIds).toEqual(["sq"]);
+    expect(regionsByEntities(regions, ["sq", "cut"])).toEqual([]);
+  });
+
+  it("holes DISCRIMINATE two cells that share an outer id set", () => {
+    // A square split in two, each half carrying its own circular hole. Both
+    // halves are bounded by {cut, sq}, so the outer ids cannot tell them apart
+    // and the hole ids are the only thing that can — this is the tie the hole
+    // rule exists for, and without it both halves come back.
+    const regions = detectRegions("s1", [
+      rect("sq", 0, 0, 100, 100),
+      line("cut", -60, 0, 60, 0),
+      circle("ha", 0, 25, 10),
+      circle("hb", 0, -25, 10),
+    ]);
+    expect(regionsByEntities(regions, ["cut", "sq"])).toHaveLength(2);
+
+    const top = regionsByEntities(regions, ["cut", "sq"], [["ha"]]);
+    expect(top).toHaveLength(1);
+    expect(top[0]!.centroid.y).toBeGreaterThan(0);
+
+    const bottom = regionsByEntities(regions, ["cut", "sq"], [["hb"]]);
+    expect(bottom).toHaveLength(1);
+    expect(bottom[0]!.centroid.y).toBeLessThan(0);
   });
 });

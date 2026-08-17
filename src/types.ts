@@ -425,9 +425,18 @@ export type Feature =
       // resolve that to the wrong cell (field 19314fdc, the shell wall that
       // extrudes as its inner loop). The sidecar CUTS these out of the rebuilt
       // face; the edit tool uses them to tell apart two regions that share an
-      // outer loop. Absent on documents written before this field existed, and
-      // absent is NOT the same as empty: it means the holes are unknown, so
-      // neither side may treat the region as solid.
+      // outer loop.
+      //
+      // Absent on documents written before this field existed. An entry of `[]`
+      // reads the SAME as absent, not as "this region has no holes": the sidecar
+      // iterates `hole_eids or []`, so both mean "no holes named here", and both
+      // leave the outer loop rebuilding solid. `[]` is also what a text profile
+      // records, because glyph regions arrive pre-formed from the font
+      // tessellation and their holes carry no entity ids to name (the 'o' of a
+      // sketch text). So an entry of `[]` is a claim about what was RECORDED,
+      // never a claim that the profile is solid, and neither half may read it as
+      // one. An empty GROUP inside a non-empty entry is different again and the
+      // sidecar refuses the whole anchor on it (`if not grp: return None`).
       regionHoleEntities?: string[][][];
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded

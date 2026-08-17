@@ -337,7 +337,8 @@ export class SketchOverlay {
   }
   /** Replace the selection with the regions those ENTITY references name, falling
    *  back per-reference to the stored point only when the reference carries no
-   *  ids. Returns the indices it could NOT resolve, so the caller can say so.
+   *  ids. Returns the references it could NOT resolve — the references and not
+   *  their indices, because the caller has to keep them, not just count them.
    *
    *  This is what `selectRegionsByPoints` cannot do on its own. Re-opening an
    *  extrude whose sketch has since moved resolves the stored point against the
@@ -349,36 +350,52 @@ export class SketchOverlay {
    *  A reference that HAS ids and resolves to nothing is left unresolved rather
    *  than falling through to its point: that fall-through is the corrupting
    *  gesture, and it is silent. Resolved references are anchored to the region's
-   *  FRESH interior, so committing the edit repairs the stale point on disk. */
-  selectRegionsByEntities(sketchId: string, refs: RegionRef[]): number[] {
+   *  FRESH interior, so committing the edit repairs the stale point on disk. The
+   *  CALLER is what makes an unresolved reference safe: ExtrudeTool carries it
+   *  through commit untouched, because "this tool could not draw it" is not a
+   *  reason to delete an area the model still builds.
+   *
+   *  Two limits, both inherited and neither closed here. The selection this
+   *  writes is still POINTS (`selectRegionsByPoints`), and `selectedRegions`
+   *  re-resolves those against every sketch, so a second sketch on the SAME
+   *  plane whose region covers the anchor is selected alongside. Fixing that
+   *  means making the overlay's whole selection identity-based rather than
+   *  point-based, which is a much wider change than this one. And a stale point
+   *  is only fenced in as far as the ids fence it: a reference to an OUTER loop
+   *  can no longer land in that profile's hole (the hole's cell does not carry
+   *  the outer id), but a reference saved on the hole's own cell can still choose
+   *  the wrong piece among cells that all carry its id. */
+  selectRegionsByEntities(sketchId: string, refs: RegionRef[]): RegionRef[] {
     const inSketch = this.regions.filter((wr) => wr.sketchId === sketchId);
     const shapes = inSketch.map((wr) => wr.region);
     const points: [number, number, number][] = [];
-    const unresolved: number[] = [];
-    refs.forEach((ref, i) => {
+    const unresolved: RegionRef[] = [];
+    for (const ref of refs) {
       if (!ref.entityIds.length) {
         // no provenance recorded (pre-0.1.123 document, or a cell whose loop the
         // tracer deduped away): the point is all there is, exactly as before.
         if (ref.point) points.push(ref.point);
-        else unresolved.push(i);
-        return;
+        else unresolved.push(ref);
+        continue;
       }
       const named = new Set(regionsByEntities(shapes, ref.entityIds, ref.holeEntityIds));
       // `shapes` is `inSketch`'s own Region objects, so identity maps them back
       let hits = inSketch.filter((wr) => named.has(wr.region));
       if (hits.length > 1 && ref.point) {
-        // the ids cannot tell these cells apart (two halves of a split square,
-        // the glyphs of one text). The stored point breaks the tie, and it can
-        // only choose among cells the ids already permit — so even a stale point
-        // can no longer wander into a hole, whose cell carries different ids.
+        // the ids cannot tell these cells apart: two halves of a split square
+        // carry the same set, the glyphs of one text all carry the text's id,
+        // and a reference matched by containment names several pieces of what it
+        // used to be. The stored point breaks the tie among cells the ids
+        // already permit, which is narrower than resolving it against the whole
+        // sketch and is the only thing that keeps it out of a hole.
         const p = ref.point;
         const narrowed = hits.filter((wr) => this.pointHitsRegion(p, wr));
         if (narrowed.length) hits = narrowed;
       }
       const hit = hits.length === 1 ? hits[0] : undefined;
       if (hit) points.push([hit.interior3D.x, hit.interior3D.y, hit.interior3D.z]);
-      else unresolved.push(i);
-    });
+      else unresolved.push(ref);
+    }
     this.selectRegionsByPoints(points);
     return unresolved;
   }
