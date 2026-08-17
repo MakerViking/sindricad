@@ -138,24 +138,35 @@ jobs:
           cp bin/planegcs.js   /out/patched.planegcs.js
           cp bin/planegcs.wasm /out/patched.planegcs.wasm
 
-      # The claim being tested is "JS glue only, zero solver risk". If the wasm
-      # moved, that claim is void and the change is no longer a drop-in.
-      - name: The wasm MUST be unchanged, or this is not a glue-only change
+      # The wasm is RECORDED, not gated, and that is a measured decision rather
+      # than a softened one. Three runs at the same pinned commit in the same
+      # container: run 1 had control == published and patched != control; run 2
+      # had the exact opposite; run 3, single-threaded, had control != published
+      # AND patched != control. The JS glue reproduced byte for byte in all
+      # three. So the wasm compile is not reproducible in this toolchain and a
+      # byte comparison of it means nothing in either direction - on run 1 it
+      # said "the flag changed the solver" and on run 2 it said it did not.
+      #
+      # This does not weaken the vendoring, because the wasm IS NOT VENDORED.
+      # The Function-constructor sink is in the glue; the app keeps loading the
+      # PUBLISHED wasm (src/sketch/solver.ts imports it by ?url from the npm
+      # package). Shipping only the glue keeps the solver binary exactly as it
+      # is today, which is a stronger guarantee than any checksum here could be.
+      #
+      # What still has to be argued behaviourally, and cannot be argued from a
+      # hash: that the patched glue drives the published wasm correctly. That is
+      # what the solver suites are for, and it is the gate that belongs on the
+      # vendoring commit, not on this build.
+      - name: Record the wasm hashes (not a gate - see the note above)
         run: |
           ctl=$(sha256sum /out/control.planegcs.wasm | cut -d' ' -f1)
           pat=$(sha256sum /out/patched.planegcs.wasm | cut -d' ' -f1)
           echo "control wasm: $ctl"
           echo "patched wasm: $pat"
           echo "published wasm: $PUBLISHED_WASM_SHA256"
-          if [ "$ctl" != "$pat" ]; then
-            echo "::error::The flag changed the WASM, not just the JS glue. This is NOT a drop-in."
-            exit 1
+          if [ "$ctl" != "$PUBLISHED_WASM_SHA256" ]; then
+            echo "::warning::The control wasm does not match the published one. Expected: this build is not reproducible for the wasm. The wasm is not vendored, so this does not block."
           fi
-          if [ "$pat" != "$PUBLISHED_WASM_SHA256" ]; then
-            echo "::error::The built wasm does not match the published one."
-            exit 1
-          fi
-          echo "WASM identical to the published binary. The solver itself is untouched."
 
       - name: The sink MUST be gone from the patched glue
         run: |
@@ -184,7 +195,10 @@ jobs:
             echo "run:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo
             echo "The unpatched control build reproduced the published 1.1.7 planegcs.js"
-            echo "byte for byte, and the wasm is identical with and without the flag."
+            echo "byte for byte. The WASM is deliberately NOT compared: it does not build"
+            echo "reproducibly in this toolchain (see the workflow comments), and it is not"
+            echo "vendored - the app keeps loading the published wasm from the npm package."
+            echo "Only planegcs.js is intended for vendoring."
             echo
             cat /out/SHA256SUMS.txt
           } > /out/PROVENANCE.txt
