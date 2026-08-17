@@ -195,10 +195,28 @@ def parse_feature_handler_keys():
     return set(re.findall(r'"([^"]+)"\s*:\s*_handle_', m.group(1)))
 
 
+_SOURCE_CACHE = {}
+
+
+def _module_source(name):
+    """Source text and parsed AST of a sidecar module, read and parsed ONCE.
+
+    Three separate scrapers below want server.py, and a run of
+    test_malformed_ops.py calls all three: without this that is three reads and
+    three AST parses of a ~2900-line module for one test file. Cached at module
+    scope because these files do not change while a test process runs."""
+    hit = _SOURCE_CACHE.get(name)
+    if hit is None:
+        src = open(os.path.join(SIDECAR_DIR, name)).read()
+        hit = (src, ast.parse(src))
+        _SOURCE_CACHE[name] = hit
+    return hit
+
+
 def parse_server_ops():
     """The op strings server.py dispatches — parsed from its `op == "..."`
     branches AT RUNTIME."""
-    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
+    src, _tree = _module_source("server.py")
     return set(re.findall(r'op\s*==\s*"([^"]+)"', src))
 
 
@@ -274,8 +292,7 @@ def parse_request_fields(allow_dynamic=None):
 
     Returns the raw scrape including the transport envelope (`id`, `op`,
     `binary`, `chunked`); the caller decides what to exclude and must say why."""
-    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
-    tree = ast.parse(src)
+    src, tree = _module_source("server.py")
     owners = _function_owners(tree)
     parents = {}
     for node in ast.walk(tree):
@@ -324,8 +341,8 @@ def parse_required_fields():
     reason. A test can then derive its malformed payloads from the very table
     the production guard validates against, instead of hand-copying field names
     that drift the moment an op grows one."""
-    src = open(os.path.join(SIDECAR_DIR, "server.py")).read()
-    for node in ast.walk(ast.parse(src)):
+    _src, tree = _module_source("server.py")
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
         if not any(getattr(t, "id", None) == "_REQUIRED_FIELDS" for t in node.targets):

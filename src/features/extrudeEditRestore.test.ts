@@ -39,7 +39,7 @@ const promptEl = {
     remove() {},
   },
 };
-(globalThis as unknown as { document: unknown }).document = {
+(globalThis as unknown as { document: unknown }).document ??= {
   createElement: () => ({
     style: {},
     appendChild() {},

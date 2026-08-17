@@ -79,22 +79,25 @@ fi
 # vendored one.
 echo
 echo "installed glue vs vendored"
+# $glue and $sum are section 2's, deliberately reused: one path literal and one
+# sha256sum of one artifact. Section 2 already guarded that sha256sum exists, so
+# `$sum` is empty when it does not, which this branch has to respect.
 vendored_sums="vendor/planegcs/SHA256SUMS.txt"
-installed="node_modules/@salusoft89/planegcs/dist/planegcs_dist/planegcs.js"
 if [ ! -f "$vendored_sums" ]; then
   echo "  no vendored artifact in the tree"
   if [ "$tightened" = yes ]; then
     note "the CSP is tightened and there is no vendored glue to install, so the
       stock artifact is what gets bundled and the solver will not start."
   fi
-elif [ ! -f "$installed" ]; then
+elif [ ! -f "$glue" ]; then
   echo "  package not installed (run npm ci)"
+elif [ -z "${sum:-}" ]; then
+  echo "  no sha256sum on PATH — cannot identify the installed glue"
 else
   want=$(grep " planegcs.js\$" "$vendored_sums" | cut -d' ' -f1)
-  got=$(sha256sum "$installed" | cut -d' ' -f1)
-  if [ "$want" = "$got" ]; then
+  if [ "$want" = "$sum" ]; then
     echo "  installed glue IS the vendored build"
-    if grep -q 'var a=Function' "$installed"; then
+    if grep -q 'var a=Function' "$glue"; then
       note "the vendored glue still contains embind's Function-constructor helper.
       It was built without -s DYNAMIC_EXECUTION=0, or the wrong file was vendored."
     else

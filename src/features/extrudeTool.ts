@@ -21,11 +21,16 @@ import { choose } from "../ui/choice";
 type Phase = "pick" | "drag";
 type Op = "new" | "join" | "cut" | "intersect";
 
-/** One area of the feature being edited that the tool could not resolve, held
- *  exactly as the document has it so commit can put it back untouched. */
-type CarriedRegion = {
-  region: [number, number, number];
-  entityIds: string[];
+/** One area of the feature being edited, in the document's own shape.
+ *
+ *  This IS `RegionRef` with nothing optional: `point` and `holeEntityIds` are
+ *  optional there because a caller may not record them, but an area that is
+ *  going back into the document has both. Declaring it as a narrowing rather
+ *  than a second type keeps one description of the persisted triple
+ *  (`regions` / `regionEntities` / `regionHoleEntities`, one index at a time),
+ *  so a fourth field is added in one place and not three. */
+type CarriedRegion = RegionRef & {
+  point: [number, number, number];
   holeEntityIds: string[][];
 };
 
@@ -172,20 +177,16 @@ export class ExtrudeTool {
       // build is unaffected either way. They are dropped only when the user
       // changes the area set, because that gesture re-states the set — see
       // onDown.
-      this.editCarried = unresolved.flatMap((ref) =>
-        // a reference with no point names nothing and points nowhere, so there
-        // is nothing to preserve; every reference built above has one.
-        ref.point
-          ? [{
-              region: ref.point,
-              entityIds: ref.entityIds,
-              // absent hole ids carry as `[]`, which is what the sidecar already
-              // makes of absent (`for grp in (hole_eids or [])`), so this records
-              // no claim the document did not already make.
-              holeEntityIds: ref.holeEntityIds ?? [],
-            }]
-          : [],
-      );
+      // `unresolved` are already RegionRefs built from the document at the top
+      // of this method, so they carry a point by construction; absent hole ids
+      // carry as `[]`, which is what the sidecar already makes of absent
+      // (`for grp in (hole_eids or [])`), recording no claim the document did
+      // not already make.
+      this.editCarried = unresolved.map((ref) => ({
+        ...ref,
+        point: ref.point ?? [0, 0, 0],
+        holeEntityIds: ref.holeEntityIds ?? [],
+      }));
       this.beginDrag();
       if (unresolved.length) {
         // beginDrag sets its own prompt, so this replaces it. An area whose ids
@@ -539,6 +540,14 @@ export class ExtrudeTool {
     const first = this.selected[0];
     if (!first) return;
     const hiddenBodies = this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds();
+    const areas: CarriedRegion[] = [
+      ...this.selected.map((wr) => ({
+        point: [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z] as [number, number, number],
+        entityIds: wr.region.entityIds,
+        holeEntityIds: wr.region.holeEntityIds ?? [],
+      })),
+      ...this.editCarried,
+    ];
     const feature: Feature = {
       id: this.editId ?? this.store.nextId(),
       type: "extrude",
@@ -552,34 +561,27 @@ export class ExtrudeTool {
       sketch: first.sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
-      regions: [
-        ...this.selected.map(
-          (wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z] as [number, number, number],
-        ),
-        ...this.editCarried.map((c) => c.region),
-      ],
       // The entities that bound each area, recorded so the reference survives the
       // user moving the geometry it was picked on. `regions` alone is a world
       // point, and a point does not move with the circle it was inside — it ends
-      // up in whatever profile now covers it (field report a20cca53).
-      //
-      // `editCarried` is appended to all three arrays, in step: those are the
-      // areas of the feature being edited that this tool could not resolve, and
-      // they go back untouched. Writing only `selected` would delete them, so a
-      // depth change on a feature whose sketch has partly moved would quietly
-      // shrink the solid. Order across areas carries no meaning (they union), so
-      // appending is safe.
-      regionEntities: [
-        ...this.selected.map((wr) => wr.region.entityIds),
-        ...this.editCarried.map((c) => c.entityIds),
-      ],
-      // the holes' own bounding entities, so the sidecar can rebuild the face
-      // WITH its holes. Without these it rebuilds a SOLID face whose centre sits
+      // up in whatever profile now covers it (field report a20cca53). The holes'
+      // own bounding entities ride along too, so the sidecar can rebuild the face
+      // WITH its holes; without them it rebuilds a SOLID face whose centre sits
       // inside the hole and resolves to the wrong cell (field 19314fdc).
-      regionHoleEntities: [
-        ...this.selected.map((wr) => wr.region.holeEntityIds ?? []),
-        ...this.editCarried.map((c) => c.holeEntityIds),
-      ],
+      //
+      // Built as ONE list of areas and then projected, rather than three spreads
+      // kept in step by hand. The index correspondence between the three arrays
+      // is the thing this whole path exists to protect, so it is established
+      // structurally and not re-asserted three times.
+      //
+      // `editCarried` are the areas of the feature being edited that this tool
+      // could not resolve, and they go back untouched. Writing only `selected`
+      // would delete them, so a depth change on a feature whose sketch has partly
+      // moved would quietly shrink the solid. Order across areas carries no
+      // meaning (they union), so appending is safe.
+      regions: areas.map((a) => a.point),
+      regionEntities: areas.map((a) => a.entityIds),
+      regionHoleEntities: areas.map((a) => a.holeEntityIds),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let

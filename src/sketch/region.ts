@@ -305,15 +305,13 @@ export function pointInRegion(p: THREE.Vector2, region: Region): boolean {
   return !region.holes.some((h) => pointInLoop(p, h));
 }
 
-/** unordered id-set equality. The tracer sorts its ids (`[...eids].sort()`) but
- *  the fast path and glyphRegion emit singletons unsorted, and a stored reference
- *  is only as ordered as whatever wrote it — so identity is compared as a SET. */
+/** unordered id-set equality, expressed as containment both ways — which is
+ *  what it is, and saying so keeps ONE relation instead of two predicates that
+ *  must agree. The tracer sorts its ids (`[...eids].sort()`) but the fast path
+ *  and glyphRegion emit singletons unsorted, and a stored reference is only as
+ *  ordered as whatever wrote it, so identity is compared as a SET throughout. */
 function sameIds(a: readonly string[], b: readonly string[]): boolean {
-  const A = new Set(a);
-  const B = new Set(b);
-  if (A.size !== B.size) return false;
-  for (const id of A) if (!B.has(id)) return false;
-  return true;
+  return idsCoveredBy(a, b) && idsCoveredBy(b, a);
 }
 
 /** Do two lists of hole-id groups describe the same holes? Order-insensitive on
@@ -392,9 +390,14 @@ export function regionsByEntities(
     const byHoles = cands.filter((r) => sameHoleIds(r.holeEntityIds, holeEids));
     return byHoles.length ? byHoles : cands;
   };
-  const exact = regions.filter((r) => sameIds(r.entityIds, eids));
-  if (exact.length) return narrow(exact);
-  return narrow(regions.filter((r) => idsCoveredBy(eids, r.entityIds)));
+  // ONE narrowing pass, because exact is a special case of covering: a region
+  // whose ids equal the reference's necessarily contains them. Filtering the
+  // covered set again — rather than scanning `regions` twice with two different
+  // predicates — puts that subset relationship in the code instead of leaving a
+  // reader to derive it, and makes the tier order read as the preference it is.
+  const covered = regions.filter((r) => idsCoveredBy(eids, r.entityIds));
+  const exact = covered.filter((r) => idsCoveredBy(r.entityIds, eids));
+  return narrow(exact.length ? exact : covered);
 }
 
 /** absolute area of a closed polygon (shoelace) */

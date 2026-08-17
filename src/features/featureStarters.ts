@@ -86,6 +86,19 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
    *
    *  Not an "error" class: this is a normal modal refusal, and setStatus
    *  breadcrumbs every error, which repeated clicks would flood. */
+  /** "you need a body for this" — the companion to busy(), and one wording.
+   *
+   *  Eleven starters spelled this guard out by hand and the copies had already
+   *  drifted into three phrasings of one sentence ("create or import", "import
+   *  or create", and one with no tool name at all). Same reasoning as
+   *  TOOL_BUSY_MESSAGE: a refusal the user reads should not depend on which
+   *  button they happened to press. */
+  const needsBody = (tool: string) => {
+    if (hasBody()) return false;
+    setStatus(`${tool}: create or import a body first`, "");
+    return true;
+  };
+
   const busy = () => {
     if (!toolBusy()) return false;
     setStatus(TOOL_BUSY_MESSAGE, "");
@@ -280,10 +293,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Reuses the plane picker + offset gizmo so the cut lands exactly where you want.
   async function startSplit() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Split: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Split")) return;
     // "select that plane and cut": a selected construction plane cuts ALL visible
     // bodies by id (startCutByPlane handles the keep-side prompt).
     const selId = getSelectedFeature();
@@ -315,10 +325,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // of currently-visible body ids.
   async function startCutByPlane(planeId: string) {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Cut: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Cut")) return;
     const keep = await choose<"both" | "top" | "bottom">("Cut — keep which side?", [
       { value: "both", label: "Both", hint: "two bodies" },
       { value: "top", label: "Top", hint: "+normal side" },
@@ -401,10 +408,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // fewer faces, but coarsens curved regions).
   function startSimplifyMesh() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Simplify Mesh: import or create a body first", "");
-      return;
-    }
+    if (needsBody("Simplify Mesh")) return;
     store.addFeature({ id: store.nextId(), type: "simplifyMesh", tolerance: 1 } as Feature);
   }
 
@@ -416,10 +420,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // can't confidently clean passes through unchanged.
   function startCleanUp() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Clean Up: import or create a body first", "");
-      return;
-    }
+    if (needsBody("Clean Up")) return;
     store.addFeature({ id: store.nextId(), type: "cleanUp" } as Feature);
     setStatus("Clean Up added — bodies unified + debris collapsed from here on", "");
   }
@@ -428,10 +429,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // an import). Default factor 1 — set it in the inspector.
   function startScale() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Scale: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Scale")) return;
     store.addFeature({ id: store.nextId(), type: "scale", factor: 1 } as Feature);
   }
 
@@ -439,10 +437,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // and angles in the inspector.
   function startMove() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Move: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Move")) return;
     const bodies = store.buildState.result?.bodies ?? [];
     let ids = viewport.getSelectedBodies();
     if (!ids.length && bodies.length) {
@@ -568,10 +563,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     onPick: (sel: Selector, at: { x: number; y: number }) => void,
   ) {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Create or import a body first", "");
-      return;
-    }
+    if (needsBody("Shell")) return;
     setPlanePick(true);
     viewport.suspendPicking = true;
     setPrompt(promptText);
@@ -725,10 +717,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // hands off to the tool directly.
   function startTexture() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Texture: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Texture")) return;
     texture.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
@@ -738,10 +727,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // glyphs land.
   function startTextOnFace() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Text on Face: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Text on Face")) return;
     textOnFace.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
@@ -749,10 +735,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // counts / spacing / angle in the inspector.
   async function startPattern() {
     if (busy()) return;
-    if (!hasBody()) {
-      setStatus("Pattern: create or import a body first", "");
-      return;
-    }
+    if (needsBody("Pattern")) return;
     const kind = await choose<"rect" | "circular">("Pattern type", [
       { value: "rect", label: "Rectangular", hint: "grid" },
       { value: "circular", label: "Circular", hint: "around axis" },

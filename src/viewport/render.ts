@@ -395,8 +395,7 @@ export function visibleBodyMeshes(view: ModelView): THREE.Mesh[] {
  *  mesh's own `userData.owner` (set in buildBodyMesh) — `hit.faceIndex` is a
  *  LOCAL triangle index into whichever body mesh was actually hit. */
 export function faceIdOfHit(hit: THREE.Intersection): number {
-  const owner = hit.object.userData.owner as BodyMesh | undefined;
-  return owner?.faceIds[hit.faceIndex ?? 0] ?? 0;
+  return bodyOfHit(hit)?.faceIds[hit.faceIndex ?? 0] ?? 0;
 }
 
 /** The BodyMesh a raycast Intersection landed on — companion to faceIdOfHit,
