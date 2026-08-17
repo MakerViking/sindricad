@@ -2215,6 +2215,39 @@ def _building_frame(ws, rid):
     return _send
 
 
+def _job_entry(fn, *args):
+    """Run a supervised job, announcing in the heartbeat that it has STARTED.
+
+    Field 383e7bfd: "one operation stalled for over 60 s" on a document with
+    NOTHING in it — no bodies, no sketches. Two faults compounded to produce it.
+
+    The supervisor's clock used to start at SUBMIT (`last_t` was set right after
+    run_in_executor). The pool is max_workers=1 and _warmup is submitted at pool
+    creation, so the first job after a pool comes up QUEUES behind a cold
+    build123d/OCP import and spent its whole budget without executing a single
+    instruction. A job that has not started cannot have stalled. Worse, the reap
+    recycles the pool, which submits a fresh warm-up, so the retry queues behind
+    another cold import: a spiral rather than a one-off.
+
+    The second fault is why an EMPTY document is the shape that surfaced it. The
+    heartbeat's only writer is `builder.on_feature_tick`, which fires per feature
+    and per tessellated body — a zero-feature rebuild never ticked at all, so
+    nothing could reset the clock and STALL_TIMEOUT degenerated into a plain wall
+    clock over queue plus execution.
+
+    One tick here fixes both: _run_stall resets its clock whenever the counter
+    moves, so the budget measures EXECUTION stall, and an empty document gets the
+    one tick it could never otherwise produce. It deliberately does NOT touch
+    _HB_IDX — no feature is in progress yet, and -1 already means "none".
+
+    This does not lengthen the budget. A job that starts and then wedges still
+    stops ticking and is still reaped after STALL_TIMEOUT; only the clock's
+    origin moves, from when the job was queued to when it began."""
+    if _HB is not None:
+        _HB.value += 1
+    return fn(*args)
+
+
 async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     """Run a rebuild-class job supervised by PROGRESS instead of wall clock: kill
     the worker only when the shared heartbeat hasn't moved for `stall` seconds.
@@ -2236,13 +2269,18 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
     token = _CANCEL.get()
     cancelled = lambda: bool(token and token["cancelled"])
     try:
-        fut = loop.run_in_executor(_pool, fn, *args)
+        fut = loop.run_in_executor(_pool, _job_entry, fn, *args)
     except BrokenProcessPool:
         if cancelled():
             return _cancelled_result()
         return _on_broken(gen)
     last = _HB.value if _HB is not None else 0
     last_t = loop.time()
+    # The pool's warm-up, if this job was submitted before it finished. With
+    # max_workers=1 a job submitted while _warmup still holds the worker cannot
+    # start, and time it spends WAITING must not be charged to its stall budget —
+    # see _job_entry for the field report this comes from.
+    warm = _warm[1] if _warm is not None and _warm[0] == gen else None
     while True:
         try:
             res = await asyncio.wait_for(asyncio.shield(fut), timeout=1.0)
@@ -2267,6 +2305,13 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                 if cur != last:
                     last, last_t = cur, loop.time()
                     continue
+            # Still queued behind the worker's cold start: hold the clock at now
+            # rather than reaping a job that has not run an instruction. A broken
+            # bring-up is NOT silently waited on forever — it resolves this future
+            # with BrokenProcessPool, which the handler below already owns.
+            if warm is not None and not warm.done():
+                last_t = loop.time()
+                continue
             if loop.time() - last_t > stall:
                 # Say so in the log. This watchdog previously recycled the pool
                 # and returned its message to the UI without printing a thing,

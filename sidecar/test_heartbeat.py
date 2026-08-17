@@ -234,9 +234,13 @@ class _StubValue:
         self.value = v
 
 
-def _drive_run_stall(job, stall):
+def _drive_run_stall(job, stall, warm=None):
     """Run server._run_stall(job) against a thread pool and a stub heartbeat.
-    Returns (result, elapsed_seconds)."""
+    Returns (result, elapsed_seconds).
+
+    `warm` stands in for the pool's warm-up future. Passing one is what
+    exercises the queued-behind-the-warm-up branch; leaving it None keeps the
+    older tests on the path they were written for."""
     import asyncio
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
@@ -244,12 +248,13 @@ def _drive_run_stall(job, stall):
     import server
 
     saved = (server._pool, server._HB, server._HB_IDX, server._kill_pool,
-             server._new_pool, server._env_broken)
+             server._new_pool, server._env_broken, server._warm)
     pool = ThreadPoolExecutor(max_workers=1)
     hb = _StubValue(0)
     try:
         server._pool, server._HB, server._HB_IDX = pool, hb, _StubValue(-1)
         server._env_broken = False
+        server._warm = None if warm is None else (server._pool_gen, warm)
         # Stubbed so a reap exercises the supervision decision without tearing
         # down a real process pool underneath the test.
         server._kill_pool = lambda _p: None
@@ -263,7 +268,7 @@ def _drive_run_stall(job, stall):
         return asyncio.run(_go())
     finally:
         (server._pool, server._HB, server._HB_IDX, server._kill_pool,
-         server._new_pool, server._env_broken) = saved
+         server._new_pool, server._env_broken, server._warm) = saved
         pool.shutdown(wait=False)
 
 
@@ -323,6 +328,50 @@ def test_the_document_ops_no_longer_use_a_wall_clock():
     print(f"{PASS} export/exportProject/interference/projectGeometry all on _run_stall")
 
 
+def _silent_slow_job(hb):
+    """Never ticks, and runs past the stall window — the shape of a job that is
+    simply QUEUED rather than wedged."""
+    import time as _time
+    _time.sleep(2.5)
+    return {"ok": True, "did": "queued work"}
+
+
+# --- field 383e7bfd: a 60 s stall on a document with NOTHING in it ------------
+# The supervisor's clock used to run while a job sat in the queue behind the
+# pool's cold warm-up (max_workers=1), so on a slow machine the first rebuild
+# was reaped without executing an instruction — and the reap recycled the pool,
+# putting the retry behind another cold import. These two pin BOTH directions:
+# queue time is not charged, and a job that has actually started still is.
+
+def test_a_job_queued_behind_the_warmup_is_not_reaped():
+    """A job that never ticks and outlives the stall window survives while the
+    warm-up is still holding the worker. Without the guard this is reaped at 1 s
+    and the caller is told the kernel stalled, on a document that may be empty."""
+    from concurrent.futures import Future
+
+    warm = Future()  # deliberately never resolved: the worker is still coming up
+    res, elapsed = _drive_run_stall(_silent_slow_job, stall=1.0, warm=warm)
+    assert res.get("did") == "queued work", f"a queued job was reaped: {res}"
+    assert elapsed >= 2.5, f"returned too early ({elapsed:.2f}s) to prove anything"
+    print(f"{PASS} a job queued behind the warm-up survived {elapsed:.1f}s under a 1.0s stall")
+
+
+def test_a_wedged_job_is_still_reaped_once_the_worker_is_up():
+    """The counter-check, and the one that matters: the guard must not disable
+    the watchdog. With the warm-up finished, a job that ticks and then wedges is
+    still reaped on the same budget as before."""
+    from concurrent.futures import Future
+
+    warm = Future()
+    warm.set_result(True)  # the worker came up; nothing is queued ahead
+    res, elapsed = _drive_run_stall(_stalling_job, stall=1.0, warm=warm)
+    err = (res or {}).get("error") or {}
+    assert "stalled for over" in str(err.get("message", "")), \
+        f"a wedged job was NOT reaped — the watchdog is disabled: {res}"
+    assert elapsed < 5.0, f"reaped far too late ({elapsed:.2f}s)"
+    print(f"{PASS} a wedged job was still reaped after {elapsed:.1f}s once the worker was up")
+
+
 if __name__ == "__main__":
     print("heartbeat ticks (stall watchdog)")
     test_export_mesh_ticks_on_every_tier()
@@ -333,5 +382,7 @@ if __name__ == "__main__":
     test_progress_tick_survives_a_broken_hook()
     test_long_but_ticking_work_is_never_reaped()
     test_silent_work_is_reaped_with_a_stalled_message()
+    test_a_job_queued_behind_the_warmup_is_not_reaped()
+    test_a_wedged_job_is_still_reaped_once_the_worker_is_up()
     test_the_document_ops_no_longer_use_a_wall_clock()
     print("all heartbeat tests passed")

@@ -52,6 +52,22 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **An empty document no longer reports that the geometry engine stalled.**
+  Reported from the field with a screenshot: "one operation stalled for over
+  60 s, the geometry kernel was restarted" on a document with no bodies and no
+  sketches, on a machine slow enough to be drawing in software.
+
+  Nothing was stuck. The engine runs one worker, and the first job after launch
+  waits behind that worker's own start-up, which loads the geometry libraries
+  and takes a moment. That wait was being counted against the job's own time
+  limit, so on a slow enough machine the first rebuild ran out of time before it
+  had started, and restarting the engine only sent the next attempt to the back
+  of the same queue. An empty document was the shape that showed it, because it
+  has no features to report progress from.
+
+  Waiting for the engine to come up is no longer counted as the job being stuck.
+  A job that really does wedge is still stopped on the same limit as before.
+
 - **Small faces can be selected again, and at a shallow angle they can be
   selected at all.** Reported from the field: a small face is nearly unclickable,
   and tilting the view takes away the last of it.
