@@ -182,12 +182,20 @@ jobs:
           } > /out/PROVENANCE.txt
           cat /out/PROVENANCE.txt
 
+      # always(), because a FAILED gate is exactly when the outputs are worth
+      # having. The first run refused to emit anything when the wasm turned out
+      # to differ, which was correct as a gate and useless as evidence: nothing
+      # survived to say WHAT differed. The gate still fails the job; it just no
+      # longer takes the artifacts down with it.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: planegcs-glue-dynamic-execution-0
           path: |
             /out/patched.planegcs.js
             /out/control.planegcs.js
+            /out/patched.planegcs.wasm
+            /out/control.planegcs.wasm
             /out/PROVENANCE.txt
             /out/SHA256SUMS.txt
-          if-no-files-found: error
+          if-no-files-found: warn
