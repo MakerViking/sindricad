@@ -16,6 +16,7 @@ import {
   entityPolyline,
   glyphRegion,
   pointInRegion,
+  regionsByEntities,
   type Region,
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
@@ -35,6 +36,19 @@ export interface WorldRegion {
   fill?: THREE.Mesh; // the fill mesh, for hover/selection recoloring
   groupId?: string; // regions selected/hovered as a unit (all glyphs of one text)
   entityId?: string; // the source text entity, for double-click-to-edit
+}
+
+/** One stored region reference as a feature persists it: the entities that bound
+ *  the area, and the interior point recorded alongside them. The ids are what
+ *  survives the user moving the geometry; the point is the legacy form and the
+ *  tie-break. Mirrors the extrude feature's `regionEntities` / `regionHoleEntities`
+ *  / `regions` triple (src/types.ts), one index at a time. */
+export interface RegionRef {
+  entityIds: string[];
+  /** parallel to the region's holes; `undefined` means the reference does not
+   *  record them (not that the region has none) — see regionsByEntities */
+  holeEntityIds?: string[][] | undefined;
+  point?: [number, number, number] | undefined;
 }
 
 export const CURVE_COLOR = 0x5b9bff; // under-constrained blue
@@ -320,6 +334,53 @@ export class SketchOverlay {
   selectRegionsByPoints(points: [number, number, number][]) {
     this.selectedRegionPoints = points.map((p) => [p[0], p[1], p[2]]);
     this.recolorFills();
+  }
+  /** Replace the selection with the regions those ENTITY references name, falling
+   *  back per-reference to the stored point only when the reference carries no
+   *  ids. Returns the indices it could NOT resolve, so the caller can say so.
+   *
+   *  This is what `selectRegionsByPoints` cannot do on its own. Re-opening an
+   *  extrude whose sketch has since moved resolves the stored point against the
+   *  cells that are there NOW, and on a holed profile the point can be inside the
+   *  hole — containment succeeds, so the HOLE's own region comes back selected
+   *  and committing writes it over the feature (field 19314fdc, the shell wall
+   *  that extrudes as its inner loop; the anchor half of field a20cca53).
+   *
+   *  A reference that HAS ids and resolves to nothing is left unresolved rather
+   *  than falling through to its point: that fall-through is the corrupting
+   *  gesture, and it is silent. Resolved references are anchored to the region's
+   *  FRESH interior, so committing the edit repairs the stale point on disk. */
+  selectRegionsByEntities(sketchId: string, refs: RegionRef[]): number[] {
+    const inSketch = this.regions.filter((wr) => wr.sketchId === sketchId);
+    const shapes = inSketch.map((wr) => wr.region);
+    const points: [number, number, number][] = [];
+    const unresolved: number[] = [];
+    refs.forEach((ref, i) => {
+      if (!ref.entityIds.length) {
+        // no provenance recorded (pre-0.1.123 document, or a cell whose loop the
+        // tracer deduped away): the point is all there is, exactly as before.
+        if (ref.point) points.push(ref.point);
+        else unresolved.push(i);
+        return;
+      }
+      const named = new Set(regionsByEntities(shapes, ref.entityIds, ref.holeEntityIds));
+      // `shapes` is `inSketch`'s own Region objects, so identity maps them back
+      let hits = inSketch.filter((wr) => named.has(wr.region));
+      if (hits.length > 1 && ref.point) {
+        // the ids cannot tell these cells apart (two halves of a split square,
+        // the glyphs of one text). The stored point breaks the tie, and it can
+        // only choose among cells the ids already permit — so even a stale point
+        // can no longer wander into a hole, whose cell carries different ids.
+        const p = ref.point;
+        const narrowed = hits.filter((wr) => this.pointHitsRegion(p, wr));
+        if (narrowed.length) hits = narrowed;
+      }
+      const hit = hits.length === 1 ? hits[0] : undefined;
+      if (hit) points.push([hit.interior3D.x, hit.interior3D.y, hit.interior3D.z]);
+      else unresolved.push(i);
+    });
+    this.selectRegionsByPoints(points);
+    return unresolved;
   }
   /** Hover-highlight one region's fill (or clear with null). */
   setHoverRegion(wr: WorldRegion | null) {

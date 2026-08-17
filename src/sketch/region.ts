@@ -305,6 +305,71 @@ export function pointInRegion(p: THREE.Vector2, region: Region): boolean {
   return !region.holes.some((h) => pointInLoop(p, h));
 }
 
+/** unordered id-set equality. The tracer sorts its ids (`[...eids].sort()`) but
+ *  the fast path and glyphRegion emit singletons unsorted, and a stored reference
+ *  is only as ordered as whatever wrote it — so identity is compared as a SET. */
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  const A = new Set(a);
+  const B = new Set(b);
+  if (A.size !== B.size) return false;
+  for (const id of A) if (!B.has(id)) return false;
+  return true;
+}
+
+/** Do two lists of hole-id groups describe the same holes? Order-insensitive on
+ *  BOTH levels: hole order follows loop-discovery order, so reordering the
+ *  entities in a sketch reorders the holes without changing the geometry. */
+function sameHoleIds(a: readonly string[][], b: readonly string[][]): boolean {
+  if (a.length !== b.length) return false;
+  const spare = [...b];
+  for (const grp of a) {
+    const i = spare.findIndex((s) => sameIds(grp, s));
+    if (i < 0) return false;
+    spare.splice(i, 1);
+  }
+  return true;
+}
+
+/** The regions bounded by exactly these entities — how a stored region reference
+ *  is resolved once the geometry it was picked on has MOVED.
+ *
+ *  `interior` is a world point and a point does not move with the circle it was
+ *  inside (field report a20cca53); worse, on a holed profile the stale point can
+ *  land in the HOLE, and `pointInRegion` then happily resolves it to the hole's
+ *  own cell (field 19314fdc). The entity ids survive the move, so they are asked
+ *  first and the point is only ever a tie-break between cells the ids already
+ *  permit.
+ *
+ *  The OUTER loop decides; `holeEids` only narrows a tie, and never rules a
+ *  candidate out on its own. That is deliberate: the hole set is the part most
+ *  likely to have legitimately changed since the reference was saved (a hole
+ *  added or removed, or — for every document written between 0.1.123 and the
+ *  release that added `regionHoleEntities` — never recorded at all). Demanding
+ *  hole equality would push those references back onto the stale point, which is
+ *  the exact corruption this exists to remove. Passing `undefined` means "cannot
+ *  discriminate", which is NOT the same as passing `[]` ("this region has no
+ *  holes").
+ *
+ *  Several results mean the ids genuinely cannot tell the cells apart — a line
+ *  splitting a square gives both halves the SAME entity set, and every glyph of
+ *  one text carries that text's single id. The sidecar refuses outright there
+ *  (`len(faces) != 1` in `_region_anchor_from_entities`) and falls back to the
+ *  stored point; the caller here does the same, and safely, because the point can
+ *  only choose among cells the ids already allow. Zero results mean the ids name
+ *  nothing live: the sketch really changed, and the caller must say so rather
+ *  than guess. */
+export function regionsByEntities(
+  regions: readonly Region[],
+  eids: readonly string[],
+  holeEids?: readonly string[][],
+): Region[] {
+  if (!eids.length) return [];
+  const byOuter = regions.filter((r) => sameIds(r.entityIds, eids));
+  if (byOuter.length < 2 || holeEids === undefined) return byOuter;
+  const byHoles = byOuter.filter((r) => sameHoleIds(r.holeEntityIds, holeEids));
+  return byHoles.length ? byHoles : byOuter;
+}
+
 /** absolute area of a closed polygon (shoelace) */
 function loopAbsArea(loop: THREE.Vector2[]): number {
   let a = 0;

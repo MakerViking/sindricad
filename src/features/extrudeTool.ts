@@ -111,10 +111,45 @@ export class ExtrudeTool {
     const saved: [number, number, number][] = (
       f.regions ?? (f.region ? [f.region] : [])
     ) as [number, number, number][];
-    this.overlay.selectRegionsByPoints(saved);
+    // Resolve each area by the ENTITIES it was picked on, not by its stored
+    // point. The point does not move with the geometry (field a20cca53), and on
+    // a holed profile a stale point lands inside the HOLE — containment
+    // succeeds, the hole's own cell comes back selected, and committing any
+    // edit (a bare depth change is enough) writes that hole over the feature.
+    // That is field 19314fdc's other half: the sidecar builds the wall while the
+    // edit tool reopens on the hole. Documents with no ids keep the point path
+    // exactly, which is what the sidecar does too (`if not eids ... return None`).
+    const ents = f.regionEntities;
+    let unresolved: number[] = [];
+    if (ents?.length) {
+      unresolved = this.overlay.selectRegionsByEntities(
+        f.sketch,
+        saved.map((p, i) => ({
+          entityIds: ents[i] ?? [],
+          // `undefined` (not `[]`) when this document never recorded them: every
+          // file written between 0.1.123 and the release that added the field
+          // names outer loops only, and "unknown holes" must not read as "no
+          // holes" — see regionsByEntities.
+          holeEntityIds: f.regionHoleEntities?.[i],
+          point: p,
+        })),
+      );
+    } else {
+      this.overlay.selectRegionsByPoints(saved);
+    }
     this.selected = this.overlay.selectedRegions();
     if (this.selected.length) {
       this.beginDrag();
+      if (unresolved.length) {
+        // beginDrag sets its own prompt, so this replaces it. An area whose ids
+        // no longer name a cell is NOT quietly re-resolved from its point: the
+        // sketch really did change, and a wrong area committed in silence is the
+        // whole defect. Say which, and let the user re-pick.
+        setPrompt(
+          `Editing extrude: ${unresolved.length} of ${saved.length} areas no longer match the sketch · ` +
+            "Ctrl-click to re-pick · type a value + Enter · click to commit · Esc to cancel",
+        );
+      }
     } else {
       setPrompt(
         "Editing extrude: its areas were not found (sketch changed?) — select a profile · Esc to cancel",

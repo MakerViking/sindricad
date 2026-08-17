@@ -2,7 +2,13 @@
 // detectRegions, pointInLoop/pointInRegion.
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { detectRegions, entityPolyline, glyphRegion, pointInRegion } from "./region";
+import {
+  detectRegions,
+  entityPolyline,
+  glyphRegion,
+  pointInRegion,
+  regionsByEntities,
+} from "./region";
 import type { ResolvedEntity } from "./snap";
 
 const line = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity =>
@@ -182,5 +188,68 @@ describe("detectRegions — projected reference geometry forms profiles", () => 
       construction: true,
     };
     expect(detectRegions("s1", [pc])).toHaveLength(0);
+  });
+});
+
+// regionsByEntities is how a stored region reference is resolved once the sketch
+// has moved: `interior` is a world point and stays behind (field a20cca53), and
+// on a holed profile that stale point lands inside the HOLE (field 19314fdc).
+// These run against the real tracer, so the id sets under test are the ones the
+// tracer actually emits rather than hand-written stand-ins.
+describe("regionsByEntities", () => {
+  // 100x100 outer / 80x80 inner: two cells, the wall and the inner disk
+  const shell = () =>
+    detectRegions("s1", [rect("outer", 0, 0, 100, 100), rect("inner", 0, 0, 80, 80)]);
+
+  it("names the WALL by its outer ids, not the cell the stale point would hit", () => {
+    const hit = regionsByEntities(shell(), ["outer"], [["inner"]]);
+    expect(hit).toHaveLength(1);
+    expect(hit[0]!.holes).toHaveLength(1);
+  });
+
+  it("the inner disk is a different reference entirely", () => {
+    const hit = regionsByEntities(shell(), ["inner"]);
+    expect(hit).toHaveLength(1);
+    expect(hit[0]!.holes).toHaveLength(0);
+  });
+
+  it("id ORDER does not matter — the tracer sorts, the fast path does not", () => {
+    // a line across a square: both halves carry {sq, cut} in tracer order
+    const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100), line("cut", -60, 0, 60, 0)]);
+    expect(regionsByEntities(regions, ["cut", "sq"])).toHaveLength(2);
+    expect(regionsByEntities(regions, ["sq", "cut"])).toHaveLength(2);
+  });
+
+  it("holes break a tie but never rule the only candidate out", () => {
+    // the wall's holes really are [["inner"]]; claiming otherwise must NOT drop
+    // it, because a legacy reference records no holes and one that does may have
+    // had a hole added or removed since — and dropping it means falling back to
+    // the stored point, which is the corruption.
+    expect(regionsByEntities(shell(), ["outer"], [])).toHaveLength(1);
+    expect(regionsByEntities(shell(), ["outer"], [["gone"]])).toHaveLength(1);
+    expect(regionsByEntities(shell(), ["outer"], undefined)).toHaveLength(1);
+  });
+
+  it("hole ORDER does not matter — it follows loop discovery, not the document", () => {
+    const regions = detectRegions("s1", [
+      rect("outer", 0, 0, 100, 100),
+      circle("a", -25, 0, 8),
+      circle("b", 25, 0, 8),
+    ]);
+    const wall = regionsByEntities(regions, ["outer"], [["b"], ["a"]]);
+    expect(wall).toHaveLength(1);
+    expect(wall[0]!.holes).toHaveLength(2);
+  });
+
+  it("ids that name nothing live resolve to nothing (the sketch really changed)", () => {
+    expect(regionsByEntities(shell(), ["deleted"])).toEqual([]);
+    expect(regionsByEntities(shell(), [])).toEqual([]);
+  });
+
+  it("a SUBSET of a region's bounding ids is not a match", () => {
+    // set equality, mirroring the sidecar's "these edges bound exactly one face":
+    // a partial reference must fall back rather than resolve to a bigger cell.
+    const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100), line("cut", -60, 0, 60, 0)]);
+    expect(regionsByEntities(regions, ["sq"])).toEqual([]);
   });
 });
