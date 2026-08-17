@@ -156,6 +156,16 @@ This file starts on 2026-08-03. For anything before that, see the
   are still matched by position there, so a click on one sketch can still take in
   an area of another sketch lying on the same plane.
 
+  One case is untouched, and it is the oldest documents. An extrude saved before
+  the shapes were recorded at all, in any build before 0.1.123, has nothing to
+  match on, so reopening it still resolves its areas by their stored points
+  alone. If such a sketch has moved, one of those points can now land outside
+  the area it named, and committing writes back only the areas that were found:
+  a two-area extrude can come back as one, on nothing but a depth change. That
+  is not new and this release does not change it, but nothing warns about it
+  either, so it is worth knowing before reopening an old file. Saving the
+  document once with this build records the shapes and takes it off this path.
+
   Two things this does not claim. The edit tool and the builder still resolve a
   reference by different rules, so they can still reach different answers: the
   builder accepts a reference whose named shapes no longer bound the area on their
