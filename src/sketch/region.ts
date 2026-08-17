@@ -305,6 +305,98 @@ export function pointInRegion(p: THREE.Vector2, region: Region): boolean {
   return !region.holes.some((h) => pointInLoop(p, h));
 }
 
+/** unordered id-set equality. The tracer sorts its ids (`[...eids].sort()`) but
+ *  the fast path and glyphRegion emit singletons unsorted, and a stored reference
+ *  is only as ordered as whatever wrote it — so identity is compared as a SET. */
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  const A = new Set(a);
+  const B = new Set(b);
+  if (A.size !== B.size) return false;
+  for (const id of A) if (!B.has(id)) return false;
+  return true;
+}
+
+/** Do two lists of hole-id groups describe the same holes? Order-insensitive on
+ *  BOTH levels: hole order follows loop-discovery order, so reordering the
+ *  entities in a sketch reorders the holes without changing the geometry. */
+function sameHoleIds(a: readonly string[][], b: readonly string[][]): boolean {
+  if (a.length !== b.length) return false;
+  const spare = [...b];
+  for (const grp of a) {
+    const i = spare.findIndex((s) => sameIds(grp, s));
+    if (i < 0) return false;
+    spare.splice(i, 1);
+  }
+  return true;
+}
+
+/** Does this region's traced boundary include every entity the reference names?
+ *  Weaker than `sameIds`, and deliberately: the sidecar's rule is "these edges
+ *  bound exactly one face", which a reference naming only SOME of a cell's
+ *  boundary satisfies (`_region_face_from_entities` documents that case). */
+function idsCoveredBy(eids: readonly string[], regionIds: readonly string[]): boolean {
+  const R = new Set(regionIds);
+  return eids.every((id) => R.has(id));
+}
+
+/** The regions a stored reference's entities name — how that reference is
+ *  resolved once the geometry it was picked on has MOVED.
+ *
+ *  `interior` is a world point and a point does not move with the circle it was
+ *  inside (field report a20cca53); worse, on a holed profile the stale point can
+ *  land in the HOLE, and `pointInRegion` then happily resolves it to the hole's
+ *  own cell (field 19314fdc). The entity ids survive the move, so they are asked
+ *  first and the point is only ever a tie-break between cells the ids already
+ *  permit.
+ *
+ *  Two tiers, in order. EXACT set equality first, which is unambiguous whenever
+ *  it hits. Then, only if nothing matched exactly, regions whose boundary
+ *  CONTAINS every named entity: drawing a line across a saved profile re-traces
+ *  it into pieces that each carry the new entity too, and no cell has the saved
+ *  set any more. Refusing there was a regression of its own — the sidecar still
+ *  resolves that reference (its rule is "these edges bound exactly one face",
+ *  which a partial reference satisfies) and still builds the feature, so the
+ *  edit tool refusing to open something the model happily builds is a fresh
+ *  disagreement rather than a fix. The second tier usually returns several
+ *  pieces, and then the stored point picks among them, which is where it is
+ *  safe: it can only choose cells the ids already permit, so it can no longer
+ *  wander into a hole (the hole's own cell does not contain the outer id).
+ *
+ *  The OUTER loop decides; `holeEids` only narrows a tie, and never rules a
+ *  candidate out on its own. That is deliberate: the hole set is the part most
+ *  likely to have legitimately changed since the reference was saved (a hole
+ *  added or removed, or — for every document written between 0.1.123 and the
+ *  release that added `regionHoleEntities` — never recorded at all). Demanding
+ *  hole equality would push those references back onto the stale point, which is
+ *  the exact corruption this exists to remove. The known cost is a divergence
+ *  the sidecar does not share: it REFUSES an entity anchor whose hole group names
+ *  a dead entity (`if not grp: return None`) while this still resolves. That
+ *  shows only in the pre-commit preview, and committing rewrites the hole ids
+ *  from the live region, so it heals on the first commit.
+ *
+ *  Several results mean the ids genuinely cannot tell the cells apart — a line
+ *  splitting a square gives both halves the SAME entity set, and every glyph of
+ *  one text carries that text's single id. The sidecar refuses outright there
+ *  (`len(faces) != 1` in `_region_anchor_from_entities`) and falls back to the
+ *  stored point; the caller here breaks the tie with the point instead. Zero
+ *  results mean the ids name nothing live: the sketch really changed, and the
+ *  caller must say so rather than guess. */
+export function regionsByEntities(
+  regions: readonly Region[],
+  eids: readonly string[],
+  holeEids?: readonly string[][],
+): Region[] {
+  if (!eids.length) return [];
+  const narrow = (cands: Region[]): Region[] => {
+    if (cands.length < 2 || holeEids === undefined) return cands;
+    const byHoles = cands.filter((r) => sameHoleIds(r.holeEntityIds, holeEids));
+    return byHoles.length ? byHoles : cands;
+  };
+  const exact = regions.filter((r) => sameIds(r.entityIds, eids));
+  if (exact.length) return narrow(exact);
+  return narrow(regions.filter((r) => idsCoveredBy(eids, r.entityIds)));
+}
+
 /** absolute area of a closed polygon (shoelace) */
 function loopAbsArea(loop: THREE.Vector2[]): number {
   let a = 0;

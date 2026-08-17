@@ -9,7 +9,7 @@
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
-import type { SketchOverlay, WorldRegion } from "../sketch/overlay";
+import type { RegionRef, SketchOverlay, WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { Feature } from "../types";
 import { pointInRegion } from "../sketch/region";
@@ -20,6 +20,14 @@ import { choose } from "../ui/choice";
 
 type Phase = "pick" | "drag";
 type Op = "new" | "join" | "cut" | "intersect";
+
+/** One area of the feature being edited that the tool could not resolve, held
+ *  exactly as the document has it so commit can put it back untouched. */
+type CarriedRegion = {
+  region: [number, number, number];
+  entityIds: string[];
+  holeEntityIds: string[][];
+};
 
 export class ExtrudeTool {
   active = false;
@@ -38,6 +46,11 @@ export class ExtrudeTool {
   private editId: string | null = null; // committed feature id being edited
   private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
   private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
+  /** Areas of the feature being edited that this tool could NOT resolve, held
+   *  exactly as the document has them and written straight back on commit. See
+   *  startEdit: without this, editing the depth of a feature whose sketch has
+   *  partly changed DELETES the areas the tool could not draw. */
+  private editCarried: CarriedRegion[] = [];
   /** while editing, this sketch is forced visible so its regions exist
    *  (consumed sketches hide by default) — main.ts's isSketchVisible honors it. */
   forcedSketchId: string | null = null;
@@ -111,15 +124,122 @@ export class ExtrudeTool {
     const saved: [number, number, number][] = (
       f.regions ?? (f.region ? [f.region] : [])
     ) as [number, number, number][];
-    this.overlay.selectRegionsByPoints(saved);
-    this.selected = this.overlay.selectedRegions();
-    if (this.selected.length) {
-      this.beginDrag();
+    // Resolve each area by the ENTITIES it was picked on, not by its stored
+    // point. The point does not move with the geometry (field a20cca53), and on
+    // a holed profile a stale point lands inside the HOLE — containment
+    // succeeds, the hole's own cell comes back selected, and committing any
+    // edit (a bare depth change is enough) writes that hole over the feature.
+    // That is field 19314fdc's other half: the sidecar builds the wall while the
+    // edit tool reopens on the hole. Documents with no ids keep the point path
+    // exactly, which is what the sidecar does too (`if not eids ... return None`).
+    const ents = f.regionEntities;
+    let unresolved: RegionRef[] = [];
+    if (ents?.length) {
+      const answer = this.overlay.selectRegionsByEntities(
+        f.sketch,
+        saved.map((p, i) => ({
+          entityIds: ents[i] ?? [],
+          // `undefined` (not `[]`) when this document never recorded them: every
+          // file written between 0.1.123 and the release that added the field
+          // names outer loops only, and "unknown holes" must not read as "no
+          // holes" — see regionsByEntities.
+          holeEntityIds: f.regionHoleEntities?.[i],
+          point: p,
+        })),
+      );
+      unresolved = answer.unresolved;
+      // The regions the IDS resolved, not what the overlay lights up. Reading
+      // the selection back instead round-trips this answer through a world
+      // point, and `selectedRegions` re-resolves a point against every coplanar
+      // sketch — so a neighbouring sketch's region joined the feature and
+      // commit wrote it (route B: 18000 mm³ of wall became 50000 mm³, and the
+      // feature's `sketch` field was rewritten to the neighbour, on nothing but
+      // a depth change). Identity established by ids is kept as identity.
+      this.selected = answer.resolved;
     } else {
+      this.overlay.selectRegionsByPoints(saved);
+      this.selected = this.editSelection();
+    }
+    if (this.selected.length) {
+      // An area the tool cannot show is still an area of the FEATURE. Writing
+      // back only what is selected would delete it on a bare depth change — one
+      // ordinary gesture, no confirmation, geometry gone, which is the same
+      // class of silent corruption this whole fix exists to remove. So the
+      // references that did not resolve are carried through commit byte for
+      // byte: this tool has no opinion about an area it could not find, and the
+      // sidecar's own resolution rule is not this one (it accepts references
+      // this refuses, and falls back to the stored point otherwise), so the
+      // build is unaffected either way. They are dropped only when the user
+      // changes the area set, because that gesture re-states the set — see
+      // onDown.
+      this.editCarried = unresolved.flatMap((ref) =>
+        // a reference with no point names nothing and points nowhere, so there
+        // is nothing to preserve; every reference built above has one.
+        ref.point
+          ? [{
+              region: ref.point,
+              entityIds: ref.entityIds,
+              // absent hole ids carry as `[]`, which is what the sidecar already
+              // makes of absent (`for grp in (hole_eids or [])`), so this records
+              // no claim the document did not already make.
+              holeEntityIds: ref.holeEntityIds ?? [],
+            }]
+          : [],
+      );
+      this.beginDrag();
+      if (unresolved.length) {
+        // beginDrag sets its own prompt, so this replaces it. An area whose ids
+        // no longer name a cell is NOT quietly re-resolved from its point: the
+        // sketch really did change, and a wrong area committed in silence is the
+        // whole defect. Say which, and say what happens to it.
+        setPrompt(
+          `Editing extrude: ${unresolved.length} of ${saved.length} areas no longer match the sketch ` +
+            "and are kept unchanged · changing the area set drops them · " +
+            "type a value + Enter · click to commit · Esc to cancel",
+        );
+      }
+    } else {
+      // Nothing resolved, so there is no depth edit to protect and nothing is
+      // carried (`editCarried` is left empty, as cleanup leaves it): the user
+      // states the areas again from the pick phase, and what they pick is the
+      // feature's new area set. Carrying references into a set the user is
+      // building by hand would silently ADD areas instead of preserving them.
+      const one = saved.length === 1;
       setPrompt(
-        "Editing extrude: its areas were not found (sketch changed?) — select a profile · Esc to cancel",
+        `Editing extrude: its ${one ? "area was" : `${saved.length} areas were`} not found ` +
+          `(sketch changed?) · what you pick replaces ${one ? "it" : "them"} · ` +
+          "select a profile · Esc to cancel",
       );
     }
+    return true;
+  }
+
+  /** The overlay's selection, cut down to the sketch this edit belongs to.
+   *
+   *  A feature names ONE sketch (`Feature.sketch`), so an area from another one
+   *  cannot be part of it — but `selectedRegions` matches by world point and
+   *  accepts any region within ~1e-3 mm of the plane, so a second sketch drawn
+   *  on the SAME plane hands back its regions too. Committing those wrote a
+   *  foreign sketch's area into the feature AND retargeted `sketch` to it, on a
+   *  reopen and a click. Outside edit mode this changes nothing (the pick phase
+   *  is the user stating the set from scratch). */
+  private editSelection(): WorldRegion[] {
+    const sel = this.overlay.selectedRegions();
+    const own = this.forcedSketchId;
+    if (!this.editId || own === null) return sel;
+    return sel.filter((wr) => wr.sketchId === own);
+  }
+
+  /** True when this click is on another sketch's area while editing — refused
+   *  out loud, because silently ignoring it is the affordance bug and silently
+   *  taking it is the geometry bug. */
+  private refusesForeignRegion(r: WorldRegion): boolean {
+    if (!this.editId || this.forcedSketchId === null) return false;
+    if (r.sketchId === this.forcedSketchId) return false;
+    setPrompt(
+      "That area belongs to a different sketch · an extrude uses one sketch, so this edit " +
+        "can only use its own · Esc, then extrude the other sketch separately",
+    );
     return true;
   }
 
@@ -165,10 +285,11 @@ export class ExtrudeTool {
     if (this.phase === "pick") {
       const r = this.regionUnder(e.clientX, e.clientY);
       if (!r) return;
+      if (this.refusesForeignRegion(r)) return;
       e.preventDefault();
       const additive = e.ctrlKey || e.metaKey || e.shiftKey;
       this.overlay.toggleRegionSelection(r, additive);
-      this.selected = this.overlay.selectedRegions();
+      this.selected = this.editSelection();
       // plain click picks one area and goes straight to depth; Ctrl-click keeps
       // accumulating (Enter confirms the set)
       if (!additive && this.selected.length) this.beginDrag();
@@ -181,8 +302,15 @@ export class ExtrudeTool {
       if (e.ctrlKey || e.metaKey || e.shiftKey) {
         const r = this.regionUnder(e.clientX, e.clientY);
         if (!r) return; // modifier on empty space: do nothing rather than commit
+        if (this.refusesForeignRegion(r)) return;
         this.overlay.toggleRegionSelection(r, true);
-        this.selected = this.overlay.selectedRegions();
+        this.selected = this.editSelection();
+        // The user is now stating the area set by hand, so the unmatched areas
+        // startEdit was holding on their behalf stop applying — keeping them
+        // would ADD an area to whatever is picked here. This is the one place
+        // the edit can lose an area, and it says so instead of doing it quietly.
+        const dropped = this.editCarried.length;
+        this.editCarried = [];
         if (!this.selected.length) {
           // emptied: updatePreview early-returns without disposing, so the old
           // preview would hang in the scene. Drop it and go back to picking.
@@ -196,10 +324,21 @@ export class ExtrudeTool {
           // said "select a profile". onKey defers to the input while it has
           // focus, so nothing else intercepted it. (GitHub issue #14.)
           this.dim.hide();
-          setPrompt("Select a profile to extrude · Ctrl-click adds areas · Enter to confirm");
+          setPrompt(
+            (dropped ? `${dropped} unmatched ${dropped === 1 ? "area is" : "areas are"} no longer kept · ` : "") +
+              "Select a profile to extrude · Ctrl-click adds areas · Enter to confirm",
+          );
           return;
         }
         this.updatePreview();
+        if (dropped) {
+          setPrompt(
+            `Editing extrude: ${dropped} unmatched ${dropped === 1 ? "area is" : "areas are"} ` +
+              "no longer kept, pick again if the feature still needs " +
+              `${dropped === 1 ? "it" : "them"} · Ctrl-click areas to add/remove · ` +
+              "type a value + Enter · click to commit · Esc to cancel",
+          );
+        }
         return;
       }
       void this.commit();
@@ -403,19 +542,44 @@ export class ExtrudeTool {
     const feature: Feature = {
       id: this.editId ?? this.store.nextId(),
       type: "extrude",
+      // `first` is safe to read the sketch off ONLY because the selection is
+      // fenced to one sketch: `selectRegionsByEntities` resolves within the
+      // feature's own sketch and `editSelection` filters the rest to it. Before
+      // that fence, a coplanar neighbour that sorted earlier in the timeline
+      // became `first` and re-targeted the whole feature's `sketch` — silently,
+      // on a depth change. Fence and field move together; do not derive this
+      // from a selection that is not fenced.
       sketch: first.sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
-      regions: this.selected.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
+      regions: [
+        ...this.selected.map(
+          (wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z] as [number, number, number],
+        ),
+        ...this.editCarried.map((c) => c.region),
+      ],
       // The entities that bound each area, recorded so the reference survives the
       // user moving the geometry it was picked on. `regions` alone is a world
       // point, and a point does not move with the circle it was inside — it ends
       // up in whatever profile now covers it (field report a20cca53).
-      regionEntities: this.selected.map((wr) => wr.region.entityIds),
+      //
+      // `editCarried` is appended to all three arrays, in step: those are the
+      // areas of the feature being edited that this tool could not resolve, and
+      // they go back untouched. Writing only `selected` would delete them, so a
+      // depth change on a feature whose sketch has partly moved would quietly
+      // shrink the solid. Order across areas carries no meaning (they union), so
+      // appending is safe.
+      regionEntities: [
+        ...this.selected.map((wr) => wr.region.entityIds),
+        ...this.editCarried.map((c) => c.entityIds),
+      ],
       // the holes' own bounding entities, so the sidecar can rebuild the face
       // WITH its holes. Without these it rebuilds a SOLID face whose centre sits
       // inside the hole and resolves to the wrong cell (field 19314fdc).
-      regionHoleEntities: this.selected.map((wr) => wr.region.holeEntityIds ?? []),
+      regionHoleEntities: [
+        ...this.selected.map((wr) => wr.region.holeEntityIds ?? []),
+        ...this.editCarried.map((c) => c.holeEntityIds),
+      ],
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
@@ -463,6 +627,7 @@ export class ExtrudeTool {
     this.viewport.suspendPicking = false;
     this.active = false;
     this.selected = [];
+    this.editCarried = [];
     if (this.editId !== null || this.forcedSketchId !== null) {
       this.editId = null;
       this.editOp = null;

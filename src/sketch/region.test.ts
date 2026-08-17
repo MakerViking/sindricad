@@ -2,7 +2,13 @@
 // detectRegions, pointInLoop/pointInRegion.
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { detectRegions, entityPolyline, glyphRegion, pointInRegion } from "./region";
+import {
+  detectRegions,
+  entityPolyline,
+  glyphRegion,
+  pointInRegion,
+  regionsByEntities,
+} from "./region";
 import type { ResolvedEntity } from "./snap";
 
 const line = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity =>
@@ -182,5 +188,159 @@ describe("detectRegions — projected reference geometry forms profiles", () => 
       construction: true,
     };
     expect(detectRegions("s1", [pc])).toHaveLength(0);
+  });
+});
+
+// regionsByEntities is how a stored region reference is resolved once the sketch
+// has moved: `interior` is a world point and stays behind (field a20cca53), and
+// on a holed profile that stale point lands inside the HOLE (field 19314fdc).
+// These run against the real tracer, so the id sets under test are the ones the
+// tracer actually emits rather than hand-written stand-ins.
+describe("regionsByEntities", () => {
+  // 100x100 outer / 80x80 inner: two cells, the wall and the inner disk
+  const shell = () =>
+    detectRegions("s1", [rect("outer", 0, 0, 100, 100), rect("inner", 0, 0, 80, 80)]);
+
+  it("names the WALL by its outer ids, not the cell the stale point would hit", () => {
+    const hit = regionsByEntities(shell(), ["outer"], [["inner"]]);
+    expect(hit).toHaveLength(1);
+    expect(hit[0]!.holes).toHaveLength(1);
+  });
+
+  it("the inner disk is a different reference entirely", () => {
+    const hit = regionsByEntities(shell(), ["inner"]);
+    expect(hit).toHaveLength(1);
+    expect(hit[0]!.holes).toHaveLength(0);
+  });
+
+  it("id ORDER does not matter — the tracer sorts, the fast path does not", () => {
+    // a line across a square: both halves carry {sq, cut} in tracer order
+    const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100), line("cut", -60, 0, 60, 0)]);
+    expect(regionsByEntities(regions, ["cut", "sq"])).toHaveLength(2);
+    expect(regionsByEntities(regions, ["sq", "cut"])).toHaveLength(2);
+  });
+
+  it("holes break a tie but never rule the only candidate out", () => {
+    // the wall's holes really are [["inner"]]; claiming otherwise must NOT drop
+    // it, because a legacy reference records no holes and one that does may have
+    // had a hole added or removed since — and dropping it means falling back to
+    // the stored point, which is the corruption.
+    expect(regionsByEntities(shell(), ["outer"], [])).toHaveLength(1);
+    expect(regionsByEntities(shell(), ["outer"], [["gone"]])).toHaveLength(1);
+    expect(regionsByEntities(shell(), ["outer"], undefined)).toHaveLength(1);
+  });
+
+  it("hole ORDER does not matter — it follows loop discovery, not the document", () => {
+    const regions = detectRegions("s1", [
+      rect("outer", 0, 0, 100, 100),
+      circle("a", -25, 0, 8),
+      circle("b", 25, 0, 8),
+    ]);
+    const wall = regionsByEntities(regions, ["outer"], [["b"], ["a"]]);
+    expect(wall).toHaveLength(1);
+    expect(wall[0]!.holes).toHaveLength(2);
+  });
+
+  it("hole order does not matter WHERE IT DECIDES — two candidates, two holes each", () => {
+    // The test above cannot fail on order: one candidate carries {outer}, so the
+    // hole comparison never runs (`narrow` returns early below two candidates).
+    // This is the arrangement where the comparison IS the decision — a square
+    // split in two, each half carrying TWO circles — so comparing the groups
+    // positionally instead of as a set picks the wrong half or neither. Both
+    // orderings are asserted: one of them is not loop-discovery order, whichever
+    // that happens to be.
+    const regions = detectRegions("s1", [
+      rect("sq", 0, 0, 200, 200),
+      line("cut", -120, 0, 120, 0),
+      circle("ha1", -50, 50, 10),
+      circle("ha2", 50, 50, 10),
+      circle("hb1", -50, -50, 10),
+      circle("hb2", 50, -50, 10),
+    ]);
+    expect(regionsByEntities(regions, ["cut", "sq"])).toHaveLength(2); // the ids tie
+    for (const holes of [[["ha1"], ["ha2"]], [["ha2"], ["ha1"]]]) {
+      const top = regionsByEntities(regions, ["cut", "sq"], holes);
+      expect(top).toHaveLength(1);
+      expect(top[0]!.centroid.y).toBeGreaterThan(0);
+    }
+    for (const holes of [[["hb1"], ["hb2"]], [["hb2"], ["hb1"]]]) {
+      const bottom = regionsByEntities(regions, ["cut", "sq"], holes);
+      expect(bottom).toHaveLength(1);
+      expect(bottom[0]!.centroid.y).toBeLessThan(0);
+    }
+  });
+
+  it("ids that name nothing live resolve to nothing (the sketch really changed)", () => {
+    expect(regionsByEntities(shell(), ["deleted"])).toEqual([]);
+    expect(regionsByEntities(shell(), [])).toEqual([]);
+  });
+
+  it("a reference naming only SOME of a cell's boundary still matches it", () => {
+    // Not set equality: the sidecar's rule is "these edges bound exactly one
+    // face", which a partial reference satisfies, and it says so outright
+    // ("A reference that names only SOME of its boundary entities also rebuilds
+    // bigger than its cell, and there the anchor is right"). Refusing here made
+    // drawing ONE line across a saved profile un-reopenable while the model went
+    // on building it. Both halves qualify, so the caller's point breaks the tie.
+    const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100), line("cut", -60, 0, 60, 0)]);
+    expect(regionsByEntities(regions, ["sq"])).toHaveLength(2);
+  });
+
+  it("an EXACT match wins over cells that merely contain the named ids", () => {
+    // A big square with a smaller one inside it and one line crossing both. The
+    // arrangement traces four cells: two halves of the inner square, bounded by
+    // {cut, sq}, and two pieces of the surrounding ring, bounded by
+    // {big, cut, sq} — the ring pieces CONTAIN the reference's ids too. A
+    // reference saved on the inner square must resolve to the inner square, so
+    // the containment tier is only consulted when nothing matches exactly.
+    // Without that order the reference can land on a piece of the ring, which is
+    // a different profile of a different size.
+    const regions = detectRegions("s1", [
+      rect("big", 0, 0, 300, 300),
+      rect("sq", 0, 0, 100, 100),
+      line("cut", -200, 0, 200, 0),
+    ]);
+    expect(regions.map((r) => r.entityIds)).toEqual([
+      ["big", "cut", "sq"],
+      ["big", "cut", "sq"],
+      ["cut", "sq"],
+      ["cut", "sq"],
+    ]);
+    const hit = regionsByEntities(regions, ["cut", "sq"]);
+    expect(hit).toHaveLength(2);
+    for (const r of hit) expect(r.entityIds).not.toContain("big");
+  });
+
+  it("ids the region no longer carries do NOT match, in either tier", () => {
+    // the stored reference names {sq, cut} but `cut` has since been deleted, so
+    // the one live cell carries {sq} alone. Neither equal (different sets) nor
+    // covering (the cell does not include `cut`), so this refuses — matching a
+    // cell bounded by FEWER entities than the reference names would resolve a
+    // reference to a profile that is no longer the one it described.
+    const regions = detectRegions("s1", [rect("sq", 0, 0, 100, 100)]);
+    expect(regions[0]!.entityIds).toEqual(["sq"]);
+    expect(regionsByEntities(regions, ["sq", "cut"])).toEqual([]);
+  });
+
+  it("holes DISCRIMINATE two cells that share an outer id set", () => {
+    // A square split in two, each half carrying its own circular hole. Both
+    // halves are bounded by {cut, sq}, so the outer ids cannot tell them apart
+    // and the hole ids are the only thing that can — this is the tie the hole
+    // rule exists for, and without it both halves come back.
+    const regions = detectRegions("s1", [
+      rect("sq", 0, 0, 100, 100),
+      line("cut", -60, 0, 60, 0),
+      circle("ha", 0, 25, 10),
+      circle("hb", 0, -25, 10),
+    ]);
+    expect(regionsByEntities(regions, ["cut", "sq"])).toHaveLength(2);
+
+    const top = regionsByEntities(regions, ["cut", "sq"], [["ha"]]);
+    expect(top).toHaveLength(1);
+    expect(top[0]!.centroid.y).toBeGreaterThan(0);
+
+    const bottom = regionsByEntities(regions, ["cut", "sq"], [["hb"]]);
+    expect(bottom).toHaveLength(1);
+    expect(bottom[0]!.centroid.y).toBeLessThan(0);
   });
 });

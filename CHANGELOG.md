@@ -117,24 +117,68 @@ This file starts on 2026-08-03. For anything before that, see the
   wall, so a document that was quietly wrong comes back right on the first
   rebuild after updating. Nothing needs re-picking.
 
-  **Only half of this is fixed, and reopening the extrude is the unfixed half.**
-  Building the feature now finds the wall, but the edit tool still finds the area
-  by the point that was clicked when it was made, so on a holed area that has
-  since been moved it reopens on the hole instead of the wall. Committing that
-  edit, even just a new depth, writes the hole back as the stored area, and from
-  then on the feature really does extrude the hole. There is no confirmation
-  step: it looks like an ordinary depth change.
+  **Reopening the extrude is fixed too.** The edit tool used to find the area by
+  the point that was clicked when the feature was made, so a holed area whose
+  sketch had since moved reopened on the hole rather than the wall. Committing
+  that edit, even just a new depth, wrote the hole back as the stored area, and
+  from then on the feature really did extrude the hole. There was no confirmation
+  step: it looked like an ordinary depth change.
 
-  That applies to every way of reopening it, because they are all the same tool:
-  double-clicking the feature in the timeline, Edit on its right-click menu there,
-  and Edit Extrude on the right-click menu of a face in the viewport. Avoid all
-  three on a holed extrude whose sketch has moved.
+  The edit tool now finds the area by the shapes that formed it rather than by the
+  point that was clicked, and re-records the point from wherever that area is now.
+  So a holed area that has moved reopens on the wall, and the edit repairs the
+  stale point rather than acting on it. This covers every way of reopening the
+  feature, because they are all the same tool: double-clicking it in the timeline,
+  Edit on its right-click menu there, and Edit Extrude on the right-click menu of a
+  face in the viewport.
 
-  To change the depth safely, select the feature with a single click and edit
-  Distance in the inspector on the right. That writes the one number and leaves
-  the stored area alone, so the feature keeps building the wall. Reopening the
-  edit tool is the thing to avoid until its half lands, which is tracked as the
-  rest of this fix.
+  When the shapes an area was formed from are gone from the sketch, the tool no
+  longer guesses from the stale point. It leaves that area unpicked, says how many
+  areas are affected, and **keeps them exactly as the document has them** when the
+  edit is committed, so an area the tool cannot find is not deleted by a change of
+  depth. The same holds when the shapes name several areas at once and the stored
+  point is inside none of them: that reference is kept untouched instead of being
+  attached to whichever piece came first. The one thing that does drop these areas
+  is holding Ctrl, Shift or Cmd and clicking to change which areas the feature
+  uses, since that is the user stating the set by hand, and the banner says so at
+  the moment it happens. If none of the areas can be found the tool asks for a
+  fresh pick, and what gets picked replaces the lot.
+
+  **Reopening an extrude can no longer pick up an area from a different sketch.**
+  A second sketch drawn on the same plane as the one a feature was built from used
+  to be selected alongside it on reopening, because areas were matched by position:
+  its area was written into the feature on commit, and the feature could even be
+  re-pointed at that other sketch. A shell wall of 18,000 mm³ became 50,000 mm³
+  that way, or 800,000 mm³ when the other sketch came first in the timeline, on
+  nothing more than reopening and changing the depth. An edit now uses only areas
+  from the sketch the feature names, and clicking an area from another sketch says
+  so rather than taking it. Creating a new extrude is not covered by this: areas
+  are still matched by position there, so a click on one sketch can still take in
+  an area of another sketch lying on the same plane.
+
+  Two things this does not claim. The edit tool and the builder still resolve a
+  reference by different rules, so they can still reach different answers: the
+  builder accepts a reference whose named shapes no longer bound the area on their
+  own, and it falls back to the stored point in cases where the edit tool refuses.
+  Where they disagree, committing an edit writes the edit tool's answer, so a
+  feature can still move to a neighbouring piece of a profile. And when the shapes
+  genuinely cannot tell two areas apart, for example the two halves of a square cut
+  by a line, the stored point still decides between them, so a sketch moved far
+  enough can still reopen on the neighbouring half. That is the old behaviour,
+  unchanged, and it is now fenced in: the point only ever chooses among areas the
+  shapes already allow, which is why it can no longer land in a hole.
+
+  A holed area saved by any build from 0.1.123 until this one records its outer
+  shape but not the hole's, so if that sketch has since been moved the build still
+  falls back to the stored point and can still produce the hole. Reopening the
+  extrude now shows the wall correctly; commit once and the hole's shapes are
+  recorded, after which the build agrees. That commit changes what such a document
+  builds: a 32,000 mm³ block that was the hole becomes the 18,000 mm³ wall that was
+  picked. That is the repair, and it is why a bare depth change can make the solid
+  smaller.
+
+  Loft profiles are not covered. They are stored as points with no shapes
+  recorded at all, so there is nothing yet for either half to re-anchor to.
 
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.
