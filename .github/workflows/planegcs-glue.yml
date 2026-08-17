@@ -24,7 +24,8 @@
 # the only variable between the two outputs. If the control does not reproduce,
 # the patched artifact is not trustworthy and the job fails without producing one.
 #
-# Manual trigger only. This is an occasional provenance build, not part of CI.
+# Manual trigger, once this is on the default branch. This is an occasional
+# provenance build, not part of CI.
 
 name: planegcs-glue
 
@@ -35,6 +36,13 @@ on:
         description: "planegcs commit to build (default = the commit that produced 1.1.7)"
         required: false
         default: "951ba1a56c7fbae17de05851a221129e185fa92c"
+  # TEMPORARY, and delete it before this merges. workflow_dispatch only works
+  # once the file is on the default branch, and a push to main here publishes a
+  # rolling beta — which is far too much to spend on proving a CI job runs. This
+  # gets the first real run on the branch itself; once the artifact exists,
+  # workflow_dispatch is the only trigger that should remain.
+  push:
+    branches: [ci/planegcs-glue]
 
 permissions:
   contents: read
@@ -48,6 +56,9 @@ jobs:
     container: emscripten/emsdk:3.1.45
 
     env:
+      # The commit that produced the published 1.1.7 artifact, proven via the npm
+      # packument's gitHead. Used when no ref is supplied (i.e. a push run).
+      DEFAULT_REF: "951ba1a56c7fbae17de05851a221129e185fa92c"
       # From node_modules/@salusoft89/planegcs/dist/planegcs_dist/, i.e. exactly
       # what package-lock.json resolves today. Update these ONLY together with the
       # pinned version in package.json.
@@ -67,7 +78,7 @@ jobs:
         run: |
           git clone https://github.com/Salusoft89/planegcs /planegcs
           cd /planegcs
-          git checkout ${{ github.event.inputs.ref }}
+          git checkout ${{ github.event.inputs.ref || env.DEFAULT_REF }}
           git log --oneline -1
 
       # bindings.cpp is GENERATED, not committed - upstream dropped it in 0cc67f3
@@ -159,7 +170,7 @@ jobs:
             echo "planegcs glue built with -s DYNAMIC_EXECUTION=0"
             echo
             echo "source:    https://github.com/Salusoft89/planegcs"
-            echo "commit:    ${{ github.event.inputs.ref }}"
+            echo "commit:    ${{ github.event.inputs.ref || env.DEFAULT_REF }}"
             echo "toolchain: emscripten/emsdk:3.1.45 (upstream's own builder base)"
             echo "patch:     -s DYNAMIC_EXECUTION=0 appended to LINK_FLAGS in planegcs/CMakeLists.txt"
             echo "run:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
