@@ -146,10 +146,12 @@ fn tools() -> Value {
         },
         {
             "name": "geom_measure",
-            "description": "Exact kernel volume, surface area, centre of mass, bounding box and entity \
-                counts. These are KERNEL values, not measured off the display mesh, so they are exact \
-                for curved bodies. `checks` adds validity and watertightness and is much slower — leave \
-                it off unless you need them.",
+            "description": "Volume, surface area, centre of mass and entity counts for the document \
+                open right now. These are KERNEL values, not measured off the display mesh, so they \
+                are exact for curved bodies. `bbox` is the EXCEPTION: it is derived from the mesh \
+                (see `bboxSource`), so it is conservative and shifts with tessellation — do not read \
+                it as an exact dimension. `checks` adds validity and watertightness and is much \
+                slower; leave it off unless you need them.",
             "inputSchema": json!({
                 "type": "object",
                 "properties": {

@@ -150,5 +150,6 @@ describe("handleTool", () => {
     // The two that make an agent fail SILENTLY rather than loudly.
     expect(s.traps.join(" ")).toContain("fingerprint you INVENTED");
     expect(s.traps.join(" ")).toContain("centroid");
+    expect(s.traps.join(" ")).toContain("display MESH");
   });
 });
