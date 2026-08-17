@@ -11,6 +11,14 @@ license = "AGPL-3.0-only"
 name = "sindricad_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# The read-only MCP server an agent is pointed at. Named explicitly because
+# Cargo would otherwise derive `sindri_mcp` from the file name, and this is a
+# user-facing command that goes in a client's config file — hyphens, like every
+# other CLI. It links none of the app: no Tauri, no webview, no OCCT.
+[[bin]]
+name = "sindri-mcp"
+path = "src/bin/sindri_mcp.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

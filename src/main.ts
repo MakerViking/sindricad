@@ -2,6 +2,7 @@ import "./styles.css";
 import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
+import { installAgentBridge } from "./agent/bridge";
 import { featureErrorText } from "./geometry/featureErrorText";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
@@ -204,6 +205,14 @@ void initSpaceMouse(viewport, (pressed) => {
 // into stderr and retried forever, so a plugged-in SpaceMouse just did nothing
 // with no way to find out why. Guarded to Tauri: plain `vite` has no emitter.
 if ("__TAURI_INTERNALS__" in window) {
+  // The read-only agent bridge. Guarded to Tauri for the same reason as the
+  // block below: plain `vite` has no broker to emit its event, and `listen()`
+  // would just reject. Failure here must not take the app down — an app whose
+  // agent bridge is missing is still the app.
+  void installAgentBridge({ store, geometry }).catch((e) => {
+    console.warn("agent bridge unavailable:", e);
+  });
+
   void listen<{ name: string; detail: string }>("spacemouse:blocked", (e) => {
     console.warn("SpaceMouse blocked:", e.payload.detail);
     toast(
