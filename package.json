@@ -1,7 +1,7 @@
 {
   "name": "sindricad",
   "version": "0.1.0",
-  "description": "SindriCAD — a parametric CAD app driving build123d",
+  "description": "SindriCAD \u2014 a parametric CAD app driving build123d",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -13,7 +13,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "prepare": "git config core.hooksPath .githooks || true",
+    "postinstall": "node scripts/vendor-planegcs.mjs"
   },
   "dependencies": {
     "@salusoft89/planegcs": "^1.1.7",

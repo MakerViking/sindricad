@@ -1,0 +1,17 @@
+planegcs glue built with -s DYNAMIC_EXECUTION=0
+
+source:    https://github.com/Salusoft89/planegcs
+commit:    951ba1a56c7fbae17de05851a221129e185fa92c
+toolchain: emscripten/emsdk:3.1.45 (upstream's own builder base)
+patch:     -s DYNAMIC_EXECUTION=0 appended to LINK_FLAGS in planegcs/CMakeLists.txt
+run:       https://github.com/MakerViking/sindricad/actions/runs/32002153102
+
+The unpatched control build reproduced the published 1.1.7 planegcs.js
+byte for byte. The WASM is deliberately NOT compared: it does not build
+reproducibly in this toolchain (see the workflow comments), and it is not
+vendored - the app keeps loading the published wasm from the npm package.
+Only planegcs.js is intended for vendoring.
+
+5d5fe10097d757e7b4df2ee65f3804e3b32f9a09459b50634afe9a3bbc6b174d  control.planegcs.js
+641b4f9ce6dcc95faf9325d236c3a6b2be0c93add460407d940831f14de4b479  patched.planegcs.js
+5bec882aa7732943aa3e42003c4fca5896692eabfc25afb0094bf0d54e60fd6d  control.planegcs.wasm

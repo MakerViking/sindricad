@@ -68,43 +68,44 @@ else
   fi
 fi
 
-# --- 3. what the bundle actually ships ----------------------------------------
-# The decisive artifact: whichever glue vite bundled is what a packaged build
-# runs. `var a=Function` is embind's `new_` helper after closure minification —
-# a grep for "new Function(" finds NOTHING here and is not evidence of absence.
-#
-# POLARITY MATTERS HERE, and an earlier version of this script had it backwards.
-# Finding the string proves the sink IS present. NOT finding it proves only that
-# this one string was not found: vite re-minifies, and a renamed local would make
-# the grep miss a sink that is still there. Reporting that as "patched glue
-# bundled" is a false all-clear on the single question that decides whether a
-# packaged build ships a working solver — so absence is INCONCLUSIVE, and
-# inconclusive + a tightened CSP is a FAILURE, not an OK.
+# --- 3. is the glue that will be bundled the VENDORED one? ---------------------
+# POSITIVE identification, by checksum. An earlier version of this check greped
+# the built bundle for one hardcoded minified spelling of the sink and treated
+# ABSENCE as proof the patched glue was in place. That polarity is unsafe: vite
+# re-minifies, so a renamed local makes the grep miss a sink that is still
+# there, and the script would green-light tightening the CSP on a build that
+# ships a dead solver. What can be positively identified is the artifact vite
+# will bundle - node_modules' copy - against the checksums shipped beside the
+# vendored one.
 echo
-echo "built bundle (dist/)"
-if [ ! -d dist ]; then
-  echo "  not built — run 'npm run build' first (this check is inconclusive without it)"
+echo "installed glue vs vendored"
+vendored_sums="vendor/planegcs/SHA256SUMS.txt"
+installed="node_modules/@salusoft89/planegcs/dist/planegcs_dist/planegcs.js"
+if [ ! -f "$vendored_sums" ]; then
+  echo "  no vendored artifact in the tree"
   if [ "$tightened" = yes ]; then
-    note "the CSP is tightened and there is no bundle to check. Build and re-run:
-      shipping on this evidence would be a guess."
+    note "the CSP is tightened and there is no vendored glue to install, so the
+      stock artifact is what gets bundled and the solver will not start."
   fi
+elif [ ! -f "$installed" ]; then
+  echo "  package not installed (run npm ci)"
 else
-  hits=$(grep -l 'var a=Function' dist/assets/*.js 2>/dev/null || true)
-  if [ -n "$hits" ]; then
-    echo "  Function-constructor sink PRESENT in: $hits"
-    if [ "$tightened" = yes ]; then
-      note "the CSP forbids the Function constructor and the bundle still needs it —
-      this build ships a dead constraint solver. Vendor the patched glue, or put
-      'unsafe-eval' back."
+  want=$(grep " planegcs.js\$" "$vendored_sums" | cut -d' ' -f1)
+  got=$(sha256sum "$installed" | cut -d' ' -f1)
+  if [ "$want" = "$got" ]; then
+    echo "  installed glue IS the vendored build"
+    if grep -q 'var a=Function' "$installed"; then
+      note "the vendored glue still contains embind's Function-constructor helper.
+      It was built without -s DYNAMIC_EXECUTION=0, or the wrong file was vendored."
+    else
+      echo "  and it carries no Function-constructor sink"
     fi
   else
-    echo "  that sink spelling not found — INCONCLUSIVE, not a pass"
-    echo "  (proves only that one minified spelling is absent, not that the glue is patched)"
+    echo "  installed glue is NOT the vendored build"
     if [ "$tightened" = yes ]; then
-      note "the CSP is tightened and the bundled glue could not be POSITIVELY identified
-      as the patched build. Confirm by checksum against the artifact from the
-      planegcs-glue workflow, then run the packaged-build check in
-      docs/CSP-SOLVER-VERIFICATION.md. Do not ship on a missing grep."
+      note "the CSP is tightened but node_modules holds a different glue than the
+      vendored one. Run 'node scripts/vendor-planegcs.mjs' (npm's postinstall
+      does this) and rebuild."
     fi
   fi
 fi

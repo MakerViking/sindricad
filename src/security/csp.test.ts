@@ -16,6 +16,10 @@
 // in `csp` alone breaks only for users. Nobody notices either until a report
 // arrives.
 import { describe, it, expect } from "vitest";
+// ?raw for the same reason the policy itself is read that way: no node types
+// in this tsconfig, and the point is to read the SHIPPED bytes.
+import vendoredGlue from "../../vendor/planegcs/planegcs.js?raw";
+import packageJsonRaw from "../../package.json?raw";
 
 // `?raw` + JSON.parse rather than a JSON import: tsconfig has no
 // resolveJsonModule, and vite/client already declares the `?raw` form.
@@ -115,19 +119,40 @@ describe("script-src", () => {
     }
   });
 
-  it("carries 'unsafe-eval' ONLY until the patched planegcs glue lands", () => {
-    // This is a pin on a known-undesirable state, and it is meant to fail the
-    // day it changes. When it does: update TARGET_SCRIPT_SRC's use below,
-    // delete this test, and run docs/CSP-SOLVER-VERIFICATION.md end to end —
-    // the whole point is that a green vitest run does not prove the solver
-    // starts under the tightened policy.
+  it("does not grant 'unsafe-eval' while the bundled glue still needs it", () => {
+    // This replaces a pin that simply asserted 'unsafe-eval' was still present
+    // and whose failure message said "delete this test". Deleting it would have
+    // left NOTHING enforcing the thing that actually matters, which is not
+    // whether the token is there but whether the two halves AGREE:
+    //
+    //   policy grants 'unsafe-eval'   + glue needs it  -> fine, the old state
+    //   policy withholds 'unsafe-eval' + glue sink gone -> fine, the new state
+    //   policy withholds 'unsafe-eval' + glue sink here -> A DEAD SOLVER in
+    //       every packaged build, and green in `tauri dev`, which is precisely
+    //       how this hid for months.
+    //
+    // The sink is NOT spelled `new Function(`. Closure specialises embind's
+    // `new_` helper to `var a=Function; ... a.apply(c,b)`, so grepping for the
+    // obvious spelling finds nothing and proves nothing - that false negative
+    // is why four reporters were told to update their webview runtime.
+    const granted = (directives(csp).get("script-src") ?? "").includes(PENDING_REMOVAL);
+    if (granted) return; // the old state: nothing to enforce yet
+
     expect(
-      directives(csp).get("script-src"),
-      `script-src changed. If 'unsafe-eval' was just removed: good — but a packaged build with the `
-        + `stock @salusoft89/planegcs glue will fail to start the 2D solver, because embind hands a `
-        + `SOURCE STRING to the Function constructor and 'wasm-unsafe-eval' does not cover that. `
-        + `Confirm the vendored glue is in place first (docs/CSP-SOLVER-VERIFICATION.md), then delete this test.`,
-    ).toBe(`${TARGET_SCRIPT_SRC.replace("script-src ", "")} ${PENDING_REMOVAL}`);
+      (vendoredGlue as string).includes("var a=Function"),
+      "the CSP no longer grants 'unsafe-eval', but the vendored planegcs glue still "
+        + "contains embind's Function-constructor helper. A packaged build would start "
+        + "with no 2D solver: no constraints, no dimensions, no point dragging - and "
+        + "`tauri dev` would look perfect, because it serves without the CSP.",
+    ).toBe(false);
+
+    // The glue only matters if it is actually installed over the npm copy.
+    const pkg = JSON.parse(packageJsonRaw as string) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.postinstall ?? "",
+      "the vendored glue is sink-free but nothing installs it, so node_modules keeps "
+        + "the stock artifact and the shipped bundle still needs 'unsafe-eval'",
+    ).toContain("vendor-planegcs");
   });
 
   it("is the only directive that carries 'unsafe-eval'", () => {
