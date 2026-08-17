@@ -337,8 +337,21 @@ export class SketchOverlay {
   }
   /** Replace the selection with the regions those ENTITY references name, falling
    *  back per-reference to the stored point only when the reference carries no
-   *  ids. Returns the references it could NOT resolve — the references and not
-   *  their indices, because the caller has to keep them, not just count them.
+   *  ids. Returns BOTH halves of the answer: the WorldRegions it resolved, in the
+   *  order of the references that named them, and the references it could NOT
+   *  resolve — the references and not their indices, because the caller has to
+   *  keep them, not just count them.
+   *
+   *  `resolved` is returned rather than left for the caller to read back out of
+   *  `selectedRegions()`, and that is the whole point of it. The selection this
+   *  writes is POINTS, and `selectedRegions` re-resolves a point against EVERY
+   *  sketch (coplanar within ~1e-3 mm) — so a caller that reads the selection
+   *  back has laundered the identity these ids just established and gets a
+   *  coplanar NEIGHBOUR sketch's region alongside. ExtrudeTool committed that
+   *  neighbour into the feature (route B: an 18000 mm³ wall became 50000 mm³ on
+   *  a bare depth change). The overlay's *display* is still point-based, so a
+   *  neighbouring region can still light up; what the caller COMMITS is now
+   *  these regions, from this sketch.
    *
    *  This is what `selectRegionsByPoints` cannot do on its own. Re-opening an
    *  extrude whose sketch has since moved resolves the stored point against the
@@ -355,49 +368,62 @@ export class SketchOverlay {
    *  through commit untouched, because "this tool could not draw it" is not a
    *  reason to delete an area the model still builds.
    *
-   *  Two limits, both inherited and neither closed here. The selection this
-   *  writes is still POINTS (`selectRegionsByPoints`), and `selectedRegions`
-   *  re-resolves those against every sketch, so a second sketch on the SAME
-   *  plane whose region covers the anchor is selected alongside. Fixing that
-   *  means making the overlay's whole selection identity-based rather than
-   *  point-based, which is a much wider change than this one. And a stale point
-   *  is only fenced in as far as the ids fence it: a reference to an OUTER loop
-   *  can no longer land in that profile's hole (the hole's cell does not carry
-   *  the outer id), but a reference saved on the hole's own cell can still choose
-   *  the wrong piece among cells that all carry its id. */
-  selectRegionsByEntities(sketchId: string, refs: RegionRef[]): RegionRef[] {
+   *  Two limits, both inherited and neither closed here. The overlay's SELECTION
+   *  is still points, so what lights up on screen is still whatever contains the
+   *  anchor, including a coplanar neighbour's region — only the returned
+   *  `resolved` list is identity-clean, and it is that list a caller must write.
+   *  And a stale point is only fenced in as far as the ids fence it: a reference
+   *  to an OUTER loop can no longer land in that profile's hole (the hole's cell
+   *  does not carry the outer id), but a reference saved on the hole's own cell
+   *  can still choose the wrong piece among cells that all carry its id. */
+  selectRegionsByEntities(
+    sketchId: string,
+    refs: RegionRef[],
+  ): { resolved: WorldRegion[]; unresolved: RegionRef[] } {
     const inSketch = this.regions.filter((wr) => wr.sketchId === sketchId);
     const shapes = inSketch.map((wr) => wr.region);
-    const points: [number, number, number][] = [];
+    const resolved: WorldRegion[] = [];
     const unresolved: RegionRef[] = [];
     for (const ref of refs) {
+      let hits: WorldRegion[];
       if (!ref.entityIds.length) {
         // no provenance recorded (pre-0.1.123 document, or a cell whose loop the
-        // tracer deduped away): the point is all there is, exactly as before.
-        if (ref.point) points.push(ref.point);
-        else unresolved.push(ref);
-        continue;
-      }
-      const named = new Set(regionsByEntities(shapes, ref.entityIds, ref.holeEntityIds));
-      // `shapes` is `inSketch`'s own Region objects, so identity maps them back
-      let hits = inSketch.filter((wr) => named.has(wr.region));
-      if (hits.length > 1 && ref.point) {
-        // the ids cannot tell these cells apart: two halves of a split square
-        // carry the same set, the glyphs of one text all carry the text's id,
-        // and a reference matched by containment names several pieces of what it
-        // used to be. The stored point breaks the tie among cells the ids
-        // already permit, which is narrower than resolving it against the whole
-        // sketch and is the only thing that keeps it out of a hole.
+        // tracer deduped away): the point is all there is, exactly as before —
+        // except that it is resolved against THIS sketch's cells rather than
+        // every sketch's, and a point that now lands in none of them counts as
+        // unresolved (the caller carries it) instead of vanishing at commit.
         const p = ref.point;
-        const narrowed = hits.filter((wr) => this.pointHitsRegion(p, wr));
-        if (narrowed.length) hits = narrowed;
+        hits = p ? inSketch.filter((wr) => this.pointHitsRegion(p, wr)) : [];
+      } else {
+        const named = new Set(regionsByEntities(shapes, ref.entityIds, ref.holeEntityIds));
+        // `shapes` is `inSketch`'s own Region objects, so identity maps them back
+        hits = inSketch.filter((wr) => named.has(wr.region));
+        if (hits.length > 1 && ref.point) {
+          // the ids cannot tell these cells apart: two halves of a split square
+          // carry the same set, the glyphs of one text all carry the text's id,
+          // and a reference matched by containment names several pieces of what it
+          // used to be. The stored point breaks the tie among cells the ids
+          // already permit, which is narrower than resolving it against the whole
+          // sketch and is the only thing that keeps it out of a hole.
+          const p = ref.point;
+          const narrowed = hits.filter((wr) => this.pointHitsRegion(p, wr));
+          if (narrowed.length) hits = narrowed;
+        }
       }
+      // One cell or nothing. Several means the ids name a set of cells and the
+      // point is in none of them, so nothing here can tell which one the user
+      // extruded; zero means the ids (or the point) name nothing live. Either
+      // way, choosing would be a guess written to disk — this refuses, and the
+      // caller keeps the reference untouched.
       const hit = hits.length === 1 ? hits[0] : undefined;
-      if (hit) points.push([hit.interior3D.x, hit.interior3D.y, hit.interior3D.z]);
+      if (hit) resolved.push(hit);
       else unresolved.push(ref);
     }
-    this.selectRegionsByPoints(points);
-    return unresolved;
+    // the FRESH interiors, so committing the edit repairs the stale points on disk
+    this.selectRegionsByPoints(
+      resolved.map((wr) => [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z]),
+    );
+    return { resolved, unresolved };
   }
   /** Hover-highlight one region's fill (or clear with null). */
   setHoverRegion(wr: WorldRegion | null) {

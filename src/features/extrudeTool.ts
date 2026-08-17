@@ -135,7 +135,7 @@ export class ExtrudeTool {
     const ents = f.regionEntities;
     let unresolved: RegionRef[] = [];
     if (ents?.length) {
-      unresolved = this.overlay.selectRegionsByEntities(
+      const answer = this.overlay.selectRegionsByEntities(
         f.sketch,
         saved.map((p, i) => ({
           entityIds: ents[i] ?? [],
@@ -147,10 +147,19 @@ export class ExtrudeTool {
           point: p,
         })),
       );
+      unresolved = answer.unresolved;
+      // The regions the IDS resolved, not what the overlay lights up. Reading
+      // the selection back instead round-trips this answer through a world
+      // point, and `selectedRegions` re-resolves a point against every coplanar
+      // sketch — so a neighbouring sketch's region joined the feature and
+      // commit wrote it (route B: 18000 mm³ of wall became 50000 mm³, and the
+      // feature's `sketch` field was rewritten to the neighbour, on nothing but
+      // a depth change). Identity established by ids is kept as identity.
+      this.selected = answer.resolved;
     } else {
       this.overlay.selectRegionsByPoints(saved);
+      this.selected = this.editSelection();
     }
-    this.selected = this.overlay.selectedRegions();
     if (this.selected.length) {
       // An area the tool cannot show is still an area of the FEATURE. Writing
       // back only what is selected would delete it on a bare depth change — one
@@ -205,6 +214,35 @@ export class ExtrudeTool {
     return true;
   }
 
+  /** The overlay's selection, cut down to the sketch this edit belongs to.
+   *
+   *  A feature names ONE sketch (`Feature.sketch`), so an area from another one
+   *  cannot be part of it — but `selectedRegions` matches by world point and
+   *  accepts any region within ~1e-3 mm of the plane, so a second sketch drawn
+   *  on the SAME plane hands back its regions too. Committing those wrote a
+   *  foreign sketch's area into the feature AND retargeted `sketch` to it, on a
+   *  reopen and a click. Outside edit mode this changes nothing (the pick phase
+   *  is the user stating the set from scratch). */
+  private editSelection(): WorldRegion[] {
+    const sel = this.overlay.selectedRegions();
+    const own = this.forcedSketchId;
+    if (!this.editId || own === null) return sel;
+    return sel.filter((wr) => wr.sketchId === own);
+  }
+
+  /** True when this click is on another sketch's area while editing — refused
+   *  out loud, because silently ignoring it is the affordance bug and silently
+   *  taking it is the geometry bug. */
+  private refusesForeignRegion(r: WorldRegion): boolean {
+    if (!this.editId || this.forcedSketchId === null) return false;
+    if (r.sketchId === this.forcedSketchId) return false;
+    setPrompt(
+      "That area belongs to a different sketch · an extrude uses one sketch, so this edit " +
+        "can only use its own · Esc, then extrude the other sketch separately",
+    );
+    return true;
+  }
+
   private onMove(e: PointerEvent) {
     if (this.phase === "pick") {
       const r = this.regionUnder(e.clientX, e.clientY);
@@ -247,10 +285,11 @@ export class ExtrudeTool {
     if (this.phase === "pick") {
       const r = this.regionUnder(e.clientX, e.clientY);
       if (!r) return;
+      if (this.refusesForeignRegion(r)) return;
       e.preventDefault();
       const additive = e.ctrlKey || e.metaKey || e.shiftKey;
       this.overlay.toggleRegionSelection(r, additive);
-      this.selected = this.overlay.selectedRegions();
+      this.selected = this.editSelection();
       // plain click picks one area and goes straight to depth; Ctrl-click keeps
       // accumulating (Enter confirms the set)
       if (!additive && this.selected.length) this.beginDrag();
@@ -263,8 +302,9 @@ export class ExtrudeTool {
       if (e.ctrlKey || e.metaKey || e.shiftKey) {
         const r = this.regionUnder(e.clientX, e.clientY);
         if (!r) return; // modifier on empty space: do nothing rather than commit
+        if (this.refusesForeignRegion(r)) return;
         this.overlay.toggleRegionSelection(r, true);
-        this.selected = this.overlay.selectedRegions();
+        this.selected = this.editSelection();
         // The user is now stating the area set by hand, so the unmatched areas
         // startEdit was holding on their behalf stop applying — keeping them
         // would ADD an area to whatever is picked here. This is the one place
@@ -502,6 +542,13 @@ export class ExtrudeTool {
     const feature: Feature = {
       id: this.editId ?? this.store.nextId(),
       type: "extrude",
+      // `first` is safe to read the sketch off ONLY because the selection is
+      // fenced to one sketch: `selectRegionsByEntities` resolves within the
+      // feature's own sketch and `editSelection` filters the rest to it. Before
+      // that fence, a coplanar neighbour that sorted earlier in the timeline
+      // became `first` and re-targeted the whole feature's `sketch` — silently,
+      // on a depth change. Fence and field move together; do not derive this
+      // from a selection that is not fenced.
       sketch: first.sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,

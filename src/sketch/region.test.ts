@@ -241,6 +241,35 @@ describe("regionsByEntities", () => {
     expect(wall[0]!.holes).toHaveLength(2);
   });
 
+  it("hole order does not matter WHERE IT DECIDES — two candidates, two holes each", () => {
+    // The test above cannot fail on order: one candidate carries {outer}, so the
+    // hole comparison never runs (`narrow` returns early below two candidates).
+    // This is the arrangement where the comparison IS the decision — a square
+    // split in two, each half carrying TWO circles — so comparing the groups
+    // positionally instead of as a set picks the wrong half or neither. Both
+    // orderings are asserted: one of them is not loop-discovery order, whichever
+    // that happens to be.
+    const regions = detectRegions("s1", [
+      rect("sq", 0, 0, 200, 200),
+      line("cut", -120, 0, 120, 0),
+      circle("ha1", -50, 50, 10),
+      circle("ha2", 50, 50, 10),
+      circle("hb1", -50, -50, 10),
+      circle("hb2", 50, -50, 10),
+    ]);
+    expect(regionsByEntities(regions, ["cut", "sq"])).toHaveLength(2); // the ids tie
+    for (const holes of [[["ha1"], ["ha2"]], [["ha2"], ["ha1"]]]) {
+      const top = regionsByEntities(regions, ["cut", "sq"], holes);
+      expect(top).toHaveLength(1);
+      expect(top[0]!.centroid.y).toBeGreaterThan(0);
+    }
+    for (const holes of [[["hb1"], ["hb2"]], [["hb2"], ["hb1"]]]) {
+      const bottom = regionsByEntities(regions, ["cut", "sq"], holes);
+      expect(bottom).toHaveLength(1);
+      expect(bottom[0]!.centroid.y).toBeLessThan(0);
+    }
+  });
+
   it("ids that name nothing live resolve to nothing (the sketch really changed)", () => {
     expect(regionsByEntities(shell(), ["deleted"])).toEqual([]);
     expect(regionsByEntities(shell(), [])).toEqual([]);
