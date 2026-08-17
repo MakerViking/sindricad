@@ -6,10 +6,11 @@ protocol and nothing on the path imports `DocumentStore.mutate()`.
 
 ## Configure a client
 
-Point the client at the `sindri-mcp` binary that ships beside the app:
+`sindri-mcp` is installed beside the app (on Linux it lands on `$PATH` as
+`/usr/bin/sindri-mcp`; on macOS inside the bundle; on Windows next to the exe):
 
 ```jsonc
-{ "mcpServers": { "sindricad": { "command": "/path/to/sindri-mcp" } } }
+{ "mcpServers": { "sindricad": { "command": "sindri-mcp" } } }
 ```
 
 The server starts whether or not SindriCAD is running. If the app is closed, the
@@ -17,9 +18,8 @@ tools say so and start working the moment you open it — a client launches its 
 servers at startup, long before you open a CAD app, and refusing to start would
 present as "the MCP server is broken".
 
-**Unix only for now.** The transport is an `AF_UNIX` socket; the Windows
-named-pipe half is not written. On Windows the app logs one line at startup and
-runs exactly as it did before.
+Building it yourself: `cargo build --release --bin sindri-mcp`, or
+`scripts/stage-sindri-mcp.sh` to put it where a local `tauri build` expects it.
 
 ## The tools
 
@@ -111,14 +111,23 @@ existed.
 
 ## Status
 
-Working and verified end to end against a running app: the socket, the token,
-the handshake permissions, all five tools, and the shim's stdio protocol.
+Verified end to end against a running app with real geometry, on Linux: the
+socket, the token, the handshake permissions, all five tools, the shim's stdio
+protocol, and the binary extracted from a built `.deb`. `geom.measure`'s volume,
+area, centre of mass and entity counts were cross-checked against the same
+document measured directly through the sidecar, bypassing the bridge entirely —
+they match to the last digit.
 
-Not done yet:
+**Windows is written but unrun.** The transport is a named pipe there
+(`\\.\pipe\sindricad-agent-…`, `first_pipe_instance` + `reject_remote_clients`),
+and only the transport differs — the protocol, the auth and the dispatch are the
+same generic code. Its API usage is type-checked against the Windows target, and
+CI's Windows leg compiles it, but nobody has run it on Windows. One gap is known
+and unclosed: a named pipe's default DACL is broader than the Unix socket's
+`0600`, so on Windows the token is doing more of the work.
 
-- the Windows named-pipe transport;
-- bundling `sindri-mcp` into the installers (today it is built by
-  `cargo build --bin sindri-mcp`);
-- a demonstration against a document containing real geometry — the end-to-end
-  run so far used an empty document, so the reply *shapes* are proven and the
-  numbers are not.
+Not done:
+
+- a demonstration of a model *authoring* references against this surface. Driving
+  the tools proves they answer; it does not prove an agent can use them to build
+  something, which is the question the whole arc exists to settle.

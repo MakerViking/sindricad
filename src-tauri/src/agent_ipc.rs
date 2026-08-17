@@ -223,6 +223,21 @@ fn write_handshake(path: &PathBuf, body: &str) -> std::io::Result<()> {
     f.write_all(body.as_bytes())
 }
 
+/// Windows has no mode bits; the equivalent guarantee comes from the file
+/// living under the per-user AppData root, which is already ACL'd to this user.
+///
+/// `create_new` is kept for the part that DOES carry over: it refuses to write
+/// through a file (or symlink) something else planted at this path.
+#[cfg(windows)]
+fn write_handshake(path: &PathBuf, body: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    f.write_all(body.as_bytes())
+}
+
 /// Start the broker. Best-effort: a failure here costs the agent bridge, not the
 /// app.
 ///
@@ -321,14 +336,21 @@ fn restrict(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
 
 /// One connection: newline-delimited JSON in, newline-delimited JSON out.
 ///
+/// Generic over the stream so the Unix socket and the Windows named pipe share
+/// it. Only the transport differs between platforms; none of the protocol,
+/// the auth, or the dispatch does, and duplicating this per platform is how the
+/// two halves drift.
+///
 /// Requests on a single connection are served CONCURRENTLY rather than in
 /// lockstep — each reply carries the client's own `id`, so a slow `geom.measure`
 /// must not block a `build.status` behind it.
-#[cfg(unix)]
-async fn serve(app: AppHandle, stream: tokio::net::UnixStream) {
+async fn serve<S>(app: AppHandle, stream: S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
     use tokio::io::{AsyncBufReadExt, BufReader};
 
-    let (read_half, write_half) = stream.into_split();
+    let (read_half, write_half) = tokio::io::split(stream);
     let mut lines = BufReader::new(read_half).lines();
     // Shared because concurrent replies interleave on one stream; the lock is
     // held only for the length of a single `write_all`, so a whole line is
@@ -394,11 +416,10 @@ async fn serve(app: AppHandle, stream: tokio::net::UnixStream) {
     }
 }
 
-#[cfg(unix)]
-async fn write_line(
-    out: &std::sync::Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
-    v: &Value,
-) -> std::io::Result<()> {
+async fn write_line<W>(out: &std::sync::Arc<tokio::sync::Mutex<W>>, v: &Value) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     use tokio::io::AsyncWriteExt;
     let mut buf = serde_json::to_vec(v).unwrap_or_else(|_| b"{\"ok\":false}".to_vec());
     buf.push(b'\n');
@@ -407,13 +428,88 @@ async fn write_line(
 }
 
 // --- Windows ------------------------------------------------------------------
-// The transport is the only platform-specific part; the broker above is not. A
-// named-pipe implementation slots in here behind the same `setup` signature.
-// Until it exists the app runs exactly as before on Windows, minus the bridge,
-// and says so once at startup rather than failing silently.
-#[cfg(not(unix))]
+// Only the TRANSPORT differs. `serve` above is generic over the stream, so the
+// protocol, the auth and the dispatch are literally the same code on both
+// platforms rather than two implementations that drift.
+#[cfg(windows)]
+fn setup(app: &AppHandle) -> Result<PathBuf, String> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let dir = agent_dir(app)?;
+    let handshake = dir.join("handshake.json");
+    let token = random_token();
+    // A per-launch name, so a stale pipe from a crashed instance can never be
+    // mistaken for this one. Unlike a Unix socket there is no file to unlink:
+    // a named pipe disappears with its last handle.
+    let pipe = format!(r"\\.\pipe\sindricad-agent-{}-{}", std::process::id(), &token[..16]);
+
+    let body = serde_json::to_string_pretty(&json!({
+        "version": 1,
+        "socket": pipe,           // same field: "the address to connect to"
+        "token": token,
+        "pid": std::process::id(),
+    }))
+    .map_err(|e| e.to_string())?;
+    write_handshake(&handshake, &body).map_err(|e| format!("handshake {handshake:?}: {e}"))?;
+
+    app.manage(AgentIpc {
+        token,
+        seq: AtomicU64::new(1),
+        pending: Mutex::new(HashMap::new()),
+        handshake: handshake.clone(),
+    });
+
+    let app2 = app.clone();
+    let hs = handshake.clone();
+    tauri::async_runtime::spawn(async move {
+        // `first_pipe_instance` makes creation FAIL if something already owns
+        // this name, rather than quietly joining it — which is the Windows
+        // shape of the squatting attack the Unix side avoids by not using
+        // world-writable /tmp.
+        let mut server = match ServerOptions::new()
+            .first_pipe_instance(true)
+            .reject_remote_clients(true)
+            .create(&pipe)
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[agent] cannot create {pipe}: {e} — bridge unavailable");
+                let _ = std::fs::remove_file(&hs);
+                return;
+            }
+        };
+        println!("[agent] bridge listening on {pipe}");
+        loop {
+            if let Err(e) = server.connect().await {
+                eprintln!("[agent] accept failed, bridge stopping: {e}");
+                return;
+            }
+            // The connected instance becomes this client's stream, so the NEXT
+            // instance has to be created before serving it — otherwise the
+            // pipe name has no listener and the next client is refused. This is
+            // the shape that differs from an accept() loop, and getting it
+            // wrong means only one client ever connects.
+            let connected = server;
+            server = match ServerOptions::new().reject_remote_clients(true).create(&pipe) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[agent] cannot re-arm {pipe}: {e} — bridge stopping");
+                    let app3 = app2.clone();
+                    tauri::async_runtime::spawn(async move { serve(app3, connected).await });
+                    return;
+                }
+            };
+            let app3 = app2.clone();
+            tauri::async_runtime::spawn(async move { serve(app3, connected).await });
+        }
+    });
+    Ok(handshake)
+}
+
+// Neither Unix nor Windows: nothing to do, and the app runs exactly as before.
+#[cfg(not(any(unix, windows)))]
 fn setup(_app: &AppHandle) -> Result<PathBuf, String> {
-    Err("the agent bridge is Unix-only for now (named-pipe transport not yet written)".into())
+    Err("the agent bridge has no transport on this platform".into())
 }
 
 /// Remove the handshake file on exit. The socket goes too — a stale one would

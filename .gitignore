@@ -44,6 +44,11 @@ proving-ground/
 # bundled Python sidecar runtime (built by scripts/build-sidecar-runtime.sh, ~800MB)
 src-tauri/sidecar-runtime/
 
+# staged externalBin for the bundle: `sindri-mcp-<target-triple>`, copied out of
+# target/release by CI (and by scripts/stage-sindri-mcp.sh locally). A build
+# artifact under a name that varies per platform — never commit it.
+src-tauri/binaries/
+
 # secrets / local env: never commit
 .env
 .env.*

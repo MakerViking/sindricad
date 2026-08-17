@@ -4,6 +4,7 @@
     "createUpdaterArtifacts": true,
     "resources": {
       "sidecar-runtime": "sidecar-runtime"
-    }
+    },
+    "externalBin": ["binaries/sindri-mcp"]
   }
 }
