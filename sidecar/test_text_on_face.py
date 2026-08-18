@@ -199,11 +199,71 @@ def test_cone_and_sphere():
 def test_text_running_off_a_curved_face_raises():
     """The single most dangerous measured failure: text overflowing the
     silhouette truncates SILENTLY — one valid solid, no missing glyphs, a
-    plausible volume, and two letters sheared off. Coverage measured 0.32."""
+    plausible volume, and two letters sheared off.
+
+    This is the COVERAGE branch: every glyph still projects, so nothing above it
+    objects, and only the shadow integral can tell. It reports 32% here, which is
+    the number the threshold has to stay well clear of."""
     _, errors, _ = _rebuild(_cyl_text(height=14))
     assert errors, "oversized text silently truncated instead of raising"
-    assert "runs off this face" in errors[0].get("message", ""), errors
+    msg = errors[0].get("message", "")
+    assert "on this face" in msg and "cut off" in msg, errors
     print(PASS, "text overflowing a curved face raises instead of truncating")
+
+
+def test_the_coverage_threshold_stays_out_of_the_measurement_noise():
+    """A ratchet on the constant, because the failure it guards against is a
+    SILENT REFUSAL of a correct document and no portable fixture can express it:
+    the field case only reads low in a heavy font, and the same document with the
+    font removed reads high enough to pass even the old threshold. A CI runner
+    has neither that font nor a guaranteed substitute.
+
+    Measured 2026-08-18 by moving this constant and reading the real error —
+    ordinary text >= 0.999, the field document [0.985, 0.99), and text genuinely
+    hanging off the face [0.30, 0.35). 0.99 sat above the field document, which
+    is the bug. Anything from about 0.95 down to 0.5 separates the two."""
+    assert builder._TEXT_MIN_COVERAGE <= 0.95, (
+        f"_TEXT_MIN_COVERAGE={builder._TEXT_MIN_COVERAGE} is back inside the noise of "
+        "legitimate text (a heavy font on a curved face measured under 0.99)"
+    )
+    assert builder._TEXT_MIN_COVERAGE > 0.5, (
+        f"_TEXT_MIN_COVERAGE={builder._TEXT_MIN_COVERAGE} no longer refuses a real "
+        "clip (text hanging off the face measured 0.32)"
+    )
+    print(PASS, f"coverage threshold {builder._TEXT_MIN_COVERAGE} separates 0.32 from 0.99")
+
+
+def test_a_heavy_font_on_a_curved_face_is_not_refused():
+    """The field report, reduced to the only part that is portable.
+
+    The document was correct — it builds, one solid, every letter present — and
+    was refused anyway because a heavy typeface reads about 1.5% low on the
+    shadow integral. Its font cannot be assumed present on a CI runner, and with
+    the font removed the same document reads high enough to pass even the old
+    threshold, so the ORIGINAL case cannot be reproduced here at all. What is
+    reproducible is the discrimination the fix depends on: the threshold governs
+    the outcome, and the two populations sit either side of it.
+
+    Deliberately NOT asserting that some fixture reads between 0.90 and 0.99.
+    Nothing portable does, and a test that pretended to would pass for the wrong
+    reason on every machine."""
+    saved = builder._TEXT_MIN_COVERAGE
+    try:
+        # the overflow case reads 32%: refused at the shipped 0.90, accepted once
+        # the threshold drops below it. If both runs agreed, this constant would
+        # not be what decides, and the ratchet above would be guarding nothing.
+        builder._TEXT_MIN_COVERAGE = 0.90
+        _, refused, _ = _rebuild(_cyl_text(height=14))
+        builder._TEXT_MIN_COVERAGE = 0.20
+        _, allowed, _ = _rebuild(_cyl_text(height=14))
+    finally:
+        builder._TEXT_MIN_COVERAGE = saved
+    assert refused, "32% coverage must be refused at the shipped threshold"
+    assert not allowed, (
+        "lowering the threshold below the measured coverage did not change the "
+        "outcome, so _TEXT_MIN_COVERAGE is not what decides this"
+    )
+    print(PASS, "the coverage threshold is what decides, and it brackets 0.32")
 
 
 def test_bevel_emboss_removes_material_from_the_rim():
@@ -418,6 +478,8 @@ def main():
     test_curved_face_emboss_and_engrave()
     test_cone_and_sphere()
     test_text_running_off_a_curved_face_raises()
+    test_the_coverage_threshold_stays_out_of_the_measurement_noise()
+    test_a_heavy_font_on_a_curved_face_is_not_refused()
     test_bevel_emboss_removes_material_from_the_rim()
     test_bevel_engrave_widens_the_mouth()
     test_bevel_wider_than_the_stroke_is_refused_up_front()

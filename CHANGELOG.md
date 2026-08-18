@@ -37,6 +37,31 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Text on a curved face is no longer refused when it fits.** Reported from the
+  field: embossing "SindriCAD" around a 25 mm cylinder was rejected with "the
+  text runs off this face (one letter only 99% on it)", which is its own
+  contradiction, and the advice it gave could not help. The text was correct all
+  along.
+
+  The check that guards against a letter being silently sheared off measures how
+  much of each glyph lands on the face. That measurement carries a small error,
+  and how large it is depends on the typeface: a heavy weight reads about one and
+  a half percent low while fitting perfectly. The limit had been set from a single
+  sample in one font, close enough to a perfect score that ordinary error crossed
+  it, so correct documents were turned away.
+
+  The limit is now set from a spread of measurements instead. Text that genuinely
+  hangs off a face reads around a third of a glyph, so the gap between the two is
+  wide and nothing about the protection is weaker: text running off the edge is
+  still refused, and still refused for the same reason.
+
+  Two details worth knowing if this ever bit you. The error suggested making the
+  text smaller, and that could never have worked, because the reading does not
+  change with size: the same document was refused identically from 1.5 mm up to
+  10 mm. And a letter clipped by only a few percent is still not detectable this
+  way, because a clip that small cannot be told apart from the measurement error
+  itself.
+
 - **Textured surfaces no longer export broken geometry, and build twice as
   fast.** Two faults, both in the mesh a texture produces.
 

@@ -6227,14 +6227,37 @@ def _min_stroke_width(glyph):
 # silently — hence the three constants below, each guarding a measured failure.
 
 _TEXT_PROJ_DEFLECTION = 0.005  # meshing tolerance for the shadow integral
-# A glyph must land essentially whole on the picked face. MEASURED on a R=20
-# cylinder with "SindriCAD": a glyph that fits reads 0.9993 at this deflection
-# (1.0 in the limit — the shortfall is pure mesh error, and it converges:
-# 0.9935 at deflection 0.05, 0.9998 at 0.002). Text overflowing the silhouette
-# reads 0.3216 while STILL reporting one valid solid and a plausible volume, so
-# this integral is the only thing standing between the user and a word with two
-# letters silently sheared off.
-_TEXT_MIN_COVERAGE = 0.99
+# A glyph must land essentially whole on the picked face, and this is the only
+# thing standing between the user and a word with letters silently sheared off:
+# overflowing text still reports one valid solid and a plausible volume.
+#
+# RECALIBRATED 2026-08-18 from a field report. The old 0.99 was set from a single
+# sample (a R=20 cylinder in the default font) and sat inside the measurement
+# noise of legitimate text, so it refused a correct document. Measured by moving
+# this constant and reading the error the product actually produces -- no
+# instrumentation of the internals, because an instrumented probe misreported
+# which branch was firing and had to be thrown away:
+#
+#   ordinary text, R=20 cylinder, default font        >= 0.999   builds
+#   the field document with its font REMOVED          [0.995, 0.999)
+#   the field document as saved (a heavy face)        [0.985, 0.99)  <- refused
+#   text genuinely hanging off the end of the face    [0.30, 0.35)
+#
+# THE FONT IS THE VARIABLE, not the geometry, and that is the same document at
+# the same placement in both of the middle rows: a heavier face carries more
+# glyph boundary, the shortfall is boundary mesh error, so a bold font reads
+# lower while fitting perfectly well. 0.90 clears the worst legitimate reading by
+# 0.085 and still refuses a real clip by a factor of nearly three.
+#
+# Worth knowing when reading the next bug report: the shortfall does NOT depend
+# on text size. The field case was refused identically at every height from
+# 1.5mm to 10mm, so "make it smaller" could never have helped, which is why the
+# message no longer leads with it.
+#
+# NOT resolvable by tuning: a glyph clipped by a few percent is indistinguishable
+# from a heavy font's measurement error, because the two overlap. Catching those
+# needs a containment test rather than an area ratio.
+_TEXT_MIN_COVERAGE = 0.90
 # Projected area / flat area. The projection direction is fixed (build123d's
 # Face.project_to_shape takes no radial option), so a glyph on a steeply
 # turning-away surface gets smeared rather than wrapped — up to 6.7x on a torus
@@ -6364,8 +6387,8 @@ def _text_patches_on_curved(glyphs, face, direction, pick, extent):
         )
     if worst_cov < _TEXT_MIN_COVERAGE:
         raise ValueError(
-            f"Text: the text runs off this face (one letter only {worst_cov * 100:.0f}% "
-            "on it) — make it smaller, or move it away from the edge"
+            f"Text: one letter is only {worst_cov * 100:.0f}% on this face, so it "
+            "would be cut off — move the text away from the edge, or make it smaller"
         )
     if worst_smear > _TEXT_MAX_SMEAR:
         raise ValueError(
