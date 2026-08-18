@@ -20,7 +20,7 @@ import {
   type Region,
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
-import { dimensionSegments, asRound } from "./entityDims";
+import { dimensionSegments, asRound, dimRefPoints } from "./entityDims";
 import { distToSeg } from "./geom2d";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
@@ -622,6 +622,19 @@ export function curveObjects(
         const a = e.points[0], b = e.points[e.points.length - 1];
         if (a) add(endpointDot(plane, a.x, a.y, ENDPOINT_COLOR, endpointR));
         if (b) add(endpointDot(plane, b.x, b.y, ENDPOINT_COLOR, endpointR));
+      } else if (e.type === "rectangle") {
+        // Corners 0..3, from dimRefPoints — the SAME source pickEndpoint reads,
+        // so the two cannot drift about which corners are addressable. Not a
+        // blanket switch to dimRefPoints for every type: it also returns an
+        // arc's CENTRE as p2, which is a dimension target and not an endpoint.
+        //
+        // Without this the four corners were pickable and invisible, which is
+        // the exact shape of GH #17 — a tool whose targets carry no dot reads
+        // as dead, and the corners are the only click targets opening the
+        // rectangle affordance added.
+        for (const { pos } of dimRefPoints(e)) {
+          add(endpointDot(plane, pos.x, pos.y, ENDPOINT_COLOR, endpointR));
+        }
       }
     }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));

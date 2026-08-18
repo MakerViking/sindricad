@@ -5,7 +5,7 @@
 // into doc entities is covered by the step-4 refresh e2e).
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { curveObjects } from "./overlay";
+import { curveObjects, ENDPOINT_COLOR } from "./overlay";
 import { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 
@@ -42,5 +42,59 @@ describe("curveObjects — projected link colors", () => {
     const native: ResolvedEntity = { type: "line", id: "p1", x1: 0, y1: 0, x2: 10, y2: 0 };
     const objs = curveObjects([native], plane, 0xffffff);
     expect(matColor(objs[0]!)).toBe(0xffffff);
+  });
+});
+
+// What you can CLICK must be what you can SEE. pickEndpoint gained rectangle
+// corners when the constraint affordance opened; the dots did not follow, so the
+// four corners — the only new click targets that change added — were addressable
+// and invisible. That is the shape of GH #17, where Coincident read as a dead
+// tool precisely because its targets carried no marker.
+describe("curveObjects — endpoint dots mark what pickEndpoint can address", () => {
+  const plane = new SketchPlane("XY");
+  const R = 0.5; // dot half-size, in world units
+
+  // A dot is the only thing drawn in ENDPOINT_COLOR; its centre is the midpoint
+  // of its own square outline, so recovering it needs no knowledge of the shape.
+  const dotCentres = (objs: THREE.Object3D[]): [number, number][] =>
+    objs
+      .filter((o) => !(o as THREE.Group).isGroup && matColor(o) === ENDPOINT_COLOR)
+      .map((o) => {
+        const g = (o as THREE.Line).geometry as THREE.BufferGeometry;
+        g.computeBoundingBox();
+        const b = g.boundingBox!;
+        return [(b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2];
+      });
+
+  const near = (a: [number, number], b: [number, number]) =>
+    Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6;
+
+  it("a rectangle carries a dot on each of its four corners", () => {
+    const rect: ResolvedEntity = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 };
+    const centres = dotCentres(curveObjects([rect], plane, 0xffffff, false, R));
+    // rectCorners' CCW order, which is also dimRefPoints' p 0..3 and therefore
+    // the corner indices a constraint names.
+    const corners: [number, number][] = [[-20, -10], [20, -10], [20, 10], [-20, 10]];
+    expect(centres).toHaveLength(4);
+    for (const c of corners) {
+      expect(centres.some((d) => near(d, c)), `no dot on corner ${c}`).toBe(true);
+    }
+  });
+
+  it("CONTROL: a line still gets exactly its two ends, and an arc centre is not a dot", () => {
+    // Proves the assertion above discriminates rather than counting whatever is
+    // drawn: dimRefPoints returns an arc's CENTRE as p2 (a dimension target, not
+    // an endpoint), so a blanket switch to it would put a dot in mid-air here.
+    const line: ResolvedEntity = { type: "line", id: "L", x1: 0, y1: 0, x2: 10, y2: 0 };
+    const arc: ResolvedEntity = {
+      type: "arc", id: "A", x1: 0, y1: 0, x2: 10, y2: 0, mx: 5, my: 5,
+    };
+    expect(dotCentres(curveObjects([line], plane, 0xffffff, false, R))).toHaveLength(2);
+    expect(dotCentres(curveObjects([arc], plane, 0xffffff, false, R))).toHaveLength(2);
+  });
+
+  it("the emphasis pass draws no dots, for a rectangle as for everything else", () => {
+    const rect: ResolvedEntity = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 };
+    expect(dotCentres(curveObjects([rect], plane, 0x33aaff, true, R))).toHaveLength(0);
   });
 });
