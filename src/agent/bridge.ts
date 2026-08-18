@@ -89,12 +89,19 @@ function schema(): unknown {
           "treat it as an exact dimension.",
       },
       "geom.query": {
-        params: { items: "query items — see selectors below" },
+        params: {
+          items:
+            'query items. ONE item is {"kind":"face"|"edge", "sel":{…selector…}, ' +
+            '"where":{…predicate…}?, "limit":N?, "body":"id"?, "id":"yours"?} — the ' +
+            "selector goes INSIDE `sel`, and a `by`/`dir`/`fp` written on the item " +
+            "itself is refused rather than ignored. An item with neither `sel` nor " +
+            "`where` deliberately matches every entity of `kind`.",
+        },
         returns: "which faces or edges match, as storable by:\"match\" references",
       },
     },
     selectors: {
-      face: ['by:"normal" dir+deg (PLANAR faces only)', 'by:"nearest" point', 'by:"match" fp', 'by:"all"'],
+      face: ['by:"normal" dir + optional deg (PLANAR faces only; default 8.1°)', 'by:"nearest" point', 'by:"match" fp', 'by:"all"'],
       edge: ['by:"axis"', 'by:"all"', 'by:"nearest" point', 'by:"match" fp', 'by:"tangentChain" seed', 'by:"ofFace" face'],
     },
     traps: [
@@ -155,6 +162,36 @@ function docRead(store: DocumentStore): unknown {
   };
 }
 
+/**
+ * Envelope the document-authored strings in a measure reply.
+ *
+ * The sidecar's reply is also what the app renders for a human, so it carries
+ * `bodies[].name` and `warnings[].subject` as PLAIN text — correct for a toast,
+ * wrong for an agent. `doc.read` already envelopes the identical strings and the
+ * schema declares both untrusted, so leaving them bare HERE was worse than never
+ * marking them at all: a reader who sees the same body name marked by one tool
+ * and unmarked by another learns that unmarked means trusted.
+ *
+ * Rebuilt field-by-field rather than mutated: the reply is a wire object the
+ * caller also holds, and this must not depend on knowing every key it carries.
+ */
+function envelopeMeasured(result: unknown): unknown {
+  if (!result || typeof result !== "object") return result;
+  const r = result as Record<string, unknown>;
+  const mark = (v: unknown, key: string, kind: string) => {
+    if (!v || typeof v !== "object") return v;
+    const o = v as Record<string, unknown>;
+    return key in o ? { ...o, [key]: envelope(o[key], kind) } : o;
+  };
+  return {
+    ...r,
+    ...(Array.isArray(r.bodies) ? { bodies: r.bodies.map((b) => mark(b, "name", "name")) } : {}),
+    ...(Array.isArray(r.warnings)
+      ? { warnings: r.warnings.map((w) => mark(w, "subject", "subject")) }
+      : {}),
+  };
+}
+
 async function geomMeasure(deps: BridgeDeps, params: Record<string, unknown>): Promise<ToolResult> {
   // Both geometry ops are OPTIONAL on the backend interface — the in-process Rust
   // spike implements neither. Guarding beats a stub that always throws, and the
@@ -168,7 +205,7 @@ async function geomMeasure(deps: BridgeDeps, params: Record<string, unknown>): P
     ...(bodies ? { bodies } : {}),
     ...(checks ? { checks } : {}),
   });
-  return r.ok ? { ok: true, result: r.result } : fail("measureFailed", r.message ?? "measure failed");
+  return r.ok ? { ok: true, result: envelopeMeasured(r.result) } : fail("measureFailed", r.message ?? "measure failed");
 }
 
 async function geomQuery(deps: BridgeDeps, params: Record<string, unknown>): Promise<ToolResult> {
