@@ -1,0 +1,17 @@
+# The vendored planegcs artifacts are verified BY CHECKSUM before they are
+# installed over node_modules (scripts/vendor-planegcs.mjs, run from postinstall),
+# so their exact bytes are load-bearing rather than incidental. That check is the
+# only thing standing between a swapped-out artifact and the solver.
+#
+# GitHub's Windows runners check out with core.autocrlf=true, which rewrites LF to
+# CRLF in every file git considers text. That moved planegcs.js from 641b4f9c to
+# f204b9ac, the install script correctly refused an artifact that was not the one
+# built and reviewed, and `npm ci` failed on windows-latest alone while Linux and
+# macOS stayed green (first observed on PR #34). Nothing was wrong with the file:
+# git handed Windows different bytes than it committed.
+#
+# So pin them. `-text` keeps planegcs.js byte-identical everywhere and still
+# diffable; the wasm is `binary` because it is. Any future artifact that is
+# checksummed, signed, or hashed belongs in this list the day it is added.
+vendor/planegcs/planegcs.js    -text
+vendor/planegcs/planegcs.wasm  binary

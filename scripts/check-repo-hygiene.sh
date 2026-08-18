@@ -87,6 +87,33 @@ if [ -n "$old" ]; then
   printf '%s\n' "$old" | sed 's/^/    /'
 fi
 
+# --- checksummed artifacts must not be line-ending translated -----------------
+# Anything verified by hash has load-bearing BYTES, and git will happily hand a
+# Windows checkout different ones: the runners set core.autocrlf=true, so every
+# file git considers text arrives with CRLF. vendor/planegcs/planegcs.js went
+# from 641b4f9c to f204b9ac that way, vendor-planegcs.mjs correctly refused to
+# install an artifact that was not the one built and reviewed, and `npm ci`
+# failed on windows-latest alone while Linux and macOS stayed green.
+#
+# Enumerated from SHA256SUMS.txt rather than from a list here, so an artifact
+# added to the manifest without a .gitattributes rule fails on the day it lands
+# instead of on the next Windows run.
+echo "checking line-ending pins on checksummed artifacts…"
+sums='vendor/planegcs/SHA256SUMS.txt'
+if [ -f "$sums" ]; then
+  while read -r _hash name; do
+    [ -n "${name:-}" ] || continue
+    path="vendor/planegcs/$name"
+    git ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || continue
+    # `text` must be explicitly unset (-text) or the file marked binary; the
+    # default (unspecified/auto) is what lets autocrlf rewrite it.
+    attr=$(git check-attr text -- "$path" | sed 's/.*: //')
+    if [ "$attr" != "unset" ]; then
+      note "$path is checksummed but not pinned in .gitattributes (text: $attr)"
+    fi
+  done < "$sums"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo
   echo "Repo hygiene FAILED. Untrack with:  git rm --cached <path>"
