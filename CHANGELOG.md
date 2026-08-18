@@ -50,7 +50,60 @@ This file starts on 2026-08-03. For anything before that, see the
   the key, so switching away from the app mid-drag cannot leave the button stuck
   in a mode where clicking no longer selects anything.
 
+- **Rectangle corners and edges can be constrained now, not only dimensioned.**
+  Asked for by a user who found that clicking a rectangle corner with Coincident
+  armed did nothing at all. Dimensioning that same corner already worked, so the
+  two behaved differently for no reason visible from the outside.
+
+  A corner is now an endpoint for Coincident, Midpoint, Symmetric and Fix, and
+  each of the four sides is a line for Horizontal, Vertical, Parallel,
+  Perpendicular, Collinear, Equal and Tangent. The side you get is the one under
+  the cursor. Corners are also drawn as dots now, the way every other endpoint
+  is, so it is possible to see where they are before clicking.
+
+  A rectangle keeps its sides square to the sketch axes, so a few combinations
+  are settled before you ask: Horizontal on a side that is already horizontal is
+  reported as redundant rather than applied, and Vertical on that same side is
+  refused. Clicking the side at right angles to it does what you would expect.
+
 ### Fixed
+
+- **A rectangle can no longer be solved out of existence.**
+  Found while opening the constraint work above, and present long before it. A
+  constraint that could only be satisfied by flattening a rectangle to nothing
+  was applied and reported as successful: the shape collapsed to zero width or
+  zero height, and nothing said so. A plain line in the same contradiction was
+  already caught, so this was specific to rectangles.
+
+  There was a second and quieter version of the same thing. A constraint that
+  pulled one corner past the opposite one could be satisfied by mirroring the
+  rectangle, and because a rectangle is stored as a position and a size rather
+  than as four separate corners, its corners were silently relabelled by that
+  mirror. The constraint then meant something different from what it was drawn
+  to mean, and the next edit collapsed the shape.
+
+  Both are refused now, and the sketch is left exactly as it was rather than
+  half solved. Dragging a corner of an unconstrained rectangle past the opposite
+  corner still works and still follows the cursor, because nothing in that
+  gesture depends on which corner is which.
+
+- **An extrude saved before 0.1.123 no longer loses an area when its depth is
+  changed.** Files from before that release record the areas of an extrude as
+  points rather than as the sketch geometry bounding them. If the sketch moved
+  after the extrude was made, a stored point could end up outside the area it
+  named, and reopening the extrude dropped that area without a word: a two-area
+  extrude came back as one, and typing a new depth wrote the loss to the file.
+  One ordinary gesture, no confirmation.
+
+  An area the tool cannot find is now kept exactly as it was, and the message
+  says how many were kept and what would drop them. Changing the area set on
+  purpose still works and still replaces what it says it replaces.
+
+  This narrows the problem rather than ending it, and it is worth knowing the
+  rest. A stored point that has drifted into a different area, most often into a
+  hole in the profile it belongs to, still resolves to the wrong one. Nothing in
+  a file that lacks the newer references can tell those two cases apart, which is
+  why the references exist. Re-saving an older file records them.
 
 - **An empty document no longer reports that the geometry engine stalled.**
   Reported from the field with a screenshot: "one operation stalled for over
