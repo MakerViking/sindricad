@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
-import { refPoint } from "./entityDims";
+import { lineOperand, refPoint } from "./entityDims";
 
 const V = (x: number, y: number) => new THREE.Vector2(x, y);
 
@@ -48,7 +48,19 @@ function entCenter(e: ResolvedEntity): THREE.Vector2 {
 export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchConstraint[]): ConstraintGlyph[] {
   const byId = new Map(ents.map((e) => [e.id, e]));
   const out: ConstraintGlyph[] = [];
-  const center = (id: string): THREE.Vector2 | null => { const e = byId.get(id); return e ? entCenter(e) : null; };
+  /** Where a constraint's badge sits for an operand id. A LINE operand is tried
+   *  first, through the app's own decoder, because a rectangle EDGE (`R~k`) has
+   *  no entity of its own: without this the badge for the seven line tools'
+   *  newest legal pick would be dropped entirely — no amber for the redundant
+   *  `horizontal`, and nothing to right-click to delete it. Falls back to the
+   *  entity centre for circles/arcs and for a bare rectangle id. */
+  const center = (id: string): THREE.Vector2 | null => {
+    const seg = lineOperand(byId, id);
+    if (seg) return V((seg.x1 + seg.x2) / 2, (seg.y1 + seg.y2) / 2);
+    if (id.includes("~")) return null; // a malformed edge id names nothing
+    const e = byId.get(id);
+    return e ? entCenter(e) : null;
+  };
   const refPos = (id: string, p: number): THREE.Vector2 | null => {
     const e = byId.get(id);
     return e ? refPoint(e, p) : null;

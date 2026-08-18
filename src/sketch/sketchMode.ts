@@ -185,7 +185,7 @@ export class SketchMode {
   // the sketch. Ten lines drawn, one Ctrl+Z, all ten gone. These stacks live for
   // the editing session only; leaving and re-entering a sketch starts fresh.
   private history = new SketchHistory();
-  private dragRefusedToast = false; // one fixed-point toast per refused drag gesture
+  private dragRefusedToast = false; // one refusal toast per drag gesture (fixed point, or refused geometry)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
   // armed cheaply on pointerdown over an entity body; the snapshot and the
@@ -3325,10 +3325,17 @@ export class SketchMode {
     // entities that own a center (circle/arc), for concentric/radius/equalRadius
     const roundIds = ids((e) => { const k = curveKind(e); return k === "circle" || k === "arc"; });
     const curveIds = ids((e) => curveKind(e) !== undefined);
-    // entities that own an addressable endpoint (line/arc/spline/point; projected line/arc/poly)
+    // Entities that own an addressable endpoint (line/arc/spline/point;
+    // projected line/arc/poly), which coincident/midpoint/symmetric name.
+    // RECTANGLES are in this set as of 2026-08-17: their four corners became
+    // pickable points (constraintTools.pickEndpoint) and endpointPoint resolves
+    // them, so leaving them out would have every rect-corner coincident survive
+    // its own solve and then be silently deleted by the next trim/fillet/delete
+    // — the constraint would work until the user touched anything else.
     const endIds = ids(
       (e) =>
         e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "point" ||
+        e.type === "rectangle" ||
         (e.type === "projected" && e.curve.kind !== "circle"),
     );
     // entities exposing at least one dimensionable reference point (p2p/p2l/fix targets)
@@ -3344,6 +3351,18 @@ export class SketchMode {
       const k = Number(id.slice(t + 1));
       return rectIds.has(id.slice(0, t)) && Number.isInteger(k) && k >= 0 && k <= 3;
     };
+    // A CURVE operand (tangent2's two picks) is any line/circle/arc — and a rect
+    // edge is a line, so it has to decode too or the tangent the edge picker now
+    // emits would be deleted by the next unrelated edit.
+    const hasCurveOperand = (id: string) => curveIds.has(id) || hasLineOperand(id);
+    // A POINT operand (coincident/midpoint/symmetric). A rectangle corner is
+    // spelled `<rectId>` + corner index 0..3 — the form the pickers emit and the
+    // one the document defines — but `<rectId>~<k>` p0/p1 reaches the same
+    // corner through the edge registration in sketchSolve, and a saved file or
+    // the agent-control API can carry it. Accept both here: deleting a
+    // constraint the solver honours is the silent-drop failure again, one layer
+    // up.
+    const hasPointOperand = (id: string) => endIds.has(id) || hasLineOperand(id);
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return hasLineOperand(c.line);
@@ -3351,12 +3370,12 @@ export class SketchMode {
           return hasLineOperand(c.l1) && hasLineOperand(c.l2);
         case "diameter": return roundIds.has(c.circle);
         case "tangent": return hasLineOperand(c.line) && circleIds.has(c.circle);
-        case "tangent2": return curveIds.has(c.a) && curveIds.has(c.b);
+        case "tangent2": return hasCurveOperand(c.a) && hasCurveOperand(c.b);
         case "equalRadius": return roundIds.has(c.a) && roundIds.has(c.b);
-        case "coincident": return endIds.has(c.e1) && endIds.has(c.e2);
+        case "coincident": return hasPointOperand(c.e1) && hasPointOperand(c.e2);
         case "concentric": return roundIds.has(c.c1) && roundIds.has(c.c2);
-        case "midpoint": return endIds.has(c.e) && hasLineOperand(c.line);
-        case "symmetric": return endIds.has(c.e1) && endIds.has(c.e2) && hasLineOperand(c.line);
+        case "midpoint": return hasPointOperand(c.e) && hasLineOperand(c.line);
+        case "symmetric": return hasPointOperand(c.e1) && hasPointOperand(c.e2) && hasLineOperand(c.line);
         case "radius": return roundIds.has(c.e);
         case "p2pDistance": return refIds.has(c.e1) && refIds.has(c.e2);
         case "p2lDistance": return refIds.has(c.e) && hasLineOperand(c.line);
@@ -3547,13 +3566,20 @@ export class SketchMode {
           if (!this.conflict) this.entities = r.entities;
           this.lastDof = r.dof;
           if (r.dragRefused) {
-            // grabbed point is fixed and did NOT move: keep the anchor on it.
+            // Nothing moved: keep the anchor where the grabbed point still is.
             // Advancing dragFrom to the cursor would re-run the nearest-point
             // search from a drifted origin and capture an unrelated FREE point
             // mid-gesture (yanking it to the cursor on release).
+            //
+            // "geometry" is the guard refusing the solve itself (a collapsed
+            // line, a mirrored rectangle). It blames no constraint, so
+            // r.conflicts is empty and nothing above paints a red chip — without
+            // a word here the drag would just stop dead with no explanation.
             if (!this.dragRefusedToast) {
               this.dragRefusedToast = true;
-              toast(r.dragRefused === "projected" ? PROJECTED_FIXED_MSG : "That point is fixed — delete its Fix constraint to move it");
+              toast(r.dragRefused === "projected" ? PROJECTED_FIXED_MSG
+                : r.dragRefused === "geometry" ? "That move would flatten or flip constrained geometry, so it was not applied"
+                : "That point is fixed — delete its Fix constraint to move it");
             }
           } else if (this.dragFrom) {
             this.dragFrom.set(d.toX, d.toY); // track grabbed pt

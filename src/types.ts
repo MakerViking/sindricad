@@ -285,13 +285,18 @@ export type SketchConstraint =
   // tangent: a line and a circle/arc touch (line tangent to the circle)
   | { type: "tangent"; line: string; circle: string }
   // coincident: two entity endpoints share a position. `e1`/`e2` are entity ids;
-  // `p1`/`p2` are the endpoint index (0 = start, 1 = end) on each.
+  // `p1`/`p2` are the point index — 0 = start, 1 = end on a line/arc/spline, and
+  // 0..3 for a RECTANGLE CORNER (rectCorners CCW order), the same `p` semantics
+  // p2pDistance and `fix` use. One convention for a corner, in every constraint
+  // that names a point: sketchSolve's endpointPoint and dimPoint both resolve it.
   | { type: "coincident"; e1: string; p1: number; e2: string; p2: number }
   // concentric: two circles/arcs share a center
   | { type: "concentric"; c1: string; c2: string }
-  // midpoint: a point (endpoint of `e`/`p`) sits at the midpoint of a line
+  // midpoint: a point (`e`/`p`, same semantics as coincident) sits at the
+  // midpoint of a line operand (`line` may be a rect edge)
   | { type: "midpoint"; e: string; p: number; line: string }
-  // symmetric: two endpoints mirror across a line (the symmetry axis)
+  // symmetric: two points (same semantics as coincident) mirror across a line
+  // operand (the symmetry axis; may be a rect edge)
   | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string }
   // angle: driving included angle (DEGREES) between two lines (solver works in radians)
   | { type: "angle"; id?: string; l1: string; l2: string; value: number; driven?: boolean; place?: PlaceOffset }

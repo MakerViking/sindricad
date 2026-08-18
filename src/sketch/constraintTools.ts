@@ -10,7 +10,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { projEndSamples } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
-import { curveKind, dimRefPoints } from "./entityDims";
+import { curveKind, dimRefPoints, lineOperandAt } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
 
 export const CONSTRAINT_TOOLS = new Set<SketchTool>([
@@ -28,10 +28,25 @@ export const CONSTRAINT_TOOLS = new Set<SketchTool>([
   "fix",
 ]);
 
-/** line/circle/arc are the tangency-capable curves (curveKind — see entityDims);
- *  circle/arc carry a radius+center. */
-const isCurve = (e: ResolvedEntity) => curveKind(e) !== undefined;
-const isRound = (e: ResolvedEntity) => { const k = curveKind(e); return k === "circle" || k === "arc"; };
+/** What a click landed on, expressed as a constraint OPERAND rather than as an
+ *  entity. The two differ for exactly one shape: a rectangle presents four line
+ *  operands (`<rectId>~<k>`) and no operand of its own, so an entity id is not
+ *  enough to say what was clicked. */
+interface Operand {
+  /** the id to put in the constraint — a rect EDGE, not the rectangle */
+  id: string;
+  kind: "line" | "circle" | "arc";
+  /** the entity it came from: needed for the projected-is-fixed message, and to
+   *  tell "another edge of the same rectangle" from "the same operand twice" */
+  ent: ResolvedEntity;
+  /** index into the live entity list, for the host's first-pick highlight */
+  index: number;
+}
+
+const isRoundOp = (o: Operand) => o.kind === "circle" || o.kind === "arc";
+
+/** the ENTITY an operand id belongs to — `R~2` belongs to the rectangle `R` */
+const baseOf = (id: string) => { const t = id.indexOf("~"); return t < 0 ? id : id.slice(0, t); };
 
 /** The slice of SketchMode these click flows read/write — live accessors, not copies. */
 export interface ConstraintHost {
@@ -67,25 +82,28 @@ export interface ConstraintHost {
 
 
 /** What each tool needs under the cursor. Used only for the "nothing here"
- *  message, so a miss names the target instead of looking like a dead tool. */
+ *  message, so a miss names the target instead of looking like a dead tool.
+ *  A rectangle EDGE is a line to every one of these, and a rectangle CORNER is
+ *  an endpoint — say so, because a user who has just been told "needs a line"
+ *  after clicking a rectangle side has been told the wrong thing. */
 const WANTS: Partial<Record<SketchTool, string>> = {
-  horizontal: "a line",
-  vertical: "a line",
-  parallel: "two lines",
-  perpendicular: "two lines",
-  collinear: "two lines",
+  horizontal: "a line, or a rectangle edge",
+  vertical: "a line, or a rectangle edge",
+  parallel: "two lines (a rectangle edge counts)",
+  perpendicular: "two lines (a rectangle edge counts)",
+  collinear: "two lines (a rectangle edge counts)",
   equal: "two lines, or two circles/arcs",
   tangent: "a circle or arc, then the line or curve it should touch",
   concentric: "two circles or arcs",
-  coincident: "two endpoints",
+  coincident: "two endpoints or rectangle corners",
   midpoint: "an endpoint, then the line to centre it on",
   symmetric: "two endpoints, then the axis line",
   fix: "a point, an endpoint or a centre",
 };
 
 const COINCIDENT_MISS =
-  "Coincident joins two ENDPOINTS — click the ends of the lines, not their middles. "
-  + "To make two lines lie along each other, use Collinear.";
+  "Coincident joins two ENDPOINTS — click the ends of the lines, or a rectangle's corners, "
+  + "not their middles. To make two lines lie along each other, use Collinear.";
 
 
 export class ConstraintTools {
@@ -95,6 +113,8 @@ export class ConstraintTools {
   // first pick (and, for symmetric, the second) on filletFirst-style state.
   private pendingEndpoint: { id: string; idx: number } | null = null;
   private pendingEndpoint2: { id: string; idx: number } | null = null;
+  /** the first operand of a two-pick flow; valid ONLY while filletFirst is set */
+  private firstOperand: Operand | null = null;
 
   /** whether an endpoint-based flow (coincident/symmetric/midpoint) is mid-pick */
   hasPending(): boolean {
@@ -104,6 +124,7 @@ export class ConstraintTools {
   resetPending() {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
+    this.firstOperand = null;
     this.host.setPendingPoint(null); // the marker must not outlive the pick
   }
 
@@ -129,32 +150,72 @@ export class ConstraintTools {
     if (t === "concentric") return this.concentricClick(p);
 
     // line-based constraints (horizontal/vertical/parallel/perpendicular/collinear)
-    const entities = this.host.entities();
-    const idx = pickEntity(entities, p, this.host.pickTol());
-    const ent = idx >= 0 ? entities[idx] : undefined;
-    if (!ent || curveKind(ent) !== "line") return this.missed();
+    const op = this.pickOperand(p);
+    if (!op || op.kind !== "line") return this.missed();
     if (t === "horizontal" || t === "vertical") {
-      // constraining the projected line ITSELF is meaningless — it's fixed
-      if (ent.type !== "line") return this.host.warn(PROJECTED_FIXED_MSG);
-      if (t === "horizontal") this.addConstraint({ type: "horizontal", line: ent.id });
-      else this.addConstraint({ type: "vertical", line: ent.id });
+      // constraining the projected line ITSELF is meaningless — it's fixed.
+      // (Tested on the ENTITY, not on `kind`: a rect edge is a line operand and
+      // is perfectly constrainable, it just isn't a `line` entity.)
+      if (op.ent.type === "projected") return this.host.warn(PROJECTED_FIXED_MSG);
+      if (t === "horizontal") this.addConstraint({ type: "horizontal", line: op.id });
+      else this.addConstraint({ type: "vertical", line: op.id });
     } else {
-      const id = ent.id;
       // two-line constraints: first click stores, second applies
-      if (this.host.getFilletFirst() == null) {
-        this.host.setFilletFirst(idx);
-        return;
-      }
-      const a = entities[this.host.getFilletFirst()!]?.id;
-      this.host.setFilletFirst(null);
-      if (!a || a === id) return this.missed();
-      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a, l2: id });
-      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a, l2: id });
-      else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a, l2: id });
+      const pair = this.holdPair(op);
+      if (!pair) return;
+      const [a, b] = pair;
+      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a.id, l2: b.id });
+      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a.id, l2: b.id });
+      else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a.id, l2: b.id });
     }
   }
 
-  /** nearest addressable endpoint (line/arc/spline end, or a point entity) to p */
+  /** THE operand under the cursor. Rectangles are the reason this exists: they
+   *  present four line operands and none of their own, so "which entity" is not
+   *  the same question as "which operand" — see entityDims.lineOperandAt for why
+   *  the seam is there and not in curveKind. */
+  private pickOperand(p: THREE.Vector2): Operand | null {
+    const entities = this.host.entities();
+    const index = pickEntity(entities, p, this.host.pickTol());
+    const ent = index >= 0 ? entities[index] : undefined;
+    if (!ent) return null;
+    const lineId = lineOperandAt(ent, p);
+    if (lineId) return { id: lineId, kind: "line", ent, index };
+    const k = curveKind(ent);
+    return k === "circle" || k === "arc" ? { id: ent.id, kind: k, ent, index } : null;
+  }
+
+  /** The shared two-pick handshake: returns [first, second] once a second
+   *  operand lands, null while arming the first or on a repeat of the same one.
+   *
+   *  `filletFirst` stays the single source of "am I armed", because SketchMode
+   *  clears it on Escape and on setTool and knows nothing about the operand slot
+   *  beside it — reading the operand only while filletFirst is set is what keeps
+   *  a first pick from surviving an Escape. */
+  private holdPair(op: Operand): [Operand, Operand] | null {
+    if (this.host.getFilletFirst() == null) {
+      this.host.setFilletFirst(op.index);
+      this.firstOperand = op;
+      return null;
+    }
+    const first = this.firstOperand;
+    this.host.setFilletFirst(null);
+    this.firstOperand = null;
+    // The SAME operand twice is a miss; two different EDGES of one rectangle are
+    // not (making two of its sides equal is a legitimate, useful pick).
+    if (!first || first.id === op.id) { this.missed(); return null; }
+    return [first, op];
+  }
+
+  /** nearest addressable endpoint (line/arc/spline end, a point entity, or a
+   *  RECTANGLE CORNER) to p.
+   *
+   *  Rectangle corners are addressed the way the document already addresses
+   *  them everywhere else — the rectangle's own id with `idx` = the corner index
+   *  0..3 from dimRefPoints (entityDims), which is what `fix` and every
+   *  dimension emit. Not the edge form `R~k` p0/p1: that reaches the same solver
+   *  point, but nothing that renders a point operand (glyphs.refPos) can decode
+   *  it, so such a constraint would be invisible and undeletable. */
   private pickEndpoint(p: THREE.Vector2): { id: string; idx: number } | null {
     const tol = this.host.pickTol();
     let best: { id: string; idx: number } | null = null;
@@ -167,7 +228,9 @@ export class ConstraintTools {
       if (e.type === "line") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
       else if (e.type === "arc") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
       else if (e.type === "point") consider(e.id, 0, e.x, e.y);
-      else if (e.type === "spline") {
+      else if (e.type === "rectangle") {
+        for (const r of dimRefPoints(e)) consider(e.id, r.p, r.pos.x, r.pos.y);
+      } else if (e.type === "spline") {
         const first = e.points[0], last = e.points[e.points.length - 1];
         if (first) consider(e.id, 0, first.x, first.y);
         if (last) consider(e.id, 1, last.x, last.y);
@@ -196,6 +259,12 @@ export class ConstraintTools {
     if (e.type === "line" || e.type === "arc") {
       return ep.idx === 0 ? { x: e.x1, y: e.y1 } : { x: e.x2, y: e.y2 };
     }
+    // rectangle: the same dimRefPoints list pickEndpoint picked from, so a
+    // corner that can be picked is always one that can be shown
+    if (e.type === "rectangle") {
+      const q = dimRefPoints(e).find((r) => r.p === ep.idx);
+      return q ? { x: q.pos.x, y: q.pos.y } : null;
+    }
     if (e.type === "spline") {
       const pt = ep.idx === 0 ? e.points[0] : e.points[e.points.length - 1];
       return pt ? { x: pt.x, y: pt.y } : null;
@@ -214,7 +283,6 @@ export class ConstraintTools {
 
   private pointConstraintClick(p: THREE.Vector2) {
     const t = this.host.tool();
-    const entities = this.host.entities();
     if (t === "midpoint") {
       // pick a point/endpoint, then a line
       if (!this.pendingEndpoint) {
@@ -224,13 +292,16 @@ export class ConstraintTools {
         this.host.setPendingPoint(this.endpointXY(ep));
         return;
       }
-      const idx = pickEntity(entities, p, this.host.pickTol());
-      const e = idx >= 0 ? entities[idx] : null;
+      const op = this.pickOperand(p);
       const ep = this.pendingEndpoint;
       this.pendingEndpoint = null;
       this.host.setPendingPoint(null);
-      if (e && curveKind(e) === "line" && e.id !== ep.id) this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: e.id });
-      else this.missed();
+      // compared by OWNING ENTITY, not by operand id: centring a rectangle's
+      // corner on one of that same rectangle's edges is a self-referential
+      // squash, and `R~0` would not equal `R` on a bare id compare
+      if (op && op.kind === "line" && baseOf(op.id) !== ep.id) {
+        this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: op.id });
+      } else this.missed();
       return;
     }
     if (t === "coincident") {
@@ -239,6 +310,7 @@ export class ConstraintTools {
         // An endpoint pick is the primary flow and wins over any line held for
         // the collinear fallback below.
         this.host.setFilletFirst(null);
+        this.firstOperand = null;
         if (!this.pendingEndpoint) {
           this.pendingEndpoint = ep;
           this.host.setPendingPoint(this.endpointXY(ep));
@@ -255,10 +327,8 @@ export class ConstraintTools {
       // constraint, no message, no highlight — indistinguishable from a broken
       // tool, and the reason both a field reporter and the author concluded
       // sketch lines were not selectable at all.
-      const ents = this.host.entities();
-      const idx = pickEntity(ents, p, this.host.pickTol());
-      const ent = idx >= 0 ? ents[idx] : undefined;
-      if (!ent || curveKind(ent) !== "line") {
+      const op = this.pickOperand(p);
+      if (!op || op.kind !== "line") {
         this.host.warn(COINCIDENT_MISS);
         return; // keep any pending endpoint: a stray click must not lose the first pick
       }
@@ -270,15 +340,16 @@ export class ConstraintTools {
       }
       // Two line BODIES: apply collinear, the way SolidWorks and Fusion do,
       // instead of doing nothing.
-      const first = this.host.getFilletFirst();
-      if (first == null) {
-        this.host.setFilletFirst(idx);
+      if (this.host.getFilletFirst() == null) {
+        this.host.setFilletFirst(op.index);
+        this.firstOperand = op;
         return;
       }
-      const a = ents[first]?.id;
+      const first = this.firstOperand;
       this.host.setFilletFirst(null);
-      if (!a || a === ent.id) return;
-      this.addConstraint({ type: "collinear", l1: a, l2: ent.id });
+      this.firstOperand = null;
+      if (!first || first.id === op.id) return;
+      this.addConstraint({ type: "collinear", l1: first.id, l2: op.id });
       this.host.warn("Two lines: applied Collinear (Coincident joins endpoints).");
       return;
     }
@@ -293,58 +364,66 @@ export class ConstraintTools {
     if (!this.pendingEndpoint2) {
       const ep = this.pickEndpoint(p);
       if (!ep) return this.missed();
-      if (ep && ep.id !== this.pendingEndpoint.id) this.pendingEndpoint2 = ep;
+      // Two corners of the SAME rectangle is the useful symmetric pick (that is
+      // what "centre this rectangle on the axis" means), so the distinctness
+      // test is per POINT here, not per entity — two picks of one line's two
+      // ends stay legal for the same reason.
+      if (ep.id !== this.pendingEndpoint.id || ep.idx !== this.pendingEndpoint.idx) this.pendingEndpoint2 = ep;
       return;
     }
     // third click: the symmetry axis line
-    const idx = pickEntity(entities, p, this.host.pickTol());
-    const e = idx >= 0 ? entities[idx] : null;
+    const op = this.pickOperand(p);
     const a = this.pendingEndpoint, b = this.pendingEndpoint2;
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
-    if (e && curveKind(e) === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: e.id });
+    this.host.setPendingPoint(null);
+    if (op && op.kind === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: op.id });
   }
 
   /** Two-pick flow shared by tangent/equal/concentric: returns [first, second]
-   *  once a second valid curve lands (both pass `ok`, distinct); null while
-   *  arming the first pick or on an invalid pick. Uses the filletFirst slot. */
-  private pickPair(p: THREE.Vector2, ok: (e: ResolvedEntity) => boolean): [ResolvedEntity, ResolvedEntity] | null {
-    const entities = this.host.entities();
-    const idx = pickEntity(entities, p, this.host.pickTol());
-    const e = idx >= 0 ? entities[idx] : undefined;
-    if (!e || !ok(e)) return null;
-    if (this.host.getFilletFirst() == null) { this.host.setFilletFirst(idx); return null; }
-    const first = entities[this.host.getFilletFirst()!];
+   *  once a second valid operand lands (both pass `ok`, distinct); null while
+   *  arming the first pick or on an invalid pick. Uses the filletFirst slot as
+   *  the armed flag — see holdPair for why the operand rides beside it. */
+  private pickPair(p: THREE.Vector2, ok: (o: Operand) => boolean): [Operand, Operand] | null {
+    const op = this.pickOperand(p);
+    if (!op || !ok(op)) return null;
+    if (this.host.getFilletFirst() == null) {
+      this.host.setFilletFirst(op.index);
+      this.firstOperand = op;
+      return null;
+    }
+    const first = this.firstOperand;
     this.host.setFilletFirst(null);
-    if (!first || first.id === e.id) return null;
-    return [first, e];
+    this.firstOperand = null;
+    if (!first || first.id === op.id) return null;
+    return [first, op];
   }
 
   /** tangent between two curves: line/circle/arc, in any mix except line+line.
    *  Emits the general `tangent2`; the compiler picks the right planegcs variant. */
   private tangentClick(p: THREE.Vector2) {
-    const pair = this.pickPair(p, isCurve);
+    const pair = this.pickPair(p, () => true); // every operand is a tangency-capable curve
     if (!pair) return this.missed();
     const [first, e] = pair;
     // two lines cannot be tangent — say so rather than swallowing the pick
-    if (curveKind(first) === "line" && curveKind(e) === "line") return this.missed();
+    if (first.kind === "line" && e.kind === "line") return this.missed();
     this.addConstraint({ type: "tangent2", a: first.id, b: e.id });
   }
 
   /** equal: two lines share length, or two circles/arcs share radius. */
   private equalClick(p: THREE.Vector2) {
-    const pair = this.pickPair(p, isCurve);
+    const pair = this.pickPair(p, () => true);
     if (!pair) return this.missed();
     const [first, e] = pair;
-    if (curveKind(first) === "line" && curveKind(e) === "line") {
+    if (first.kind === "line" && e.kind === "line") {
       this.addConstraint({ type: "equal", l1: first.id, l2: e.id });
-    } else if (isRound(first) && isRound(e)) {
+    } else if (isRoundOp(first) && isRoundOp(e)) {
       this.addConstraint({ type: "equalRadius", a: first.id, b: e.id });
     }
   }
 
   private concentricClick(p: THREE.Vector2) {
-    const pair = this.pickPair(p, isRound); // circles and arcs both carry a center
+    const pair = this.pickPair(p, isRoundOp); // circles and arcs both carry a center
     if (!pair) return this.missed();
     this.addConstraint({ type: "concentric", c1: pair[0].id, c2: pair[1].id });
   }

@@ -11,8 +11,11 @@
 //   - After ONE unrelated larger solve (40 lines that share nothing with the
 //     sketch, solved and discarded), repeating that same identical solve gives
 //     TWO different geometries, alternating between them run to run.
-//   - Both of them satisfy the constraint exactly. Neither is a convergence
-//     failure the app could detect: both report ok, with no conflicts.
+//   - Both of them satisfy the constraint exactly. Neither was a convergence
+//     failure the app could detect: both reported ok, with no conflicts. (Since
+//     2026-08-17 the collapsed one IS caught — by the rectangle collapse guard
+//     in sketchSolve, not by anything the solver says. The tie itself is
+//     untouched; only its consequence is.)
 //   - A sketch with no degenerate alternative solution stays perfectly stable
 //     under the same treatment (the control below). So this is not "the solver
 //     is random" — it is a sketch with two valid solutions, one of which is
@@ -101,8 +104,14 @@ describe("an unrelated earlier solve makes an identical solve stop repeating its
     // FIRST solves in this process — establishes that the input is not
     // inherently ambiguous to the solver, so the flip below is caused by
     // something and is not just how this sketch always behaves.
+    //
+    // Cold, the solver lands on the COLLAPSED branch every time (width 5.16e-9),
+    // which the rectangle guard now refuses — so every cold solve reports not-ok
+    // and hands back the untouched 40 mm rectangle. Repeatability is what this
+    // test is about and it is unchanged; which of the two answers is repeated is
+    // not, and the guard is why they now all read 40.
     const cold = await repeat(REPEATS, bistableCase);
-    expect(cold.every((r) => r.ok), "every cold solve succeeds").toBe(true);
+    expect(cold.every((r) => !r.ok), "cold, every solve lands on the collapsed branch and is refused").toBe(true);
     expect(distinct(cold.map((r) => r.width)),
       "cold, the same input gives the same rectangle every time").toBe(1);
   });
@@ -119,30 +128,46 @@ describe("an unrelated earlier solve makes an identical solve stop repeating its
       + "delete it rather than loosening it.")
       .toBeGreaterThan(1);
 
-    // and the two answers are not near-misses: one of them has no area at all
+    // and the two answers are not near-misses: one of them has no area at all,
+    // so the guard refuses it and hands back the pre-solve 40 mm rectangle.
+    // Comparing 40 against the surviving branch's 33.49 is still a whole
+    // rectangle apart, and it is now the REFUSAL that tells them apart rather
+    // than a silent zero.
     expect(Math.max(...widths) - Math.min(...widths),
       "the two answers differ by a whole rectangle").toBeGreaterThan(1);
-    expect(Math.min(...widths), "one of the two answers is a collapsed rectangle")
-      .toBeLessThan(1e-3);
+    expect(warm.some((r) => !r.ok), "one of the two answers is a refused collapse")
+      .toBe(true);
+    expect(warm.some((r) => r.ok), "and the other is a real solve").toBe(true);
+    expect(Math.min(...warm.map((r) => r.width)),
+      "no collapsed rectangle reaches the document on either branch").toBeGreaterThan(1e-3);
   });
 
-  it("neither answer is a failure the app could catch — both satisfy the constraint", async () => {
-    // This is what makes it dangerous rather than merely untidy. There is no
-    // error to report: the solver is right both times, the sketch simply never
-    // said which of the two it wanted.
+  it("both answers are still legitimate solver outcomes — one is now caught", async () => {
+    // This is what made it dangerous rather than merely untidy: there was no
+    // error to report, because the solver is right both times and the sketch
+    // never said which of the two it wanted. That has not changed. What HAS
+    // changed is that one of the two answers is a rectangle with no area, and
+    // the guard refuses to write it — so the bistability survives as a shape
+    // that flips between "solved" and "refused", never as data loss.
     await unrelatedSolve(40);
     const warm = await repeat(REPEATS, bistableCase);
     for (const r of warm) {
-      expect(r.ok, "every solve reports success").toBe(true);
-      expect(r.residual, "every solve satisfies symmetric exactly").toBeLessThanOrEqual(1e-6);
+      if (r.ok) {
+        expect(r.residual, "an accepted solve satisfies symmetric exactly").toBeLessThanOrEqual(1e-6);
+      } else {
+        // refused: the pre-solve geometry comes back, so symmetric is violated
+        // by the full 20 mm the constraint was going to close
+        expect(r.width, "a refused solve hands back the untouched rectangle").toBeCloseTo(40, 9);
+      }
     }
   });
 
   it("CONTROL: a sketch with no degenerate solution stays put", async () => {
     // Same treatment, ordinary geometry: stable before and after. So the flip is
     // not the solver being nondeterministic in general — it is specifically a
-    // tie between a real solution and a collapsed one, and that tie is the thing
-    // to remove (see the rectangle collapse guard in constraintSemantics).
+    // tie between a real solution and a collapsed one. The collapsed half of
+    // that tie is now refused (the rectangle guard in sketchSolve), but the tie
+    // is still there and this control is what says the rest of the solver is not.
     const before = await repeat(REPEATS, stableCase);
     await unrelatedSolve(40);
     const after = await repeat(REPEATS, stableCase);

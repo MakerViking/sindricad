@@ -10,7 +10,7 @@ import type { DimField, DimPlace, PlaceOffset, SketchConstraint } from "../types
 import { isDriven, dimPlaceOf, projEndSamples } from "../types";
 import { circumcenter, arcCenterRadius } from "./arc";
 import { rectCorners } from "./region";
-import { paramOnSeg, signedAngleDeg } from "./geom2d";
+import { paramOnSeg, distToSeg, signedAngleDeg } from "./geom2d";
 
 export type { DimField };
 type V = THREE.Vector2;
@@ -334,6 +334,35 @@ export function lineOperand(
   const c = rectCorners(base.x, base.y, base.width, base.height);
   const a = c[k], b = c[(k + 1) % 4];
   return a && b ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null;
+}
+
+/** The ENCODER, and the inverse of lineOperand: which line operand an entity
+ *  presents to a click at `p` — its own id for a native/projected line, or
+ *  `"<rectId>~<k>"` for whichever of a rectangle's four edges the click is
+ *  nearest. Null when the entity presents no line at all.
+ *
+ *  This is the seam the constraint tools pick a rect EDGE through, and it is
+ *  deliberately NOT curveKind. curveKind answers "what KIND of curve is this
+ *  entity"; a rectangle edge needs an IDENTITY as well — which of the four —
+ *  and there is nowhere in an entity-to-kind answer to carry it. Teaching
+ *  curveKind to call a rectangle a "line" would leave every caller reaching for
+ *  `ent.id`, which is the bare rectangle id and is not a line operand at all:
+ *  the constraint would emit, compile to nothing, and vanish silently — the
+ *  exact failure class the rectangle work exists to remove. */
+export function lineOperandAt(e: ResolvedEntity, p: { x: number; y: number }): string | null {
+  if (e.type === "rectangle") {
+    const c = rectCorners(e.x, e.y, e.width, e.height);
+    let best: string | null = null;
+    let bestD = Infinity;
+    for (let k = 0; k < 4; k++) {
+      const a = c[k], b = c[(k + 1) % 4];
+      if (!a || !b) continue;
+      const d = distToSeg(a, b, p);
+      if (d < bestD) { bestD = d; best = `${e.id}~${k}`; }
+    }
+    return best;
+  }
+  return curveKind(e) === "line" ? e.id : null;
 }
 
 /** The center + radius a round entity presents to snap/marker/dimension flows:

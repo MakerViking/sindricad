@@ -28,18 +28,31 @@ import { isDriven, projEndSamples } from "../types";
 // flat instead of reporting that it cannot be solved.
 const LINE_COLLAPSE_EPS = 1e-7;
 
+// A rectangle EXTENT at or below this is a collapse, not a small rectangle.
+// Deliberately far above LINE_COLLAPSE_EPS: `collinear` between a rect edge and
+// a fixed 45-degree line leaves a 40 mm edge at 4.6035578193937e-7 mm rather
+// than at 0, which cleared an absolute 1e-7 and reached the document with
+// ok:false and an empty conflict list (so sketchMode wrote it back —
+// sketchMode.ts:3585). 1e-3 mm is the bucket coincKey rounds positions into, so
+// two corners closer together than that FUSE into one solver point on the very
+// next compile and the rectangle stops being a rectangle — that is the scale at
+// which this file stops being able to tell two points apart, whatever residual
+// the solver reports.
+const RECT_COLLAPSE_MIN = 1e-3;
+
 export interface SolvePass {
   entities: ResolvedEntity[];
   dof: number;
   ok: boolean;
   conflicts: string[]; // inconsistent constraints (sketch can't solve)
   overDefined: string[]; // redundant + partially-redundant (removable / over-defining)
-  /** Set when a requested drag was refused because the grabbed point is fixed
-   *  (projected geometry vs a user `fix` constraint — distinct user messaging).
+  /** Set when a requested drag was refused: because the grabbed point is fixed
+   *  (projected geometry vs a user `fix` constraint — distinct user messaging),
+   *  or because the solve it produced was refused by the geometry guard.
    *  The caller must NOT advance its drag anchor on a refusal: a drifted anchor
    *  re-runs the unbounded nearest-point search from the cursor and captures an
    *  unrelated free point mid-gesture. */
-  dragRefused?: "projected" | "fix";
+  dragRefused?: "projected" | "fix" | "geometry";
 }
 
 const TAU = Math.PI * 2;
@@ -155,9 +168,12 @@ export async function compileAndSolve(
         // ("<rectId>~<k>" — see types.ts): registering it here is what makes
         // isLine()/ends.get() accept it, so the existing distance / p2lDistance
         // / angle compile branches take a rect edge with no further change.
-        // Side effect worth knowing: endpointPoint() now resolves `rect~k` too,
-        // so a future coincident-on-a-rect-edge would silently resolve to that
-        // edge's corner points.
+        // Side effect worth knowing: endpointPoint() resolves `rect~k` p0/p1 to
+        // that edge's two corners, which is a SECOND spelling of a point the
+        // document already addresses as `rect` + corner index. Both work; the
+        // pickers deliberately emit only the corner-index form, because the
+        // glyph renderer resolves a point operand through refPoint(entity, p)
+        // and has no idea what `R~0` is (glyphs.ts).
         ends.set(`${e.id}~${k}`, [a, b]);
       }
       cons.push({ id: `${e.id}~h0`, type: "horizontal", line: `${e.id}~0` }); // bottom
@@ -221,8 +237,17 @@ export async function compileAndSolve(
 
   const isLine = (id: string) => ends.has(id);
   // resolve an entity endpoint (0 = start, 1 = end) to its solver point id.
-  // lines + arcs have two endpoints; a point entity has just one (index ignored).
+  // lines + arcs have two endpoints; a point entity has just one (index ignored);
+  // a RECTANGLE has four corners, indexed 0..3 in rectCorners CCW order.
+  //
+  // The rectangle arm is the same lookup dimPoint makes, on purpose: `p` means
+  // the same thing in the document whichever constraint carries it (types.ts),
+  // and having two resolvers disagree about it is what silently dropped every
+  // coincident/midpoint/symmetric aimed at a corner while `fix` and the
+  // dimensions took the identical operand and worked.
   const endpointPoint = (entId: string, idx: number): string | undefined => {
+    const rc = rectMap.get(entId);
+    if (rc) return rc[idx];
     const ln = ends.get(entId);
     if (ln) return idx === 0 ? ln[0] : ln[1];
     const ar = arcMap.get(entId);
@@ -237,7 +262,11 @@ export async function compileAndSolve(
   const centerPoint = (entId: string): string | undefined =>
     centers.get(entId) ?? arcMap.get(entId)?.center;
   // resolve a dimension pick: rectangle corners by index, circle centers
-  // regardless of index, arc center at index 2, else entity endpoints
+  // regardless of index, arc center at index 2, else entity endpoints.
+  //
+  // The rectangle line is redundant with endpointPoint's own arm and stays
+  // anyway: it has to be resolved BEFORE the `idx === 2` arc-centre arm below,
+  // which would otherwise swallow rectangle corner 2 and return undefined.
   const dimPoint = (entId: string, idx: number): string | undefined => {
     const rc = rectMap.get(entId);
     if (rc) return rc[idx];
@@ -252,9 +281,86 @@ export async function compileAndSolve(
   // entity kind by id (line/circle/arc) — one lookup for the tangent/equal ladders
   const kindOf = (id: string): "line" | "circle" | "arc" | undefined =>
     ends.has(id) ? "line" : centers.has(id) ? "circle" : arcMap.has(id) ? "arc" : undefined;
+  // Which rectangles a solve could MIRROR in a way a user constraint can SEE.
+  //
+  // Not "which rectangles are named". The write-back rebuilds a rectangle from
+  // the MIN/MAX bounding box of its solved corners, so a mirrored rectangle
+  // comes back with its corner LABELS permuted: document corner j holds
+  // T(solver corner j), where T is the reflection about the rectangle's own
+  // mid-axis. T is an isometry that maps the rectangle onto itself, so a
+  // constraint whose operands all sit on that one rectangle keeps exactly the
+  // residual it had in the solver. Dimension an edge, then drag a corner past
+  // the opposite one: the shape and the dimension both come out right (measured
+  // — top and bottom of an axis-aligned rectangle are the same length, so a
+  // length dim cannot tell which of them it landed on), and refusing it would
+  // freeze a gesture that ships today.
+  //
+  // Two things break that argument, and each one scopes the guard below:
+  //   another entity  the reflection moves the rectangle and not the geometry
+  //                   its corner is tied to, so the residual changes
+  //   `fix`           an absolute pin. It stays SATISFIED across the mirror —
+  //                   `fix` stores no target, it pins whatever point the corner
+  //                   index resolves to on each compile — but it silently
+  //                   changes which corner it means: measured, pinning corner 2
+  //                   at (20,10) and dragging corner 0 past it leaves the
+  //                   document with corner 2 at (25,15) and the pinned point
+  //                   relabelled as corner 0. A pin that lets its own point move
+  //                   is the corner-identity bug wearing a stable-looking result.
+  //
+  // `angle` was in that list and is deliberately NOT: it is the one SIGNED
+  // predicate here, but a single-axis mirror of a rectangle NEGATES the angle
+  // between two of its edges, so the solver cannot produce one without breaking
+  // the very constraint it is enforcing, and a two-axis mirror is a 180-degree
+  // rotation, which preserves signed angles. Measured both ways — with `angle`
+  // excluded, the mirroring drag of a 90-degree-dimensioned rectangle is
+  // accepted and three following pumps are byte-identical.
+  //
+  // Read off the constraint's own fields rather than instrumenting each compile
+  // branch: a constraint type added later that names a rect edge would otherwise
+  // slip through silently, which is exactly the miss class that let endpointPoint
+  // and dimPoint drift apart about rectangle corners. But only for a constraint
+  // that actually COMPILED — one the compile dropped constrains nothing, and
+  // scoping the guard by spelling froze the drag of a rectangle whose only
+  // constraint was a coincident the compiler had thrown away.
+  const rectAddressed = new Set<string>();
+  const rectOf = (v: string): string | undefined => {
+    if (rectMap.has(v)) return v; // `R` + a corner index (dimPoint's convention)
+    const cut = v.lastIndexOf("~"); // `R~k`, an edge id
+    const base = cut > 0 ? v.slice(0, cut) : "";
+    return rectMap.has(base) ? base : undefined;
+  };
+  const namesEntity = (v: string) =>
+    ends.has(v) || centers.has(v) || arcMap.has(v) || pointMap.has(v) || splineMap.has(v);
+  const noteRectScope = (c: SketchConstraint) => {
+    const rects = new Set<string>();
+    let observable = c.type === "fix";
+    const read = (v: unknown) => {
+      if (typeof v !== "string") return;
+      const rect = rectOf(v);
+      if (rect) rects.add(rect);
+      else if (namesEntity(v)) observable = true;
+    };
+    for (const [k, v] of Object.entries(c)) if (k !== "type") read(v); // `type` is not an operand
+    // `offset` is the one type whose operands are not plain string fields.
+    // Belt and braces, and labelled as such: `offset` is ALSO a rim dim
+    // (isRimDim below), so the rim-branch invariant refuses any solve that moves
+    // a copy to the other side of its source, and in all four fixtures tried
+    // (rect-to-rect, and a plain-line copy above/below with the source being
+    // edge 0 or edge 2) THAT is what refuses the mirroring drag — removing this
+    // line changed no measured outcome. It stays because rimBranch compares only
+    // which SIDE the copy sits on, and a mirror can move the source edge's line
+    // while leaving the copy on the same side of it.
+    if (c.type === "offset") for (const pr of c.pairs) { read(pr.src); read(pr.cpy); }
+    // two rectangles in one constraint: each is "something else" to the other,
+    // and only one of them may mirror
+    if (observable || rects.size > 1) for (const rect of rects) rectAddressed.add(rect);
+  };
   constraints.forEach((c, i) => {
     const id = constraintKey(i); // user constraint ids never collide with `~` implicit ones
     if (isDriven(c)) return; // reference dim: measured only, never constrains
+    // (so it also cannot force a mirror — which is why the scope note at the
+    // bottom of this callback sits after this return rather than before it)
+    const compiled = cons.length, pinned = fixedPts.size;
     if (c.type === "horizontal") { if (isLine(c.line)) cons.push({ id, type: "horizontal", line: c.line }); }
     else if (c.type === "vertical") { if (isLine(c.line)) cons.push({ id, type: "vertical", line: c.line }); }
     else if (c.type === "parallel") { if (isLine(c.l1) && isLine(c.l2)) cons.push({ id, type: "parallel", l1: c.l1, l2: c.l2 }); }
@@ -388,6 +494,10 @@ export async function compileAndSolve(
         }
       });
     }
+    // Anything that reached the solver — an equation, or a pinned point (`fix`
+    // pushes no constraint, it flags the point) — can hold a rectangle against
+    // its own mirror image. Anything that did not, cannot.
+    if (cons.length !== compiled || fixedPts.size !== pinned) noteRectScope(c);
   });
 
   for (const p of points) if (fixedPts.has(p.id)) p.fixed = true;
@@ -618,6 +728,79 @@ export async function compileAndSolve(
       badGeom.add(before.id);
     }
   }
+  // A RECTANGLE is the same class of broken geometry, on the path neither check
+  // above could reach: a rectangle is never a `line` entity, so its four edges
+  // were invisible to the loop above, and expectSaneGeometry had no case for it
+  // either. `vertical` on an edge already pinned horizontal by the rectangle's
+  // own `~h0` rule is the plainest form — a flat contradiction whose only
+  // solution is a zero-length edge, which planegcs finds and reports Success
+  // for. Measured before this landed: 40x20 -> 0x20, ok:true, conflicts:[].
+  //
+  // Both halves below read the SIGNED extents off the solved corner POINTS, not
+  // the width/height `out` wrote back, because that write-back is a MIN/MAX
+  // bounding box (:622-629) and the bbox is exactly what destroys the second
+  // half. With the four implicit ~h/~v pins holding, the solved corners stay an
+  // axis-aligned (possibly degenerate) rectangle, so c1.x-c0.x and c3.y-c0.y ARE
+  // the rectangle, sign included — two sign bits is the whole of what a solve
+  // can do to corner identity. (Tried to break the pins with `parallel(R~0, a
+  // fixed 45 degree line)`: the solver collapsed edge 0 rather than rotating it,
+  // because a zero-length line has no direction and `parallel` then goes
+  // vacuous. `collinear` against the same line does the same thing but stops at
+  // 4.6e-7 mm rather than at 0, which is why the collapse threshold below is a
+  // document-scale one. Two cases, not a proof: if a solve ever does rotate a
+  // rectangle, these signed extents stop describing it and this guard needs the
+  // corner positions themselves.)
+  //
+  //   extent under RECT_COLLAPSE_MIN
+  //                 COLLAPSED. Refused for any rectangle, exactly as a line is.
+  //                 The threshold is a document-scale one, not an epsilon: a
+  //                 solve landed a 40 mm edge at 4.6e-7 mm and walked out with
+  //                 ok:false and no conflicts, which the caller writes back.
+  //   sign FLIPPED  the solver satisfied the constraint by MIRRORING. The shape
+  //                 is fine; the bbox then relabels the corners, so the
+  //                 constraint is true in the solver and false in the document,
+  //                 and the next pump closes that gap by eating the rectangle
+  //                 (measured: 40x20 -> 10x20 on solve 1, then 0x0 on solve 2).
+  //
+  // A rectangle entity is x/y/width/height and has nowhere to CARRY the mirror.
+  // Signed width/height is the only in-type candidate and three separate
+  // mechanisms erase or reject it: the parameter re-assert overwrites a
+  // solver-written negative on the next mutate (store.ts:817-820), evalDimInput
+  // refuses non-positive input so the badge would show a value it will not take
+  // back (sketchMode.ts:967,976), and a negative extent inverts rectCorners'
+  // documented CCW winding, which face classification reads as the outer face
+  // (region.ts:101,678). So the mirror is refused rather than represented — the
+  // same call pattern.ts:71 already makes for rotation.
+  //
+  // The flip half fires ONLY for a rectangle in `rectAddressed` — one a
+  // compiled constraint ties to something the mirror does not move. Everything
+  // else must go through: dragging a free rectangle's corner past the opposite
+  // one mirrors both signs and correctly follows the cursor, and so does
+  // dragging a corner of a rectangle that merely carries an edge dimension. A
+  // refused drag frame is not free either — the caller has to be told to keep
+  // its anchor (see the dragRefused note at the guard's return).
+  for (const before of entities) {
+    if (before.type !== "rectangle") continue;
+    const cp = rectMap.get(before.id);
+    if (!cp) continue;
+    const c0 = r.points[cp[0]!], c1 = r.points[cp[1]!], c3 = r.points[cp[3]!];
+    if (!c0 || !c1 || !c3) continue;
+    const w = c1.x - c0.x, h = c3.y - c0.y;
+    if (!Number.isFinite(w) || !Number.isFinite(h)) { badGeom.add(before.id); continue; }
+    // Judged only against a rectangle that HAD size, mirroring the line arm's
+    // `lineLen(before) > LINE_COLLAPSE_EPS` gate: a 40x0 rectangle can exist in
+    // a document, and refusing every solve that leaves it flat would freeze the
+    // sketch permanently instead of fixing anything.
+    const hadW = Math.abs(before.width) > RECT_COLLAPSE_MIN;
+    const hadH = Math.abs(before.height) > RECT_COLLAPSE_MIN;
+    if ((hadW && Math.abs(w) <= RECT_COLLAPSE_MIN) || (hadH && Math.abs(h) <= RECT_COLLAPSE_MIN)) {
+      badGeom.add(before.id);
+    } else if (rectAddressed.has(before.id)
+      && ((hadW && Math.sign(w) !== Math.sign(before.width))
+        || (hadH && Math.sign(h) !== Math.sign(before.height)))) {
+      badGeom.add(before.id);
+    }
+  }
   const guardIds = new Set<string>();
   if (badGeom.size) {
     for (const c of cons) {
@@ -638,13 +821,30 @@ export async function compileAndSolve(
   }
   if (guardIds.size || badGeom.size) {
     for (const id of guardIds) if (!conflicts.includes(id)) conflicts.push(id);
+    // A refused DRAG frame has to SAY it was refused. Nothing blames a user
+    // constraint for a collapsed line or rectangle (roundRefs only names circles
+    // and arcs), so `conflicts` is empty here and the caller's conflict path
+    // never fires — it would take the ordinary branch and advance its drag
+    // anchor to the cursor (sketchMode.ts:3558). The next frame's nearest-point
+    // search then runs from an origin the grabbed point is no longer at, grabs a
+    // different point, and yanks THAT one mid-gesture. `dragRefused` is the
+    // existing "keep your anchor" channel, so a geometry refusal joins it rather
+    // than inventing a second one.
+    const refused = dragRefused ?? (drag ? ("geometry" as const) : undefined);
     return {
       entities, dof: r.dof, ok: false, conflicts,
       overDefined: [...redundant, ...r.partiallyRedundant],
-      ...(dragRefused ? { dragRefused } : {}),
+      ...(refused ? { dragRefused: refused } : {}),
     };
   }
 
+  // NOTE, deliberately left as it is: this hands back `out` — the SOLVED
+  // geometry — even when r.ok is false, and the caller writes it back because it
+  // branches on `conflicts.length`, not on ok (sketchMode.ts:3547,3585). That is
+  // wanted for a drag frame the solver merely did not fully converge on, but it
+  // is also why the guard above must catch broken geometry itself rather than
+  // relying on ok:false to protect the document. Revisit the day a
+  // non-converged solve is seen writing something a user notices.
   return {
     entities: out, dof: r.dof, ok: r.ok && conflicts.length === r.conflicts.length,
     conflicts, overDefined: [...redundant, ...r.partiallyRedundant],
