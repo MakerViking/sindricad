@@ -587,6 +587,143 @@ describe("ExtrudeTool.startEdit when the ids tie and the point cannot break it",
   });
 });
 
+// The MIXED document above only reaches the id-less arm because a SIBLING
+// reference carries ids. A wholly pre-0.1.123 feature — no `regionEntities` key
+// at all — never entered that function: startEdit forked on `if (ents?.length)`
+// and sent the whole list down `selectRegionsByPoints`, which drops a point that
+// is inside nothing with no record that it existed. Every such area vanished
+// from `regions` on a bare depth change, with no banner: exactly the silent
+// deletion the id-bearing path was built to prevent, still live for the oldest
+// documents in the field — the ones most likely to have been edited since.
+describe("ExtrudeTool.startEdit on a WHOLLY legacy feature (no regionEntities key)", () => {
+  /** Two discs and a feature that names both by point alone. `moved` shifts the
+   *  sketch +20 in x, which is enough that the small disc's saved point (200,0)
+   *  is 20 mm from its new centre and so outside r=5, while the big disc's
+   *  (0,0) is 20 mm from ITS new centre and still inside r=50. So one area
+   *  resolves and one cannot — the mixed outcome that makes the drop visible. */
+  const discs = (moved: boolean): SketchEntity[] => {
+    const dx = moved ? 20 : 0;
+    return [
+      { id: "a", type: "circle", x: dx, y: 0, radius: 50 },
+      { id: "b", type: "circle", x: 200 + dx, y: 0, radius: 5 },
+    ];
+  };
+  const legacy = (moved: boolean) =>
+    doc(discs(moved), {
+      regions: [
+        [0, 0, 0],
+        [200, 0, 0],
+      ],
+    });
+
+  it("keeps the area whose point now lands in no cell, instead of deleting it", async () => {
+    const { tool, written, commit } = harness(legacy(true));
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit(); // a BARE depth edit: the user touched nothing else
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regions).toHaveLength(2);
+    expect(f.regions).toContainEqual([200, 0, 0]); // the unresolvable point, untouched
+  });
+
+  it("says the area is KEPT rather than dropping it in silence", () => {
+    const { tool } = harness(legacy(true));
+    tool.startEdit("ex1", () => {});
+    expect(prompt.text).toMatch(/1 of 2/);
+    expect(prompt.text).toMatch(/kept/i);
+  });
+
+  it("CONTROL: with the sketch unmoved both areas resolve and commit", async () => {
+    // The harness can produce two areas; it is the MOVE that loses one. Without
+    // this the test above would also pass against a tool that always wrote 2.
+    const { tool, written, commit } = harness(legacy(false));
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regions).toHaveLength(2);
+    expect(f.regionEntities).toContainEqual(["a"]);
+    expect(f.regionEntities).toContainEqual(["b"]);
+  });
+
+  it("still lets the user deliberately REMOVE an area", async () => {
+    // The distinguishing question for the carry rule: holding an area the tool
+    // could not draw must not make the area set unchangeable. Both discs resolve
+    // here, so this is removal with nothing carried — the ordinary gesture.
+    const { tool, overlay, written, commit } = harness(legacy(false));
+    tool.startEdit("ex1", () => {});
+    const small = overlay.regions.find((wr) => wr.region.entityIds.includes("b"))!;
+    expect(small).toBeDefined();
+    (tool as unknown as { regionUnder: () => unknown }).regionUnder = () => small;
+    (tool as unknown as { onDown: (e: PointerEvent) => void }).onDown({
+      button: 0,
+      ctrlKey: true,
+      clientX: 0,
+      clientY: 0,
+      preventDefault() {},
+    } as unknown as PointerEvent);
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regionEntities).toEqual([["a"]]);
+    expect(f.regions).toHaveLength(1);
+  });
+
+  it("lets the user shed a CARRIED area too, by re-stating the set", async () => {
+    // The carried area is invisible, so the only way to shed it is the gesture
+    // that re-states the whole set. Ctrl-click the small disc on, then off:
+    // selection back where it started, carried gone, and it SAID so.
+    const { tool, overlay, written, commit } = harness(legacy(true));
+    tool.startEdit("ex1", () => {});
+    const small = overlay.regions.find((wr) => wr.region.entityIds.includes("b"))!;
+    expect(small).toBeDefined();
+    (tool as unknown as { regionUnder: () => unknown }).regionUnder = () => small;
+    const ctrlClick = () =>
+      (tool as unknown as { onDown: (e: PointerEvent) => void }).onDown({
+        button: 0,
+        ctrlKey: true,
+        clientX: 0,
+        clientY: 0,
+        preventDefault() {},
+      } as unknown as PointerEvent);
+    ctrlClick(); // add
+    expect(prompt.text).toMatch(/no longer kept|dropped/i);
+    ctrlClick(); // remove again
+    await commit();
+
+    const shed = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(shed.regionEntities).toEqual([["a"]]);
+    expect(shed.regions).not.toContainEqual([200, 0, 0]);
+  });
+
+  it("writes BOTH saved areas when they now land in the same cell", async () => {
+    // The one measured behaviour change of routing legacy areas per-reference.
+    // Old path: `selectRegionsByPoints` stores both points and `selectedRegions`
+    // matches them to the same region, so two saved areas committed as ONE
+    // (measured: `OLD selectedRegions: 1`). New path resolves each reference on
+    // its own and hands back the same WorldRegion twice (`NEW resolved: 2
+    // distinct: 1`), so both entries survive. Two identical entries union to the
+    // same solid and the count is stable across further edits (both now carry
+    // the same ids and resolve to the same cell), whereas the old collapse was
+    // itself a silent drop of an entry the document had — which is the defect
+    // this whole file is about. Reachable when a dividing entity was deleted
+    // between the save and the edit.
+    const d = doc([{ id: "c", type: "circle", x: 0, y: 0, radius: 50 }], {
+      regions: [
+        [10, 0, 0],
+        [-10, 0, 0],
+      ],
+    });
+    const { tool, written, commit } = harness(d);
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regions).toHaveLength(2);
+    expect(f.regionEntities).toEqual([["c"], ["c"]]);
+  });
+});
+
 // A reference with no ids resolves by point, and a point that is now inside
 // nothing resolves to nothing. That is not a reason to drop the area: it is the
 // same "the tool cannot find it" case as dead ids, and the sidecar may still

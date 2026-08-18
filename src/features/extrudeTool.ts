@@ -135,36 +135,45 @@ export class ExtrudeTool {
     // succeeds, the hole's own cell comes back selected, and committing any
     // edit (a bare depth change is enough) writes that hole over the feature.
     // That is field 19314fdc's other half: the sidecar builds the wall while the
-    // edit tool reopens on the hole. Documents with no ids keep the point path
-    // exactly, which is what the sidecar does too (`if not eids ... return None`).
+    // edit tool reopens on the hole. An area with no ids recorded is still
+    // resolved by its point — that much the sidecar still does too (`if not
+    // eids ... return None` falls back) — but per reference and inside THIS
+    // sketch, and a point that now lands in no cell is reported unresolved so
+    // the caller can carry it. The sidecar parenthetical holds for the BUILD;
+    // it stopped describing the EDIT the moment losing an area became possible.
+    //
+    // One arm, not two. The `if (f.regionEntities?.length)` fork that used to
+    // stand here sent a WHOLLY pre-0.1.123 feature (no `regionEntities` key at
+    // all) down `selectRegionsByPoints`, which drops a point inside nothing
+    // without saying so: measured, a two-area legacy extrude whose sketch had
+    // since moved +20 mm came back with one area and committed one on a bare
+    // depth change, no banner. The id-less arm of `selectRegionsByEntities`
+    // was already written for exactly that document; nothing routed to it
+    // unless a SIBLING reference happened to carry ids.
     const ents = f.regionEntities;
-    let unresolved: RegionRef[] = [];
-    if (ents?.length) {
-      const answer = this.overlay.selectRegionsByEntities(
-        f.sketch,
-        saved.map((p, i) => ({
-          entityIds: ents[i] ?? [],
-          // `undefined` (not `[]`) when this document never recorded them: every
-          // file written between 0.1.123 and the release that added the field
-          // names outer loops only, and "unknown holes" must not read as "no
-          // holes" — see regionsByEntities.
-          holeEntityIds: f.regionHoleEntities?.[i],
-          point: p,
-        })),
-      );
-      unresolved = answer.unresolved;
-      // The regions the IDS resolved, not what the overlay lights up. Reading
-      // the selection back instead round-trips this answer through a world
-      // point, and `selectedRegions` re-resolves a point against every coplanar
-      // sketch — so a neighbouring sketch's region joined the feature and
-      // commit wrote it (route B: 18000 mm³ of wall became 50000 mm³, and the
-      // feature's `sketch` field was rewritten to the neighbour, on nothing but
-      // a depth change). Identity established by ids is kept as identity.
-      this.selected = answer.resolved;
-    } else {
-      this.overlay.selectRegionsByPoints(saved);
-      this.selected = this.editSelection();
-    }
+    const answer = this.overlay.selectRegionsByEntities(
+      f.sketch,
+      saved.map((p, i) => ({
+        entityIds: ents?.[i] ?? [],
+        // `undefined` (not `[]`) when this document never recorded them: every
+        // file written between 0.1.123 and the release that added the field
+        // names outer loops only, and "unknown holes" must not read as "no
+        // holes" — see regionsByEntities.
+        holeEntityIds: f.regionHoleEntities?.[i],
+        point: p,
+      })),
+    );
+    const unresolved: RegionRef[] = answer.unresolved;
+    // The regions the IDS resolved, not what the overlay lights up. Reading
+    // the selection back instead round-trips this answer through a world
+    // point, and `selectedRegions` re-resolves a point against every coplanar
+    // sketch — so a neighbouring sketch's region joined the feature and
+    // commit wrote it (route B: 18000 mm³ of wall became 50000 mm³, and the
+    // feature's `sketch` field was rewritten to the neighbour, on nothing but
+    // a depth change). Identity established by ids is kept as identity, and a
+    // legacy area is now fenced by `selectRegionsByEntities`'s own `inSketch`
+    // filter rather than by `editSelection` — same fence, one implementation.
+    this.selected = answer.resolved;
     if (this.selected.length) {
       // An area the tool cannot show is still an area of the FEATURE. Writing
       // back only what is selected would delete it on a bare depth change — one
