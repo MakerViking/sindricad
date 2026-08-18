@@ -24,7 +24,8 @@
 # the only variable between the two outputs. If the control does not reproduce,
 # the patched artifact is not trustworthy and the job fails without producing one.
 #
-# Manual trigger only. This is an occasional provenance build, not part of CI.
+# Manual trigger, once this is on the default branch. This is an occasional
+# provenance build, not part of CI.
 
 name: planegcs-glue
 
@@ -48,6 +49,9 @@ jobs:
     container: emscripten/emsdk:3.1.45
 
     env:
+      # The commit that produced the published 1.1.7 artifact, proven via the npm
+      # packument's gitHead. Used when no ref is supplied (i.e. a push run).
+      DEFAULT_REF: "951ba1a56c7fbae17de05851a221129e185fa92c"
       # From node_modules/@salusoft89/planegcs/dist/planegcs_dist/, i.e. exactly
       # what package-lock.json resolves today. Update these ONLY together with the
       # pinned version in package.json.
@@ -67,7 +71,7 @@ jobs:
         run: |
           git clone https://github.com/Salusoft89/planegcs /planegcs
           cd /planegcs
-          git checkout ${{ github.event.inputs.ref }}
+          git checkout ${{ github.event.inputs.ref || env.DEFAULT_REF }}
           git log --oneline -1
 
       # bindings.cpp is GENERATED, not committed - upstream dropped it in 0cc67f3
@@ -81,11 +85,19 @@ jobs:
           cd build-bindings && ./process_all.sh
           test -f /planegcs/planegcs/bindings.cpp
 
+      # -j 1 EVERYWHERE, deliberately, and it costs build time on purpose.
+      # Two runs of this job at the SAME pinned commit in the SAME container
+      # disagreed about the wasm: run 1 had control == published and patched !=
+      # control; run 2 had the exact opposite. The JS glue reproduced byte for
+      # byte in both, so the non-determinism is in the wasm compile, and
+      # parallel codegen is the prime suspect. A byte comparison across a
+      # non-deterministic build proves nothing in EITHER direction - it reads as
+      # "the flag changed the solver" on one run and "it did not" on the next.
       - name: Control build, UNPATCHED
         run: |
           cd /planegcs/planegcs
           emcmake cmake . -DCMAKE_BUILD_TYPE=Release
-          emmake make -j "$(nproc)"
+          emmake make -j 1   # -j1: see the determinism note above
           mkdir -p /out
           cp bin/planegcs.js   /out/control.planegcs.js
           cp bin/planegcs.wasm /out/control.planegcs.wasm
@@ -115,28 +127,39 @@ jobs:
           grep -n "DYNAMIC_EXECUTION" CMakeLists.txt
           rm -rf CMakeCache.txt CMakeFiles bin
           emcmake cmake . -DCMAKE_BUILD_TYPE=Release
-          emmake make -j "$(nproc)"
+          emmake make -j 1   # -j1: see the determinism note above
           cp bin/planegcs.js   /out/patched.planegcs.js
           cp bin/planegcs.wasm /out/patched.planegcs.wasm
 
-      # The claim being tested is "JS glue only, zero solver risk". If the wasm
-      # moved, that claim is void and the change is no longer a drop-in.
-      - name: The wasm MUST be unchanged, or this is not a glue-only change
+      # The wasm is RECORDED, not gated, and that is a measured decision rather
+      # than a softened one. Three runs at the same pinned commit in the same
+      # container: run 1 had control == published and patched != control; run 2
+      # had the exact opposite; run 3, single-threaded, had control != published
+      # AND patched != control. The JS glue reproduced byte for byte in all
+      # three. So the wasm compile is not reproducible in this toolchain and a
+      # byte comparison of it means nothing in either direction - on run 1 it
+      # said "the flag changed the solver" and on run 2 it said it did not.
+      #
+      # This does not weaken the vendoring, because the wasm IS NOT VENDORED.
+      # The Function-constructor sink is in the glue; the app keeps loading the
+      # PUBLISHED wasm (src/sketch/solver.ts imports it by ?url from the npm
+      # package). Shipping only the glue keeps the solver binary exactly as it
+      # is today, which is a stronger guarantee than any checksum here could be.
+      #
+      # What still has to be argued behaviourally, and cannot be argued from a
+      # hash: that the patched glue drives the published wasm correctly. That is
+      # what the solver suites are for, and it is the gate that belongs on the
+      # vendoring commit, not on this build.
+      - name: Record the wasm hashes (not a gate - see the note above)
         run: |
           ctl=$(sha256sum /out/control.planegcs.wasm | cut -d' ' -f1)
           pat=$(sha256sum /out/patched.planegcs.wasm | cut -d' ' -f1)
           echo "control wasm: $ctl"
           echo "patched wasm: $pat"
           echo "published wasm: $PUBLISHED_WASM_SHA256"
-          if [ "$ctl" != "$pat" ]; then
-            echo "::error::The flag changed the WASM, not just the JS glue. This is NOT a drop-in."
-            exit 1
+          if [ "$ctl" != "$PUBLISHED_WASM_SHA256" ]; then
+            echo "::warning::The control wasm does not match the published one. Expected: this build is not reproducible for the wasm. The wasm is not vendored, so this does not block."
           fi
-          if [ "$pat" != "$PUBLISHED_WASM_SHA256" ]; then
-            echo "::error::The built wasm does not match the published one."
-            exit 1
-          fi
-          echo "WASM identical to the published binary. The solver itself is untouched."
 
       - name: The sink MUST be gone from the patched glue
         run: |
@@ -159,24 +182,35 @@ jobs:
             echo "planegcs glue built with -s DYNAMIC_EXECUTION=0"
             echo
             echo "source:    https://github.com/Salusoft89/planegcs"
-            echo "commit:    ${{ github.event.inputs.ref }}"
+            echo "commit:    ${{ github.event.inputs.ref || env.DEFAULT_REF }}"
             echo "toolchain: emscripten/emsdk:3.1.45 (upstream's own builder base)"
             echo "patch:     -s DYNAMIC_EXECUTION=0 appended to LINK_FLAGS in planegcs/CMakeLists.txt"
             echo "run:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo
             echo "The unpatched control build reproduced the published 1.1.7 planegcs.js"
-            echo "byte for byte, and the wasm is identical with and without the flag."
+            echo "byte for byte. The WASM is deliberately NOT compared: it does not build"
+            echo "reproducibly in this toolchain (see the workflow comments), and it is not"
+            echo "vendored - the app keeps loading the published wasm from the npm package."
+            echo "Only planegcs.js is intended for vendoring."
             echo
             cat /out/SHA256SUMS.txt
           } > /out/PROVENANCE.txt
           cat /out/PROVENANCE.txt
 
+      # always(), because a FAILED gate is exactly when the outputs are worth
+      # having. The first run refused to emit anything when the wasm turned out
+      # to differ, which was correct as a gate and useless as evidence: nothing
+      # survived to say WHAT differed. The gate still fails the job; it just no
+      # longer takes the artifacts down with it.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: planegcs-glue-dynamic-execution-0
           path: |
             /out/patched.planegcs.js
             /out/control.planegcs.js
+            /out/patched.planegcs.wasm
+            /out/control.planegcs.wasm
             /out/PROVENANCE.txt
             /out/SHA256SUMS.txt
-          if-no-files-found: error
+          if-no-files-found: warn
