@@ -8,7 +8,7 @@ import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
-import { SketchOverlay, curveObjects, dimensionLineObjects, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
+import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
@@ -45,7 +45,7 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
-import { CONFLICT } from "../viewport/colors3d";
+import { CONFLICT, SKETCH_POINT_HOVER } from "../viewport/colors3d";
 
 export type SketchTool =
   | "select"
@@ -2714,7 +2714,46 @@ export class SketchMode {
     if (first) preview.push(...curveObjects([first], this.plane, 0x33aaff, true));
     const hit = idx >= 0 ? this.entities[idx] : undefined;
     if (hit) preview.push(...curveObjects([hit], this.plane, 0xff5555, true));
+    // The point under the cursor, for the tools that consume one. It goes on
+    // AFTER the entity highlight so it paints on top: an endpoint and the curve
+    // owning it are both under the cursor at once, and the click takes the
+    // point, so the point is what has to be legible.
+    const pt = this.hoverablePoint(p);
+    if (pt) {
+      preview.push(
+        pointHighlight(this.plane, pt.x, pt.y, SKETCH_POINT_HOVER, this.endpointDotRadius() * 1.7),
+      );
+    }
     this.overlay.setPreview(preview);
+  }
+
+  /** The addressable point under the cursor FOR THE ACTIVE TOOL, or null when
+   *  the tool does not take one.
+   *
+   *  Scoped rather than universal on purpose. Trim, fillet, move and the rest of
+   *  MODIFY_TOOLS act on whole entities, so lighting up a point while one of
+   *  them is armed would promise a target the tool cannot use — the same class
+   *  of lie as a target you can hit but cannot see, which is what rectangle
+   *  corners were until this release. */
+  private hoverablePoint(p: THREE.Vector2): { x: number; y: number } | null {
+    // Constraint flows: ask ConstraintTools, so the highlight and the click
+    // cannot disagree about which point is addressable.
+    if (CONSTRAINT_TOOLS.has(this.tool)) return this.constraintTools.hoverPoint(p);
+    if (this.tool !== "dimension") return null;
+    // Dimensioning resolves through dimRefPoints, which is a SUPERSET of the
+    // constraint picker: it also exposes circle and arc centres. Borrowing the
+    // constraint picker here would leave a centre unlit while a click on it
+    // works perfectly, so this searches the list dimensions actually use.
+    const tol = this.pickTol();
+    let best: { x: number; y: number } | null = null;
+    let bestD = tol * tol;
+    for (const e of this.entities) {
+      for (const { pos } of dimRefPoints(e)) {
+        const dx = pos.x - p.x, dy = pos.y - p.y, d = dx * dx + dy * dy;
+        if (d <= bestD) { bestD = d; best = { x: pos.x, y: pos.y }; }
+      }
+    }
+    return best;
   }
 
   // --- selection delete (select tool) -----------------------------------

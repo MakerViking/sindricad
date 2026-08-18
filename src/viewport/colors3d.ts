@@ -38,6 +38,16 @@ export const SELECT_HOT = 0xff9a5c;
  *  disappears the moment the user mouses over it. */
 export const ERROR = 0xe23b3b;
 
+// --- sketch points ---------------------------------------------------------
+
+/** The addressable sketch point under the cursor. Yellow rather than the amber
+ *  used for edges and handles, because a point and an edge can be under the
+ *  cursor at the same time and the user has to see WHICH one a click would take.
+ *
+ *  Deliberately not SELECT or HANDLE_HOT: this says "you would grab this", which
+ *  is a different claim from "this is selected" and from "this is draggable". */
+export const SKETCH_POINT_HOVER = 0xffe14d;
+
 // --- manipulator handles ---------------------------------------------------
 // Shared by every drag handle (press/pull, offset face, offset plane, section,
 // edge features, text on face) so they feel like one mechanism.

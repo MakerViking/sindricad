@@ -252,6 +252,17 @@ export class ConstraintTools {
   /** Plane coordinates of an endpoint reference, so the host can mark it on
    *  screen. Mirrors pickEndpoint's own idea of which points are addressable —
    *  if a point can be picked it can be shown, and vice versa. */
+  /** Plane coords of the addressable point under `p`, or null. For the hover
+   *  highlight, and deliberately routed through the SAME pickEndpoint the click
+   *  flows use: if these two ever disagree the highlight becomes a lie, which is
+   *  the failure this whole affordance exists to remove (a target you can see
+   *  but not hit is the GH #17 shape, and one you can hit but not see is what
+   *  rectangle corners were until this release). */
+  hoverPoint(p: THREE.Vector2): { x: number; y: number } | null {
+    const ep = this.pickEndpoint(p);
+    return ep ? this.endpointXY(ep) : null;
+  }
+
   private endpointXY(ep: { id: string; idx: number }): { x: number; y: number } | null {
     const e = this.host.entities().find((x) => x.id === ep.id);
     if (!e) return null;

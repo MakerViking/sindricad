@@ -712,6 +712,22 @@ function endpointDot(plane: SketchPlane, x: number, y: number, color: number, r:
   return seg;
 }
 
+/** A point highlight at plane coords, for the hover pass. Exported so the hover
+ *  draws the SAME square the resting dots do, only bigger and in another colour:
+ *  a differently-shaped marker would read as a different kind of thing rather
+ *  than as "this one, the one you are pointing at". */
+export function pointHighlight(
+  plane: SketchPlane,
+  x: number,
+  y: number,
+  color: number,
+  r: number,
+): THREE.Object3D {
+  const o = endpointDot(plane, x, y, color, r);
+  o.renderOrder = 15; // above the resting dots it sits on top of
+  return o;
+}
+
 function pointMarker(plane: SketchPlane, x: number, y: number, color: number): THREE.Object3D {
   const s = 0.9;
   const pts = [

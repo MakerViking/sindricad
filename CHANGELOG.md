@@ -61,6 +61,14 @@ This file starts on 2026-08-03. For anything before that, see the
   the cursor. Corners are also drawn as dots now, the way every other endpoint
   is, so it is possible to see where they are before clicking.
 
+  The point under the cursor lights up yellow while a tool that takes one is
+  armed, whether it is a rectangle corner, the end of a line or an arc, a
+  standalone point, or the end of a spline. A point and the curve that owns it
+  are often both under the cursor, and a click takes the point, so the point is
+  what needs to be legible. Tools that work on whole shapes, like Trim and
+  Fillet, deliberately do not light points up: a highlight there would offer
+  something those tools cannot use.
+
   A rectangle keeps its sides square to the sketch axes, so a few combinations
   are settled before you ask: Horizontal on a side that is already horizontal is
   reported as redundant rather than applied, and Vertical on that same side is
