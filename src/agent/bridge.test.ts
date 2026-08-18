@@ -138,6 +138,54 @@ describe("handleTool", () => {
     expect(out.featureErrors[0]!.subject).toBe("⟦untrusted:name⟧Bracket⟦/untrusted⟧");
   });
 
+  it("envelopes the document-authored strings in a measure reply, exactly as doc.read does", async () => {
+    // The leak this closes: the sidecar's measure reply is ALSO what the app
+    // renders for a human, so `bodies[].name` and `warnings[].subject` arrive as
+    // plain document text. doc.read wrapped the same body name and this did not
+    // — which is worse than never wrapping either, because a reader who sees one
+    // tool mark a string and another leave it bare learns that bare means safe.
+    const massProperties = vi.fn().mockResolvedValue({
+      ok: true,
+      result: {
+        units: "mm",
+        bodies: [{ id: "body1", name: "Bracket", volume: 8000 }],
+        total: { volume: 8000 },
+        warnings: [{ feature_id: "sh", message: "no face found to shell on {body}", subject: "Bracket" }],
+      },
+    });
+    const deps = { store: fakeStore(), geometry: { massProperties } as unknown as GeometryBackend };
+
+    const r = await handleTool("geom.measure", {}, deps);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.result as {
+      units: string;
+      bodies: { id: string; name: string; volume: number }[];
+      total: { volume: number };
+      warnings: { subject: string; message: string }[];
+    };
+
+    expect(out.bodies[0]!.name).toBe("⟦untrusted:name⟧Bracket⟦/untrusted⟧");
+    expect(out.warnings[0]!.subject).toBe("⟦untrusted:subject⟧Bracket⟦/untrusted⟧");
+    // The control that makes the two above capable of failing: the sidecar sent
+    // the bare string, so if the wrap ever comes out this assertion flips.
+    expect(out.bodies[0]!.name).not.toBe("Bracket");
+
+    // The property that actually broke was AGREEMENT between two tools about one
+    // string. Asserting on measure alone would let doc.read drift instead.
+    const d = await handleTool("doc.read", {}, deps);
+    expect(d.ok).toBe(true);
+    if (!d.ok) return;
+    expect(out.bodies[0]!.name).toBe((d.result as { bodies: { name: string }[] }).bodies[0]!.name);
+
+    // Pass-through: this must not become a filter that quietly drops the numbers
+    // the tool exists to return.
+    expect(out.units).toBe("mm");
+    expect(out.bodies[0]!.volume).toBe(8000);
+    expect(out.total.volume).toBe(8000);
+    expect(out.warnings[0]!.message).toBe("no face found to shell on {body}");
+  });
+
   it("tells the agent about the traps, not just the wire shape", async () => {
     const r = await handleTool("sindri.schema", {}, { store: fakeStore(), geometry: {} as GeometryBackend });
     expect(r.ok).toBe(true);
@@ -151,5 +199,9 @@ describe("handleTool", () => {
     expect(s.traps.join(" ")).toContain("fingerprint you INVENTED");
     expect(s.traps.join(" ")).toContain("centroid");
     expect(s.traps.join(" ")).toContain("display MESH");
+    // The ENVELOPE, not just the selector vocabulary. Publishing the vocabulary
+    // alone is what made a flat selector the natural first call, and a flat
+    // selector used to match every entity on the body with ok:true.
+    expect(JSON.stringify(s.tools["geom.query"])).toContain("sel");
   });
 });
