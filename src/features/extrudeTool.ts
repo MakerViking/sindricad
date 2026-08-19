@@ -174,28 +174,37 @@ export class ExtrudeTool {
     // legacy area is now fenced by `selectRegionsByEntities`'s own `inSketch`
     // filter rather than by `editSelection` — same fence, one implementation.
     this.selected = answer.resolved;
+    // An area the tool cannot show is still an area of the FEATURE. Writing back
+    // only what is selected would delete it on a bare depth change — one ordinary
+    // gesture, no confirmation, geometry gone, which is the same class of silent
+    // corruption this whole fix exists to remove. So the references that did not
+    // resolve are carried through commit byte for byte: this tool has no opinion
+    // about an area it could not find, and the sidecar's own resolution rule is
+    // not this one (it accepts references this refuses, and falls back to the
+    // stored point otherwise), so the build is unaffected either way.
+    //
+    // CARRIED WHETHER OR NOT ANYTHING RESOLVED, and that is the fix for the
+    // regression this file's own change introduced. Routing legacy features
+    // through `selectRegionsByEntities` imported its "one cell or nothing" rule,
+    // which is right when IDS narrow to several cells and wrong when a bare
+    // POINT sits inside overlapping ones — two exactly coincident circles, or a
+    // text glyph over the plate it sits on. That is ordinary geometry, not a
+    // changed sketch, so the whole feature went down the nothing-resolved arm
+    // and a re-pick replaced the area set. Refusing to DRAW an area is never a
+    // reason to delete it.
+    //
+    // `unresolved` are already RegionRefs built from the document at the top of
+    // this method, so they carry a point by construction; absent hole ids carry
+    // as `[]`, which is what the sidecar already makes of absent (`for grp in
+    // (hole_eids or [])`), recording no claim the document did not already make.
+    this.editCarried = unresolved.map((ref) => ({
+      ...ref,
+      point: ref.point ?? [0, 0, 0],
+      holeEntityIds: ref.holeEntityIds ?? [],
+    }));
     if (this.selected.length) {
-      // An area the tool cannot show is still an area of the FEATURE. Writing
-      // back only what is selected would delete it on a bare depth change — one
-      // ordinary gesture, no confirmation, geometry gone, which is the same
-      // class of silent corruption this whole fix exists to remove. So the
-      // references that did not resolve are carried through commit byte for
-      // byte: this tool has no opinion about an area it could not find, and the
-      // sidecar's own resolution rule is not this one (it accepts references
-      // this refuses, and falls back to the stored point otherwise), so the
-      // build is unaffected either way. They are dropped only when the user
-      // changes the area set, because that gesture re-states the set — see
-      // onDown.
-      // `unresolved` are already RegionRefs built from the document at the top
-      // of this method, so they carry a point by construction; absent hole ids
-      // carry as `[]`, which is what the sidecar already makes of absent
-      // (`for grp in (hole_eids or [])`), recording no claim the document did
-      // not already make.
-      this.editCarried = unresolved.map((ref) => ({
-        ...ref,
-        point: ref.point ?? [0, 0, 0],
-        holeEntityIds: ref.holeEntityIds ?? [],
-      }));
+      // They are dropped only when the user changes the area set, because that
+      // gesture re-states the set — see onDown, BOTH branches of it.
       this.beginDrag();
       if (unresolved.length) {
         // beginDrag sets its own prompt, so this replaces it. An area whose ids
@@ -209,16 +218,28 @@ export class ExtrudeTool {
         );
       }
     } else {
-      // Nothing resolved, so there is no depth edit to protect and nothing is
-      // carried (`editCarried` is left empty, as cleanup leaves it): the user
-      // states the areas again from the pick phase, and what they pick is the
-      // feature's new area set. Carrying references into a set the user is
-      // building by hand would silently ADD areas instead of preserving them.
+      // Nothing could be DRAWN. The areas are still held (above), so a depth
+      // edit committed from here keeps them; picking states a new set and drops
+      // them, which onDown's pick branch now does explicitly.
+      //
+      // Two different causes, and the message distinguishes them because only
+      // one is the sketch's fault. A reference carrying IDS that no longer name
+      // a cell means the sketch really did change. A reference with only a
+      // POINT can fail on a document nobody has touched, by landing inside
+      // overlapping cells — coincident profiles, or a text glyph over the plate
+      // beneath it. Telling that user their sketch changed is a guess presented
+      // as a fact, and it sent them looking for an edit they never made.
       const one = saved.length === 1;
+      const it = one ? "it" : "them";
+      const changed = unresolved.some((ref) => ref.entityIds?.length);
       setPrompt(
-        `Editing extrude: its ${one ? "area was" : `${saved.length} areas were`} not found ` +
-          `(sketch changed?) · what you pick replaces ${one ? "it" : "them"} · ` +
-          "select a profile · Esc to cancel",
+        changed
+          ? `Editing extrude: its ${one ? "area was" : `${saved.length} areas were`} not found ` +
+              `(sketch changed?) · ${one ? "it is" : "they are"} kept until you pick · ` +
+              `what you pick replaces ${it} · select a profile · Esc to cancel`
+          : `Editing extrude: its ${one ? "area cannot" : `${saved.length} areas cannot`} be shown ` +
+              `· ${one ? "it is" : "they are"} kept as saved · what you pick replaces ${it} ` +
+              "· select a profile · Esc to cancel",
       );
     }
     return true;
@@ -300,9 +321,26 @@ export class ExtrudeTool {
       const additive = e.ctrlKey || e.metaKey || e.shiftKey;
       this.overlay.toggleRegionSelection(r, additive);
       this.selected = this.editSelection();
+      // Picking here STATES the area set, exactly as the modifier click does in
+      // the edit phase, so anything startEdit was holding on the user's behalf
+      // stops applying. Without this the carried areas would ride along
+      // invisibly beside whatever is picked and commit would write MORE areas
+      // than the user can see — which is why the carry used to be skipped
+      // entirely on this path, at the cost of losing the areas instead.
+      // Dropping them here is what makes carrying them safe.
+      const dropped = this.editCarried.length;
+      this.editCarried = [];
       // plain click picks one area and goes straight to depth; Ctrl-click keeps
       // accumulating (Enter confirms the set)
       if (!additive && this.selected.length) this.beginDrag();
+      // AFTER beginDrag, which sets a prompt of its own: announcing the drop
+      // first would put it on screen for one statement and then replace it.
+      if (dropped) {
+        setPrompt(
+          `Editing extrude: ${dropped} area${dropped === 1 ? "" : "s"} that could not be shown ` +
+            `${dropped === 1 ? "is" : "are"} no longer kept · what you pick is the new set`,
+        );
+      }
     } else {
       e.preventDefault();
       // A modifier-held click means "change the area set", not "commit". Edit mode

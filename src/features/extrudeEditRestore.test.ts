@@ -340,7 +340,13 @@ describe("ExtrudeTool commit after a PARTIAL restore", () => {
     expect(f.regionEntities).not.toContainEqual(["gone"]);
   });
 
-  it("carries nothing when NOTHING resolved — that path re-picks from scratch", () => {
+  it("HOLDS the areas when nothing resolved, and still says a pick replaces them", () => {
+    // This used to carry nothing here, on the reasoning that carrying into a set
+    // the user is rebuilding by hand would add areas invisibly. That reasoning
+    // was right about the hazard and wrong about the remedy: it removed the
+    // hazard by discarding the areas. They are held now, and onDown's pick
+    // branch drops them the moment the user states a set — so the add can no
+    // longer happen and the loss no longer has to.
     const d = doc(shell(), {
       regions: [[45, 0, 0]],
       regionEntities: [["gone"]],
@@ -348,8 +354,10 @@ describe("ExtrudeTool commit after a PARTIAL restore", () => {
     });
     const { tool } = harness(d);
     tool.startEdit("ex1", () => {});
+    // ids that name nothing: the sketch really did change, so this wording stays
     expect(prompt.text).toMatch(/not found/);
-    expect((tool as unknown as { editCarried: unknown[] }).editCarried).toEqual([]);
+    expect(prompt.text).toMatch(/replaces/);
+    expect((tool as unknown as { editCarried: unknown[] }).editCarried).toHaveLength(1);
   });
 });
 
@@ -722,6 +730,94 @@ describe("ExtrudeTool.startEdit on a WHOLLY legacy feature (no regionEntities ke
     expect(f.regions).toHaveLength(2);
     expect(f.regionEntities).toEqual([["c"], ["c"]]);
   });
+  // The regression this file's own fix introduced. Routing wholly-legacy
+  // features through selectRegionsByEntities imported its "exactly one hit or
+  // refuse" rule, which is right for an ID-BEARING reference and wrong for a
+  // point-only one: the ids narrowing to several cells is genuinely ambiguous,
+  // but a bare point sitting inside overlapping cells is ORDINARY. Two exactly
+  // coincident circles produce one region per closed loop, so the stored point
+  // hits both. Reported shape: a legacy extrude under a text glyph, on a
+  // document that has not changed at all.
+  const twins = (): SketchEntity[] => [
+    { id: "c1", type: "circle", x: 0, y: 0, radius: 30 },
+    { id: "c2", type: "circle", x: 0, y: 0, radius: 30 },
+  ];
+  const twinLegacy = () => doc(twins(), { regions: [[0, 0, 0]] });
+
+  it("holds a legacy area whose point lands in two overlapping cells", () => {
+    // NOTHING HAS MOVED. The tool cannot say which cell the user meant, which is
+    // a reason to refuse to DRAW the area and never a reason to drop it. Before
+    // this it went down the nothing-resolved arm holding nothing, so the area
+    // survived only as long as the user did not pick — and the banner invited
+    // exactly that.
+    const { tool, written } = harness(twinLegacy());
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    expect(
+      (tool as unknown as { editCarried: unknown[] }).editCarried,
+      "the area was not held",
+    ).toHaveLength(1);
+    // and a bare commit does not rewrite the feature at all, so what is on disk
+    // is still the user's own area set
+    expect(written.feature).toBeNull();
+  });
+
+  it("does not blame the sketch for an ambiguity the sketch did not cause", () => {
+    const { tool } = harness(twinLegacy());
+    tool.startEdit("ex1", () => {});
+    expect(prompt.text).toBeTruthy();
+    expect(prompt.text, "told the user their sketch changed when it had not")
+      .not.toMatch(/sketch changed/i);
+  });
+
+  it("a re-pick REPLACES the held area rather than adding to it invisibly", async () => {
+    // The safety half of carrying on the nothing-resolved path. The carried area
+    // cannot be seen, so if picking did not drop it the user would commit two
+    // areas having chosen one — which is why the carry used to be skipped here
+    // altogether, losing the area instead. Dropping on the pick is what makes
+    // holding it safe.
+    //
+    // The pickable area is a THIRD, distant circle: picking one of the twins
+    // would select both, because the overlay's selection is point-based and the
+    // twins share every point. That is the fixture's nature, not the tool's, and
+    // asserting through it would measure the wrong thing.
+    const withSpare = doc(
+      [...twins(), { id: "d", type: "circle", x: 200, y: 0, radius: 10 }],
+      { regions: [[0, 0, 0]] },
+    );
+    const { tool, overlay, written, commit } = harness(withSpare);
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    const spare = overlay.regions.find((wr) => wr.region.entityIds.includes("d"))!;
+    expect(spare, "fixture: the spare circle produced no region").toBeDefined();
+    (tool as unknown as { regionUnder: () => unknown }).regionUnder = () => spare;
+    (tool as unknown as { onDown: (e: PointerEvent) => void }).onDown({
+      button: 0,
+      ctrlKey: false,
+      clientX: 0,
+      clientY: 0,
+      preventDefault() {},
+    } as unknown as PointerEvent);
+    expect(prompt.text, "the drop was not announced").toMatch(/no longer kept/i);
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regionEntities, "the invisible carried area rode along").toEqual([["d"]]);
+    expect(f.regions, "more areas were written than were picked").toHaveLength(1);
+  });
+
+  it("CONTROL: one circle alone resolves and is drawn, so the twin IS the cause", async () => {
+    // Without this the test above would pass against a tool that never resolves
+    // anything at all.
+    const single = doc([{ id: "c1", type: "circle", x: 0, y: 0, radius: 30 }], {
+      regions: [[0, 0, 0]],
+    });
+    const { tool, written, commit } = harness(single);
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f.regions).toHaveLength(1);
+    expect(f.regionEntities).toEqual([["c1"]]);
+  });
+
 });
 
 // A reference with no ids resolves by point, and a point that is now inside
