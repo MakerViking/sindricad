@@ -2,6 +2,7 @@ import "./styles.css";
 import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
+import { installAgentBridge } from "./agent/bridge";
 import { featureErrorText } from "./geometry/featureErrorText";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
@@ -88,7 +89,10 @@ const contextTab = document.getElementById("context-tab")!;
 const viewport = new Viewport(canvas);
 
 const geometry = import.meta.env.VITE_GEOM === "rust" ? new TauriGeometry() : new Geometry();
-void geometry.init(); // fetch the per-launch sidecar auth token + open the socket
+// Kept rather than `void`ed: the DEV-only VITE_OPEN_DOC hook below has to wait
+// for the socket before it can open anything. Nothing else awaits it, and the
+// app's own behaviour is unchanged.
+const geometryReady = geometry.init(); // per-launch sidecar auth token + socket
 // Rust's sidecar supervisor (src-tauri/src/sidecar.rs) emits this if the Python
 // geometry process crashes after launch. There's no auto-respawn (the per-launch
 // auth token would need to rotate live), so tell the user before they keep
@@ -204,6 +208,59 @@ void initSpaceMouse(viewport, (pressed) => {
 // into stderr and retried forever, so a plugged-in SpaceMouse just did nothing
 // with no way to find out why. Guarded to Tauri: plain `vite` has no emitter.
 if ("__TAURI_INTERNALS__" in window) {
+  // The read-only agent bridge. Guarded to Tauri for the same reason as the
+  // block below: plain `vite` has no broker to emit its event, and `listen()`
+  // would just reject. Failure here must not take the app down — an app whose
+  // agent bridge is missing is still the app.
+  void installAgentBridge({ store, geometry }).catch((e) => {
+    console.warn("agent bridge unavailable:", e);
+  });
+
+  // DEV ONLY: open a document at boot, so the agent bridge can be exercised
+  // end to end without a human clicking through the file dialog.
+  //
+  // It exists because the alternative did not work: this machine's Wayland
+  // session blocks xdotool/XTEST entirely, and WebKitGTK's remote inspector
+  // exposes no HTTP or CDP surface to evaluate JS through. Without this, the
+  // only end-to-end run possible was against an EMPTY document — which proves
+  // the reply shapes and none of the numbers.
+  //
+  // Same precedent as the other DEV-only hooks here (`window.__sindri`, the
+  // `?token=` query outside Tauri): gated on import.meta.env.DEV, so it is
+  // stripped from every shipping build rather than merely unused in one.
+  if (import.meta.env.DEV && import.meta.env.VITE_OPEN_DOC) {
+    // Loads the container DIRECTLY rather than through `openDocumentAtPath`,
+    // which reports every failure with `await message(...)` — a NATIVE MODAL.
+    // With no human to dismiss it the promise never settles, so a failed open
+    // presents as total silence: no error, no rebuild, no log line. That cost
+    // three rounds of guessing before the dialog was the answer.
+    //
+    // AFTER geometryReady: `geometry.init()` is awaited nowhere else, and a
+    // load that lands before the socket is open cannot rebuild.
+    const path = import.meta.env.VITE_OPEN_DOC as string;
+    const SLOT = "__devopen";
+    const report = (o: unknown) =>
+      void invoke("recovery_write", { slot: SLOT, json: JSON.stringify(o, null, 2) }).catch(() => {});
+    void geometryReady
+      .then(async () => {
+        const isContainer = await invoke<boolean>("container_is_container", { path });
+        const text = isContainer
+          ? await invoke<string>("container_open", { path })
+          : await (await import("@tauri-apps/plugin-fs")).readTextFile(path);
+        store.load(text);
+        // Cleared on success, NOT left behind. `recovery_list` is slot-agnostic
+        // and `checkRecovery` offers the newest slot unconditionally, so a
+        // leftover file here would greet the next launch with "Recover unsaved
+        // work?" pointing at a JSON status report that is not a document.
+        await invoke("recovery_clear", { slot: SLOT }).catch(() => {});
+      })
+      .catch((e) => {
+        const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+        crumb(`[dev] VITE_OPEN_DOC failed: ${detail}`);
+        report({ ok: false, detail });
+      });
+  }
+
   void listen<{ name: string; detail: string }>("spacemouse:blocked", (e) => {
     console.warn("SpaceMouse blocked:", e.payload.detail);
     toast(

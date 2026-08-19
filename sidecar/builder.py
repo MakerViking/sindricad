@@ -7997,6 +7997,17 @@ _QUERY_MAX_TOTAL = 5000
 # actually stops it.
 _QUERY_BUDGET_S = 20.0
 
+# Keys that belong INSIDE an item's `sel`, never on the item itself. The item
+# envelope is {kind, sel, where, limit, body, id}; a selector written flat —
+# {"kind":"face","by":"normal","dir":[0,0,1]} — used to leave `sel` None, which
+# means "no selector", which the filter step reads as "match everything". That
+# failed OPEN: a query for 13 up-facing planes returned all 158 faces of the body
+# with ok:true and an empty `diagnostics`, and nothing in the reply said the
+# selector had been discarded. The agent schema lists the selector vocabulary but
+# has no room to show the envelope, so writing it flat is the natural mistake —
+# it is the one a cold model makes on its first call. Refuse it by name instead.
+_QUERY_SEL_KEYS = frozenset({"by", "dir", "point", "fp", "axis", "seed", "face", "nth"})
+
 
 # The strict gate for by:"match". Three SCALE-RELATIVE invariants, ORed — not a
 # threshold on the resolver's cost, which was measured useless for this: over the
@@ -8171,6 +8182,15 @@ def query_geometry(document, items, prefix=False, strict=True):
             kind = item.get("kind")
             if kind not in ("face", "edge"):
                 raise GeomError('query: kind must be "face" or "edge"', ERR.BAD_REQUEST)
+            # BEFORE `limit`, and before anything resolves: a flat selector is a
+            # request that cannot be honoured, not one that matches everything.
+            flat = sorted(_QUERY_SEL_KEYS & set(item))
+            if flat:
+                raise GeomError(
+                    "query: the selector goes inside `sel` — found "
+                    + ", ".join("`%s`" % k for k in flat)
+                    + ' on the item itself. Use {"kind":"%s","sel":{...}}' % kind,
+                    ERR.BAD_REQUEST)
             limit = int(item.get("limit") or 200)
             if limit < 1 or limit > _QUERY_MAX_LIMIT:
                 raise GeomError(f"query: limit must be 1..{_QUERY_MAX_LIMIT}", ERR.BAD_REQUEST)

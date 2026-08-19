@@ -102,6 +102,67 @@ def test_normal_is_planarity_gated_and_uses_the_tuned_tolerance():
     print(PASS, "the normal predicate is planar-only and honours its tolerance")
 
 
+def test_a_flat_selector_is_refused_rather_than_matching_everything():
+    """The item envelope is {kind, sel, where, limit, body, id}. Writing the
+    selector FLAT on the item used to leave `sel` unset, which means "no
+    selector", which the filter step reads as "match everything" — so a query for
+    the one up-facing face of a box came back with all 6, ok:true, and an empty
+    `diagnostics`. Nothing in the reply said the selector had been dropped.
+
+    The control is the nested form: it must return STRICTLY FEWER than every
+    face, or this test would pass just as well against the broken code."""
+    flat = _q(BOX, {"id": "q", "kind": "face", "by": "normal", "dir": [0, 0, 1]})[0]
+    assert not flat["ok"], f"a flat selector must be refused: {flat}"
+    assert flat["code"] == "badRequest", flat
+    # The message has to name the fix. "invalid item" would leave the caller
+    # guessing at exactly the point the schema already failed them.
+    assert "sel" in flat["error"], flat["error"]
+    assert "`by`" in flat["error"] and "`dir`" in flat["error"], flat["error"]
+
+    nested = _q(BOX, {"id": "q", "kind": "face",
+                      "sel": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}})[0]
+    assert nested["ok"], nested
+    assert nested["count"] == 1, nested
+    every = _q(BOX, {"id": "q", "kind": "face"})[0]
+    assert every["count"] == 6, every
+    assert nested["count"] < every["count"], \
+        "CONTROL: the nested form must narrow, or the refusal above proves nothing"
+    print(PASS, "a flat selector is refused, not silently widened to everything")
+
+
+def test_the_normal_selector_honours_deg_and_keeps_its_own_default():
+    """by:"normal" advertised `deg` and read only `dir`, so deg:0 and deg:80 were
+    the same query. The empty direction is the worse half: a direction 11.5 deg
+    off +Z returned count 0 with ok:true, an authoritative "no such faces" for a
+    box that has one.
+
+    The default must NOT move to _cos_slack's ANG_TOL: every stored by:"normal"
+    selector in every saved document resolves through this branch, so widening
+    the default would re-target live Shell/Draft/Offset features."""
+    def n(**extra):
+        sel = {"kind": "face", "by": "normal", "dir": extra.pop("dir")}
+        sel.update(extra)
+        return _q(BOX, {"id": "q", "kind": "face", "sel": sel})[0]
+
+    off = [0, 0.19937, 0.97992]   # 11.5 deg off +Z — outside the 8.11 deg default
+    assert n(dir=off)["count"] == 0, "setup: 11.5 deg must be outside the default band"
+    assert n(dir=off, deg=20)["count"] == 1, "deg must WIDEN — this is the silent-empty bug"
+    # ... and the same key must TIGHTEN, or "deg works" could just mean "deg is
+    # read as always-accept", which is the failure it replaced.
+    assert n(dir=off, deg=1)["count"] == 0, "deg must tighten as well as widen"
+    assert n(dir=[0, 0, 1], deg=0)["count"] == 1, "deg:0 must still match an exact normal"
+
+    # The default band, pinned on both sides so a tuning change cannot widen it.
+    assert n(dir=[0, 0.08716, 0.99619])["count"] == 1, "5 deg is inside the default"
+    assert n(dir=[0, 0.15643, 0.98769])["count"] == 0, "9 deg is outside the default"
+
+    # A degree-shaped `tol` is refused here now too, not just on the where path.
+    bad = n(dir=[0, 0, 1], tol=5)
+    assert not bad["ok"] and bad["code"] == "badRequest", bad
+    assert "COSINE" in bad["error"], bad["error"]
+    print(PASS, "the normal selector honours deg and keeps its 8.11 deg default")
+
+
 def test_predicates_compose_as_AND():
     """Dropping any one key must change the answer, or a key is being ignored."""
     both = _q(BOX, {"id": "q", "kind": "face",
@@ -420,6 +481,8 @@ def main():
     print("Query-op tests")
     test_a_returned_reference_survives_a_mutation()
     test_normal_is_planarity_gated_and_uses_the_tuned_tolerance()
+    test_a_flat_selector_is_refused_rather_than_matching_everything()
+    test_the_normal_selector_honours_deg_and_keeps_its_own_default()
     test_predicates_compose_as_AND()
     test_count_is_the_pre_limit_total_and_expect_judges_it()
     test_one_bad_item_never_fails_the_call()

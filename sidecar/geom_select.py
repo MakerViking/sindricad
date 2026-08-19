@@ -727,8 +727,21 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
         # OCCT "offset Error". build123d's own filter_by(Axis) gates on planarity
         # for exactly this reason; this branch never did.
         d = _unit(_v(sel["dir"]))
+        # `deg`/`tol` are ADVERTISED on this selector but used to be silently
+        # dropped: the branch read only `dir`, so deg:0 and deg:80 were the same
+        # query. Two ways that hurt, and the empty one is the worse: a direction
+        # 11.55deg off +Z returned count 0 with ok:true — an authoritative "this
+        # part has no faces pointing that way" for a part that had 13.
+        #
+        # The DEFAULT deliberately stays this branch's own 0.01 (8.11deg) rather
+        # than _cos_slack's ANG_TOL (0.02, 11.5deg). Every by:"normal" selector
+        # stored in every saved document resolves through here, so widening the
+        # default would silently re-target live Shell/Draft/Offset/Texture
+        # features. Only an EXPLICIT deg/tol moves the threshold.
+        slack = (_cos_slack(sel, "normal")
+                 if ("deg" in sel or "tol" in sel) else _NORMAL_SEL_SLACK)
         return list(part.faces().filter_by(
-            lambda f: _is_planar(f) and _face_normal(f).dot(d) > 0.99))
+            lambda f: _is_planar(f) and 1.0 - _face_normal(f).dot(d) <= slack))
     if by == "nearest":
         p = _v(sel["point"])
         faces = list(part.faces())
@@ -875,6 +888,12 @@ def _within(pt, spec):
 
 _FACE_SURFACES = {"plane", "cylinder", "cone", "sphere", "torus", "bspline", "other"}
 _EDGE_CURVES = {"line", "circle", "ellipse", "bspline", "other"}
+
+# by:"normal"'s default `1 - dot` slack, held at the value that branch hardcoded
+# (dot > 0.99, i.e. 8.11deg) so stored selectors resolve exactly as before. It is
+# NOT a _TUNING entry: ANG_TOL is tuned against selector survival, and coupling
+# the two would let a tuning run silently re-target saved features.
+_NORMAL_SEL_SLACK = 0.01
 
 
 def _cos_slack(spec, what):
