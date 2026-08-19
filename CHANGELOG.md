@@ -76,6 +76,45 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Constraint tools no longer report a pick that worked as a pick that failed.**
+  Four separate ways a working gesture could read as a broken one, all found by
+  attacking the sketcher after rectangle corners became selectable.
+
+  The first click of Tangent, Equal and Concentric said "Nothing to constrain
+  there" while quietly holding the pick it had just made. It stays quiet now, and
+  speaks only when a click really did find nothing.
+
+  Equal on a line and a circle used to take both clicks and then do nothing at
+  all, without a word. It now says what it needs: two lines, or two circles, a
+  length and a radius not being comparable.
+
+  Coincident on two corners of the same rectangle did nothing and said nothing.
+  It is still refused, because joining them would collapse the rectangle, but it
+  now says so.
+
+  Arming a constraint on one side of a rectangle lit up all four sides. Only the
+  side you picked lights up now.
+
+- **A constraint that cannot be satisfied turns red again.** When a constraint
+  could only be met by flattening a line or a rectangle, the sketch correctly
+  refused to apply it, but nothing on screen said which constraint was
+  responsible: no red badge, only a message. The refusal now names it, so the
+  offending constraint can be found and deleted rather than hunted for.
+
+  This affected lines as well as rectangles, and both are fixed by the same
+  change.
+
+- **An older extrude is no longer dropped when its profile sits on top of
+  another.** An extrude saved before 0.1.123 records its areas as points, and if
+  such a point falls inside two overlapping shapes at once, the tool cannot tell
+  which one was meant. It used to report that the sketch had changed and offer to
+  replace the area, on a document nobody had touched: a plate with text on it, or
+  two shapes drawn exactly on top of each other, was enough.
+
+  The area is now kept as it was saved. Picking still replaces it, and now says
+  so first. The message also stops blaming the sketch when the sketch is not at
+  fault, while still saying so when it genuinely has changed.
+
 - **A rectangle can no longer be solved out of existence.**
   Found while opening the constraint work above, and present long before it. A
   constraint that could only be satisfied by flattening a rectangle to nothing
