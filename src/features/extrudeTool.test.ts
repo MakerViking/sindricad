@@ -60,6 +60,7 @@ function harness(regionUnderCursor: Region | null, selectedNow: Region[]) {
     editId: string | null;
     selected: Region[];
     onDown: (e: PointerEvent) => void;
+    onUp: (e: PointerEvent) => void;
     regionUnder: (x: number, y: number) => Region | null;
     commit: () => Promise<void>;
     updatePreview: () => void;
@@ -128,10 +129,17 @@ describe("ExtrudeTool editing an area set", () => {
   });
 
   it("still commits on a PLAIN click — the fix must not break committing", () => {
+    // A click is now the press AND the release: commit moved to onUp so that a
+    // press which misses the depth handle and then drags cannot commit the
+    // feature the user was still editing (extrudeArrowHandle.test.ts pins that
+    // side). What a "plain click commits" means is unchanged; where it is
+    // decided is not.
     const a = { sketchId: "s1", interior3D: { x: 0, y: 0 } };
     const h = harness(a, [a]);
 
     h.t.onDown(click({}));
+    expect(h.commit, "committing on the press again — a miss would destroy work").not.toHaveBeenCalled();
+    h.t.onUp(click({}));
 
     expect(h.commit).toHaveBeenCalledTimes(1);
     expect(h.toggled).toEqual([]);

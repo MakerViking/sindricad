@@ -1,11 +1,15 @@
 // Interactive Extrude (MCAD-style): select one or more profile AREAS, then set
-// the distance by moving the cursor along the profile normal (live solid preview +
-// arrow manipulator + numeric box). Areas can be pre-selected in the sketch or
-// picked here: plain click picks one and starts the depth drag, Ctrl-click adds
-// more (Enter to confirm the set). A ring (annulus) area previews/extrudes as a
-// tube; selecting several areas unions them. Operation auto-selects: New Body when
-// nothing exists, otherwise Cut when the profile pushes into an existing body and
-// Join when it pulls away (both overridable in the commit dialog).
+// the distance by DRAGGING the arrow manipulator along the profile normal, or by
+// typing it (live solid preview + arrow + numeric box). The arrow is a handle:
+// it moves the depth while it is being dragged and at no other time — hovering
+// never changes anything, and a press that has not travelled yet is still a
+// click (fields 3998d6ea / 6e2bcadd). A click commits, on the RELEASE. Areas can
+// be pre-selected in the sketch or picked here: plain click picks one and goes
+// straight to the depth step, Ctrl-click adds more (Enter to confirm the set). A
+// ring (annulus) area previews/extrudes as a tube; selecting several areas
+// unions them. Operation auto-selects: New Body when nothing exists, otherwise
+// Cut when the profile pushes into an existing body and Join when it pulls away
+// (both overridable in the commit dialog).
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
@@ -15,11 +19,44 @@ import type { Feature } from "../types";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
-import { axisDragDistance } from "./manipulator";
+import { axisDragDistance, pixelDistanceToSegment } from "./manipulator";
 import { choose } from "../ui/choice";
 
 type Phase = "pick" | "drag";
 type Op = "new" | "join" | "cut" | "intersect";
+
+/** How close the cursor must be to the depth arrow, in SCREEN pixels, to take
+ *  hold of it. Wide enough to catch a shaft a couple of pixels across with a
+ *  mouse. It no longer has to stay narrow to protect the commit gesture —
+ *  commit moved to the RELEASE of a click that did not move (onUp), so the two
+ *  gestures are told apart by what the pointer does, not by where it went down. */
+const GRAB_PX = 10;
+
+/** Below this projected shaft length the arrow has stopped being a line to aim
+ *  ALONG: the grab disc is already 2·GRAB_PX across, so a shorter shaft adds no
+ *  direction the segment test could use, and `pixelDistanceToSegment` has
+ *  degenerated into that disc.
+ *
+ *  This is not hypothetical — it is the camera the app leaves you in. Finish
+ *  Sketch calls `sketchMode.cleanup` → `viewport.exitSketchView`, which restores
+ *  the projection mode and the up vector but NOT the orientation, so the view is
+ *  still looking straight down the sketch normal when Extrude opens. Measured in
+ *  that view (extrudeArrowHandle.test.ts, `topDown`): anchor and tip both project
+ *  to (400,300) — a 0 px shaft — and BEFORE the fallback below the entire
+ *  grabbable set was a 21 px disc at the profile centre. */
+const DEGENERATE_SHAFT_PX = 2 * GRAB_PX;
+
+/** Press-to-drag threshold in screen pixels: under this a press is still a
+ *  CLICK. Same number and same reason as sketchMode's point/body drags
+ *  ("<4px: still a click"), reused rather than re-chosen so the two halves of
+ *  the app do not disagree about what a click is. */
+const DRAG_START_PX = 4;
+
+/** The shortest arrow that is ever DRAWN, in mm. A near-zero depth still has to
+ *  show a handle, so `updatePreview` floors the length here — and `overArrow`
+ *  reads the same floor, because an arrow you can see but cannot grab is
+ *  precisely field 6e2bcadd. One constant, so the two cannot drift. */
+const ARROW_MIN_MM = 1;
 
 /** One area of the feature being edited, in the document's own shape.
  *
@@ -44,6 +81,30 @@ export class ExtrudeTool {
   private previewKey = ""; // depth+sign+selection of the built preview geometry
   private arrow: THREE.ArrowHelper | null = null;
   private dim = new DimInput();
+  /** A live handle drag: the axis reading at the moment the arrow was grabbed,
+   *  and the depth it had then. Non-null ONLY between the moment a press on the
+   *  arrow turns into a drag (past DRAG_START_PX) and the release — which is the
+   *  whole of the fix for fields 3998d6ea and 6e2bcadd. The arrow is a handle,
+   *  so a pointer move outside that window has no route to the depth at all, and
+   *  inside it every path has the same one.
+   *
+   *  This is the model pressPullTool already ships (`grabbing` / `grabValue` /
+   *  `grabProj`, "grabbing the handle scrubs; a clean click elsewhere commits").
+   *  Extrude was the tool left behind, not the one being redesigned. */
+  private grab: { axis: number; distance: number } | null = null;
+  /** An unresolved left-button press in the drag phase: where it went down,
+   *  whether it went down on the handle, and whether it has yet travelled far
+   *  enough to be a drag rather than a click.
+   *
+   *  It exists because BOTH gestures the drag phase offers start with a press in
+   *  the same place. The arrow is anchored at the region's interior point, which
+   *  is where the profile is and where the prompt has taught users to click to
+   *  commit — so a press cannot be classified when it arrives, only once the
+   *  pointer has either moved (drag) or come back up in place (click). Deciding
+   *  at pointerdown is what let a press on the arrow throw away a typed depth,
+   *  and a press that MISSED the arrow by 15 px commit a feature the user was
+   *  still editing. */
+  private press: { x: number; y: number; onArrow: boolean; moved: boolean } | null = null;
   private hitScratch = new THREE.Vector3();
   private onDone: ((id: string | null) => void) | null = null;
 
@@ -62,6 +123,8 @@ export class ExtrudeTool {
 
   private boundMove: (e: PointerEvent) => void;
   private boundDown: (e: PointerEvent) => void;
+  private boundUp: (e: PointerEvent) => void;
+  private boundCancel: () => void;
   private boundKey: (e: KeyboardEvent) => void;
 
   constructor(
@@ -71,6 +134,8 @@ export class ExtrudeTool {
   ) {
     this.boundMove = (e) => this.onMove(e);
     this.boundDown = (e) => this.onDown(e);
+    this.boundUp = (e) => this.onUp(e);
+    this.boundCancel = () => this.onCancel();
     this.boundKey = (e) => this.onKey(e);
   }
 
@@ -83,6 +148,10 @@ export class ExtrudeTool {
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
     el.addEventListener("pointerdown", this.boundDown);
+    // The release is where an extrude commits and where a handle drag ends, and
+    // it goes on WINDOW rather than the canvas — see onUp for why both.
+    window.addEventListener("pointerup", this.boundUp);
+    window.addEventListener("pointercancel", this.boundCancel);
     window.addEventListener("keydown", this.boundKey, true);
     // honour any areas pre-selected in the sketch
     this.selected = this.overlay.selectedRegions();
@@ -95,10 +164,10 @@ export class ExtrudeTool {
 
   /** Re-open a committed extrude for editing: the model rolls back to just
    *  before it, its sketch is forced visible, the saved profile areas are
-   *  pre-selected, and the saved distance seeds (and locks) the input — retype
-   *  or Ctrl-click areas, then commit to REPLACE the feature in place (same id,
-   *  one undo step). Returns false when the distance is a parameter expression
-   *  (the inspector's job). */
+   *  pre-selected, and the saved distance seeds the input — drag the arrow,
+   *  retype, or Ctrl-click areas, then commit to REPLACE the feature in place
+   *  (same id, one undo step). Returns false when the distance is a parameter
+   *  expression (the inspector's job). */
   startEdit(featureId: string, onDone: (id: string | null) => void): boolean {
     if (this.active) return false;
     const f = this.store.document.features.find((x) => x.id === featureId);
@@ -119,6 +188,8 @@ export class ExtrudeTool {
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
     el.addEventListener("pointerdown", this.boundDown);
+    window.addEventListener("pointerup", this.boundUp); // on window — see start()
+    window.addEventListener("pointercancel", this.boundCancel);
     window.addEventListener("keydown", this.boundKey, true);
 
     // roll the model back so the pre-extrude state is what previews/op-guesses
@@ -214,7 +285,7 @@ export class ExtrudeTool {
         setPrompt(
           `Editing extrude: ${unresolved.length} of ${saved.length} areas no longer match the sketch ` +
             "and are kept unchanged · changing the area set drops them · " +
-            "type a value + Enter · click to commit · Esc to cancel",
+            "drag the arrow or type a value + Enter · click to commit · Esc to cancel",
         );
       }
     } else {
@@ -284,18 +355,127 @@ export class ExtrudeTool {
     if (!this.selected.length) return;
     const first = this.selected[0];
     if (!first) return;
-    const plane = first.plane;
     const anchor = this.anchor();
-    if (!this.dim.isUserDriven("distance")) {
-      const d = axisDragDistance(this.viewport, e.clientX, e.clientY, anchor, plane.n);
-      this.distance = d;
-      this.dim.updateFromCursor({ distance: Math.abs(d) });
+    // A press that is no longer held cannot be a drag. `pointerup` is heard on
+    // window, but a release the browser never delivers at all — dragging out of
+    // the window, a pointercancel, an alt-tab mid-gesture — would otherwise
+    // leave the handle latched and the depth following the bare cursor, which
+    // is field 3998d6ea exactly, arrived at from the other side. `buttons` is
+    // the only thing on a move event that knows, and it costs nothing to ask.
+    if (this.press && !(e.buttons & 1)) this.endPress();
+    this.armDragIfMoved(e, anchor, first.plane.n);
+    if (this.grab) {
+      // Dragging the handle. The depth is where it stood when the arrow was
+      // grabbed, plus how far along the axis the cursor has travelled since —
+      // an OFFSET, not the raw axis reading. Reading it absolutely would snap
+      // the depth to the cursor on the first frame unless the user had grabbed
+      // the arrow exactly at its tip, which on a 33 mm arrow means a jump of
+      // tens of millimetres for taking hold of the middle of the shaft.
+      const axis = axisDragDistance(this.viewport, e.clientX, e.clientY, anchor, first.plane.n);
+      this.distance = this.grab.distance + (axis - this.grab.axis);
+      // A drag owns the field (armDragIfMoved unlocked it), so this lands. The
+      // box shows the magnitude and `distance` carries the sign — the split
+      // commit() reads.
+      this.dim.updateFromCursor({ distance: Math.abs(this.distance) });
     } else {
+      // NOT dragging, so the depth is not the pointer's to change. It used to
+      // be: a pre-selected profile puts this tool straight into "drag" phase
+      // with the field still cursor-tracking, so bare pointermoves — no button
+      // ever down, no pointerdown ever dispatched — scrubbed the depth (field
+      // 3998d6ea). Two bare moves were enough to swing it from the seeded
+      // 10 mm to a large negative and then a large positive value; the exact
+      // figures depend on where the cursor was and are not worth recording,
+      // because the sign is the part that bites. The sign crossing zero flips
+      // `entersSolid`'s reading
+      // and with it Cut vs Join, so hovering over the sketch plane silently
+      // retargeted the operation.
+      //
+      // The field is still read back, because typing has to reach the preview
+      // without waiting for Enter, and a move is the only tick this tool gets.
       const v = this.dim.getValue("distance");
-      if (v != null) this.distance = v; // the field is the truth: typed sign wins
+      if (v != null && this.dim.isUserDriven("distance")) this.distance = v; // the field is the truth: typed sign wins
     }
     this.positionDim(anchor);
     this.updatePreview();
+    if (!this.grab) {
+      // After updatePreview, so the affordance is measured against the arrow as
+      // just drawn. A handle that gives no sign of being grabbable is half of
+      // field 6e2bcadd — the reporter could SEE the arrow and concluded it was
+      // decoration.
+      this.viewport.domElement.style.cursor = this.overArrow(e.clientX, e.clientY) ? "ns-resize" : "default";
+    }
+  }
+
+  /** Turn a pending press into a handle drag once the pointer has actually
+   *  travelled — the second half of classifying the press onDown deliberately
+   *  left open.
+   *
+   *  Two things had to wait for movement, and they are the two confirmed
+   *  defects of deciding at pointerdown:
+   *
+   *  - The field is unlocked HERE, not on the press. Typing a depth and then
+   *    clicking to commit is the gesture the prompt teaches, and the arrow sits
+   *    at the profile's interior point — the very place that click lands. When
+   *    the press unlocked the field, that taught gesture silently threw the
+   *    typed number away and committed the pre-typed one. Typing now wins right
+   *    up until the user drags.
+   *  - The grab's reference reading is taken at the PRESS position, not here,
+   *    so the ~4 px that armed the drag is not swallowed and the depth moves
+   *    continuously from where the arrow was taken hold of.
+   *
+   *  A press that missed the handle still latches `moved`, because that is what
+   *  stops the release from committing (see onUp): a press aimed at the arrow
+   *  and landing 15 px off it used to commit the in-progress feature at whatever
+   *  depth was current. */
+  private armDragIfMoved(e: PointerEvent, anchor: THREE.Vector3, axis: THREE.Vector3) {
+    const p = this.press;
+    if (!p || p.moved || this.grab) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    if (dx * dx + dy * dy < DRAG_START_PX * DRAG_START_PX) return; // still a click
+    p.moved = true;
+    if (!p.onArrow) return; // the pointer is dragging something that is not this handle
+    this.grab = {
+      axis: axisDragDistance(this.viewport, p.x, p.y, anchor, axis),
+      distance: this.distance,
+    };
+    this.dim.unlock("distance");
+    this.viewport.domElement.style.cursor = "ns-resize";
+  }
+
+  /** Is the cursor on the depth arrow? The test that makes the manipulator a
+   *  handle rather than a readout.
+   *
+   *  Measured against the arrow AS DRAWN: updatePreview floors its length at
+   *  ARROW_MIN_MM so a near-zero depth still shows something, and an arrow you
+   *  can see but cannot grab is the complaint being fixed.
+   *
+   *  The fallback is the part that makes this usable rather than merely correct.
+   *  Weighed three ways when the shaft projects to nothing: a bigger disc around
+   *  the anchor (a number with no referent — any radius is a guess), the arrow's
+   *  DRAWN head size in pixels (real, but still a small disc, and it shrinks
+   *  with zoom exactly when the model is small on screen), or the selected
+   *  PROFILE. The profile wins: it is the one thing with screen extent in that
+   *  view, it is what the user is looking at and aiming for, it scales with zoom
+   *  for free, and — since commit became a release-in-place — a click on it
+   *  still commits, so widening the grab steals no gesture. */
+  private overArrow(cx: number, cy: number): boolean {
+    const first = this.selected[0];
+    if (!this.arrow || !first) return false;
+    const anchor = this.anchor();
+    const sign = this.distance >= 0 ? 1 : -1;
+    const tip = anchor
+      .clone()
+      .addScaledVector(first.plane.n, sign * Math.max(Math.abs(this.distance), ARROW_MIN_MM));
+    const a = this.viewport.projectToScreen(anchor);
+    const b = this.viewport.projectToScreen(tip);
+    if (pixelDistanceToSegment(cx, cy, a, b) <= GRAB_PX) return true;
+    if (Math.hypot(b.x - a.x, b.y - a.y) >= DEGENERATE_SHAFT_PX) return false;
+    // Degenerate shaft: grab anywhere on the profile being extruded. Scoped to
+    // the SELECTED areas, so a press on some other region still means what it
+    // means everywhere else in this tool.
+    const r = this.regionUnder(cx, cy);
+    return r !== null && this.selected.includes(r);
   }
 
   /** Park the depth input at a STABLE spot near the profile — anchored to the
@@ -384,13 +564,82 @@ export class ExtrudeTool {
             `Editing extrude: ${dropped} unmatched ${dropped === 1 ? "area is" : "areas are"} ` +
               "no longer kept, pick again if the feature still needs " +
               `${dropped === 1 ? "it" : "them"} · Ctrl-click areas to add/remove · ` +
-              "type a value + Enter · click to commit · Esc to cancel",
+              "drag the arrow or type a value + Enter · click to commit · Esc to cancel",
           );
         }
         return;
       }
-      void this.commit();
+      // Neither gesture the drag phase offers is decided here. Both start with a
+      // left press, often in the SAME place — the arrow is anchored at the
+      // region's interior point, which is exactly where the prompt teaches users
+      // to click to commit — so the press is only recorded, and onMove/onUp
+      // classify it by what the pointer does next. Deciding at pointerdown is
+      // what produced both confirmed defects: a press on the arrow discarded a
+      // typed depth, and a press aimed at the arrow that landed 15 px off it
+      // committed the feature the user was still editing.
+      //
+      // The `e.preventDefault()` above is what lets the user drag and then keep
+      // typing: without it the press moves focus off the depth input and the
+      // keystrokes after a drag go nowhere (DimInput's ✓ button guards itself
+      // the same way).
+      this.press = {
+        x: e.clientX,
+        y: e.clientY,
+        onArrow: this.overArrow(e.clientX, e.clientY),
+        moved: false,
+      };
     }
+  }
+
+  /** End of a press. THIS is where an extrude commits, and where a handle drag
+   *  ends — the two outcomes of the press onDown deliberately left unclassified.
+   *
+   *  Commit is a click: a left press that never travelled DRAG_START_PX and came
+   *  back up within that distance of where it went down. That is a stated change
+   *  to how EVERY extrude commits, not just one aimed at the arrow, and it is
+   *  the point. Committing on pointerDOWN meant a press that missed the handle
+   *  destroyed the in-progress feature: measured side-on, a press 15 px off the
+   *  shaft followed by a drag left the distance at 33.594 and committed. The
+   *  cost is that a press-drag-release over empty space no longer commits — the
+   *  user has to click. That is the trade taken deliberately: a gesture that
+   *  fails to commit is one more click, a gesture that commits by accident is
+   *  lost work.
+   *
+   *  The release is heard on WINDOW, not on the canvas: a depth drag routinely
+   *  ends with the cursor over the depth box or off the edge of the viewport,
+   *  and a pointerup the tool never hears leaves the handle latched to the mouse
+   *  — the very symptom of field 3998d6ea, arrived at from the other side. Which
+   *  is also why the release POSITION is checked and not just the `moved` flag:
+   *  the moves themselves are only heard on the canvas, so a drag that leaves it
+   *  would otherwise come back as a click.
+   *
+   *  The field stays UNLOCKED after a drag: the number in the box is the dragged
+   *  one, `distance` carries its sign (the box shows the magnitude), and typing
+   *  re-locks on the next keystroke. */
+  /** Forget the in-flight press and any drag it armed. The one place that does
+   *  it, so a release, a cancel and a button that came up unseen cannot drift
+   *  apart about what "the gesture is over" means. */
+  private endPress() {
+    this.press = null;
+    this.grab = null;
+  }
+
+  /** The browser took the gesture away (a system drag, a context menu, focus
+   *  loss). Treated as an abandoned drag and never as a commit: the user did
+   *  not release over the model, so nothing about their intent is known. */
+  private onCancel() {
+    this.endPress();
+  }
+
+  private onUp(e: PointerEvent) {
+    const p = this.press;
+    const wasDragging = this.grab !== null;
+    this.endPress();
+    if (wasDragging || !p || this.phase !== "drag" || e.button !== 0) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    if (p.moved || dx * dx + dy * dy > DRAG_START_PX * DRAG_START_PX) return; // a drag, not a click
+    void this.commit();
   }
 
   private onKey(e: KeyboardEvent) {
@@ -405,31 +654,42 @@ export class ExtrudeTool {
   private beginDrag() {
     this.phase = "drag";
     this.overlay.setHoverRegion(null);
+    if (!this.editId) this.distance = 10; // a fresh extrude starts at 10 mm
     this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
-    if (this.editId) {
-      // seed the SIGNED saved distance and lock the field (userDriven): extrude's
-      // onMove free-tracks the cursor and would clobber the seed on the first
-      // move otherwise. Cursor-scrub is deliberately off in edit mode — retype
-      // or commit. (Seeding the abs value would silently drop a cut's sign the
-      // moment getValue is read back — the DimInput abs-display trap.)
-      this.dim.seed("distance", this.distance);
-      setPrompt(
-        "Editing extrude: Ctrl-click areas to add/remove · type a value + Enter · " +
-          "click to commit · Esc to cancel (later features are hidden while editing)",
-      );
-    } else {
-      this.distance = 10;
-      // Advertise the area toggle here too. The pick-phase prompt says
-      // "Ctrl-click adds areas", but a plain click jumps straight to drag, so a
-      // user who picked one of several profiles landed here and was told only
-      // how to set depth — the reporter of issue #14 concluded the other closed
-      // sections simply could not be selected. The handler existed; nothing
-      // said so.
-      setPrompt(
-        "Move to set depth · Ctrl-click areas to add/remove · type a value + Enter · " +
+    // Seed on BOTH paths, and lock the field either way.
+    //
+    // The edit path always did (the SIGNED saved distance — seeding the absolute
+    // value would silently drop a cut's sign the moment getValue is read back,
+    // the DimInput abs-display trap). The create path did not, and that was the
+    // other half of field 3998d6ea: an unseeded field is cursor-tracking, so the
+    // depth followed the pointer with nothing pressed. Filling it here also fixes
+    // what removing the scrub would otherwise leave behind — the box used to be
+    // populated by that first stray move, so without a seed the user would face a
+    // blank D beside a 10 mm preview.
+    //
+    // The lock costs nothing now: hovering no longer writes to the field, and
+    // grabbing the arrow releases it (onDown). What it buys is that the two
+    // paths are the same tool from here on.
+    this.dim.seed("distance", this.distance);
+    setPrompt(
+      this.editId
+        ? "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to " +
+            "add/remove · click to commit · Esc to cancel " +
+            "(later features are hidden while editing)"
+        : // Advertise the area toggle here too. The pick-phase prompt says
+          // "Ctrl-click adds areas", but a plain click jumps straight to drag, so
+          // a user who picked one of several profiles landed here and was told
+          // only how to set depth — the reporter of issue #14 concluded the other
+          // closed sections simply could not be selected. The handler existed;
+          // nothing said so.
+          //
+          // "Move to set depth" is gone with the scrub it described. A prompt that
+          // advertises a gesture the tool does not have is how issue #14 happened;
+          // one that describes a gesture the tool no longer has is the same fault
+          // in reverse.
+          "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · " +
           "negative = cut · click to commit · Esc to cancel",
-      );
-    }
+    );
     this.positionDim();
     this.updatePreview();
   }
@@ -502,12 +762,12 @@ export class ExtrudeTool {
     const anchor = this.anchor();
     const dir = plane.n.clone().multiplyScalar(sign);
     if (!this.arrow) {
-      this.arrow = new THREE.ArrowHelper(dir, anchor, depth || 1, 0xffd24a, 6, 3);
+      this.arrow = new THREE.ArrowHelper(dir, anchor, Math.max(depth, ARROW_MIN_MM), 0xffd24a, 6, 3);
       this.viewport.addToScene(this.arrow);
     } else {
       this.arrow.position.copy(anchor);
       this.arrow.setDirection(dir);
-      this.arrow.setLength(Math.max(depth, 1), 6, 3);
+      this.arrow.setLength(Math.max(depth, ARROW_MIN_MM), 6, 3);
     }
   }
 
@@ -680,8 +940,12 @@ export class ExtrudeTool {
     const el = this.viewport.domElement;
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerdown", this.boundDown);
+    window.removeEventListener("pointerup", this.boundUp);
+    window.removeEventListener("pointercancel", this.boundCancel);
     window.removeEventListener("keydown", this.boundKey, true);
     el.style.cursor = "default";
+    this.grab = null; // a tool torn down mid-drag must not resume one on reopen
+    this.press = null; // nor commit on a release that arrives after teardown
     this.dim.hide();
     this.disposePreviewGeom();
     this.previewMat?.dispose();

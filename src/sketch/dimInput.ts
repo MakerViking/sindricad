@@ -175,6 +175,17 @@ export class DimInput {
     return !!f && f.userDriven;
   }
 
+  /** Hand a field back to cursor tracking — the inverse of `seed`, for a tool
+   *  whose 3D handle has just been GRABBED. Taking hold of a manipulator is as
+   *  deliberate a statement of the value as typing one, so it has to win over a
+   *  typed or seeded number; otherwise the box sits frozen at the old figure
+   *  while the geometry moves under it. Typing re-locks the field on the next
+   *  keystroke (the `input` listener), so this cannot strand a value. */
+  unlock(name: string) {
+    const f = this.fields.find((x) => x.def.name === name);
+    if (f) f.userDriven = false;
+  }
+
   /** returns the field value in MM (length fields converted from display unit) */
   getValue(name: string): number | null {
     const f = this.fields.find((x) => x.def.name === name);

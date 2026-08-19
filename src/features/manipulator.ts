@@ -56,3 +56,26 @@ export function axisDragDistance(
   const sign = axis.dot(camDir) < 0 ? 1 : -1; // toward the viewer → mouse up = +
   return (p0.y - clientY) * px * sign;
 }
+
+/** Cursor-to-handle distance in PIXELS: "is the pointer on that arrow?", where
+ *  `a`/`b` are the handle's projected ends (viewport.projectToScreen).
+ *
+ *  Screen space is the only frame in which that question has a stable answer. A
+ *  world-space tolerance is sub-millimetre when zoomed in and metres wide when
+ *  zoomed out, so one grab radius would be unhittable on one model and
+ *  unavoidable on the next — while a pixel radius is the size of the thing the
+ *  user is actually aiming at. */
+export function pixelDistanceToSegment(
+  px: number,
+  py: number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  // len2 ≈ 0 when the handle points dead at the camera: it is a dot on screen,
+  // and clamping t to 0 measures to that dot rather than dividing by zero.
+  const t = len2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((px - a.x) * dx + (py - a.y) * dy) / len2));
+  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
+}
