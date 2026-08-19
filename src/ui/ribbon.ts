@@ -134,6 +134,15 @@ export const MODEL: Group[] = [
 
 export const SKETCH: Group[] = [
   {
+    // Select comes first, and alone, because it is the way OUT of every tool to
+    // its right. Field report c9db7ec2 (0.1.148) — "there doesn't seem to be any
+    // way to select elements in sketch mode" — was reported against a ribbon
+    // where the only route back was Escape, and Escape is the third branch of
+    // that key's chain, so it can take two presses to reach the tool.
+    label: "SELECT",
+    items: [{ action: "select", label: "Select", iconName: "select", key: "S" }],
+  },
+  {
     label: "CREATE",
     items: [
       { action: "line", label: "Line", iconName: "line", key: "L" },
@@ -203,8 +212,9 @@ export const SKETCH: Group[] = [
   },
 ];
 
-// Collapse priority: lower numbers fold into the "⋯ More" overflow first. PALETTE
-// and FINISH are pinned (never collapse — Finish Sketch must stay reachable).
+// Collapse priority: lower numbers fold into the "⋯ More" overflow first. SELECT,
+// PALETTE and FINISH are pinned (never collapse — Finish Sketch must stay
+// reachable, and so must the tool that gets you back to picking geometry).
 const PRIORITY: Record<string, number> = {
   CREATE: 100,
   MODIFY: 90,
@@ -214,7 +224,7 @@ const PRIORITY: Record<string, number> = {
   INSERT: 30,
   CONSTRAINTS: 20,
 };
-const PINNED = new Set(["PALETTE", "FINISH"]);
+export const PINNED = new Set(["SELECT", "PALETTE", "FINISH"]);
 
 interface GroupMeta {
   el: HTMLElement;

@@ -30,6 +30,10 @@ export const SHORTCUTS: Shortcut[] = [
   { key: "1", action: "selmode-faces", context: "model", label: "Select faces" },
   { key: "2", action: "selmode-bodies", context: "model", label: "Select bodies" },
   // --- sketch context ---
+  // S is free inside a sketch (the model-context S above starts one, and this
+  // table resolves sketch entries first while sketching). Field report c9db7ec2
+  // had no key at all for select, leaving Escape as the only route back.
+  { key: "s", action: "select", context: "sketch", label: "Select" },
   { key: "l", action: "line", context: "sketch", label: "Line" },
   { key: "c", action: "circle", context: "sketch", label: "Circle" },
   { key: "r", action: "rectangle", context: "sketch", label: "Rectangle" },

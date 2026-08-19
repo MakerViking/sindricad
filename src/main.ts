@@ -528,6 +528,7 @@ const NON_REPEATABLE = new Set([
   "new", "open", "save", "saveas", "export", "import",
   "print-export", "print-orca", "print-send", "welcome", "ta-publish",
   "undo", "redo", "compute-all", "shortcut-help", "finish", "palette",
+  "select", // a mode switch, not a command — "Repeat Select" would be nonsense
   "fit", "iso", "top", "front", "right", "persp",
   "selmode", "selmode-faces", "selmode-bodies",
   "hide-selected", "show-all-bodies",
@@ -906,7 +907,11 @@ geometry.onStatus((connected) => {
 });
 
 const SKETCH_PROMPTS: Record<string, string> = {
-  select: "Pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A) · Trim (T)",
+  // Re-editing a sketch now lands here (sketchMode.enter), so this line is the
+  // first thing a user sees over their existing geometry. It used to read only
+  // "Pick a tool: …", which never mentioned that clicking the geometry does
+  // anything — the same blind spot as field report c9db7ec2.
+  select: "Select: click geometry to pick it · drag to move · Delete to remove · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
   line: "Line: click points · type length + Tab + angle · Enter to commit · click the start to close · Esc",
   rectangle: "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
   circle: "Circle: click center, then radius · type ⌀ · Enter · Esc",
@@ -1082,6 +1087,16 @@ const SKETCH_MODIFY: Record<string, SketchTool> = {
 };
 function handleAction(action: string) {
   if (!NON_REPEATABLE.has(action)) lastAction = action; // for "Repeat <command>"
+  // Select is in neither table below because it draws and modifies nothing — it
+  // is how you get BACK to picking entities. It needs its own line for the same
+  // reason field report c9db7ec2 exists: every other route to it (ribbon, key,
+  // palette) dead-ends here, and handleAction's switch has no default: case, so
+  // an unrouted action would leave the new button silently doing nothing.
+  if (action === "select") {
+    if (sketch.active) sketch.setTool("select");
+    else setStatus("Enter a sketch to select sketch geometry", "");
+    return;
+  }
   // sketch CREATE tools: switch tool while sketching, else start a sketch with it
   if (SKETCH_TOOLS.has(action)) {
     if (sketch.active) sketch.setTool(action as SketchTool);

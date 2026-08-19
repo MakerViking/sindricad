@@ -427,7 +427,15 @@ export class SketchMode {
     this.overlay.update(store.document, this.editingId ?? "__active__");
     this.refreshActive();
     this.armPreEdit(); // the session's baseline: the first edit undoes back to here
-    this.setTool("rectangle");
+    // A NEW sketch opens armed to draw (mainstream MCAD: Fusion auto-starts a
+    // create tool), but RE-EDITING one opens in select. editFeature() is the only
+    // caller that passes editId and it never sets a tool afterwards, so a user
+    // who double-clicked a sketch to change what is already there used to land on
+    // top of that geometry with Rectangle armed — every click drew instead of
+    // picking. That is the case field report c9db7ec2 describes: a sidebar full
+    // of editable lengths for entities the user could not click. startSketch()
+    // still overrides this immediately when a tool was asked for (L/C/R/A/P).
+    this.setTool(this.editingId ? "select" : "rectangle");
     this.setViewLocked(this.viewLocked); // apply lock-to-plane preference
     if (this.constraints.length > 0) this.requestSolve(); // restore DOF state
     this.onState?.();

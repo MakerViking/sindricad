@@ -76,6 +76,104 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Slots and polygons count as closed shapes again. An older file containing one
+  can change shape the first time it is edited, and the section below says
+  exactly how.** Reported from the field: "The slot is not recognized as a closed
+  area." A slot drawn on its own offered no profile to extrude at all, and a slot
+  drawn inside another profile was not shaded as a hole in it, so the shape on
+  screen was not the shape that would be built. Polygons had the same fault for
+  the same reason.
+
+  Only the shading was wrong. Sketch shading listed the closed shapes by name and
+  neither slot nor polygon was on that list, nor on the list of open curves that
+  get chained into loops, so both fell between the two in silence. The geometry
+  kernel never had the problem: it has always built a slot face, and has always
+  treated a slot lying inside a profile as a hole in it.
+
+  **Read this if you have saved a file with a slot or a polygon in a profile you
+  extruded.** Because the shading was the half that was wrong, the picture on
+  screen and the solid in the file have been disagreeing. Take a 40x20 rectangle
+  with a 20x6 slot through it, extruded 10 deep and saved by an earlier build: on
+  screen it is a plain block with no slot in it, and what actually builds is the
+  slot on its own, 1482.74 mm3 of it. After this fix both halves say the same
+  thing, the rectangle with the slot cut out, 6517.26 mm3.
+
+  That correction is written into the file the next time that extrude is
+  committed. Opening the file is not enough and neither is saving it: the extrude
+  has to be edited, and nudging its depth counts. So a file that has looked
+  settled for weeks can produce a different solid the first time it is touched.
+  The new solid is the one the kernel was always going to build, now drawn
+  honestly, so nothing that was ever really there is being lost. If an old model
+  depended on the old result, extrude the slot as its own profile to get it back.
+
+- **The sketch Select tool has a button and a key, and re-opening a sketch starts
+  in it.** Reported from the field: "There doesn't seem to be any way to select
+  elements (lines, rectangles, etc) in sketch mode, although there is a list of
+  editable lengths in the right-hand sidebar."
+
+  That was accurate. A sketch always opened with Rectangle armed, the sketch
+  ribbon had no Select entry, nothing was bound to a key, and right-clicking
+  while a drawing tool was active did nothing. Escape was the only way back, and
+  it is the last branch of a chain that clears in-progress points first and the
+  selection second, so it could take two presses, from a user who had to guess
+  the key in the first place.
+
+  Select is now the first button on the sketch ribbon, where it stays put however
+  narrow the window gets, it is bound to S, and it is searchable in the command
+  palette (Ctrl+K). Re-opening a sketch to edit it starts in Select rather than
+  Rectangle, so a click picks the geometry instead of drawing over it. Creating a
+  new sketch still arms Rectangle, and starting one with L, C, R, A or P still
+  arms that tool.
+
+- **The yellow depth arrow is a handle now: it changes the extrude only while
+  you drag it.** Two reports, opposite complaints, one cause. The first, on
+  creating an extrude: "I select it then select extrude, the yellow arrow is
+  automatically attached to my mouse so the extrude goes wherever I move my
+  mouse to." The second, on editing one: "I can change the height by typing a
+  number in but I cannot grab the yellow arrow that is visible."
+
+  Starting an extrude from a profile selected beforehand went straight to the
+  depth step with the depth still tracking the cursor, so the solid grew and
+  shrank on a bare mouse move, with no button ever pressed. Worse, moving across
+  the sketch plane took the depth negative, and a negative depth means Cut, so
+  the operation could swap between Join and Cut without a click. Re-opening a
+  committed extrude had the mirror-image problem: the saved height held the
+  depth so firmly that the arrow, which was drawn and pointing the right way,
+  could not be moved at all.
+
+  Both now work the same way, and the way Press/Pull's handle already did: press
+  on the arrow, drag, release. Hovering changes nothing on either path. A typed
+  value wins over the pointer right up until you actually drag, so typing a
+  height and then clicking to commit keeps the number you typed. The arrow can
+  be taken hold of anywhere on the profile when you are looking straight down
+  it, which is where Finish Sketch leaves you and where the arrow points at the
+  camera and has no length on screen. And an extrude now commits on the release
+  of a click that did not move, so a press that misses the arrow and turns into
+  a drag no longer commits the feature you were still editing. Cut versus Join
+  follows the depth you actually set rather than one you passed through on the
+  way to the menu.
+
+- **A sketch that fails on a bad line, arc or spline now says which one, and
+  where.** Reported by a field tester whose sketch looked like a finished closed
+  profile and whose five revolves all failed: "This sketch appears to me to be a
+  closed profile, but the error message says it is incomplete", and "I cannot
+  rotate it about the X".
+
+  Both symptoms were one cause. The sketch held a line whose two ends were in
+  the same place. A line like that draws nothing, so there was nothing on screen
+  to find, and the profile was shaded and selectable because sketch shading
+  already leaves such a line out. The geometry kernel could not build it, and
+  reported only `sketch failed (StdFail_NotDone)`. Every feature after it then
+  reported that its sketch was missing, which is why the revolves looked broken.
+
+  A zero-length line, an arc whose three points are in a straight line or on top
+  of each other, and a spline that repeats a point are now each refused by name,
+  with the coordinates of the entity at fault, so geometry that draws nothing can
+  still be found and deleted. Zero-size circles and rectangles were already
+  refused by name and now carry their coordinates too, which is what the
+  reporter needed next: their sketch also held a 0x0 rectangle, and the old
+  message did not say which of twenty entities it meant.
+
 - **Symmetric now shows both points it is holding.** The tool takes three
   clicks, a point, another point, then the line to mirror across, and only the
   first click left a mark on screen. The middle of the gesture looked like

@@ -9,6 +9,12 @@
 // states work without touching the markup.
 
 const PATHS = {
+  // The pointer arrow, drawn as an outline so it takes the same stroke weight as
+  // every other entry. Deliberately the plain cursor and nothing else: it is the
+  // one glyph a user already reads as "stop drawing, let me click things", which
+  // is exactly what field report c9db7ec2 could not find a control for.
+  select: `<path d="M5 3.2L5 19.4l4-3.9 2.7 5.3 2.8-1.4-2.7-5.2 5.2-0.5z"/>`,
+
   // sketch create
   line: `<line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="1.6" fill="currentColor"/><circle cx="20" cy="4" r="1.6" fill="currentColor"/>`,
   rectangle: `<rect x="4" y="6" width="16" height="12" rx="0.5"/>`,
