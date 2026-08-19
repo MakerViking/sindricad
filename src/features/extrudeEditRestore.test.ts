@@ -446,12 +446,20 @@ describe("ExtrudeTool edit with a COPLANAR second sketch", () => {
     expect(tool.startEdit("ex1", () => {})).toBe(true);
     await commit();
 
-    // Nothing resolves inside "own", so the tool never reaches a committable
-    // state and writes NOTHING - the feature keeps what the document already
-    // had. Without the fence the id resolves against the neighbour instead and
-    // this commits its 400x400 area (and re-points `sketch` at it), which is
-    // what the mutation check below is for.
-    expect(written.feature).toBeNull();
+    // Nothing resolves inside "own", so the area is HELD and written back
+    // exactly as the document had it. What the fence is for is the neighbour:
+    // without it the id resolves against "other" instead, and this commits its
+    // 400x400 area and re-points `sketch` at it.
+    //
+    // This used to assert that nothing was written at all, which was true only
+    // because a commit with no selection cancelled. That cancel is gone for the
+    // edit path, so the fence is now asserted directly rather than through a
+    // side effect of it.
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f).not.toBeNull();
+    expect(f.sketch, "the feature was re-pointed at the coplanar neighbour").toBe("own");
+    expect(f.regions, "the neighbour's area was committed").toEqual([[45, 0, 0]]);
+    expect(f.regionEntities).toEqual([["outer"]]);
   });
 
   it("commits only its OWN sketch's area, with the neighbour EARLIER in the timeline", async () => {
@@ -744,21 +752,61 @@ describe("ExtrudeTool.startEdit on a WHOLLY legacy feature (no regionEntities ke
   ];
   const twinLegacy = () => doc(twins(), { regions: [[0, 0, 0]] });
 
-  it("holds a legacy area whose point lands in two overlapping cells", () => {
+  it("holds a legacy area whose point lands in two overlapping cells", async () => {
     // NOTHING HAS MOVED. The tool cannot say which cell the user meant, which is
     // a reason to refuse to DRAW the area and never a reason to drop it. Before
     // this it went down the nothing-resolved arm holding nothing, so the area
     // survived only as long as the user did not pick — and the banner invited
     // exactly that.
-    const { tool, written } = harness(twinLegacy());
+    const { tool, written, commit } = harness(twinLegacy());
     expect(tool.startEdit("ex1", () => {})).toBe(true);
     expect(
       (tool as unknown as { editCarried: unknown[] }).editCarried,
       "the area was not held",
     ).toHaveLength(1);
-    // and a bare commit does not rewrite the feature at all, so what is on disk
-    // is still the user's own area set
-    expect(written.feature).toBeNull();
+    // and the area survives a bare commit rather than being replaced
+    await commit();
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f, "the edit was discarded instead of applied").not.toBeNull();
+    expect(f.regions).toHaveLength(1);
+    expect(f.regions).toContainEqual([0, 0, 0]);
+  });
+
+  it("applies a typed depth even when no area could be drawn", async () => {
+    // The edit used to be thrown away here: commit read the sketch off the first
+    // SELECTED region, found none, and cancelled — so a user who opened the
+    // feature, typed a depth and pressed Enter got nothing at all, with no
+    // message. Everything needed was present except a selection, and the sketch
+    // is named by the feature itself.
+    const { tool, written, commit } = harness(twinLegacy());
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    (tool as unknown as { distance: number }).distance = 12.5;
+    await commit();
+
+    const f = written.feature as Extract<Feature, { type: "extrude" }>;
+    expect(f, "the depth edit was discarded").not.toBeNull();
+    expect(f.distance).toBeCloseTo(12.5);
+    expect(f.sketch, "the feature's own sketch must be preserved").toBe("s1");
+    expect(f.regions, "the held area was not written back").toHaveLength(1);
+  });
+
+  it("CONTROL: creating with nothing selected still CANCELS, not just writes nothing", async () => {
+    // The empty-selection cancel is load-bearing for the CREATE flow — without
+    // it, Enter after removing the last area silently threw the extrude away
+    // (GitHub #14). The carried-only path must not have widened past editing.
+    //
+    // Asserting `tool.active` rather than only "nothing was written", because
+    // nothing-was-written passes for the WRONG reason: a later guard returns
+    // early when no sketch can be named, so the tool writes nothing either way
+    // and the assertion could not see the cancel disappear. Verified by
+    // mutation — widening carriedOnly to `!this.selected.length` leaves the
+    // write-nothing assertion green and this one red.
+    const { tool, written, commit } = harness(twinLegacy());
+    tool.start(() => {}); // create, not edit: nothing selected, nothing carried
+    expect(tool.active).toBe(true);
+    await commit();
+    expect(written.feature, "a create with no areas wrote a feature").toBeNull();
+    expect(tool.active, "the tool was left alive instead of cancelling").toBe(false);
   });
 
   it("does not blame the sketch for an ambiguity the sketch did not cause", () => {

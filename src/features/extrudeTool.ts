@@ -537,7 +537,23 @@ export class ExtrudeTool {
   private committing = false;
   private async commit() {
     if (this.committing) return;
-    if (!this.selected.length) return this.cancel();
+    // An edit whose areas could NONE of them be drawn is still a real edit. The
+    // areas are held in `editCarried`, the sketch is known from the feature
+    // being edited, and the only thing missing is a selected region to read that
+    // sketch off — so cancelling here threw away a typed depth and exited, which
+    // reads as the tool ignoring you. Reachable whenever every stored reference
+    // is ambiguous or stale: a legacy area over overlapping cells, or ids that
+    // no longer name anything.
+    //
+    // Scoped hard to the EDIT path with something actually held. The
+    // empty-selection cancel is load-bearing for CREATE: without it, typing
+    // Enter after removing the last area silently threw the whole extrude away
+    // (GitHub issue #14).
+    const carriedOnly = !this.selected.length
+      && this.editId !== null
+      && this.editCarried.length > 0
+      && this.forcedSketchId !== null;
+    if (!this.selected.length && !carriedOnly) return this.cancel();
     const v = this.dim.getValue("distance");
     // GATE on isUserDriven: while dragging, the field displays |distance| —
     // reading it back unconditionally strips the drag's sign and sends the
@@ -585,7 +601,11 @@ export class ExtrudeTool {
       op = this.editOp;
     }
     const first = this.selected[0];
-    if (!first) return;
+    // `forcedSketchId` is the same field the selection fence uses, set from the
+    // feature at startEdit, so a carried-only commit writes the sketch the
+    // feature already named rather than inferring one from nothing.
+    const sketchId = first ? first.sketchId : this.forcedSketchId;
+    if (!sketchId) return;
     const hiddenBodies = this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds();
     const areas: CarriedRegion[] = [
       ...this.selected.map((wr) => ({
@@ -605,7 +625,7 @@ export class ExtrudeTool {
       // became `first` and re-targeted the whole feature's `sketch` — silently,
       // on a depth change. Fence and field move together; do not derive this
       // from a selection that is not fenced.
-      sketch: first.sketchId,
+      sketch: sketchId,
       distance: Math.round(this.distance * 1000) / 1000,
       operation: op,
       // The entities that bound each area, recorded so the reference survives the
