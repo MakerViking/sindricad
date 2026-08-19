@@ -1,7 +1,8 @@
-// Closed-region (profile) detection from resolved sketch entities. Rectangles
-// and circles are their own loops; free line segments are chained into closed
-// loops by shared endpoints. Each region yields a 2D loop polygon used for
-// shading, hover-hit-testing, and the extrude live preview.
+// Closed-region (profile) detection from resolved sketch entities. Closed
+// primitives (rectangle, circle, polygon, slot) are their own loops; free line
+// segments are chained into closed loops by shared endpoints. Each region yields
+// a 2D loop polygon used for shading, hover-hit-testing, and the extrude live
+// preview.
 
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
@@ -183,16 +184,60 @@ export function detectRegions(
     // mirrors the sidecar's OCCT arrangement (builder.py _subdivide_faces).
     traced = traceLoops(planarize(perEntity));
   } else {
-    // Fast path (unchanged for non-crossing sketches): rectangles + circles are
-    // their own loops; free line/arc/spline geometry is chained into closed loops
-    // by shared endpoints. The first three are 1:1 with an entity, so provenance
+    // Fast path (unchanged for non-crossing sketches): every CLOSED primitive is
+    // its own loop; free line/arc/spline geometry is chained into closed loops
+    // by shared endpoints. The closed ones are 1:1 with an entity, so provenance
     // is exact; the chained loops get theirs from the tracer.
+    //
+    // Both lists below are type whitelists, and this is the second time one has
+    // drifted from the ResolvedEntity union: `slot` and `polygon` were in
+    // NEITHER, so they fell through both branches in silence and a slot simply
+    // was not offered as a profile (field c2a97cee, "The slot is not recognized
+    // as a closed area" — a solo slot measured 0 regions, and one lying inside
+    // another profile contributed no loop to be nested as a hole, so the shading
+    // showed the surrounding shape solid). Only the frontend had the bug: the
+    // sidecar's own list
+    // (builder.py, `elif et in ("line","arc","spline","polygon","slot")`) builds
+    // the face fine. region.test.ts now ratchets this list against the union.
+    //
+    // This CHANGES WHAT AN EXISTING SAVED DOCUMENT BUILDS, and that is the
+    // intent. A pre-fix file records the outer entity with no holes, because the
+    // slot contributed no loop to be nested as one; re-opening the extrude now
+    // resolves that same reference to a RING, and commit writes the hole ids.
+    // Measured on the reviewer's fixture (40x20 rect, 20x6 slot, distance 10):
+    // that document builds 1482.7433 mm^3 today, the SLOT cell alone, because
+    // the stored point is the rectangle's centroid and it has always landed
+    // inside the slot's cell; after commit it builds 6517.2567 mm^3, the ring,
+    // which is what the shading now shows. Note which two numbers disagreed:
+    // the pre-fix SHADING was the whole 40x20 rectangle (800 mm^2, i.e. 8000
+    // mm^3 at this depth) while the pre-fix BUILD was the 148.2743 mm^2 slot —
+    // 5.4x apart, and neither was the ring the user drew. Shading and build now
+    // agree to 0.12%. Pinned by "a
+    // pre-fix reference naming only the rectangle now resolves to the RING" in
+    // region.test.ts, and called out in CHANGELOG.md because a file changes shape.
     traced = [];
     for (const { e } of perEntity) {
       if (e.type === "rectangle")
         traced.push({ loop: rectCorners(e.x, e.y, e.width, e.height), eids: [e.id] });
       else if (e.type === "circle")
         traced.push({ loop: circleLoop(e.x, e.y, e.radius), eids: [e.id] });
+      else if (e.type === "polygon")
+        // The outline helpers DIRECTLY, not entityPolyline: that wraps them in
+        // closed(), and every loop in `traced` is stored without the repeated
+        // final vertex (rectCorners/circleLoop return none). Measured cost of
+        // the duplicate on the reported 20×6 slot: `centroidOf` is a plain
+        // vertex average, so repeating one vertex weights it twice and moves
+        // the centroid — and with it the label and the `interiorPoint` seed —
+        // from (-0.3030, -0.0909) to (-0.5882, 0). It also puts a zero-length
+        // edge into the shoelace, which contributes nothing but is noise the
+        // rest of this file does not expect.
+        // e.angle is in DEGREES like every other angle field; the helper is radians.
+        traced.push({ loop: polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180), eids: [e.id] });
+      else if (e.type === "slot")
+        // segs defaults to the same 16 entityPolyline uses, so the traced loop
+        // is vertex-for-vertex the outline overlay.ts draws — the shaded region
+        // cannot drift from the curve the user sees.
+        traced.push({ loop: slotOutline(e.x1, e.y1, e.x2, e.y2, e.width), eids: [e.id] });
       // a projected CIRCLE is a closed loop of its own, like a native circle —
       // its polyline has no free endpoints for the chain tracer to join
       else if (e.type === "projected" && e.curve.kind === "circle")
