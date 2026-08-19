@@ -128,6 +128,18 @@ export class ConstraintTools {
     this.host.setPendingPoint(null); // the marker must not outlive the pick
   }
 
+  /** The OPERAND id a two-pick flow is currently holding, or null.
+   *
+   *  `filletFirst` holds an ENTITY index, which is all SketchMode's own fillet
+   *  tool needs and is what its Escape path reads — but it cannot say WHICH of a
+   *  rectangle's four line operands was picked, so the first-pick highlight lit
+   *  all four sides when the user had armed one. This is the missing half, and
+   *  it is deliberately read-only: the index stays the single source of "am I
+   *  armed", so nothing here can leave a pick alive that Escape cannot clear. */
+  heldOperandId(): string | null {
+    return this.host.getFilletFirst() == null ? null : (this.firstOperand?.id ?? null);
+  }
+
   /** Report a click that found no usable target. Every tool routes misses here:
    *  a constraint tool that does nothing and says nothing is indistinguishable
    *  from a broken one, which is exactly how Coincident read (GitHub #17). */
@@ -330,7 +342,26 @@ export class ConstraintTools {
         const a = this.pendingEndpoint;
         this.pendingEndpoint = null;
         this.host.setPendingPoint(null);
-        if (a.id !== ep.id) this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
+        // Two points of the SAME entity: refused, but no longer in silence. It
+        // used to fall through a bare `if (a.id !== ep.id)` — no constraint, no
+        // message, and the pending marker wiped on the way out, which is the
+        // dead-tool reading this whole pass exists to remove. Newly easy to hit
+        // now that rectangle corners are pickable: both corners of a rectangle
+        // carry the rectangle's own id, so clicking any two of them lands here.
+        //
+        // Refusing is right on the geometry as well as the affordance. Joining
+        // two corners of one rectangle annihilates it in a single solve, and
+        // joining a line's two ends collapses it — the guard would refuse the
+        // solve anyway, one step later and with less to say about why.
+        if (a.id === ep.id) {
+          this.host.warn(
+            a.idx === ep.idx
+              ? "That is the same point twice — Coincident joins two DIFFERENT points."
+              : "Those are two points of the same shape — joining them would collapse it.",
+          );
+          return;
+        }
+        this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
         return;
       }
 
@@ -395,18 +426,29 @@ export class ConstraintTools {
    *  once a second valid operand lands (both pass `ok`, distinct); null while
    *  arming the first pick or on an invalid pick. Uses the filletFirst slot as
    *  the armed flag — see holdPair for why the operand rides beside it. */
+  /** Two-click operand pick, reporting its OWN misses.
+   *
+   *  It has to, because `null` means two different things here and the callers
+   *  could not tell them apart: "that click found nothing" and "that click armed
+   *  the first of two". Every caller used to answer both with `missed()`, so the
+   *  opening click of Tangent, Equal and Concentric told the user "Nothing to
+   *  constrain there" about a pick that had landed perfectly well and was
+   *  waiting for its partner. That is the dead-tool signature the whole
+   *  affordance pass exists to remove, reading out loud on a tool that worked.
+   *
+   *  `holdPair` above already had this shape; this brings the two into line. */
   private pickPair(p: THREE.Vector2, ok: (o: Operand) => boolean): [Operand, Operand] | null {
     const op = this.pickOperand(p);
-    if (!op || !ok(op)) return null;
+    if (!op || !ok(op)) { this.missed(); return null; }
     if (this.host.getFilletFirst() == null) {
       this.host.setFilletFirst(op.index);
       this.firstOperand = op;
-      return null;
+      return null; // armed, not missed: say nothing
     }
     const first = this.firstOperand;
     this.host.setFilletFirst(null);
     this.firstOperand = null;
-    if (!first || first.id === op.id) return null;
+    if (!first || first.id === op.id) { this.missed(); return null; }
     return [first, op];
   }
 
@@ -414,7 +456,7 @@ export class ConstraintTools {
    *  Emits the general `tangent2`; the compiler picks the right planegcs variant. */
   private tangentClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, () => true); // every operand is a tangency-capable curve
-    if (!pair) return this.missed();
+    if (!pair) return; // pickPair already said whatever needed saying
     const [first, e] = pair;
     // two lines cannot be tangent — say so rather than swallowing the pick
     if (first.kind === "line" && e.kind === "line") return this.missed();
@@ -424,18 +466,27 @@ export class ConstraintTools {
   /** equal: two lines share length, or two circles/arcs share radius. */
   private equalClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, () => true);
-    if (!pair) return this.missed();
+    if (!pair) return; // pickPair already said whatever needed saying
     const [first, e] = pair;
     if (first.kind === "line" && e.kind === "line") {
       this.addConstraint({ type: "equal", l1: first.id, l2: e.id });
     } else if (isRoundOp(first) && isRoundOp(e)) {
       this.addConstraint({ type: "equalRadius", a: first.id, b: e.id });
+    } else {
+      // A line and a circle. Both picks were valid targets, so `missed` would be
+      // a lie, and falling off the end here is worse: it consumed two clicks,
+      // emitted nothing and said nothing, which is precisely how a working tool
+      // reads as broken. There is no meaning to give it — a length and a radius
+      // are not the same measurement — so say that.
+      this.host.warn(
+        "Equal needs two lines, or two circles/arcs — a length and a radius are not comparable.",
+      );
     }
   }
 
   private concentricClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, isRoundOp); // circles and arcs both carry a center
-    if (!pair) return this.missed();
+    if (!pair) return; // pickPair already said whatever needed saying
     this.addConstraint({ type: "concentric", c1: pair[0].id, c2: pair[1].id });
   }
 

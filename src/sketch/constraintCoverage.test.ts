@@ -175,3 +175,118 @@ describe("hoverPoint — the highlight cannot disagree with the click", () => {
     expect(near!.y).toBeCloseTo(2, 9);
   });
 });
+
+// Three ways a tool that WORKS could still read as broken. All three survived
+// the first affordance pass because each satisfies "did something" in the
+// ratchet above — by saying the wrong thing, or by consuming a click that the
+// ratchet's single-click property never looks past.
+describe("a working tool must not report itself as a miss", () => {
+  const RECT = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 } as ResolvedEntity;
+
+  it.each(["tangent", "equal", "concentric"] as SketchTool[])(
+    "%s stays quiet on the click that ARMS it, rather than crying miss",
+    (tool) => {
+      const h = new Host();
+      h._ents = fixture();
+      h._tool = tool;
+      const ct = new ConstraintTools(h);
+      ct.click(v(10, 60)); // dead on C1's rim: a valid first operand for all three
+      expect(h.getFilletFirst(), `${tool}: the pick was not held`).not.toBeNull();
+      expect(h.warnings, `${tool}: a landed first pick was reported as a miss`).toEqual([]);
+    },
+  );
+
+  it("equal on a line and a circle says why, instead of eating both clicks", () => {
+    // Both picks are valid targets, so "nothing to constrain there" would be a
+    // lie — but a length and a radius are not comparable, so there is nothing to
+    // emit either. This used to fall off the end of the method: two clicks
+    // consumed, no constraint, no message.
+    const h = new Host();
+    h._ents = fixture();
+    h._tool = "equal";
+    const ct = new ConstraintTools(h);
+    ct.click(v(80, 1.5)); // on L3
+    ct.click(v(10, 60)); // on C1's rim
+    expect(h._cons, "a line and a circle cannot be made equal").toEqual([]);
+    expect(h.warnings.length, "both clicks were consumed in silence").toBeGreaterThan(0);
+    expect(h.warnings.join(" ")).toMatch(/two lines|two circles|radius/i);
+  });
+
+  it("coincident on two corners of ONE rectangle refuses out loud", () => {
+    // Newly reachable: both corners carry the rectangle's own id, so the old
+    // `if (a.id !== ep.id)` skipped them — no constraint, no message, and the
+    // pending marker wiped. Refusing is right (that pair annihilates the
+    // rectangle in a single solve); refusing silently is not.
+    const h = new Host();
+    h._ents = [RECT];
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(-20, -10)); // corner 0
+    expect(h.pending, "the first corner was not held").not.toBeNull();
+    ct.click(v(20, 10)); // corner 2, same rectangle
+    expect(h._cons, "a self-annihilating pair was applied").toEqual([]);
+    expect(h.warnings.length, "the refusal was silent").toBeGreaterThan(0);
+    expect(h.warnings.join(" ")).toMatch(/same shape|collapse/i);
+  });
+
+  it("CONTROL: two corners of DIFFERENT shapes still apply", () => {
+    // Proves the refusal above is scoped to one entity rather than to rectangle
+    // corners in general, which would close the door this release just opened.
+    const h = new Host();
+    h._ents = [RECT, { type: "point", id: "P", x: 60, y: 60 } as ResolvedEntity];
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(-20, -10)); // a rectangle corner
+    ct.click(v(60, 60)); // a separate point
+    expect(h._cons, "a legitimate corner-to-point coincident was refused").toHaveLength(1);
+    expect(h.warnings).toEqual([]);
+  });
+});
+
+// The first-pick highlight has to know WHICH of a rectangle's four line operands
+// was armed, or it lights all four sides for a constraint that will apply to one.
+// filletFirst carries an ENTITY index and cannot express that; this is the half
+// that can. (What sketchMode then DRAWS with it is not unit-testable — that file
+// is scoped out as e2e territory — so this pins the seam, not the pixels.)
+describe("heldOperandId — which operand a two-pick flow is holding", () => {
+  const RECT = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 } as ResolvedEntity;
+
+  it("names the rectangle EDGE that was picked, not the rectangle", () => {
+    const h = new Host();
+    h._ents = [RECT];
+    h._tool = "parallel";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, -10)); // the bottom edge
+    expect(h.getFilletFirst(), "the pick was not armed").not.toBeNull();
+    expect(ct.heldOperandId()).toBe("R~0");
+    // and the OTHER edges are distinguishable, which is the whole point
+    const h2 = new Host();
+    h2._ents = [RECT];
+    h2._tool = "parallel";
+    const ct2 = new ConstraintTools(h2);
+    ct2.click(v(20, 0)); // the right edge
+    expect(ct2.heldOperandId()).toBe("R~1");
+  });
+
+  it("is null when nothing is held, so a stale id cannot outlive the pick", () => {
+    const h = new Host();
+    h._ents = [RECT];
+    h._tool = "parallel";
+    const ct = new ConstraintTools(h);
+    expect(ct.heldOperandId()).toBeNull();
+    ct.click(v(0, -10));
+    expect(ct.heldOperandId()).toBe("R~0");
+    ct.resetPending(); // Escape / tool switch
+    h.setFilletFirst(null);
+    expect(ct.heldOperandId(), "the id outlived the pick it belonged to").toBeNull();
+  });
+
+  it("stays null for a plain line, where the entity id already says it all", () => {
+    const h = new Host();
+    h._ents = [{ type: "line", id: "L", x1: 0, y1: 0, x2: 40, y2: 0 } as ResolvedEntity];
+    h._tool = "parallel";
+    const ct = new ConstraintTools(h);
+    ct.click(v(20, 0));
+    expect(ct.heldOperandId()).toBe("L"); // same as the entity: the caller draws the entity
+  });
+});

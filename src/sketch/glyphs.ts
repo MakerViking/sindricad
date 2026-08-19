@@ -63,7 +63,24 @@ export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchCons
   };
   const refPos = (id: string, p: number): THREE.Vector2 | null => {
     const e = byId.get(id);
-    return e ? refPoint(e, p) : null;
+    if (e) return refPoint(e, p);
+    // A rectangle EDGE spelling of a corner, `R~k` with p 0 or 1. Nothing here
+    // emits it — the pickers deliberately use the rectangle's own id with a
+    // corner index, which is what every dimension and `fix` already record —
+    // but the SOLVER accepts it (sketchSolve registers each edge as a line, so
+    // endpointPoint resolves its two ends), and so does pruneConstraints. A
+    // constraint in that spelling therefore arrives live from a saved file or
+    // the agent-control API, solves, survives pruning, and rendered NOTHING:
+    // invisible on screen and impossible to right-click away.
+    //
+    // Edge k runs from corner k to corner (k+1)%4 (sketchSolve's registration,
+    // over rectCorners' CCW order), so p0 is corner k and p1 the next one.
+    const t = id.lastIndexOf("~");
+    if (t < 0) return null;
+    const rect = byId.get(id.slice(0, t));
+    const k = Number(id.slice(t + 1));
+    if (!rect || rect.type !== "rectangle" || !Number.isInteger(k) || k < 0 || k > 3) return null;
+    return refPoint(rect, (k + (p === 1 ? 1 : 0)) % 4);
   };
   const mid2 = (a: THREE.Vector2 | null, b: THREE.Vector2 | null) => (a && b ? a.clone().add(b).multiplyScalar(0.5) : null);
   const push = (i: number, label: string, pos: THREE.Vector2 | null) => { if (pos) out.push({ cIndex: i, label, pos }); };

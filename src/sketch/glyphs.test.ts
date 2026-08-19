@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { constraintGlyphs } from "./glyphs";
 import type { ResolvedEntity } from "./snap";
+import type { SketchConstraint } from "../types";
 
 describe("constraintGlyphs", () => {
   const line: ResolvedEntity = { type: "line", id: "l", x1: 0, y1: 0, x2: 10, y2: 0 };
@@ -92,5 +93,55 @@ describe("constraintGlyphs", () => {
     it("skips an edge index the rectangle does not have", () => {
       expect(constraintGlyphs([rect], [{ type: "horizontal", line: "R~9" }])).toEqual([]);
     });
+  });
+});
+
+// A constraint spelled with a rectangle EDGE and a point index (`R~k` p0/p1) is
+// a second, legal spelling of a corner. Nothing in the app emits it — the
+// pickers use the rectangle's own id — but the solver accepts it and
+// pruneConstraints keeps it, so one can arrive live from a saved file or the
+// agent-control API. It used to render nothing at all: a constraint that solves,
+// survives pruning, cannot be seen and cannot be right-clicked away.
+describe("constraintGlyphs — the rectangle EDGE spelling of a corner", () => {
+  const R = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 } as ResolvedEntity;
+  const P = { type: "point", id: "P", x: 60, y: 60 } as ResolvedEntity;
+  // rectCorners is CCW from bottom-left: (-20,-10) (20,-10) (20,10) (-20,10),
+  // and edge k runs corner k -> corner (k+1)%4.
+  const corners: [number, number][] = [[-20, -10], [20, -10], [20, 10], [-20, 10]];
+
+  it.each([0, 1, 2, 3])("edge %i p0 draws on that edge's FIRST corner", (k) => {
+    const g = constraintGlyphs([R, P], [
+      { type: "coincident", e1: `R~${k}`, p1: 0, e2: "P", p2: 0 } as SketchConstraint,
+    ]);
+    expect(g, `R~${k} p0 rendered nothing`).toHaveLength(1);
+    expect(g[0]!.pos.x).toBeCloseTo(corners[k]![0]);
+    expect(g[0]!.pos.y).toBeCloseTo(corners[k]![1]);
+  });
+
+  it("edge k p1 draws on the NEXT corner round, and wraps at edge 3", () => {
+    const at = (k: number, p: number) =>
+      constraintGlyphs([R, P], [
+        { type: "coincident", e1: `R~${k}`, p1: p, e2: "P", p2: 0 } as SketchConstraint,
+      ])[0]!.pos;
+    expect(at(0, 1).x).toBeCloseTo(20); // edge 0 ends at corner 1
+    expect(at(0, 1).y).toBeCloseTo(-10);
+    // the wrap is the part an off-by-one would get wrong while every other row passes
+    expect(at(3, 1).x).toBeCloseTo(-20); // edge 3 ends back at corner 0
+    expect(at(3, 1).y).toBeCloseTo(-10);
+  });
+
+  it("refuses a spelling that names no rectangle, rather than inventing a spot", () => {
+    // A dangling or malformed reference must stay invisible: drawing it at a
+    // made-up position would be worse than not drawing it, because the user
+    // could then delete a constraint that is not where the badge says it is.
+    expect(constraintGlyphs([R, P], [
+      { type: "coincident", e1: "NOPE~0", p1: 0, e2: "P", p2: 0 } as SketchConstraint,
+    ])).toHaveLength(0);
+    expect(constraintGlyphs([R, P], [
+      { type: "coincident", e1: "R~9", p1: 0, e2: "P", p2: 0 } as SketchConstraint,
+    ])).toHaveLength(0);
+    expect(constraintGlyphs([R, P], [
+      { type: "coincident", e1: "P~0", p1: 0, e2: "P", p2: 0 } as SketchConstraint,
+    ])).toHaveLength(0);
   });
 });

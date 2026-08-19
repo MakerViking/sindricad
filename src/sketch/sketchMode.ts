@@ -17,7 +17,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, lineOperand, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
@@ -2711,7 +2711,22 @@ export class SketchMode {
     const idx = pickEntity(this.entities, p, this.pickTol());
     const preview: THREE.Object3D[] = [];
     const first = this.filletFirst != null ? this.entities[this.filletFirst] : undefined;
-    if (first) preview.push(...curveObjects([first], this.plane, 0x33aaff, true));
+    if (first) {
+      // A rectangle presents four LINE OPERANDS and no operand of its own, so
+      // highlighting the entity lit all four sides when the user had armed one
+      // of them: the right constraint, and feedback that pointed at the wrong
+      // thing. Draw the edge actually picked, when the flow is holding one.
+      // SketchMode's own fillet tool shares `filletFirst` and holds no operand,
+      // so it falls through to the whole entity exactly as before.
+      const opId = this.constraintTools.heldOperandId();
+      const seg = opId && opId !== first.id
+        ? lineOperand(new Map(this.entities.map((e) => [e.id, e])), opId)
+        : null;
+      preview.push(...curveObjects(
+        seg ? [{ type: "line", id: first.id, ...seg } as ResolvedEntity] : [first],
+        this.plane, 0x33aaff, true,
+      ));
+    }
     const hit = idx >= 0 ? this.entities[idx] : undefined;
     if (hit) preview.push(...curveObjects([hit], this.plane, 0xff5555, true));
     // The point under the cursor, for the tools that consume one. It goes on
