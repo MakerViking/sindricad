@@ -1062,15 +1062,16 @@ describe("the first thing a user will do with a clickable rect edge", () => {
     expect(g[0]!.cIndex, "and it deletes the right constraint").toBe(0);
   });
 
-  it("Vertical on that same edge is REFUSED, and blames no constraint", async () => {
-    // Stated exactly as it behaves rather than as one might wish. The guard
-    // catches the collapse and returns ok:false, but nothing populates
-    // `conflicts` — roundRefs names circles and arcs only — so no chip goes red.
-    // What the user gets instead is SketchMode's trial-constraint withdrawal:
-    // the constraint is spliced back out and a toast says it was not applied
-    // (sketchMode.ts, `if (this.trialConstraint && (this.conflict || !r.ok))`).
-    // That is a real answer, and it is why the refusal must set ok:false even
-    // with an empty conflict list.
+  it("Vertical on that same edge is REFUSED, and NAMES the constraint that did it", async () => {
+    // The other half of the pair above: redundant grades amber, conflicting
+    // grades red, and both land on a glyph the user can see and delete.
+    //
+    // This test used to assert the opposite, and said so honestly: the guard
+    // caught the collapse and returned ok:false while nothing populated
+    // `conflicts`, because the blame walk enumerated circle and arc operands
+    // only and a rectangle is neither. The toast was then the whole message.
+    // Now the walk reads every entity a constraint names, so the chip goes red
+    // on the constraint that asked for the impossible thing.
     const ents = [RECT("R", 0, 0, 40, 20)];
     const h = applyByClicking("vertical", ents, [[0, -10]]);
     expect(h._cons).toHaveLength(1);
@@ -1078,8 +1079,12 @@ describe("the first thing a user will do with a clickable rect edge", () => {
     expect(r.ok, "the contradiction must be refused").toBe(false);
     expect(r.entities, "and the rectangle handed back untouched").toEqual(ents);
     expect(diagnosisOf(0, idxSet(r.conflicts), idxSet(r.overDefined)),
-      "nothing blames the user constraint — the toast is the whole message")
-      .toBeNull();
+      "the refusal must name the constraint responsible, or no chip can go red")
+      .toBe("conflict");
+    // and there must be something on screen to paint red and to delete
+    const g = constraintGlyphs(r.entities, h._cons);
+    expect(g, "the conflicting constraint has no glyph to paint red on").toHaveLength(1);
+    expect(g[0]!.cIndex).toBe(0);
   });
 
   it("Vertical on the RIGHT edge is the harmless one, same tool", async () => {
@@ -1636,6 +1641,30 @@ describe("a rectangle solved out of existence is refused, not written", () => {
     ]);
     expect(r.ok, "a collapsing LINE is refused").toBe(false);
     expect(r.entities, "and the pre-solve geometry is handed back").toEqual(start);
+  });
+
+  it("and the LINE collapse now names its constraints too, which it never did", async () => {
+    // The blame walk was shared, so widening it past circles and arcs fixed the
+    // line path at the same time as the rectangle one. That was the argument for
+    // doing it in one place rather than adding a rectangle special case, and
+    // this is the part of that argument that was previously untested: the field
+    // case on 2026-08-15 (a 65mm edge folding to 0mm) reported conflicts that
+    // named the dims, but a collapse driven by ANGULAR constraints alone named
+    // nothing at all.
+    const start = [L("A", 0, 0, 55, 0), L("B", 0, 0, 0, -45)];
+    const cons = [
+      { type: "horizontal", line: "A" } as SketchConstraint,
+      { type: "vertical", line: "B" } as SketchConstraint,
+      { type: "collinear", l1: "A", l2: "B" } as SketchConstraint,
+    ];
+    const r = await compileAndSolve(start, cons);
+    expect(r.ok).toBe(false);
+    expect(r.conflicts.length, "a refused line collapse blamed nobody").toBeGreaterThan(0);
+    // every blamed id must decode to a real user constraint, never an implicit pin
+    for (const id of r.conflicts) {
+      expect(constraintIndexOf(id), `blamed an implicit id: ${id}`).not.toBeNull();
+      expect(constraintIndexOf(id)!).toBeLessThan(cons.length);
+    }
   });
 });
 

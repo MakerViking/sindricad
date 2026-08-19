@@ -805,7 +805,11 @@ export async function compileAndSolve(
   if (badGeom.size) {
     for (const c of cons) {
       if (constraintIndexOf(c.id) === null) continue; // implicit pins aren't the user's fault
-      if (roundRefs(c).some((id) => badGeom.has(id))) guardIds.add(c.id);
+      // A collapsed line or rectangle has to blame the constraint that asked
+      // for it. This used to consult a roundRefs() that enumerated circle and
+      // arc operands only, so it named nothing for the two shapes the guard
+      // above actually catches; that function had no other caller and is gone.
+      if (entityRefs(c).some((id) => badGeom.has(id))) guardIds.add(c.id);
     }
   }
   // branch invariants: a rim dim must still describe the SAME configuration it
@@ -821,10 +825,10 @@ export async function compileAndSolve(
   }
   if (guardIds.size || badGeom.size) {
     for (const id of guardIds) if (!conflicts.includes(id)) conflicts.push(id);
-    // A refused DRAG frame has to SAY it was refused. Nothing blames a user
-    // constraint for a collapsed line or rectangle (roundRefs only names circles
-    // and arcs), so `conflicts` is empty here and the caller's conflict path
-    // never fires — it would take the ordinary branch and advance its drag
+    // A refused DRAG frame has to SAY it was refused, and `conflicts` is not
+    // enough on its own. A drag with no user constraint on the collapsing
+    // entity still blames nobody (there is nothing to blame), so the caller's
+    // conflict path would not fire — it would take the ordinary branch and advance its drag
     // anchor to the cursor (sketchMode.ts:3558). The next frame's nearest-point
     // search then runs from an origin the grabbed point is no longer at, grabs a
     // different point, and yanks THAT one mid-gesture. `dragRefused` is the
@@ -854,21 +858,40 @@ export async function compileAndSolve(
 
 /** the round (circle/arc) entity ids a compiled constraint names — the blame
  *  list when one of them solves to a non-positive radius */
-function roundRefs(c: SConstraint): string[] {
-  switch (c.type) {
-    case "diameter": case "circleRadius": return [c.circle];
-    case "arcRadius": return [c.arc];
-    case "rimGap": return [c.round1, c.round2];
-    case "rimLine": case "rimPoint": return [c.round];
-    case "radiusDifference": return [c.inner, c.outer];
-    case "tangentLC": return [c.circle];
-    case "tangentLA": return [c.arc];
-    case "tangentCC": case "equalRadiusCC": return [c.c1, c.c2];
-    case "tangentCA": case "equalRadiusCA": return [c.circle, c.arc];
-    case "tangentAA": case "equalRadiusAA": return [c.a1, c.a2];
-    default: return [];
+/** Every ENTITY a constraint names, by id, with a rectangle addressed through
+ *  one of its edges (`R~2`) reported as the rectangle itself.
+ *
+ *  This replaces a roundRefs() that enumerated circle and arc operands only,
+ *  which was the whole reason a collapsed LINE or RECTANGLE could be refused
+ *  while nothing turned red: the guard knew the geometry was bad and could not
+ *  name the constraint that asked for it, so `conflicts` came back empty and
+ *  every caller keyed on it — the red chip, the drag's conflict branch — saw
+ *  nothing to report.
+ *
+ *  Walks the constraint's own fields rather than switching on its type, so a
+ *  constraint type added later is covered the day it lands. That is the same
+ *  reason `noteRectScope` walks fields, and the same miss class that let
+ *  `endpointPoint` and `dimPoint` drift apart about corners. `id` and `type`
+ *  are skipped: they name the constraint, not an entity. */
+function entityRefs(c: SConstraint): string[] {
+  const out: string[] = [];
+  const take = (v: unknown): void => {
+    if (typeof v === "string") {
+      const t = v.lastIndexOf("~");
+      out.push(t < 0 ? v : v.slice(0, t));
+    } else if (Array.isArray(v)) {
+      v.forEach(take);
+    } else if (v && typeof v === "object") {
+      Object.values(v).forEach(take);
+    }
+  };
+  for (const [k, v] of Object.entries(c)) {
+    if (k === "id" || k === "type") continue;
+    take(v);
   }
+  return out;
 }
+
 
 /** the rim dims whose configuration `rimBranch` classifies. `radialGap` is
  *  deliberately absent: `difference` is signed, so it cannot invert an annulus
