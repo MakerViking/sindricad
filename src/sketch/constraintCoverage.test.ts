@@ -28,6 +28,7 @@ class Host implements ConstraintHost {
   _fillet: number | null = null;
   warnings: string[] = [];
   pending: { x: number; y: number } | null = null;
+  pendingAll: { x: number; y: number }[] = [];
   tool() { return this._tool; }
   entities() { return this._ents; }
   constraints() { return this._cons; }
@@ -36,7 +37,7 @@ class Host implements ConstraintHost {
   setFilletFirst(i: number | null) { this._fillet = i; }
   requestSolve() {}
   warn(m: string) { this.warnings.push(m); }
-  setPendingPoint(p: { x: number; y: number } | null) { this.pending = p; }
+  setPendingPoints(ps: { x: number; y: number }[]) { this.pending = ps[0] ?? null; this.pendingAll = ps; }
   addConstraint(c: SketchConstraint) { this._cons.push(c); }
 }
 
@@ -288,5 +289,62 @@ describe("heldOperandId — which operand a two-pick flow is holding", () => {
     const ct = new ConstraintTools(h);
     ct.click(v(20, 0));
     expect(ct.heldOperandId()).toBe("L"); // same as the entity: the caller draws the entity
+  });
+});
+
+// Symmetric is a THREE-click gesture — point, point, axis — and only the first
+// click used to leave a marker. The middle of the gesture showed nothing at all,
+// which on a tool whose first click was already invisible once (GH #17) is the
+// same failure wearing a different hat.
+describe("symmetric marks BOTH points it is holding", () => {
+  const L1 = { type: "line", id: "L1", x1: 0, y1: 0, x2: 40, y2: 0 } as ResolvedEntity;
+  const L2 = { type: "line", id: "L2", x1: 0, y1: 20, x2: 40, y2: 20 } as ResolvedEntity;
+  const AX = { type: "line", id: "AX", x1: -10, y1: 10, x2: 50, y2: 10 } as ResolvedEntity;
+  const armed = () => {
+    const h = new Host();
+    h._ents = [L1, L2, AX];
+    h._tool = "symmetric";
+    return { h, ct: new ConstraintTools(h) };
+  };
+
+  it("holds one marker after the first pick and TWO after the second", () => {
+    const { h, ct } = armed();
+    ct.click(v(0, 0)); // L1 start
+    expect(h.pendingAll, "the first pick was not marked").toHaveLength(1);
+    ct.click(v(0, 20)); // L2 start
+    expect(h.pendingAll, "the second pick left no marker").toHaveLength(2);
+    expect(h.pendingAll).toContainEqual({ x: 0, y: 0 });
+    expect(h.pendingAll).toContainEqual({ x: 0, y: 20 });
+  });
+
+  it("clears both once the axis completes the constraint", () => {
+    const { h, ct } = armed();
+    ct.click(v(0, 0));
+    ct.click(v(0, 20));
+    ct.click(v(25, 10)); // the axis line, away from any endpoint
+    expect(h._cons, "the symmetric constraint was not applied").toHaveLength(1);
+    expect(h._cons[0]!.type).toBe("symmetric");
+    expect(h.pendingAll, "the markers outlived the completed gesture").toEqual([]);
+  });
+
+  it("says so when the second pick is the point already held", () => {
+    // This used to return having done and said nothing, leaving a pick held that
+    // the user had no way to tell was still held.
+    const { h, ct } = armed();
+    ct.click(v(0, 0));
+    ct.click(v(0, 0)); // the same point again
+    expect(h._cons).toEqual([]);
+    expect(h.warnings.length, "the repeat pick was swallowed").toBeGreaterThan(0);
+    expect(h.warnings.join(" ")).toMatch(/already picked/i);
+    expect(h.pendingAll, "the first pick was dropped").toHaveLength(1);
+  });
+
+  it("clears every marker when the gesture is abandoned", () => {
+    const { h, ct } = armed();
+    ct.click(v(0, 0));
+    ct.click(v(0, 20));
+    expect(h.pendingAll).toHaveLength(2);
+    ct.resetPending(); // Escape / tool switch
+    expect(h.pendingAll, "markers survived an abandoned gesture").toEqual([]);
   });
 });

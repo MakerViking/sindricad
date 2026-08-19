@@ -68,10 +68,14 @@ export interface ConstraintHost {
   /** surface a user-facing warning (SketchMode routes it to the toast layer —
    *  kept an accessor so these flows stay DOM-free/unit-testable) */
   warn(msg: string): void;
-  /** Show (or clear) the endpoint this flow is holding, so the user can see that
-   *  a first pick landed. Coincident's first click used to leave NO trace at all
-   *  — the tool looked broken until the second click happened to work. */
-  setPendingPoint(p: { x: number; y: number } | null): void;
+  /** Show (or clear) the endpoints this flow is holding, so the user can see
+   *  that a pick landed. Coincident's first click used to leave NO trace at all
+   *  — the tool looked broken until the second click happened to work.
+   *
+   *  A LIST, because symmetric holds two points before it asks for its axis and
+   *  a single marker could only ever show one of them: its middle click landed
+   *  with no feedback whatsoever. Pass [] to clear. */
+  setPendingPoints(ps: { x: number; y: number }[]): void;
   /** Push a constraint and solve. The host REMOVES it again if that solve turns
    *  out to conflict: an unsatisfiable constraint left sitting in the sketch
    *  poisons every later one, because the whole system stops solving and nothing
@@ -101,6 +105,11 @@ const WANTS: Partial<Record<SketchTool, string>> = {
   fix: "a point, an endpoint or a centre",
 };
 
+/** A nullable plane point as the list `setPendingPoints` takes — a point the
+ *  flow could not resolve shows nothing rather than a marker at the origin. */
+const pts = (...ps: ({ x: number; y: number } | null)[]): { x: number; y: number }[] =>
+  ps.filter((q): q is { x: number; y: number } => q !== null);
+
 const COINCIDENT_MISS =
   "Coincident joins two ENDPOINTS — click the ends of the lines, or a rectangle's corners, "
   + "not their middles. To make two lines lie along each other, use Collinear.";
@@ -125,7 +134,7 @@ export class ConstraintTools {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
     this.firstOperand = null;
-    this.host.setPendingPoint(null); // the marker must not outlive the pick
+    this.host.setPendingPoints([]); // the marker must not outlive the pick
   }
 
   /** The OPERAND id a two-pick flow is currently holding, or null.
@@ -312,13 +321,13 @@ export class ConstraintTools {
         const ep = this.pickEndpoint(p);
         if (!ep) return this.missed();
         this.pendingEndpoint = ep;
-        this.host.setPendingPoint(this.endpointXY(ep));
+        this.host.setPendingPoints(pts(this.endpointXY(ep)));
         return;
       }
       const op = this.pickOperand(p);
       const ep = this.pendingEndpoint;
       this.pendingEndpoint = null;
-      this.host.setPendingPoint(null);
+      this.host.setPendingPoints([]);
       // compared by OWNING ENTITY, not by operand id: centring a rectangle's
       // corner on one of that same rectangle's edges is a self-referential
       // squash, and `R~0` would not equal `R` on a bare id compare
@@ -336,12 +345,12 @@ export class ConstraintTools {
         this.firstOperand = null;
         if (!this.pendingEndpoint) {
           this.pendingEndpoint = ep;
-          this.host.setPendingPoint(this.endpointXY(ep));
+          this.host.setPendingPoints(pts(this.endpointXY(ep)));
           return;
         }
         const a = this.pendingEndpoint;
         this.pendingEndpoint = null;
-        this.host.setPendingPoint(null);
+        this.host.setPendingPoints([]);
         // Two points of the SAME entity: refused, but no longer in silence. It
         // used to fall through a bare `if (a.id !== ep.id)` — no constraint, no
         // message, and the pending marker wiped on the way out, which is the
@@ -400,7 +409,7 @@ export class ConstraintTools {
       const ep = this.pickEndpoint(p);
       if (!ep) return this.missed();
       this.pendingEndpoint = ep;
-      this.host.setPendingPoint(this.endpointXY(ep));
+      this.host.setPendingPoints(pts(this.endpointXY(ep)));
       return;
     }
     if (!this.pendingEndpoint2) {
@@ -410,7 +419,19 @@ export class ConstraintTools {
       // what "centre this rectangle on the axis" means), so the distinctness
       // test is per POINT here, not per entity — two picks of one line's two
       // ends stay legal for the same reason.
-      if (ep.id !== this.pendingEndpoint.id || ep.idx !== this.pendingEndpoint.idx) this.pendingEndpoint2 = ep;
+      if (ep.id === this.pendingEndpoint.id && ep.idx === this.pendingEndpoint.idx) {
+        // Clicking the SAME point twice used to fall out of here having done and
+        // said nothing, holding a pick the user could not tell was still held.
+        this.host.warn("That is the point you already picked — choose the second one to mirror.");
+        return;
+      }
+      this.pendingEndpoint2 = ep;
+      // BOTH points are now held, and both are marked. With one marker the
+      // second pick landed with no feedback at all, so the middle of a
+      // three-click gesture looked like nothing had happened.
+      this.host.setPendingPoints(
+        pts(this.endpointXY(this.pendingEndpoint), this.endpointXY(ep)),
+      );
       return;
     }
     // third click: the symmetry axis line
@@ -418,7 +439,7 @@ export class ConstraintTools {
     const a = this.pendingEndpoint, b = this.pendingEndpoint2;
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
-    this.host.setPendingPoint(null);
+    this.host.setPendingPoints([]);
     if (op && op.kind === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: op.id });
   }
 

@@ -337,10 +337,14 @@ export class SketchMode {
       // Mark the endpoint a constraint flow is holding. Coincident's first click
       // used to leave no trace at all, so the tool looked dead until the second
       // click happened to land on an endpoint.
-      setPendingPoint: (p) => {
-        this.pendingConstraintPoint = p ? this.plane.to3D(p.x, p.y) : null;
-        this.overlay.setPendingPoint(this.pendingConstraintPoint, this.viewport.camera);
+      setPendingPoints: (ps) => {
+        const worlds = ps.map((q) => this.plane.to3D(q.x, q.y));
+        this.pendingConstraintPoint = worlds[0] ?? null;
+        this.overlay.setPendingPoints(worlds, this.viewport.camera);
         if (this.pendingConstraintPoint) {
+          // one scale for the pool: the markers are a few mm apart at most, so a
+          // per-marker size would differ by less than a pixel and cost a
+          // projection each
           this.overlay.setPendingPointScale(
             this.viewport.pixelWorldSize(this.pendingConstraintPoint) * 6,
           );

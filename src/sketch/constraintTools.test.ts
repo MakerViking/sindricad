@@ -24,7 +24,12 @@ class MockHost implements ConstraintHost {
   warn(msg: string) { this.warnings.push(msg); }
   pending: { x: number; y: number } | null = null;
   pendingSets = 0;
-  setPendingPoint(p: { x: number; y: number } | null) { this.pending = p; this.pendingSets++; }
+  pendingAll: { x: number; y: number }[] = [];
+  setPendingPoints(ps: { x: number; y: number }[]) {
+    this.pendingAll = ps;
+    this.pending = ps[0] ?? null; // `pending` stays "the first held point"
+    this.pendingSets++;
+  }
   addConstraint(c: SketchConstraint) { this._cons.push(c); this.solves++; }
 }
 

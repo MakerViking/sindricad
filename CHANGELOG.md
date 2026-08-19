@@ -76,6 +76,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Symmetric now shows both points it is holding.** The tool takes three
+  clicks, a point, another point, then the line to mirror across, and only the
+  first click left a mark on screen. The middle of the gesture looked like
+  nothing had happened. Clicking the same point twice by mistake also did
+  nothing and said nothing; it now says which click it is waiting for.
+
+- **Editing an extrude applies the depth you typed, even when none of its areas
+  can be shown.** If every stored area was ambiguous or out of date, typing a new
+  depth and pressing Enter did nothing at all: no change, no message, and the
+  tool closed. The areas are kept and the new depth is applied.
+
 - **Constraint tools no longer report a pick that worked as a pick that failed.**
   Four separate ways a working gesture could read as a broken one, all found by
   attacking the sketcher after rectangle corners became selectable.

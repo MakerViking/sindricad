@@ -115,7 +115,11 @@ export class SketchOverlay {
   private activeSketch = new THREE.Group(); // active sketch's committed curves
   private previewGroup = new THREE.Group(); // the rubber-band, rebuilt per move
   private snapMarker: THREE.Mesh;
-  private pendingMarker: THREE.Mesh;
+  /** The endpoint(s) a constraint flow is holding. A POOL rather than one mesh:
+   *  symmetric holds two points before it asks for the axis, and with a single
+   *  marker its middle click left no trace at all. Grown on demand and capped —
+   *  no flow addresses more points than it can show. */
+  private pendingMarkers: THREE.Mesh[] = [];
   private planeCache = new Map<string, SketchPlane>();
   regions: WorldRegion[] = []; // committed-sketch regions
   private activeRegions: WorldRegion[] = []; // active-sketch regions (sketch mode)
@@ -142,16 +146,21 @@ export class SketchOverlay {
     this.snapMarker.visible = false;
     this.group.add(this.snapMarker);
 
-    // The endpoint a constraint flow is currently holding. A filled disc rather
-    // than the snap ring, so "I have this point" never reads as "you could snap
-    // here": the two can be on screen at once and mean different things.
-    this.pendingMarker = new THREE.Mesh(
+  }
+
+  /** One more held-point disc, added to the scene hidden. A filled disc rather
+   *  than the snap ring, so "I have this point" never reads as "you could snap
+   *  here": the two can be on screen at once and mean different things. */
+  private growPendingMarker(): THREE.Mesh {
+    const m = new THREE.Mesh(
       new THREE.CircleGeometry(1.0, 20),
       new THREE.MeshBasicMaterial({ color: 0x35d07f, depthTest: false }),
     );
-    this.pendingMarker.renderOrder = 31; // above the snap ring
-    this.pendingMarker.visible = false;
-    this.group.add(this.pendingMarker);
+    m.renderOrder = 31; // above the snap ring
+    m.visible = false;
+    this.group.add(m);
+    this.pendingMarkers.push(m);
+    return m;
   }
 
   planeFor(spec: PlaneSpec): SketchPlane {
@@ -560,18 +569,27 @@ export class SketchOverlay {
   }
 
   /** Show the endpoint a constraint flow is holding, or clear it with null. */
-  setPendingPoint(world: THREE.Vector3 | null, camera?: THREE.Camera) {
-    if (!world) {
-      this.pendingMarker.visible = false;
-      return;
+  /** Show every point a constraint flow is holding, or clear them with []. */
+  setPendingPoints(worlds: THREE.Vector3[], camera?: THREE.Camera) {
+    for (let i = 0; i < Math.max(worlds.length, this.pendingMarkers.length); i++) {
+      const w = worlds[i];
+      const m = this.pendingMarkers[i] ?? (w ? this.growPendingMarker() : undefined);
+      if (!m) continue;
+      m.visible = w !== undefined;
+      if (w) {
+        m.position.copy(w);
+        if (camera) m.quaternion.copy(camera.quaternion); // face camera
+      }
     }
-    this.pendingMarker.visible = true;
-    this.pendingMarker.position.copy(world);
-    if (camera) this.pendingMarker.quaternion.copy(camera.quaternion); // face camera
   }
 
   setPendingPointScale(s: number) {
-    this.pendingMarker.scale.setScalar(s);
+    for (const m of this.pendingMarkers) m.scale.setScalar(s);
+  }
+
+  /** How many held-point markers are currently on screen. */
+  visiblePendingCount(): number {
+    return this.pendingMarkers.filter((m) => m.visible).length;
   }
 
   /** Show/hide the translucent profile region fills (Sketch Palette toggle). */

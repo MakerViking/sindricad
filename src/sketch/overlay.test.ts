@@ -5,7 +5,7 @@
 // into doc entities is covered by the step-4 refresh e2e).
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { curveObjects, ENDPOINT_COLOR } from "./overlay";
+import { curveObjects, SketchOverlay, ENDPOINT_COLOR } from "./overlay";
 import { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 
@@ -96,5 +96,48 @@ describe("curveObjects — endpoint dots mark what pickEndpoint can address", ()
   it("the emphasis pass draws no dots, for a rectangle as for everything else", () => {
     const rect: ResolvedEntity = { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 };
     expect(dotCentres(curveObjects([rect], plane, 0x33aaff, true, R))).toHaveLength(0);
+  });
+});
+
+// The held-point markers are a POOL, because symmetric holds two points before
+// it asks for its axis. Tested here as well as through the constraint flows: the
+// flow tests assert what the HOST was told, and would stay green against an
+// overlay that was told about two points and drew one.
+describe("setPendingPoints — every held point gets a marker", () => {
+  const at = (x: number, y: number) => new THREE.Vector3(x, y, 0);
+
+  it("shows one marker per point, and grows for the second", () => {
+    const o = new SketchOverlay();
+    expect(o.visiblePendingCount()).toBe(0);
+    o.setPendingPoints([at(0, 0)]);
+    expect(o.visiblePendingCount()).toBe(1);
+    o.setPendingPoints([at(0, 0), at(10, 5)]);
+    expect(o.visiblePendingCount(), "the second held point drew no marker").toBe(2);
+  });
+
+  it("hides the extra marker again when the flow drops back to one point", () => {
+    // The pool is reused rather than rebuilt, so a marker left visible from a
+    // previous gesture would read as a point that is still held.
+    const o = new SketchOverlay();
+    o.setPendingPoints([at(0, 0), at(10, 5)]);
+    o.setPendingPoints([at(0, 0)]);
+    expect(o.visiblePendingCount(), "a stale marker outlived its point").toBe(1);
+  });
+
+  it("clears everything on []", () => {
+    const o = new SketchOverlay();
+    o.setPendingPoints([at(0, 0), at(10, 5)]);
+    o.setPendingPoints([]);
+    expect(o.visiblePendingCount()).toBe(0);
+  });
+
+  it("puts each marker AT its own point, not all at the first", () => {
+    const o = new SketchOverlay();
+    o.setPendingPoints([at(0, 0), at(10, 5)]);
+    const shown = (o.group.children as THREE.Object3D[])
+      .filter((c) => c.visible && (c as THREE.Mesh).isMesh)
+      .map((c) => [c.position.x, c.position.y]);
+    expect(shown).toContainEqual([0, 0]);
+    expect(shown, "both markers landed on the same point").toContainEqual([10, 5]);
   });
 });

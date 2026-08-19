@@ -361,6 +361,7 @@ class Host implements ConstraintHost {
   _fillet: number | null = null;
   warnings: string[] = [];
   pending: { x: number; y: number } | null = null;
+  pendingAll: { x: number; y: number }[] = [];
   tool() { return this._tool; }
   entities() { return this._ents; }
   constraints() { return this._cons; }
@@ -369,7 +370,7 @@ class Host implements ConstraintHost {
   setFilletFirst(i: number | null) { this._fillet = i; }
   requestSolve() {}
   warn(m: string) { this.warnings.push(m); }
-  setPendingPoint(p: { x: number; y: number } | null) { this.pending = p; }
+  setPendingPoints(ps: { x: number; y: number }[]) { this.pending = ps[0] ?? null; this.pendingAll = ps; }
   addConstraint(c: SketchConstraint) { this._cons.push(c); }
 }
 
