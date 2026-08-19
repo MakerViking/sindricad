@@ -6463,6 +6463,96 @@ def list_fonts():
         return {"families": []}
 
 
+# Two sketch points closer than this ARE the same point, so a line between them
+# has no extent. OCCT's own Precision::Confusion (1e-7 mm, read off the kernel),
+# deliberately not a tolerance of our own: anything wider would be picking a
+# minimum-feature size, which docs/EDGE-CASES.md §1 leaves open as a product
+# decision rather than a bug fix.
+#
+# MEASURED (sidecar/test_degenerate_entities.py pins all of it): OCCT does not
+# refuse short lines. Above 1e-7 it builds the edge with its real length; from
+# just under 1e-7 all the way down to 1e-15 it still builds an edge, but the one
+# it hands back has length exactly 0.0; and it raises StdFail at only two points
+# in the range — exactly 1e-7, and exactly coincident. Bisected at x = 0.1, 1,
+# 10, 100 and 1000 the flip is 1e-7 to seven figures every time, so it is an
+# absolute distance. `<= _COINCIDENT` is therefore the whole band the kernel
+# will not give extent to, and refuses nothing OCCT would have built with any.
+_COINCIDENT = 1e-7
+
+# Two CONSECUTIVE spline points closer than this cannot be interpolated. This is
+# not an OCCT constant but build123d's own default `tol` for Edge.make_spline,
+# which it passes straight to GeomAPI_Interpolate — so the boundary belongs to
+# our own call, and the test asserts the default still reads 1e-6.
+#
+# MEASURED: a gap of exactly 1e-6 RAISES, and so does everything below it;
+# 1.0000001e-6 is the first gap that builds. Bisected at spans of 0.1, 1, 10, 100
+# and 1000 mm it is the same absolute 1e-6 every time — a gap, not a ratio. The
+# comparison below is therefore `<=`, not `<`: an earlier cut used `<` on a
+# comment that claimed exactly 1e-6 built, which let precisely that value through
+# to the kernel and out to the user as the worst message of the three, "sketch
+# failed (Standard_ConstructionError)" with an empty body. That is the failure
+# this guard exists to remove, so it must not be the one value it misses.
+_SPLINE_MIN_GAP = 1e-6
+
+# What to tell the user when OCCT itself refuses to build a curve. Keyed by
+# entity type; every one of these failures is "the points are too close together
+# or too straight", the kernel just says so in a different class each time. Each
+# value is one clause with no dash of its own — the template supplies the only
+# one, so the message does not read as two sentences fighting.
+_UNBUILDABLE_ADVICE = {
+    "line": "its two ends are too close together; move one end away from the other",
+    "arc": "its three points are too close together, or too near one straight line, "
+           "for an arc to pass through them; move its middle point off the line "
+           "between the two ends",
+    "spline": "two of its points are too close together to interpolate; move one "
+              "of them",
+    "slot": "it is too short or too narrow; give it more length or width",
+    "polygon": "its radius is too small; give it a bigger one",
+}
+
+
+def _entity_anchor(e, val):
+    """Where to send the user looking for one sketch entity.
+
+    The start point where there is one, because that is where the sketch tool
+    put the cursor; the centre otherwise. Degenerate entities draw nothing, so
+    coordinates are the ONLY way to find them in a sketch of any size — that is
+    why every message in the guard block carries this.
+    """
+    if "x1" in e:
+        return val(e["x1"]), val(e["y1"])
+    pts = e.get("points") or []
+    if pts:
+        return val(pts[0]["x"]), val(pts[0]["y"])
+    return val(e.get("x", 0)), val(e.get("y", 0))
+
+
+def _unbuildable_message(e, val):
+    """A named, located message for a curve the KERNEL refused to build.
+
+    The guards in _build_sketch catch what they can predict; this catches what
+    they cannot, so no OCCT class name has to reach the user as the whole
+    explanation. Two of the three boundaries involved are absolute constants
+    (see _COINCIDENT and _SPLINE_MIN_GAP), but an arc's is a fixed fraction of
+    its chord — 3.7252903e-9 * chord, measured identical on chords of 0.1, 1,
+    10, 100 and 1000 mm — so no constant can express it, and a guard that tried
+    was wrong at every scale but one: it refused arcs OCCT builds happily on a
+    10 mm chord while still leaking StdFail_NotDone on a 1000 mm one. Letting
+    the kernel decide and naming its refusal is exact at every size, and cannot
+    refuse anything that would have built.
+
+    The exception itself is deliberately not quoted: its class was the whole
+    problem in field report 88042d97, and for a spline its message is empty.
+    """
+    kind = e.get("type") or "entity"
+    x, y = _entity_anchor(e, val)
+    advice = _UNBUILDABLE_ADVICE.get(
+        kind, "its points are too close together to define it")
+    article = "an" if kind[:1] in "aeiou" else "a"
+    return (f"{article} {kind} in this sketch cannot be built (near {x:g}, {y:g}) — "
+            f"{advice}, or delete it")
+
+
 def _build_sketch(f, val, datums=None):
     """Build a 2D sketch and locate it onto its plane (algebra mode).
 
@@ -6492,6 +6582,42 @@ def _build_sketch(f, val, datums=None):
             by_ent.setdefault(eid, []).extend(eds)
         return eds
 
+    def _own_edges(ent):
+        """`_own(ent, _entity_edges(ent, val))`, but a KERNEL refusal names the
+        entity instead of reaching the generic handler as a bare class name.
+
+        The backstop for everything the guard block above cannot predict. It can
+        only fire where the build had already failed, so it cannot refuse
+        geometry that would have built — which is what lets the guards stay on
+        the safe side of every threshold rather than racing OCCT's.
+
+        KeyError and TypeError pass through untouched: those mean a field is
+        missing or the wrong shape, which is a malformed document, not geometry
+        the user can move. So does ValueError, which is how the guards above
+        raise: relabelling one would replace a message naming the entity with a
+        weaker one about points being too close.
+
+        Only OCCT's own failures are relabelled, by module rather than by a list
+        of class names. The kernel raises a different class for each primitive
+        (StdFail_NotDone for a line or arc, Standard_ConstructionError for a
+        spline) and adding a curve type would add another, so matching on names
+        would rot. Anything else — an IndexError off a malformed point list, an
+        OverflowError out of a parameter expression, a plain bug in the arc or
+        slot construction — is NOT the user's geometry being too small, and
+        saying so would send them looking for a modelling fault that is not
+        there. Those propagate to the generic handler, which is honest about
+        being generic.
+        """
+        try:
+            eds = _entity_edges(ent, val)
+        except (KeyError, TypeError, ValueError):
+            raise
+        except Exception as ex:
+            if type(ex).__module__.split(".")[0] != "OCP":
+                raise
+            raise ValueError(_unbuildable_message(ent, val)) from ex
+        return _own(ent, eds)
+
     # Associative patterns: expand each definition into its derived entities and
     # append them, so a patterned hole/array builds like hand-drawn geometry. The
     # math mirrors src/sketch/pattern.ts so frontend preview and build agree.
@@ -6514,29 +6640,79 @@ def _build_sketch(f, val, datums=None):
         # This was a real field bug (docs/EDGE-CASES.md §1): a ring whose inner
         # circle had collapsed to r=0.
         if et == "circle" and not (val(e["radius"]) > 0):
+            cx, cy = val(e.get("x", 0)), val(e.get("y", 0))
             raise ValueError(
-                f"a circle in this sketch has a radius of {val(e['radius']):g} — "
-                "give it a radius greater than 0, or delete it"
+                f"a circle in this sketch has a radius of {val(e['radius']):g} "
+                f"(centred at {cx:g}, {cy:g}) — give it a radius greater than 0, "
+                "or delete it"
             )
         if et == "rectangle" and not (val(e["width"]) > 0 and val(e["height"]) > 0):
+            rx, ry = val(e.get("x", 0)), val(e.get("y", 0))
             raise ValueError(
-                "a rectangle in this sketch has a zero width or height — "
-                "give it a size, or delete it"
+                f"a rectangle in this sketch has a zero width or height "
+                f"(centred at {rx:g}, {ry:g}) — give it a size, or delete it"
             )
+        # Lines and splines had no guard here, so a degenerate one fell through
+        # to _entity_edges and OCCT answered with a bare StdFail_NotDone
+        # ("BRep_API: command not done"), or — for a spline — a
+        # Standard_ConstructionError whose message is the EMPTY STRING. The
+        # generic handler turned those into "sketch failed (StdFail_NotDone)":
+        # field report 88042d97, where one zero-length line failed a sketch,
+        # five revolves and an extrude with seven errors, and the reporter could
+        # see nothing wrong with the profile because a zero-length line draws
+        # nothing. They read the cascade as a revolve bug ("I cannot rotate it
+        # about the X"); every revolve was only saying its sketch was missing.
+        #
+        # These REFUSE rather than skip, like the two guards above. Skipping is
+        # defensible — a zero-extent entity adds no area, and the frontend
+        # already leaves them out of a region (that document's own
+        # regionEntities excludes the bad line) — but the entity is invisible,
+        # so a silent skip would leave it in the file forever with nothing ever
+        # naming it. Hence the location in every message: it is the only way to
+        # find geometry that draws nothing.
+        #
+        # ARCS deliberately have no threshold here. Their boundary is a fraction
+        # of the chord, not a distance, so a constant is wrong at every size but
+        # one; _own_edges below names the kernel's own refusal instead. See
+        # _unbuildable_message.
+        if et == "line":
+            x1, y1 = val(e["x1"]), val(e["y1"])
+            # <= because the whole band up to and including _COINCIDENT is
+            # geometry OCCT gives no extent to — see that constant for the sweep.
+            if math.hypot(val(e["x2"]) - x1, val(e["y2"]) - y1) <= _COINCIDENT:
+                raise ValueError(
+                    f"a line in this sketch has zero length (both ends at {x1:g}, "
+                    f"{y1:g}) — move one end away from the other, or delete the line"
+                )
+        if et == "spline":
+            pts = [(val(p["x"]), val(p["y"])) for p in e.get("points", [])]
+            # Only CONSECUTIVE repeats break the interpolation: measured, a
+            # spline that returns to an earlier point (a closed loop) builds
+            # fine, while two points in a row at the same place raise. `<=`
+            # because a gap of EXACTLY _SPLINE_MIN_GAP is refused by the kernel
+            # too — see that constant.
+            for i in range(1, len(pts)):
+                if math.hypot(pts[i][0] - pts[i - 1][0],
+                              pts[i][1] - pts[i - 1][1]) <= _SPLINE_MIN_GAP:
+                    raise ValueError(
+                        f"a spline in this sketch has two points in the same place "
+                        f"(at {pts[i][0]:g}, {pts[i][1]:g}) — move one of them, or "
+                        "delete the spline"
+                    )
         if et == "rectangle":
             faces.append(
                 Pos(val(e.get("x", 0)), val(e.get("y", 0)))
                 * Rectangle(val(e["width"]), val(e["height"]))
             )
-            all_edges.extend(_own(e, _entity_edges(e, val)))
+            all_edges.extend(_own_edges(e))
         elif et == "circle":
             faces.append(Pos(val(e.get("x", 0)), val(e.get("y", 0))) * Circle(val(e["radius"])))
-            all_edges.extend(_own(e, _entity_edges(e, val)))
+            all_edges.extend(_own_edges(e))
         elif et in ("line", "arc", "spline", "polygon", "slot"):
             # free-form curves + parametric outlines: boundary edges join the
             # loop assembly AND the planar arrangement (one construction path —
             # _entity_edges — shared with sketch-curve projection sources)
-            for ed in _own(e, _entity_edges(e, val)):
+            for ed in _own_edges(e):
                 edges.append(ed)
                 all_edges.append(ed)
         elif et == "point":
@@ -6548,6 +6724,10 @@ def _build_sketch(f, val, datums=None):
             # depends on it). A cached circle also contributes its FACE,
             # mirroring the native circle branch; degenerate curves (zero-length
             # line, point-like poly) yield no edges: reference-only.
+            #
+            # Deliberately NOT wrapped in _own_edges: these numbers are authored
+            # by the projection recompute, not by a user, so a refusal here is
+            # our bug and must not be dressed up as "move your points apart".
             if (e.get("curve") or {}).get("kind") == "circle":
                 cv = e["curve"]
                 faces.append(Pos(cv["x"], cv["y"]) * Circle(cv["r"]))

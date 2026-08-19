@@ -50,6 +50,46 @@ greater than 0, or delete it"*. Zero-size rectangles too.
 (1e-7 m) and the resulting geometry is not trustworthy. Left alone deliberately —
 picking a minimum-feature threshold is a product decision, not a bug fix.
 
+**2026-08-19, field report 88042d97:** that guard block named only circle and
+rectangle, so a zero-length LINE still reached OCCT and came back as the bare
+`sketch failed (StdFail_NotDone)` — killing a sketch, five revolves and an
+extrude with seven errors, on an entity that draws nothing and so could not be
+seen. Lines and splines now join the block, every message (including the circle
+and rectangle ones) carries the entity's coordinates because that is the only
+way to find geometry with no visible extent, and anything the kernel refuses
+that no guard predicted is named by `_unbuildable_message` instead of surfacing
+its class. Following each message in turn now takes the reporter's own document
+from seven errors to four bodies.
+
+The thresholds were re-measured after a first cut asserted three of them wrongly.
+Each is now pinned by `sidecar/test_degenerate_entities.py`, against the kernel:
+
+| shape | boundary | scales with size? |
+|---|---|---|
+| line | `1e-7` (OCCT `Precision::Confusion`) | no — same at x = 0.1 … 1000 |
+| spline, consecutive points | `1e-6` (build123d's own default `make_spline` tol) | no — same at spans 0.1 … 1000 mm |
+| arc, through-point off the chord | `3.7252903e-9 × chord` | **yes** — same ratio on 0.1, 1, 10, 100 and 1000 mm chords |
+
+What the kernel actually does, which is not what the first cut claimed:
+
+- A short **line** is not refused. Above `1e-7` OCCT builds it with its real
+  length; below, it still builds but the edge has length exactly `0.0` down to
+  `1e-14`; it raises at only two points in the range, exactly `1e-7` and exactly
+  coincident (the reporter's case). So `<= 1e-7` is exactly the band the kernel
+  gives no extent to, and refuses nothing it would have built with any.
+- A **spline** with consecutive points under `1e-6` apart raises
+  `Standard_ConstructionError` *with an empty message* — the worst of the three,
+  and the `1e-7` the first cut used missed the whole `1e-7 → 1e-6` band.
+- An **arc**'s boundary is a ratio, so no constant can express it: a fixed
+  `1e-7` refused arcs OCCT builds happily on a 10 mm chord while still leaking
+  `StdFail_NotDone` on a 1000 mm one. The guard therefore does not predict arcs
+  at all — it lets the kernel refuse and names the refusal, which is exact at
+  every size and cannot reject geometry that would have built.
+
+None of this decides the OPEN item above: these thresholds are the kernel's own,
+not a minimum-feature size.
+
+
 ## 2. Raw OCCT exception class names reached the user — FIXED
 
 Nine operations surfaced an internal exception type as the whole explanation.

@@ -110,6 +110,11 @@ jobs:
           uv run python test_body_binding.py
           uv run python test_selector_ambiguity.py
           uv run python test_error_codes.py
+          # Field report 88042d97: a degenerate line/arc/spline must name and
+          # locate itself instead of reaching the user as a raw OCCT class. It
+          # also pins the kernel's own thresholds, so an OCCT or build123d bump
+          # that moves one fails here rather than silently mis-tuning the guard.
+          uv run python test_degenerate_entities.py
           # Ratchet, not cases: it enumerates the ops server.py dispatches and
           # sends each one every malformed shape it derives from the request
           # fields server.py reads. An op added without a _REQUIRED_FIELDS row
