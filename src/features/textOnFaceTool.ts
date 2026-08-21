@@ -354,6 +354,14 @@ export class TextOnFaceTool {
         onCancel: () => this.cancel(),
       },
     );
+    // Draw the outline straight away rather than waiting for the first change.
+    // On the EDIT path nothing else ever fires one — the panel opens with the
+    // saved values and `onChange` only runs when something is touched — so
+    // re-opening a text to nudge its placement showed no outline at all, which
+    // is the state it was reported in. On the create path the text is still
+    // empty here and schedulePreview returns early, so this costs nothing.
+    const v0 = this.panel.values;
+    if (v0) this.schedulePreview(v0);
   }
 
   private buildFeature(v: TextOnFaceValues): Feature {
@@ -383,6 +391,13 @@ export class TextOnFaceTool {
 
   private schedulePreview(v: TextOnFaceValues) {
     this.values = v;
+    // Keep the tool's placement in step with the panel's. The outline is built
+    // from `this.u`/`this.v` while the committed feature is built from the
+    // panel's values, so without this a typed offset moved the text and left the
+    // outline where it was — the preview and the result disagreeing about where
+    // the text is, which is worse than having no preview.
+    this.u = v.u;
+    this.v = v.v;
     window.clearTimeout(this.outlineTimer);
     window.clearTimeout(this.previewTimer);
     // blank text has no geometry and the sidecar rightly refuses it — don't
@@ -401,16 +416,23 @@ export class TextOnFaceTool {
     }, SOLID_DEBOUNCE_MS);
   }
 
-  /** The outline is a STAND-IN for a solid that hasn't been computed yet, so it
-   *  retires the moment the real one arrives — otherwise every committed-looking
-   *  preview carries a second, redundant wireframe of itself. Changing any value
-   *  brings it straight back, because the solid on screen is then stale. */
+  /** The outline used to retire the moment the solid arrived, on the reasoning
+   *  that it was a stand-in and keeping it meant a redundant second wireframe.
+   *  That reasoning was about TYPING, where the solid says everything the outline
+   *  did. It does not hold for PLACEMENT: while you drag the text or type an
+   *  offset, the outline is the only thing that tracks at gesture speed — the
+   *  solid is 400ms behind at best and a rebuild behind at worst — and a 0.6mm
+   *  emboss on a 40mm face is nearly invisible at a glance anyway. Reported as
+   *  "I can't see the preview outline of the text".
+   *
+   *  It now lives as long as the panel does; clearOutlines happens on
+   *  commit/cancel. `solidPending` still tracks the round trip, it just no longer
+   *  takes the outline down with it. */
   private watchForSolid() {
     this.unsubBuild?.();
     this.unsubBuild = this.store.onBuild((s) => {
       if (s.building || !s.result || !this.solidPending) return;
       this.solidPending = false;
-      this.clearOutlines();
     });
   }
 

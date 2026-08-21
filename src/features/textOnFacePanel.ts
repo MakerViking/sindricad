@@ -49,6 +49,13 @@ export class TextOnFacePanel {
     return !!this.root;
   }
 
+  /** The panel's current values, or null when it is closed. Lets the tool draw
+   *  a preview the moment the panel opens instead of waiting for the first
+   *  edit — the edit path never fires an onChange on its own. */
+  get values(): TextOnFaceValues | null {
+    return this.read ? this.read() : null;
+  }
+
   /** Does this element belong to the panel? The tool's capture-phase key handler
    *  asks before treating a keystroke as a shortcut — otherwise typing "T" in
    *  the text box fires the Text tool and closes the panel (the exact bug the
