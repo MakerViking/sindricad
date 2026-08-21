@@ -75,7 +75,7 @@ export class TextOnFacePanel {
     this.root = root;
     root.className = "tool-panel";
     Object.assign(root.style, {
-      top: "60px", right: "16px", width: "270px", zIndex: "60",
+      top: "60px", right: "16px", width: "300px", zIndex: "60",
     });
     document.body.appendChild(root);
 
@@ -89,14 +89,25 @@ export class TextOnFacePanel {
     const label = (t: string) => {
       const l = document.createElement("label");
       l.textContent = t;
-      Object.assign(l.style, { opacity: ".75", minWidth: "62px" });
+      // nowrap: a two-word label ("Across mm") otherwise wraps to two lines and
+      // shoves the rest of its row sideways.
+      Object.assign(l.style, {
+        opacity: ".75", minWidth: "62px", whiteSpace: "nowrap", flex: "0 0 auto",
+      });
       return l;
     };
     const num = (v: number, step: string, min?: string) => {
       const i = document.createElement("input");
       i.type = "number"; i.value = String(v); i.step = step;
       if (min !== undefined) i.min = min;
-      i.style.width = "70px";
+      // FLEXIBLE, not a fixed 70px. The paired rows (Size/Depth, Across/Up,
+      // Angle/Wrap) put label+input+label+input in one flex row: at fixed widths
+      // that is 62+70+62+70 plus three 6px gaps = 282px against the 252px this
+      // panel actually has inside its padding, so the second input of every pair
+      // hung outside the panel and off the window — reported with Depth, Up and
+      // Wrap all unreachable. Letting the inputs share what is left makes the row
+      // fit whatever the panel is.
+      Object.assign(i.style, { flex: "1 1 0", minWidth: "0", boxSizing: "border-box" });
       return i;
     };
 
@@ -154,6 +165,7 @@ export class TextOnFacePanel {
     italic.type = "checkbox";
     italic.checked = (init.style ?? "regular").includes("italic");
     const align = document.createElement("select");
+    Object.assign(align.style, { flex: "1 1 0", minWidth: "0" });
     for (const a of ["left", "center", "right"] as const) {
       const o = document.createElement("option");
       o.value = a; o.textContent = a;
@@ -170,6 +182,7 @@ export class TextOnFacePanel {
     const bevel = num(init.bevel ?? 0, "0.05", "0");
     bevel.title = "0 = sharp edges. Measured in mm, not degrees.";
     const bevelStyle = document.createElement("select");
+    Object.assign(bevelStyle.style, { flex: "1 1 0", minWidth: "0" });
     for (const [v, t] of [["auto", "auto"], ["chamfer", "chamfer"], ["fillet", "round"], ["taper", "sloped"]] as const) {
       const o = document.createElement("option");
       o.value = v; o.textContent = t;
