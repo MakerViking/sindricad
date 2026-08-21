@@ -22,9 +22,35 @@ export function isInspectorEditable(type: Feature["type"]): boolean {
   return type === "sketch" || type in NUM_FIELDS;
 }
 
+/** What to say when an EDIT gesture (double-click a timeline chip, tree
+ *  edit-feature) lands on the inspector rather than on an interactive tool.
+ *  Keyed on the same predicate as the timeline's "double-click to edit" tooltip
+ *  so the promise and the message cannot drift apart — a cylinder used to reach
+ *  editFeature's bare `default:` arm and say nothing at all, which read as "the
+ *  row is broken" (field report c8531ceb).
+ *
+ *  The not-editable wording stays NEUTRAL on purpose: "delete it and re-run the
+ *  tool" is true for loft/sweep/combine/split/mirror/removeBody/deleteFace and
+ *  false for `import`, which has no tool to re-run. */
+export function editHint(type: Feature["type"]): string {
+  const label = labelOf(type);
+  return isInspectorEditable(type)
+    ? `Edit ${label} values in the inspector (right panel)`
+    : `${label} has no editable values in the inspector`;
+}
+
+/** Label for a feature type, tolerating a type this build does not know (a
+ *  document written by a newer version): the timeline guards its own lookup the
+ *  same way rather than throwing mid-render. */
+function labelOf(type: Feature["type"]): string {
+  return (FEATURE_META[type] as { label: string } | undefined)?.label ?? type;
+}
+
 export class Inspector {
   private el: HTMLElement;
   private selectedId: string | null = null;
+  /** the FEATURE editor's own container (see render) — null until first render */
+  private featureBox: HTMLElement | null = null;
 
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
@@ -34,15 +60,32 @@ export class Inspector {
     onUnitChange(() => this.render());
   }
 
-  select(id: string | null) {
+  /** `focus` is passed ONLY by the edit gesture (double-click / edit-feature),
+   *  never by plain selection — otherwise every click in the timeline would
+   *  steal the caret out of whatever the user was typing in. */
+  select(id: string | null, focus = false) {
     this.selectedId = id;
     this.render();
+    if (focus) this.focusFeatureEditor();
+  }
+
+  /** Put the caret on the selected feature's first field, so the double-click
+   *  delivers what the tooltip promises. Scoped to featureBox rather than the
+   *  panel: the panel's first input is a global "Parameters (mm)" row, i.e.
+   *  editing a cylinder would type into an unrelated parameter. A no-op when
+   *  nothing is selected or the type has no fields (there is no input). */
+  private focusFeatureEditor() {
+    const box = this.featureBox;
+    if (!box) return;
+    box.scrollIntoView({ block: "nearest" });
+    box.querySelector<HTMLInputElement>("input")?.focus();
   }
 
   private render() {
     const doc = this.store.document;
     const unit = getUnit();
     this.el.innerHTML = "";
+    this.featureBox = null;
 
     // --- parameters (user params only; model params dN live in the dialog) ---
     this.el.appendChild(title(`Parameters (${unit})`));
@@ -71,15 +114,22 @@ export class Inspector {
     const f = doc.features.find((x) => x.id === this.selectedId);
     if (!f) return;
 
+    // The feature's rows get their OWN container: focusFeatureEditor scopes its
+    // input lookup to this box, so the edit gesture cannot land on a global
+    // parameter row above.
+    const box = document.createElement("div");
+    this.featureBox = box;
+    this.el.appendChild(box);
+
     // sketch: editable per-entity dimensions (same descriptors as the in-canvas
     // labels). Editing entity i serializes just that entity back to numbers and
     // leaves the others (and their parameter references) untouched.
     if (f.type === "sketch") {
-      this.el.appendChild(title(`Sketch · ${f.id}`, true));
+      box.appendChild(title(`Sketch · ${f.id}`, true));
       const resolved = resolveEntities(f, doc.parameters);
       resolved.forEach((e, i) => {
         for (const d of entityDims(e)) {
-          this.el.appendChild(
+          box.appendChild(
             numberRow(`${d.label} ${unit}`, displayValue(d.valueMm), (v) => {
               const copy = resolveEntities(f, doc.parameters)[i];
               if (!copy) return;
@@ -94,10 +144,24 @@ export class Inspector {
     }
 
     const fields = NUM_FIELDS[f.type];
-    if (!fields) return;
+    // A type with no numeric fields used to render NOTHING — a blank panel is
+    // indistinguishable from a broken one, and the timeline still told the user
+    // to double-click the row (field report c8531ceb). Name the feature and say
+    // there is nothing to edit.
+    box.appendChild(title(`${labelOf(f.type)} · ${f.id}`, true));
+    if (!fields) {
+      const hint = document.createElement("div");
+      hint.className = "empty-state";
+      hint.textContent = "No editable values on this feature.";
+      box.appendChild(hint);
+      return;
+    }
 
-    this.el.appendChild(title(`${FEATURE_META[f.type].label} · ${f.id}`, true));
-    for (const [field, label, kind] of fields) {
+    for (const [field, label, kind, applies] of fields) {
+      // a row that doesn't apply to THIS feature's shape (press/pull's target
+      // offset without an up-to target) is not rendered at all — an input the
+      // sidecar ignores reads as "I typed a number and nothing happened".
+      if (applies && !applies(f)) continue;
       const cur = (f as any)[field] as Num | undefined;
       const target: ParamTarget = { kind: "feature", feature: f.id, field };
       const bound = this.store.boundExpr(target);
@@ -118,7 +182,7 @@ export class Inspector {
         row.classList.add("fx-row");
         row.title = `${bound.name} = ${bound.expr} = ${round(bound.value)}`;
       }
-      this.el.appendChild(row);
+      box.appendChild(row);
     }
   }
 

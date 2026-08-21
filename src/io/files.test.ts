@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 
-import { describeImportCapability, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot } from "./files";
+import { describeImportCapability, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot, needsUnassignedConfirm } from "./files";
 
 // Both mappers are TOTAL — an unrecognised extension silently becomes "step"
 // rather than erroring. That is deliberate (the save dialog can hand back a bare
@@ -265,5 +265,158 @@ describe("importedBodyCount", () => {
     // count of 0 here would silently disable the warning for single-body files
     // and, worse, misreport the document.
     expect(importedBodyCount({})).toBe(1);
+  });
+});
+
+// Field-reported 2026-08-21: a curated four-slot palette exported as one object
+// on extruder 1, and NOTHING said so. The colour side of the project 3MF was
+// correct all along — filament_colour carried all four — but no body had ever
+// been bound to a slot, and the warning that exists for exactly that case never
+// fired, because it was computed AFTER an awaited printer probe that rejects
+// when the U1 is offline, unconfigured, or merely slower than 1.5s.
+describe("print-project colour assignment warnings", () => {
+  const backend = {
+    async rebuild() { return { ok: false, error: { message: "stub" } }; },
+    async init() {}, onStatus() { return () => {}; }, connected: true,
+  } as unknown as GeometryBackend;
+
+  const CUSTOM_PALETTE = [
+    { name: "Lilac", color: "#B8ACD6" },
+    { name: "Mint", color: "#96D8AF" },
+    { name: "Coral", color: "#F99963" },
+    { name: "Sky", color: "#B8CDE9" },
+  ];
+
+  function storeWithPalette(palette?: { name: string; color: string }[]) {
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    if (palette) store.load(JSON.stringify({ version: 5, parameters: {}, features: [], palette }));
+    return store;
+  }
+
+  afterEach(() => {
+    vi.doUnmock("../print/printerClient");
+    vi.doUnmock("../ui/toast");
+    vi.resetModules();
+  });
+
+  it("still reports unassigned bodies when the printer never answers", async () => {
+    // THE REGRESSION. The printer probe rejects, exactly as an offline U1 makes
+    // it. The unassigned count needs no printer, so it must survive that.
+    vi.doMock("../print/printerClient", () => ({
+      activePrinterId: () => "u1",
+      printerFilaments: async () => { throw new Error("offline"); },
+    }));
+    const toasts: string[] = [];
+    vi.doMock("../ui/toast", () => ({ toast: (m: string) => void toasts.push(m) }));
+
+    const { warnPrintAssignments } = await import("./files");
+    await warnPrintAssignments(storeWithPalette(CUSTOM_PALETTE), ["b1"]);
+
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0]).toContain("1 body is unassigned");
+  });
+
+  it("says nothing when every body is assigned and the printer is unreachable", async () => {
+    // The counter-check: making the warning printer-independent must not make it
+    // fire on a correctly-assigned document.
+    vi.doMock("../print/printerClient", () => ({
+      activePrinterId: () => "u1",
+      printerFilaments: async () => { throw new Error("offline"); },
+    }));
+    const toasts: string[] = [];
+    vi.doMock("../ui/toast", () => ({ toast: (m: string) => void toasts.push(m) }));
+
+    const { warnPrintAssignments } = await import("./files");
+    const store = storeWithPalette(CUSTOM_PALETTE);
+    store.setBodyColorSlot("b1", 2);
+    await warnPrintAssignments(store, ["b1"]);
+
+    expect(toasts).toEqual([]);
+  });
+
+  it("reports both halves when the printer DOES answer", async () => {
+    vi.doMock("../print/printerClient", () => ({
+      activePrinterId: () => "u1",
+      printerFilaments: async () => ({ 0: { present: false } }),
+    }));
+    const toasts: string[] = [];
+    vi.doMock("../ui/toast", () => ({ toast: (m: string) => void toasts.push(m) }));
+
+    const { warnPrintAssignments } = await import("./files");
+    await warnPrintAssignments(storeWithPalette(CUSTOM_PALETTE), ["b1"]);
+
+    expect(toasts[0]).toContain("slot 1 has no filament loaded");
+    expect(toasts[0]).toContain("1 body is unassigned");
+  });
+});
+
+describe("needsUnassignedConfirm", () => {
+  const backend = {
+    async rebuild() { return { ok: false, error: { message: "stub" } }; },
+    async init() {}, onStatus() { return () => {}; }, connected: true,
+  } as unknown as GeometryBackend;
+  const CUSTOM = [{ name: "Lilac", color: "#B8ACD6" }, { name: "Mint", color: "#96D8AF" }];
+
+  function storeWithPalette(palette?: { name: string; color: string }[]) {
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    if (palette) store.load(JSON.stringify({ version: 5, parameters: {}, features: [], palette }));
+    return store;
+  }
+
+  it("prompts when a curated palette has no assignments at all", () => {
+    expect(needsUnassignedConfirm(storeWithPalette(CUSTOM), ["b1", "b2"])).toBe(true);
+  });
+
+  it("stays quiet once ANY body is assigned", () => {
+    // One assignment means the user knows the mechanism; the post-export toast
+    // still names the bodies they missed. Prompting again would be a nag.
+    const store = storeWithPalette(CUSTOM);
+    store.setBodyColorSlot("b2", 1);
+    expect(needsUnassignedConfirm(store, ["b1", "b2"])).toBe(false);
+  });
+
+  it("never prompts on an untouched default palette", () => {
+    // The ordinary single-colour export must not grow a dialog.
+    expect(needsUnassignedConfirm(storeWithPalette(), ["b1"])).toBe(false);
+  });
+
+  it("never prompts with no bodies", () => {
+    expect(needsUnassignedConfirm(storeWithPalette(CUSTOM), [])).toBe(false);
+  });
+});
+
+describe("needsUnassignedConfirm and face-level color", () => {
+  const backend = {
+    async rebuild() { return { ok: false, error: { message: "stub" } }; },
+    async init() {}, onStatus() { return () => {}; }, connected: true,
+  } as unknown as GeometryBackend;
+  const CUSTOM = [{ name: "Lilac", color: "#B8ACD6" }, { name: "Mint", color: "#96D8AF" }];
+
+  function storeWithFacePaint(slots: (number | null)[]) {
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    store.load(JSON.stringify({ version: 5, parameters: {}, features: [], palette: CUSTOM }));
+    // buildState is what the sidecar filled in; textureColorSlots is its dense
+    // per-face palette-slot array (main.ts:computeTexturePaint paints from it).
+    // buildState is a getter on the prototype; shadow it with an own property
+    // rather than reaching for a private field name that could be renamed.
+    Object.defineProperty(store, "buildState", {
+      configurable: true,
+      get: () => ({
+        result: { bodies: [{ id: "b1", name: "Body1", faceStart: 0, faceCount: slots.length, textureColorSlots: slots }] },
+      }),
+    });
+    return store;
+  }
+
+  it("does not warn when a texture colors faces but no body is assigned", () => {
+    // The field document exactly: a curated palette, zero body assignments, and
+    // three textured faces carrying slots. Since the project writer emits
+    // per-triangle paint_color this DOES print in color, so warning would be
+    // the same lie the prompt exists to prevent, inverted.
+    expect(needsUnassignedConfirm(storeWithFacePaint([null, 2, null, 0]), ["b1"])).toBe(false);
+  });
+
+  it("still warns when the faces carry no slots at all", () => {
+    expect(needsUnassignedConfirm(storeWithFacePaint([null, null]), ["b1"])).toBe(true);
   });
 });

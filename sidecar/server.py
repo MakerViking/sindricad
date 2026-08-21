@@ -58,6 +58,42 @@ import occt_smp
 import sysmem
 import untrusted
 
+
+def _never_let_a_diagnostic_raise():
+    """Make this process's own stdout/stderr unable to kill an operation.
+
+    Field f3b9c287 (0.1.171, Japanese Windows): the Rust shell spawns us with
+    piped stdio, and a pipe is not a console, so CPython gave sys.stdout the
+    ANSI code page (cp932) with errors='strict'. The stall watchdog's own
+    diagnostic print carries an em dash, so the DIAGNOSTIC raised
+    UnicodeEncodeError — and that error, not the operation's result, is what the
+    user was shown ("'cp932' codec can't encode character '\\u2014' in position
+    81"). Worse, it raised BEFORE the pool recycle below it, so the wedged
+    worker was never replaced.
+
+    The spawn env sets PYTHONUTF8=1 (src-tauri/src/sidecar.rs::configure_env),
+    which is the first layer. This is the second, and it is not redundant: it
+    covers a hand-started `python server.py`, a user who has PYTHONIOENCODING
+    set (which OVERRIDES utf-8 mode for stdio and restores errors='strict'),
+    and the spawn WORKERS, which re-import this module but never run main().
+    A log line must never be able to fail the work it is describing.
+
+    stderr already defaults to backslashreplace, but it is set explicitly here
+    so the guarantee does not rest on a CPython default; stdout does not, which
+    is the whole bug.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # A redirected stream can be anything — a StringIO under pytest, a
+        # closed pipe, an object with no reconfigure at all. Never a hard
+        # requirement, so the whole thing is best-effort by design.
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except Exception:
+            pass
+
+
+_never_let_a_diagnostic_raise()
+
 HOST = "127.0.0.1"
 # Env-overridable so a test/benchmark instance can run beside the app's own
 # sidecar without stealing its port.
@@ -256,18 +292,39 @@ def _worker_init(hb=None, hb_idx=None, err_buf=None, mesh=None, mesh_total=None)
             pass  # advisory maintenance must never stop a worker coming up
 
         if hb is not None:
-            def _tick(i):
-                hb.value += 1  # single writer (this worker); no lock needed
-                if hb_idx is not None:
-                    hb_idx.value = i
-
-            builder.on_feature_tick = _tick
+            builder.on_feature_tick = _heartbeat_hook(hb, hb_idx)
     except BaseException:
         _publish_init_error(err_buf)
         # MUST re-raise: this is what breaks the pool. Swallowing it would leave
         # a worker with no `builder` accepting jobs, which fails per-operation
         # and looks exactly like the bug this whole path exists to end.
         raise
+
+
+def _heartbeat_hook(hb, hb_idx):
+    """The worker's `builder.on_feature_tick`: bump the counter, publish what is
+    running. Module level rather than a closure inside _worker_init so a test can
+    drive the REAL hook over stub Values — observing that a tick leaves the right
+    index behind, not merely that some callback was invoked."""
+    # Resolved once, not per tick: this runs on the hot path of a 3,000-body
+    # rebuild. `builder` is imported locally because server.py deliberately has
+    # no module-level import of it (the worker warms it in _worker_init).
+    import builder
+
+    keep = builder.HB_KEEP_INDEX
+
+    def _tick(i):
+        hb.value += 1  # single writer (this worker); no lock needed
+        # HB_KEEP_INDEX is a LIVENESS-only tick, published from a stretch
+        # running inside a phase/feature that already announced itself (e.g. the
+        # loops in _refacet_clean). It says the worker is alive, not what it is
+        # doing, so it must leave the index alone: that index is all the STALL
+        # line and the crash reply have to name the culprit with. Every other
+        # code, -1 ("no feature is building") included, publishes as before.
+        if hb_idx is not None and i != keep:
+            hb_idx.value = i
+
+    return _tick
 
 
 def _publish_init_error(err_buf):
@@ -355,10 +412,38 @@ _EXPORT_ANG_TOL = 0.3
 _EXPORT_MESH_CACHE = {}  # body id -> {"shape", "texture_key", "positions", "indices"}
 
 
+def _face_color_slots(sh, textures):
+    """Dense per-face palette slot for a body, or None when nothing is painted.
+
+    One entry per `sh.faces()` in that enumeration's order, which is the same
+    convention the face-id fids use — so a triangle's face id indexes straight
+    into this. Later texture features win, matching tessellate.
+
+    SHARED by the viewport payload and the project-3MF export on purpose. These
+    were the same eight lines twice over, and the export half not having them is
+    exactly how a model that showed three colours on screen exported as one.
+    """
+    if not textures:
+        return None
+    from builder import _face_fp  # local, like every other builder import here
+
+    face_specs = {}
+    for spec, faces in textures:
+        for f in faces:
+            face_specs[_face_fp(f)] = spec  # later feature wins, like tessellate
+    slots = [(face_specs.get(_face_fp(face)) or {}).get("colorSlot") for face in sh.faces()]
+    return slots if any(s is not None for s in slots) else None
+
+
 def _export_mesh(b, tol=None):
-    """Export-grade (positions, indices) for one live body, three-tier cached
-    (RAM identity -> disk artifact -> compute + persist), mirroring
-    _body_payload. Worker-side only."""
+    """Export-grade (positions, indices, face_ids) for one live body, three-tier
+    cached (RAM identity -> disk artifact -> compute + persist), mirroring
+    _body_payload. Worker-side only.
+
+    face_ids is tessellate()'s third return, one B-rep face id per triangle. It
+    is what lets the project writer paint a FACE: without it the export can only
+    colour whole objects, which is how a model showing three texture colours on
+    screen left here as one."""
     import pickle
 
     from tessellate import tessellate
@@ -385,7 +470,7 @@ def _export_mesh(b, tol=None):
     # a second time with no way to tell why.
     if (ent is not None and ent["shape"] is sh
             and ent["texture_key"] == texture_key and ent["tol"] == tol):
-        return ent["positions"], ent["indices"]
+        return ent["positions"], ent["indices"], ent["faceIds"]
     # This body was last meshed at a DIFFERENT tolerance. OCCT keeps the
     # triangulation on the shape and considers an existing finer mesh adequate
     # for a coarser request, so without dropping it first the new tolerance is
@@ -395,7 +480,10 @@ def _export_mesh(b, tol=None):
 
     mesh_key = None
     if b.get("meshKey"):
-        mesh_key = "%s-export-t%s" % (b["meshKey"], tol)
+        # "export2" because the artifact gained face_ids: an older 2-tuple would
+        # unpickle fine and then silently export unpainted. Bumping the key
+        # retires them instead of teaching every reader to sniff the shape.
+        mesh_key = "%s-export2-t%s" % (b["meshKey"], tol)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     mesh = None
@@ -410,12 +498,12 @@ def _export_mesh(b, tol=None):
     if mesh is None:
         t0 = time.monotonic()
         textures = resolve_body_textures(b) if b.get("_textures") else None
-        pos, idx, _fids = tessellate(
+        pos, idx, fids = tessellate(
             sh, tolerance=tol, angular_tolerance=_EXPORT_ANG_TOL,
             textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
             force_remesh=retolerance,
         )
-        mesh = (pos, idx)
+        mesh = (pos, idx, fids)
         if mesh_key and (time.monotonic() - t0) * 1000.0 >= _MESH_PERSIST_MIN_MS:
             try:
                 import geomstore
@@ -432,11 +520,12 @@ def _export_mesh(b, tol=None):
     # doing anyway — on the very worker the rest of this branch defends from OOM.
     positions = np.asarray(mesh[0], dtype=np.float64)
     indices = np.asarray(mesh[1], dtype=np.int32)
+    face_ids = np.asarray(mesh[2], dtype=np.int32)
     _EXPORT_MESH_CACHE[bid] = {
         "shape": sh, "texture_key": texture_key, "tol": tol,
-        "positions": positions, "indices": indices,
+        "positions": positions, "indices": indices, "faceIds": face_ids,
     }
-    return positions, indices
+    return positions, indices, face_ids
 
 
 # Filenames Windows refuses outright, in ANY case and with or without an
@@ -760,16 +849,7 @@ def _body_payload(b, tolerance, profile):
         # Two-tone inlay preview: dense per-face palette-slot array, same
         # sh.faces() enumeration the fid convention uses. Sparse-by-convention —
         # None (omitted key) when no texture on this body carries a colorSlot.
-        tex_color_slots = None
-        if textures:
-            face_specs = {}
-            for spec, faces in textures:
-                for f in faces:
-                    face_specs[_face_fp(f)] = spec  # later feature wins, like tessellate
-            tex_color_slots = [(face_specs.get(_face_fp(face)) or {}).get("colorSlot")
-                               for face in sh.faces()]
-            if not any(s is not None for s in tex_color_slots):
-                tex_color_slots = None
+        tex_color_slots = _face_color_slots(sh, textures)
         edges = edge_polylines_by_body([b])
         for e in edges:
             e.pop("id", None)  # ids are assigned client-side after assembly
@@ -1089,7 +1169,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
         pos_parts, idx_parts, vbase = [], [], 0
         ntri = 0
         for b in target_bodies:
-            pos, idx = _export_mesh(b)
+            pos, idx, _fids = _export_mesh(b)
             # Checked HERE, per body, rather than on the concatenated total.
             # The cap exists to stop a pathological document allocating
             # unbounded memory, and a check that runs only after every body has
@@ -1136,7 +1216,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
         slots = body_colors or {}
         entries, ntri = [], 0
         for b in target_bodies:
-            pos, idx = _export_mesh(b)
+            pos, idx, _fids = _export_mesh(b)
             ntri += len(idx) // 3
             # Same reason as _mesh_export: bound the allocation as it happens.
             # GLB keeps bodies SEPARATE, so without this a 3,000-body assembly
@@ -1271,11 +1351,12 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
 
     palette, body_colors, body_names = sanitize_inputs(palette, body_colors, body_names)
     meshed = []
+    face_slots = {}
     ntri = 0
     for b in live:
         # Export-grade tolerance — the viewport default (0.1) is visibly faceted
         # on a printed part. Cached across exports of an unchanged body.
-        positions, indices = _export_mesh(b)
+        positions, indices, face_ids = _export_mesh(b)
         if not len(indices):
             continue  # degenerate body with no triangulation — skip, like exports do
         # This path had NO budget at all, which made it the way round every cap
@@ -1286,12 +1367,32 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
         if refusal:
             return {"error": {"message": refusal}}
         meshed.append(
-            {"id": b["id"], "name": b["name"], "positions": positions, "indices": indices}
+            {"id": b["id"], "name": b["name"], "positions": positions,
+             "indices": indices, "faceIds": face_ids}
         )
+        # Per-FACE colour, the same array the viewport paints from. Derived here
+        # rather than passed in from the frontend because it is a property of the
+        # rebuilt geometry, not of the request — and because the frontend's copy
+        # is keyed on the VIEWPORT tessellation's face ids, which an export-grade
+        # remesh does not have to agree with.
+        if b.get("_textures"):
+            from texture import resolve_body_textures
+            slots = _face_color_slots(b["shape"], resolve_body_textures(b))
+            if slots:
+                face_slots[str(b["id"])] = slots
     if not meshed:
         return {"error": {"message": "nothing to export — no meshable bodies"}}
 
-    res = {"path": write_project_3mf(meshed, path, palette, body_colors, body_names, settings)}
+    # A slot the palette does not have cannot be printed; drop it rather than
+    # emitting a paint_color pointing past filament_colour, which Orca reads as
+    # an extruder it has no filament for. sanitize_inputs already does the
+    # equivalent for BODY assignments.
+    face_slots = {
+        bid: [s if (s is not None and 0 <= s < len(palette)) else None for s in slots]
+        for bid, slots in face_slots.items()
+    }
+    res = {"path": write_project_3mf(meshed, path, palette, body_colors, body_names,
+                                     settings, face_slots=face_slots)}
     if errors:
         res["warnings"] = [_err_entry(e) for e in errors]
     return res
@@ -2334,22 +2435,45 @@ async def _run_stall(loop, fn, *args, stall=STALL_TIMEOUT, on_progress=None):
                 last_t = loop.time()
                 continue
             if loop.time() - last_t > stall:
-                # Say so in the log. This watchdog previously recycled the pool
-                # and returned its message to the UI without printing a thing,
-                # so a 0.1.111 field report of exactly this stall arrived with a
+                # Read the heartbeat and BUILD THE LINE before recycling. The
+                # index names the feature (or import phase) the worker was on
+                # and is all that survives the kill; the string is composed here
+                # so that nothing left to do below can lose it. Say so in the
+                # log at all: this watchdog previously recycled the pool and
+                # returned its message to the UI without printing a thing, so a
+                # 0.1.111 field report of exactly this stall arrived with a
                 # 179-byte log holding only "LISTENING 8765" — the one event
-                # worth diagnosing left no trace anywhere. The heartbeat index is
-                # the feature the worker was on, and it is all that survives.
+                # worth diagnosing left no trace anywhere.
                 idx = int(_HB_IDX.value) if _HB_IDX is not None else -1
-                print(
+                stall_line = (
                     f"STALL: no worker heartbeat for {int(stall)}s while running "
                     f"{getattr(fn, '__name__', fn)!r} (feature index {idx}) — "
-                    "recycling the worker pool",
-                    flush=True,
+                    "recycling the worker pool"
                 )
-                _kill_pool(_pool)
-                _pool = _new_pool()
-                fut.cancel()
+                # RECOVERY FIRST, DIAGNOSTIC SECOND. The print used to sit above
+                # these three lines, and in field f3b9c287 it RAISED — a cp932
+                # stdout could not encode the em dash above — so the wedged
+                # worker was never killed. With max_workers=1 it held the only
+                # slot and every later geometry op blocked forever: one bad log
+                # line took the engine out for the rest of the session. Nothing
+                # the diagnostic does can skip recovery now (it runs after), and
+                # the print is additionally wrapped so it cannot propagate.
+                #
+                # `finally`, not a plain suffix: _kill_pool is raise-proof but
+                # _new_pool constructs a ProcessPoolExecutor, which can fail (out
+                # of fds, no /dev/shm). If it does, the caller gets that
+                # exception — but the stall it was reacting to must still be in
+                # the log, otherwise the one event worth diagnosing is again
+                # invisible, exactly as in 0.1.111.
+                try:
+                    _kill_pool(_pool)
+                    _pool = _new_pool()
+                    fut.cancel()
+                finally:
+                    try:
+                        print(stall_line, flush=True)
+                    except Exception:
+                        pass  # a diagnostic must never be able to fail recovery
                 return {"error": {"message": (
                     "one operation stalled for over %d s — the geometry kernel was "
                     "restarted; progress up to the last checkpoint is kept"
@@ -2601,6 +2725,298 @@ def _malformed(op, req):
     return None
 
 
+# Bytes per triangle, used ONLY as a LAST RESORT — every mesh format this
+# server accepts is counted exactly by _mesh_triangle_count() below, and this
+# table is what is left when that count cannot be had (a 3MF whose .model is
+# past the scan window, a file whose structure we don't recognise).
+#
+# These are deliberately the LOWEST plausible rate for each format, not the
+# typical one, because the estimate feeds a stall DEADLINE: under-counting
+# triangles buys a short budget and reaps an import that was working, while
+# over-counting only makes a genuinely wedged worker sit a little longer, and
+# the MAX_IMPORT_TRIANGLES clamp bounds even that. The previous table held the
+# typical rate for ONE exporter each ({stl: 250, 3mf: 75, obj: 55, glb: 40}) and
+# so erred the reaping way for every other one: measured on this machine at
+# 50,188 triangles from one plate, a `%g` ASCII STL is 131.2 B/tri against the
+# assumed 250 (estimate 0.53x truth) and a `%g` OBJ is 39.6 against 55 (0.72x).
+# 50 B/tri is a binary STL's exact rate and no STL encoding can beat it (an
+# ASCII facet is ~86 B even with single-digit coordinates); 24 B/tri is under
+# 3MF's 32-byte `<triangle v1="0" v2="1" v3="2"/>`; 10 B/tri is an OBJ of
+# single-digit indices with shared vertices; 6 B/tri is glTF's indices-only
+# floor.
+_MESH_BYTES_PER_TRI = {"stl": 50, "3mf": 24, "obj": 10, "glb": 6}
+
+# Mirrors builder.MAX_IMPORT_TRIANGLES. Duplicated rather than imported for the
+# reason _mesh_triangle_estimate spells out — importing builder would pull
+# build123d into the SERVER process. test_heartbeat asserts the two agree.
+MAX_IMPORT_TRIANGLES = 150_000
+
+# Mirrors builder.MAX_IMPORT_SCAN_BYTES for the same reason: the window a
+# counting scan is allowed to read, so a multi-GB ASCII STL or a zip-bombed 3MF
+# cannot be walked (or slurped) in the server process. test_heartbeat asserts
+# the two agree.
+MAX_IMPORT_SCAN_BYTES = 64 * 1024 * 1024
+
+# The glTF JSON chunk is read whole to count triangles, so it needs its own
+# bound — the 32-bit length field in the header is attacker-controlled.
+_MAX_GLB_JSON_BYTES = 32 * 1024 * 1024
+
+# Mesh import cost, RE-MEASURED on this machine 2026-08-21 over a plate of
+# 196-340 through-holes at five densities, two passes, occt_smp.configure()
+# first as the worker does. The table, the encoding sweep and the harness live
+# beside the assertions in test_heartbeat._MEASURED_IMPORT; the numbers that
+# decide these constants (worst of every pass and every encoding):
+#
+#     ntri       longest SILENT stretch      whole import
+#     50,188              11.7 s                 43.8 s
+#     83,900              22.8 s                 95.4 s
+#    123,704              63.7 s                214.4 s
+#    145,532              62.5 s                210.2 s
+#
+# The SILENT stretch is what this deadline is actually raced against — a mesh
+# import now ticks 533-1169 times (via _import_phase and _refacet_clean's own
+# loops), and _run_stall resets its clock on every one — so the earlier framing
+# of "one blocking lib3mf call, no loop to tick inside" no longer holds and the
+# earlier single-number table measured neither column cleanly.
+#
+# The curve is kept at (ntri/10,300)^2 with a 5.5x headroom, which clears the
+# measured whole-import time by 3.0-5.2x and the measured silent stretch by
+# 11-17x. Retuning it DOWN was considered and rejected: the count is not the
+# whole story. A 141,916-triangle mesh of one family measured 444-499 s while a
+# 152,052-triangle mesh of the SAME family (same exporter, same plate, 14 more
+# holes) measured 220-312 s, so the SHAPE moves the cost by more than 2x at a
+# fixed triangle count, and this box is a 24-thread desktop where the dominant
+# stage (refacet) is OCCT-parallel — a 4-core laptop is several times slower
+# again. 2.6x shape spread x a slower machine is most of an 11x margin.
+#
+# It is deliberately generous, because the two failure modes are not symmetric —
+# a watchdog that waits too long costs a wedged worker holding the single pool
+# slot until the user hits cancel (polled every second, see _CANCEL), while one
+# that fires too early destroys a working import with no recourse at all. That
+# is field f3b9c287.
+_MESH_READ_DIV = 10_300.0     # ntri -> seconds, squared
+_MESH_BUDGET_HEADROOM = 5.5   # shape spread (2.6x) x slower machine (2x)
+_MESH_BUDGET_FLOOR = 90.0     # never shorter than the old flat deadline
+
+
+def _mesh_import_budget(ntri):
+    """Stall budget in seconds for importing a mesh of `ntri` triangles.
+
+    A pure function of the count so it can be checked BY VALUE — the property
+    that matters is what it returns, not how it is spelled.
+
+    `ntri` is derived from a file that may be hostile (a 3MF whose .model
+    declares a gigabyte of uncompressed XML), and a budget that grows without
+    bound is a watchdog switched off. The clamp is what stops that, and it is
+    MAX_IMPORT_TRIANGLES rather than an arbitrary ceiling because that is the
+    honest bound: the worker refuses a denser mesh before reading a byte of it,
+    so a declared count above the cap cannot buy a longer read. The cost of the
+    clamp is stated rather than hidden — at the cap this returns ~1,166 s, i.e.
+    a wedged 150k-triangle import is reaped after ~19 minutes. That is what a
+    lib3mf-based reader honestly needs for a file we still accept; if that is too
+    long to wait, the lever is MAX_IMPORT_TRIANGLES, not this deadline.
+    """
+    n = min(max(int(ntri), 0), MAX_IMPORT_TRIANGLES)
+    return max(_MESH_BUDGET_FLOOR, _MESH_BUDGET_HEADROOM * (n / _MESH_READ_DIV) ** 2)
+
+
+def _count_needle(fh, needle, limit, max_bytes):
+    """Count `needle` occurrences in a binary stream WITHOUT loading it whole.
+    Returns (count, complete).
+
+    Reads 1 MiB chunks and keeps a len(needle)-1 byte carry between them, so a
+    match straddling a chunk boundary counts exactly once (the carry is shorter
+    than the needle, so it cannot itself hold a match — no double counting).
+    Stops once the count passes `limit` (already over the import cap, so the
+    exact value stops mattering) or `max_bytes` have been read.
+
+    `complete` is the load-bearing half of the return: a scan cut short by
+    `max_bytes` yields a FLOOR, not a count, and a floor used as a triangle
+    count is an under-estimate — the direction that reaps a healthy import.
+    Callers must fall back rather than believe it. This is the twin of
+    builder._count_stream; see _mesh_triangle_estimate for why it is duplicated
+    instead of imported."""
+    nlen = len(needle)
+    count = 0
+    total = 0
+    carry = b""
+    while True:
+        chunk = fh.read(1 << 20)
+        if not chunk:
+            return count, True
+        total += len(chunk)
+        buf = carry + chunk
+        count += buf.count(needle)
+        carry = buf[-(nlen - 1):] if nlen > 1 else b""
+        if count > limit:
+            return count, True      # past the cap: the budget clamps here anyway
+        if total >= max_bytes:
+            return count, False     # a floor, not a count
+
+
+def _obj_triangle_count(path, cap, max_bytes):
+    """Exact triangle count for a Wavefront OBJ, or None.
+
+    Counts CORNERS, not `f` lines, because builder._read_obj_triangles
+    fan-triangulates an n-gon into n-2 triangles: a quad mesh (Blender's
+    default export) has exactly half as many `f` lines as triangles, and half
+    the count is a quarter of the budget."""
+    n = 0
+    total = 0
+    with open(path, "rb") as fh:
+        for ln in fh:
+            total += len(ln)
+            if ln[:2] == b"f ":
+                corners = len(ln.split()) - 1
+                if corners >= 3:
+                    n += corners - 2
+                if n > cap:
+                    return n        # past the cap: the budget clamps here anyway
+            # Checked on EVERY line, not just non-face ones: a file made
+            # entirely of degenerate `f 1 2` lines never advances `n`, so a
+            # byte bound guarded by the else-branch would walk it all.
+            if total >= max_bytes:
+                return None         # scan window exhausted: a floor, not a count
+    return n
+
+
+def _glb_triangle_count(path):
+    """Exact triangle count for a binary glTF, or None.
+
+    Read from the JSON chunk's accessor counts — the same chunk
+    builder._glb_dominant_color already parses, so this needs no new dependency
+    and no geometry. A mesh referenced by several nodes is counted once per
+    node, and one that no node references is still counted once, because both
+    roundings are in the over-count (longer budget) direction."""
+    with open(path, "rb") as fh:
+        head = fh.read(20)
+        if len(head) < 20 or struct.unpack("<I", head[:4])[0] != 0x46546C67:
+            return None
+        jlen = struct.unpack("<I", head[12:16])[0]
+        if jlen > _MAX_GLB_JSON_BYTES:
+            return None
+        raw = fh.read(jlen)
+    if len(raw) < jlen:
+        return None
+    doc = json.loads(raw)
+    accessors = doc.get("accessors") or []
+    instances = {}
+    for node in doc.get("nodes") or []:
+        m = (node or {}).get("mesh")
+        if isinstance(m, int):
+            instances[m] = instances.get(m, 0) + 1
+    n = 0
+    for i, mesh in enumerate(doc.get("meshes") or []):
+        per_mesh = 0
+        for prim in (mesh or {}).get("primitives") or []:
+            mode = prim.get("mode", 4)      # 4 = TRIANGLES (the glTF default)
+            if mode not in (4, 5, 6):       # 5/6 = STRIP/FAN; below that: no triangles
+                continue
+            acc = prim.get("indices")
+            if not isinstance(acc, int):
+                acc = (prim.get("attributes") or {}).get("POSITION")
+            if not isinstance(acc, int) or not 0 <= acc < len(accessors):
+                return None                 # can't tell — fall back to bytes
+            c = (accessors[acc] or {}).get("count", 0)
+            if not isinstance(c, int) or c < 0:
+                return None
+            per_mesh += c // 3 if mode == 4 else max(0, c - 2)
+        n += per_mesh * max(1, instances.get(i, 0))
+    return n
+
+
+def _mesh_triangle_count(path, fmt):
+    """The EXACT triangle count of a mesh file, or None when it cannot be had
+    cheaply and certainly. Never raises."""
+    cap = MAX_IMPORT_TRIANGLES
+    try:
+        if fmt == "stl":
+            with open(path, "rb") as fh:
+                head = fh.read(84)
+            if len(head) == 84:
+                n = struct.unpack("<I", head[80:84])[0]
+                if n and os.path.getsize(path) == 84 + 50 * n:
+                    return n            # binary STL: exact, straight from byte 80
+            # ASCII STL: one "facet normal" per triangle, by the format's grammar.
+            with open(path, "rb") as fh:
+                n, complete = _count_needle(fh, b"facet normal", cap,
+                                            MAX_IMPORT_SCAN_BYTES)
+            return n if (complete and n) else None
+        if fmt == "3mf":
+            # The .model's UNCOMPRESSED size comes from the zip central
+            # directory, so the bomb check costs no decompression; the count
+            # itself streams the model through the same bounded window.
+            import zipfile
+
+            with zipfile.ZipFile(path) as z:
+                model = next((nm for nm in z.namelist()
+                              if nm.lower().endswith(".model")), None)
+                if model is None or z.getinfo(model).file_size > MAX_IMPORT_SCAN_BYTES:
+                    return None
+                with z.open(model) as fh:
+                    n, complete = _count_needle(fh, b"<triangle", cap,
+                                                MAX_IMPORT_SCAN_BYTES)
+            return n if (complete and n) else None
+        if fmt == "obj":
+            n = _obj_triangle_count(path, cap, MAX_IMPORT_SCAN_BYTES)
+            return n or None
+        if fmt == "glb":
+            n = _glb_triangle_count(path)
+            return n or None
+    except Exception:
+        return None
+    return None
+
+
+def _mesh_triangle_estimate(path, fmt):
+    """How many triangles a mesh file holds. 0 for a non-mesh format (or
+    anything unreadable), meaning "no idea" — the caller then sizes the stall
+    budget from bytes instead.
+
+    EXACT wherever the format allows it to be counted with stdlib alone, which
+    is all four of the mesh formats this server accepts:
+
+        binary STL  uint32 at byte 80 (and the 84 + 50n size identity)
+        ASCII STL   one "facet normal" per triangle
+        3MF         one "<triangle" per triangle, stream-decompressed
+        OBJ         corners of every `f` line, minus 2 per line (fan)
+        glTF/GLB    accessor counts in the JSON chunk, times node instances
+
+    Deliberately NOT builder._peek_triangle_count, which is the same idea:
+    importing builder pulls build123d — and its import-time system font scan,
+    the cause of four Windows bring-up failures — into the SERVER process, which
+    is the one thing the worker-process split exists to prevent. So the ~15 lines
+    are carried here instead, stdlib-only; the real MAX_IMPORT_TRIANGLES gate
+    still runs in the worker against its own count.
+
+    This used to be a bytes-per-triangle guess for everything except binary STL,
+    and the guess ran 1.4-1.9x high for real exporters, so the budget landed at
+    0.5-0.7x the honest one and reaped working imports — a `%g`-formatted ASCII
+    STL, one encoding away from the format in field f3b9c287, estimated 0.53x
+    and got the 90 s floor. Exact counting is what removes that whole class,
+    not a better constant."""
+    fmt = (fmt or "").lower()
+    per = _MESH_BYTES_PER_TRI.get(fmt)
+    if per is None:
+        return 0
+    n = _mesh_triangle_count(path, fmt)
+    if n is not None:
+        return n
+    try:
+        size = os.path.getsize(path)
+        if fmt == "3mf":
+            import zipfile
+
+            with zipfile.ZipFile(path) as z:
+                model = next((nm for nm in z.namelist()
+                              if nm.lower().endswith(".model")), None)
+                size = z.getinfo(model).file_size if model else size
+        return int(size / per)
+    except Exception:
+        return 0  # unreadable/odd file: fall back to the byte-derived budget
+
+
+
 async def _dispatch(ws, loop, req, req_id, op):
     """Run one request and send its reply. Split out of handle() so the read
     loop can stay responsive while this is running — see handle().
@@ -2712,9 +3128,9 @@ async def _dispatch(ws, loop, req, req_id, op):
 
     elif op == "import":
         # A one-time import (file read + B-rep build) runs far longer than a
-        # rebuild. Two things matter here:
+        # rebuild. Three things matter here:
         #
-        # 1. The budget is SIZE-DERIVED, never a constant. A 356 MiB STEP
+        # 1. The budget is INPUT-DERIVED, never a constant. A 356 MiB STEP
         #    measured 193 s end to end (90.6 s read, 93.9 s canonicalize), so a
         #    flat 90 s reaps a legitimate import. max() keeps it from ever being
         #    SHORTER than the old deadline for the files that already worked.
@@ -2724,19 +3140,40 @@ async def _dispatch(ws, loop, req, req_id, op):
         #    default this would reap a working import 30 s EARLIER than the old
         #    flat 90 s. The stall reaper cannot observe liveness through an
         #    atomic OCCT call, so here `stall` is simply the wall clock.
+        # 3. A MESH is budgeted by TRIANGLES, not by bytes — see the branch
+        #    below, which is where field f3b9c287's import was actually lost.
         try:
             _sz = os.path.getsize(req["path"]) / (1024 * 1024)
         except OSError:
             _sz = 0.0
-        budget = max(90.0, 60.0 + 1.5 * _sz)
-        # The REAPER budget above is deliberately generous, so it is the wrong
-        # denominator for a progress bar — using it made a 15.7 s import crawl to
-        # 6% and then jump to done. `eta` is a separate, deliberately tighter
-        # ESTIMATE: ~0.5 s/MiB, measured at 0.41 s/MiB on a 38 MiB file and
-        # 0.54 s/MiB on the 356 MiB reference. Under-estimating is the safe
-        # direction — the bar reaches its phase cap and waits, which reads as
-        # "nearly there" rather than "stuck at 6%".
-        eta = max(3.0, 0.5 * _sz)
+        _ntri = _mesh_triangle_estimate(req["path"], req.get("format"))
+        if _ntri:
+            # A MESH is budgeted by TRIANGLES, not bytes: under the old byte
+            # formula a 5.94 MiB / 124,668-triangle STL got 90 s and was reaped
+            # 46 s into a read that was working fine, which is field f3b9c287 —
+            # the user's STL never had a chance, and the reaper's own diagnostic
+            # then failed to encode on top of it. The read is ONE lib3mf call
+            # with no loop to tick inside, so the watchdog cannot see through it:
+            # this budget IS the wall clock for it. The curve, what it is fitted
+            # to and why it is as generous as it is live in
+            # _mesh_import_budget().
+            #
+            # NOTE for whoever reads this next: that the honest deadline for a
+            # 150k-triangle mesh is ~19 minutes says the cap is too high for a
+            # lib3mf-based reader. Lowering it would refuse files that import
+            # (slowly) today, so it is deliberately left alone here.
+            budget = _mesh_import_budget(_ntri)
+            eta = max(3.0, (_ntri / 10690.0) ** 2)
+        else:
+            budget = max(90.0, 60.0 + 1.5 * _sz)
+            # The REAPER budget above is deliberately generous, so it is the wrong
+            # denominator for a progress bar — using it made a 15.7 s import crawl to
+            # 6% and then jump to done. `eta` is a separate, deliberately tighter
+            # ESTIMATE: ~0.5 s/MiB, measured at 0.41 s/MiB on a 38 MiB file and
+            # 0.54 s/MiB on the 356 MiB reference. Under-estimating is the safe
+            # direction — the bar reaches its phase cap and waits, which reads as
+            # "nearly there" rather than "stuck at 6%".
+            eta = max(3.0, 0.5 * _sz)
 
         # The progress origin has to be PER PHASE, not per request. `_t0` used to
         # be bound once as a default argument, so `frac` measured total elapsed
@@ -2752,7 +3189,13 @@ async def _dispatch(ws, loop, req, req_id, op):
             # *_mesh swallows the meshing counters _run_stall passes positionally
             # (an import does not mesh). Without it they would bind to _rid/_b
             # and corrupt every import frame.
-            i = code if 0 <= code < len(_IMPORT_PHASES) else 0
+            #
+            # A NEGATIVE code is the documented "not a feature" liveness tick
+            # (builder.progress_tick, now published from inside _refacet_clean's
+            # loops). It means "still alive", NOT "back to phase 0": mapping it
+            # onto a phase would rewind the bar to "Reading file" and reset this
+            # phase's origin on every tick.
+            i = code if 0 <= code < len(_IMPORT_PHASES) else max(_ph["i"], 0)
             if i != _ph["i"]:
                 _ph["i"], _ph["t"] = i, loop.time()
             base = sum(w for _, w in _IMPORT_PHASES[:i])

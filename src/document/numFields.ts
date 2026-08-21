@@ -12,12 +12,29 @@ import { isDimConstraint } from "../sketch/id";
  *  Defined here (document layer); ui/units.ts re-exports it for its consumers. */
 export type FieldKind = "length" | "angle" | "count";
 
+/** [field, label, kind] — plus an optional `applies` predicate for a row that
+ *  only exists in some shapes of the feature. The inspector skips a row whose
+ *  predicate says no; every other consumer (migration, the params engine) reads
+ *  the first three slots and is unaffected. */
+export type NumFieldRow = [string, string, FieldKind] | [string, string, FieldKind, (f: Feature) => boolean];
+
+/** A press/pull only honours `upToOffset` when it HAS an up-to target — without
+ *  one the sidecar extrudes the plain distance and the offset is ignored, so
+ *  the row was an input that swallowed the number and changed nothing (field
+ *  report, bug #88). The wire refuses that combination too; this keeps the user
+ *  from typing into it in the first place. */
+function hasUpToTarget(f: Feature): boolean {
+  return f.type === "press-pull" && (f.upTo !== undefined || f.upToPlane !== undefined);
+}
+
 /** [field, label, kind] rows per feature type. */
-export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], [string, string, FieldKind][]>> = {
+export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>> = {
   extrude: [["distance", "Distance", "length"]],
   fillet: [["radius", "Radius", "length"]],
   chamfer: [["distance", "Length", "length"]],
-  "press-pull": [["distance", "Distance", "length"]],
+  // "Target offset" is measured along the EXTRUDE direction, not the target's
+  // normal: positive pushes past the up-to target, negative stops short.
+  "press-pull": [["distance", "Distance", "length"], ["upToOffset", "Target offset", "length", hasUpToTarget]],
   revolve: [["angle", "Angle", "angle"]],
   datumPlane: [["offset", "Offset", "length"]],
   box: [["length", "Length", "length"], ["width", "Width", "length"], ["height", "Height", "length"]],
@@ -80,7 +97,7 @@ export const INT_FIELDS: Record<string, number> = {
 export const NON_NUM_STRING_FIELDS = new Set([
   "id", "type", "name", "operation", "font", "style", "align", "text", "pathRef",
   "plane", "sketch", "axis", "profile", "path", "direction", "body", "imagePath", "solid",
-  "bevelStyle",
+  "bevelStyle", "upToPlane",
 ]);
 
 /** A parameter target resolved to the live object holding the number. */

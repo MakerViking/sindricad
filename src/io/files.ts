@@ -376,6 +376,8 @@ export async function exportPrintProject(
     path = picked;
   }
 
+  if (!(await confirmUnassignedPalette(store, bodies.map((b) => b.id)))) return null;
+
   // Same busy/cancel treatment as exportModel and importPath — this path
   // tessellates every body at export grade before writing the project, so it is
   // every bit as long-running as a plain export on a large document.
@@ -393,7 +395,7 @@ export async function exportPrintProject(
     await reportError(`Print export failed: ${res.message ?? "unknown error"}`);
     return null;
   }
-  void warnUnloadedFilaments(store, bodies.map((b) => b.id));
+  void warnPrintAssignments(store, bodies.map((b) => b.id));
   // Only surface a modal when there are warnings (features that didn't build) —
   // the silent-staging path (Stage D) shouldn't pop a dialog on the happy path.
   if (res.warnings?.length) {
@@ -406,41 +408,110 @@ export async function exportPrintProject(
   return res.path ?? path;
 }
 
-/** Best-effort post-export check: warn when the design uses palette slots whose
- *  toolhead has no filament loaded, or leaves bodies unassigned (they export as
- *  extruder 1). Fire-and-forget and bounded to 1.5s client-side (the shared
- *  Rust HTTP client has a 10s timeout — a warning arriving that late is worse
- *  than none): unreachable/slow/unconfigured printer → silently no warning.
- *  Never blocks or fails the export itself. */
-async function warnUnloadedFilaments(store: DocumentStore, bodyIds: string[]) {
+/** Ask before exporting a project that curates colors but assigns none.
+ *
+ *  A palette entry paints nothing on its own: color is per BODY, bound by
+ *  right-clicking a body (Browser row or viewport) and picking a slot. Someone
+ *  who has built a four-slot palette has plainly said "I want multi-color", so
+ *  exporting that as one object on extruder 1 is worth a question — the toast
+ *  after the fact arrives once Orca is already open, which is where this was
+ *  field-reported.
+ *
+ *  Gated on a CUSTOMISED palette so it cannot nag the ordinary single-color
+ *  export: an untouched default palette with no assignments is just a plain
+ *  print, not a mistake. Returns false only if the user cancels. */
+async function confirmUnassignedPalette(store: DocumentStore, bodyIds: string[]): Promise<boolean> {
+  if (!needsUnassignedConfirm(store, bodyIds)) return true;
+  const { ask } = await import("@tauri-apps/plugin-dialog");
+  return ask(
+    "No body is assigned to a palette slot, so this will print in a single color.\n\n" +
+      "Assign colors by right-clicking a body — in the Browser list or in the viewport — and picking a slot.",
+    { title: "Export without colors?", kind: "warning", okLabel: "Export anyway", cancelLabel: "Cancel" },
+  );
+}
+
+/** Does any built face carry a palette slot of its own? Today that means a
+ *  texture feature's `colorSlot`, surfaced per face by the sidecar as
+ *  `textureColorSlots` and painted in the viewport by main.ts's
+ *  computeTexturePaint. */
+function hasFacePaint(store: DocumentStore): boolean {
+  for (const b of store.buildState.result?.bodies ?? []) {
+    if (b.textureColorSlots?.some((s) => s != null)) return true;
+  }
+  return false;
+}
+
+/** The decision behind that prompt, split out so it is testable without a
+ *  dialog: a curated palette, and no color assigned ANYWHERE.
+ *
+ *  Face-level color counts. A texture feature's `colorSlot` is a real assignment
+ *  that the viewport paints and — since the project writer learned per-triangle
+ *  `paint_color` — the export now carries too, so a document colored entirely
+ *  that way must not be told it "will print in a single color". Warning on it
+ *  would be this prompt's own defect pointing the other way. */
+export function needsUnassignedConfirm(store: DocumentStore, bodyIds: string[]): boolean {
+  if (store.paletteIsDefault()) return false;
+  if (!bodyIds.length) return false;
+  if (hasFacePaint(store)) return false;
+  return slotUsage(store, bodyIds).unassigned === bodyIds.length;
+}
+
+/** Which palette slots this set of bodies prints on, and how many bodies carry
+ *  no assignment at all (project3mf sends those to slot 0 / extruder 1). Pure
+ *  local state — no printer, no await. */
+function slotUsage(store: DocumentStore, bodyIds: string[]): { usedSlots: Set<number>; unassigned: number } {
+  const assigned = store.bodyColorsMap();
+  const usedSlots = new Set<number>();
+  let unassigned = 0;
+  for (const id of bodyIds) {
+    const slot = assigned[id];
+    if (slot == null) {
+      unassigned++;
+      usedSlots.add(0); // project3mf defaults unassigned bodies to slot 0
+    } else {
+      usedSlots.add(slot);
+    }
+  }
+  return { usedSlots, unassigned };
+}
+
+/** Used slots whose toolhead has no filament loaded. Best-effort and bounded to
+ *  1.5s client-side (the shared Rust HTTP client has a 10s timeout — a warning
+ *  arriving that late is worse than none). An unreachable, slow or unconfigured
+ *  printer yields [] meaning UNKNOWN, never "empty". */
+async function emptyPrinterSlots(usedSlots: Set<number>): Promise<number[]> {
   try {
     const { activePrinterId, printerFilaments } = await import("../print/printerClient");
     const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 1500));
     const filaments = await Promise.race([printerFilaments(activePrinterId()), timeout]);
-    const assigned = store.bodyColorsMap();
-    const usedSlots = new Set<number>();
-    let unassigned = 0;
-    for (const id of bodyIds) {
-      const slot = assigned[id];
-      if (slot == null) {
-        unassigned++;
-        usedSlots.add(0); // project3mf defaults unassigned bodies to slot 0
-      } else {
-        usedSlots.add(slot);
-      }
-    }
-    const empty = [...usedSlots].filter((s) => !filaments[s]?.present).sort();
-    if (!empty.length && !unassigned) return;
-    const parts: string[] = [];
-    if (empty.length) {
-      parts.push(`slot${empty.length > 1 ? "s" : ""} ${empty.map((s) => s + 1).join(", ")} ha${empty.length > 1 ? "ve" : "s"} no filament loaded on the printer`);
-    }
-    if (unassigned) parts.push(`${unassigned} bod${unassigned > 1 ? "ies are" : "y is"} unassigned (defaulting to slot 1)`);
-    const { toast } = await import("../ui/toast");
-    toast(`Exported, but ${parts.join("; ")}.`, { kind: "warning" });
+    return [...usedSlots].filter((s) => !filaments[s]?.present).sort((a, b) => a - b);
   } catch {
-    // printer offline/slow/unconfigured — the check is best-effort by design
+    return []; // printer offline/slow/unconfigured — best-effort by design
   }
+}
+
+/** Post-export check: warn when bodies went out unassigned (they print as
+ *  extruder 1), or when a used slot has no filament loaded on the printer.
+ *
+ *  The two halves are deliberately INDEPENDENT. The unassigned count is pure
+ *  local state and must be reported whether or not a printer answers. It used to
+ *  be computed inside the printer probe's `try`, after an `await` that rejects
+ *  on a 1.5s timeout, so an offline, slow or unconfigured U1 swallowed the one
+ *  warning that needs no printer at all — the export went out monochrome and
+ *  said nothing. Field-reported: a curated four-slot palette, zero assignments,
+ *  one object on extruder 1, no warning anywhere. Never blocks or fails the
+ *  export itself. */
+export async function warnPrintAssignments(store: DocumentStore, bodyIds: string[]) {
+  const { usedSlots, unassigned } = slotUsage(store, bodyIds);
+  const empty = await emptyPrinterSlots(usedSlots);
+  if (!empty.length && !unassigned) return;
+  const parts: string[] = [];
+  if (empty.length) {
+    parts.push(`slot${empty.length > 1 ? "s" : ""} ${empty.map((s) => s + 1).join(", ")} ha${empty.length > 1 ? "ve" : "s"} no filament loaded on the printer`);
+  }
+  if (unassigned) parts.push(`${unassigned} bod${unassigned > 1 ? "ies are" : "y is"} unassigned (defaulting to slot 1)`);
+  const { toast } = await import("../ui/toast");
+  toast(`Exported, but ${parts.join("; ")}.`, { kind: "warning" });
 }
 
 

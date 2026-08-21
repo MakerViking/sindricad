@@ -164,6 +164,14 @@ export class SketchMode {
   private pendingConstraintPoint: THREE.Vector3 | null = null;
   /** the constraint just added by a tool, on trial until its solve comes back */
   private trialConstraint: SketchConstraint | null = null;
+  /** The entities the NEXT non-drag solve is allowed to move — "what you picked
+   *  first is what moves" (bug #86, see sketchSolve's `bias`). Armed by the tool
+   *  that knows the pick order and consumed by exactly one solve in pump().
+   *
+   *  Deliberately NOT persisted with the constraint, and deliberately not
+   *  reachable from headlessSolve: pick order belongs to the gesture, not to the
+   *  document, so no saved sketch changes how it solves because of this. */
+  private pendingBias: { moves: string[] } | null = null;
   private selected = new Set<string>(); // selected entity ids (select tool)
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
@@ -328,9 +336,10 @@ export class SketchMode {
       getFilletFirst: () => this.filletFirst,
       setFilletFirst: (v) => { this.filletFirst = v; },
       requestSolve: () => this.requestSolve(),
-      addConstraint: (c) => {
+      addConstraint: (c, moves) => {
         this.constraints.push(c);
         this.trialConstraint = c; // withdrawn again if this solve conflicts
+        if (moves) this.pendingBias = { moves: [moves] }; // before requestSolve — pump reads it synchronously
         this.requestSolve();
       },
       warn: (msg) => toast(msg),
@@ -656,14 +665,14 @@ export class SketchMode {
    *  can't apply to them — say so rather than dropping the flag in silence.
    *  Returns the constraint that was placed (carrying the id it was born with,
    *  or inherited), so a caller can bind an expression to it. */
-  private placeDim(c: SketchConstraint, forceDriven = false): SketchConstraint {
+  private placeDim(c: SketchConstraint, forceDriven = false, moves?: string): SketchConstraint {
     const drivenable = isPlacedDim(c);
     const driven = drivenable && (this.referenceMode || forceDriven);
     if (this.referenceMode && !drivenable) {
       toast("A line length / circle diameter can't be a reference dimension yet — created as driving.");
     }
     const out = driven ? ({ ...c, driven: true } as SketchConstraint) : c;
-    this.setDrivingDimension(out);
+    this.setDrivingDimension(out, moves);
     return out;
   }
   setDimensionsVisible(on: boolean) {
@@ -865,8 +874,12 @@ export class SketchMode {
 
   /** Add/replace the driving dimension on an entity, then re-solve. A dim gets
    *  its stable id at birth; a replacement inherits the replaced dim's id, so a
-   *  parameter binding survives retyping the dimension. */
-  private setDrivingDimension(c: SketchConstraint) {
+   *  parameter binding survives retyping the dimension.
+   *
+   *  `moves` names the entity this dimension should move (the first-picked
+   *  operand — see DimPlan.moves). It biases exactly ONE solve and is never
+   *  stored, so only the callers that still know the pick order pass it. */
+  private setDrivingDimension(c: SketchConstraint, moves?: string) {
     // the unordered pair of rounds a rim-gap dim spans. radialGap and
     // c2cDistance are the SAME user intent ("the gap between these two rims") in
     // two solver formulations — treating them as one target is what stops a
@@ -916,6 +929,7 @@ export class SketchMode {
     });
     if (isDimConstraint(c) && !c.id) c.id = replacedId ?? newConstraintId();
     this.constraints.push(c);
+    if (moves) this.pendingBias = { moves: [moves] }; // BEFORE requestSolve: pump reads it synchronously
     this.requestSolve();
     // requestSolve is a no-op once the solver is known dead, so on those
     // machines the value has to be written into the geometry here or it is
@@ -2128,7 +2142,10 @@ export class SketchMode {
     // being the radial gap the moment either centre moves (see types.ts)
     if (conc && !this.referenceMode && !forceDriven) this.addConcentricPair(conc.c1, conc.c2);
     if (!this.referenceMode && !forceDriven) this.seedFirstPicked(c, firstPicked);
-    const placed = this.placeDim(c, forceDriven);
+    // A reference dim measures and constrains nothing, so it has no business
+    // holding anything still — same gate the two implied constraints above use.
+    const moves = this.referenceMode || forceDriven ? undefined : plan.moves;
+    const placed = this.placeDim(c, forceDriven, moves);
     // bind exactly as the label editor does: a formula binds, and a plain number
     // over a dim that WAS bound (the id carries over on replace) rewrites that
     // binding to the literal instead of leaving a stale expression behind
@@ -3653,12 +3670,22 @@ export class SketchMode {
           this.refreshDragGeometry(); // curves only; dims/candidates rebuilt on endDrag
         } else {
           this.solveDirty = false;
+          // Consume the "what you picked moves" bias here and nowhere else. A
+          // DRAG frame must never see it (it has its own pin, and the two would
+          // fight); a plain re-solve must never see it (it belongs to the one
+          // gesture that armed it).
+          const bias = this.pendingBias;
+          this.pendingBias = null;
           if (this.constraints.length === 0) { this.lastDof = -1; this.conflict = false; continue; }
           const ver = this.entityVersion;
-          const r = await compileAndSolve(this.entities, this.constraints);
+          const r = await compileAndSolve(this.entities, this.constraints, undefined, bias ?? undefined);
           if (!this.active) break;
-          // geometry changed mid-solve (a draw committed): discard, re-solve
-          if (this.entityVersion !== ver) { this.solveDirty = true; continue; }
+          // geometry changed mid-solve (a draw committed): discard, re-solve.
+          // Re-arm the bias with it — this result never reached the document, so
+          // the gesture that armed it has still not had its one biased solve.
+          // `??=`, not `=`: a newer gesture may have armed its own while we were
+          // awaiting, and that one is the more recent intent.
+          if (this.entityVersion !== ver) { this.pendingBias ??= bias; this.solveDirty = true; continue; }
           this.conflict = r.conflicts.length > 0;
           // A constraint that cannot be satisfied must not stay in the sketch.
           // Keeping it leaves the whole system unsolvable, so every LATER

@@ -390,3 +390,420 @@ describe("a line that collapses to nothing is refused, like a zero-radius circle
     expectUnchangedOnFailure(r, entities, r.entities, "collinear on H+V");
   });
 });
+
+// Bug #86, field report 787121b3 (0.1.136): "The dimensions of the rectangle
+// (40x40) change instead of changing the distance of the circle to the
+// rectangle."
+//
+// A rectangle expands into 4 free corners + 4 implicit h/v rules, so it carries
+// 4 DOF and nothing that says "keep my drawn size". A p2lDistance from a circle
+// centre to one of its edges is ONE equation over three free x-coordinates, so
+// the solver is free to split the correction between the circle and the
+// rectangle — and it does, unstably: at the reported start position it moved the
+// left edge 0.110mm and the circle 0.071mm (39.890111 x 40), at x=-13.9 it moved
+// the rectangle alone, at x=-13.95 the circle alone.
+//
+// The fix is a POLICY, not a repair: the FIRST-PICKED entity moves. Everything
+// else is anchored at its input position for that one solve.
+describe("bug #86 — a dimension moves what you dimensioned, not what you measured from", () => {
+  const seed = (): any[] => [
+    { type: "rectangle", id: "e9", x: 0, y: 0, width: 40, height: 40 },
+    { type: "circle", id: "e11", x: -13.8194, y: 12.798995405618346, radius: 2.4 },
+  ];
+  const dim: any[] = [
+    { type: "diameter", circle: "e11", value: 4.8 },
+    { type: "p2lDistance", e: "e11", p: 0, line: "e9~3", value: 6 }, // to the LEFT edge
+  ];
+  const rectOf = (r: { entities: ResolvedEntity[] }) => {
+    const e = r.entities.find((x) => x.id === "e9");
+    if (e?.type !== "rectangle") throw new Error("rectangle lost");
+    return e;
+  };
+  const circleOf = (r: { entities: ResolvedEntity[] }) => {
+    const e = r.entities.find((x) => x.id === "e11");
+    if (e?.type !== "circle") throw new Error("circle lost");
+    return e;
+  };
+
+  it("a distance dimension moves the entity you dimensioned, not the one you measured from", async () => {
+    const r = await compileAndSolve(seed(), dim, undefined, { moves: ["e11"] });
+    const rect = rectOf(r);
+    expect(rect.width).toBe(40); // the reported symptom: it became 39.890111
+    expect(rect.height).toBe(40);
+    expect(rect.x).toBe(0);
+    // the left edge is at x = -20, so 6mm out from it is x = -14
+    expect(Math.abs(circleOf(r).x - -14)).toBeLessThan(1e-9);
+  });
+
+  it("no bias is today's behaviour", async () => {
+    // Bias omitted must take the untouched free path, and what that path DOES is
+    // the defect: it pays for the dimension by moving the rectangle's left edge.
+    //
+    // Asserted as the defect and not as a number. This solve is one of the
+    // bistable ones solveReproducibility documents — repeated 20 times in one
+    // process it alternates between 39.890111 (rect 61% / circle 39%) and
+    // 39.929289 (the same split the other way round) — and WHICH of the two it
+    // lands on depends on how many solves ran earlier in the same worker. So an
+    // exact-float allowlist here fails on unrelated edits to the tests ABOVE it:
+    // a mutation that changed nothing about this solve, only the count before it,
+    // flipped it red. Both values resize the rectangle and neither is 40, and
+    // that is the whole of what this test is about.
+    const r = await compileAndSolve(seed(), dim);
+    const rect = rectOf(r);
+    expect(rect.width).not.toBe(40); // the rectangle paid, which is the bug
+    expect(rect.width).toBeGreaterThan(39.5); // ...a little, not a collapse
+    expect(rect.width).toBeLessThan(40);
+    expect(rect.x).toBe((40 - rect.width) / 2); // the LEFT edge is the one that moved
+  });
+
+  it("anchors do not change what the solver reports", async () => {
+    // The anchors ride on the drag pin's device — a `fixed:true` HELPER point
+    // plus a `temporary:true` coincidence. `temporary` tags the constraint -1,
+    // so it never enters dof / conflicts / redundant. Doing it with `fixed:true`
+    // on the real points instead fabricates 4 redundants and reports dof 1,
+    // which is what this test exists to catch.
+    const free = await compileAndSolve(seed(), dim);
+    const biased = await compileAndSolve(seed(), dim, undefined, { moves: ["e11"] });
+    expect(biased.dof).toBe(5);
+    expect(biased.dof).toBe(free.dof);
+    expect(biased.conflicts).toEqual([]);
+    expect(biased.overDefined).toEqual([]);
+  });
+
+  it("an anchored pass the GEOMETRY GUARD condemns falls back to the free solve", async () => {
+    // sketchMode withdraws a trial constraint — with a "that conflicts with the
+    // ones already on this sketch" toast — on `!r.ok` OR any conflict
+    // (sketchMode.ts:3666). So a biased pass that is anything less than
+    // ok-with-no-conflicts must be discarded WHOLE, result AND diagnostics, and
+    // today's free solve returned in its place: the bias must never be able to
+    // turn a good constraint into a withdrawn one.
+    //
+    // THE THING THIS TEST HAS TO DISCRIMINATE, because an earlier version of it
+    // did not: the fallback has to be judged on the FINISHED pass, guard
+    // included, not on solveSketch's raw return. Perpendicular between this
+    // rectangle's TOP edge and this line, rect picked first, is a case where
+    // planegcs reports Success with an empty conflict list while having driven
+    // the rectangle's width to zero — so the raw return looks clean, and only
+    // the RECT_COLLAPSE guard 170 lines later condemns it. Judged raw, the
+    // fallback never fired and this perfectly valid Perpendicular came back
+    // ok:false / conflicts:["k0"] with the geometry untouched.
+    //
+    // Deleting the fallback line makes this fail on the first expect.
+    const rect = (): any[] => [
+      { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 },
+      { type: "line", id: "L", x1: 10, y1: 20, x2: -20, y2: 10 },
+    ];
+    const perp: any[] = [{ type: "perpendicular", l1: "R~2", l2: "L" }];
+    const free = await compileAndSolve(rect(), perp);
+    const biased = await compileAndSolve(rect(), perp, undefined, { moves: ["R"] });
+    expect(free.ok).toBe(true); // the constraint IS satisfiable — nothing to withdraw
+    expect(free.conflicts).toEqual([]);
+    expect(biased.ok).toBe(true);
+    expect(biased.conflicts).toEqual([]);
+    // discarded WHOLE: the free solve's geometry, not the collapsed anchored one
+    expect(biased.entities).toEqual(free.entities);
+    // and the anchored pass really was condemned, i.e. this is the fallback and
+    // not a bias that happened to land on the same answer — picking the LINE
+    // first (the other order) is clean anchored, and lands somewhere else.
+    const other = await compileAndSolve(rect(), perp, undefined, { moves: ["L"] });
+    const otherRect = other.entities.find((e) => e.id === "R");
+    if (otherRect?.type !== "rectangle") throw new Error("rectangle lost");
+    expect(otherRect.width).toBeCloseTo(40, 9); // rect held; the LINE rotated
+    expect(free.entities).not.toEqual(other.entities);
+  });
+
+  it("a mover's non-mover circle keeps its RADIUS — the tangent gesture", async () => {
+    // A radius is a solver variable that hangs off no point, so anchoring the
+    // circle's centre alone left it as free as ever, and the bias made the
+    // reported symptom WORSE than shipping nothing: arm Tangent, pick the LINE
+    // first, and the circle the user did not pick grew 5 -> 7 (+40%), where the
+    // unbiased solve took it to 5.822 (+16%). SolveInput.radiusAnchors is the
+    // fix; the bar it has to clear is "never worse than the free solve", and it
+    // clears it by not moving the non-mover AT ALL.
+    const seedT = (): any[] => [
+      { type: "line", id: "L", x1: -20, y1: 8, x2: 20, y2: 8 },
+      { type: "circle", id: "C", x: 0, y: 0, radius: 5 },
+    ];
+    const tangent: any[] = [{ type: "tangent2", a: "L", b: "C" }];
+    const circ = (r: { entities: ResolvedEntity[] }) => {
+      const e = r.entities.find((x) => x.id === "C");
+      if (e?.type !== "circle") throw new Error("circle lost");
+      return e;
+    };
+    const free = await compileAndSolve(seedT(), tangent);
+    const biased = await compileAndSolve(seedT(), tangent, undefined, { moves: ["L"] });
+    expect(biased.ok).toBe(true);
+    expect(biased.conflicts).toEqual([]);
+    expect(circ(biased).radius).toBe(5); // untouched, not merely closer than free
+    expect(circ(biased).x).toBe(0);
+    expect(circ(biased).y).toBeCloseTo(0, 12);
+    // never worse than today, stated as the measurement it is
+    expect(Math.abs(circ(biased).radius - 5)).toBeLessThan(Math.abs(circ(free).radius - 5));
+    // and the LINE, which IS the mover, absorbed the whole correction: tangent
+    // to an r=5 circle at the origin puts it at y=5.
+    const l = biased.entities.find((e) => e.id === "L");
+    if (l?.type !== "line") throw new Error("line lost");
+    expect(l.y1).toBeCloseTo(5, 9);
+  });
+
+  it("...and an ARC keeps its radius too, with no radius pin of its own", async () => {
+    // Same gesture, same bar, DIFFERENT mechanism, and the difference is worth
+    // stating because it is why sketchSolve emits no arc radius anchor. An
+    // arc's centre is compiled as a non-mergeable point, so a non-mover arc's
+    // centre is always anchored, and `arc_rules` keeps both endpoints on the
+    // circle — centre + either endpoint already fixes the radius. Confirmed by
+    // deleting an arc arm from the radius anchors: this test did not move.
+    //
+    // What it DOES defend is the guarantee itself: with the bias removed the
+    // arc grows past 7.5, and this fails.
+    const seedA = (): any[] => [
+      { type: "line", id: "L", x1: -20, y1: 8, x2: 20, y2: 8 },
+      { type: "arc", id: "A", x1: -5, y1: 0, x2: 5, y2: 0, mx: 0, my: 5 },
+    ];
+    const tangent: any[] = [{ type: "tangent2", a: "L", b: "A" }];
+    const free = await compileAndSolve(seedA(), tangent);
+    const biased = await compileAndSolve(seedA(), tangent, undefined, { moves: ["L"] });
+    expect(biased.ok).toBe(true);
+    expect(biased.conflicts).toEqual([]);
+    expect(biased.overDefined).toEqual([]);
+    expect(biased.dof).toBe(free.dof);
+    const arcOf = (r: { entities: ResolvedEntity[] }) => {
+      const e = r.entities.find((x) => x.id === "A");
+      if (e?.type !== "arc") throw new Error("arc lost");
+      return Math.hypot(e.mx - (e.x1 + e.x2) / 2, e.my - (e.y1 + e.y2) / 2); // sagitta == r here
+    };
+    expect(arcOf(biased)).toBeCloseTo(5, 9); // untouched
+    expect(arcOf(free)).toBeGreaterThan(7); // what it does without the pin
+  });
+
+  it("equal-radius moves the circle you picked first, not the other one", async () => {
+    // The gesture that read as fixed while doing nothing: constraintTools passes
+    // `moves` on the equalRadius path, but until radii were anchored the bias
+    // could not reach a radius, so all three of these gave C1=5 / C2=5 — the
+    // NON-picked circle halving every time, which is bug #86 exactly.
+    const two = (): any[] => [
+      { type: "circle", id: "C1", x: 0, y: 0, radius: 5 },
+      { type: "circle", id: "C2", x: 30, y: 0, radius: 10 },
+    ];
+    const eq: any[] = [{ type: "equalRadius", a: "C1", b: "C2" }];
+    const radii = (r: { entities: ResolvedEntity[] }) =>
+      r.entities.map((e) => (e.type === "circle" ? e.radius : NaN));
+    const first = await compileAndSolve(two(), eq, undefined, { moves: ["C1"] });
+    expect(radii(first)).toEqual([10, 10]);
+    expect(radii(await compileAndSolve(two(), eq, undefined, { moves: ["C2"] }))).toEqual([5, 5]);
+    // and a radius anchor stays out of the diagnostics exactly as a point anchor
+    // does — `temporary` is what buys that, and losing it would light the whole
+    // sketch amber. The free solve reports the same 5.
+    expect(first.dof).toBe((await compileAndSolve(two(), eq)).dof);
+    expect(first.dof).toBe(5);
+    expect(first.overDefined).toEqual([]);
+    expect(first.conflicts).toEqual([]);
+  });
+
+  it("a corner the MOVER shares stays free — anchoring it freezes the mover", async () => {
+    // The `shared points stay FREE` rule, which nothing else in the suite
+    // defends: inverting its `.some` to `.every` left all 608 sketch tests green
+    // while reintroducing the bug. L's start is merged onto R's bottom-left
+    // corner, so that solver point is owned by BOTH — and R is the mover, so it
+    // must NOT be anchored. Anchored (the `.every` reading), R's left edge can
+    // only move by dragging a pinned corner with it, so the solver splits the
+    // 0.1806 mm correction instead and the circle the user did not pick drifts:
+    // R 39.9097 with C at -13.9097, rather than R 39.8194 with C where it was.
+    const shared = (): any[] => [
+      { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 40 },
+      { type: "line", id: "L", x1: -20, y1: -20, x2: -40, y2: -40 },
+      { type: "circle", id: "C", x: -13.8194, y: 12.798995405618346, radius: 2.4 },
+    ];
+    const cons: any[] = [
+      { type: "diameter", circle: "C", value: 4.8 },
+      { type: "p2lDistance", e: "C", p: 0, line: "R~3", value: 6 },
+    ];
+    const r = await compileAndSolve(shared(), cons, undefined, { moves: ["R"] });
+    const rect = r.entities.find((e) => e.id === "R");
+    const c = r.entities.find((e) => e.id === "C");
+    if (rect?.type !== "rectangle" || c?.type !== "circle") throw new Error("geometry lost");
+    expect(c.x).toBe(-13.8194); // exactly: the circle is not the mover
+    expect(rect.width).toBeCloseTo(39.8194, 9); // the rectangle paid in full
+  });
+
+  it("naming an entity that moves nothing degrades gracefully", async () => {
+    // The mover is whatever was picked FIRST, and nothing guarantees the pick is
+    // one of the operands (a stale pick, a future flow). With every point
+    // anchored the solver splits the correction 50/50 instead of failing — and
+    // dimensioning the rectangle first moves the RECTANGLE, which is the same
+    // policy read from the other end.
+    const other: any[] = [...seed(), { type: "line", id: "L1", x1: 30, y1: -30, x2: 50, y2: -12 }];
+    const none = await compileAndSolve(other, dim, undefined, { moves: ["L1"] });
+    expect(none.ok).toBe(true);
+    expect(none.conflicts).toEqual([]);
+    const rectFirst = await compileAndSolve(seed(), dim, undefined, { moves: ["e9"] });
+    expect(circleOf(rectFirst).x).toBe(-13.8194); // the circle did not budge
+    expect(rectOf(rectFirst).width).toBeCloseTo(39.8194, 9);
+  });
+
+  it("a mover spelled as a rectangle EDGE frees the rectangle, not nothing", async () => {
+    // `moves` names ENTITIES and `own()` attributes an edge's corners to the
+    // rectangle, so an un-normalised `R~3` matched nothing: every point in the
+    // sketch got anchored, including the four corners the pick meant to free,
+    // and the gesture degraded to "moves nothing" — bug #86's exact symptom,
+    // silently, with ok:true and no conflicts. (Measured before the
+    // normalisation: R came back 39.9398 with the circle dragged to -13.9398.)
+    // No caller spells it that way today; this is the trap closed for the next one.
+    const r = await compileAndSolve(seed(), dim, undefined, { moves: ["e9~3"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    expect(circleOf(r).x).toBe(-13.8194); // the circle is not the mover: untouched
+    expect(rectOf(r).width).toBeCloseTo(39.8194, 9); // the rectangle paid in full
+  });
+
+  it("a rim DISTANCE moves the circle you picked — it does not resize it", async () => {
+    // A rim dim measures a POSITION, so paying for it in the mover's radius is
+    // never what the gesture meant. And the free radius was not merely unhelpful:
+    // with the centre free and the radius free, planegcs takes the radius
+    // NEGATIVE (raw solved radius -1.4999999999999982 here), the geometry guard
+    // condemns the whole anchored pass, and the fallback quietly returns the FREE
+    // solve — which moves the line the user measured FROM. So the one gesture the
+    // policy exists for did not apply to itself, invisibly. Measured before the
+    // mover-radius pin: L at y=-13.264911 and C resized to 2.470178.
+    const seedR = (): any[] => [
+      { type: "circle", id: "C", x: 0, y: 0, radius: 5 },
+      { type: "line", id: "L", x1: -20, y1: -12, x2: 20, y2: -12 },
+    ];
+    const rim: any[] = [{ type: "c2lDistance", circle: "C", line: "L", value: 20 }];
+    const r = await compileAndSolve(seedR(), rim, undefined, { moves: ["C"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const c = r.entities.find((e) => e.id === "C");
+    const l = r.entities.find((e) => e.id === "L");
+    if (c?.type !== "circle" || l?.type !== "line") throw new Error("geometry lost");
+    expect(l.y1).toBe(-12); // the NON-mover line did not move at all
+    expect(l.y2).toBe(-12);
+    expect(c.radius).toBe(5); // the mover was not resized
+    expect(c.y).toBeCloseTo(13, 9); // it MOVED: rim 20mm above a line at y=-12
+  });
+
+  it("...but a SIZE dim on the same circle still resizes it", async () => {
+    // The boundary just inside the guard above: any constraint that governs the
+    // mover's radius vetoes the pin, or the policy would freeze the very thing a
+    // diameter/equal-radius gesture is asking to change. Rim dim AND a diameter
+    // on one circle — the diameter must win, and the line must still hold still.
+    const seedR = (): any[] => [
+      { type: "circle", id: "C", x: 0, y: 0, radius: 5 },
+      { type: "line", id: "L", x1: -20, y1: -12, x2: 20, y2: -12 },
+    ];
+    const both: any[] = [
+      { type: "c2lDistance", circle: "C", line: "L", value: 20 },
+      { type: "diameter", circle: "C", value: 16 },
+    ];
+    const r = await compileAndSolve(seedR(), both, undefined, { moves: ["C"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const c = r.entities.find((e) => e.id === "C");
+    const l = r.entities.find((e) => e.id === "L");
+    if (c?.type !== "circle" || l?.type !== "line") throw new Error("geometry lost");
+    expect(c.radius).toBeCloseTo(8, 9); // the diameter got what it asked for
+    expect(l.y1).toBeCloseTo(-12, 12); // and the non-mover still held (to 2e-15)
+    expect(c.y).toBeCloseTo(16, 9); // rim at -12+20 = 8, centre 8 above that
+  });
+
+  it("a BIG sketch still takes the bias — anchoring all of it aborts the solver", async () => {
+    // THE regression this exists for is not a wrong number, it is a THROW. An
+    // anchor costs two wasm primitives (a fixed helper point + a temporary
+    // coincidence), and planegcs answers an exhausted heap with `Aborted(OOM)`
+    // out of solve_system — which escapes compileAndSolve into sketchMode's
+    // pump(), where it is read as a dead solver and turns constraint solving off
+    // for the WHOLE session ("The 2D constraint solver stopped responding").
+    // So on a large sketch, placing the FIRST dimension killed constraint
+    // solving on a sketch that dimensioned fine before the bias existed.
+    //
+    // 300 unconstrained lines + the same rectangle-and-circle fixture: 605
+    // solver points, of which exactly FOUR (the rectangle's corners) can move
+    // when the circle is the mover. Anchoring the reachable set is 4 anchors;
+    // anchoring the sketch is 603, and 603 aborts. The free solve was never in
+    // any trouble at this size, which is what makes it a pure regression — so
+    // this asserts BOTH, and asserts the policy still holds at the end of it.
+    const many = (n: number): any[] => {
+      const ents: any[] = [];
+      for (let i = 0; i < n; i++) {
+        ents.push({ type: "line", id: `L${i}`, x1: 100 + i * 3, y1: 0, x2: 102 + i * 3, y2: 5 });
+      }
+      return [...ents, ...seed()];
+    };
+    const free = await compileAndSolve(many(300), dim);
+    expect(free.ok).toBe(true); // the size itself is not the problem
+    const r = await compileAndSolve(many(300), dim, undefined, { moves: ["e11"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    expect(rectOf(r).width).toBe(40); // and the policy survived the scoping
+    expect(Math.abs(circleOf(r).x - -14)).toBeLessThan(1e-9);
+  });
+});
+
+// Round-3 review: scoping the anchors to the REACHABLE set is not a bound.
+// Reachability spreads through the constraint graph, so a single hub entity
+// re-couples the whole sketch and the anchor count is O(connected component)
+// again — a circle dimensioned to a line that N others are `parallel` to reaches
+// 2N+1 points. Past a few hundred anchors planegcs answers with Aborted(OOM),
+// and that throw cannot be recovered from downstream: the abandoned biased pass
+// has already taken the heap, so the free retry under it aborts too and the
+// throw reaches pump(), which turns constraint solving off for the whole sketch
+// session. A sketch that dimensioned fine before the bias existed would lose its
+// solver on the FIRST dimension.
+describe("bug #86 — a bias too big to pay for is dropped, not attempted", () => {
+  const fan = (n: number) => {
+    const ents: any[] = [
+      { type: "circle", id: "C", x: 0, y: 40, radius: 5 },
+      { type: "line", id: "L0", x1: -20, y1: 0, x2: 20, y2: 0 },
+    ];
+    const cons: any[] = [{ type: "p2lDistance", e: "C", p: 0, line: "L0", value: 20 }];
+    for (let i = 0; i < n; i++) {
+      ents.push({ type: "line", id: `fanline${i}`, x1: -20, y1: -5 - i, x2: 20, y2: -5 - i });
+      cons.push({ type: "parallel", l1: "L0", l2: `fanline${i}` });
+    }
+    return { ents, cons };
+  };
+
+  it("solves a fan past the budget exactly as the free solve would", async () => {
+    // What is OBSERVABLE from outside is that the bias was not applied: over the
+    // budget the answer must be the free solve's, entity for entity. (An anchored
+    // pass that aborts and retries free lands on the same answer, so this cannot
+    // witness the allocation itself — the heap cost is invisible to a caller.
+    // Stated rather than implied: this pins the CAP's behaviour, not the abort.)
+    const cons = fan(200).cons;
+    const free = await compileAndSolve(fan(200).ents, cons);
+    const biased = await compileAndSolve(fan(200).ents, cons, undefined, { moves: ["C"] });
+    expect(biased.ok).toBe(true);
+    expect(free.ok).toBe(true);
+    // The load-bearing assertion: the bias was DROPPED, not attempted. Nothing
+    // in `entities` can say this — an over-budget bias and one that aborted the
+    // heap and fell back both return the free answer — which is why the pass
+    // reports the decision.
+    expect(biased.biasAnchors).toBe(0);
+    const y = (r: typeof free, id: string) => {
+      const e = r.entities.find((x) => x.id === id);
+      if (e?.type !== "line") throw new Error(`${id} lost`);
+      return e.y1;
+    };
+    expect(y(biased, "L0")).toBeCloseTo(y(free, "L0"), 9);
+  });
+
+  it("still applies the bias on a sketch inside the budget", async () => {
+    // The counter-check: the cap must not quietly disable the policy everywhere.
+    // 10 parallels is ~21 reachable points, far under MAX_BIAS_ANCHORS.
+    const { ents, cons } = fan(10);
+    const biased = await compileAndSolve(ents, cons, undefined, { moves: ["C"] });
+    expect(biased.ok).toBe(true);
+    expect(biased.biasAnchors).toBeGreaterThan(0); // inside the budget, the policy applies
+    const l0 = biased.entities.find((e) => e.id === "L0");
+    if (l0?.type !== "line") throw new Error("L0 lost");
+    // C was picked, so C moves and the line it was measured FROM stays put.
+    // Tolerance, not equality: the solver returns residue on the order of 1e-14
+    // and an exact assertion here would be a coin flip on its neighbours — the
+    // trap round 3 caught twice in this very file.
+    expect(l0.y1).toBeCloseTo(0, 9);
+    expect(l0.y2).toBeCloseTo(0, 9);
+    const c = biased.entities.find((e) => e.id === "C");
+    if (c?.type !== "circle") throw new Error("C lost");
+    expect(c.y).toBeCloseTo(20, 6); // the mover absorbed the 20 mm
+  });
+});

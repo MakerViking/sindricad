@@ -92,10 +92,45 @@ def _bbox(bodies):
     return lo, hi
 
 
-def _mesh_xml(positions, indices):
+def _paint_attr(slot):
+    """The `paint_color` value for a 0-based palette slot.
+
+    Bambu/Orca store per-face painting as a `paint_color` attribute on
+    <triangle>; PrusaSlicer spells the identical encoding
+    `slic3rpe:mmu_segmentation`. The value is a SLOT INDEX, never a colour — the
+    RGB always comes from filament_colour in project_settings.config, which this
+    writer already emits. Documented values, by 1-based extruder:
+
+        1 -> "4"    2 -> "8"    3 -> "0C"    4 -> "1C"    5 -> "2C"
+
+    i.e. 1 and 2 are `n << 2`, and everything from 3 up is `((n - 3) << 4) | 0xC`
+    zero-padded to two hex digits.
+
+    Extruder 1 encodes as "4" like any other — whether to emit it at all is the
+    CALLER's decision, taken by comparing against the object's own extruder, not
+    something to smuggle in here as an empty string. A face explicitly on slot 0
+    of an object whose base is slot 2 genuinely needs "4" written out.
+
+    UPPERCASE, and that is not cosmetic: Bambu Studio's parser accepts only
+    A-F and silently ignores lowercase, which is a documented cause of a painted
+    model importing as a single colour. Never `.lower()` this.
+
+    Whole faces only. A brush stroke that splits a triangle makes the slicer emit
+    long strings encoding a recursive subdivision tree, which is undocumented and
+    reverse-engineered; painting whole B-rep faces never reaches that encoding.
+    """
+    n = int(slot) + 1
+    if n <= 1:
+        return "4"
+    if n == 2:
+        return "8"
+    return f"{((n - 3) << 4) | 0xC:02X}"
+
+
+def _mesh_xml(positions, indices, face_ids=None, face_slots=None, base_slot=0):
     """The whole mesh as one string. Kept for callers with small meshes and for
     the tests; `_mesh_chunks` is what the writer uses."""
-    return "".join(_mesh_chunks(positions, indices))
+    return "".join(_mesh_chunks(positions, indices, face_ids, face_slots, base_slot))
 
 
 # Vertices per emitted chunk. Large enough that the per-chunk overhead is noise,
@@ -103,7 +138,7 @@ def _mesh_xml(positions, indices):
 _XML_CHUNK_VERTS = 4096
 
 
-def _mesh_chunks(positions, indices):
+def _mesh_chunks(positions, indices, face_ids=None, face_slots=None, base_slot=0):
     """Yield a body's <mesh> XML in bounded pieces.
 
     Built as a generator rather than one string because the caller streams it
@@ -111,6 +146,12 @@ def _mesh_chunks(positions, indices):
     triangles, and materialising that as a single Python str (plus the list of
     per-element strings "".join consumes) costs many times the mesh itself — on
     the one path that has no triangle budget of its own.
+
+    `face_ids` is tessellate()'s third return, one B-rep face id PER TRIANGLE, and
+    `face_slots` a dense per-face palette slot (None where unpainted). Together
+    they paint whole faces without touching a vertex. A face whose slot equals
+    `base_slot` emits no attribute: the object already carries that extruder, so
+    writing it again would be noise on every triangle of the common case.
     """
     yield "<mesh><vertices>"
     buf = []
@@ -125,10 +166,26 @@ def _mesh_chunks(positions, indices):
     if buf:
         yield "".join(buf)
     yield "</vertices><triangles>"
+    # Precompute slot -> attribute once; per-triangle f-strings are the hot loop
+    # on a multi-million-triangle assembly.
+    attrs = {}
+    if face_ids is not None and face_slots:
+        for s in set(s for s in face_slots if s is not None):
+            if s != base_slot:
+                v = _paint_attr(s)
+                if v:
+                    attrs[s] = f' paint_color="{v}"'
     buf = []
     for i in range(0, len(indices) - 2, 3):
+        paint = ""
+        if attrs:
+            t = i // 3
+            if t < len(face_ids):
+                fid = face_ids[t]
+                if 0 <= fid < len(face_slots):
+                    paint = attrs.get(face_slots[fid], "")
         buf.append(
-            f'<triangle v1="{indices[i]}" v2="{indices[i + 1]}" v3="{indices[i + 2]}"/>'
+            f'<triangle v1="{indices[i]}" v2="{indices[i + 1]}" v3="{indices[i + 2]}"{paint}/>'
         )
         if len(buf) >= _XML_CHUNK_VERTS:
             yield "".join(buf)
@@ -139,11 +196,16 @@ def _mesh_chunks(positions, indices):
 
 
 def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
-                      bed=(270.0, 270.0)):
+                      bed=(270.0, 270.0), face_slots=None):
     """Write an Orca-project 3MF. Returns `path`.
 
-    bodies      : [{"id", "name", "positions", "indices"}] — flat mm/Z-up lists
-                  straight from tessellate() (face_ids unused here)
+    bodies      : [{"id", "name", "positions", "indices", "faceIds"}] — flat
+                  mm/Z-up lists straight from tessellate(); "faceIds" is its
+                  third return, one B-rep face id per triangle
+    face_slots  : {body id → dense per-face palette slot, None where unpainted}
+                  — per-FACE colour, written as per-triangle `paint_color`. The
+                  object's own extruder stays the base layer, so a face whose
+                  slot equals it emits nothing
     palette     : [{"name", "color"}] 0-based slots (sanitize_inputs first)
     body_colors : {body id → slot index}; missing → slot 0 (extruder 1)
     body_names  : {body id → display name} (sidebar renames win over b["name"])
@@ -177,7 +239,7 @@ def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
         pid = f' pid="1" pindex="{slot}"' if palette else ""
         # Header only. The MESH is streamed later, straight into the zip, so it
         # is never held here alongside every other body's.
-        objects_meta.append((b, f'<object id="{oid}" type="model" name={quoteattr(name)}{pid}>'))
+        objects_meta.append((b, f'<object id="{oid}" type="model" name={quoteattr(name)}{pid}>', slot))
         items_xml.append(f'<item objectid="{oid}" transform="{transform}" printable="1"/>')
         cfg_objects.append(
             f'  <object id="{oid}">\n'
@@ -201,9 +263,12 @@ def write_project_3mf(bodies, path, palette, body_colors, body_names, settings,
             ' <metadata name="BambuStudio:3mfVersion">1</metadata>\n'
             f" <resources>{basematerials}"
         )
-        for b, header in objects_meta:
+        for b, header, base in objects_meta:
             yield header
-            yield from _mesh_chunks(b["positions"], b["indices"])
+            yield from _mesh_chunks(
+                b["positions"], b["indices"], b.get("faceIds"),
+                (face_slots or {}).get(str(b["id"])), base,
+            )
             yield "</object>"
         yield f"</resources>\n <build>{''.join(items_xml)}</build>\n</model>"
 

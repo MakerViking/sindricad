@@ -16,7 +16,7 @@
 // under dragging while remaining a single atomic entity in the document.
 
 import type { ResolvedEntity } from "./snap";
-import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc } from "./solver";
+import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc, type SolveResult } from "./solver";
 import { circumcenter } from "./arc";
 import { rectCorners } from "./region";
 import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
@@ -53,10 +53,29 @@ export interface SolvePass {
    *  re-runs the unbounded nearest-point search from the cursor and captures an
    *  unrelated free point mid-gesture. */
   dragRefused?: "projected" | "fix" | "geometry";
+  /** How many anchors a requested mover bias actually handed to the solver.
+   *  0 means the bias was dropped before it was attempted. Absent when no bias
+   *  was requested at all.
+   *
+   *  A COUNT rather than a boolean, and that distinction is the whole point: an
+   *  over-budget bias (dropped, 0 anchors) and a bias that was attempted with
+   *  hundreds of anchors, aborted the wasm heap and fell back both return the
+   *  free solve's answer AND both "did not apply a bias". Nothing in `entities`
+   *  separates them, so a boolean here would pass identically either way — which
+   *  it demonstrably did before this was a count. */
+  biasAnchors?: number;
 }
 
 const TAU = Math.PI * 2;
 const ccwDelta = (from: number, to: number) => ((to - from) % TAU + TAU) % TAU;
+
+/** Most anchors a mover bias may allocate before it gives up and solves free.
+ *  Each anchor is a fixed helper point plus a temporary coincidence in the
+ *  planegcs wasm heap, and an exhausted heap answers with `Aborted(OOM)` — a
+ *  throw that cannot be recovered from once made (see the cap's own note). The
+ *  measured cliff is ~400 in a fresh worker and ~300 once a session has been
+ *  running; this leaves room for the pressure to move. */
+const MAX_BIAS_ANCHORS = 120;
 
 /** THE position-coincidence key: two points merge into one solver point iff
  *  their keys match (0.001mm buckets). Anything else that needs "are these
@@ -84,6 +103,7 @@ export async function compileAndSolve(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
   drag?: { fromX: number; fromY: number; toX: number; toY: number },
+  bias?: { moves: string[] },
 ): Promise<SolvePass> {
   const points: SPoint[] = [];
   const pointByKey = new Map<string, string>();
@@ -522,338 +542,621 @@ export async function compileAndSolve(
     else if (best) dragRefused = projPts.has(best.id) ? "projected" : "fix";
   }
 
-  const r = await solveSketch({ points, lines, circles, arcs, constraints: cons, ...(dragInput ? { drag: dragInput } : {}) });
-
-  // planegcs never sees a constraint whose operands are ALL fixed — fixed
-  // params aren't solver variables, so such a constraint is silently accepted
-  // even when violated (e.g. a driving dim between two projected points).
-  // Classify these "inert" constraints ourselves: satisfied → redundant
-  // (amber), violated → conflict (red) — through the same reporting channel
-  // the solver's own diagnosis uses.
-  const conflicts = [...r.conflicts];
-  const redundant = [...r.redundant];
-  // No fixed points (no projected geometry, no `fix`) ⇒ no constraint can be
-  // inert (every inertResidual arm requires fx/fxLine/fxRound operands, and
-  // projRounds is only ever populated alongside fixedPts) — skip the whole
-  // classification pass on ordinary sketches, incl. every drag frame.
-  if (fixedPts.size) {
-    // mm (radians for angles) — comfortably above the residual floor left by the
-    // sidecar's 6-decimal curve rounding (a p2p distance between rounded points
-    // can be off by ~1.4e-6 even when nominally exact), and matching its 1e-4 mm
-    // change tolerance: a conceptually-satisfied inert dim must grade amber, not red
-    const INERT_TOL = 1e-4;
-    const pos = new Map(points.map((p) => [p.id, p])); // fixed ⇒ input == solved
-    const lineEnds = new Map(lines.map((l) => [l.id, l]));
-    const radiusOf = new Map<string, number>([
-      ...circles.map((c) => [c.id, c.radius] as const),
-      ...arcs.map((a) => [a.id, a.radius] as const),
-    ]);
-    const centerOf = new Map<string, string>([
-      ...circles.map((c) => [c.id, c.center] as const),
-      ...arcs.map((a) => [a.id, a.center] as const),
-    ]);
-    const fx = (id: string) => fixedPts.has(id);
-    const fxLine = (id: string) => { const l = lineEnds.get(id); return !!l && fx(l.p1) && fx(l.p2); };
-    const fxRound = (id: string) => projRounds.has(id); // center fixed AND radius pinned
-    const roundAt = (id: string) => radiusOf.get(id)!;
-    const P = (id: string) => pos.get(id)!;
-    const dist = (aId: string, bId: string) => { const a = P(aId), b = P(bId); return Math.hypot(a.x - b.x, a.y - b.y); };
-    const lineDir = (id: string) => {
-      const l = lineEnds.get(id)!;
-      const a = P(l.p1), b = P(l.p2);
-      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-      return { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
-    };
-    const lineLen = (id: string) => { const l = lineEnds.get(id)!; return dist(l.p1, l.p2); };
-    const perpDist = (pId: string, lId: string) => {
-      const l = lineEnds.get(lId)!;
-      const a = P(l.p1), b = P(l.p2), q = P(pId);
-      const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-      return Math.abs((q.x - a.x) * (b.y - a.y) - (q.y - a.y) * (b.x - a.x)) / len;
-    };
-    const tangentRes = (aId: string, bId: string) => { // two rounds: outer or inner tangency
-      const d = dist(centerOf.get(aId)!, centerOf.get(bId)!);
-      const r1 = radiusOf.get(aId)!, r2 = radiusOf.get(bId)!;
-      return Math.min(Math.abs(d - (r1 + r2)), Math.abs(d - Math.abs(r1 - r2)));
-    };
-    // residual of an inert constraint, or null when any operand is still free
-    const inertResidual = (c: SConstraint): number | null => {
-      switch (c.type) {
-        // self-coincident (both endpoints position-merged into one solver
-        // point, e.g. a user endpoint snapped ONTO the projected point it is
-        // constrained to) is absorbed by the merge — vacuous, not over-defining
-        case "coincident": return c.a !== c.b && fx(c.a) && fx(c.b) ? dist(c.a, c.b) : null;
-        case "horizontal": { if (!fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(P(l.p1).y - P(l.p2).y); }
-        case "vertical": { if (!fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(P(l.p1).x - P(l.p2).x); }
-        case "parallel": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.y - d1.y * d2.x); }
-        case "perpendicular": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.x + d1.y * d2.y); }
-        case "equal": return fxLine(c.l1) && fxLine(c.l2) ? Math.abs(lineLen(c.l1) - lineLen(c.l2)) : null;
-        case "distance": return fx(c.a) && fx(c.b) ? Math.abs(dist(c.a, c.b) - c.value) : null;
-        case "p2lDistance": return fx(c.p) && fxLine(c.line) ? Math.abs(perpDist(c.p, c.line) - c.value) : null;
-        case "diameter": return fxRound(c.circle) ? Math.abs(2 * radiusOf.get(c.circle)! - c.value) : null;
-        case "circleRadius": return fxRound(c.circle) ? Math.abs(radiusOf.get(c.circle)! - c.value) : null;
-        case "arcRadius": return fxRound(c.arc) ? Math.abs(radiusOf.get(c.arc)! - c.value) : null;
-        case "tangentLC": return fxLine(c.line) && fxRound(c.circle) ? Math.abs(perpDist(centerOf.get(c.circle)!, c.line) - radiusOf.get(c.circle)!) : null;
-        case "tangentLA": return fxLine(c.line) && fxRound(c.arc) ? Math.abs(perpDist(centerOf.get(c.arc)!, c.line) - radiusOf.get(c.arc)!) : null;
-        case "tangentCC": return fxRound(c.c1) && fxRound(c.c2) ? tangentRes(c.c1, c.c2) : null;
-        case "tangentCA": return fxRound(c.circle) && fxRound(c.arc) ? tangentRes(c.circle, c.arc) : null;
-        case "tangentAA": return fxRound(c.a1) && fxRound(c.a2) ? tangentRes(c.a1, c.a2) : null;
-        case "angleLL": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); const actual = Math.atan2(d1.x * d2.y - d1.y * d2.x, d1.x * d2.x + d1.y * d2.y); const w = ((actual - c.value) % TAU + TAU + Math.PI) % TAU - Math.PI; return Math.abs(w); }
-        case "equalRadiusCC": return fxRound(c.c1) && fxRound(c.c2) ? Math.abs(radiusOf.get(c.c1)! - radiusOf.get(c.c2)!) : null;
-        case "equalRadiusCA": return fxRound(c.circle) && fxRound(c.arc) ? Math.abs(radiusOf.get(c.circle)! - radiusOf.get(c.arc)!) : null;
-        case "equalRadiusAA": return fxRound(c.a1) && fxRound(c.a2) ? Math.abs(radiusOf.get(c.a1)! - radiusOf.get(c.a2)!) : null;
-        case "pointOnLine": return fx(c.p) && fxLine(c.line) ? perpDist(c.p, c.line) : null;
-        case "pointOnPerpBisector": { if (!fx(c.p) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(dist(c.p, l.p1) - dist(c.p, l.p2)); }
-        case "symmetric": { if (!fx(c.a) || !fx(c.b) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; const A = P(l.p1), d = lineDir(c.line), a = P(c.a), b = P(c.b); const t = (a.x - A.x) * d.x + (a.y - A.y) * d.y; const mx = 2 * (A.x + t * d.x) - a.x, my = 2 * (A.y + t * d.y) - a.y; return Math.hypot(mx - b.x, my - b.y); }
-        // rim dims: the same measures entityDims defines, over the pinned params
-        case "rimGap": {
-          if (!fxRound(c.round1) || !fxRound(c.round2)) return null;
-          const g1 = roundAt(c.round1), g2 = roundAt(c.round2);
-          const d = dist(centerOf.get(c.round1)!, centerOf.get(c.round2)!);
-          const rd = Math.abs(g1 - g2);
-          return Math.abs((d < rd ? rd - d : d - g1 - g2) - c.value);
-        }
-        case "rimLine": {
-          if (!fxRound(c.round) || !fxLine(c.line)) return null;
-          return Math.abs((perpDist(centerOf.get(c.round)!, c.line) - roundAt(c.round)) - c.value);
-        }
-        case "rimPoint": {
-          if (!fx(c.p) || !fxRound(c.round)) return null;
-          return Math.abs(Math.abs(dist(c.p, centerOf.get(c.round)!) - roundAt(c.round)) - c.value);
-        }
-        case "radiusDifference":
-          return fxRound(c.inner) && fxRound(c.outer)
-            ? Math.abs((roundAt(c.outer) - roundAt(c.inner)) - c.value)
-            : null;
+  // --- "what you picked is what moves" (bug #86) -----------------------------
+  // A rectangle expands into 4 free corner points plus 4 implicit
+  // horizontal/vertical rules (:160-186), which leaves it 4 DOF with nothing
+  // that says "keep my drawn size". So a distance dimension from a circle to one
+  // of its edges compiles to ONE p2l_distance over three free x-coordinates, and
+  // planegcs is free to split the correction between the circle and the
+  // rectangle — which it does, and not stably: field report 787121b3 typed 6 mm
+  // from a circle to a 40x40 rectangle's left edge and got a 39.890111 x 40
+  // rectangle, and moving the circle's start position 0.13 mm swings the split
+  // from 39%/61% to 100% either way. This is a MISSING POLICY, not a broken
+  // function: every one of those solutions satisfies the constraint.
+  //
+  // The policy is the first-picked entity moves. Everything else is held at its
+  // INPUT state for this one solve — position AND radius, with the drag pin's
+  // device, the only bias the vendored solver offers (see SolveInput.anchors and
+  // .radiusAnchors for why there is no weight to reach for instead).
+  //
+  // Four rules, all load-bearing:
+  //   only the REACHABLE     an anchor costs two wasm primitives, and planegcs's
+  //                          heap is small enough that anchoring a whole sketch
+  //                          aborts it (see `reachable` below). A point no
+  //                          compiled constraint can reach cannot move, so
+  //                          holding it still buys nothing and costs the solve.
+  //   shared points stay FREE  merged corners belong to two entities, and an
+  //                            anchor on a point the MOVER also owns freezes the
+  //                            mover through the back door.
+  //   fixed points are skipped they cannot move anyway; a second pin is noise.
+  //   circle radii too       a circle's radius hangs off no point, so pinning
+  //                            its centre alone leaves the solver free to pay in
+  //                            radius — which on the tangent gesture it did,
+  //                            harder than with no bias at all. (An arc's does
+  //                            hang off points; see below.)
+  const anchors: { point: string; x: number; y: number }[] = [];
+  const radiusAnchors: { id: string; radius: number }[] = [];
+  if (bias?.moves.length) {
+    // A mover spelled as a rectangle EDGE (`R~3`) is the rectangle. `own()`
+    // already attributes an edge's corners to the rectangle, so without this
+    // normalisation such a mover matches NOTHING, every point in the sketch is
+    // anchored including the ones it meant to free, and the gesture silently
+    // degrades to "moves nothing" — bug #86's exact symptom with no signal.
+    // No caller spells it that way today; both dimensionTool and constraintTools
+    // stamp `ent.id`. This is here so the next one cannot be caught by it.
+    const movers = new Set(bias.moves.map((id) => rectOf(id) ?? id));
+    const owners = new Map<string, Set<string>>(); // solver point -> entities that own it
+    const own = (entId: string, ...pids: (string | undefined)[]) => {
+      for (const pid of pids) {
+        if (pid === undefined) continue;
+        let s = owners.get(pid);
+        if (!s) owners.set(pid, (s = new Set()));
+        s.add(entId);
       }
     };
+    for (const [id, cp] of rectMap) own(id, ...cp);
+    // `ends` carries rectangle EDGES too (`R~k`), and `moves` names ENTITIES —
+    // attribute an edge to its rectangle or naming the rectangle would fail to
+    // free its own corners.
+    for (const [id, e] of ends) own(rectOf(id) ?? id, ...e);
+    for (const [id, c] of centers) own(id, c);
+    for (const [id, a] of arcMap) own(id, a.ourS, a.ourE, a.center);
+    for (const [id, ps] of splineMap) own(id, ...ps);
+    for (const [id, p] of pointMap) own(id, p);
+
+    // WHICH points this solve could move at all. Everything else is anchored for
+    // nothing, and "for nothing" is not free: each anchor is a fixed helper point
+    // plus a temporary coincidence, and planegcs's wasm heap ABORTS (OOM, a throw
+    // that escapes to sketchMode's pump() and kills constraint solving for the
+    // rest of the session) somewhere past a few hundred of them. Measured before
+    // this scoping: 300 lines + a rectangle + a circle — 605 points — solved free
+    // in 35 ms and threw Aborted(OOM) the moment a dimension was placed on it.
+    // The cliff is memory PRESSURE, not a bound, so it moves with how long the
+    // session has run; the answer is not a cap but not generating the anchors.
+    //
+    // Reachability is over the COMPILED constraints, implicit rectangle rules
+    // included — that is what carries a correction from a dimensioned edge round
+    // to the other three corners. A FIXED point terminates the walk: it cannot
+    // transmit motion, so nothing past it needs holding. Rounds are collected
+    // alongside because a radius couples through a constraint (equal-radius)
+    // that may name no free point at all.
+    const pointIds = new Set(points.map((p) => p.id));
+    const groups = cons.map((c) => {
+      const pts: string[] = [], rounds: string[] = [];
+      const take = (v: unknown): void => {
+        if (typeof v === "string") {
+          if (pointIds.has(v)) { pts.push(v); return; }
+          const e = ends.get(v);
+          if (e) { pts.push(e[0], e[1]); return; }
+          const ctr = centers.get(v);
+          if (ctr) { pts.push(ctr); rounds.push(v); return; }
+          const a = arcMap.get(v);
+          if (a) { pts.push(a.ourS, a.ourE, a.center); rounds.push(v); return; }
+        } else if (Array.isArray(v)) v.forEach(take);
+        else if (v && typeof v === "object") Object.values(v).forEach(take);
+      };
+      for (const [k, v] of Object.entries(c)) { if (k !== "id" && k !== "type") take(v); }
+      return { pts, rounds };
+    });
+    const groupsAt = new Map<string, number[]>();
+    groups.forEach((g, i) => {
+      for (const p of g.pts) {
+        let l = groupsAt.get(p);
+        if (!l) groupsAt.set(p, (l = []));
+        l.push(i);
+      }
+    });
+    const reachable = new Set<string>();
+    const reachableRounds = new Set<string>();
+    const queue: string[] = [];
+    const reach = (pid: string) => {
+      if (reachable.has(pid)) return;
+      reachable.add(pid);
+      if (!fixedPts.has(pid)) queue.push(pid); // a fixed point conducts nothing
+    };
+    for (const p of points) {
+      const ow = owners.get(p.id);
+      if (ow && [...ow].some((id) => movers.has(id))) reach(p.id);
+    }
+    // A drag frame moves its grabbed point too, so the correction spreads from
+    // there as well. (Nothing pairs a drag with a bias today; leaving it out
+    // would make that combination anchor the wrong half of the sketch.)
+    if (dragInput) reach(dragInput.point);
+    const walked = new Set<number>();
+    while (queue.length) {
+      const p = queue.pop()!;
+      for (const gi of groupsAt.get(p) ?? []) {
+        if (walked.has(gi)) continue;
+        walked.add(gi);
+        const g = groups[gi]!;
+        for (const q of g.pts) reach(q);
+        for (const rd of g.rounds) reachableRounds.add(rd);
+      }
+    }
+
+    for (const p of points) {
+      if (fixedPts.has(p.id)) continue;
+      if (!reachable.has(p.id)) continue;
+      const ow = owners.get(p.id);
+      if (ow && [...ow].some((id) => movers.has(id))) continue;
+      anchors.push({ point: p.id, x: p.x, y: p.y });
+    }
+    // No `some`/`every` question here, unlike the points: a radius belongs to
+    // exactly one entity, so "owned by a mover" is a plain id compare. A
+    // PROJECTED circle is skipped for the same reason a fixed point is — its
+    // `~r` pin already holds the radius rigid and a second pin is noise.
+    //
+    // CIRCLES ONLY, deliberately. An ARC needs no radius pin: its centre is
+    // compiled as a non-mergeable point (compileArc), so nothing can ever merge
+    // onto it and a non-mover arc's centre is therefore always anchored — and
+    // `arc_rules` holds both endpoints on the circle, so centre + either
+    // endpoint already fixes the radius. Measured: adding an arc_radius pin
+    // changes no arc solve this suite can construct. The tangent-on-an-arc test
+    // covers that the radius does stay put; it just does not need this to.
+    for (const c of circles) {
+      if (movers.has(c.id) || projRounds.has(c.id)) continue;
+      if (reachableRounds.has(c.id)) radiusAnchors.push({ id: c.id, radius: c.radius });
+    }
+    // ...and the MOVER's own radius, on a rim distance ONLY.
+    //
+    // A rim dim ("6 mm from this circle's EDGE to that line") measures a
+    // position, not a size, so the mover paying in radius is never what the
+    // gesture meant — and it is worse than unhelpful: with the centre free and
+    // the radius free, planegcs takes the radius NEGATIVE (circle r5, line 20 mm
+    // off, circle picked first: raw solved radius -1.4999999999999982), the
+    // geometry guard below condemns the whole pass, and the fallback quietly
+    // hands back the free solve — which moves the LINE the user measured FROM.
+    // So the one gesture the policy exists for did not apply to itself, invisibly.
+    //
+    // Scoped hard, because a radius pin on the mover is exactly wrong for a SIZE
+    // dim: any constraint that governs this circle's radius (diameter, radius,
+    // equal-radius, an offset's `difference`) vetoes the pin. That is what keeps
+    // "equal-radius moves the circle you picked first" — where the mover's radius
+    // MUST change — working.
+    const rimMovers = new Set<string>();
+    const radiusGoverned = new Set<string>();
     for (const c of cons) {
-      if (constraintIndexOf(c.id) === null) continue; // implicit pins are exempt
-      const res = inertResidual(c);
-      if (res === null) continue;
-      const list = res <= INERT_TOL ? redundant : conflicts;
-      if (!list.includes(c.id)) list.push(c.id);
+      if (c.type === "rimGap") { rimMovers.add(c.round1); rimMovers.add(c.round2); }
+      else if (c.type === "rimLine") rimMovers.add(c.round);
+      else if (c.type === "rimPoint") rimMovers.add(c.round);
+      else if (c.type === "diameter" || c.type === "circleRadius") radiusGoverned.add(c.circle);
+      else if (c.type === "arcRadius") radiusGoverned.add(c.arc);
+      else if (c.type === "equalRadiusCC") { radiusGoverned.add(c.c1); radiusGoverned.add(c.c2); }
+      else if (c.type === "equalRadiusCA") { radiusGoverned.add(c.circle); radiusGoverned.add(c.arc); }
+      else if (c.type === "equalRadiusAA") { radiusGoverned.add(c.a1); radiusGoverned.add(c.a2); }
+      else if (c.type === "radiusDifference") { radiusGoverned.add(c.inner); radiusGoverned.add(c.outer); }
+    }
+    for (const c of circles) {
+      if (!movers.has(c.id) || projRounds.has(c.id)) continue;
+      if (rimMovers.has(c.id) && !radiusGoverned.has(c.id)) radiusAnchors.push({ id: c.id, radius: c.radius });
     }
   }
+  // A LAST bound, because reachability is not one. Scoping the anchors to what
+  // the solve can reach (above) removes them for an unrelated fan of geometry,
+  // but reachability spreads through the constraint graph, so one hub entity
+  // re-couples the whole sketch: a circle dimensioned to a line that N others
+  // are `parallel` to reaches 2N+1 points, and the anchor count is back to
+  // O(connected component). Measured on that shape, anchoring aborts the wasm
+  // heap somewhere past a few hundred anchors.
+  //
+  // The abort CANNOT be recovered from downstream, which is what makes a cap the
+  // fix rather than a nicety: the failed biased pass has already taken the heap,
+  // so the free retry beneath it aborts too and the throw reaches pump(), which
+  // reads it as a dead solver and turns constraint solving off for the rest of
+  // the sketch session. The retry's own comment reasoned that at that size "the
+  // free solve has no heap either" — but the free solve of the same model run
+  // FIRST succeeds, so the model is fine and it is the abandoned attempt that
+  // poisons it. Do not allocate what cannot be paid for.
+  //
+  // Dropping the bias is the honest degradation: it restores exactly today's
+  // free solve, which is the "never worse than before" bar this whole change is
+  // held to, and it costs the preference only on sketches big enough that the
+  // alternative was losing the solver outright. The budget sits well under the
+  // measured cliff (~400 anchors fresh, ~300 in a worker that has been running a
+  // while) because the cliff is memory PRESSURE and moves with session age.
+  if (anchors.length > MAX_BIAS_ANCHORS) {
+    anchors.length = 0;
+    radiusAnchors.length = 0;
+  }
+  const biased = anchors.length > 0 || radiusAnchors.length > 0;
 
-  const out = entities.map((e): ResolvedEntity => {
-    if (e.type === "line") {
-      const [p1, p2] = ends.get(e.id)!;
-      const a = r.points[p1], b = r.points[p2];
-      return a && b ? { ...e, x1: a.x, y1: a.y, x2: b.x, y2: b.y } : e;
+  const model = { points, lines, circles, arcs, constraints: cons, ...(dragInput ? { drag: dragInput } : {}) };
+  // EVERYTHING between the raw solve and the answer, as a function of that raw
+  // solve. It is a closure and not a top-level helper only because it reads two
+  // dozen compile-time locals; what matters is that it can be run TWICE.
+  //
+  // It has to be. The geometry guard below is where a collapsed rectangle turns
+  // into `ok:false` + a blamed constraint — 170 lines AFTER the solve. Judging
+  // the biased pass on solveSketch's own return therefore judged it before the
+  // half that can condemn it had run: an anchored pass that squashed a rectangle
+  // reported ok:true / conflicts:[], the fallback below never fired, and
+  // sketchMode withdrew a perfectly good constraint with a "that conflicts with
+  // the ones already on this sketch" toast. Reproduced on a 40x20 rectangle and
+  // a line, Perpendicular with the rect edge picked first.
+  const finish = (r: SolveResult): SolvePass => {
+    // planegcs never sees a constraint whose operands are ALL fixed — fixed
+    // params aren't solver variables, so such a constraint is silently accepted
+    // even when violated (e.g. a driving dim between two projected points).
+    // Classify these "inert" constraints ourselves: satisfied → redundant
+    // (amber), violated → conflict (red) — through the same reporting channel
+    // the solver's own diagnosis uses.
+    const conflicts = [...r.conflicts];
+    const redundant = [...r.redundant];
+    // No fixed points (no projected geometry, no `fix`) ⇒ no constraint can be
+    // inert (every inertResidual arm requires fx/fxLine/fxRound operands, and
+    // projRounds is only ever populated alongside fixedPts) — skip the whole
+    // classification pass on ordinary sketches, incl. every drag frame.
+    if (fixedPts.size) {
+      // mm (radians for angles) — comfortably above the residual floor left by the
+      // sidecar's 6-decimal curve rounding (a p2p distance between rounded points
+      // can be off by ~1.4e-6 even when nominally exact), and matching its 1e-4 mm
+      // change tolerance: a conceptually-satisfied inert dim must grade amber, not red
+      const INERT_TOL = 1e-4;
+      const pos = new Map(points.map((p) => [p.id, p])); // fixed ⇒ input == solved
+      const lineEnds = new Map(lines.map((l) => [l.id, l]));
+      const radiusOf = new Map<string, number>([
+        ...circles.map((c) => [c.id, c.radius] as const),
+        ...arcs.map((a) => [a.id, a.radius] as const),
+      ]);
+      const centerOf = new Map<string, string>([
+        ...circles.map((c) => [c.id, c.center] as const),
+        ...arcs.map((a) => [a.id, a.center] as const),
+      ]);
+      const fx = (id: string) => fixedPts.has(id);
+      const fxLine = (id: string) => { const l = lineEnds.get(id); return !!l && fx(l.p1) && fx(l.p2); };
+      const fxRound = (id: string) => projRounds.has(id); // center fixed AND radius pinned
+      const roundAt = (id: string) => radiusOf.get(id)!;
+      const P = (id: string) => pos.get(id)!;
+      const dist = (aId: string, bId: string) => { const a = P(aId), b = P(bId); return Math.hypot(a.x - b.x, a.y - b.y); };
+      const lineDir = (id: string) => {
+        const l = lineEnds.get(id)!;
+        const a = P(l.p1), b = P(l.p2);
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        return { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+      };
+      const lineLen = (id: string) => { const l = lineEnds.get(id)!; return dist(l.p1, l.p2); };
+      const perpDist = (pId: string, lId: string) => {
+        const l = lineEnds.get(lId)!;
+        const a = P(l.p1), b = P(l.p2), q = P(pId);
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+        return Math.abs((q.x - a.x) * (b.y - a.y) - (q.y - a.y) * (b.x - a.x)) / len;
+      };
+      const tangentRes = (aId: string, bId: string) => { // two rounds: outer or inner tangency
+        const d = dist(centerOf.get(aId)!, centerOf.get(bId)!);
+        const r1 = radiusOf.get(aId)!, r2 = radiusOf.get(bId)!;
+        return Math.min(Math.abs(d - (r1 + r2)), Math.abs(d - Math.abs(r1 - r2)));
+      };
+      // residual of an inert constraint, or null when any operand is still free
+      const inertResidual = (c: SConstraint): number | null => {
+        switch (c.type) {
+          // self-coincident (both endpoints position-merged into one solver
+          // point, e.g. a user endpoint snapped ONTO the projected point it is
+          // constrained to) is absorbed by the merge — vacuous, not over-defining
+          case "coincident": return c.a !== c.b && fx(c.a) && fx(c.b) ? dist(c.a, c.b) : null;
+          case "horizontal": { if (!fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(P(l.p1).y - P(l.p2).y); }
+          case "vertical": { if (!fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(P(l.p1).x - P(l.p2).x); }
+          case "parallel": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.y - d1.y * d2.x); }
+          case "perpendicular": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.x + d1.y * d2.y); }
+          case "equal": return fxLine(c.l1) && fxLine(c.l2) ? Math.abs(lineLen(c.l1) - lineLen(c.l2)) : null;
+          case "distance": return fx(c.a) && fx(c.b) ? Math.abs(dist(c.a, c.b) - c.value) : null;
+          case "p2lDistance": return fx(c.p) && fxLine(c.line) ? Math.abs(perpDist(c.p, c.line) - c.value) : null;
+          case "diameter": return fxRound(c.circle) ? Math.abs(2 * radiusOf.get(c.circle)! - c.value) : null;
+          case "circleRadius": return fxRound(c.circle) ? Math.abs(radiusOf.get(c.circle)! - c.value) : null;
+          case "arcRadius": return fxRound(c.arc) ? Math.abs(radiusOf.get(c.arc)! - c.value) : null;
+          case "tangentLC": return fxLine(c.line) && fxRound(c.circle) ? Math.abs(perpDist(centerOf.get(c.circle)!, c.line) - radiusOf.get(c.circle)!) : null;
+          case "tangentLA": return fxLine(c.line) && fxRound(c.arc) ? Math.abs(perpDist(centerOf.get(c.arc)!, c.line) - radiusOf.get(c.arc)!) : null;
+          case "tangentCC": return fxRound(c.c1) && fxRound(c.c2) ? tangentRes(c.c1, c.c2) : null;
+          case "tangentCA": return fxRound(c.circle) && fxRound(c.arc) ? tangentRes(c.circle, c.arc) : null;
+          case "tangentAA": return fxRound(c.a1) && fxRound(c.a2) ? tangentRes(c.a1, c.a2) : null;
+          case "angleLL": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); const actual = Math.atan2(d1.x * d2.y - d1.y * d2.x, d1.x * d2.x + d1.y * d2.y); const w = ((actual - c.value) % TAU + TAU + Math.PI) % TAU - Math.PI; return Math.abs(w); }
+          case "equalRadiusCC": return fxRound(c.c1) && fxRound(c.c2) ? Math.abs(radiusOf.get(c.c1)! - radiusOf.get(c.c2)!) : null;
+          case "equalRadiusCA": return fxRound(c.circle) && fxRound(c.arc) ? Math.abs(radiusOf.get(c.circle)! - radiusOf.get(c.arc)!) : null;
+          case "equalRadiusAA": return fxRound(c.a1) && fxRound(c.a2) ? Math.abs(radiusOf.get(c.a1)! - radiusOf.get(c.a2)!) : null;
+          case "pointOnLine": return fx(c.p) && fxLine(c.line) ? perpDist(c.p, c.line) : null;
+          case "pointOnPerpBisector": { if (!fx(c.p) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(dist(c.p, l.p1) - dist(c.p, l.p2)); }
+          case "symmetric": { if (!fx(c.a) || !fx(c.b) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; const A = P(l.p1), d = lineDir(c.line), a = P(c.a), b = P(c.b); const t = (a.x - A.x) * d.x + (a.y - A.y) * d.y; const mx = 2 * (A.x + t * d.x) - a.x, my = 2 * (A.y + t * d.y) - a.y; return Math.hypot(mx - b.x, my - b.y); }
+          // rim dims: the same measures entityDims defines, over the pinned params
+          case "rimGap": {
+            if (!fxRound(c.round1) || !fxRound(c.round2)) return null;
+            const g1 = roundAt(c.round1), g2 = roundAt(c.round2);
+            const d = dist(centerOf.get(c.round1)!, centerOf.get(c.round2)!);
+            const rd = Math.abs(g1 - g2);
+            return Math.abs((d < rd ? rd - d : d - g1 - g2) - c.value);
+          }
+          case "rimLine": {
+            if (!fxRound(c.round) || !fxLine(c.line)) return null;
+            return Math.abs((perpDist(centerOf.get(c.round)!, c.line) - roundAt(c.round)) - c.value);
+          }
+          case "rimPoint": {
+            if (!fx(c.p) || !fxRound(c.round)) return null;
+            return Math.abs(Math.abs(dist(c.p, centerOf.get(c.round)!) - roundAt(c.round)) - c.value);
+          }
+          case "radiusDifference":
+            return fxRound(c.inner) && fxRound(c.outer)
+              ? Math.abs((roundAt(c.outer) - roundAt(c.inner)) - c.value)
+              : null;
+        }
+      };
+      for (const c of cons) {
+        if (constraintIndexOf(c.id) === null) continue; // implicit pins are exempt
+        const res = inertResidual(c);
+        if (res === null) continue;
+        const list = res <= INERT_TOL ? redundant : conflicts;
+        if (!list.includes(c.id)) list.push(c.id);
+      }
     }
-    if (e.type === "circle") {
-      const c = r.points[centers.get(e.id)!];
-      const rad = r.circles[e.id];
-      return c ? { ...e, x: c.x, y: c.y, radius: rad ?? e.radius } : e;
+
+    const out = entities.map((e): ResolvedEntity => {
+      if (e.type === "line") {
+        const [p1, p2] = ends.get(e.id)!;
+        const a = r.points[p1], b = r.points[p2];
+        return a && b ? { ...e, x1: a.x, y1: a.y, x2: b.x, y2: b.y } : e;
+      }
+      if (e.type === "circle") {
+        const c = r.points[centers.get(e.id)!];
+        const rad = r.circles[e.id];
+        return c ? { ...e, x: c.x, y: c.y, radius: rad ?? e.radius } : e;
+      }
+      if (e.type === "rectangle") {
+        const cp = rectMap.get(e.id);
+        const pts = cp?.map((id) => r.points[id]);
+        if (!pts || pts.some((p) => !p)) return e;
+        const xs = pts.map((p) => p!.x), ys = pts.map((p) => p!.y);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        return { ...e, x: (minX + maxX) / 2, y: (minY + maxY) / 2, width: maxX - minX, height: maxY - minY };
+      }
+      if (e.type === "arc") {
+        const m = arcMap.get(e.id);
+        if (!m) return e; // wasn't solved (degenerate)
+        const s = r.points[m.ourS], en = r.points[m.ourE], c = r.points[m.center];
+        if (!s || !en || !c) return e;
+        // recompute the through-point as the arc's mid-sweep, from the solved
+        // endpoints + center (robust to angle normalisation in the solver)
+        const rad = r.arcs[e.id]?.radius ?? Math.hypot(s.x - c.x, s.y - c.y);
+        const [from, to] = m.startIsOurS ? [s, en] : [en, s];
+        const aFrom = Math.atan2(from.y - c.y, from.x - c.x);
+        const aTo = Math.atan2(to.y - c.y, to.x - c.x);
+        const midA = aFrom + ccwDelta(aFrom, aTo) / 2;
+        return {
+          ...e, x1: s.x, y1: s.y, x2: en.x, y2: en.y,
+          mx: c.x + Math.cos(midA) * rad, my: c.y + Math.sin(midA) * rad,
+        };
+      }
+      if (e.type === "spline") {
+        const ids = splineMap.get(e.id);
+        if (!ids) return e;
+        // ids is 1:1 with e.points (built via e.points.map above), so iterate the
+        // originals: `orig` is always defined and is the fallback when the solver
+        // didn't return a position for that fit point.
+        return { ...e, points: e.points.map((orig, k) => {
+          const id = ids[k];
+          return (id !== undefined ? r.points[id] : undefined) ?? orig;
+        }) };
+      }
+      if (e.type === "point") {
+        const p = r.points[pointMap.get(e.id)!];
+        return p ? { ...e, x: p.x, y: p.y } : e;
+      }
+      return e;
+    });
+
+    // THE solve guard. planegcs will happily report Success / dof 0 / no conflict
+    // for a solution that drives a radius through zero, or that satisfies an
+    // edge-to-edge distance by turning the configuration inside-out (its p2c/c2l
+    // measures are unsigned, and c2cdistance's nested branch is unsigned in
+    // |r1 - r2|). Neither may reach the document: blame the constraints involved
+    // and hand back the PRE-solve geometry, so the caller's existing
+    // "keep last good on conflict" path paints a red chip instead of a broken part.
+    const badGeom = new Set<string>();
+    for (const [eid, rad] of Object.entries(r.circles)) {
+      if (!(rad > 0) || !Number.isFinite(rad)) badGeom.add(eid);
     }
-    if (e.type === "rectangle") {
-      const cp = rectMap.get(e.id);
-      const pts = cp?.map((id) => r.points[id]);
-      if (!pts || pts.some((p) => !p)) return e;
-      const xs = pts.map((p) => p!.x), ys = pts.map((p) => p!.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const minY = Math.min(...ys), maxY = Math.max(...ys);
-      return { ...e, x: (minX + maxX) / 2, y: (minY + maxY) / 2, width: maxX - minX, height: maxY - minY };
+    for (const [eid, a] of Object.entries(r.arcs)) {
+      if (!(a.radius > 0) || !Number.isFinite(a.radius)) badGeom.add(eid);
     }
-    if (e.type === "arc") {
-      const m = arcMap.get(e.id);
-      if (!m) return e; // wasn't solved (degenerate)
-      const s = r.points[m.ourS], en = r.points[m.ourE], c = r.points[m.center];
-      if (!s || !en || !c) return e;
-      // recompute the through-point as the arc's mid-sweep, from the solved
-      // endpoints + center (robust to angle normalisation in the solver)
-      const rad = r.arcs[e.id]?.radius ?? Math.hypot(s.x - c.x, s.y - c.y);
-      const [from, to] = m.startIsOurS ? [s, en] : [en, s];
-      const aFrom = Math.atan2(from.y - c.y, from.x - c.x);
-      const aTo = Math.atan2(to.y - c.y, to.x - c.x);
-      const midA = aFrom + ccwDelta(aFrom, aTo) / 2;
+    // A LINE that collapses to nothing is the same class of broken geometry as a
+    // zero-radius circle, and it was not covered here. Applying `collinear` to two
+    // lines already pinned horizontal and vertical is satisfiable ONLY by shrinking
+    // one of them to zero length — at zero length a line has no direction, so
+    // "parallel" becomes vacuous and planegcs duly reports success on that branch.
+    // Seen in the app 2026-08-15: a 65mm edge became 0mm and the L folded flat.
+    // The conflict WAS detected (conflicts named both dims and the parallel); the
+    // broken geometry was simply applied anyway.
+    //
+    // Judged only against lines that HAD length, so a degenerate line already in
+    // the sketch is not newly refused, and only the collapse itself is caught.
+    const lineLen = (e: { x1: number; y1: number; x2: number; y2: number }) =>
+      Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+    const solvedById = new Map(out.map((e) => [e.id, e]));
+    for (const before of entities) {
+      if (before.type !== "line") continue;
+      const after = solvedById.get(before.id);
+      if (!after || after.type !== "line") continue;
+      const la = lineLen(after);
+      if (!Number.isFinite(la) || (lineLen(before) > LINE_COLLAPSE_EPS && la <= LINE_COLLAPSE_EPS)) {
+        badGeom.add(before.id);
+      }
+    }
+    // A RECTANGLE is the same class of broken geometry, on the path neither check
+    // above could reach: a rectangle is never a `line` entity, so its four edges
+    // were invisible to the loop above, and expectSaneGeometry had no case for it
+    // either. `vertical` on an edge already pinned horizontal by the rectangle's
+    // own `~h0` rule is the plainest form — a flat contradiction whose only
+    // solution is a zero-length edge, which planegcs finds and reports Success
+    // for. Measured before this landed: 40x20 -> 0x20, ok:true, conflicts:[].
+    //
+    // Both halves below read the SIGNED extents off the solved corner POINTS, not
+    // the width/height `out` wrote back, because that write-back is a MIN/MAX
+    // bounding box (:622-629) and the bbox is exactly what destroys the second
+    // half. With the four implicit ~h/~v pins holding, the solved corners stay an
+    // axis-aligned (possibly degenerate) rectangle, so c1.x-c0.x and c3.y-c0.y ARE
+    // the rectangle, sign included — two sign bits is the whole of what a solve
+    // can do to corner identity. (Tried to break the pins with `parallel(R~0, a
+    // fixed 45 degree line)`: the solver collapsed edge 0 rather than rotating it,
+    // because a zero-length line has no direction and `parallel` then goes
+    // vacuous. `collinear` against the same line does the same thing but stops at
+    // 4.6e-7 mm rather than at 0, which is why the collapse threshold below is a
+    // document-scale one. Two cases, not a proof: if a solve ever does rotate a
+    // rectangle, these signed extents stop describing it and this guard needs the
+    // corner positions themselves.)
+    //
+    //   extent under RECT_COLLAPSE_MIN
+    //                 COLLAPSED. Refused for any rectangle, exactly as a line is.
+    //                 The threshold is a document-scale one, not an epsilon: a
+    //                 solve landed a 40 mm edge at 4.6e-7 mm and walked out with
+    //                 ok:false and no conflicts, which the caller writes back.
+    //   sign FLIPPED  the solver satisfied the constraint by MIRRORING. The shape
+    //                 is fine; the bbox then relabels the corners, so the
+    //                 constraint is true in the solver and false in the document,
+    //                 and the next pump closes that gap by eating the rectangle
+    //                 (measured: 40x20 -> 10x20 on solve 1, then 0x0 on solve 2).
+    //
+    // A rectangle entity is x/y/width/height and has nowhere to CARRY the mirror.
+    // Signed width/height is the only in-type candidate and three separate
+    // mechanisms erase or reject it: the parameter re-assert overwrites a
+    // solver-written negative on the next mutate (store.ts:817-820), evalDimInput
+    // refuses non-positive input so the badge would show a value it will not take
+    // back (sketchMode.ts:967,976), and a negative extent inverts rectCorners'
+    // documented CCW winding, which face classification reads as the outer face
+    // (region.ts:101,678). So the mirror is refused rather than represented — the
+    // same call pattern.ts:71 already makes for rotation.
+    //
+    // The flip half fires ONLY for a rectangle in `rectAddressed` — one a
+    // compiled constraint ties to something the mirror does not move. Everything
+    // else must go through: dragging a free rectangle's corner past the opposite
+    // one mirrors both signs and correctly follows the cursor, and so does
+    // dragging a corner of a rectangle that merely carries an edge dimension. A
+    // refused drag frame is not free either — the caller has to be told to keep
+    // its anchor (see the dragRefused note at the guard's return).
+    for (const before of entities) {
+      if (before.type !== "rectangle") continue;
+      const cp = rectMap.get(before.id);
+      if (!cp) continue;
+      const c0 = r.points[cp[0]!], c1 = r.points[cp[1]!], c3 = r.points[cp[3]!];
+      if (!c0 || !c1 || !c3) continue;
+      const w = c1.x - c0.x, h = c3.y - c0.y;
+      if (!Number.isFinite(w) || !Number.isFinite(h)) { badGeom.add(before.id); continue; }
+      // Judged only against a rectangle that HAD size, mirroring the line arm's
+      // `lineLen(before) > LINE_COLLAPSE_EPS` gate: a 40x0 rectangle can exist in
+      // a document, and refusing every solve that leaves it flat would freeze the
+      // sketch permanently instead of fixing anything.
+      const hadW = Math.abs(before.width) > RECT_COLLAPSE_MIN;
+      const hadH = Math.abs(before.height) > RECT_COLLAPSE_MIN;
+      if ((hadW && Math.abs(w) <= RECT_COLLAPSE_MIN) || (hadH && Math.abs(h) <= RECT_COLLAPSE_MIN)) {
+        badGeom.add(before.id);
+      } else if (rectAddressed.has(before.id)
+        && ((hadW && Math.sign(w) !== Math.sign(before.width))
+          || (hadH && Math.sign(h) !== Math.sign(before.height)))) {
+        badGeom.add(before.id);
+      }
+    }
+    const guardIds = new Set<string>();
+    if (badGeom.size) {
+      for (const c of cons) {
+        if (constraintIndexOf(c.id) === null) continue; // implicit pins aren't the user's fault
+        // A collapsed line or rectangle has to blame the constraint that asked
+        // for it. This used to consult a roundRefs() that enumerated circle and
+        // arc operands only, so it named nothing for the two shapes the guard
+        // above actually catches; that function had no other caller and is gone.
+        if (entityRefs(c).some((id) => badGeom.has(id))) guardIds.add(c.id);
+      }
+    }
+    // branch invariants: a rim dim must still describe the SAME configuration it
+    // was created in (see entityDims.rimGap for why the branches can't be trusted)
+    if (constraints.some(isRimDim)) {
+      const beforeById = new Map(entities.map((e) => [e.id, e]));
+      const afterById = new Map(out.map((e) => [e.id, e]));
+      constraints.forEach((c, i) => {
+        if (isDriven(c) || !isRimDim(c)) return;
+        const cls = rimBranch(c, beforeById);
+        if (cls !== null && cls !== rimBranch(c, afterById)) guardIds.add(constraintKey(i));
+      });
+    }
+    if (guardIds.size || badGeom.size) {
+      for (const id of guardIds) if (!conflicts.includes(id)) conflicts.push(id);
+      // A refused DRAG frame has to SAY it was refused, and `conflicts` is not
+      // enough on its own. A drag with no user constraint on the collapsing
+      // entity still blames nobody (there is nothing to blame), so the caller's
+      // conflict path would not fire — it would take the ordinary branch and advance its drag
+      // anchor to the cursor (sketchMode.ts:3558). The next frame's nearest-point
+      // search then runs from an origin the grabbed point is no longer at, grabs a
+      // different point, and yanks THAT one mid-gesture. `dragRefused` is the
+      // existing "keep your anchor" channel, so a geometry refusal joins it rather
+      // than inventing a second one.
+      const refused = dragRefused ?? (drag ? ("geometry" as const) : undefined);
       return {
-        ...e, x1: s.x, y1: s.y, x2: en.x, y2: en.y,
-        mx: c.x + Math.cos(midA) * rad, my: c.y + Math.sin(midA) * rad,
+        entities, dof: r.dof, ok: false, conflicts,
+        overDefined: [...redundant, ...r.partiallyRedundant],
+        ...(refused ? { dragRefused: refused } : {}),
       };
     }
-    if (e.type === "spline") {
-      const ids = splineMap.get(e.id);
-      if (!ids) return e;
-      // ids is 1:1 with e.points (built via e.points.map above), so iterate the
-      // originals: `orig` is always defined and is the fallback when the solver
-      // didn't return a position for that fit point.
-      return { ...e, points: e.points.map((orig, k) => {
-        const id = ids[k];
-        return (id !== undefined ? r.points[id] : undefined) ?? orig;
-      }) };
-    }
-    if (e.type === "point") {
-      const p = r.points[pointMap.get(e.id)!];
-      return p ? { ...e, x: p.x, y: p.y } : e;
-    }
-    return e;
-  });
 
-  // THE solve guard. planegcs will happily report Success / dof 0 / no conflict
-  // for a solution that drives a radius through zero, or that satisfies an
-  // edge-to-edge distance by turning the configuration inside-out (its p2c/c2l
-  // measures are unsigned, and c2cdistance's nested branch is unsigned in
-  // |r1 - r2|). Neither may reach the document: blame the constraints involved
-  // and hand back the PRE-solve geometry, so the caller's existing
-  // "keep last good on conflict" path paints a red chip instead of a broken part.
-  const badGeom = new Set<string>();
-  for (const [eid, rad] of Object.entries(r.circles)) {
-    if (!(rad > 0) || !Number.isFinite(rad)) badGeom.add(eid);
-  }
-  for (const [eid, a] of Object.entries(r.arcs)) {
-    if (!(a.radius > 0) || !Number.isFinite(a.radius)) badGeom.add(eid);
-  }
-  // A LINE that collapses to nothing is the same class of broken geometry as a
-  // zero-radius circle, and it was not covered here. Applying `collinear` to two
-  // lines already pinned horizontal and vertical is satisfiable ONLY by shrinking
-  // one of them to zero length — at zero length a line has no direction, so
-  // "parallel" becomes vacuous and planegcs duly reports success on that branch.
-  // Seen in the app 2026-08-15: a 65mm edge became 0mm and the L folded flat.
-  // The conflict WAS detected (conflicts named both dims and the parallel); the
-  // broken geometry was simply applied anyway.
-  //
-  // Judged only against lines that HAD length, so a degenerate line already in
-  // the sketch is not newly refused, and only the collapse itself is caught.
-  const lineLen = (e: { x1: number; y1: number; x2: number; y2: number }) =>
-    Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
-  const solvedById = new Map(out.map((e) => [e.id, e]));
-  for (const before of entities) {
-    if (before.type !== "line") continue;
-    const after = solvedById.get(before.id);
-    if (!after || after.type !== "line") continue;
-    const la = lineLen(after);
-    if (!Number.isFinite(la) || (lineLen(before) > LINE_COLLAPSE_EPS && la <= LINE_COLLAPSE_EPS)) {
-      badGeom.add(before.id);
-    }
-  }
-  // A RECTANGLE is the same class of broken geometry, on the path neither check
-  // above could reach: a rectangle is never a `line` entity, so its four edges
-  // were invisible to the loop above, and expectSaneGeometry had no case for it
-  // either. `vertical` on an edge already pinned horizontal by the rectangle's
-  // own `~h0` rule is the plainest form — a flat contradiction whose only
-  // solution is a zero-length edge, which planegcs finds and reports Success
-  // for. Measured before this landed: 40x20 -> 0x20, ok:true, conflicts:[].
-  //
-  // Both halves below read the SIGNED extents off the solved corner POINTS, not
-  // the width/height `out` wrote back, because that write-back is a MIN/MAX
-  // bounding box (:622-629) and the bbox is exactly what destroys the second
-  // half. With the four implicit ~h/~v pins holding, the solved corners stay an
-  // axis-aligned (possibly degenerate) rectangle, so c1.x-c0.x and c3.y-c0.y ARE
-  // the rectangle, sign included — two sign bits is the whole of what a solve
-  // can do to corner identity. (Tried to break the pins with `parallel(R~0, a
-  // fixed 45 degree line)`: the solver collapsed edge 0 rather than rotating it,
-  // because a zero-length line has no direction and `parallel` then goes
-  // vacuous. `collinear` against the same line does the same thing but stops at
-  // 4.6e-7 mm rather than at 0, which is why the collapse threshold below is a
-  // document-scale one. Two cases, not a proof: if a solve ever does rotate a
-  // rectangle, these signed extents stop describing it and this guard needs the
-  // corner positions themselves.)
-  //
-  //   extent under RECT_COLLAPSE_MIN
-  //                 COLLAPSED. Refused for any rectangle, exactly as a line is.
-  //                 The threshold is a document-scale one, not an epsilon: a
-  //                 solve landed a 40 mm edge at 4.6e-7 mm and walked out with
-  //                 ok:false and no conflicts, which the caller writes back.
-  //   sign FLIPPED  the solver satisfied the constraint by MIRRORING. The shape
-  //                 is fine; the bbox then relabels the corners, so the
-  //                 constraint is true in the solver and false in the document,
-  //                 and the next pump closes that gap by eating the rectangle
-  //                 (measured: 40x20 -> 10x20 on solve 1, then 0x0 on solve 2).
-  //
-  // A rectangle entity is x/y/width/height and has nowhere to CARRY the mirror.
-  // Signed width/height is the only in-type candidate and three separate
-  // mechanisms erase or reject it: the parameter re-assert overwrites a
-  // solver-written negative on the next mutate (store.ts:817-820), evalDimInput
-  // refuses non-positive input so the badge would show a value it will not take
-  // back (sketchMode.ts:967,976), and a negative extent inverts rectCorners'
-  // documented CCW winding, which face classification reads as the outer face
-  // (region.ts:101,678). So the mirror is refused rather than represented — the
-  // same call pattern.ts:71 already makes for rotation.
-  //
-  // The flip half fires ONLY for a rectangle in `rectAddressed` — one a
-  // compiled constraint ties to something the mirror does not move. Everything
-  // else must go through: dragging a free rectangle's corner past the opposite
-  // one mirrors both signs and correctly follows the cursor, and so does
-  // dragging a corner of a rectangle that merely carries an edge dimension. A
-  // refused drag frame is not free either — the caller has to be told to keep
-  // its anchor (see the dragRefused note at the guard's return).
-  for (const before of entities) {
-    if (before.type !== "rectangle") continue;
-    const cp = rectMap.get(before.id);
-    if (!cp) continue;
-    const c0 = r.points[cp[0]!], c1 = r.points[cp[1]!], c3 = r.points[cp[3]!];
-    if (!c0 || !c1 || !c3) continue;
-    const w = c1.x - c0.x, h = c3.y - c0.y;
-    if (!Number.isFinite(w) || !Number.isFinite(h)) { badGeom.add(before.id); continue; }
-    // Judged only against a rectangle that HAD size, mirroring the line arm's
-    // `lineLen(before) > LINE_COLLAPSE_EPS` gate: a 40x0 rectangle can exist in
-    // a document, and refusing every solve that leaves it flat would freeze the
-    // sketch permanently instead of fixing anything.
-    const hadW = Math.abs(before.width) > RECT_COLLAPSE_MIN;
-    const hadH = Math.abs(before.height) > RECT_COLLAPSE_MIN;
-    if ((hadW && Math.abs(w) <= RECT_COLLAPSE_MIN) || (hadH && Math.abs(h) <= RECT_COLLAPSE_MIN)) {
-      badGeom.add(before.id);
-    } else if (rectAddressed.has(before.id)
-      && ((hadW && Math.sign(w) !== Math.sign(before.width))
-        || (hadH && Math.sign(h) !== Math.sign(before.height)))) {
-      badGeom.add(before.id);
-    }
-  }
-  const guardIds = new Set<string>();
-  if (badGeom.size) {
-    for (const c of cons) {
-      if (constraintIndexOf(c.id) === null) continue; // implicit pins aren't the user's fault
-      // A collapsed line or rectangle has to blame the constraint that asked
-      // for it. This used to consult a roundRefs() that enumerated circle and
-      // arc operands only, so it named nothing for the two shapes the guard
-      // above actually catches; that function had no other caller and is gone.
-      if (entityRefs(c).some((id) => badGeom.has(id))) guardIds.add(c.id);
-    }
-  }
-  // branch invariants: a rim dim must still describe the SAME configuration it
-  // was created in (see entityDims.rimGap for why the branches can't be trusted)
-  if (constraints.some(isRimDim)) {
-    const beforeById = new Map(entities.map((e) => [e.id, e]));
-    const afterById = new Map(out.map((e) => [e.id, e]));
-    constraints.forEach((c, i) => {
-      if (isDriven(c) || !isRimDim(c)) return;
-      const cls = rimBranch(c, beforeById);
-      if (cls !== null && cls !== rimBranch(c, afterById)) guardIds.add(constraintKey(i));
-    });
-  }
-  if (guardIds.size || badGeom.size) {
-    for (const id of guardIds) if (!conflicts.includes(id)) conflicts.push(id);
-    // A refused DRAG frame has to SAY it was refused, and `conflicts` is not
-    // enough on its own. A drag with no user constraint on the collapsing
-    // entity still blames nobody (there is nothing to blame), so the caller's
-    // conflict path would not fire — it would take the ordinary branch and advance its drag
-    // anchor to the cursor (sketchMode.ts:3558). The next frame's nearest-point
-    // search then runs from an origin the grabbed point is no longer at, grabs a
-    // different point, and yanks THAT one mid-gesture. `dragRefused` is the
-    // existing "keep your anchor" channel, so a geometry refusal joins it rather
-    // than inventing a second one.
-    const refused = dragRefused ?? (drag ? ("geometry" as const) : undefined);
+    // NOTE, deliberately left as it is: this hands back `out` — the SOLVED
+    // geometry — even when r.ok is false, and the caller writes it back because it
+    // branches on `conflicts.length`, not on ok (sketchMode.ts:3547,3585). That is
+    // wanted for a drag frame the solver merely did not fully converge on, but it
+    // is also why the guard above must catch broken geometry itself rather than
+    // relying on ok:false to protect the document. Revisit the day a
+    // non-converged solve is seen writing something a user notices.
     return {
-      entities, dof: r.dof, ok: false, conflicts,
-      overDefined: [...redundant, ...r.partiallyRedundant],
-      ...(refused ? { dragRefused: refused } : {}),
+      entities: out, dof: r.dof, ok: r.ok && conflicts.length === r.conflicts.length,
+      conflicts, overDefined: [...redundant, ...r.partiallyRedundant],
+      ...(dragRefused ? { dragRefused } : {}),
     };
-  }
-
-  // NOTE, deliberately left as it is: this hands back `out` — the SOLVED
-  // geometry — even when r.ok is false, and the caller writes it back because it
-  // branches on `conflicts.length`, not on ok (sketchMode.ts:3547,3585). That is
-  // wanted for a drag frame the solver merely did not fully converge on, but it
-  // is also why the guard above must catch broken geometry itself rather than
-  // relying on ok:false to protect the document. Revisit the day a
-  // non-converged solve is seen writing something a user notices.
-  return {
-    entities: out, dof: r.dof, ok: r.ok && conflicts.length === r.conflicts.length,
-    conflicts, overDefined: [...redundant, ...r.partiallyRedundant],
-    ...(dragRefused ? { dragRefused } : {}),
   };
+
+  // Take the biased pass only if it is CLEAN — judged on the FINAL pass, guard
+  // included — and otherwise discard it whole, result and diagnostics alike, for
+  // today's free solve. sketchMode withdraws a trial constraint, with a "that
+  // conflicts with the ones already on this sketch" toast, on `!ok` or any
+  // conflict (sketchMode.ts:3666). A bias is a preference about WHICH valid
+  // solution to land on; it must never be able to turn a good constraint into a
+  // withdrawn one.
+  //
+  // This is a routine path, not insurance, and that was the miss: anchoring the
+  // non-mover is exactly what removes the solver's freedom to avoid a collapse,
+  // so the bias makes the rectangle guard fire STRICTLY MORE OFTEN than the free
+  // solve does. Measured over 364 random circle+rectangle p2l-distance sketches
+  // that the FREE solve handles cleanly: the anchored pass was discarded on 74
+  // of them (20%). (`temporary` really does keep the anchors out of dof /
+  // conflicts / redundant, so planegcs itself still never fails because of one —
+  // it is the geometry they steer it into that does.)
+  //
+  // The fallback is not a guarantee of a clean answer, only of never being
+  // WORSE than the unbiased solve: 3 of those 364 came back dirty even after
+  // falling back, and a control that ran two plain free solves instead of a
+  // biased one hit the same thing 2 times out of 364. That residual is the
+  // process-state bistability solveReproducibility.test.ts documents, which
+  // predates every line of this bias.
+  //
+  // The biased pass may also THROW rather than return: anchors cost wasm heap,
+  // and planegcs answers an exhausted heap with `Aborted(OOM)` out of
+  // solve_system. Scoping the anchors to what the solve can reach is what keeps
+  // that off the routine path, but the cliff is memory PRESSURE and moves with
+  // how long the session has run, so it cannot be ruled out by counting. A throw
+  // here escapes to sketchMode's pump(), which reads it as a dead solver and
+  // turns constraint solving off for the whole sketch session — so the bias must
+  // swallow its own: an abort is one more reason to fall back to today's free
+  // solve, not a reason to lose the solver. A throw from the FREE solve is left
+  // alone; that one IS a dead solver, and the retry below rethrows it.
+  //
+  // Measured, on a fan of N lines all `parallel` to the one a circle is
+  // dimensioned from (2N+1 reachable points over N constraints — the shape where
+  // the anchors, not the model, are what runs the heap out): at N=150 and N=180
+  // the anchored pass aborts and this retry returns ok:true, and at N=200 the
+  // free solve has no heap either and the throw goes through, which is correct.
+  // Not pinned by a test on purpose: the threshold moves with how many solves ran
+  // before it, so any such test would be a coin flip on its neighbours.
+  let pass: SolvePass;
+  try {
+    pass = finish(await solveSketch(biased ? { ...model, anchors, radiusAnchors } : model));
+  } catch (err) {
+    if (!biased) throw err;
+    return { ...finish(await solveSketch(model)), ...(bias ? { biasAnchors: anchors.length } : {}) };
+  }
+  if (biased && !(pass.ok && pass.conflicts.length === 0)) pass = finish(await solveSketch(model));
+  return bias ? { ...pass, biasAnchors: anchors.length } : pass;
 }
 
 /** the round (circle/arc) entity ids a compiled constraint names — the blame

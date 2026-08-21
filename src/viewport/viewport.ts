@@ -672,7 +672,10 @@ export class Viewport {
     this.requestRender();
   }
 
-  /** right-click hit-test against the construction-plane quads. */
+  /** Hit-test against the construction-plane quads — the right-click menu, and
+   *  Press/Pull's "extrude up to this plane" target pick. Callers must try the
+   *  BODY first and come here only on a miss (see handleClick): a plane's quad
+   *  floating in front of the solid must never steal a face pick. */
   pickDatumAt(clientX: number, clientY: number): string | null {
     if (!this.datumQuads.length) return null;
     const dh = this.rayFrom(clientX, clientY).intersectObjects(this.datumQuads, false)[0];

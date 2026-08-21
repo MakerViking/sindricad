@@ -332,12 +332,42 @@ def _refacet_clean(shape, tol=0.12, debug=False):
             for i, f in faces_by_idx.items()
         }
 
+        # This function is the longest stretch on the mesh-import path that has
+        # loops in it at all, and it published NOTHING while it ran — so the
+        # stall watchdog saw a heartbeat that had stopped moving and reaped a
+        # worker that was making real progress (field f3b9c287; measured 116.7 s
+        # here on a 124,668-triangle plate). A tick AROUND a long loop proves
+        # nothing — the gap the watchdog sees is INSIDE it — so the loops publish
+        # from within.
+        #
+        # Where the time actually goes, measured on a 50,188-triangle plate
+        # (24.2 s total): 54% in the sew + ShapeFix pair further down, which are
+        # two single OCCT calls with no loop in them at all; 11% in the final
+        # validation; then ~9% rebuilding regions, ~6% growing them, ~6% reading
+        # face vertices. So ticking the loops is HALF the fix — the import
+        # budget in server.py's `import` branch covers the blocking calls.
+        #
+        # Every `n`th iteration rather than every one: a tick is cheap but not
+        # free (it crosses into a shared mp Value), and the watchdog's budget is
+        # tens of seconds, so per-iteration resolution buys nothing. The stride
+        # is per-loop because one iteration means very different work in each —
+        # a whole region rebuilt vs one triangle bucketed.
+        #
+        # keep_index throughout this function: it runs INSIDE something that has
+        # already said what it is — the import's "Simplifying faces" phase, or a
+        # cleanUp feature's own index — and a bare liveness tick that overwrote
+        # that would leave the STALL line and the crash reply naming nothing.
+        def _tick_every(k, n=64):
+            if k % n == 0:
+                progress_tick(keep_index=True)
+
         # region-grow from the biggest faces: absorb an edge-adjacent face when
         # ALL its vertices lie within tol of the ANCHOR's plane (anchored, not
         # chained, so regions can't drift step by step across the part)
         region = {}
         planes = []  # region id -> (point, normal) as np arrays
-        for i in sorted(faces_by_idx, key=lambda i: -faces_by_idx[i].area):
+        for grown, i in enumerate(sorted(faces_by_idx, key=lambda i: -faces_by_idx[i].area)):
+            _tick_every(grown)
             if i in region:
                 continue
             f = faces_by_idx[i]
@@ -427,13 +457,15 @@ def _refacet_clean(shape, tol=0.12, debug=False):
 
         tri_w = widx[tris]
         region_tris = defaultdict(list)
-        for t, fid in zip(tri_w, face_ids):
+        for bucketed, (t, fid) in enumerate(zip(tri_w, face_ids)):
+            _tick_every(bucketed, 8192)  # one triangle per iteration: long stride
             rid = region.get(fid_to_idx.get(fid))
             if rid is not None:
                 region_tris[rid].append(t)
 
         new_faces = []
-        for rid, rtris in region_tris.items():
+        for rebuilt, (rid, rtris) in enumerate(region_tris.items()):
+            _tick_every(rebuilt, 16)  # a whole region per iteration: short stride
             p0, nn = planes[rid]
             ec = Counter()
             for a, b, c in rtris:
@@ -519,9 +551,18 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         sew = BRepBuilderAPI_Sewing(1.5 * tol)
         for f in new_faces:
             sew.Add(f)
+        # The two calls below are the single most expensive thing in here and
+        # there is NO loop to tick inside either — measured 4.5 s and 8.6 s
+        # (19% + 36% of the whole function) on a 50,188-triangle plate. Ticking
+        # BETWEEN them is the only honest liveness signal available: it says the
+        # sew finished, which is true. It halves the worst silent stretch, it
+        # does not remove it — the import budget in server.py's `import` branch
+        # is what has to cover what is left (see the note there).
         sew.Perform()
+        progress_tick(keep_index=True)
         fixer = ShapeFix_Shape(sew.SewedShape())
         fixer.Perform()
+        progress_tick(keep_index=True)
         sewn = fixer.Shape()
         # sewing disjoint bodies yields ONE shell holding several disconnected
         # face components; SolidFromShell on that is garbage (mixed orientation,
@@ -534,6 +575,7 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         unvisited = set(range(1, cmap.Extent() + 1))
         solids = []
         while unvisited:
+            progress_tick(keep_index=True)  # one connected component per pass, each its own sew
             seed = unvisited.pop()
             compo, queue = [seed], [seed]
             while queue:
@@ -565,6 +607,7 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         # merge the facet-length collinear edge segments left on the region
         # boundaries (faces are already maximal; this unifies EDGES)
         cleaned = _maybe_unify(cleaned)
+        progress_tick(keep_index=True)  # the hard validation below is several more OCCT calls
 
         from OCP.BRepCheck import BRepCheck_Analyzer
 
@@ -1651,7 +1694,21 @@ def _import_phase(code):
             pass  # a dropped progress frame must never fail an import
 
 
-def progress_tick():
+# The index a LIVENESS-ONLY tick publishes. The worker's hook honours it by
+# leaving the shared index untouched (server._heartbeat_hook), which is the whole
+# point: such a tick says "still alive", it does not say what is running, so it
+# must not erase what does. Publishing -1 for it erased the import phase — the
+# first tick inside _refacet_clean turned "Simplifying faces" into "(feature
+# index -1)" in the STALL line and in the crash reply's feature_index, i.e. the
+# very stall diagnostic these ticks exist to make useful named nothing.
+#
+# A distinct sentinel rather than reusing -1, because -1 has a MEANING that is
+# still wanted elsewhere: the meshing/checkpoint ticks publish it to say "no
+# feature is building", which is what stops the timeline claiming one is.
+HB_KEEP_INDEX = -2
+
+
+def progress_tick(keep_index=False):
     """Publish one unit of progress from a long phase that isn't a feature build
     (export meshing, checkpoint writes, the interference sweep). Same globals()
     lookup as `_import_phase`, for the same reason.
@@ -1660,11 +1717,15 @@ def progress_tick():
     advances the counter without claiming some feature is building. It matters
     because the supervisor reaps on a heartbeat that STOPS MOVING: a phase that
     runs long without ticking is killed for being slow rather than for being
-    wedged, which is the exact distinction the stall watchdog exists to make."""
+    wedged, which is the exact distinction the stall watchdog exists to make.
+
+    `keep_index=True` publishes HB_KEEP_INDEX instead: use it from a stretch that
+    runs INSIDE a phase or a feature that has already announced itself, so the
+    liveness signal does not overwrite the name of what is running."""
     cb = globals().get("on_feature_tick")
     if cb is not None:
         try:
-            cb(-1)
+            cb(HB_KEEP_INDEX if keep_index else -1)
         except Exception:
             pass  # a dropped progress frame must never fail the work
 
@@ -2017,6 +2078,37 @@ def _handle_chamfer(f, ctx):
     _blend_edges(f, ctx, "Chamfer", lambda es: chamfer(es, length=d), lambda e: chamfer([e], length=d), d)
 
 
+def _bad_up_to_plane(up_plane, f, ctx):
+    """Why an `upToPlane` id didn't resolve to a datum — as an exception to raise.
+
+    Four causes look identical from ctx.datums alone (the id simply isn't a key),
+    and they need opposite fixes: reorder the timeline, undo a delete, re-pick the
+    reference, or repair an upstream feature. The document's feature list
+    distinguishes them, so ask it rather than assuming the ordering case.
+
+    The id is UNTRUSTED document text and rides in `subject`, not in the sentence.
+    """
+    feats = list(ctx.features or ())
+    ids = [g.get("id") for g in feats]
+    # position of the press/pull itself: everything at a LATER index is "not yet"
+    here = ids.index(f.get("id")) if f.get("id") in ids else len(feats)
+    at = next((i for i, gid in enumerate(ids) if gid == up_plane), None)
+    if at is None:
+        msg = ("Press/Pull: the 'up to' plane is gone — the datum plane it points at "
+               "was deleted. Re-pick a target.")
+    elif feats[at].get("type") != "datumPlane":
+        msg = ("Press/Pull: the 'up to' plane points at a feature that isn't a datum "
+               "plane. Pick a datum plane, or XY / XZ / YZ.")
+    elif at > here:
+        msg = ("Press/Pull: the 'up to' plane isn't in the timeline yet — a datum plane "
+               "has to come BEFORE the press/pull that extrudes up to it.")
+    else:
+        # earlier in the timeline, but never registered → its own feature failed
+        msg = ("Press/Pull: the 'up to' datum plane didn't build — fix that feature "
+               "first, then this one can reach it.")
+    return GeomError(msg, subject=up_plane)
+
+
 def _handle_press_pull(f, ctx):
     # target the body that OWNS the picked face (sent by the tool),
     # not just the active body — so press/pull on a multi-body model
@@ -2029,12 +2121,33 @@ def _handle_press_pull(f, ctx):
     # push renumbers topology, and the selectors are geometric, so this
     # stays correct (the tool emits one by:"nearest" selector per face).
     sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
-    # `upTo`: extrude each face UP TO a target surface instead of by a
-    # fixed distance. Capture the target plane once (point + normal) so
-    # every source face extrudes to the same surface.
+    # `upTo` / `upToPlane`: extrude each face UP TO a target surface instead of by
+    # a fixed distance. Capture the target plane once (point + normal) so every
+    # source face extrudes to the same surface.
+    #   upTo      — a face Selector (the topology-fingerprint vocabulary)
+    #   upToPlane — a datumPlane feature id, or "XY"/"XZ"/"YZ". NOT a Selector: a
+    #               datum has no topology to fingerprint, so it names itself the
+    #               way sketch.planeId and split.planeId already do.
     up = f.get("upTo")
+    up_plane = f.get("upToPlane")
+    if up and up_plane:
+        raise ValueError(
+            "Press/Pull: set an 'up to' face or an 'up to' plane, not both — clear one first."
+        )
     tgt_pt = tgt_n = None
-    if up:
+    if up_plane:
+        # ctx.datums is filled in TIMELINE ORDER, so a missing id can mean four
+        # different things — and "isn't in the timeline YET" is only one of them.
+        # Guessing it for all four told a user whose datum had been DELETED that it
+        # "has to come BEFORE" the press/pull, the exact inverse of the truth. Look
+        # the id up in the document's own feature list to tell them apart.
+        # (The id is document text: it rides in `subject`, never in the prose —
+        # see untrusted.py and the BODY_SLOT note in errors.py.)
+        if isinstance(up_plane, str) and up_plane not in ctx.datums and up_plane not in PLANES:
+            raise _bad_up_to_plane(up_plane, f, ctx)
+        pl = _plane_of(up_plane, ctx.datums)
+        tgt_pt, tgt_n = pl.origin, pl.z_dir
+    elif up:
         # Point picks resolve GLOBALLY: the target only contributes
         # a PLANE, so "extrude until it meets that other part" is
         # legitimate — the user may aim at a face of ANY body.
@@ -2061,16 +2174,59 @@ def _handle_press_pull(f, ctx):
         if not tf:
             raise ValueError("Press/Pull: the 'up to' target surface wasn't found")
         tgt_pt, tgt_n = tf[0].center(), tf[0].normal_at()
+    up_any = bool(up or up_plane)
+    # `upToOffset` moves the landing along the extrude direction — positive past
+    # the target, negative short of it — for a face target and a plane target alike.
+    up_off = ctx.val(f.get("upToOffset") or 0)
+    # ...and with NO target there is nothing to measure it from, so the number the
+    # user typed was read and then thrown away: `d` fell back to `distance` and the
+    # offset vanished with err == [] (a 3 mm push with a 7 mm offset gave 3 mm).
+    # Refuse rather than drop it — a wire that silently ignores a field is the same
+    # silent class as a boolean that changes nothing. A ZERO offset is not refused:
+    # it drops nothing, and a client that always sends the field must stay valid.
+    if up_off and not up_any:
+        raise ValueError(
+            "Press/Pull: 'up to offset' only means something with an 'up to' target — "
+            "pick a face or a plane to extrude up to, or clear the offset."
+        )
     dist = ctx.val(f["distance"])
     for sel in sels:
         found = resolve_faces(act["shape"], sel, diag=ctx.diagnostics, feature_id=f.get("id"))
         if not found:
             raise ValueError("no face found to press/pull")
         src = found[0]
-        d = _distance_to_target(src, tgt_pt, tgt_n) if up else dist
+        trim = None
+        if up_any:
+            # per source face: the offset is measured along ITS normal, so faces
+            # pushed in different directions each get their own trim plane.
+            d, trim_pt = _distance_to_target(src, tgt_pt, tgt_n, up_off)
+            # A target COINCIDENT with the source face is one ordinary gesture away
+            # (datum on a face, press T, click that datum) and used to return the
+            # part untouched with err == [] — a green chip on an operation that did
+            # nothing. Same silent class as the boolean no-op guards in
+            # _boolean_into_bodies, so it gets the same treatment: raise, and let
+            # the rebuild loop paint the feature red. Measured AFTER the offset,
+            # because a coincident target WITH an offset does move the face.
+            #
+            # Measured across the WHOLE face, not at `d`'s single centre sample: a
+            # TILTED target through the centre reads d == 0 while moving the rest
+            # of the face by millimetres, and refusing it said "already level with
+            # the face you picked" about a plane that climbs to z=15 over a face at
+            # z=5. Worse, it was a cliff — nudging that datum by 2e-7 mm flipped
+            # the outcome between −1000 mm³, refused, and +1000 mm³. Refuse only
+            # when the face would not move ANYWHERE.
+            lo, hi = _face_travel_range(src, trim_pt, tgt_n)
+            if max(abs(lo), abs(hi)) < _PP_NO_MOVE:
+                raise ValueError(
+                    "Press/Pull moved nothing — the 'up to' target is already level with "
+                    "the face you picked. Pick a different target, or set an offset."
+                )
+            trim = (trim_pt, tgt_n)
+        else:
+            d = dist
         # up-to distances are exact by construction — the inward
         # clamp would silently stop short of the chosen target
-        act["shape"] = _press_pull(act["shape"], src, d, clamp=(not up))
+        act["shape"] = _press_pull(act["shape"], src, d, clamp=(not up_any), trim=trim)
 
 
 def _handle_delete_face(f, ctx):
@@ -5503,11 +5659,38 @@ def _draft(shape, faces, angle_deg, axis):
     return _wrap_topods(drafter.Shape())
 
 
-def _press_pull(part, face, d, clamp=True):
+# Below this many mm the face does not move: `_press_pull` returns the part
+# untouched, and the up-to path REFUSES rather than report a green no-op (see
+# _handle_press_pull). One constant so "no movement" cannot come to mean two
+# different things at the two sites.
+_PP_NO_MOVE = 1e-9
+
+# How far past the source body an up-to prism may reach, as a multiple of that
+# body's bounding-box DIAGONAL. The overshoot is span/|n·N| (see _prism_to_plane),
+# so it blows up as the target goes edge-on: measured on a 20x20x10 box (diagonal
+# 30 mm) with a datum tilted off the face normal, the result's z_max was 11.8 mm at
+# 30°, 23.3 at 60°, then 1151.9 at 89.5°, 5735.6 at 89.9° and 572963.8 at 89.999°.
+# Those tall ones are geometrically CORRECT — the plane really does climb that far
+# — which is why nothing caught them; the problem is blast radius, a metre-high
+# spike and a full retessellation of it from one misjudged click. 10 sits an order
+# of magnitude above the legitimate cases (60° needs 1.9) and corresponds to about
+# 84° off-normal for a face that spans its whole body, so it refuses only targets
+# the user is looking at nearly edge-on.
+_PP_MAX_OVERSHOOT = 10.0
+
+
+def _press_pull(part, face, d, clamp=True, trim=None):
     """Push/pull a single solid face by signed distance `d` (mm): +d grows the body
     (boss), -d cuts inward (pocket). `clamp=False` skips the inward-push safety
     cap: the up-to-surface path computes an EXACT distance to a user-chosen
     target, and capping at 90% of local thickness silently stopped short.
+
+    `trim=(point, normal)` is the up-to path: `d` then only SIZES the prism, and
+    the material between the face and that plane is cut out of it on BOTH sides of
+    the face (see `_prism_to_plane`) so every point of the face lands on the
+    target, not just the ones under its centre. Which way each point travels is
+    the plane's business, not `d`'s — a target that crosses the face pulls part of
+    it out and pushes the rest in, so the up-to path adds AND subtracts.
 
     PLANAR faces extrude the face region into a prism and boolean it (union for +d,
     subtract for -d). This is far more robust than a local surface offset
@@ -5516,7 +5699,12 @@ def _press_pull(part, face, d, clamp=True):
     resize a hole/boss cleanly). Other curved surfaces are rejected — OCCT's offset
     is too unreliable on them to risk taking down the sidecar.
     """
-    if abs(d) < 1e-9:
+    # On the up-to path `d` is measured at the face CENTRE, and a tilted target
+    # through that centre gives d == 0 while moving the rest of the face by
+    # millimetres — so a tiny `d` is only "no movement" when there is no trim
+    # plane. `_handle_press_pull` has already measured the real move across the
+    # whole face before it hands one over.
+    if trim is None and abs(d) < _PP_NO_MOVE:
         return part
     try:
         gt = face.geom_type
@@ -5536,26 +5724,257 @@ def _press_pull(part, face, d, clamp=True):
         except Exception:
             pass
         dd = _clamp_planar(part, face, d) if clamp else d  # cap an inward push so it can't go through
-        if abs(dd) < 1e-9:
+        if trim is None and abs(dd) < _PP_NO_MOVE:
             return part
-        prism = extrude(face, dd)  # +dd outward (boss), -dd inward (pocket)
-        return (part + prism) if dd > 0 else (part - prism)
+        if trim is None:
+            prism = extrude(face, dd)  # +dd outward (boss), -dd inward (pocket)
+            return (part + prism) if dd > 0 else (part - prism)
+        # Up-to: two prisms, one per side of the face. `add` is the material
+        # OUTSIDE the body between the face and the target, `cut` the material
+        # INSIDE it — a target that crosses the face has both, and the sign of
+        # `dd` (measured at one point, the centre) cannot pick between them.
+        add, cut = _prism_to_plane(face, dd, trim[0], trim[1], part)
+        if cut is not None:
+            _refuse_if_cut_deletes_a_solid(part, cut)
+        out = part
+        if add is not None:
+            out = out + add
+        if cut is not None:
+            out = out - cut
+        return out
     if gt == GeomType.CYLINDER:
         return _offset_face(part, face, _clamp_cylinder(face, d))
     raise ValueError("Press/Pull supports flat and cylindrical faces only")
 
 
-def _distance_to_target(src_face, target_pt, target_n):
+def _refuse_if_cut_deletes_a_solid(part, cut):
+    """Refuse an up-to cut that would make one of `part`'s solids DISAPPEAR.
+
+    An up-to target past the body's FAR side used to cut the whole thing away and
+    report success — solids 0, volume 0, err []. Same silent class as the boolean
+    no-op guards in `_boolean_into_bodies`: flag the feature red and leave the
+    model alone.
+
+    Emptiness was the first test, and it only fires when nothing at all is left:
+    on a body an earlier cut had split in two, the prism ate one solid and the
+    survivor kept the chip green (2 solids / 3200 mm³ → 1 solid / 1600).
+
+    The solid COUNT was the second, and it is just as blind, one step deeper: a
+    prism that consumes one solid while SPLITTING another leaves the count
+    unchanged. Measured on a 20x20x10 plate + 6x20x10 rib + a separate 4x4x4
+    block joined into the same body (2 solids / 5264 mm³): a cut down the rib
+    removed the rib, split the plate in two and ate the block whole — 2 solids
+    in, 2 solids out, err == [], 64 mm³ gone under a green chip.
+
+    So test each solid on its own, which is what the invariant actually says: an
+    up-to cut may split a solid in two or eat into one, but it must never make
+    one disappear.
+
+    Only the CUT prism is checked. A join that bridges two solids into one also
+    drops the count, and that is a real, visible, legitimate outcome.
+    """
+    solids = part.solids()
+    if not solids:
+        return
+    gone = 0
+    for s in solids:
+        # AABBs first: a solid the prism cannot reach needs no boolean, which
+        # keeps this O(solids the prism actually touches) on a big body.
+        try:
+            if not _bbox_overlap(s, cut):
+                continue
+            rem = s - cut
+        except Exception:
+            continue  # a boolean that won't run is not evidence the solid died
+        if not rem.solids():
+            gone += 1
+    if not gone:
+        return
+    if gone == len(solids):
+        raise ValueError(
+            "Press/Pull removed the whole body — the 'up to' target is past its "
+            "far side. Pick a target inside the body, or push it by a distance."
+        )
+    raise ValueError(
+        f"Press/Pull would delete {gone} of the body's {len(solids)} "
+        "solids — the 'up to' target is past the far side of the piece you "
+        "picked. Pick a target inside it, or push it by a distance."
+    )
+
+
+def _prism_to_plane(face, d, target_pt, target_n, part):
+    """The material between `face` and the target plane, as `(add, cut)` — the half
+    OUTSIDE the body and the half INSIDE it. Either may be None.
+
+    Extrudes the face generously PAST the plane and cuts the prism on it, instead
+    of extruding by the single scalar distance-to-the-plane. That scalar is
+    measured at the face's CENTRE, so a target that isn't parallel to the face
+    produced a FLAT-topped solid — correct along the centre line and silently
+    wrong everywhere else, with no error. The trimmed prism's new face IS the
+    target plane.
+
+    BOTH sides, because "up to" means every point of the face travels to the
+    target and a plane that CROSSES the face sends them opposite ways. Extruding
+    only the side the centre is on left the rest of the face where it started:
+    measured on a 20x20x10 box with a datum at (0,0,6) tilted 30°, the result
+    carried the target plane over part of the top and 165.36 mm² of the original
+    z=5 face over the rest — 41% of the picked face never moved, err == []. And
+    the volume cannot see it (4794.671 for the half-moved shape against 4400.000
+    for a true up-to, which is also what the earlier flat-top bug produced), so
+    only the SHAPE is a witness.
+
+    `split(..., bisect_by=<Plane>)` is the same call `_do_split` makes: split
+    bounds an unbounded plane against the shape itself, so nothing has to build a
+    bounded target face.
+
+    The overshoot is derived, not guessed. A point p on the face reaches the plane
+    at d + ((c − p)·N)/(n·N), so the face's own bbox diagonal over |n·N| bounds how
+    far past the centre distance the furthest corner can sit.
+
+    `part` is the source body, and it is here only to BOUND that overshoot —
+    see `_PP_MAX_OVERSHOOT`."""
+    n = face.normal_at()
+    denom = n.dot(target_n)
+    if abs(denom) < 1e-6:
+        # unreachable via _distance_to_target (which refuses first), but this is the
+        # term the overshoot divides by — never let it become an infinite prism.
+        raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
+    bb = face.bounding_box()
+    span = (bb.max - bb.min).length  # ≥ |p − c| for every p on the face
+    tilt = span / abs(denom)  # how far past d the furthest corner of the face lands
+    # Blast-radius cap. Refusing only |n·N| < 1e-6 (above) leaves everything short
+    # of dead-parallel legal, and 1/|n·N| grows without bound long before that:
+    # a target a hair off edge-on turns a 20 mm part into a 1.15 m spike, correctly
+    # and silently.
+    #
+    # The cap is on the TILT term ALONE. Folding the numeric slack below into it
+    # bounded `d` too, and told a user aiming square-on at a datum 28,000 mm away
+    # — |n·N| exactly 1.0, not edge-on by any reading — that the target was "too
+    # close to edge-on" (27,000 built, 28,000 did not). A target that is FAR but
+    # square-on is a legitimate long extrude; the tilt is what runs away.
+    try:
+        pbb = part.bounding_box()
+        reach = (pbb.max - pbb.min).length
+    except Exception:
+        reach = None  # unmeasurable body: keep the old behaviour rather than refuse
+    if reach and reach > 1e-9 and tilt > _PP_MAX_OVERSHOOT * reach:
+        raise ValueError(
+            "Press/Pull: the 'up to' surface is too close to edge-on from this face — "
+            f"reaching it would build something over {_PP_MAX_OVERSHOOT:g}x the size of "
+            "the body. Pick a target more square to the face."
+        )
+    # |travel| ≤ |d| + tilt everywhere on the face, so this reaches past the plane
+    # from either side of it, with a little slack for a clean split.
+    length = abs(d) + tilt + max(1.0, 0.01 * abs(d))
+    plane = Plane(origin=target_pt, z_dir=target_n)
+    # A point at signed height s above the face plane lies between the face and the
+    # target exactly when s and (s − travel) have opposite signs, i.e. when
+    # (q − target_pt)·N has the sign of −s·(n·N). So the +n prism keeps the side of
+    # the target plane where that dot product is ≤ 0 for denom > 0, and the −n
+    # prism keeps the other one.
+    pos_keep = Keep.BOTTOM if denom > 0 else Keep.TOP
+    neg_keep = Keep.TOP if denom > 0 else Keep.BOTTOM
+    lo, hi = _face_travel_range(face, target_pt, target_n)
+    # Skip the side the face demonstrably never travels to — the ordinary
+    # parallel-target gesture has only one, and this keeps its cost unchanged.
+    add = _trim_prism_at(face, length, plane, pos_keep) if hi > _PP_NO_MOVE else None
+    cut = _trim_prism_at(face, -length, plane, neg_keep) if lo < -_PP_NO_MOVE else None
+    if add is None and cut is None:
+        raise ValueError(
+            "Press/Pull: the 'up to' surface doesn't trim this face's extrusion — "
+            "pick a target the face can actually reach."
+        )
+    return add, cut
+
+
+def _trim_prism_at(face, length, plane, keep):
+    """`face` extruded by `length` (signed, along its normal) and cut on `plane`,
+    keeping `keep` — or None when that half holds no material."""
+    kept = split(extrude(face, length), bisect_by=plane, keep=keep)
+    if kept is None:
+        return None
+    return kept if kept.solids() else None
+
+
+def _face_travel_range(src_face, target_pt, target_n):
+    """`(min, max)` of the signed distance each point of `src_face` must travel
+    along the face's own normal to land on the target plane.
+
+    The distance is AFFINE over the face plane, so the extremes sit at the corners
+    — but a face's `vertices()` do not bound a curved edge (a circular top face has
+    one), so the face's bounding-box corners are projected back onto the face plane
+    and measured too. Projecting first is what makes a target COINCIDENT with a
+    tilted face read as exactly zero: off-plane corners of a tilted face's box
+    would otherwise show movement where there is none."""
+    c, n = src_face.center(), src_face.normal_at()
+    denom = n.dot(target_n)
+    if abs(denom) < 1e-6:
+        raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
+
+    def travel(p):
+        return ((target_pt.X - p.X) * target_n.X
+                + (target_pt.Y - p.Y) * target_n.Y
+                + (target_pt.Z - p.Z) * target_n.Z) / denom
+
+    pts = [c]
+    try:
+        pts += [Vector(v.X, v.Y, v.Z) for v in src_face.vertices()]
+    except Exception:
+        pass
+    try:
+        bb = src_face.bounding_box()
+        for x in (bb.min.X, bb.max.X):
+            for y in (bb.min.Y, bb.max.Y):
+                for z in (bb.min.Z, bb.max.Z):
+                    q = Vector(x, y, z)
+                    pts.append(q - n * ((q - c).dot(n)))  # onto the face's own plane
+    except Exception:
+        pass
+    ts = [travel(p) for p in pts]
+    return min(ts), max(ts)
+
+
+def _distance_to_target(src_face, target_pt, target_n, offset=0.0):
     """Signed distance to extrude `src_face` along its own normal so it lands on the
     target plane (a point `target_pt` on it + its normal `target_n`) — i.e. "up to
     that surface". Raises if the face is parallel to the target (it never reaches).
-    MVP: assumes a planar source and a planar target."""
+
+    `offset` shifts the landing along the EXTRUDE DIRECTION (the direction of
+    travel, whichever way the face has to move to reach the target): positive goes
+    PAST the target, negative stops short. Signing it off the travel direction
+    rather than off +normal is what makes "positive = past" hold in both
+    directions — a face that has to move against its own normal to reach the
+    target would otherwise read the offset backwards.
+
+    Returns `(d, trim_point)`: the signed distance, and a point on the plane the
+    prism should be trimmed at (the target plane translated by `offset`), so both
+    stay consistent — see `_prism_to_plane`.
+
+    The source face must be PLANAR. A curved face has no single normal to measure
+    along: `normal_at()` handed back one arbitrary direction and the wall was
+    offset by that scalar, which silently collapsed a r5 h20 cylinder from
+    1570.8 mm³ to 15.7 mm³ with no error."""
+    try:
+        gt = src_face.geom_type
+    except Exception:
+        gt = None
+    if gt != GeomType.PLANE:
+        raise ValueError(
+            "Press/Pull: 'up to' needs a FLAT source face — a curved face has no single "
+            "direction to measure to the target along. Push it by a distance instead."
+        )
     c, n = src_face.center(), src_face.normal_at()
     denom = n.X * target_n.X + n.Y * target_n.Y + n.Z * target_n.Z
     if abs(denom) < 1e-6:
         raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
     num = (target_pt.X - c.X) * target_n.X + (target_pt.Y - c.Y) * target_n.Y + (target_pt.Z - c.Z) * target_n.Z
-    return num / denom
+    d = num / denom
+    if not offset:
+        return d, target_pt
+    # move the plane |offset| along the travel direction; the distance to the moved
+    # plane is exactly d + offset·sign(d), so the two can't drift apart.
+    shift = offset * (1.0 if d >= 0 else -1.0)
+    return d + shift, target_pt + n * shift
 
 
 def _clamp_cylinder(face, d):

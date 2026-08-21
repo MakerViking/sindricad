@@ -18,6 +18,79 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Fixed
+
+- **Colors set in SindriCAD now survive into OrcaSlicer.** Reported by a tester
+  whose cube had three textured faces on three different filaments: the viewport
+  showed three colors and Orca opened it in one. Nothing was broken on the way
+  in — the colors were assigned, and the sidecar already published them per face
+  for the viewport — but the project writer could only say "this whole object
+  prints on that extruder". It had no way to name a single face.
+
+  Faces now carry their own filament through the file, written as per-triangle
+  paint the way Bambu and Orca store painting themselves. Body color still sets
+  the object's filament, and a face color overrides it, so the two layer the way
+  you would expect. Whole faces only, which is what keeps the file to the plain,
+  well-understood form of that encoding.
+
+- **Importing an STL on a Japanese-locale Windows machine failed with a codec
+  error, and took the geometry engine with it.** Reported from a Japanese
+  Windows install: an import ended in `'cp932' codec can't encode character`,
+  which is not an import problem at all. The message was the stall watchdog's own
+  log line failing to print — and because it failed before the watchdog could
+  recycle its worker, the engine stayed wedged for the rest of the session.
+
+  The sidecar now speaks UTF-8 regardless of the machine's language, its
+  diagnostics can no longer fail in a way that skips recovery, and a slow mesh
+  import reports progress from inside the long stages so it is no longer cut off
+  while it is still working. Import deadlines are now sized by triangle count
+  rather than guessed from file size, which was wrong by up to 1.8x on ordinary
+  ASCII STL and OBJ files.
+
+- **Text on a face started vertical on any wall.** Text ran bottom-to-top on
+  every face that was not roughly horizontal, because the frame it is laid out
+  in took its direction from world up. Text now reads horizontally on walls, and
+  top faces are unchanged.
+
+- **A dimension moved the wrong thing.** Reported with a 40x40 rectangle and a
+  circle: dimensioning the circle 6 mm from the rectangle's edge resized the
+  *rectangle* instead of moving the circle. In an under-constrained sketch the
+  solver was free to spend the correction anywhere, and nothing expressed a
+  preference. The entity you pick FIRST now moves, and everything you measured
+  from stays put. Where that cannot be satisfied, the old behavior is used
+  rather than refusing the constraint.
+
+- **Double-clicking most features in the timeline did nothing and said nothing.**
+  Reported as "editing has no effect" on a primitive cylinder. The editor was in
+  fact already open — the inspector, on the right — but nothing said so, and the
+  row's own tooltip promised "double-click to edit" for all thirty feature
+  types, including the eight that have no editable values at all. Double-click
+  now says where to edit and puts the cursor in the first field, and the rows
+  that cannot be edited no longer claim they can.
+
+- **Press/Pull up to a target could quietly produce wrong geometry.** Three
+  cases, all silent: a cylindrical face shrank instead of extruding, a target
+  past the far side of the body deleted it, and a tilted target produced a
+  flat-topped solid that was simply incorrect. Tilted targets are now trimmed
+  properly, and the two cases that cannot be meant are refused with a reason.
+
+### Added
+
+- **Extrude up to a plane, with an offset.** Requested by a tester who made an
+  offset plane, picked a face, and found no way to extrude to it. Press/Pull can
+  now target a construction plane as well as a face, and either target takes an
+  offset measured along the direction of travel, so "3 mm past that plane" is one
+  operation.
+
+- **Place text on a face exactly.** Text placement is now editable as two
+  numbers, draggable directly on the face, and snaps to the face's middle, the
+  midpoints of its sides and its corners. The offsets read across and up the
+  face, so they mean the same thing on a wall as on a top face.
+
+- **A print export that would come out single-color now says so first**, instead
+  of after the slicer has already opened. It also no longer stays silent when
+  the printer is unreachable, which is exactly when it used to say nothing.
+
 ### Added
 
 - **Press/Pull now acts on whatever you click, not just a body face.** Reported

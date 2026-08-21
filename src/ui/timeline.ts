@@ -9,6 +9,7 @@
 import type { DocumentStore } from "../document/store";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FEATURE_META } from "./featureMeta";
+import { isInspectorEditable } from "./inspector";
 import { icon, type IconName } from "./icons";
 import { contextMenu } from "./menu";
 import { esc } from "./escape";
@@ -41,6 +42,25 @@ function buildProgress(
     label: `building ${Math.min(progress + 1, total)}/${total}`,
     pct: total === 0 ? 0 : Math.round(((progress + 1) / total) * 100),
   };
+}
+
+/** A feature chip's hover text: position, name, build error, and what the two
+ *  gestures on it will do. Pure and exported so the promise it makes is tested
+ *  directly — the fork used to live inline in the chip builder, where the only
+ *  thing a test could see was that the file mentioned `isInspectorEditable`,
+ *  which stays true even if the string goes back to promising an edit on every
+ *  row (field report c8531ceb). */
+export function featureTooltip(
+  index: number,
+  label: string,
+  errMsg: string | undefined,
+  editable: boolean,
+): string {
+  return (
+    `${index + 1} · ${label}` +
+    (errMsg ? `\n⚠ ${errMsg}` : "") +
+    (editable ? "\ndouble-click to edit · right-click for more" : "\nright-click for more")
+  );
 }
 
 export class Timeline {
@@ -275,10 +295,13 @@ export class Timeline {
     if (errMsg) node.classList.add("error");
     if (rolledBack) node.classList.add("rolled");
     if (suppressed) node.classList.add("suppressed");
-    node.title =
-      `${i + 1} · ${meta.label}` +
-      (errMsg ? `\n⚠ ${errMsg}` : "") +
-      "\ndouble-click to edit · right-click for more";
+    // Only promise the double-click where it opens something — the same
+    // predicate the inspector's message and the chip's right-click menu key on,
+    // so the three cannot drift (field report c8531ceb). Same defensive cast as
+    // the meta lookup above: an unknown type is not editable here, so it gets
+    // the quieter tooltip rather than a promise this build cannot keep.
+    const editable = isInspectorEditable(f.type as keyof typeof FEATURE_META);
+    node.title = featureTooltip(i, meta.label, errMsg, editable);
     // icon() returns trusted markup built from a fixed table — it must NOT go through
     // esc(), which would render the SVG source as visible text.
     node.innerHTML = `<span class="glyph">${icon(meta.iconName)}</span>`;
@@ -287,7 +310,7 @@ export class Timeline {
     node.addEventListener("dblclick", () => this.onEdit?.(f.id));
     node.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      this.openMenu(e, f.id, i, suppressed);
+      this.openMenu(e, f.id, i, suppressed, editable);
     });
 
     // reorder via native drag-and-drop
@@ -355,7 +378,7 @@ export class Timeline {
   }
 
   // --- right-click context menu (shared engine in ui/menu.ts) ---
-  private openMenu(e: MouseEvent, id: string, i: number, suppressed: boolean) {
+  private openMenu(e: MouseEvent, id: string, i: number, suppressed: boolean, editable: boolean) {
     // "Re-pick" only appears when THIS feature's last build reported an ambiguous
     // saved reference — offering it on a healthy feature would invite users to
     // overwrite references that are working.
@@ -364,7 +387,10 @@ export class Timeline {
       : [];
     contextMenu(e.clientX, e.clientY, [
       ...repick,
-      { label: "Edit", onClick: () => this.onEdit?.(id) },
+      // Same fork as the tooltip and as the viewport's face menu
+      // (contextMenus.ts): a loft has nothing to edit, so offering "Edit" here
+      // just moves the broken promise one gesture over.
+      { label: editable ? "Edit" : "Select", onClick: () => this.onEdit?.(id) },
       { label: suppressed ? "Unsuppress" : "Suppress", onClick: () => this.store.toggleSuppress(id) },
       { label: "Roll to here", onClick: () => this.store.setRollback(i) },
       { label: "Roll past here", onClick: () => this.store.setRollback(i + 1) },

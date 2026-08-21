@@ -269,7 +269,20 @@ fn configure_env(cmd: &mut Command, rt: &Runtime, token: &str, blobs: Option<&st
         // ~/.local/lib/pythonX.Y/site-packages joins sys.path for anyone who has
         // run `pip install --user`, where a mismatched numpy would break the
         // engine in a way that looks like our bug. Confirmed with a scratch HOME.
-        .env("PYTHONNOUSERSITE", "1");
+        .env("PYTHONNOUSERSITE", "1")
+        // We spawn the sidecar with piped stdio, and a pipe is not a console, so
+        // CPython gives sys.stdout the machine's ANSI code page with
+        // errors='strict'. On a Japanese Windows that is cp932, and the stall
+        // watchdog's own diagnostic print (server.py::_run_stall) carries an em
+        // dash — so the DIAGNOSTIC raised UnicodeEncodeError and the message the
+        // user saw was "'cp932' codec can't encode character '—'" instead of
+        // the import result (field report f3b9c287, 0.1.171). UTF-8 mode also
+        // relaxes the handler to surrogateescape, so no byte can kill a print.
+        // Deliberately NOT PYTHONIOENCODING: it OVERRIDES UTF-8 mode for stdio and
+        // resets the error handler back to strict, i.e. it would undo this.
+        // Verified on this machine: PYTHONUTF8=1 => stdout utf-8/surrogateescape
+        // and locale.getpreferredencoding(False) == utf-8.
+        .env("PYTHONUTF8", "1");
     if let Some(pp) = &rt.pythonpath {
         cmd.env("PYTHONPATH", pp); // bundled site-packages (dir install, no venv)
     }
@@ -547,6 +560,37 @@ mod tests {
         // the bundled site-packages must still be handed over
         let pp = find("PYTHONPATH").expect("PYTHONPATH must be set for a bundle");
         assert_eq!(pp.1, Some(std::ffi::OsStr::new("/opt/app/sidecar-runtime/site-packages")));
+    }
+
+    /// Field f3b9c287 (Japanese Windows): stdio is a PIPE, not a console, so
+    /// CPython picked the ANSI code page (cp932) with errors='strict' and the
+    /// stall watchdog's own em-dashed diagnostic raised UnicodeEncodeError —
+    /// which surfaced to the user as a codec error instead of the real result.
+    /// PYTHONUTF8 forces utf-8 with surrogateescape for every spawn we make.
+    #[test]
+    fn sidecar_env_forces_utf8_stdio() {
+        let rt = Runtime {
+            python: PathBuf::from("/opt/app/python3.12"),
+            script: PathBuf::from("server.py"),
+            cwd: PathBuf::from("/opt/app"),
+            pythonpath: None,
+        };
+        let mut cmd = Command::new(&rt.python);
+        configure_env(&mut cmd, &rt, "tok", None);
+        let envs: Vec<_> = cmd.get_envs().collect();
+        let find = |k: &str| envs.iter().find(|(n, _)| *n == std::ffi::OsStr::new(k));
+
+        let utf8 = find("PYTHONUTF8").expect("PYTHONUTF8 must be set");
+        assert_eq!(utf8.1, Some(std::ffi::OsStr::new("1")));
+
+        // PYTHONIOENCODING would OVERRIDE utf-8 mode for stdio and put the error
+        // handler back to strict — setting it is the un-fix, so it must stay
+        // absent (we also must not merely REMOVE it: a user who set it on
+        // purpose keeps it, and layer two in server.py covers that case).
+        assert!(
+            find("PYTHONIOENCODING").is_none(),
+            "PYTHONIOENCODING must not be touched — it overrides PYTHONUTF8 for stdio"
+        );
     }
 
     /// The blob store is the seam between Rust and Python: Rust writes it when

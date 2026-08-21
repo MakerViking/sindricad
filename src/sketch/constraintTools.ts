@@ -80,8 +80,13 @@ export interface ConstraintHost {
    *  out to conflict: an unsatisfiable constraint left sitting in the sketch
    *  poisons every later one, because the whole system stops solving and nothing
    *  moves. Reported in the app 2026-08-15 — after one bad Collinear, a perfectly
-   *  good Parallel on other lines also appeared to do nothing. */
-  addConstraint(c: SketchConstraint): void;
+   *  good Parallel on other lines also appeared to do nothing.
+   *
+   *  `moves` names the ENTITY that solve should move — the first-picked operand
+   *  of a two-pick flow (bug #86; see DimPlan.moves for why the geometry cannot
+   *  answer this on its own). A one-pick flow has no second operand to hold
+   *  still and passes nothing. */
+  addConstraint(c: SketchConstraint, moves?: string): void;
 }
 
 
@@ -181,13 +186,16 @@ export class ConstraintTools {
       if (t === "horizontal") this.addConstraint({ type: "horizontal", line: op.id });
       else this.addConstraint({ type: "vertical", line: op.id });
     } else {
-      // two-line constraints: first click stores, second applies
+      // two-line constraints: first click stores, second applies. The FIRST pick
+      // is the one that moves (bug #86) — `ent.id` rather than the operand id,
+      // because a rect edge's mover is its rectangle.
       const pair = this.holdPair(op);
       if (!pair) return;
       const [a, b] = pair;
-      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a.id, l2: b.id });
-      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a.id, l2: b.id });
-      else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a.id, l2: b.id });
+      const moves = a.ent.id;
+      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a.id, l2: b.id }, moves);
+      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a.id, l2: b.id }, moves);
+      else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a.id, l2: b.id }, moves);
     }
   }
 
@@ -332,7 +340,8 @@ export class ConstraintTools {
       // corner on one of that same rectangle's edges is a self-referential
       // squash, and `R~0` would not equal `R` on a bare id compare
       if (op && op.kind === "line" && baseOf(op.id) !== ep.id) {
-        this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: op.id });
+        // the POINT was picked first, so the point is what moves (bug #86)
+        this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: op.id }, ep.id);
       } else this.missed();
       return;
     }
@@ -370,7 +379,7 @@ export class ConstraintTools {
           );
           return;
         }
-        this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx });
+        this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx }, a.id);
         return;
       }
 
@@ -400,7 +409,7 @@ export class ConstraintTools {
       this.host.setFilletFirst(null);
       this.firstOperand = null;
       if (!first || first.id === op.id) return;
-      this.addConstraint({ type: "collinear", l1: first.id, l2: op.id });
+      this.addConstraint({ type: "collinear", l1: first.id, l2: op.id }, first.ent.id);
       this.host.warn("Two lines: applied Collinear (Coincident joins endpoints).");
       return;
     }
@@ -440,7 +449,9 @@ export class ConstraintTools {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
     this.host.setPendingPoints([]);
-    if (op && op.kind === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: op.id });
+    // three picks, and the first is still the mover: A swings onto B's mirror
+    // rather than the pair meeting in the middle
+    if (op && op.kind === "line") this.addConstraint({ type: "symmetric", e1: a.id, p1: a.idx, e2: b.id, p2: b.idx, line: op.id }, a.id);
   }
 
   /** Two-pick flow shared by tangent/equal/concentric: returns [first, second]
@@ -481,7 +492,7 @@ export class ConstraintTools {
     const [first, e] = pair;
     // two lines cannot be tangent — say so rather than swallowing the pick
     if (first.kind === "line" && e.kind === "line") return this.missed();
-    this.addConstraint({ type: "tangent2", a: first.id, b: e.id });
+    this.addConstraint({ type: "tangent2", a: first.id, b: e.id }, first.ent.id);
   }
 
   /** equal: two lines share length, or two circles/arcs share radius. */
@@ -490,9 +501,9 @@ export class ConstraintTools {
     if (!pair) return; // pickPair already said whatever needed saying
     const [first, e] = pair;
     if (first.kind === "line" && e.kind === "line") {
-      this.addConstraint({ type: "equal", l1: first.id, l2: e.id });
+      this.addConstraint({ type: "equal", l1: first.id, l2: e.id }, first.ent.id);
     } else if (isRoundOp(first) && isRoundOp(e)) {
-      this.addConstraint({ type: "equalRadius", a: first.id, b: e.id });
+      this.addConstraint({ type: "equalRadius", a: first.id, b: e.id }, first.ent.id);
     } else {
       // A line and a circle. Both picks were valid targets, so `missed` would be
       // a lie, and falling off the end here is worse: it consumed two clicks,
@@ -508,7 +519,7 @@ export class ConstraintTools {
   private concentricClick(p: THREE.Vector2) {
     const pair = this.pickPair(p, isRoundOp); // circles and arcs both carry a center
     if (!pair) return; // pickPair already said whatever needed saying
-    this.addConstraint({ type: "concentric", c1: pair[0].id, c2: pair[1].id });
+    this.addConstraint({ type: "concentric", c1: pair[0].id, c2: pair[1].id }, pair[0].ent.id);
   }
 
   /** fix/lock: pin the nearest addressable point of any entity. Reuses
@@ -535,7 +546,7 @@ export class ConstraintTools {
     return this.missed();
   }
 
-  private addConstraint(c: SketchConstraint) {
-    this.host.addConstraint(c);
+  private addConstraint(c: SketchConstraint, moves?: string) {
+    this.host.addConstraint(c, moves);
   }
 }

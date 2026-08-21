@@ -10,7 +10,7 @@ import { DocumentStore, EMPTY_DOCUMENT } from "./document/store";
 import { Timeline } from "./ui/timeline";
 import { isEditableTarget } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
-import { Inspector } from "./ui/inspector";
+import { Inspector, editHint } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
 import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
@@ -1028,27 +1028,41 @@ function editFeature(id: string) {
     noteCommitted(cid);
     if (cid) selectFeature(cid);
   };
+  // Where every arm lands when the gesture cannot open an interactive tool: the
+  // inspector IS the edit surface, so name the feature and put the caret in its
+  // first field. One helper rather than a literal per arm — a parameter-bound
+  // fillet (startEdit declines) used to get an unnamed generic hint and NO
+  // caret, i.e. strictly worse affordance than a cylinder, which reached the
+  // default arm below and got both (field report c8531ceb).
+  const toInspector = () => {
+    setStatus(editHint(f.type), "");
+    inspector.select(id, true);
+  };
   switch (f.type) {
     case "sketch":
       sketch.enter(f.plane, store, id);
       break;
     case "fillet":
     case "chamfer":
-      // false = not tool-editable (parameter value / structural selectors) —
-      // the inspector is already focused via selectFeature above.
-      if (!edgeFeature.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      // false = not tool-editable (parameter value / structural selectors)
+      if (!edgeFeature.startEdit(id, done)) toInspector();
       break;
     case "extrude":
-      if (!extrude.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      if (!extrude.startEdit(id, done)) toInspector();
       break;
     case "texture":
-      if (!textureTool.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      if (!textureTool.startEdit(id, done)) toInspector();
       break;
     case "textOnFace":
-      if (!textOnFaceTool.startEdit(id, done)) setStatus("Edit the value in the inspector (right panel)", "");
+      if (!textOnFaceTool.startEdit(id, done)) toInspector();
       break;
     default:
-      break; // inspector focus (selectFeature above) is the edit surface for the rest
+      // The remaining 24 types have no interactive tool at all; a cylinder
+      // reached this arm as a bare `break;` and gave no sign whatsoever, which
+      // read as "the row is broken". editHint also covers the types with NO
+      // fields, which render a named empty state instead of a blank panel.
+      toInspector();
+      break;
   }
 }
 

@@ -332,6 +332,79 @@ describe("resolveDim — pair matrix", () => {
   });
 });
 
+// The field-reported bug itself: "6 mm from this circle to that rectangle's
+// edge" resized the RECTANGLE. Which of the two moves is a policy, the policy is
+// "the one you picked first", and `plan.moves` is where this layer says so — it
+// is not carried by the constraint the plan makes, so nothing else can observe
+// it. Nothing did: inverting the stamp to `t2.e.id` (the second pick moves and
+// the thing you measured FROM gets resized — exactly the reported bug) left the
+// whole sketch suite green.
+//
+// Every case is asserted in BOTH orders. One order alone is not a test of pick
+// order at all: `moves = whichever operand is the circle` would pass it.
+describe("resolveDim — which operand the pick order nominates as the mover (bug #86)", () => {
+  const moverOf = (a: DimTarget, b: DimTarget) => plan(resolveDim([a, b])).moves;
+
+  it("circle + rectangle edge — the reported gesture, both ways round", () => {
+    const c = circle("c", -13.8194, 12.8, 2.4);
+    const r = rect("r", 0, 0, 40, 40);
+    const edge = T.edge(r, 3, -20, 20, -20, -20); // the LEFT edge
+    expect(moverOf(T.entity(c), edge)).toBe("c"); // circle picked first: it moves
+    expect(moverOf(edge, T.entity(c))).toBe("r"); // edge first: the RECTANGLE moves
+  });
+
+  it("a rect edge nominates the RECTANGLE, never the `r~k` operand", () => {
+    // `moves` is matched against ENTITY ids in sketchSolve; `r~3` matches
+    // nothing there and silently degrades to "moves nothing", which is the
+    // reported symptom again with no signal.
+    const r = rect("r", 0, 0, 40, 40);
+    expect(moverOf(T.edge(r, 3, -20, 20, -20, -20), T.entity(line("l", 0, 0, 10, 0)))).toBe("r");
+  });
+
+  it("point + line, and the same pair the other way round", () => {
+    const l = line("l", 0, 0, 10, 0);
+    const p = line("p", 3, 6, 4, 7);
+    // the CONSTRAINT is identical in both orders (it dedups on the operands) —
+    // only `moves` records which one the user asked to move
+    expect(made(resolveDim([T.point(p, 0, 3, 6), T.entity(l)]), 6))
+      .toEqual(made(resolveDim([T.entity(l), T.point(p, 0, 3, 6)]), 6));
+    expect(moverOf(T.point(p, 0, 3, 6), T.entity(l))).toBe("p");
+    expect(moverOf(T.entity(l), T.point(p, 0, 3, 6))).toBe("l");
+  });
+
+  it("two lines (angle), two circles (centre distance), circle + line", () => {
+    const a = line("a", 0, 0, 10, 0), b = line("b", 0, 0, 0, 10);
+    expect(moverOf(T.entity(a), T.entity(b))).toBe("a");
+    expect(moverOf(T.entity(b), T.entity(a))).toBe("b");
+    const c1 = circle("c1", 0, 0, 5), c2 = circle("c2", 30, 0, 3);
+    expect(moverOf(T.entity(c1), T.entity(c2))).toBe("c1");
+    expect(moverOf(T.entity(c2), T.entity(c1))).toBe("c2");
+    const l = line("l", 0, 0, 10, 0), c = circle("c", 0, 7, 5);
+    expect(moverOf(T.entity(c), T.entity(l))).toBe("c");
+    expect(moverOf(T.entity(l), T.entity(c))).toBe("l");
+  });
+
+  it("`lineLine` swaps its own operands and STILL reports the first pick", () => {
+    // The one branch that reorders what it was handed: the plan's l1/l2 come out
+    // in a normalised order, so reading the mover back off the constraint would
+    // give the wrong entity. It is stamped from the TARGETS, above that swap.
+    const steep = atAngle("steep", 80), flat = atAngle("flat", 10);
+    const p = plan(resolveDim([T.entity(flat), T.entity(steep)]));
+    expect(p.moves).toBe("flat");
+    expect(plan(resolveDim([T.entity(steep), T.entity(flat)])).moves).toBe("steep");
+  });
+
+  it("a SINGLE-pick dim nominates nobody", () => {
+    // A lone circle's diameter has no second operand to hold still, so there is
+    // nothing to express — and a `moves` naming the sole operand would anchor
+    // the rest of the sketch against it for no reason.
+    expect(plan(resolveDim([T.entity(circle("c", 0, 0, 5))])).moves).toBeUndefined();
+    expect(plan(resolveDim([T.entity(line("l", 0, 0, 10, 0))])).moves).toBeUndefined();
+    const r = rect("r", 0, 0, 20, 10);
+    expect(plan(resolveDim([T.edge(r, 0, -10, -5, 10, -5)])).moves).toBeUndefined();
+  });
+});
+
 // --- errors: nothing is ever a silent dead end -------------------------------
 
 describe("resolveDim — error cases", () => {

@@ -391,6 +391,671 @@ def test_presspull_upto():
     print(f"  press-pull up-to OK: z_max {bb['max'][2]:.0f}, vol {part.volume:.0f}")
 
 
+# --- press-pull up-to: plane targets, offset, and the three silent-wrong guards --
+# A datum plane is a legitimate up-to target (field report ffab4ece: "created an
+# offset plane, selected a face to extrude, would be good if extruding to the
+# offset plane is possible"). `upToPlane` is a DATUM FEATURE ID (or "XY"/"XZ"/"YZ"),
+# not a Selector — a datum has no topology to fingerprint, so it names itself the
+# way sketch.planeId and split.planeId already do.
+
+_PP_BOX = {"id": "b1", "type": "box", "length": 20, "width": 20, "height": 10}  # z −5..5
+_PP_TOP = {"kind": "face", "by": "nearest", "point": [0, 0, 5]}  # its top face
+
+
+def _pp_body(bodies, bid="body1"):
+    """The named body's shape, or None if the feature annihilated it."""
+    for b in bodies:
+        if b["id"] == bid:
+            return b.get("shape")
+    return None
+
+
+def _stranded_area(shape, z):
+    """Total area of HORIZONTAL faces of `shape` still sitting at height `z`.
+
+    The witness for "up to" on a target that crosses the picked face: any of the
+    picked face left behind at its starting height is area that never travelled.
+    Volume cannot see it — a half-moved top and a flat top can measure the same —
+    so the shape has to be read directly."""
+    tot = 0.0
+    for f in shape.faces():
+        n = f.normal_at()
+        if abs(abs(n.Z) - 1) < 1e-6 and abs(f.center().Z - z) < 1e-6:
+            tot += f.area
+    return tot
+
+
+# A 20x20x10 plate (z −5..5) with a 6x20x10 rib on top (z 5..15) fused into one
+# solid, plus a separate 4x4x4 block at z −20..−16 joined into the SAME body:
+# 1 body / 2 solids / 5264 mm³. The block sits under the rib's footprint, so a
+# prism down the rib passes straight through it.
+_PP_RIB_AND_BLOCK = [
+    _PP_BOX,
+    {"id": "b2", "type": "box", "length": 6, "width": 20, "height": 10},
+    {"id": "mv2", "type": "move", "dx": 0, "dy": 0, "dz": 10, "rx": 0, "ry": 0, "rz": 0,
+     "bodies": ["body2"]},
+    {"id": "b3", "type": "box", "length": 4, "width": 4, "height": 4},
+    {"id": "mv3", "type": "move", "dx": 0, "dy": 0, "dz": -18, "rx": 0, "ry": 0, "rz": 0,
+     "bodies": ["body3"]},
+    {"id": "cb", "type": "combine", "operation": "join", "target": "body1",
+     "tools": ["body2", "body3"]},
+]
+_PP_RIB_TOP = {"kind": "face", "by": "nearest", "point": [0, 0, 15]}
+
+
+def test_presspull_upto_datum_plane():
+    """`upToPlane` extrudes up to a DATUM plane, with no face to pick.
+
+    Before: `upToPlane` was not read at all, so the feature fell through to
+    `distance` (0) and silently did nothing — err == [], body unchanged at 4000."""
+    doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 25},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp"},
+    ]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    bb = bbox(part)
+    assert abs(bb["max"][2] - 25) < 0.01, f"top must land ON the datum at z=25, got {bb['max'][2]}"
+    assert abs(part.volume - 12000) < 1, f"20x20x30 = 12000, got {part.volume:.1f}"
+
+    # a BASE plane id resolves the same way (no datum feature needed)
+    doc2 = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "XY"},  # z=0, INSIDE the box → pushes the top down
+    ]}
+    part2, err2, _ = rebuild(doc2)
+    assert not err2, err2
+    assert abs(bbox(part2)["max"][2]) < 0.01, f"top must land on XY (z=0), got {bbox(part2)['max'][2]}"
+
+    # a datum that only exists LATER in the timeline must say so, not resolve
+    doc3 = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp"},
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 25},
+    ]}
+    _p3, err3, _b3 = rebuild(doc3)
+    assert err3 and "timeline" in err3[0]["message"], f"out-of-order datum must name the ordering: {err3}"
+
+    # `upTo` and `upToPlane` together are invalid — refuse rather than pick one
+    doc4 = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 25},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp", "upTo": _PP_TOP},
+    ]}
+    _p4, err4, _b4 = rebuild(doc4)
+    assert err4, "setting both upTo and upToPlane must be refused, not silently resolved"
+    print(f"  press-pull up-to datum plane OK: z_max 25, vol {part.volume:.0f}; "
+          f"late datum + both-set refused")
+
+
+def test_presspull_upto_offset():
+    """`upToOffset` shifts the landing along the EXTRUDE direction: positive goes
+    past the target, negative stops short. Applies to a plane target and a face
+    target alike. Before: the field was not read, so both cases ignored it."""
+    doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 25},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp", "upToOffset": -3},
+    ]}
+    part, err, _ = rebuild(doc)
+    assert not err, err
+    assert abs(bbox(part)["max"][2] - 22) < 0.01, f"−3 must stop short at z=22, got {bbox(part)['max'][2]}"
+    assert abs(part.volume - 10800) < 1, f"20x20x27 = 10800, got {part.volume:.1f}"
+
+    # mirror on a FACE target: body2's bottom face sits at z=20, so −3 lands at 17
+    face_doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "b2", "type": "box", "length": 8, "width": 8, "height": 10},
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 25, "rx": 0, "ry": 0, "rz": 0,
+         "bodies": ["body2"]},  # body2 z 20..30
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0, "body": "body1",
+         "face": _PP_TOP, "upTo": {"kind": "face", "by": "nearest", "point": [0, 0, 20]},
+         "upToOffset": -3},
+    ]}
+    _p, ferr, fbodies = rebuild(face_doc)
+    assert not ferr, ferr
+    b1 = _pp_body(fbodies)
+    assert abs(b1.bounding_box().max.Z - 17) < 0.01, f"face target −3 → z=17, got {b1.bounding_box().max.Z}"
+    assert abs(b1.volume - 8800) < 1, f"20x20x22 = 8800, got {b1.volume:.1f}"
+
+    # sign convention, in the direction where the two readings diverge: the top
+    # face pushed DOWN to XY travels along −normal, so a POSITIVE offset still has
+    # to go PAST z=0, not back up. Reading the offset off +normal instead of off
+    # the travel direction inverts exactly this case.
+    down = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "pp", "type": "press-pull", "operation": "cut", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "XY", "upToOffset": 2},
+    ]}
+    dp_, derr, _ = rebuild(down)
+    assert not derr, derr
+    assert abs(bbox(dp_)["max"][2] + 2) < 0.01, (
+        f"pushing DOWN, +2 must land past the target at z=−2, got {bbox(dp_)['max'][2]}"
+    )
+    print("  press-pull up-to offset OK: plane −3 → z=22, face −3 → z=17, downward +2 → z=−2")
+
+
+def test_presspull_upto_tilted_target_trims():
+    """A TILTED target has to TRIM the extrusion, not extrude by one scalar.
+
+    Before: the target was reduced to (centre, normal) and the distance measured at
+    the source face's CENTRE, so the result was a flat-topped solid — right only
+    along the centre line, silently wrong everywhere else, with err == [].
+
+    Volume alone cannot catch this: the landing height is linear across the face, so
+    a centred face's average height IS its centre height and both the wrong flat top
+    and the correct wedge measure 12000. The witness is the SHAPE — the new top face
+    must be the target plane itself."""
+    n = [0, 0.7071067811865476, 0.7071067811865476]
+    doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "dp", "type": "datumPlane",
+         "plane": {"origin": [0, 0, 25], "normal": n, "xdir": [1, 0, 0]}},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp"},
+    ]}
+    part, err, _ = rebuild(doc)
+    assert not err, err
+    # the landing surface is z = 25 − y over x,y ∈ [−10,10]: 15 at y=+10, 35 at y=−10.
+    # added material = ∫∫(20 − y) dx dy = 20·400 = 8000, on top of the 4000 box.
+    bb = bbox(part)
+    assert abs(bb["max"][2] - 35) < 0.01, f"the wedge peaks at z=35 (flat-top bug gives 25), got {bb['max'][2]}"
+    assert abs(part.volume - 12000) < 1, f"4000 + 8000 wedge = 12000, got {part.volume:.1f}"
+    top = max(part.faces(), key=lambda f: f.center().Z)
+    from build123d import Vector
+    assert abs(abs(top.normal_at().dot(Vector(*n))) - 1) < 1e-6, (
+        f"the new top face must BE the target plane, got normal {top.normal_at()}"
+    )
+
+    # the same tilt through the SHIPPED path — an up-to FACE, not a datum. This is
+    # where the flat top was actually measured (body1 came back z −5..25, vol 12000).
+    face_doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "s", "type": "sketch",
+         "plane": {"origin": [0, 0, 25], "normal": n, "xdir": [1, 0, 0]},
+         "entities": [{"id": "r", "type": "rectangle", "width": 60, "height": 60, "x": 0, "y": 0}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 2, "operation": "new"},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0, "body": "body1",
+         "face": _PP_TOP, "upTo": {"kind": "face", "by": "nearest", "point": [0, 0, 25]}},
+    ]}
+    _p, ferr, fbodies = rebuild(face_doc)
+    assert not ferr, ferr
+    b1 = _pp_body(fbodies)
+    assert abs(b1.bounding_box().max.Z - 35) < 0.01, (
+        f"tilted FACE target must trim too, got z_max {b1.bounding_box().max.Z}"
+    )
+    print(f"  press-pull up-to tilted OK: trimmed wedge z 15..35, vol {part.volume:.0f}")
+
+
+def test_presspull_upto_refuses_through_body():
+    """An up-to target past the body's FAR side used to consume the whole body:
+    solids 0, volume 0, err == []. Same class as the boolean no-op guard — flag it
+    red instead of deleting the model."""
+    doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "b2", "type": "box", "length": 20, "width": 20, "height": 10},
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": -30, "rx": 0, "ry": 0, "rz": 0,
+         "bodies": ["body2"]},  # body2 z −35..−25, well below body1
+        {"id": "pp", "type": "press-pull", "operation": "cut", "distance": -1, "body": "body1",
+         "face": _PP_TOP,
+         "upTo": {"kind": "face", "by": "nearest", "point": [0, 0, -35]}},  # body2's BOTTOM
+    ]}
+    _part, err, bodies = rebuild(doc)
+    assert err, "an up-to that eats the whole body must raise, not return an empty body"
+    b1 = _pp_body(bodies)
+    assert b1 is not None and len(b1.solids()) == 1 and abs(b1.volume - 4000) < 1, (
+        f"the body must survive the refusal intact, got {b1 and b1.volume}"
+    )
+    print(f"  press-pull up-to through-body refused: {err[0]['message']}")
+
+
+def test_presspull_upto_refuses_cylinder():
+    """A CURVED source face has no single direction to measure to the target along.
+    Before: `normal_at()` on the cylinder gave one arbitrary direction and the wall
+    was offset by that scalar — a r5 h20 cylinder (1570.8 mm³) silently collapsed to
+    15.7 mm³ with err == []."""
+    doc = {"parameters": {}, "features": [
+        {"id": "cy", "type": "cylinder", "radius": 5, "height": 20},
+        {"id": "b2", "type": "box", "length": 10, "width": 10, "height": 4},
+        {"id": "mv", "type": "move", "dx": 30, "dy": 0, "dz": 0, "rx": 0, "ry": 0, "rz": 0,
+         "bodies": ["body2"]},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0, "body": "body1",
+         "face": {"kind": "face", "by": "nearest", "point": [5, 0, 0]},  # the cylindrical wall
+         "upTo": {"kind": "face", "by": "nearest", "point": [25, 0, 0]}},
+    ]}
+    _part, err, bodies = rebuild(doc)
+    assert err, "an up-to on a curved source face must raise, not shrink the radius"
+    b1 = _pp_body(bodies)
+    assert abs(b1.volume - 1570.796) < 0.1, f"the cylinder must be untouched, got {b1.volume:.1f}"
+    print(f"  press-pull up-to cylinder refused: {err[0]['message']}")
+
+
+# The two-solid body every multi-solid check below starts from: a 4 mm slot cut
+# clean across the 20x20x10 box splits body1 into x −10..−2 and x 2..10 — 2 solids,
+# 3200 mm³, still ONE body. A single-solid box cannot see the bug this catches.
+_PP_SPLIT_BODY = [
+    _PP_BOX,
+    {"id": "dpc", "type": "datumPlane", "plane": "XY", "offset": -10},
+    {"id": "sk", "type": "sketch", "plane": "dpc",
+     "entities": [{"id": "r", "type": "rectangle", "width": 4, "height": 40, "x": 0, "y": 0}]},
+    {"id": "ec", "type": "extrude", "sketch": "sk", "distance": 20, "operation": "cut"},
+]
+
+
+def test_presspull_upto_refuses_deleting_one_solid():
+    """An up-to cut past ONE solid's far side must refuse, even when other solids
+    on the same body survive.
+
+    The first guard tested emptiness (`not out.solids()`), which only fires when the
+    body has nothing left. On a body an earlier cut split in two, a target past one
+    piece's far side deleted that piece while the other kept the chip green:
+    err == [], 2 solids / 3200 mm³ → 1 solid / 1600. The count is the witness, not
+    the emptiness."""
+    before, err0, bodies0 = rebuild({"parameters": {}, "features": list(_PP_SPLIT_BODY)})
+    assert not err0, err0
+    b0 = _pp_body(bodies0)
+    assert len(b0.solids()) == 2 and abs(b0.volume - 3200) < 1, (
+        f"setup must give 2 solids / 3200 mm³, got {len(b0.solids())} / {b0.volume:.1f}"
+    )
+
+    doc = {"parameters": {}, "features": _PP_SPLIT_BODY + [
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": -50},  # far below the box
+        {"id": "pp", "type": "press-pull", "operation": "cut", "distance": 0, "body": "body1",
+         "face": {"kind": "face", "by": "nearest", "point": [-6, 0, 5]},  # the LEFT piece's top
+         "upToPlane": "dp"},
+    ]}
+    _p, err, bodies = rebuild(doc)
+    assert err, "an up-to that eats a whole solid must raise, not delete it silently"
+    b1 = _pp_body(bodies)
+    assert len(b1.solids()) == 2 and abs(b1.volume - 3200) < 1, (
+        f"both solids must survive the refusal, got {len(b1.solids())} / {b1.volume:.1f}"
+    )
+
+    # CONTROL — the count dropping is not by itself an error. A JOIN that bridges
+    # two solids into one is a real, visible, correct outcome, and a guard that
+    # looked at the count alone would refuse it. Two stacked slabs with a 10 mm gap,
+    # one body; press the lower one's top up to the upper one's top plane.
+    merge = {"parameters": {}, "features": [
+        _PP_BOX,                                                            # z −5..5
+        {"id": "b2", "type": "box", "length": 20, "width": 20, "height": 10},
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 20, "rx": 0, "ry": 0, "rz": 0,
+         "bodies": ["body2"]},                                              # z 15..25
+        {"id": "cb", "type": "combine", "operation": "join", "target": "body1",
+         "tools": ["body2"]},                                               # 1 body, 2 solids
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 25},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0, "body": "body1",
+         "face": _PP_TOP, "upToPlane": "dp"},
+    ]}
+    _pm, merr, mbodies = rebuild(merge)
+    assert not merr, f"a join that merges two solids into one must still succeed: {merr}"
+    bm = _pp_body(mbodies)
+    assert len(bm.solids()) == 1, f"the bridging join should leave ONE solid, got {len(bm.solids())}"
+    assert abs(bm.volume - 12000) < 1, f"20x20x30 = 12000, got {bm.volume:.1f}"
+    print(f"  press-pull up-to one-solid delete refused: {err[0]['message']}")
+
+
+def test_presspull_upto_refuses_edge_on_target():
+    """A target that is nearly EDGE-ON to the source face must be refused, not built.
+
+    The overshoot the trimmed prism needs is span/|n·N| (see `_prism_to_plane`), which
+    runs away long before the dead-parallel |n·N| < 1e-6 check fires. Measured on this
+    20x20x10 box with the datum tilted off the face normal, err was [] and the result's
+    z_max went 1151.9 mm at 89.5°, 5735.6 at 89.9°, 572963.8 at 89.999° — a metre-high
+    spike and a full retessellation of it from one misjudged click. Those answers are
+    geometrically CORRECT, which is exactly why nothing caught them; the cap is on
+    blast radius, so the test has to check both sides of it."""
+    from build123d import Vector
+
+    def tilted(deg):
+        a = math.radians(deg)
+        return {"parameters": {}, "features": [
+            _PP_BOX,
+            {"id": "dp", "type": "datumPlane",
+             "plane": {"origin": [0, 0, 6], "normal": [0, math.sin(a), math.cos(a)],
+                       "xdir": [1, 0, 0]}},
+            {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+             "face": _PP_TOP, "upToPlane": "dp"},
+        ]}
+
+    # LEGITIMATE tilts still build, and still build the RIGHT thing. These targets
+    # CROSS the 20x20 top face (z = 6 − y·tan(deg) dips under z=5 at y = 1/tan), so
+    # the witness is the SHAPE, not the volume: this row used to assert 4794.67 at
+    # 30°, which is the volume of a result that carried the target plane over part
+    # of the face and left 165.36 mm² of the ORIGINAL z=5 face standing over the
+    # rest. A true up-to leaves none of it — and measures 4400.000, while the
+    # earlier flat-top bug ALSO measured 4400, so the two wrongs are
+    # volume-indistinguishable and only `_stranded_area` tells them apart.
+    #
+    # 30°: the plane stays above the box floor across the whole face, so the top
+    #      simply follows it — 4000 + 20·∫(1 − y·tan30) dy = 4400.
+    # 60°: it dips below z=−5 past y=6.35, so the box is cut clean away there and
+    #      the volume is 20·∫(11 − y·tan60) dy over y ∈ [−10, 6.35] = 4630.645.
+    for deg, vol, z_max in ((30.0, 4400.000, 11.7735), (60.0, 4630.645, 23.3205)):
+        _p, err, bodies = rebuild(tilted(deg))
+        assert not err, f"a {deg}° target is ordinary work and must still build: {err}"
+        b1 = _pp_body(bodies)
+        assert _stranded_area(b1, 5) < 1e-6, (
+            f"{deg}°: {_stranded_area(b1, 5):.2f} mm² of the picked face is still at z=5 — "
+            "'up to' means EVERY point of it reaches the target"
+        )
+        tn = Vector(0, math.sin(math.radians(deg)), math.cos(math.radians(deg)))
+        on_target = [f for f in b1.faces() if abs(abs(f.normal_at().dot(tn)) - 1) < 1e-6]
+        assert on_target and max(f.area for f in on_target) > 100, (
+            f"{deg}°: no face of the result carries the target plane's normal"
+        )
+        assert abs(b1.volume - vol) < 0.01, f"{deg}°: expected {vol}, got {b1.volume:.3f}"
+        assert abs(b1.bounding_box().max.Z - z_max) < 0.01, (
+            f"{deg}°: expected z_max {z_max}, got {b1.bounding_box().max.Z:.3f}"
+        )
+
+    # ...just INSIDE the cap, a steep target is still ordinary work and must build.
+    # The cap is span/|n·N| > 10·(body diagonal), i.e. about 84.6° for this box.
+    _p84, err84, b84 = rebuild(tilted(84.0))
+    assert not err84, f"84° is inside the cap and must build: {err84}"
+    assert abs(_pp_body(b84).bounding_box().max.Z - 101.1436) < 0.01, (
+        f"84° must reach the plane, got z_max {_pp_body(b84).bounding_box().max.Z:.4f}"
+    )
+
+    # ...and the runaway ones are refused, with the body left exactly as it was.
+    for deg in (85.0, 89.5, 89.9, 89.999):
+        _p, err, bodies = rebuild(tilted(deg))
+        assert err, f"a {deg}° target must be refused, not built"
+        assert "edge-on" in err[0]["message"], f"{deg}°: say WHY it was refused: {err}"
+        b1 = _pp_body(bodies)
+        assert abs(b1.volume - 4000) < 1 and abs(b1.bounding_box().max.Z - 5) < 1e-6, (
+            f"{deg}°: the box must be untouched, got {b1.volume:.1f} / "
+            f"z_max {b1.bounding_box().max.Z}"
+        )
+    print("  press-pull up-to edge-on refused: 30°/60° land whole on the target "
+          "(nothing stranded at z=5), 84° builds, 85°+ refused")
+
+
+def test_presspull_upto_refuses_coincident_target():
+    """A target LEVEL with the source face is one ordinary gesture away — datum on a
+    face, press T, click that datum — and used to return the part untouched with
+    err == [], a green chip on an operation that did nothing. Same class as the
+    boolean no-op guards, so it gets the same treatment: raise."""
+    doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 5},  # ON the top face
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp"},
+    ]}
+    _p, err, bodies = rebuild(doc)
+    assert err, "an up-to target level with the source face must raise, not report success"
+    assert abs(_pp_body(bodies).volume - 4000) < 1, "the box must be untouched"
+
+    # ...but a coincident target WITH an offset really does move the face, so the
+    # guard has to be measured after the offset, not before it.
+    doc["features"][-1] = dict(doc["features"][-1], upToOffset=4)
+    _p2, err2, bodies2 = rebuild(doc)
+    assert not err2, f"a coincident target plus an offset is a real move: {err2}"
+    b2 = _pp_body(bodies2)
+    assert abs(b2.bounding_box().max.Z - 9) < 0.01, f"+4 → z=9, got {b2.bounding_box().max.Z}"
+    assert abs(b2.volume - 5600) < 1, f"20x20x14 = 5600, got {b2.volume:.1f}"
+    print(f"  press-pull up-to coincident refused: {err[0]['message']}")
+
+
+def test_presspull_upto_no_move_guard_measures_the_whole_face():
+    """The no-move guard has to ask whether the face moves ANYWHERE, not whether it
+    moves at its CENTRE.
+
+    Measuring at the centre refused every target that merely passed THROUGH it: a
+    datum on the top face tilted 45° about X was rejected as "already level with the
+    face you picked" while the plane climbed to z=15 at y=−10 — a 10 mm move over
+    half the face, called nothing. And it was a cliff, not a boundary: nudging that
+    datum to z=5.0000001 built and ADDED 1000 mm³, to z=4.9999999 CUT 1000 mm³, so
+    2e-7 mm of datum flipped the outcome across −1000 / refused / +1000."""
+    from build123d import Vector
+
+    def through_centre(deg, z=5.0):
+        a = math.radians(deg)
+        return {"parameters": {}, "features": [
+            _PP_BOX,
+            {"id": "dp", "type": "datumPlane",
+             "plane": {"origin": [0, 0, z], "normal": [0, math.sin(a), math.cos(a)],
+                       "xdir": [1, 0, 0]}},
+            {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+             "face": _PP_TOP, "upToPlane": "dp"},
+        ]}
+
+    # A tilted target through the face centre is a real move at every one of these
+    # angles, and the answer is CONTINUOUS across the datum height that used to be
+    # a cliff. Volume is unchanged by symmetry (what the plane adds on y<0 it takes
+    # on y>0), which is exactly why the shape is the assertion.
+    for deg, z_max in ((10.0, 6.7632), (45.0, 15.0), (80.0, 61.7128)):
+        heights = [None, None, None]
+        for i, z in enumerate((5.0, 5.0000001, 4.9999999)):
+            _p, err, bodies = rebuild(through_centre(deg, z))
+            assert not err, f"{deg}° through the face centre is a real move: {err}"
+            b1 = _pp_body(bodies)
+            assert _stranded_area(b1, 5) < 1e-6, (
+                f"{deg}° @ z={z}: {_stranded_area(b1, 5):.2f} mm² of the face never moved"
+            )
+            assert abs(b1.bounding_box().max.Z - z_max) < 0.01, (
+                f"{deg}° @ z={z}: the plane peaks at z={z_max}, got {b1.bounding_box().max.Z:.4f}"
+            )
+            tn = Vector(0, math.sin(math.radians(deg)), math.cos(math.radians(deg)))
+            on_target = [f for f in b1.faces()
+                         if abs(abs(f.normal_at().dot(tn)) - 1) < 1e-6]
+            assert on_target and max(f.area for f in on_target) > 100, (
+                f"{deg}° @ {z}: no face of the result carries the target plane's normal"
+            )
+            heights[i] = b1.volume
+        assert max(heights) - min(heights) < 1e-3, (
+            f"{deg}°: 2e-7 mm of datum must not change the volume, got {heights}"
+        )
+    # 45° through the centre: +1000 mm³ of wedge on y<0, −1000 on y>0.
+    _p45, _e45, b45 = rebuild(through_centre(45.0))
+    assert abs(_pp_body(b45).volume - 4000) < 0.01, (
+        f"45° through the centre is volume-neutral, got {_pp_body(b45).volume:.3f}"
+    )
+
+    # CONTROL, just inside the boundary the guard still owns: a target PARALLEL to
+    # the face moves it by the same amount everywhere, so "level with the face" is
+    # still exactly the no-op it always was and must still be refused...
+    level = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 5},
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+         "face": _PP_TOP, "upToPlane": "dp"},
+    ]}
+    _pl, lerr, lbodies = rebuild(level)
+    assert lerr and "moved nothing" in lerr[0]["message"], (
+        f"a target level with the face is still a no-op and must raise: {lerr}"
+    )
+    assert abs(_pp_body(lbodies).volume - 4000) < 1e-6, "the refused box must be untouched"
+
+    # ...and a parallel target a thousandth of a millimetre off it is a real move.
+    level["features"][1] = dict(level["features"][1], offset=5.001)
+    _pn, nerr, nbodies = rebuild(level)
+    assert not nerr, f"a 0.001 mm parallel move is real and must build: {nerr}"
+    assert abs(_pp_body(nbodies).volume - 4000.4) < 1e-3, (
+        f"20x20x0.001 = 0.4 mm³ added, got {_pp_body(nbodies).volume:.4f}"
+    )
+
+    # CONTROL on a TILTED source face, where "measure the whole face" is easiest to
+    # get wrong: the face's bounding box has corners OFF its own plane, and reading
+    # the target distance at those raw corners shows movement on a target that is
+    # dead coincident. Box rotated 45° about X, datum laid exactly on its new top.
+    r = math.sqrt(0.5)
+    tc, tn = [0, -5 * r, 5 * r], [0, -r, r]
+
+    def on_tilted_face(origin):
+        return {"parameters": {}, "features": [
+            _PP_BOX,
+            {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 0,
+             "rx": 45, "ry": 0, "rz": 0, "bodies": ["body1"]},
+            {"id": "dp", "type": "datumPlane",
+             "plane": {"origin": origin, "normal": tn, "xdir": [1, 0, 0]}},
+            {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+             "face": {"kind": "face", "by": "nearest", "point": tc}, "upToPlane": "dp"},
+        ]}
+
+    _pt, terr, tbodies = rebuild(on_tilted_face(tc))
+    assert terr and "moved nothing" in terr[0]["message"], (
+        f"a target coincident with a TILTED face is still a no-op and must raise: {terr}"
+    )
+    assert abs(_pp_body(tbodies).volume - 4000) < 1e-6, "the refused box must be untouched"
+    _pm, merr, mbodies = rebuild(on_tilted_face([tc[i] + 2 * tn[i] for i in range(3)]))
+    assert not merr, f"2 mm off that same tilted face is a real move: {merr}"
+    assert abs(_pp_body(mbodies).volume - 4800) < 1e-3, (
+        f"400 mm² x 2 mm = 800 mm³ added, got {_pp_body(mbodies).volume:.4f}"
+    )
+    print("  press-pull up-to no-move guard OK: tilted-through-centre builds at "
+          "10°/45°/80° and is continuous across 2e-7 mm; level still refused, on a "
+          "tilted face too")
+
+
+def test_presspull_upto_refuses_deleting_a_split_solid():
+    """The through-body guard must test each solid, not the solid COUNT.
+
+    Counting made a cut that deletes one solid while SPLITTING another look like no
+    change at all: on the rib+plate+block body below (2 solids / 5264 mm³) a cut
+    down the rib to z=−30 removed the rib, split the plate in two and ate the 4x4x4
+    block whole — 2 solids in, 2 solids out, err == [], and 64 mm³ of the user's
+    model gone under a green chip (5264 − 1200 − 1200 − 64 = 2800)."""
+    _b, err0, bodies0 = rebuild({"parameters": {}, "features": list(_PP_RIB_AND_BLOCK)})
+    assert not err0, err0
+    b0 = _pp_body(bodies0)
+    assert len(b0.solids()) == 2 and abs(b0.volume - 5264) < 1, (
+        f"setup must give 2 solids / 5264 mm³, got {len(b0.solids())} / {b0.volume:.1f}"
+    )
+
+    def cut_to(offset):
+        return {"parameters": {}, "features": _PP_RIB_AND_BLOCK + [
+            {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": offset},
+            {"id": "pp", "type": "press-pull", "operation": "cut", "distance": 0,
+             "body": "body1", "face": _PP_RIB_TOP, "upToPlane": "dp"},
+        ]}
+
+    _p, err, bodies = rebuild(cut_to(-30))  # past the block's far side
+    assert err, "a cut that consumes a whole solid must raise even when the count holds"
+    assert "delete" in err[0]["message"], f"say what would be lost: {err}"
+    b1 = _pp_body(bodies)
+    assert len(b1.solids()) == 2 and abs(b1.volume - 5264) < 1, (
+        f"the body must survive the refusal intact, got {len(b1.solids())} / {b1.volume:.1f}"
+    )
+
+    # CONTROL, just inside the boundary: the same cut stopped at z=−6 — below the
+    # plate, above the block. It still SPLITS the plate in two (2 solids → 3), which
+    # is ordinary work; nothing disappears, so nothing may be refused.
+    _pc, cerr, cbodies = rebuild(cut_to(-6))
+    assert not cerr, f"a cut that only splits a solid must still build: {cerr}"
+    bc = _pp_body(cbodies)
+    assert len(bc.solids()) == 3, f"the plate splits in two, block survives → 3, got {len(bc.solids())}"
+    assert abs(bc.volume - 2864) < 1, f"5264 − 1200 rib − 1200 slot = 2864, got {bc.volume:.1f}"
+    print(f"  press-pull up-to split-solid delete refused: {err[0]['message']}")
+
+
+def test_presspull_upto_far_square_on_target_builds():
+    """A target that is FAR but dead square-on is a legitimate long extrude.
+
+    The blast-radius cap folded the prism's numeric slack, `max(1, 0.01·|d|)`, into
+    the quantity it capped, so |n·N| == 1.0 — square-on by any reading — was refused
+    above roughly 1000x the body diagonal with the message "too close to edge-on".
+    Measured on this box: 27,000 mm built and 28,000 mm did not."""
+    def to_offset(o):
+        return {"parameters": {}, "features": [
+            _PP_BOX,
+            {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": o},
+            {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+             "face": _PP_TOP, "upToPlane": "dp"},
+        ]}
+
+    for o in (27000, 28000, 50000):
+        _p, err, bodies = rebuild(to_offset(o))
+        assert not err, f"a square-on target at {o} mm is a long extrude, not edge-on: {err}"
+        b1 = _pp_body(bodies)
+        assert abs(b1.bounding_box().max.Z - o) < 0.01, (
+            f"{o}: must land ON the target, got z_max {b1.bounding_box().max.Z}"
+        )
+        assert abs(b1.volume - 400 * (o + 5)) < 1, (
+            f"{o}: 20x20x{o + 5} = {400 * (o + 5)}, got {b1.volume:.1f}"
+        )
+    print("  press-pull up-to far square-on target OK: 27000 / 28000 / 50000 mm all build")
+
+
+def test_presspull_upto_plane_missing_says_why():
+    """An `upToPlane` id that isn't a live datum has FOUR causes needing opposite
+    fixes, and the guard used to report the ordering one for all of them — telling a
+    user whose datum was DELETED that it "has to come BEFORE" the press/pull, the
+    inverse of the truth. The id is document text, so it rides in `subject`, never in
+    the sentence."""
+    def run(features):
+        _p, err, _b = rebuild({"parameters": {}, "features": features})
+        # pick the PRESS/PULL's entry: case (d) below breaks the datum on purpose,
+        # so that feature reports first and err[0] would be the wrong error.
+        mine = [e for e in err if e["feature_id"] == "pp"]
+        assert mine, f"a bad up-to plane must raise on the press/pull: {err}"
+        return mine[0]
+
+    pp = {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+          "face": _PP_TOP}
+    datum = {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": 25}
+
+    # (a) defined LATER — the one case the old message was right about
+    later = run([_PP_BOX, dict(pp, upToPlane="dp"), datum])
+    assert "timeline" in later["message"] and "BEFORE" in later["message"], later
+
+    # (b) not in the document at all (the datum was deleted)
+    gone = run([_PP_BOX, dict(pp, upToPlane="dp")])
+    assert "BEFORE" not in gone["message"], f"a deleted datum is not an ordering problem: {gone}"
+    assert "delete" in gone["message"].lower(), gone
+
+    # (c) points at a feature that exists but is not a datum plane
+    wrong = run([_PP_BOX, dict(pp, upToPlane="b1")])
+    assert "BEFORE" not in wrong["message"] and "datum plane" in wrong["message"], wrong
+
+    # (d) the datum is upstream but its own feature failed, so it never registered
+    broken = run([_PP_BOX,
+                  {"id": "dp", "type": "datumPlane", "plane": "nope", "offset": 25},
+                  dict(pp, upToPlane="dp")])
+    assert "BEFORE" not in broken["message"] and "didn't build" in broken["message"], broken
+
+    # the id itself never reaches the prose — it rides in `subject`, sanitised
+    for e in (later, gone, wrong, broken):
+        assert "dp" not in e["message"].split() and "b1" not in e["message"].split(), (
+            f"the document's id must not be echoed into the sentence: {e['message']}"
+        )
+    assert gone["subject"] == "dp" and wrong["subject"] == "b1", (gone, wrong)
+    print("  press-pull up-to missing plane diagnosed: later / deleted / not-a-datum / "
+          "failed, id in `subject`")
+
+
+def test_presspull_offset_needs_a_target():
+    """`upToOffset` with no up-to target was READ and then thrown away: `d` fell back
+    to `distance`, so a 3 mm push with a 7 mm offset moved 3 mm with err == [] and the
+    typed 7 vanished. Refuse it — a wire that silently drops a number the user typed
+    is the same silent class as a boolean that changes nothing."""
+    doc = {"parameters": {}, "features": [
+        _PP_BOX,
+        {"id": "pp", "type": "press-pull", "operation": "join", "distance": 3,
+         "face": _PP_TOP, "upToOffset": 7},
+    ]}
+    _p, err, bodies = rebuild(doc)
+    assert err, "an offset with nothing to offset FROM must be refused, not dropped"
+    b1 = _pp_body(bodies)
+    assert abs(b1.bounding_box().max.Z - 5) < 1e-6, (
+        f"the refused feature must leave the box alone, got z_max {b1.bounding_box().max.Z}"
+    )
+
+    # a ZERO offset drops nothing, so it stays valid — a client that always sends
+    # the field must not start failing.
+    doc["features"][-1] = dict(doc["features"][-1], upToOffset=0)
+    _p2, err2, bodies2 = rebuild(doc)
+    assert not err2, f"upToOffset 0 without a target is harmless and must build: {err2}"
+    assert abs(_pp_body(bodies2).bounding_box().max.Z - 8) < 1e-6, "plain distance 3 → z=8"
+    print(f"  press-pull offset without a target refused: {err[0]['message']}")
+
+
+
 def test_extrude_operation_multibody():
     """extrude `join` booleans against EVERY body it overlaps (MCAD-style) so a
     bridging extrude merges them; `new` keeps the extrude as a separate body."""
@@ -1758,6 +2423,67 @@ def test_export_despite_errors():
           "feature named; nothing-built still refuses")
 
 
+
+def test_export_project_3mf_paints_textured_faces():
+    """A texture feature's colorSlot must reach the file as per-triangle
+    `paint_color`, not just the viewport.
+
+    Field-reported 2026-08-21: a cube with three textured faces at three palette
+    slots showed three colours on screen and opened in Orca as one. The colour
+    was assigned, the sidecar already published it per face for the viewport, and
+    the project writer had no way to say it — it emitted per-OBJECT extruders
+    only. Nothing was broken; the export simply could not express the model."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    import server
+    from project3mf import _paint_attr
+
+    # The documented Bambu/Orca encoding, pinned by value. Getting this wrong is
+    # silent: a wrong code paints the wrong filament, and LOWERCASE hex is
+    # ignored outright by Bambu's parser, which reads as "all one colour".
+    assert [_paint_attr(i) for i in range(5)] == ["4", "8", "0C", "1C", "2C"]
+    assert all(c not in "abcdef" for c in "".join(_paint_attr(i) for i in range(8)))
+
+    doc = {"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 20, "height": 20, "x": 0, "y": 0}]},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new"},
+        {"id": "t1", "type": "texture", "kind": "ribs", "depth": 0.4, "scale": 5,
+         "colorSlot": 2, "profile": "facet", "direction": "out", "sharpness": 0.5,
+         "body": "body1",
+         "faces": {"kind": "face", "by": "nearest", "point": [0, 0, 10]}},
+    ]}
+    _, errors, bodies = rebuild(doc)
+    assert not errors, f"setup failed: {errors}"
+    assert len(bodies) == 1
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "painted.3mf")
+        res = server._export_project_job(
+            doc, path,
+            [{"name": "A", "color": "#B8ACD6"}, {"name": "B", "color": "#96D8AF"},
+             {"name": "C", "color": "#F99963"}],
+            {},          # no BODY assignment at all — the field case exactly
+            {}, {},
+        )
+        assert "error" not in res, f"exportProject failed: {res}"
+        with zipfile.ZipFile(res["path"]) as z:
+            model = z.read("3D/3dmodel.model").decode("utf-8")
+        tris = ET.fromstring(model).iter("{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}triangle")
+        painted = [t for t in tris if t.get("paint_color")]
+        assert painted, "no triangle carried paint_color — the colour was dropped again"
+        vals = {t.get("paint_color") for t in painted}
+        assert vals == {"0C"}, f"slot 2 must encode as 0C, got {vals}"
+
+        # ...and the unpainted faces stay silent, inheriting the object extruder.
+        total = model.count("<triangle ")
+        assert 0 < len(painted) < total, (
+            f"{len(painted)} of {total} triangles painted — a whole-body paint means "
+            "the face mapping collapsed"
+        )
+    return True
+
+
 def test_export_project_3mf():
     """Orca-project 3MF export job: zip layout, per-object extruder metadata
     (1-based = slot+1, unassigned → 1), palette → filament_colour, shared
@@ -1892,9 +2618,23 @@ if __name__ == "__main__":
     test_presspull_targets_owning_body()
     test_presspull_multiface()
     test_presspull_upto()
+    test_presspull_upto_datum_plane()
+    test_presspull_upto_offset()
+    test_presspull_upto_tilted_target_trims()
+    test_presspull_upto_refuses_through_body()
+    test_presspull_upto_refuses_cylinder()
+    test_presspull_upto_refuses_deleting_one_solid()
+    test_presspull_upto_refuses_edge_on_target()
+    test_presspull_upto_refuses_coincident_target()
+    test_presspull_upto_no_move_guard_measures_the_whole_face()
+    test_presspull_upto_refuses_deleting_a_split_solid()
+    test_presspull_upto_far_square_on_target_builds()
+    test_presspull_upto_plane_missing_says_why()
+    test_presspull_offset_needs_a_target()
     test_presspull_upto_exact()
     test_export_despite_errors()
     test_export_project_3mf()
+    test_export_project_3mf_paints_textured_faces()
     test_sketch_patterns()
     test_sketch_spline_extrude()
     test_sketch_pattern_with_spline()

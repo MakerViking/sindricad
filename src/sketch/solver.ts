@@ -69,6 +69,49 @@ export interface SolveInput {
   arcs?: SArc[];
   constraints: SConstraint[];
   drag?: { point: PointId; x: number; y: number };
+  /** Points to hold STILL for this solve, at the given position — the "only what
+   *  you picked moves" bias (see sketchSolve's `bias`).
+   *
+   *  Deliberately the SAME device as `drag`, and for a measured reason: there
+   *  are no per-parameter weights anywhere in this ABI, and a per-constraint
+   *  `scale` is inert on a temporary constraint across 1e-6..1e6, so a fixed
+   *  helper point plus a `temporary:true` coincidence is the only bias this
+   *  codebase has. `temporary` sets the constraint's tagId to -1, which keeps an
+   *  anchor out of dof / conflicts / redundant AND makes it SOFT — planegcs
+   *  solves the temporary constraints as a secondary subsystem, so an anchor
+   *  yields to a real constraint rather than fighting it. Measured: anchoring a
+   *  rectangle whose corner a `fix` still has to move leaves the real constraint
+   *  satisfied and the anchor simply ignored, with dof and every diagnostic list
+   *  identical to the unanchored solve.
+   *
+   *  Anchoring the same points with `fixed:true` on the REAL points instead is
+   *  hard, and reports dof 1 with 4 fabricated redundants. Don't. */
+  anchors?: { point: PointId; x: number; y: number }[];
+  /** The RADIUS half of `anchors`: rounds to hold at their given radius.
+   *
+   *  A planegcs circle/arc radius is a free variable of its own — it is not
+   *  reachable through any point, so anchoring a circle's centre leaves its
+   *  radius as free as it ever was. Without this, "only what you picked moves"
+   *  was a lie for every constraint that can pay in radius, and on the tangent
+   *  gesture it was WORSE than no bias at all: line at y=8 tangent to a circle
+   *  r=5 at the origin, picking the LINE first, took the circle to r=7 (+40%)
+   *  where the unbiased solve took it to r=5.822 (+16%). With the radius pinned
+   *  the circle does not move at all and the line lands at y=5.
+   *
+   *  Same `temporary:true` device as `anchors`, and measured to BITE rather than
+   *  to be ignored, on both of the cases that matter: the tangent above, and
+   *  equal-radius between two circles (r5 and r10 — pinning either one is what
+   *  decides which of them changes; unpinned, planegcs always shrinks C2 to 5
+   *  regardless of the pick). Note for whoever finds a contradicting note: an
+   *  earlier investigation recorded a temporary `circle_radius` pin as
+   *  completely inert. That is not what this ABI does — the numbers above are
+   *  from the installed wasm.
+   *
+   *  Circles only in practice: an ARC's radius is reachable through its centre
+   *  and endpoints (planegcs `arc_rules`), so whoever anchors those has already
+   *  anchored the radius — sketchSolve says so at the call site and does not
+   *  emit one. Add an `arc_radius` arm here if a caller ever needs it. */
+  radiusAnchors?: { id: string; radius: number }[];
 }
 export interface SolveResult {
   points: Record<PointId, { x: number; y: number }>;
@@ -172,6 +215,17 @@ export async function solveSketch(input: SolveInput): Promise<SolveResult> {
     prims.push({ id: "__drag", type: "point", x: input.drag.x, y: input.drag.y, fixed: true });
     prims.push({ id: "__dragc", type: "p2p_coincident", p1_id: input.drag.point, p2_id: "__drag", temporary: true });
   }
+  // Anchors ride the drag pin's device, one helper point each. Read-back walks
+  // input.points only, so these helpers never reach the caller.
+  (input.anchors ?? []).forEach((a, i) => {
+    prims.push({ id: `__anc${i}`, type: "point", x: a.x, y: a.y, fixed: true });
+    prims.push({ id: `__ancc${i}`, type: "p2p_coincident", p1_id: a.point, p2_id: `__anc${i}`, temporary: true });
+  });
+  // A radius anchor needs no helper primitive — the value goes straight on the
+  // constraint.
+  (input.radiusAnchors ?? []).forEach((a, i) => {
+    prims.push({ id: `__crad${i}`, type: "circle_radius", c_id: a.id, radius: a.radius, temporary: true });
+  });
 
   w.push_primitives_and_params(prims);
   const status = w.solve();

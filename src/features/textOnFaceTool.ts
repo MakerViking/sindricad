@@ -24,6 +24,57 @@ import { HANDLE_IDLE as OUTLINE_COLOR } from "../viewport/colors3d";
 
 type Phase = "pick" | "edit";
 
+/** Re-frame a picked face plane so text READS horizontally on it.
+ *
+ *  `viewport.pickFacePlane` builds its xdir from world UP whenever the face is
+ *  not roughly horizontal (viewport.ts:1347: `ref = |n.z| < 0.9 ? Z : X`), so on
+ *  any wall the frame's x-axis points up the wall — and text, which runs along
+ *  x, comes out vertical. Field-reported: "it always starts vertical".
+ *
+ *  Fixed HERE rather than in pickFacePlane because that helper is shared with
+ *  "Sketch on this face" and "Offset plane from face"; re-orienting it would
+ *  silently rotate the frame every new sketch on a wall is built in. The plane
+ *  is stored per-feature, so a text-only convention changes nothing else.
+ *
+ *  It also makes the placement offsets mean something a person can predict: u
+ *  runs horizontally, v runs up. A frame where "u" moved the text vertically
+ *  would make the numeric fields worse than useless.
+ */
+export function textFrame(plane: PlaneDef): PlaneDef {
+  const n = new THREE.Vector3(...plane.normal).normalize();
+  const up = new THREE.Vector3(0, 0, 1);
+  // A horizontal face has no "up" to align to — keep world X, which is what the
+  // picker already chooses for it, so top faces are unaffected.
+  if (Math.abs(n.dot(up)) > 0.9) return plane;
+  const x = new THREE.Vector3().crossVectors(up, n).normalize();
+  if (!Number.isFinite(x.x) || x.lengthSq() < 1e-12) return plane; // degenerate: leave it alone
+  return { ...plane, xdir: [x.x, x.y, x.z] };
+}
+
+/** The nearest snap candidate within `tol`, else the point itself.
+ *
+ *  Split out because it is the one part of the drag with a real bug surface —
+ *  a `<` where `<=` belongs, or "first within tolerance" instead of "nearest",
+ *  both feel like the snap sticking to the wrong target — and the rest of the
+ *  gesture needs a viewport and a pointer to exercise at all.
+ *
+ *  Ties go to the EARLIER candidate, which is why the caller lists the true
+ *  centroid first: on a rectangular face the centroid and the centre of the
+ *  extent coincide, and the centroid is the more meaningful of the two. */
+export function snapTo(
+  at: { u: number; v: number },
+  candidates: { u: number; v: number }[],
+  tol: number,
+): { u: number; v: number } {
+  let best = tol;
+  let out = at;
+  for (const c of candidates) {
+    const d = Math.hypot(c.u - at.u, c.v - at.v);
+    if (d < best) { best = d; out = c; }
+  }
+  return out;
+}
+
 // Typing drives the cheap 2D outline; the real solid follows once typing pauses.
 // Measured on a one-body document: `tessellateText` 20.7 ms against 223 ms for a
 // full emboss rebuild — and that 223 ms is a FLOOR, excluding the WebSocket round
@@ -47,6 +98,9 @@ export class TextOnFaceTool {
   private pick: [number, number, number] = [0, 0, 0];
   private u = 0;
   private v = 0;
+  private dragging = false;
+  private snapUV: { u: number; v: number }[] = [];
+  private snapTol = 0;
   private values: TextOnFaceValues | null = null;
   private previewTimer = 0;
   private outlineTimer = 0;
@@ -59,6 +113,7 @@ export class TextOnFaceTool {
   private onDone: ((id: string | null) => void) | null = null;
   private boundMove: (e: PointerEvent) => void;
   private boundDown: (e: PointerEvent) => void;
+  private boundUp: (e: PointerEvent) => void;
   private boundKey: (e: KeyboardEvent) => void;
 
   constructor(
@@ -68,6 +123,7 @@ export class TextOnFaceTool {
   ) {
     this.boundMove = (e) => this.onMove(e);
     this.boundDown = (e) => this.onDown(e);
+    this.boundUp = () => { this.dragging = false; };
     this.boundKey = (e) => this.onKey(e);
   }
 
@@ -81,6 +137,7 @@ export class TextOnFaceTool {
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
     el.addEventListener("pointerdown", this.boundDown, true);
+    el.addEventListener("pointerup", this.boundUp, true);
     window.addEventListener("keydown", this.boundKey, true);
     // warm the font list while the user is still choosing a face
     if (!this.fonts.length) void fetchFonts().then((f) => (this.fonts = f)).catch(() => {});
@@ -110,6 +167,13 @@ export class TextOnFaceTool {
     this.u = Number(f.u ?? 0);
     this.v = Number(f.v ?? 0);
     this.viewport.suspendPicking = true;
+    // The edit path used to bind the keyboard only, so a re-opened text could
+    // not be dragged — the placement gesture would exist for a NEW text and
+    // silently not for an existing one.
+    const el = this.viewport.domElement;
+    el.addEventListener("pointermove", this.boundMove);
+    el.addEventListener("pointerdown", this.boundDown, true);
+    el.addEventListener("pointerup", this.boundUp, true);
     window.addEventListener("keydown", this.boundKey, true);
     this.store.beginEditPreview(featureId);
     void this.openPanel({
@@ -119,6 +183,8 @@ export class TextOnFaceTool {
       operation: f.operation,
       angle: Number(f.angle ?? 0),
       align: f.align ?? "left",
+      u: Number(f.u ?? 0),
+      v: Number(f.v ?? 0),
       style: f.style ?? "regular",
       bevel: Number(f.bevel ?? 0),
       bevelStyle: (f.bevelStyle ?? "auto") as TextOnFaceValues["bevelStyle"],
@@ -129,13 +195,110 @@ export class TextOnFaceTool {
   }
 
   private onMove(e: PointerEvent) {
-    if (this.phase !== "pick") return;
+    if (this.phase === "edit") {
+      if (this.dragging) this.dragTo(e);
+      return;
+    }
     const faceId = this.viewport.hoverFaceAt(e.clientX, e.clientY);
     this.viewport.domElement.style.cursor = faceId != null ? "text" : "default";
   }
 
+  /** Where a screen point lands on the text's own plane, in (u, v) millimetres.
+   *
+   *  Intersects the mathematical PLANE rather than the body mesh, so a drag that
+   *  wanders past the edge of the face still tracks the cursor instead of
+   *  sticking at the last triangle it hit. */
+  private uvAt(clientX: number, clientY: number): { u: number; v: number } | null {
+    if (!this.plane) return null;
+    const O = new THREE.Vector3(...this.plane.origin);
+    const N = new THREE.Vector3(...this.plane.normal).normalize();
+    const U = new THREE.Vector3(...this.plane.xdir).normalize();
+    const V = new THREE.Vector3().crossVectors(N, U);
+    const ray = this.viewport.rayFrom(clientX, clientY).ray;
+    const denom = N.dot(ray.direction);
+    if (Math.abs(denom) < 1e-9) return null; // looking along the face: no answer
+    const t = N.dot(O.clone().sub(ray.origin)) / denom;
+    if (t <= 0) return null; // the plane is behind the camera
+    const p = ray.origin.clone().addScaledVector(ray.direction, t).sub(O);
+    return { u: p.dot(U), v: p.dot(V) };
+  }
+
+  /** Snap targets for the face under the cursor: its centroid, and the centre,
+   *  edge midpoints and corners of its extent in the text frame.
+   *
+   *  Computed from the DISPLAY triangles, so they are as exact as the
+   *  tessellation — which is the right precision for a placement gesture, and
+   *  the numeric fields are there for when it is not. The bbox is taken in the
+   *  text's own (u, v) frame rather than in world axes, so "middle of this face"
+   *  means the same thing on a wall as on a top face. */
+  private buildSnaps(clientX: number, clientY: number) {
+    this.snapUV = [];
+    if (!this.plane) return;
+    const faceId = this.viewport.hoverFaceAt(clientX, clientY);
+    if (faceId == null) return;
+    const O = new THREE.Vector3(...this.plane.origin);
+    const N = new THREE.Vector3(...this.plane.normal).normalize();
+    const U = new THREE.Vector3(...this.plane.xdir).normalize();
+    const V = new THREE.Vector3().crossVectors(N, U);
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    let seen = false;
+    for (const tri of this.viewport.faceTriangles(faceId)) {
+      for (const w of [tri.a, tri.b, tri.c]) {
+        const d = w.clone().sub(O);
+        const u = d.dot(U), v = d.dot(V);
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+        seen = true;
+      }
+    }
+    if (!seen) return;
+    const midU = (minU + maxU) / 2;
+    const midV = (minV + maxV) / 2;
+    const c = this.viewport.measureFace(faceId).centroid.clone().sub(O);
+    this.snapUV = [
+      { u: c.dot(U), v: c.dot(V) },                     // true centroid
+      { u: midU, v: midV },                             // centre of the extent
+      { u: midU, v: minV }, { u: midU, v: maxV },       // edge midpoints
+      { u: minU, v: midV }, { u: maxU, v: midV },
+      { u: minU, v: minV }, { u: maxU, v: minV },       // corners
+      { u: minU, v: maxV }, { u: maxU, v: maxV },
+    ];
+    // Tolerance as a FRACTION of the face, not a fixed millimetre or pixel
+    // figure: a 4 mm boss and a 400 mm panel both want "near enough the middle"
+    // to mean the same gesture, and a pixel figure would change what snaps as
+    // the user zooms.
+    this.snapTol = Math.max(maxU - minU, maxV - minV) * 0.04;
+  }
+
+  private dragTo(e: PointerEvent) {
+    const at = this.uvAt(e.clientX, e.clientY);
+    if (!at) return;
+    const { u, v } = snapTo(at, this.snapUV, this.snapTol);
+    this.u = Math.round(u * 1000) / 1000;
+    this.v = Math.round(v * 1000) / 1000;
+    this.panel.setPlacement(this.u, this.v);
+    if (this.values) {
+      this.values = { ...this.values, u: this.u, v: this.v };
+      this.schedulePreview(this.values);
+    }
+  }
+
   private onDown(e: PointerEvent) {
-    if (e.button !== 0 || this.phase !== "pick") return;
+    if (e.button !== 0) return;
+    if (this.phase === "edit") {
+      // Drag anywhere on the body to slide the text across its face. A miss
+      // returns WITHOUT consuming the event, so a click on empty space still
+      // orbits the camera — the same rule the pick phase follows.
+      if (this.viewport.hoverFaceAt(e.clientX, e.clientY) == null) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.buildSnaps(e.clientX, e.clientY);
+      this.dragging = true;
+      this.dragTo(e);
+      return;
+    }
     const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
     if (!hit) return; // missed the body — let the click orbit
     const plane = this.viewport.pickFacePlane(e.clientX, e.clientY);
@@ -148,23 +311,28 @@ export class TextOnFaceTool {
     // body happened to be created last.
     this.bodyId = hit.bodyId;
     this.face = hit.bodyId ? { ...hit.selector, body: hit.bodyId } : hit.selector;
-    this.plane = plane;
+    this.plane = textFrame(plane);
     this.pick = [hit.anchor.x, hit.anchor.y, hit.anchor.z];
     this.featureId = this.store.nextId();
     this.viewport.clearHover();
     this.viewport.domElement.style.cursor = "default";
 
-    // place the text where the click landed, in the plane's own frame
-    const O = new THREE.Vector3(...plane.origin);
-    const U = new THREE.Vector3(...plane.xdir);
-    const N = new THREE.Vector3(...plane.normal);
+    // place the text where the click landed, in the plane's own frame — the
+    // REFRAMED one, or u/v would be measured against axes the feature does not
+    // carry and the text would land somewhere else entirely.
+    const O = new THREE.Vector3(...this.plane.origin);
+    const U = new THREE.Vector3(...this.plane.xdir);
+    const N = new THREE.Vector3(...this.plane.normal);
     const V = new THREE.Vector3().crossVectors(N, U);
     const d = hit.anchor.clone().sub(O);
     this.u = Math.round(d.dot(U) * 1000) / 1000;
     this.v = Math.round(d.dot(V) * 1000) / 1000;
 
     this.phase = "edit";
-    void this.openPanel({ text: "", height: 6, depth: 0.6, operation: "emboss", align: "center", bevel: 0, bevelStyle: "auto" });
+    void this.openPanel({
+      text: "", height: 6, depth: 0.6, operation: "emboss", align: "center",
+      bevel: 0, bevelStyle: "auto", u: this.u, v: this.v,
+    });
   }
 
   private async openPanel(initial: Partial<TextOnFaceValues>) {
@@ -202,8 +370,10 @@ export class TextOnFaceTool {
       style: v.style,
       align: v.align,
       angle: v.angle,
-      u: this.u,
-      v: this.v,
+      // The PANEL's values, not the click-time ones: these are editable now, and
+      // reading them from `this` would quietly discard every typed offset.
+      u: v.u,
+      v: v.v,
       ...(v.bevel > 0 ? { bevel: v.bevel, bevelStyle: v.bevelStyle } : {}),
       ...(v.font ? { font: v.font } : {}),
       ...(v.boxWidth ? { boxWidth: v.boxWidth } : {}),
@@ -359,6 +529,7 @@ export class TextOnFaceTool {
     const el = this.viewport.domElement;
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerdown", this.boundDown, true);
+    el.removeEventListener("pointerup", this.boundUp, true);
     window.removeEventListener("keydown", this.boundKey, true);
     el.style.cursor = "default";
     this.viewport.clearHover();

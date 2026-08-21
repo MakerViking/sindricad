@@ -98,6 +98,20 @@ export interface DimPlan {
    *  nothing else (see types.ts). SketchMode adds the `concentric` constraint
    *  unless one already holds them together. */
   implyConcentric?: { c1: string; c2: string };
+  /** The entity this dimension should MOVE — the FIRST-PICKED operand.
+   *
+   *  A pair dimension is one equation over two entities' free parameters, and
+   *  the solver will happily satisfy it by moving either. Field report 787121b3:
+   *  dimensioning a circle 6 mm from a 40x40 rectangle's edge resized the
+   *  RECTANGLE to 39.890111. Which one moves is a POLICY question the geometry
+   *  cannot answer, and the answer is "the one you picked first" — SketchMode
+   *  hands this to the next solve as `bias.moves` (sketchSolve).
+   *
+   *  Set only for a two-pick plan: a lone circle's diameter has no second
+   *  operand to hold still, so it has nothing to say here. NOT persisted with
+   *  the constraint — pick order is a property of the gesture, not of the
+   *  document, so re-editing the placed value later takes the free solve. */
+  moves?: string;
   /** every operand is fixed reference geometry → create a driven (reference) dim */
   forceDriven?: boolean;
   /** status/toast text once this plan is armed */
@@ -657,6 +671,18 @@ function roundValuePlan(eid: string, r: number, c: V, what: string): DimPlan {
 }
 
 function resolvePair(t1: DimTarget, t2: DimTarget): DimResolution {
+  const r = pairPlan(t1, t2);
+  // "the first-picked entity moves" — stamped HERE, at the one place that still
+  // knows the pick order. Every branch below normalises its operands by entity
+  // id (so re-dimensioning the same pair the other way round REPLACES the dim
+  // rather than adding a second one), and `lineLine` swaps them outright, so
+  // nothing further down can be asked for this. A rectangle EDGE pick reports
+  // the rectangle, which is the entity the bias moves.
+  if (!isDimError(r)) r.moves = t1.e.id;
+  return r;
+}
+
+function pairPlan(t1: DimTarget, t2: DimTarget): DimResolution {
   const o1 = reduce(t1);
   if ("error" in o1) return o1;
   const o2 = reduce(t2);

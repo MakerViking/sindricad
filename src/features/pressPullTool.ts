@@ -42,6 +42,7 @@ export class PressPullTool {
   private faces: Selector[] = []; // one or more faces pushed together by `value`
   private faceIds: number[] = []; // their mesh faceIds (for the instant ghost preview)
   private upTo: Selector | null = null; // "extrude up to this surface" target (else by distance)
+  private upToPlane: string | null = null; // ...or up to this DATUM plane, by feature id
   private pickingTarget = false; // waiting for the user to click the up-to target surface
   private bodyId: string | null = null; // the body that owns the picked face
   private anchor = new THREE.Vector3(); // gizmo origin = the clicked point on the face
@@ -162,11 +163,21 @@ export class PressPullTool {
       e.stopImmediatePropagation();
       const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
       if (hit && !this.faceIds.includes(hit.faceId)) {
-        this.upTo = hit.selector;
+        this.setUpTo(hit.selector);
         this.commitUpTo();
-      } else {
-        setPrompt("Pick the face to extrude UP TO (any face, any body) · Esc to go back");
+        return;
       }
+      // A datum plane is a legitimate target too (field report ffab4ece: "extrude
+      // up to that offset plane"), but only on a body MISS — the same BODY-FIRST
+      // precedence viewport.handleClick uses, so an 80x80 quad floating in front
+      // of the solid can never steal a face pick.
+      const datumId = hit ? null : this.viewport.pickDatumAt(e.clientX, e.clientY);
+      if (datumId) {
+        this.setUpTo(datumId);
+        this.commitUpTo();
+        return;
+      }
+      setPrompt("Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back");
       return;
     }
     // drag phase: Ctrl/Cmd-click another face on the SAME body adds it to the
@@ -210,13 +221,32 @@ export class PressPullTool {
     // Clean click on ANOTHER face = extrude UP TO it (mainstream MCAD "to object" —
     // no T needed: pick a face, then click the face to meet). Empty space or
     // one of the operation's own faces = commit as before.
+    //
+    // Deliberately NO datum fallback here, unlike the T-mode branch above: this
+    // runs on EVERY click that isn't on the gizmo, so falling back to a datum
+    // quad would turn "click empty space to commit" into "extrude up to this
+    // plane" wherever a plane's 80x80 quad happens to sit under the cursor —
+    // a silent wrong commit. Naming a plane as the target needs T.
     const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
     if (hit && !this.faceIds.includes(hit.faceId)) {
-      this.upTo = hit.selector;
+      this.setUpTo(hit.selector);
       this.commitUpTo();
       return;
     }
     this.commit();
+  }
+
+  /** `upTo` (a face) and `upToPlane` (a datum id) are mutually exclusive by
+   *  contract — the sidecar REFUSES a feature carrying both rather than picking
+   *  one — so every target set goes through here and clears the other. */
+  private setUpTo(target: Selector | string) {
+    if (typeof target === "string") {
+      this.upToPlane = target;
+      this.upTo = null;
+    } else {
+      this.upTo = target;
+      this.upToPlane = null;
+    }
   }
 
   private onKey(e: KeyboardEvent) {
@@ -227,7 +257,7 @@ export class PressPullTool {
         // active let Enter commit a plain distance mid-target-pick)
         this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
         this.dim.updateFromCursor({ distance: Math.abs(this.value) });
-        setPrompt("Drag the arrow · type a value · click another face = extrude up to it · click empty space to commit · Esc to cancel");
+        setPrompt("Drag the arrow · type a value · click another face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel");
         return;
       }
       this.cancel();
@@ -237,7 +267,7 @@ export class PressPullTool {
       this.pickingTarget = true;
       this.dim.hide(); // Enter must not commit a plain distance while picking
       this.viewport.clearPressPullGhost();
-      setPrompt("Click the face to extrude UP TO (any face, any body) · Esc to go back");
+      setPrompt("Click the face or plane to extrude UP TO (any face, any body) · Esc to go back");
     }
   }
 
@@ -245,6 +275,7 @@ export class PressPullTool {
     this.faces = faces;
     this.faceIds = faceIds;
     this.upTo = null;
+    this.upToPlane = null;
     this.pickingTarget = false;
     this.bodyId = bodyId;
     this.anchor.copy(anchor);
@@ -259,7 +290,7 @@ export class PressPullTool {
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ distance: 0 });
     setPrompt(
-      "Drag the arrow · type a value (negative = cut) · click ANOTHER face = extrude up to it · click empty space to commit · Esc to cancel",
+      "Drag the arrow · type a value (negative = cut) · click ANOTHER face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel",
     );
     this.raf = requestAnimationFrame(this.boundTick);
   }
@@ -336,6 +367,7 @@ export class PressPullTool {
       operation: v >= 0 ? "join" : "cut",
       ...(this.bodyId != null ? { body: this.bodyId } : {}),
       ...(this.upTo ? { upTo: this.upTo } : {}),
+      ...(this.upToPlane ? { upToPlane: this.upToPlane } : {}),
     };
   }
 

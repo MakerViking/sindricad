@@ -459,7 +459,20 @@ export type Feature =
   // offset the surface (e.g. resize a hole). With several faces, each is pushed by
   // the same `distance` along its own normal. `upTo` (a target face selector), when
   // set, extrudes each face up to that surface instead of by `distance`.
-  | { id: string; type: "press-pull"; face: Selector | Selector[]; distance: Num; operation: "join" | "cut"; body?: string; upTo?: Selector }
+  //
+  // `upToPlane` names a DATUM as that target instead: a datumPlane feature id, or
+  // one of the base plane ids "XY"/"XZ"/"YZ". It is deliberately NOT a Selector —
+  // Selector is the topology-fingerprint vocabulary and a datum has no topology to
+  // fingerprint — so it follows the same by-id shape `sketch.planeId` and
+  // `split.planeId` already use. Setting BOTH `upTo` and `upToPlane` is invalid:
+  // the tool clears one when it sets the other and the sidecar REFUSES a feature
+  // carrying both rather than silently picking one.
+  //
+  // `upToOffset` shifts where the extrude stops. It is measured ALONG THE EXTRUDE
+  // DIRECTION (the source face normal), NOT along the target's normal: positive =
+  // past the target, negative = stop short. It applies to a face target and a
+  // plane target alike.
+  | { id: string; type: "press-pull"; face: Selector | Selector[]; distance: Num; operation: "join" | "cut"; body?: string; upTo?: Selector; upToPlane?: string; upToOffset?: Num }
   | { id: string; type: "deleteFace"; face: Selector | Selector[]; body?: string }
   | { id: string; type: "mirror"; plane: Plane3 }
   // `operation` is threaded through the same New/Join/Cut/Intersect boolean as

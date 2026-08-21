@@ -20,6 +20,13 @@ export interface TextOnFaceValues {
   bevel: number;
   bevelStyle: "auto" | "chamfer" | "fillet" | "taper";
   boxWidth?: number;
+  /** Placement offsets in the face plane's own frame, millimetres. `u` runs
+   *  horizontally across the face and `v` up it — see textFrame() in
+   *  textOnFaceTool, which is what makes those two directions predictable
+   *  rather than "whatever axis the picker happened to choose". Seeded from the
+   *  click, then editable here so a placement can be typed exactly. */
+  u: number;
+  v: number;
 }
 
 export class TextOnFacePanel {
@@ -28,6 +35,15 @@ export class TextOnFacePanel {
   private onCommit: ((v: TextOnFaceValues) => void) | null = null;
   private onChange: ((v: TextOnFaceValues) => void) | null = null;
   private onCancel: (() => void) | null = null;
+  private setUV: ((u: number, v: number) => void) | null = null;
+
+  /** Push a placement in from the viewport (a drag), so the numeric fields and
+   *  the model never disagree about where the text is. Deliberately does NOT
+   *  re-emit onChange: the drag is already driving the preview, and echoing
+   *  would queue a second rebuild per pointer move. */
+  setPlacement(u: number, v: number) {
+    this.setUV?.(u, v);
+  }
 
   get isActive() {
     return !!this.root;
@@ -114,6 +130,13 @@ export class TextOnFacePanel {
     const depth = num(init.depth ?? 0.6, "0.1", "0.01");
     row(label("Size mm"), height, label("Depth"), depth);
 
+    // Placement. Seeded from where the click landed, so these open showing the
+    // spot the user already chose rather than 0/0 — a field that disagrees with
+    // what is on screen is worse than no field.
+    const offU = num(init.u ?? 0, "0.5");
+    const offV = num(init.v ?? 0, "0.5");
+    row(label("Across mm"), offU, label("Up"), offV);
+
     const op = document.createElement("select");
     op.style.flex = "1";
     for (const [v, t] of [["emboss", "Emboss (raised)"], ["engrave", "Engrave (cut)"]] as const) {
@@ -178,14 +201,21 @@ export class TextOnFacePanel {
         operation: op.value as TextOnFaceValues["operation"],
         bevel: Number(bevel.value) || 0,
         bevelStyle: bevelStyle.value as TextOnFaceValues["bevelStyle"],
+        u: Number(offU.value) || 0,
+        v: Number(offV.value) || 0,
       };
       if (font.value) v.font = font.value;
       if (Number(boxWidth.value) > 0) v.boxWidth = Number(boxWidth.value);
       return v;
     };
 
+    this.setUV = (u, v) => {
+      offU.value = String(Math.round(u * 1000) / 1000);
+      offV.value = String(Math.round(v * 1000) / 1000);
+    };
+
     const emit = () => this.onChange?.(this.read!());
-    for (const el of [text, font, height, depth, op, bold, italic, align, angle, boxWidth, bevel, bevelStyle]) {
+    for (const el of [text, font, height, depth, op, bold, italic, align, angle, boxWidth, bevel, bevelStyle, offU, offV]) {
       el.addEventListener("input", emit);
       el.addEventListener("change", emit);
     }
