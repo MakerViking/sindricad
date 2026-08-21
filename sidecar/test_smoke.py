@@ -700,6 +700,72 @@ def test_presspull_upto_refuses_deleting_one_solid():
     print(f"  press-pull up-to one-solid delete refused: {err[0]['message']}")
 
 
+
+def test_presspull_upto_guards_survive_their_own_blind_spots():
+    """The two guards, at the boundaries where each was measured to fail.
+
+    Both are third-round findings: the fixes for the obvious case left a narrower
+    one open, and both failures are the same shape as the bug they replaced —
+    geometry quietly gone, err == [].
+
+    (a) SURVIVING is not the same as surviving the REBUILD. `_drop_debris` runs
+    later on every body and deletes any solid under 0.1% of the biggest that is
+    not touching it. A cut leaving a 0.16 mm³ crumb therefore passed a
+    "remainder is non-empty" test and was swept away afterwards — the block gone
+    with a green chip, exactly what the per-solid guard exists to stop.
+
+    (b) The overshoot cap is a RATIO of the face's tilt term to the BODY's
+    diagonal, so a small face on a large body defeats it: a 2x2 pip on a 200x200
+    plate at 89.9° gave tilt 1620 against a 2830 budget and passed, while `d`
+    itself — which that cap does not bound — reached 171,887 mm and built a
+    172-metre spike. An angular floor is independent of both sizes."""
+    # (a) the crumb. -30 clears the block entirely; -19.99 leaves 0.16 mm³ of it.
+    for offset in (-30, -19.99):
+        doc = {"parameters": {}, "features": _PP_RIB_AND_BLOCK + [
+            {"id": "dp", "type": "datumPlane", "plane": "XY", "offset": offset},
+            {"id": "pp", "type": "press-pull", "operation": "cut", "distance": 0,
+             "body": "body1", "face": _PP_RIB_TOP, "upToPlane": "dp"},
+        ]}
+        _p, err, bodies = rebuild(doc)
+        assert err, f"datum {offset}: a solid reduced to debris must raise, not vanish later"
+        assert "delete" in err[0]["message"], f"datum {offset}: say what is lost: {err}"
+        b = _pp_body(bodies)
+        assert len(b.solids()) == 2 and abs(b.volume - 5264) < 1, (
+            f"datum {offset}: body must survive intact, got {len(b.solids())} / {b.volume:.1f}"
+        )
+
+    # (b) a SMALL face on a LARGE body. The pip sits on the plate (plate z -5..5,
+    # pip z 5..7) so the join is one solid and the pip's top is a real 2x2 face.
+    plate = [
+        {"id": "b1", "type": "box", "length": 200, "width": 200, "height": 10},
+        {"id": "b2", "type": "box", "length": 2, "width": 2, "height": 2},
+        {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 6, "rx": 0, "ry": 0, "rz": 0,
+         "bodies": ["body2"]},
+        {"id": "cb", "type": "combine", "operation": "join", "target": "body1",
+         "tools": ["body2"]},
+    ]
+    pip_top = {"kind": "face", "by": "nearest", "point": [0, 0, 7]}
+
+    def aimed(deg):
+        a = math.radians(deg)
+        return {"parameters": {}, "features": plate + [
+            {"id": "dp", "type": "datumPlane",
+             "plane": {"origin": [0, 300, 7], "normal": [0, math.sin(a), math.cos(a)],
+                       "xdir": [1, 0, 0]}},
+            {"id": "pp", "type": "press-pull", "operation": "join", "distance": 0,
+             "body": "body1", "face": pip_top, "upToPlane": "dp"},
+        ]}
+
+    _p, err, bodies = rebuild(aimed(89.9))
+    assert err, "a near edge-on target must be refused however small the face is"
+    assert "edge-on" in err[0]["message"], f"name the reason: {err}"
+    b = _pp_body(bodies)
+    assert b.bounding_box().max.Z < 20, (
+        f"the refusal must leave the part alone, got z_max {b.bounding_box().max.Z:.1f}"
+    )
+    return True
+
+
 def test_presspull_upto_refuses_edge_on_target():
     """A target that is nearly EDGE-ON to the source face must be refused, not built.
 
@@ -2625,6 +2691,7 @@ if __name__ == "__main__":
     test_presspull_upto_refuses_cylinder()
     test_presspull_upto_refuses_deleting_one_solid()
     test_presspull_upto_refuses_edge_on_target()
+    test_presspull_upto_guards_survive_their_own_blind_spots()
     test_presspull_upto_refuses_coincident_target()
     test_presspull_upto_no_move_guard_measures_the_whole_face()
     test_presspull_upto_refuses_deleting_a_split_solid()

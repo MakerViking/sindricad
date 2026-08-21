@@ -74,6 +74,12 @@ This file starts on 2026-08-03. For anything before that, see the
   flat-topped solid that was simply incorrect. Tilted targets are now trimmed
   properly, and the two cases that cannot be meant are refused with a reason.
 
+  Two narrower versions of the same thing are closed with them: a cut that left
+  a solid as a crumb small enough for cleanup to sweep away afterwards, and a
+  target so close to edge-on that reaching it would build something far larger
+  than the part — which slipped through when the face was small and the body
+  large.
+
 ### Added
 
 - **Extrude up to a plane, with an offset.** Requested by a tester who made an

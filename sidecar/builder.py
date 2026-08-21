@@ -5678,6 +5678,20 @@ _PP_NO_MOVE = 1e-9
 # the user is looking at nearly edge-on.
 _PP_MAX_OVERSHOOT = 10.0
 
+# How square to the face an "up to" target must be, as |n·N|. 0.095 is a hair
+# under cos(84.5°), so a target up to ~84.5° off builds and anything beyond it is
+# refused.
+#
+# This exists BESIDE the overshoot cap, not instead of it, because the two catch
+# different runaways and each is blind to the other's. The overshoot cap is a
+# RATIO — the face's tilt term against the body's diagonal — so it is defeated by
+# a small face on a large body: a 2x2 pip on a 200x200 plate at 89.9° gives
+# tilt 1620 against a 2830 budget and passes, while `d` itself, which nothing
+# there bounds, reaches 171,887 mm and builds a 172-METRE spike with err == [].
+# An angular floor is independent of both face and body size, so it means the
+# same thing on every part.
+_PP_MIN_SQUARENESS = 0.095
+
 
 def _press_pull(part, face, d, clamp=True, trim=None):
     """Push/pull a single solid face by signed distance `d` (mm): +d grows the body
@@ -5776,6 +5790,21 @@ def _refuse_if_cut_deletes_a_solid(part, cut):
     solids = part.solids()
     if not solids:
         return
+    # "Survives" has to mean survives the REBUILD, not survives this boolean.
+    # _drop_debris runs later on every body and deletes any solid under 0.1% of
+    # the biggest one that is not touching it, so a remainder below that line is
+    # certified here and swept away afterwards — the same solid gone with
+    # err == [], which is the defect this guard exists to prevent. Measured: the
+    # rib/plate/block fixture cut to a datum at -19.99 instead of -30 leaves the
+    # block a 0.16 mm³ crumb, passes a non-empty test, and vanishes downstream.
+    #
+    # The threshold is read against the pre-cut body, deliberately: _drop_debris
+    # compares against the largest solid of the FINISHED shape, and anticipating
+    # that exactly would mean running the whole cut twice. Judging against the
+    # largest solid we have is the conservative direction — it can only refuse
+    # slightly earlier than the sweep would bite, never later.
+    biggest = max((abs(s.volume) for s in solids), default=0.0)
+    debris_floor = 1e-3 * biggest
     gone = 0
     for s in solids:
         # AABBs first: a solid the prism cannot reach needs no boolean, which
@@ -5786,8 +5815,11 @@ def _refuse_if_cut_deletes_a_solid(part, cut):
             rem = s - cut
         except Exception:
             continue  # a boolean that won't run is not evidence the solid died
-        if not rem.solids():
+        rem_solids = rem.solids()
+        if not rem_solids:
             gone += 1
+        elif sum(abs(x.volume) for x in rem_solids) <= debris_floor:
+            gone += 1  # a crumb _drop_debris will delete is not a survivor
     if not gone:
         return
     if gone == len(solids):
@@ -5839,6 +5871,17 @@ def _prism_to_plane(face, d, target_pt, target_n, part):
         # unreachable via _distance_to_target (which refuses first), but this is the
         # term the overshoot divides by — never let it become an infinite prism.
         raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
+    if abs(denom) < _PP_MIN_SQUARENESS:
+        # Checked before the size-relative cap below, which a small face on a big
+        # body slips straight past. 1/|n·N| is the amplification the whole
+        # construction divides by, so bounding it bounds `d` and the tilt term
+        # together — including the far-and-nearly-edge-on case where `d` alone
+        # runs away.
+        raise ValueError(
+            "Press/Pull: the 'up to' surface is too close to edge-on from this face — "
+            "reaching it would build something far larger than the part. Pick a target "
+            "more square to the face."
+        )
     bb = face.bounding_box()
     span = (bb.max - bb.min).length  # ≥ |p − c| for every p on the face
     tilt = span / abs(denom)  # how far past d the furthest corner of the face lands
