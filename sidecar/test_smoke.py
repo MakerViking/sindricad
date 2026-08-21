@@ -2490,6 +2490,72 @@ def test_export_despite_errors():
 
 
 
+
+def test_text_on_face_colours_only_its_glyphs():
+    """A `colorSlot` on textOnFace paints the LETTERS, not the face they sit on.
+
+    Face ownership cannot answer this on its own: `_owners` is last-modifier, so
+    the host face the glyphs were cut into is attributed to the text feature too.
+    Measured on the reported document, 159 faces came back owned by the text, of
+    which 4 — 1529.6 mm², the 40x40 face minus the glyph footprint, split into
+    regions — were the host. Colouring by owner would paint the whole side.
+
+    So the handler records new-AND-off-the-plane faces while it still holds both
+    shapes, and that map rides to the wire and into the project 3MF."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+    import re
+    import server
+
+    doc = {"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 40, "height": 40, "x": 0, "y": 0}]},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 10, "operation": "new"},
+        {"id": "t1", "type": "textOnFace",
+         "face": {"kind": "face", "by": "nearest", "point": [0, 0, 10]},
+         "pick": [0, 0, 10],
+         "plane": {"origin": [0, 0, 10], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+         "text": "AB", "height": 6, "depth": 0.6, "operation": "emboss",
+         "align": "center", "u": 0, "v": 0, "colorSlot": 2},
+    ]}
+    _p, err, bodies = rebuild(doc)
+    assert not err, f"setup failed: {err}"
+    b = bodies[0]
+    marks = b.get("_faceSlots") or {}
+    assert marks, "the text claimed no faces — a colourSlot that colours nothing"
+    assert set(marks.values()) == {2}, f"every claimed face is slot 2: {set(marks.values())}"
+
+    # The HOST face must NOT be claimed. It is the one still lying in the text's
+    # plane; the glyph tops sit `depth` above it and the walls run between.
+    from builder import _face_fp
+    host = [f for f in b["shape"].faces() if abs(f.center().Z - 10) < 1e-6]
+    assert host, "the fixture should still have a face at z=10"
+    for f in host:
+        assert _face_fp(f) not in marks, (
+            f"the host face ({f.area:.1f} mm²) was claimed — that paints the whole surface"
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "textcolour.3mf")
+        res = server._export_project_job(
+            doc, path,
+            [{"name": "A", "color": "#B8ACD6"}, {"name": "B", "color": "#96D8AF"},
+             {"name": "C", "color": "#F99963"}],
+            {}, {}, {})
+        assert "error" not in res, f"export failed: {res}"
+        with zipfile.ZipFile(res["path"]) as z:
+            model = z.read("3D/3dmodel.model").decode("utf-8")
+    vals = set(re.findall(r'paint_color="([^"]+)"', model))
+    assert vals == {"0C"}, f"slot 2 must reach the file as 0C, got {vals}"
+    painted = model.count("paint_color=")
+    total = model.count("<triangle ")
+    assert 0 < painted < total, (
+        f"{painted} of {total} triangles painted — all or nothing means the face "
+        "mapping collapsed"
+    )
+    return True
+
+
 def test_export_project_3mf_paints_textured_faces():
     """A texture feature's colorSlot must reach the file as per-triangle
     `paint_color`, not just the viewport.
@@ -2702,6 +2768,7 @@ if __name__ == "__main__":
     test_export_despite_errors()
     test_export_project_3mf()
     test_export_project_3mf_paints_textured_faces()
+    test_text_on_face_colours_only_its_glyphs()
     test_sketch_patterns()
     test_sketch_spline_extrude()
     test_sketch_pattern_with_spline()

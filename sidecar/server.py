@@ -412,7 +412,7 @@ _EXPORT_ANG_TOL = 0.3
 _EXPORT_MESH_CACHE = {}  # body id -> {"shape", "texture_key", "positions", "indices"}
 
 
-def _face_color_slots(sh, textures):
+def _face_color_slots(sh, textures, face_slots=None):
     """Dense per-face palette slot for a body, or None when nothing is painted.
 
     One entry per `sh.faces()` in that enumeration's order, which is the same
@@ -423,15 +423,29 @@ def _face_color_slots(sh, textures):
     were the same eight lines twice over, and the export half not having them is
     exactly how a model that showed three colours on screen exported as one.
     """
-    if not textures:
+    if not textures and not face_slots:
         return None
     from builder import _face_fp  # local, like every other builder import here
+
+    # Faces a feature claimed outright, by fingerprint — today the glyph faces of
+    # a coloured `textOnFace`, recorded by its handler while it still had both
+    # shapes. Read FIRST so an explicit per-face texture slot below can override
+    # it, which is the established behaviour and the more specific statement.
+    if face_slots:
+        base = [face_slots.get(_face_fp(face)) for face in sh.faces()]
+    else:
+        base = [None] * len(sh.faces())
+    if not textures:
+        return base if any(x is not None for x in base) else None
 
     face_specs = {}
     for spec, faces in textures:
         for f in faces:
             face_specs[_face_fp(f)] = spec  # later feature wins, like tessellate
-    slots = [(face_specs.get(_face_fp(face)) or {}).get("colorSlot") for face in sh.faces()]
+    slots = [
+        (face_specs.get(_face_fp(face)) or {}).get("colorSlot") if (face_specs.get(_face_fp(face)) or {}).get("colorSlot") is not None else b
+        for face, b in zip(sh.faces(), base)
+    ]
     return slots if any(s is not None for s in slots) else None
 
 
@@ -849,7 +863,7 @@ def _body_payload(b, tolerance, profile):
         # Two-tone inlay preview: dense per-face palette-slot array, same
         # sh.faces() enumeration the fid convention uses. Sparse-by-convention —
         # None (omitted key) when no texture on this body carries a colorSlot.
-        tex_color_slots = _face_color_slots(sh, textures)
+        tex_color_slots = _face_color_slots(sh, textures, b.get("_faceSlots"))
         edges = edge_polylines_by_body([b])
         for e in edges:
             e.pop("id", None)  # ids are assigned client-side after assembly
@@ -1375,9 +1389,13 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
         # rebuilt geometry, not of the request — and because the frontend's copy
         # is keyed on the VIEWPORT tessellation's face ids, which an export-grade
         # remesh does not have to agree with.
-        if b.get("_textures"):
+        if b.get("_textures") or b.get("_faceSlots"):
             from texture import resolve_body_textures
-            slots = _face_color_slots(b["shape"], resolve_body_textures(b))
+            slots = _face_color_slots(
+                b["shape"],
+                resolve_body_textures(b) if b.get("_textures") else None,
+                b.get("_faceSlots"),
+            )
             if slots:
                 face_slots[str(b["id"])] = slots
     if not meshed:

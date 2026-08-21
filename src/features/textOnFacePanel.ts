@@ -27,6 +27,8 @@ export interface TextOnFaceValues {
    *  click, then editable here so a placement can be typed exactly. */
   u: number;
   v: number;
+  /** Palette slot for the glyphs, or null to inherit the body's colour. */
+  colorSlot: number | null;
 }
 
 export class TextOnFacePanel {
@@ -65,7 +67,13 @@ export class TextOnFacePanel {
   }
 
   show(
-    opts: { editing: boolean; fonts: string[]; initial: Partial<TextOnFaceValues> },
+    opts: {
+      editing: boolean;
+      fonts: string[];
+      initial: Partial<TextOnFaceValues>;
+      /** the document palette, for the glyph-colour chips */
+      palette?: { name: string; color: string; material?: string }[];
+    },
     handlers: {
       onCommit: (v: TextOnFaceValues) => void;
       onChange: (v: TextOnFaceValues) => void;
@@ -201,6 +209,48 @@ export class TextOnFacePanel {
       "actually manage on every letter — that differs by font, so it is usually " +
       "the right choice.";
     const bevelRow = row(label("Bevel mm"), bevel, bevelStyle);
+
+    // Filament slot for the letters. Chips rather than a <select> because the
+    // thing being chosen IS a colour — the same swatch vocabulary the body
+    // colour menu uses (browserTree.bodyColorMenuItems). "—" is inherit, which
+    // is the default and what every text before this had.
+    let emitLater = () => {};
+    let slot: number | null = init.colorSlot ?? null;
+    const chips: HTMLButtonElement[] = [];
+    const paintChips = () => {
+      chips.forEach((c, i) => {
+        const on = (i === 0 && slot === null) || i - 1 === slot;
+        c.style.outline = on ? "2px solid var(--accent, #6cf)" : "1px solid var(--line-strong)";
+        c.style.outlineOffset = on ? "1px" : "0";
+      });
+    };
+    const chip = (bg: string, title: string, value: number | null) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.title = title;
+      Object.assign(b.style, {
+        width: "22px", height: "18px", padding: "0", borderRadius: "3px",
+        background: bg, border: "none", cursor: "pointer", flex: "0 0 auto",
+      });
+      // pointerdown + preventDefault so choosing a colour never blurs the text
+      // area mid-sentence — the same reason the OK/Cancel buttons do it.
+      b.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        slot = value;
+        paintChips();
+        emitLater();
+      });
+      chips.push(b);
+      return b;
+    };
+    const slotRow = row(label("Color"));
+    slotRow.appendChild(chip("transparent", "Use the body's colour", null));
+    chips[0]!.textContent = "—";
+    Object.assign(chips[0]!.style, { color: "var(--text)", fontSize: "11px", lineHeight: "18px" });
+    (opts.palette ?? []).forEach((sl, i) => {
+      slotRow.appendChild(chip(sl.color, `${sl.name} (slot ${i + 1})`, i));
+    });
+    paintChips();
     const syncBevel = () => {
       bevelStyle.style.visibility = Number(bevel.value) > 0 ? "visible" : "hidden";
     };
@@ -223,6 +273,7 @@ export class TextOnFacePanel {
         bevelStyle: bevelStyle.value as TextOnFaceValues["bevelStyle"],
         u: Number(offU.value) || 0,
         v: Number(offV.value) || 0,
+        colorSlot: slot,
       };
       if (font.value) v.font = font.value;
       if (Number(boxWidth.value) > 0) v.boxWidth = Number(boxWidth.value);
@@ -235,6 +286,9 @@ export class TextOnFacePanel {
     };
 
     const emit = () => this.onChange?.(this.read!());
+    // The chips fire before `read` exists during construction, so defer through
+    // the same emit the inputs use rather than calling onChange directly.
+    emitLater = () => emit();
     for (const el of [text, font, height, depth, op, bold, italic, align, angle, boxWidth, bevel, bevelStyle, offU, offV]) {
       el.addEventListener("input", emit);
       el.addEventListener("change", emit);

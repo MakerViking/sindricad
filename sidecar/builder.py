@@ -3041,6 +3041,40 @@ def _handle_text_on_face(f, ctx):
         )
     if bevel and op == "engrave":
         result = _bevel_pocket_mouth(body["shape"], result, face, bevel, f, ctx, glyphs)
+
+    # Record which faces this text OWNS for colouring, while both shapes are in
+    # hand — the only moment it is knowable exactly.
+    #
+    # Face ownership alone is too coarse: `_owners` is last-modifier, so the HOST
+    # face the glyphs were cut into becomes the text's too. Measured on the
+    # reported document: 159 faces attributed to the text feature, of which 4 —
+    # totalling 1529.6 mm², i.e. the 40x40 face minus the glyph footprint, split
+    # into regions — are the host. Colouring by owner would paint the whole side
+    # of the part.
+    #
+    # A face is the TEXT's if it is new AND off the text's plane. New alone is
+    # not enough (the host face is re-made by the cut, so its fingerprint changes
+    # too); off-plane alone is not enough (the rest of the body is off-plane).
+    # Together they are exactly the glyph tops and walls: 155 of the 159 above.
+    slot = f.get("colorSlot")
+    if slot is not None:
+        try:
+            was = {_face_fp(x) for x in body["shape"].faces()}
+            origin, normal = plane.origin, plane.z_dir
+            marks = {}
+            for fc in result.faces():
+                fp = _face_fp(fc)
+                if fp in was:
+                    continue
+                c = fc.center()
+                off = abs((c - origin).dot(normal))
+                if off > 1e-6:
+                    marks[fp] = int(slot)
+            if marks:
+                body["_faceSlots"] = {**(body.get("_faceSlots") or {}), **marks}
+        except Exception:
+            pass  # a colour that cannot be attributed must never fail the text
+
     body["shape"] = result
 
 
@@ -3492,6 +3526,12 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
         entry = {"id": b["id"], "name": b["name"], "shape": sh,
                  "owners": b.get("_owners") or {},
                  "_textures": b.get("_textures")}
+        # Same rule as `_textures` right above, and the same failure if it is
+        # forgotten: per-face colour would survive the rebuild and vanish on the
+        # way to the wire. Only set when present, so an uncoloured body's dict is
+        # byte-identical to before.
+        if b.get("_faceSlots"):
+            entry["_faceSlots"] = b["_faceSlots"]
         # Rebuilt from an explicit key set, so anything new on the body dict has
         # to be listed here or it is silently dropped between rebuild and the
         # wire — which is how `_textures` was lost once already. Added only when
@@ -3838,6 +3878,7 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
         store, keys, mod = persist["store"], persist["keys"], persist["mod"]
         manifest, fps, owners = [], [], {}
         textures = {}
+        face_slots = {}
         for b in bodies:
             # One tick per body, at the top so every path through the loop
             # counts (the shapeless `continue` below included). Serialising a
@@ -3882,6 +3923,14 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
             # lost the texture. Same class of state as `_owners` above.
             if b.get("_textures"):
                 textures[b["id"]] = b["_textures"]
+            # Per-face colour is body state that is NOT in the shape either: it
+            # is a fingerprint->slot map the text handler computed from two
+            # shapes it no longer has. A disk resume past the text feature would
+            # otherwise come back correct but uncoloured, silently — exactly what
+            # happened to `_textures`. Fingerprint keys are tuples, so they go to
+            # JSON as pairs like `_owners` above.
+            if b.get("_faceSlots"):
+                face_slots[b["id"]] = [[list(k), v] for k, v in b["_faceSlots"].items()]
         state = json.dumps({
             "datums": datums,
             "errors": errors,
@@ -3894,6 +3943,7 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
             "n": counter_n,
             "owners": owners,
             "textures": textures,
+            "faceSlots": face_slots,
             "fps": fps,
         })
         store.save_checkpoint(keys[i], i, manifest, state, persist["acc_ms"])
@@ -3961,6 +4011,9 @@ def _restore_from_disk(store, chain_keys):
             tex = state.get("textures", {}).get(ent["body_id"])
             if tex:
                 body["_textures"] = tex
+            fslots = state.get("faceSlots", {}).get(ent["body_id"])
+            if fslots:
+                body["_faceSlots"] = {tuple(k): v for k, v in fslots}
             # same rule for the assembly-tree node: absent on every body that did
             # not come from a manifest-bound import, and on every checkpoint
             # written before this existed

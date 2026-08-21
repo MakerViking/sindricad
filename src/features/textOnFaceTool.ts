@@ -185,6 +185,7 @@ export class TextOnFaceTool {
       align: f.align ?? "left",
       u: Number(f.u ?? 0),
       v: Number(f.v ?? 0),
+      colorSlot: f.colorSlot ?? null,
       style: f.style ?? "regular",
       bevel: Number(f.bevel ?? 0),
       bevelStyle: (f.bevelStyle ?? "auto") as TextOnFaceValues["bevelStyle"],
@@ -331,7 +332,7 @@ export class TextOnFaceTool {
     this.phase = "edit";
     void this.openPanel({
       text: "", height: 6, depth: 0.6, operation: "emboss", align: "center",
-      bevel: 0, bevelStyle: "auto", u: this.u, v: this.v,
+      bevel: 0, bevelStyle: "auto", u: this.u, v: this.v, colorSlot: null,
     });
   }
 
@@ -347,7 +348,10 @@ export class TextOnFaceTool {
     setPrompt("Type the text · Ctrl+Enter to apply · Esc to cancel");
     this.watchForSolid();
     this.panel.show(
-      { editing: this.editingId != null, fonts: this.fonts, initial },
+      {
+        editing: this.editingId != null, fonts: this.fonts, initial,
+        palette: this.store.colorPalette,
+      },
       {
         onChange: (v) => this.schedulePreview(v),
         onCommit: (v) => this.commit(v),
@@ -382,6 +386,9 @@ export class TextOnFaceTool {
       // reading them from `this` would quietly discard every typed offset.
       u: v.u,
       v: v.v,
+      // Omitted when inheriting, so a text with no colour of its own stays
+      // byte-identical to one saved before glyph colour existed.
+      ...(v.colorSlot != null ? { colorSlot: v.colorSlot } : {}),
       ...(v.bevel > 0 ? { bevel: v.bevel, bevelStyle: v.bevelStyle } : {}),
       ...(v.font ? { font: v.font } : {}),
       ...(v.boxWidth ? { boxWidth: v.boxWidth } : {}),

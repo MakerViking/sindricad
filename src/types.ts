@@ -602,6 +602,12 @@ export type Feature =
       boxWidth?: Num;
       u?: Num;
       v?: Num;
+      /** Palette slot the GLYPHS print on, independent of the body's own slot.
+       *  Absent means "inherit the body's". The sidecar records exactly which
+       *  faces the emboss added (new AND off the text's plane — face ownership
+       *  alone is last-modifier and would claim the host face too), so this
+       *  colours the letters and not the surface they sit on. */
+      colorSlot?: number;
       // Bevel on the letter rim, as a WIDTH in mm — never an angle. With an
       // angle the offset would be depth*tan(angle), so editing the separately
       // editable depth would silently walk the bevel across the size at which
