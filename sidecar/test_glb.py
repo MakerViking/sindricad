@@ -187,7 +187,7 @@ def test_textured_body_exports_its_displaced_mesh():
     assert body.get("_textures"), "the fixture should be textured"
 
     import server
-    pos, idx = server._export_mesh(body)
+    pos, idx, _fids = server._export_mesh(body)  # third return is per-triangle face ids
     p = os.path.join(tempfile.mkdtemp(), "tex.glb")
     mesh_writers.write_glb([{"name": "Knurled", "positions": pos,
                              "indices": idx, "color": "#e8e8e8"}], p)
