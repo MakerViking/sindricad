@@ -412,6 +412,36 @@ _EXPORT_ANG_TOL = 0.3
 _EXPORT_MESH_CACHE = {}  # body id -> {"shape", "texture_key", "positions", "indices"}
 
 
+def _paint_key(b):
+    """Cache key for everything that colours a body's FACES without changing its
+    shape — the texture specs, and the per-face slot map a coloured `textOnFace`
+    records.
+
+    Both tiers of both mesh caches key on this, and the reason is the whole
+    point: recolouring changes no geometry, so a payload cached against shape
+    identity alone comes back with the OLD colours. The disk tier makes that
+    survive a save and reopen, which is how it was reported — "it doesn't show
+    after selecting it, or even when saving it".
+
+    The texture CODE VERSION rides along, so a texture-algorithm update cannot
+    serve meshes displaced by the previous version out of the disk cache.
+    """
+    tex = b.get("_textures")
+    slots = b.get("_faceSlots")
+    if not tex and not slots:
+        return None
+    from texture import CODE_VERSION as _tex_ver
+
+    # Fingerprint keys are tuples; sort them as strings so the key is stable
+    # across runs regardless of dict order.
+    slot_part = sorted((str(k), v) for k, v in slots.items()) if slots else None
+    return "v%d:%s:%s" % (
+        _tex_ver,
+        json.dumps(tex, sort_keys=True) if tex else "-",
+        json.dumps(slot_part) if slot_part else "-",
+    )
+
+
 def _face_color_slots(sh, textures, face_slots=None):
     """Dense per-face palette slot for a body, or None when nothing is painted.
 
@@ -471,11 +501,7 @@ def _export_mesh(b, tol=None):
     progress_tick()
     tol = _EXPORT_TOL if tol is None else tol
     bid, sh = b["id"], b["shape"]
-    if b.get("_textures"):
-        from texture import CODE_VERSION as _tex_ver
-        texture_key = "v%d:%s" % (_tex_ver, json.dumps(b.get("_textures"), sort_keys=True))
-    else:
-        texture_key = None
+    texture_key = _paint_key(b)
     ent = _EXPORT_MESH_CACHE.get(bid)
     # TOLERANCE IS PART OF THE KEY. Without it a coarser retry (a tolerance
     # backoff after a triangle-budget refusal) would be handed the mesh from the
@@ -802,13 +828,7 @@ def _body_payload(b, tolerance, profile):
     bid, sh = b["id"], b.get("shape")
     requested = tolerance
     size_scale, ang_tol = profile
-    if b.get("_textures"):
-        from texture import CODE_VERSION as _tex_ver
-        # code version rides in the key: a texture-algorithm update must not
-        # serve meshes displaced by the previous version from the disk cache
-        texture_key = "v%d:%s" % (_tex_ver, json.dumps(b.get("_textures"), sort_keys=True))
-    else:
-        texture_key = None
+    texture_key = _paint_key(b)
     ent = _MESH_CACHE.get(bid)
     # RAM hit BEFORE _effective_tolerance: it's a pure function of (shape,
     # requested), so identical shape identity + identical request imply an
