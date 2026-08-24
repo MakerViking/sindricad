@@ -8,7 +8,7 @@
 export interface ToastOptions {
   kind?: "error" | "warning" | "info";
   action?: { label: string; onClick: () => void };
-  timeout?: number; // ms; errors default longer
+  timeout?: number; // ms; errors default longer. 0 = STICKY, never auto-dismissed.
 }
 
 import { crumb } from "../diagnostics/breadcrumbs";
@@ -64,5 +64,9 @@ export function toast(message: string, opts: ToastOptions = {}) {
   el.appendChild(close);
 
   host.appendChild(el);
-  timer = window.setTimeout(dismiss, opts.timeout ?? (kind === "error" ? 8000 : kind === "warning" ? 6000 : 3500));
+  // timeout 0 means the caller has something the user must not lose by looking
+  // away. Everything else keeps its old default, so nothing existing turns
+  // sticky by accident: nothing passes 0 unless it means it.
+  const ms = opts.timeout ?? (kind === "error" ? 8000 : kind === "warning" ? 6000 : 3500);
+  if (ms > 0) timer = window.setTimeout(dismiss, ms);
 }

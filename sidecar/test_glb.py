@@ -270,6 +270,30 @@ def test_import_reads_the_dominant_material_colour():
     print(PASS, "import reads the dominant material colour, round-tripping exactly")
 
 
+def test_glb_stays_unwelded_so_face_edges_stay_sharp():
+    """GLB must NOT get the export weld the 3MF path uses.
+
+    3MF and STL carry no normals, so sharing one index per position there is free
+    and it is what stops a slicer calling the mesh non-manifold. glTF does carry
+    normals, and mesh_writers._vertex_normals averages per VERTEX with no crease
+    angle — it relies on tessellate() having given every face its own copy. Weld
+    a cube and all 24 corner vertices become 8, each averaging three
+    perpendicular faces, and every corner shades round."""
+    import server
+
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 20, "width": 20, "height": 20},
+    ]}
+    p = os.path.join(tempfile.mkdtemp(), "sharp.glb")
+    res = server._export_job(doc, "glb", p)
+    assert "error" not in res, res
+    gdoc, _blob = _read_glb_raw(p)
+    prim = gdoc["meshes"][0]["primitives"][0]
+    n = gdoc["accessors"][prim["attributes"]["POSITION"]]["count"]
+    assert n == 24, f"a cube must export 4 vertices per face, got {n} (welded to 8?)"
+    print(PASS, "glb keeps per-face vertices (24 on a cube), so its corners stay sharp")
+
+
 def main():
     print("GLB export/import tests")
     test_container_is_structurally_valid()
@@ -281,6 +305,7 @@ def main():
     test_export_job_routes_glb_and_threads_colours()
     test_import_recovers_a_solid_not_a_surface_body()
     test_import_reads_the_dominant_material_colour()
+    test_glb_stays_unwelded_so_face_edges_stay_sharp()
     print("ALL PASS")
 
 

@@ -197,6 +197,376 @@ def tessellate_bodies(bodies, tolerance=0.1, density_cap=None, diag=None):
     return positions, indices, face_ids, meta
 
 
+def conform_shared_boundaries(positions, indices, face_ids, tol=1e-6):
+    """Split away the T-junctions a textured face leaves along its boundary, so
+    the whole body meshes watertight.
+
+    texture.py densifies a textured face's boundary ring — to the sample spacing,
+    and again wherever a crease crosses the rim — by LERPING along the existing
+    boundary polyline. No gap opens: every new point lies exactly on the segment
+    the neighbouring face spans. But that neighbour still spans it with ONE long
+    edge, so the two sides share no edges any more. Measured on a 20mm cube with
+    a single hex-textured face: 286 edges used by exactly one triangle, 282 of
+    them with their midpoint strictly inside another such edge. Slicers weld by
+    position and then read those as holes (Orca: "non-manifold edges"), which is
+    what a printed part cannot have.
+
+    Every triangle owning an under-shared edge is re-fanned, with the other
+    side's vertices inserted along that edge. The fan runs from the polygon's
+    CENTROID, not from a corner: the polygon is convex, so the centroid is
+    strictly interior, whereas a corner fan emits a zero-area triangle whenever
+    both edges at the apex carry insertions.
+
+    Inserted vertices are COPIED, never shared with the neighbouring face —
+    tessellate() gives every B-rep face its own vertex chunk and mesh_writers'
+    normals depend on it for sharp face-to-face edges. Welding is the slicer's
+    job, and it does it by position.
+
+    Geometry is untouched to within `tol` (1 nanometre): every new vertex lies on
+    an existing edge or inside an existing triangle, and the only vertices that
+    MOVE are near-duplicates snapped onto each other by that same tolerance, so
+    volume and silhouette are unchanged (verified by divergence-theorem volume in
+    test_texture.py). Triangles are reordered — kept ones first, then the fans —
+    which every consumer tolerates because face_ids is per-triangle and moves
+    with them.
+
+    Returns (positions, indices, face_ids) as flat numpy arrays; a mesh with
+    nothing under-shared is returned unchanged.
+    """
+    import numpy as np
+    from scipy.spatial import cKDTree
+
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    F = np.asarray(face_ids, dtype=np.int64)
+
+    def unchanged():
+        return P.reshape(-1), T.reshape(-1), F
+
+    if not len(T):
+        return unchanged()
+
+    # Weld by POSITION, for the edge count only — faces never share a vertex
+    # index, so counting over raw indices calls every face boundary open.
+    uq, inv = np.unique(np.round(P, 7), axis=0, return_inverse=True)
+    inv = inv.ravel()
+    # welded id -> one ORIGINAL vertex, so every geometric test and every copied
+    # vertex below uses the exact position rather than the rounded weld key
+    rep = np.empty(len(uq), dtype=np.int64)
+    rep[inv] = np.arange(len(P))
+
+    def under_shared(inv):
+        """(edge endpoints as welded ids, flat slots of the under-shared ones).
+
+        A slot is `triangle * 3 + corner`, so it names the one triangle that owns
+        an edge nothing else shares."""
+        W = inv[T]
+        ends = np.stack([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]], axis=1).reshape(-1, 2)
+        # one int64 per edge instead of np.unique(axis=0)'s lexsort — the export
+        # tier runs this over millions of triangles
+        key = (np.minimum(ends[:, 0], ends[:, 1]) * len(uq)
+               + np.maximum(ends[:, 0], ends[:, 1]))
+        _u, back, counts = np.unique(key, return_inverse=True, return_counts=True)
+        back = back.ravel()
+        owner = np.empty(len(counts), dtype=np.int64)
+        owner[back] = np.arange(len(back))  # count == 1: exactly one writer
+        return ends, owner[np.flatnonzero(counts == 1)]
+
+    ends, flat = under_shared(inv)
+    if not len(flat):
+        return unchanged()
+
+    # Two faces can plant a crossing on the same shared edge a HAIR apart — the
+    # two charts compute it independently, and the measured gap on a 110mm hex
+    # plate was 1e-7 mm, one bucket of the weld above. Splitting cannot reconcile
+    # such a pair: each point sits within `tol` of the other edge's ENDPOINT, so
+    # the interior guard below rightly refuses to insert it (that would only
+    # trade a hole for a sliver), and both edges stay one-sided however many
+    # passes run. Merge them instead, snapping the exported positions too, so the
+    # slicer's own weld also sees one vertex.
+    rim = np.unique(ends[flat].ravel())
+    pairs = cKDTree(P[rep[rim]]).query_pairs(tol, output_type="ndarray")
+    if len(pairs):
+        merged_into = {}
+
+        def survivor(x):
+            while merged_into.get(x, x) != x:
+                x = merged_into[x]
+            return x
+
+        for i, j in pairs:
+            a, b = survivor(int(rim[i])), survivor(int(rim[j]))
+            if a != b:
+                merged_into[max(a, b)] = min(a, b)
+        remap = np.arange(len(uq))
+        for x in merged_into:
+            remap[x] = survivor(x)
+        gone = np.flatnonzero(remap != np.arange(len(uq)))
+        moved = np.isin(inv, gone)
+        P = P.copy()  # `positions` may be the caller's own array
+        P[moved] = P[rep[remap[inv[moved]]]]
+        inv = remap[inv]
+        ends, flat = under_shared(inv)
+        if not len(flat):
+            return unchanged()
+
+    owner_tri, owner_slot = flat // 3, flat % 3
+
+    # only a vertex that sits on an under-shared edge can be a T-junction
+    cand = np.unique(ends[flat].ravel())
+    cpos = P[rep[cand]]
+    A, B = P[rep[ends[flat, 0]]], P[rep[ends[flat, 1]]]
+    d = B - A
+    length = np.linalg.norm(d, axis=1)
+    inserts = {}  # (triangle, corner) -> welded ids lying strictly inside it
+    hits_per_edge = cKDTree(cpos).query_ball_point(
+        (A + B) * 0.5, length * 0.5 + tol, workers=-1)
+    for k, hits in enumerate(hits_per_edge):
+        if not hits or length[k] <= 0.0:
+            continue
+        hits = np.asarray(hits)
+        q = cpos[hits]
+        t = ((q - A[k]) @ d[k]) / (length[k] * length[k])
+        # strictly interior in DISTANCE, not in parameter: a parametric epsilon
+        # on a 0.05mm edge admits a point a hair from the endpoint, and inserting
+        # a near-copy of a corner is how a fan gets a degenerate triangle
+        on = ((t * length[k] > tol) & ((1.0 - t) * length[k] > tol)
+              & (np.linalg.norm(A[k] + d[k] * t[:, None] - q, axis=1) <= tol))
+        if on.any():
+            inserts[(int(owner_tri[k]), int(owner_slot[k]))] = cand[hits[on]]
+    if not inserts:
+        return unchanged()
+
+    by_tri = {}
+    for (ti, slot), ids in inserts.items():
+        by_tri.setdefault(ti, {})[slot] = ids
+
+    keep = np.ones(len(T), dtype=bool)
+    extra, new_tris, new_fids = [], [], []
+    n_verts = len(P)
+    for ti, slots in by_tri.items():
+        keep[ti] = False
+        poly, poly_pos = [], []
+        for s in range(3):
+            i0, i1 = int(T[ti, s]), int(T[ti, (s + 1) % 3])
+            poly.append(i0)
+            poly_pos.append(P[i0])
+            ids = slots.get(s)
+            if ids is None:
+                continue
+            pts = P[rep[ids]]
+            for j in np.argsort((pts - P[i0]) @ (P[i1] - P[i0])):
+                poly.append(n_verts + len(extra))
+                extra.append(pts[j])
+                poly_pos.append(pts[j])
+        centre = n_verts + len(extra)
+        extra.append(np.mean(poly_pos, axis=0))
+        fid = int(F[ti])
+        for k in range(len(poly)):
+            new_tris.append((centre, poly[k], poly[(k + 1) % len(poly)]))
+            new_fids.append(fid)
+
+    P = np.concatenate([P, np.asarray(extra, dtype=np.float64)])
+    T = np.concatenate([T[keep], np.asarray(new_tris, dtype=np.int64)])
+    F = np.concatenate([F[keep], np.asarray(new_fids, dtype=np.int64)])
+    return P.reshape(-1), T.reshape(-1), F
+
+
+def open_edge_count(indices):
+    """Edges used by exactly one triangle, counted on the INDICES AS GIVEN.
+
+    Takes no positions, deliberately — no welding. That is the point. A mesh can
+    be watertight by position and still be full of one-sided edges by index, and
+    a slicer reading the indexed form is entitled to call that broken.
+    `conform_shared_boundaries` fixes the first kind; `weld_vertices` fixes the
+    second; this is what tells them apart.
+    """
+    import numpy as np
+
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    if not len(T):
+        return 0
+    n = int(T.max()) + 1
+    a = np.minimum(T[:, [0, 1, 2]], T[:, [1, 2, 0]])
+    b = np.maximum(T[:, [0, 1, 2]], T[:, [1, 2, 0]])
+    _u, c = np.unique((a * n + b).ravel(), return_counts=True)
+    return int((c == 1).sum())
+
+
+def flipped_edge_count(indices):
+    """Shared edges whose two triangles are wound the SAME way round.
+
+    A closed, consistently oriented surface traverses every interior edge once in
+    each direction. Two triangles that both go a->b disagree about which side is
+    out, and a slicer counts that edge as non-manifold once per triangle — which
+    is exactly how 478 of these read as "956 non-manifold edges" in Orca on a mesh
+    with no holes at all.
+
+    Counted on the indices as given, so run it on a WELDED mesh: unwelded, almost
+    no edge is shared and it reports a contented zero."""
+    import numpy as np
+
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    if not len(T):
+        return 0
+    he = np.stack([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]], axis=1).reshape(-1, 2)
+    n = int(T.max()) + 1
+    _u, c = np.unique(he[:, 0] * n + he[:, 1], return_counts=True)
+    return int((c > 1).sum())
+
+
+def orient_consistently(positions, indices):
+    """Wind every triangle to agree with its neighbours, and every closed shell
+    outward. Run on a WELDED mesh — it needs shared indices to have neighbours.
+
+    Why this is not already true: texture.py's `_orient_windings` checks each
+    triangle against its OWN vertices' analytic normals. That is a per-triangle
+    test, and on a faceted displacement the vertex normals on a steep facet can
+    disagree with the facet itself, so some triangles get turned the wrong way.
+    Measured on a hex-textured 40mm cube: 1911 disagreeing edges straight out of
+    tessellate, against 0 on the same cube untextured.
+
+    Fixed HERE rather than in texture.py on purpose. The viewport does not care —
+    it shades from analytic normals and splits creases — while a change in there
+    would mean a CODE_VERSION bump that invalidates every cached textured mesh
+    for a defect only the exporter sees.
+
+    Two passes, and the second is the safety net for the first:
+      1. Propagate. Walk the triangle graph over shared edges and flip whatever
+         disagrees with the neighbour it was reached from. That makes each shell
+         self-consistent but says nothing about which way is out.
+      2. Point it outward. Per connected shell, if the signed volume came out
+         negative the whole shell is inside-out, so flip it. Applied only to
+         shells that are actually CLOSED: an open shell's signed volume is
+         meaningless, and flipping one on that basis would be a coin toss.
+    """
+    import numpy as np
+
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    if len(T) < 2:
+        return P.reshape(-1), T.reshape(-1)
+
+    ntri = len(T)
+    he = np.stack([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]], axis=1).reshape(-1, 2)
+    nv = int(T.max()) + 1
+    lo = np.minimum(he[:, 0], he[:, 1])
+    hi = np.maximum(he[:, 0], he[:, 1])
+    key = lo * nv + hi
+
+    # Pair up the half-edges that share an undirected edge. Only edges with
+    # EXACTLY two are adjacency: a one-sided edge has no neighbour to agree with,
+    # and a >2 edge has no single right answer.
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    heads = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+    counts = np.diff(np.r_[heads, len(ks)])
+    pair = heads[counts == 2]
+    if not len(pair):
+        return P.reshape(-1), T.reshape(-1)
+    sa, sb = order[pair], order[pair + 1]
+    ta, tb = sa // 3, sb // 3
+    # Both half-edges pointing the same way means the two triangles disagree.
+    disagree = he[sa, 0] == he[sb, 0]
+
+    # CSR adjacency over triangles, built symmetrically so the walk can cross
+    # each edge either way.
+    src = np.concatenate([ta, tb])
+    dst = np.concatenate([tb, ta])
+    par = np.concatenate([disagree, disagree]).astype(np.int8)
+    o = np.argsort(src, kind="stable")
+    src, dst, par = src[o], dst[o], par[o]
+    indptr = np.searchsorted(src, np.arange(ntri + 1))
+
+    flip = np.zeros(ntri, dtype=bool)
+    comp = np.full(ntri, -1, dtype=np.int64)
+    seen = np.zeros(ntri, dtype=bool)
+    ncomp = 0
+    for root in range(ntri):
+        if seen[root]:
+            continue
+        seen[root] = True
+        comp[root] = ncomp
+        stack = [root]
+        while stack:
+            t = stack.pop()
+            for k in range(indptr[t], indptr[t + 1]):
+                nb = dst[k]
+                if seen[nb]:
+                    continue
+                seen[nb] = True
+                comp[nb] = ncomp
+                # agree with the triangle we arrived from
+                flip[nb] = flip[t] ^ bool(par[k])
+                stack.append(nb)
+        ncomp += 1
+
+    out = T.copy()
+    out[flip] = out[flip][:, [0, 2, 1]]
+
+    # Pass 2 — outward. Only for shells with no boundary: `counts == 1` marks a
+    # one-sided edge, and a shell owning one is open.
+    one_sided = heads[counts == 1]
+    open_comps = set(comp[order[one_sided] // 3].tolist()) if len(one_sided) else set()
+    a, b, c = P[out[:, 0]], P[out[:, 1]], P[out[:, 2]]
+    vol6 = np.einsum("ij,ij->i", a, np.cross(b, c))
+    per_comp = np.bincount(comp, weights=vol6, minlength=ncomp)
+    inside_out = [i for i in range(ncomp) if per_comp[i] < 0 and i not in open_comps]
+    if inside_out:
+        sel = np.isin(comp, inside_out)
+        out[sel] = out[sel][:, [0, 2, 1]]
+    return P.reshape(-1), out.reshape(-1)
+
+
+def weld_vertices(positions, indices, face_ids=None):
+    """Share ONE index per distinct position. For the indexed export formats only.
+
+    tessellate() gives every B-rep face its own vertex chunk and never shares an
+    index across a face boundary, so a perfectly closed surface still exports
+    with thousands of edges that only one triangle references. Measured on a
+    textured cube Orca rejected: 4502 vertices for 3219 distinct positions, and
+    2558 one-sided edges by index against 0 by position. Slicers do not all weld
+    on load, and the ones that don't call that non-manifold and offer a "repair"
+    that destroys a textured mesh.
+
+    Geometry is untouched: this only makes two vertices that ALREADY sat at the
+    same coordinates share a slot. On that same file — same 6434 triangles, same
+    volume to the last digit, same bbox, nothing collapsed.
+
+    NOT part of `conform_shared_boundaries`, and the two must not be merged:
+    that pass deliberately COPIES vertices to keep the per-face chunking intact,
+    because mesh_writers' glTF normals rely on it for sharp face-to-face edges
+    (see its `_vertex_normals`). Welding is safe only where no normals travel
+    with the file — 3MF and STL — and only per BODY. Welding a merged multi-body
+    soup would fuse two touching bodies into one shell.
+
+    Returns (positions, indices, face_ids) as flat numpy arrays, face_ids being
+    None when none was passed. Triangles that collapse — two corners landing on
+    one vertex — are dropped: they are zero-area, and leaving them in
+    re-introduces the one-sided edges this exists to remove. `face_ids` rides
+    along precisely so the painted-3MF writer's per-triangle array cannot fall
+    out of step with the triangles when that happens.
+    """
+    import numpy as np
+
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    F = None if face_ids is None else np.asarray(face_ids).reshape(-1)
+    if not len(T):
+        return P.reshape(-1), T.reshape(-1), F
+    uq, inv = np.unique(np.round(P, 7), axis=0, return_inverse=True)
+    inv = inv.ravel()
+    # Keep an ORIGINAL coordinate per welded slot rather than the rounded key the
+    # bucketing used — the survivor's own position, unmoved. Rounding every
+    # vertex to 1e-7 would be invisible in a 3MF (%.6g) but it is still a nudge
+    # applied to geometry that had no reason to move.
+    rep = np.empty(len(uq), dtype=np.int64)
+    rep[inv] = np.arange(len(P))
+    W = inv[T]
+    keep = (W[:, 0] != W[:, 1]) & (W[:, 1] != W[:, 2]) & (W[:, 2] != W[:, 0])
+    return P[rep].reshape(-1), W[keep].reshape(-1), (None if F is None else F[keep])
+
+
 def vertex_normals(positions, indices):
     """Area-weighted per-vertex normals for a whole mesh (flat lists in/out) —
     the same accumulation three.js's computeVertexNormals does, run server-side

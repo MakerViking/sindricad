@@ -490,7 +490,7 @@ def _export_mesh(b, tol=None):
     screen left here as one."""
     import pickle
 
-    from tessellate import tessellate
+    from tessellate import conform_shared_boundaries, tessellate
     from texture import resolve_body_textures
     from builder import progress_tick
 
@@ -523,7 +523,10 @@ def _export_mesh(b, tol=None):
         # "export2" because the artifact gained face_ids: an older 2-tuple would
         # unpickle fine and then silently export unpainted. Bumping the key
         # retires them instead of teaching every reader to sniff the shape.
-        mesh_key = "%s-export2-t%s" % (b["meshKey"], tol)
+        # "export3" for conform_shared_boundaries — an export2 artifact is a
+        # perfectly valid mesh that just still has its T-junctions, so nothing
+        # downstream could tell it apart from a conformed one.
+        mesh_key = "%s-export3-t%s" % (b["meshKey"], tol)
         if texture_key:
             mesh_key += "-x%s" % hashlib.sha1(texture_key.encode()).hexdigest()[:16]
     mesh = None
@@ -543,6 +546,13 @@ def _export_mesh(b, tol=None):
             textures=textures, density_cap=EXPORT_DENSITY_CAP_PER_FACE,
             force_remesh=retolerance,
         )
+        if textures:
+            # A textured face densifies its own boundary ring, so it no longer
+            # shares edges with whatever is on the other side — textured or
+            # plain. Geometrically closed, but every slicer reads the
+            # T-junctions as holes. EXPORT only: the viewport never leaves the
+            # app, and this would cost the weld pass on every edit.
+            pos, idx, fids = conform_shared_boundaries(pos, idx, fids)
         mesh = (pos, idx, fids)
         if mesh_key and (time.monotonic() - t0) * 1000.0 >= _MESH_PERSIST_MIN_MS:
             try:
@@ -626,6 +636,17 @@ def _budget_warning(ntri):
     if ntri <= EXPORT_TRIANGLE_WARN:
         return None
     return f"export is very dense ({ntri:,} triangles)"
+
+
+def _open_edge_warning(n):
+    """Told at export time, in SindriCAD, rather than discovered in the slicer.
+
+    Counted AFTER the export weld, so anything left is a genuine hole in the
+    surface and not the index duplication that weld exists to remove. Deliberately
+    a warning and not a refusal: an open shell is a legitimate thing to export,
+    and blocking it would be a worse failure than the one being reported."""
+    return (f"the mesh has {n:,} unmatched edge{'s' if n != 1 else ''} — it is not "
+            "fully closed, so a slicer may report it as non-manifold")
 
 
 def _prune_export_cache(live):
@@ -1170,6 +1191,7 @@ def _export_job(document, fmt, path, body=None, separate=False,
     import re
     from builder import rebuild_cached
     from exporters import export
+    from tessellate import open_edge_count, orient_consistently, weld_vertices
     import mesh_writers
 
     # rebuild_cached, not rebuild: export runs in the SAME long-lived worker as
@@ -1202,8 +1224,19 @@ def _export_job(document, fmt, path, body=None, separate=False,
         allocate an unbounded mesh."""
         pos_parts, idx_parts, vbase = [], [], 0
         ntri = 0
+        open_edges = 0
         for b in target_bodies:
             pos, idx, _fids = _export_mesh(b)
+            # WELD PER BODY, before the vertex-base offset. tessellate() never
+            # shares an index across a face boundary, so a closed surface still
+            # leaves thousands of edges that only one triangle references, and a
+            # slicer reading the indexed form calls that non-manifold (Orca:
+            # 2986 on a textured cube whose surface had no holes at all). Doing
+            # it here rather than on the concatenation below is deliberate: the
+            # merged soup would weld two TOUCHING bodies into a single shell.
+            pos, idx, _w = weld_vertices(pos, idx)
+            pos, idx = orient_consistently(pos, idx)
+            open_edges += open_edge_count(idx)
             # Checked HERE, per body, rather than on the concatenated total.
             # The cap exists to stop a pathological document allocating
             # unbounded memory, and a check that runs only after every body has
@@ -1227,6 +1260,8 @@ def _export_job(document, fmt, path, body=None, separate=False,
         warn = _budget_warning(ntri)
         if warn:
             warnings.append({"message": warn})
+        if open_edges:
+            warnings.append({"message": _open_edge_warning(open_edges)})
         if fmt == "stl":
             mesh_writers.write_stl(positions, mindices, p)
         elif fmt == "3mf":
@@ -1374,6 +1409,7 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     features become warnings; only zero live bodies is a hard error."""
     from builder import rebuild_cached
     from project3mf import sanitize_inputs, write_project_3mf
+    from tessellate import open_edge_count, orient_consistently, weld_vertices
 
     part, errors, bodies = rebuild_cached(document)
     live = [b for b in bodies if b.get("shape") is not None]
@@ -1387,12 +1423,22 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     meshed = []
     face_slots = {}
     ntri = 0
+    open_edges = 0
     for b in live:
         # Export-grade tolerance — the viewport default (0.1) is visibly faceted
         # on a printed part. Cached across exports of an unchanged body.
         positions, indices, face_ids = _export_mesh(b)
         if not len(indices):
             continue  # degenerate body with no triangulation — skip, like exports do
+        # Share one index per position, per body — see _mesh_export's twin call.
+        # face_ids rides through the weld so the per-triangle paint array cannot
+        # fall out of step if a triangle collapses.
+        positions, indices, face_ids = weld_vertices(positions, indices, face_ids)
+        # Winding, not holes: texture.py orients each triangle against its own
+        # vertex normals, which cannot guarantee it agrees with its neighbour, and
+        # a slicer counts a disagreeing edge as non-manifold once per triangle.
+        positions, indices = orient_consistently(positions, indices)
+        open_edges += open_edge_count(indices)
         # This path had NO budget at all, which made it the way round every cap
         # the plain export enforces. Checked per body, before the mesh is kept,
         # so the allocation is bounded to the cap plus one body.
@@ -1431,8 +1477,11 @@ def _export_project_job(document, path, palette, body_colors, body_names, settin
     }
     res = {"path": write_project_3mf(meshed, path, palette, body_colors, body_names,
                                      settings, face_slots=face_slots)}
-    if errors:
-        res["warnings"] = [_err_entry(e) for e in errors]
+    notes = [_err_entry(e) for e in errors]
+    if open_edges:
+        notes.append({"message": _open_edge_warning(open_edges)})
+    if notes:
+        res["warnings"] = notes
     return res
 
 

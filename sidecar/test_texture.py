@@ -632,6 +632,278 @@ def test_a_vanished_texture_face_says_so():
     print(PASS, "a texture whose face vanished records a diagnostic; a live one stays silent")
 
 
+def _edge_share(positions, indices):
+    """(one-sided, over-shared) edge counts for a whole body, welded by POSITION.
+
+    The weld is the point: tessellate() gives every face its own vertex chunk, so
+    an index-level count would call every face boundary open. A slicer welds the
+    same way, which is why this — not texture._manifold_check, which only ever
+    sees one face — is the check that predicts what Orca reports."""
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    _uq, inv = np.unique(np.round(P, 7), axis=0, return_inverse=True)
+    W = inv.ravel()[T]
+    e = np.sort(np.stack([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]], axis=1).reshape(-1, 2), axis=1)
+    _u, counts = np.unique(e, axis=0, return_counts=True)
+    return int((counts == 1).sum()), int((counts > 2).sum())
+
+
+def _mesh_volume(positions, indices):
+    """Divergence-theorem volume — sensitive to a single flipped winding."""
+    P = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    a, b, c = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
+
+
+def test_textured_export_is_watertight():
+    """The whole-body invariant a per-face manifold check cannot see.
+
+    A textured face densifies its own boundary ring, so it stops sharing edges
+    with the face on the other side and the export leaks T-junctions. Note the
+    SINGLE-face case: this is not a textured-vs-textured problem, and a fix that
+    only reconciled two textured faces would leave it broken."""
+    from build123d import Box, Cylinder
+
+    from tessellate import conform_shared_boundaries
+
+    spec = texture.validate_texture_spec(
+        {"id": "t", "kind": "hex", "scale": 2.0, "depth": 0.6, "profile": "facet"})
+    cube, cyl = Box(20, 20, 20), Cylinder(10, 20)
+    cases = [
+        ("cube, every face", cube, list(cube.faces())),
+        ("cube, one face", Box(20, 20, 20), [list(Box(20, 20, 20).faces())[0]]),
+        ("cylinder, every face", cyl, list(cyl.faces())),
+    ]
+    for name, shape, faces in cases:
+        pos, idx, fids = tessellate(shape, 0.1, textures=[(spec, faces)], density_cap=400_000)
+        leaks, _ = _edge_share(pos, idx)
+        assert leaks > 0, f"{name}: nothing to fix — has the boundary densification gone?"
+
+        pos2, idx2, fids2 = conform_shared_boundaries(pos, idx, fids)
+        after, over = _edge_share(pos2, idx2)
+        assert after == 0, f"{name}: {after} one-sided edges survived (was {leaks})"
+        assert over == 0, f"{name}: {over} edges shared by more than two triangles"
+        assert len(fids2) == len(idx2) // 3, "one face id per triangle, after the split too"
+        assert set(np.unique(fids2)) == set(np.unique(fids)), "no face lost its triangles"
+        assert abs(_mesh_volume(pos2, idx2) - _mesh_volume(pos, idx)) < 1e-9, \
+            f"{name}: the split moved geometry or flipped a winding"
+        print(PASS, f"{name}: {leaks} one-sided edges -> 0, volume unchanged")
+
+
+def test_hair_apart_boundary_vertices_are_merged():
+    """Two faces can plant a crossing on the same shared edge a hair apart — the
+    charts compute it independently, and 1e-7 mm was measured on a 110mm hex
+    plate. Splitting alone can never reconcile that pair: each side inserts a
+    copy of the other's point and both edges stay one-sided forever. Found only
+    at a million triangles, so it is pinned here on a hand-built mesh instead."""
+    from tessellate import conform_shared_boundaries
+
+    hair = 1e-7
+    # two fans meeting along x=0, the left one splitting the seam at y=0.5 and
+    # the right one at y=0.5+hair
+    pos = np.array([
+        (0.0, 0.0, 0.0), (0.0, 1.0, 0.0), (-1.0, 0.5, 0.0), (0.0, 0.5, 0.0),
+        (1.0, 0.5, 0.0), (0.0, 0.5 + hair, 0.0),
+    ])
+    idx = np.array([(0, 3, 2), (3, 1, 2), (0, 4, 5), (5, 4, 1)])
+    fids = np.array([0, 0, 1, 1])
+    before, _ = _edge_share(pos, idx)
+    assert before == 8, f"the seam must start out unshared on both sides, got {before}"
+
+    pos2, idx2, _f = conform_shared_boundaries(pos.ravel(), idx.ravel(), fids)
+    after, over = _edge_share(pos2, idx2)
+    assert over == 0, f"{over} edges shared by more than two triangles"
+    assert after == 4, f"only the four outer edges may stay open, got {after}"
+    ys = np.asarray(pos2).reshape(-1, 3)[:, 1]
+    assert not np.any(np.abs(ys - (0.5 + hair)) < hair / 2), \
+        "the hair-apart vertex must be snapped onto its twin, not just re-indexed"
+    print(PASS, "boundary vertices 1e-7 apart are merged, not left as a hole")
+
+
+def _indexed_edges(indices):
+    """(one-sided, over-shared) counted on the RAW indices — no welding.
+
+    The distinction this file's other export test missed. A mesh can be closed by
+    position and still hand a slicer thousands of edges only one triangle
+    references, because tessellate() gives every face its own vertex chunk.
+    Orca reported 2986 non-manifold edges on a cube whose surface had no holes."""
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    e = np.sort(np.stack([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]], axis=1).reshape(-1, 2), axis=1)
+    _u, c = np.unique(e, axis=0, return_counts=True)
+    return int((c == 1).sum()), int((c > 2).sum())
+
+
+def test_export_is_manifold_by_index_not_only_by_position():
+    """What actually reaches the slicer.
+
+    conform_shared_boundaries closes the surface; weld_vertices makes the INDICES
+    say so. Both are needed, and only the second is visible to a reader that does
+    not weld on load."""
+    from build123d import Box
+
+    from tessellate import open_edge_count, weld_vertices
+
+    spec = texture.validate_texture_spec(
+        {"id": "t", "kind": "hex", "scale": 2.0, "depth": 0.6, "profile": "facet"})
+    box = Box(20, 20, 20)
+    pos, idx, fids = tessellate(box, 0.1, textures=[(spec, list(box.faces()))],
+                                density_cap=400_000)
+    from tessellate import conform_shared_boundaries
+    pos, idx, fids = conform_shared_boundaries(pos, idx, fids)
+    assert _edge_share(pos, idx) == (0, 0), "the surface should already be closed"
+    before_open, _ = _indexed_edges(idx)
+    assert before_open > 0, "nothing to fix — has tessellate started sharing indices?"
+
+    wpos, widx, wfids = weld_vertices(pos, idx, fids)
+    assert _indexed_edges(widx) == (0, 0), \
+        f"{_indexed_edges(widx)[0]} edges still one-sided by index (was {before_open})"
+    assert open_edge_count(widx) == 0, "the export-time check must agree"
+
+    # ...and the model is the same model.
+    assert len(widx) == len(idx), "welding must not drop a triangle here"
+    assert len(wfids) == len(widx) // 3, "face ids stayed parallel to the triangles"
+    assert abs(_mesh_volume(wpos, widx) - _mesh_volume(pos, idx)) < 1e-9, "volume moved"
+    a, b = np.asarray(pos).reshape(-1, 3), np.asarray(wpos).reshape(-1, 3)
+    assert np.allclose(a.min(0), b.min(0)) and np.allclose(a.max(0), b.max(0)), "bbox moved"
+    print(PASS, f"index-level one-sided edges {before_open} -> 0, geometry unchanged")
+
+
+def test_weld_never_fuses_two_touching_bodies():
+    """Why the weld runs per BODY and never on the merged export soup.
+
+    The plain STL/3MF path concatenates every body into one object. Welding after
+    that would make two bodies sharing a face into a single shell — and hand the
+    slicer edges with four triangles on them, which is a worse complaint than the
+    one being fixed."""
+    from build123d import Box, Pos
+
+    from tessellate import weld_vertices
+
+    a = Box(10, 10, 10)
+    b = Pos(10, 0, 0) * Box(10, 10, 10)  # face-to-face at x = 5
+    parts = []
+    base = 0
+    for solid in (a, b):
+        pos, idx, _f = tessellate(solid, 0.1)
+        wpos, widx, _w = weld_vertices(pos, idx)          # per body, as the export does
+        parts.append((np.asarray(wpos).reshape(-1, 3), np.asarray(widx).reshape(-1, 3) + base))
+        base += len(wpos) // 3
+    P = np.concatenate([p for p, _ in parts])
+    T = np.concatenate([t for _, t in parts])
+    assert _indexed_edges(T) == (0, 0), "each body must be closed on its own indices"
+
+    # the control: welding the MERGED soup is what we are avoiding
+    _uq, inv = np.unique(np.round(P, 7), axis=0, return_inverse=True)
+    fused_over = _indexed_edges(inv.ravel()[T])[1]
+    assert fused_over > 0, \
+        "the touching faces no longer overlap — pick a arrangement that does, or this proves nothing"
+    print(PASS, f"per-body weld keeps two shells; welding the merge would make {fused_over} four-way edges")
+
+
+def _flipped_edges(indices):
+    """Shared edges traversed twice the SAME way — neighbours that disagree about
+    which side is out. Orca counts one per triangle, so 478 of these read as 956
+    non-manifold edges on a mesh with no holes."""
+    from collections import Counter
+
+    T = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    he = np.stack([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]], axis=1).reshape(-1, 2)
+    c = Counter(map(tuple, he))
+    return sum(1 for _k, n in c.items() if n >= 2)
+
+
+def test_orientation_is_restored_from_a_known_good_mesh():
+    """The algorithm, against a mesh whose right answer is known exactly.
+
+    An untextured cube meshes consistently and encloses exactly 8000 mm3. Turn a
+    third of its triangles inside out and both facts break; the pass has to put
+    both back — the propagation for consistency, and the signed-volume rule for
+    which way is out. A pass with only the first would happily settle on the
+    perfectly consistent, perfectly inside-out answer."""
+    from build123d import Box
+
+    from tessellate import orient_consistently, weld_vertices
+
+    pos, idx, _f = tessellate(Box(20, 20, 20), 0.1)
+    pos, idx, _f = weld_vertices(pos, idx)
+    good = np.asarray(idx, dtype=np.int64).reshape(-1, 3)
+    assert _flipped_edges(good) == 0
+    assert abs(_mesh_volume(pos, good) - 8000.0) < 1e-9, "the control is not a clean cube"
+
+    rng = np.random.default_rng(7)
+    broken = good.copy()
+    sel = rng.random(len(broken)) < 0.34
+    broken[sel] = broken[sel][:, [0, 2, 1]]
+    assert _flipped_edges(broken) > 0, "the sabotage did not take"
+
+    _p, fixed = orient_consistently(pos, broken)
+    fixed = np.asarray(fixed, dtype=np.int64).reshape(-1, 3)
+    assert _flipped_edges(fixed) == 0, "neighbours still disagree"
+    assert abs(_mesh_volume(pos, fixed) - 8000.0) < 1e-9, \
+        f"volume {_mesh_volume(pos, fixed):g} — consistent but inside-out"
+    print(PASS, f"orientation restored from {int(sel.sum())} flipped triangles, +8000 mm3 again")
+
+
+def test_orientation_leaves_positions_alone():
+    """It reorders indices and nothing else — the shape cannot move."""
+    from build123d import Box
+
+    from tessellate import orient_consistently, weld_vertices
+
+    pos, idx, _f = tessellate(Box(12, 8, 5), 0.1)
+    pos, idx, _f = weld_vertices(pos, idx)
+    out_pos, out_idx = orient_consistently(pos, idx)
+    assert np.array_equal(np.asarray(out_pos), np.asarray(pos)), "vertices moved"
+    assert sorted(np.asarray(out_idx).reshape(-1, 3).tolist()) != [], "sanity"
+    a = np.sort(np.asarray(idx).reshape(-1, 3), axis=1)
+    b = np.sort(np.asarray(out_idx).reshape(-1, 3), axis=1)
+    assert np.array_equal(np.sort(a, axis=0), np.sort(b, axis=0)), \
+        "the triangle SET changed — orientation may only reorder each triple"
+    print(PASS, "orientation touches winding only: same vertices, same triangles")
+
+
+def test_textured_export_has_no_disagreeing_neighbours():
+    """The defect behind Orca's 956: texture.py orients each triangle against its
+    OWN vertex normals, which says nothing about the neighbour. Measured 1911
+    disagreeing edges out of tessellate on a cube that has none untextured."""
+    from build123d import Box
+
+    from tessellate import conform_shared_boundaries, orient_consistently, weld_vertices
+
+    spec = texture.validate_texture_spec(
+        {"id": "t", "kind": "hex", "scale": 2.0, "depth": 0.6, "profile": "facet"})
+    box = Box(20, 20, 20)
+    pos, idx, fids = tessellate(box, 0.1, textures=[(spec, list(box.faces()))],
+                                density_cap=400_000)
+    pos, idx, fids = conform_shared_boundaries(pos, idx, fids)
+    pos, idx, fids = weld_vertices(pos, idx, fids)
+    before = _flipped_edges(idx)
+    assert before > 0, "nothing to fix — did texture.py start orienting by neighbour?"
+
+    pos2, idx2 = orient_consistently(pos, idx)
+    assert _flipped_edges(idx2) == 0, f"{_flipped_edges(idx2)} disagreeing edges left (was {before})"
+    assert _edge_share(pos2, idx2) == (0, 0), "orientation must not open the surface"
+    assert _mesh_volume(pos2, idx2) > 0, "the shell came out inside-out"
+    print(PASS, f"disagreeing neighbour edges {before} -> 0 on a textured cube")
+
+
+def test_conform_leaves_a_clean_mesh_alone():
+    """The control. An untextured body is already watertight, and the pass must
+    hand it back untouched rather than resample or reorder it."""
+    from build123d import Box
+
+    from tessellate import conform_shared_boundaries
+
+    pos, idx, fids = tessellate(Box(20, 20, 20), 0.1)
+    assert _edge_share(pos, idx) == (0, 0), "an untextured box is watertight to begin with"
+    pos2, idx2, fids2 = conform_shared_boundaries(pos, idx, fids)
+    assert np.array_equal(np.asarray(pos2).ravel(), np.asarray(pos, dtype=np.float64))
+    assert np.array_equal(np.asarray(idx2).ravel(), np.asarray(idx, dtype=np.int64))
+    assert np.array_equal(np.asarray(fids2), np.asarray(fids, dtype=np.int64))
+    print(PASS, "a watertight mesh passes through unchanged")
+
+
 def main():
     print("Surface-texture tests")
     test_validate_texture_spec_rejects_bad_input()
@@ -657,6 +929,14 @@ def main():
     test_every_kind_meshes_cleanly_at_the_faceted_default()
     test_boundary_ring_is_dense_enough_to_carry_the_pattern()
     test_a_vanished_texture_face_says_so()
+    test_textured_export_is_watertight()
+    test_hair_apart_boundary_vertices_are_merged()
+    test_export_is_manifold_by_index_not_only_by_position()
+    test_weld_never_fuses_two_touching_bodies()
+    test_orientation_is_restored_from_a_known_good_mesh()
+    test_orientation_leaves_positions_alone()
+    test_textured_export_has_no_disagreeing_neighbours()
+    test_conform_leaves_a_clean_mesh_alone()
     print("ALL PASS")
 
 
