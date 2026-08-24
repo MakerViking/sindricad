@@ -1,0 +1,33 @@
+<svg width="512" height="512" viewBox="30 30 160 160" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SindriCAD">
+  <!-- The SindriCAD mark on its own: square, wordmark-free, for the app/taskbar
+       icon. Paths and gradient are copied VERBATIM from sindricad-lockup-app.svg
+       so the icon and the in-app header can never drift apart — only the <text>
+       lockup and the lockup's positioning transform are dropped.
+
+       The viewBox is the mark's own coordinate space, not a re-scaled one. Its
+       content spans x 55..165 and y 49..171 (the S-curve runs 70..150 with a
+       30-wide stroke, so ±15), which centres on (110, 110) in both axes; the
+       box is that centre ±80, leaving ~12% padding for the rounded masks some
+       platforms apply.
+
+       Transparent background on purpose: the gradient runs dark blue through
+       orange to red, which reads on a light taskbar and a dark one.
+
+       Regenerate the raster icons after ANY edit here:
+         rsvg-convert -w 1024 -h 1024 assets/brand/sindricad-mark.svg -o /tmp/mark.png
+         npx tauri icon /tmp/mark.png -->
+  <defs>
+    <linearGradient id="moltenLight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#33517A"/>
+      <stop offset="0.45" stop-color="#FF7C36"/>
+      <stop offset="1" stop-color="#DE3A16"/>
+    </linearGradient>
+  </defs>
+
+  <polyline points="150,64 110,110 70,156" fill="none" stroke="#8FA9CC" stroke-width="1.5" stroke-dasharray="3 5" opacity="0.3"/>
+  <path d="M150 64 C150 44 96 44 82 68 C74 84 84 98 110 110 C136 122 146 136 138 152 C124 176 70 176 70 156"
+        fill="none" stroke="url(#moltenLight)" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="144" y="58" width="12" height="12" rx="2" fill="#FFFFFF" stroke="#FF5A2C" stroke-width="2.5"/>
+  <rect x="104" y="104" width="12" height="12" rx="2" fill="#FFFFFF" stroke="#FF5A2C" stroke-width="2.5"/>
+  <rect x="64" y="150" width="12" height="12" rx="2" fill="#FFFFFF" stroke="#FF5A2C" stroke-width="2.5"/>
+</svg>

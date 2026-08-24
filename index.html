@@ -7,14 +7,21 @@
   </head>
   <body>
     <div id="app">
-      <header id="titlebar">
+      <!-- The window is undecorated (tauri.conf.json "decorations": false), so this
+           row IS the title bar: it carries the drag region and, under Tauri, the
+           minimize/maximize/close buttons that ui/windowControls.ts appends.
+           data-tauri-drag-region is matched against the EXACT event target (see
+           tauri's window/scripts/drag.js), never an ancestor — which is why it
+           sits on the bar and on the spacer, and why the menus, buttons and the
+           units dropdown below need no opt-out. -->
+      <header id="titlebar" data-tauri-drag-region>
         <span class="brand"><img src="assets/brand/sindricad-lockup-app.svg" alt="SindriCAD" /></span>
         <nav id="menubar"></nav>
         <button id="undo-btn" class="tb-btn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5h11a5 5 0 0 1 0 10H9"/><path d="M8.5 6.5l-4 4 4 4"/></svg></button>
         <button id="redo-btn" class="tb-btn" title="Redo (Ctrl+Y)" aria-label="Redo" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 10.5h-11a5 5 0 0 0 0 10H15"/><path d="M15.5 6.5l4 4-4 4"/></svg></button>
         <span id="context-tab" class="context-tab">SOLID</span>
         <span id="docname" class="docname">Untitled</span>
-        <div class="spacer"></div>
+        <div class="spacer" data-tauri-drag-region></div>
         <label class="units" title="Display units (geometry is stored in mm)">
           Units
           <select id="unit">

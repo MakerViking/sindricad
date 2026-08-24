@@ -163,6 +163,16 @@ const PATHS = {
 
   // --- window chrome / controls ---
   close: `<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>`,
+  // The three window buttons, drawn to the same 20x20 live area as `close` so
+  // the set reads as one row. Deliberately geometric rather than the platform's
+  // own glyphs: SindriCAD draws its own title bar on every OS (decorations are
+  // off), so a Windows-looking chevron on KDE would be worse than a neutral mark.
+  minimize: `<path d="M6.5 12h11"/>`,
+  maximize: `<rect x="6.5" y="6.5" width="11" height="11" rx="1"/>`,
+  // Restore: the front pane with the one behind it peeking out, the universal
+  // "put it back" mark. Two rects, not an overlapping outline, so nothing has to
+  // be knocked out at 14px.
+  restore: `<rect x="6.5" y="9.5" width="8" height="8" rx="1"/><path d="M9.5 6.5h8v8"/>`,
   undo: `<path d="M4.5 10.5h11a5 5 0 0 1 0 10H9" fill="none"/><path d="M8.5 6.5l-4 4 4 4"/>`,
   redo: `<path d="M19.5 10.5h-11a5 5 0 0 0 0 10H15" fill="none"/><path d="M15.5 6.5l4 4-4 4"/>`,
   stepFirst: `<line x1="6" y1="5" x2="6" y2="19"/><path d="M19 5.5L9.5 12l9.5 6.5z"/>`,

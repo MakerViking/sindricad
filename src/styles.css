@@ -323,6 +323,88 @@ body {
   cursor: default;
 }
 
+/* ---- window buttons ----------------------------------------------------
+   The window is undecorated, so #titlebar is the title bar and carries these.
+   Flat and borderless, unlike .tb-btn: they are window chrome, not app
+   controls, and giving them the same boxed look would read as three more tools.
+   Mounted by ui/windowControls.ts and absent outside Tauri. */
+.window-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* ABOVE .resize-edge. The strips are position:fixed and #titlebar is not, so
+     without a stacking context of its own the top-right grip owned the corner
+     and the rightmost 4px column of the Close button. Measured with
+     elementFromPoint: the window corner returned .resize-ne, not the button.
+     The cost is that the top-right corner no longer resizes; the other three
+     corners and all four edges still do, and a Close button that misses is
+     worse than a corner that does not drag. */
+  position: relative;
+  z-index: 4200;
+  /* eat the bar's right padding so close sits in the corner, where the pointer
+     can slam into it — Fitts's law is the whole reason that corner is used */
+  margin-right: calc(var(--s-4) * -1);
+  margin-left: var(--s-2);
+  flex: none;
+}
+.win-btn {
+  width: 40px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.win-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex: none;
+}
+.win-btn:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+.win-close:hover {
+  background: var(--danger-action);
+  color: var(--text);
+}
+
+/* ---- resize edges ------------------------------------------------------
+   Linux only, mounted by ui/windowControls.ts. tao's set_decorations is a bare
+   gtk_window_set_decorated(false), which takes GTK's own resize border with it,
+   so without these an undecorated window cannot be resized with the mouse at
+   all. 4px reads as "nothing there" and is still a comfortable grab.
+
+   z-index above every docked panel but below modals: a dialog that opens over
+   the window edge must own its own border, or the strip underneath steals the
+   press and starts resizing the window mid-dialog. */
+.resize-edge {
+  position: fixed;
+  /* Above every modal layer on purpose. A frameless window must stay resizable
+     while a dialog is open, and the GPU-fatal panel in particular is shown on a
+     machine where nothing else works. .window-controls sits above these again. */
+  z-index: 4100;
+}
+.resize-n, .resize-s { left: 6px; right: 6px; height: 4px; cursor: ns-resize; }
+.resize-e, .resize-w { top: 6px; bottom: 6px; width: 4px; cursor: ew-resize; }
+.resize-n { top: 0; }
+.resize-s { bottom: 0; }
+.resize-w { left: 0; }
+.resize-e { right: 0; }
+/* corners last so they win the overlap, and bigger than the edges because a
+   corner is the harder target */
+.resize-ne, .resize-nw, .resize-se, .resize-sw { width: 8px; height: 8px; }
+.resize-nw { top: 0; left: 0; cursor: nwse-resize; }
+.resize-se { bottom: 0; right: 0; cursor: nwse-resize; }
+.resize-ne { top: 0; right: 0; cursor: nesw-resize; }
+.resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+
 /* ---- "?" shortcut cheat-sheet HUD ---- */
 .shortcut-hud {
   position: fixed;
