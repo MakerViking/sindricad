@@ -4,6 +4,7 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import { entitySegments, polygonPoints } from "./region";
+import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
 import { coincKey } from "./sketchSolve";
@@ -96,7 +97,12 @@ function arcGeom(e: { x1: number; y1: number; x2: number; y2: number; mx: number
 function circleCrossAngles(ents: ResolvedEntity[], index: number, C: THREE.Vector2, R: number): number[] {
   const out: number[] = [];
   ents.forEach((o, i) => {
-    if (i === index) return;
+    // The origin axes are REFERENCE, not a modify boundary. They exist in every
+    // sketch and span it, so counting them as crossings would silently change
+    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
+    // every document ever made. Snap to them, constrain to them, do not cut on
+    // them.
+    if (i === index || isOriginGeometry(o.id)) return;
     for (const [a, b] of entitySegments(o)) {
       for (const h of segCircleIntersect(a, b, C, R)) out.push(Math.atan2(h.y - C.y, h.x - C.x));
     }
@@ -115,16 +121,29 @@ export function pickEntity(
   p: THREE.Vector2,
   tol: number,
 ): number {
-  let best = -1;
-  let bestD = tol;
-  ents.forEach((e, i) => {
-    const d = distToEntity(e, p);
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  });
-  return best;
+  // YOUR geometry always beats REFERENCE geometry. The origin axes run through
+  // 0,0 and stretch across the sketch, so anything you draw along an axis — the
+  // bottom edge of a rectangle on y=0, a line from the origin — sits exactly on
+  // top of one. Nearest-wins alone would then be decided by list order, and the
+  // origin is inserted first, so the axis would win every tie and clicking your
+  // own line would select the axis instead. Two passes rather than a distance
+  // fudge: a penalty would still lose to the axis for anything a hair further
+  // from the cursor, which is the same bug with extra arithmetic.
+  const nearestIn = (want: boolean): number => {
+    let best = -1;
+    let bestD = tol;
+    ents.forEach((e, i) => {
+      if (isOriginGeometry(e.id) !== want) return;
+      const d = distToEntity(e, p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+  const own = nearestIn(false);
+  return own >= 0 ? own : nearestIn(true);
 }
 
 function distToEntity(e: ResolvedEntity, p: THREE.Vector2): number {
@@ -197,7 +216,12 @@ export function trimEntity(
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const params = new Set<number>([0, 1]);
   ents.forEach((o, i) => {
-    if (i === index) return;
+    // The origin axes are REFERENCE, not a modify boundary. They exist in every
+    // sketch and span it, so counting them as crossings would silently change
+    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
+    // every document ever made. Snap to them, constrain to them, do not cut on
+    // them.
+    if (i === index || isOriginGeometry(o.id)) return;
     const hits: THREE.Vector2[] = [];
     if (o.type === "circle") hits.push(...segCircleIntersect(p1, p2, v(o.x, o.y), o.radius));
     else for (const [a, b] of entitySegments(o)) {
@@ -768,7 +792,12 @@ export function extendLine(
   let bestT = extendEnd2 ? 1 : 0;
   let found = false;
   ents.forEach((o, i) => {
-    if (i === index) return;
+    // The origin axes are REFERENCE, not a modify boundary. They exist in every
+    // sketch and span it, so counting them as crossings would silently change
+    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
+    // every document ever made. Snap to them, constrain to them, do not cut on
+    // them.
+    if (i === index || isOriginGeometry(o.id)) return;
     const hits: THREE.Vector2[] = [];
     if (o.type === "circle") hits.push(...segCircleIntersect(far, farEnd, v(o.x, o.y), o.radius));
     else for (const [a, b] of entitySegments(o)) {

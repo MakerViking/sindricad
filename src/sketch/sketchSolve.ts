@@ -22,7 +22,7 @@ import { rectCorners } from "./region";
 import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
 import type { SketchConstraint } from "../types";
 import { isDriven, projEndSamples } from "../types";
-import { isOriginId } from "./origin";
+import { isOriginGeometry, isOriginId } from "./origin";
 
 // Below this a line has no usable direction, so any angular constraint on it is
 // vacuously satisfiable — which is how a conflicting sketch "solves" by folding
@@ -174,6 +174,11 @@ export async function compileAndSolve(
       const p2 = getPoint(e.x2, e.y2);
       lines.push({ id: e.id, p1, p2 });
       ends.set(e.id, [p1, p2]);
+      // The origin AXES are pinned exactly like the origin point: mergeable, so
+      // a user endpoint made coincident with one is anchored by it, and fixed so
+      // the axis itself never moves. Not via projPts — an axis is not projected
+      // geometry and must not be described as such.
+      if (isOriginGeometry(e.id)) { fixedPts.add(p1); fixedPts.add(p2); }
     } else if (e.type === "circle") {
       const c = getPoint(e.x, e.y, false); // center is not an endpoint
       circles.push({ id: e.id, center: c, radius: e.radius });

@@ -26,13 +26,44 @@ import type { ResolvedEntity } from "./snap";
 /** Reserved id. Double-underscored like TEXT_PREVIEW_ID so it cannot collide
  *  with `newEntityId()` output. */
 export const ORIGIN_ID = "__origin__";
+export const ORIGIN_X_ID = "__originX__";
+export const ORIGIN_Y_ID = "__originY__";
+
+/** Half-length of the origin axes, in mm.
+ *
+ *  An axis is conceptually infinite and this is the finite stand-in. 10 m is
+ *  chosen to be past any plausible printed part, so the axes read as "lines
+ *  across the view" at every realistic zoom rather than as two long sticks that
+ *  stop somewhere. It costs nothing: they compile to two pinned endpoints each,
+ *  and nothing in the app frames the camera on sketch entities, so an axis this
+ *  long cannot drag a Fit out to 10 m. */
+const AXIS_HALF = 10_000;
 
 export const isOriginId = (id: string | undefined | null): boolean => id === ORIGIN_ID;
 
-/** True for the synthetic entities that must never be saved, deleted or dragged. */
+/** The origin POINT, the origin AXES, or neither. All three are synthetic:
+ *  never saved, never deleted, always pinned. */
+export const isOriginGeometry = (id: string | undefined | null): boolean =>
+  id === ORIGIN_ID || id === ORIGIN_X_ID || id === ORIGIN_Y_ID;
+
 export const originEntity = (): ResolvedEntity => ({
   type: "point",
   id: ORIGIN_ID,
   x: 0,
   y: 0,
 });
+
+/** The X and Y axes, as CONSTRUCTION lines through the origin.
+ *
+ *  Construction on purpose: `detectRegions` filters construction geometry out
+ *  (region.ts), so an axis lying along the bottom edge of a rectangle can never
+ *  split the profile or turn one area into two. They are still fully
+ *  selectable, so "make this line collinear with the X axis" works, which is the
+ *  thing they exist for. */
+export const originAxisEntities = (): ResolvedEntity[] => [
+  { type: "line", id: ORIGIN_X_ID, x1: -AXIS_HALF, y1: 0, x2: AXIS_HALF, y2: 0, construction: true },
+  { type: "line", id: ORIGIN_Y_ID, x1: 0, y1: -AXIS_HALF, x2: 0, y2: AXIS_HALF, construction: true },
+];
+
+/** Origin point + axes, in the order they should be inserted. */
+export const originGeometry = (): ResolvedEntity[] => [originEntity(), ...originAxisEntities()];

@@ -21,7 +21,7 @@ import {
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
 import { dimensionSegments, asRound, dimRefPoints } from "./entityDims";
-import { isOriginId } from "./origin";
+import { isOriginId, isOriginGeometry } from "./origin";
 import { distToSeg } from "./geom2d";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
@@ -672,8 +672,14 @@ export function curveObjects(
       projected && !highlight
         ? projected.stale === true ? PROJECTED_STALE_COLOR : PROJECTED_COLOR
         : color;
-    const curve =
-      !projected && e.construction ? constructionLine(pts) : polyline(pts, drawColor);
+    // The origin AXES are reference geometry, not the user's construction lines,
+    // and they must not read as something you drew and forgot. Same colour as
+    // the origin point, so the three together read as one datum.
+    const curve = isOriginGeometry(e.id)
+      ? polyline(pts, ORIGIN_COLOR)
+      : !projected && e.construction
+        ? constructionLine(pts)
+        : polyline(pts, drawColor);
     // Circles/arcs (native or projected) get a visible center "+": the center is
     // a snap target and the dimension tool's position handle — invisible, nobody
     // finds it. Grouped so the one-object-per-entity contract holds. asRound is

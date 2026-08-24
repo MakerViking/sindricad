@@ -43,7 +43,7 @@ import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
-import { isOriginId, originEntity } from "./origin";
+import { isOriginGeometry, originGeometry } from "./origin";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -463,7 +463,7 @@ export class SketchMode {
     // sketch and a reopened one alike — a document saved before this existed
     // gains one simply by being opened. Synthetic: stripped again in
     // snapshotFeature, so it is never written back. See origin.ts.
-    this.entities.unshift(originEntity());
+    this.entities.unshift(...originGeometry());
     this.viewport.suspendPicking = true;
     this.viewport.enterSketchView(this.plane.origin, this.plane.n, this.plane.v);
     this.gridKey = ""; // force the first frame to build at the current zoom
@@ -517,7 +517,7 @@ export class SketchMode {
       plane: this.plane.serialize(),
       ...(this.planeId ? { planeId: this.planeId } : {}),
       entities: this.entities
-        .filter((e) => e.id !== TEXT_PREVIEW_ID && !isOriginId(e.id))
+        .filter((e) => e.id !== TEXT_PREVIEW_ID && !isOriginGeometry(e.id))
         .map(toSketchEntity),
       ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
       ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
@@ -2876,7 +2876,7 @@ export class SketchMode {
     if (!this.selected.size) return;
     // the origin is not deletable: it is not the user's geometry, and losing it
     // mid-sketch would silently unanchor everything constrained to it
-    this.entities = this.entities.filter((en) => !this.selected.has(en.id) || isOriginId(en.id));
+    this.entities = this.entities.filter((en) => !this.selected.has(en.id) || isOriginGeometry(en.id));
     this.selected.clear();
     dismissContextMenu(); // the Delete key can fire while the right-click menu is open
     this.afterModify();
@@ -3055,7 +3055,22 @@ export class SketchMode {
 
   /** Projected geometry is FIXED reference geometry: every modify/transform seam
    *  calls this and bails with one consistent toast. Delete stays allowed. */
+  /** Refuse a modify/transform gesture aimed at geometry the user does not own,
+   *  and say which kind it is. Two kinds, deliberately one guard: every seam that
+   *  must refuse one must refuse the other, and splitting them is how a seam ends
+   *  up covering only half.
+   *
+   *  The origin case matters more than it looks. `pickEntity` already prefers
+   *  real geometry, so an axis is only ever picked when nothing else is near —
+   *  but trimming one would find no crossings (they are excluded as boundaries)
+   *  and `trimEntity` deletes a curve with no usable crossing WHOLE. Without
+   *  this, one stray click in empty space along y=0 would silently delete the X
+   *  axis for the rest of the session. */
   private guardProjected(e: ResolvedEntity | undefined): boolean {
+    if (isOriginGeometry(e?.id)) {
+      toast("The sketch origin is fixed reference geometry — snap and constrain to it, but it can't be edited");
+      return true;
+    }
     if (e?.type !== "projected") return false;
     toast(PROJECTED_FIXED_MSG);
     return true;

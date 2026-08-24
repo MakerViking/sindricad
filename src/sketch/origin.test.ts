@@ -16,9 +16,13 @@
 // anchored by it.
 
 import { describe, it, expect } from "vitest";
-import { ORIGIN_ID, isOriginId, originEntity } from "./origin";
+import {
+  ORIGIN_ID, ORIGIN_X_ID, ORIGIN_Y_ID,
+  isOriginId, isOriginGeometry, originEntity, originAxisEntities, originGeometry,
+} from "./origin";
 import sketchModeSrc from "./sketchMode.ts?raw";
 import sketchSolveSrc from "./sketchSolve.ts?raw";
+import modifySrc from "./modify.ts?raw";
 
 describe("the origin entity", () => {
   it("sits at 0,0 in plane coordinates", () => {
@@ -93,7 +97,7 @@ describe("the origin never reaches the document", () => {
     const at = sketchModeSrc.indexOf("snapshotFeature(): Feature | null {");
     expect(at).toBeGreaterThan(-1);
     const body = sketchModeSrc.slice(at, at + 900);
-    expect(body).toContain("isOriginId(e.id)");
+    expect(body).toContain("isOriginGeometry(e.id)");
     // If this ever stops holding, the origin starts being written into saved
     // documents as a real point entity, and every reopen adds another one.
     expect(body).toMatch(/entities:\s*this\.entities[\s\S]{0,120}?filter/);
@@ -101,7 +105,7 @@ describe("the origin never reaches the document", () => {
 
   it("is injected once per session, after the edit branch loads entities", () => {
     // After, so a document saved before the origin existed gains one on open.
-    const inject = sketchModeSrc.indexOf("this.entities.unshift(originEntity());");
+    const inject = sketchModeSrc.indexOf("this.entities.unshift(...originGeometry());");
     const load = sketchModeSrc.indexOf("this.entities = resolveRealEntities(f, store.document.parameters);");
     expect(inject).toBeGreaterThan(-1);
     expect(load).toBeGreaterThan(-1);
@@ -111,6 +115,76 @@ describe("the origin never reaches the document", () => {
   it("survives a delete-selection", () => {
     const at = sketchModeSrc.indexOf("private deleteSelected(");
     const body = sketchModeSrc.slice(at > -1 ? at : 0);
-    expect(body).toMatch(/!this\.selected\.has\(en\.id\)\s*\|\|\s*isOriginId\(en\.id\)/);
+    expect(body).toMatch(/!this\.selected\.has\(en\.id\)\s*\|\|\s*isOriginGeometry\(en\.id\)/);
+  });
+});
+
+describe("the origin AXES", () => {
+  it("are construction lines through 0,0 along X and Y", () => {
+    const [x, y] = originAxisEntities() as unknown as {
+      id: string; type: string; x1: number; y1: number; x2: number; y2: number; construction?: boolean;
+    }[];
+    expect(x!.id).toBe(ORIGIN_X_ID);
+    expect(y!.id).toBe(ORIGIN_Y_ID);
+    // X axis: y is 0 at both ends. Y axis: x is 0 at both ends.
+    expect(x!.y1).toBe(0); expect(x!.y2).toBe(0); expect(x!.x1).toBeLessThan(x!.x2);
+    expect(y!.x1).toBe(0); expect(y!.x2).toBe(0); expect(y!.y1).toBeLessThan(y!.y2);
+  });
+
+  it("are CONSTRUCTION, so they can never split a profile", () => {
+    // detectRegions filters construction geometry out (region.ts). Without this
+    // flag, an axis lying along the bottom edge of a rectangle would cut the
+    // profile in two and every extrude on it would find the wrong area.
+    for (const a of originAxisEntities()) {
+      expect((a as unknown as { construction?: boolean }).construction).toBe(true);
+    }
+  });
+
+  it("count as origin geometry, and ordinary ids do not", () => {
+    expect(isOriginGeometry(ORIGIN_X_ID)).toBe(true);
+    expect(isOriginGeometry(ORIGIN_Y_ID)).toBe(true);
+    expect(isOriginGeometry(ORIGIN_ID)).toBe(true);
+    expect(isOriginGeometry("e7")).toBe(false);
+    // ...but only the POINT is the origin point
+    expect(isOriginId(ORIGIN_X_ID)).toBe(false);
+  });
+
+  it("ship together with the point, point first", () => {
+    const g = originGeometry();
+    expect(g).toHaveLength(3);
+    expect(g[0]!.id).toBe(ORIGIN_ID);
+  });
+});
+
+describe("origin geometry is reference, not a modify boundary", () => {
+  it("is skipped by every crossing collector in modify.ts", () => {
+    // trim (lines), trim (circles/arcs) and extend all scan the other entities
+    // for crossings. The axes are in EVERY sketch and span it, so counting them
+    // would change what trim and extend do to any line crossing y=0 or x=0, in
+    // every document ever made. There are three collectors and all three must
+    // skip — one missed is a silent behaviour change in one tool only.
+    const hits = modifySrc.match(/if \(i === index \|\| isOriginGeometry\(o\.id\)\) return;/g);
+    expect(hits?.length, "a crossing collector is not skipping origin geometry").toBe(3);
+    expect(modifySrc).not.toMatch(/if \(i === index\) return;/);
+  });
+
+  it("loses a pick to the user's own geometry", () => {
+    // The axes run through the sketch, so anything drawn along one sits on top
+    // of it. pickEntity must try real geometry first, or clicking your own line
+    // selects the axis.
+    const at = modifySrc.indexOf("export function pickEntity(");
+    const body = modifySrc.slice(at, modifySrc.indexOf("function distToEntity", at));
+    expect(body).toMatch(/nearestIn\(false\)/);
+    expect(body).toMatch(/own >= 0 \? own : nearestIn\(true\)/);
+  });
+
+  it("cannot be trimmed, offset or dragged", () => {
+    // pickEntity prefers real geometry, so an axis is only picked when nothing
+    // else is near — and trimming one finds no crossings (excluded above), and
+    // trimEntity DELETES a curve with no usable crossing. One stray click along
+    // y=0 would otherwise remove the X axis for the session.
+    const at = sketchModeSrc.indexOf("private guardProjected(");
+    const body = sketchModeSrc.slice(at, at + 600);
+    expect(body).toContain("isOriginGeometry(e?.id)");
   });
 });
