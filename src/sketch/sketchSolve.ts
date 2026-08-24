@@ -22,6 +22,7 @@ import { rectCorners } from "./region";
 import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
 import type { SketchConstraint } from "../types";
 import { isDriven, projEndSamples } from "../types";
+import { isOriginId } from "./origin";
 
 // Below this a line has no usable direction, so any angular constraint on it is
 // vacuously satisfiable — which is how a conflicting sketch "solves" by folding
@@ -209,7 +210,15 @@ export async function compileAndSolve(
       splineMap.set(e.id, e.points.map((p, k) => getPoint(p.x, p.y, k === 0 || k === last)));
     } else if (e.type === "point") {
       // a sketch point is mergeable so it can snap onto / coincide with geometry
-      pointMap.set(e.id, getPoint(e.x, e.y, true));
+      const pid = getPoint(e.x, e.y, true);
+      pointMap.set(e.id, pid);
+      // ...and the ORIGIN is additionally PINNED, the same way projected
+      // geometry is. Mergeable AND fixed is the combination that matters: a user
+      // endpoint made coincident with it fuses onto a fixed point and is
+      // anchored by it, which is what stops a dimensioned sketch drifting.
+      // Deliberately NOT via projPts — a drag refused by the origin should not
+      // be reported as "that is projected geometry".
+      if (isOriginId(e.id)) fixedPts.add(pid);
     } else if (e.type === "projected") {
       // Fixed reference geometry (Fusion Project): compiles as pinned planegcs
       // primitives so user constraints/dims can attach to it. Endpoints are

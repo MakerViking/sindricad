@@ -21,6 +21,7 @@ import {
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
 import { dimensionSegments, asRound, dimRefPoints } from "./entityDims";
+import { isOriginId } from "./origin";
 import { distToSeg } from "./geom2d";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
@@ -55,6 +56,7 @@ export const CURVE_COLOR = 0x5b9bff; // under-constrained blue
 export const PREVIEW_COLOR = 0xffffff;
 export const SELECT_COLOR = 0xff9d3b; // selected sketch entity (orange)
 export const ENDPOINT_COLOR = 0x9ec5ff; // addressable endpoint dot (lighter than the curve)
+export const ORIGIN_COLOR = 0xffd257; // the fixed sketch origin — a datum, not geometry
 export const DIM_COLOR = 0x8fa4bd; // muted blue-gray for dimension annotations
 const FILL_COLOR = 0x3a7bd5;
 
@@ -623,7 +625,12 @@ export function curveObjects(
       out.push(o);
     };
     if (e.type === "point") {
-      add(pointMarker(plane, e.x, e.y, e.construction ? 0xffa64d : color));
+      // The ORIGIN reads as a datum, not as a stray point the user left behind.
+      // It gets its own colour and is never tinted by selection/DOF state,
+      // because it is fixed and none of those states can apply to it. A tester
+      // could not find anything to anchor to precisely because there was nothing
+      // on screen saying "this is 0,0".
+      add(pointMarker(plane, e.x, e.y, isOriginId(e.id) ? ORIGIN_COLOR : e.construction ? 0xffa64d : color));
       continue;
     }
     if (e.type === "text") {

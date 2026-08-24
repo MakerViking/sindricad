@@ -43,6 +43,7 @@ import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
+import { isOriginId, originEntity } from "./origin";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -458,6 +459,11 @@ export class SketchMode {
       }
     }
 
+    // The origin goes in AFTER the edit branch above, so it lands on a new
+    // sketch and a reopened one alike — a document saved before this existed
+    // gains one simply by being opened. Synthetic: stripped again in
+    // snapshotFeature, so it is never written back. See origin.ts.
+    this.entities.unshift(originEntity());
     this.viewport.suspendPicking = true;
     this.viewport.enterSketchView(this.plane.origin, this.plane.n, this.plane.v);
     this.gridKey = ""; // force the first frame to build at the current zoom
@@ -510,7 +516,9 @@ export class SketchMode {
       type: "sketch",
       plane: this.plane.serialize(),
       ...(this.planeId ? { planeId: this.planeId } : {}),
-      entities: this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID).map(toSketchEntity),
+      entities: this.entities
+        .filter((e) => e.id !== TEXT_PREVIEW_ID && !isOriginId(e.id))
+        .map(toSketchEntity),
       ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
       ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
     };
@@ -2866,7 +2874,9 @@ export class SketchMode {
    *  + re-solve via the shared modify tail. */
   private deleteSelected() {
     if (!this.selected.size) return;
-    this.entities = this.entities.filter((en) => !this.selected.has(en.id));
+    // the origin is not deletable: it is not the user's geometry, and losing it
+    // mid-sketch would silently unanchor everything constrained to it
+    this.entities = this.entities.filter((en) => !this.selected.has(en.id) || isOriginId(en.id));
     this.selected.clear();
     dismissContextMenu(); // the Delete key can fire while the right-click menu is open
     this.afterModify();
