@@ -34,7 +34,7 @@ export interface Region {
   holeEntityIds: string[][];
 }
 
-const EPS = 1e-4;
+export const EPS = 1e-4;
 const CIRCLE_SEGS = 64;
 const ARC_SEGS = 48;
 const SPLINE_SEGS = 16;
@@ -529,7 +529,7 @@ function interiorPoint(
 type Seg = { x1: number; y1: number; x2: number; y2: number; eid?: string | undefined };
 type Box = { minx: number; miny: number; maxx: number; maxy: number };
 
-function segsBBox(segs: Seg[]): Box {
+export function segsBBox(segs: Seg[]): Box {
   let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
   for (const s of segs) {
     minx = Math.min(minx, s.x1, s.x2);
@@ -540,7 +540,7 @@ function segsBBox(segs: Seg[]): Box {
   return { minx, miny, maxx, maxy };
 }
 
-function boxesOverlap(a: Box, b: Box): boolean {
+export function boxesOverlap(a: Box, b: Box): boolean {
   return (
     a.minx <= b.maxx + EPS && b.minx <= a.maxx + EPS &&
     a.miny <= b.maxy + EPS && b.miny <= a.maxy + EPS
@@ -551,7 +551,7 @@ function boxesOverlap(a: Box, b: Box): boolean {
  *  inside their spans (not merely touching at a shared endpoint, and not parallel/
  *  collinear). Returns null otherwise. This is the geometry the vertex-only tracer
  *  can't see. */
-function segCross(a: Seg, b: Seg): THREE.Vector2 | null {
+export function segCross(a: Seg, b: Seg): THREE.Vector2 | null {
   const rx = a.x2 - a.x1, ry = a.y2 - a.y1;
   const sx = b.x2 - b.x1, sy = b.y2 - b.y1;
   const denom = rx * sy - ry * sx;
@@ -569,7 +569,7 @@ function segCross(a: Seg, b: Seg): THREE.Vector2 | null {
  *  touching another's edge interior — e.g. a hexagon whose corner sits on a
  *  boundary rectangle's edge. OCCT splits there, so we must too, or the frontend
  *  region and the sidecar cell disagree. */
-function pointOnSegInterior(px: number, py: number, s: Seg): number | null {
+export function pointOnSegInterior(px: number, py: number, s: Seg): number | null {
   const rx = s.x2 - s.x1, ry = s.y2 - s.y1;
   const len2 = rx * rx + ry * ry;
   if (len2 < 1e-18) return null;

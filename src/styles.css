@@ -2953,3 +2953,152 @@ button.finish:hover {
   gap: var(--s-3);
   justify-content: flex-end;
 }
+
+/* ============================================================================
+   Sketch check results panel (src/sketch/checkPanel.ts)
+   Chrome only — it rides on .tool-panel for surface/border/shadow/font and
+   sets its own position and width inline, the same split the .tool-panel block
+   above describes. What is here is the parts a tool panel has no shape for: a
+   scrolling grouped list, rows that are buttons, and an empty state that has
+   to read as GOOD news rather than as a blank box.
+   ============================================================================ */
+.check-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  /* 60px top offset + room for the timeline; the list scrolls, the header and
+     the hint stay put */
+  max-height: calc(100vh - 160px);
+}
+.check-panel:focus {
+  /* focused on open so Tab reaches the rows; a ring around the whole panel
+     would just look like an error state */
+  outline: none;
+}
+.check-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+.check-title {
+  font-weight: 600;
+  flex: 1;
+}
+.check-close {
+  flex: none;
+}
+.check-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+.check-group + .check-group {
+  margin-top: var(--s-3);
+}
+.check-group-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 2px 0 4px;
+}
+.check-group-head svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+.check-group-head.is-error {
+  color: var(--error);
+}
+.check-group-head.is-info {
+  color: var(--warn);
+}
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.check-row:hover {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+.check-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.check-row-icon {
+  flex: none;
+  display: block;
+  /* nudged to sit on the first line of a message that wraps to two */
+  margin-top: 1px;
+}
+.check-row-icon svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+.check-row.is-error .check-row-icon {
+  color: var(--error);
+}
+.check-row.is-info {
+  color: var(--text-dim);
+}
+.check-row.is-info .check-row-icon {
+  color: var(--warn);
+}
+.check-msg {
+  flex: 1;
+  min-width: 0;
+}
+.check-mm {
+  flex: none;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+/* The reading most runs produce. Green tick + a plain sentence, on the raised
+   surface rather than a tinted one, so it can never be mistaken for a warning. */
+.check-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-3);
+  background: var(--raised);
+  border-radius: var(--r-md);
+}
+.check-empty-icon {
+  flex: none;
+  color: var(--ok);
+}
+.check-empty-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.check-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.check-empty-title {
+  font-weight: 600;
+  color: var(--ok-text);
+}
+.check-empty-sub {
+  color: var(--text-dim);
+}
+.check-hint {
+  font-size: 10px;
+  color: var(--text-mute);
+}

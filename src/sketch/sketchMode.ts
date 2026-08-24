@@ -45,6 +45,8 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
+import { checkSketch } from "./check";
+import { showCheckPanel, hideCheckPanel } from "./checkPanel";
 import { CONFLICT, SKETCH_POINT_HOVER } from "../viewport/colors3d";
 
 export type SketchTool =
@@ -503,6 +505,7 @@ export class SketchMode {
     el.removeEventListener("contextmenu", this.boundContext);
     window.removeEventListener("keydown", this.boundKey, true);
     dismissContextMenu();
+    hideCheckPanel(); // a stale results list must not outlive the sketch it describes
     this.selected.clear();
     this.dragFrom = null;
     this.dragSnapshot = null;
@@ -3901,6 +3904,37 @@ export class SketchMode {
   }
 
   /** remaining degrees of freedom (>0 under-constrained, 0 fully constrained) */
+  /** Sketch > Check: what is wrong with this profile, before it has to become a
+   *  solid. A tester asked for this after finding that an open contour shows up
+   *  only as an extrude that silently finds no region to pull.
+   *
+   *  Clicking a row SELECTS the entities the issue names, which is the durable
+   *  half — refreshActive paints a selection in SELECT_COLOR and it survives
+   *  the next pointer move. The marker is deliberately the throwaway half: it
+   *  rides on setPreview, so onMove wipes it as soon as the pointer returns to
+   *  the canvas, which is the right lifetime for "look here".
+   *
+   *  The panel is a SNAPSHOT. Nothing re-runs it, so an edit can leave rows
+   *  naming entities that are gone; onSelect below tolerates unknown ids rather
+   *  than assuming the sketch still matches. */
+  runCheck() {
+    showCheckPanel(checkSketch(this.entities), {
+      onSelect: (ids, at) => {
+        this.selected = new Set(ids.filter((id) => this.entities.some((e) => e.id === id)));
+        const p = this.plane.to3D(at.x, at.y);
+        this.overlay.setPreview([
+          pointHighlight(this.plane, at.x, at.y, SELECT_COLOR, this.viewport.pixelWorldSize(p) * 6),
+        ]);
+        this.refreshActive();
+        this.viewport.requestRender();
+      },
+      onClose: () => {
+        this.overlay.setPreview([]);
+        this.viewport.requestRender();
+      },
+    });
+  }
+
   get dof(): number {
     return this.lastDof;
   }
