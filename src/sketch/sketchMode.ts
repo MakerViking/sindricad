@@ -1210,6 +1210,24 @@ export class SketchMode {
       this.dimensionClick(raw, e);
       return;
     }
+    // TRIM takes the RAW cursor, never the snapped point — the same carve-out
+    // the dimension tool above makes, for a sharper reason. The entire gesture
+    // is "which side of the crossings am I pointing at", and the strongest snap
+    // targets near a line you are trimming ARE those crossings. Snapping put the
+    // click exactly on a span boundary, which belongs to both spans, so the span
+    // search took the earlier one and trim deleted the piece NEXT TO the one
+    // under the cursor. Measured on a line crossed at x=-5 and x=+5: aiming at
+    // the middle span but snapping to x=-5 removed the LEFT span instead.
+    //
+    // This also has to come BEFORE the `if (!hit) return` below: a click with
+    // nothing to snap to must still trim.
+    if (this.tool === "trim") {
+      const raw = this.planePoint(e);
+      if (!raw) return;
+      e.preventDefault();
+      this.trimClick(raw);
+      return;
+    }
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     e.preventDefault();
@@ -1304,7 +1322,7 @@ export class SketchMode {
     if (this.tool === "circle3") return this.circle3Click(p);
     if (this.tool === "centerRectangle") return this.centerRectClick(p);
     if (this.tool === "mirror") return this.mirrorClick(p);
-    if (this.tool === "trim") return this.trimClick(p);
+    // (trim is handled above, on the RAW cursor — see the carve-out there)
     if (this.tool === "fillet") return this.filletClick(p);
     if (this.tool === "chamfer") return this.chamferClick(p);
     if (this.tool === "move" || this.tool === "copy") return this.moveClick(p);

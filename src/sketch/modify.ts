@@ -214,6 +214,12 @@ export function trimEntity(
   if (sorted.length <= 2) return ents.filter((_, i) => i !== index); // no crossing → delete
 
   const tc = Math.max(0, Math.min(1, paramOnSeg(p1, p2, click)));
+  // The caller passes the RAW cursor, never a snapped point. That matters here
+  // and not anywhere else in this file: a crossing belongs to the span on either
+  // side of it, so a click landing exactly on one picks whichever comes first —
+  // deleting the piece NEXT TO the one under the cursor. Snapping aimed clicks
+  // straight at the crossings, which is precisely the input this cannot resolve.
+  // See sketchMode's trim carve-out.
   let lo = 0, hi = 1;
   for (let i = 0; i < sorted.length - 1; i++) {
     const a = sorted[i], b = sorted[i + 1];
