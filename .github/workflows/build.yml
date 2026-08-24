@@ -614,6 +614,14 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/presspull_dispatch_e2e.cjs
 
+      # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
+      # before the page loads and asserts on what the user is left looking at,
+      # which happens during module evaluation, long before geometry connects.
+      - name: No-WebGL fallback end-to-end
+        env:
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/webgl_fallback_e2e.cjs
+
       - name: Sidecar log on failure
         if: failure()
         run: tail -50 /tmp/ci_sidecar.log /tmp/ci_vite.log || true

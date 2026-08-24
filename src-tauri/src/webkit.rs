@@ -36,12 +36,36 @@ const OPT_OUT: &str = "SINDRICAD_NO_GPU_WORKAROUND";
 /// rather than quietly stop working.
 const DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 
+/// Last-resort switch for a machine whose driver cannot give the viewport a
+/// WebGL2 context at all, so the app opens showing only the static shell: the
+/// logo, and no menus. Reported on Debian Bookworm with a 2009 NVIDIA G105M,
+/// which the current proprietary driver has dropped, leaving the open-source
+/// nouveau driver and no WebGL2.
+///
+/// Deliberately OPT-IN, and deliberately not automatic. There is no reliable way
+/// to predict a WebGL2 failure from the Rust side before the webview exists:
+/// nouveau's presence does not imply it, and the proprietary-driver probe below
+/// is looking for a completely different fault (a SIGSEGV before anything
+/// paints, whereas this machine paints fine and only the 3D context dies).
+/// Guessing here would slow down every working Linux machine to rescue a few.
+///
+/// All this does is set LIBGL_ALWAYS_SOFTWARE for the user, so the workaround
+/// the in-app panel recommends can be made permanent in a .desktop file rather
+/// than retyped in a terminal every launch. Software rasterising is slow on
+/// large models; it is not slow compared with not starting.
+const FORCE_SOFTWARE: &str = "SINDRICAD_FORCE_SOFTWARE_GL";
+const SOFTWARE_GL: &str = "LIBGL_ALWAYS_SOFTWARE";
+
 /// Whether to disable the DMABUF renderer, and why. The reason is carried so the
 /// startup log says what happened; a silent environment change is exactly the
 /// kind of thing that makes a later field report unreadable.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
     Disable,
+    /// The user asked for software GL via `SINDRICAD_FORCE_SOFTWARE_GL`. Checked
+    /// FIRST, because a machine that cannot make a context at all has nothing to
+    /// gain from any decision about the DMABUF renderer.
+    ForceSoftware,
     /// Left alone, for one of the `SKIP_*` reasons below.
     Skip(&'static str),
 }
@@ -64,7 +88,18 @@ const SKIP_NO_NVIDIA: &str = "no Nvidia driver";
 /// the per-frame cost described on `DMABUF`; the alternative costs the affected
 /// minority the entire application. The size of that cost is documented by
 /// WebKit, not measured by me — there is no Nvidia hardware here to measure on.
-fn decide(nvidia_present: bool, dmabuf_already_set: bool, opted_out: bool) -> Decision {
+fn decide(
+    nvidia_present: bool,
+    dmabuf_already_set: bool,
+    opted_out: bool,
+    force_software: bool,
+) -> Decision {
+    // Software GL outranks everything: it is the most explicit request a user can
+    // make here, and it is asked for by someone whose app does not currently
+    // start at all.
+    if force_software {
+        return Decision::ForceSoftware;
+    }
     // Precedence: an explicit human beats our guess, both ways round. Someone
     // running with the variable already set is mid-workaround (the issue #6
     // reporter is, right now) and must not have it changed under them.
@@ -101,9 +136,24 @@ pub fn apply_gpu_workarounds() {
         nvidia_driver_present_under(Path::new("/")),
         std::env::var_os(DMABUF).is_some(),
         std::env::var_os(OPT_OUT).is_some(),
+        std::env::var_os(FORCE_SOFTWARE).is_some(),
     );
 
     match decision {
+        Decision::ForceSoftware => {
+            // Both, not just the first: the two faults this rescues are
+            // different (no WebGL2 at all, and a driver that crashes the web
+            // process), and someone reaching for this switch has already had
+            // one launch fail. Neither is set if the user set it themselves.
+            std::env::set_var(SOFTWARE_GL, "1");
+            if std::env::var_os(DMABUF).is_none() {
+                std::env::set_var(DMABUF, "1");
+            }
+            println!(
+                "[gpu] {FORCE_SOFTWARE} is set — forcing {SOFTWARE_GL}=1 and disabling the \
+                 WebKitGTK DMABUF renderer. Rendering will be slower."
+            );
+        }
         Decision::Disable => {
             std::env::set_var(DMABUF, "1");
             // Logged unconditionally: when this machine later files a bug, the
@@ -130,7 +180,7 @@ mod tests {
     /// DMABUF renderer off, or WebKit segfaults before the app paints (#6).
     #[test]
     fn nvidia_machine_disables_the_dmabuf_renderer() {
-        assert_eq!(decide(true, false, false), Decision::Disable);
+        assert_eq!(decide(true, false, false, false), Decision::Disable);
     }
 
     /// Everyone else keeps the fast path. A blanket disable would have been the
@@ -138,7 +188,7 @@ mod tests {
     /// only Nvidia has.
     #[test]
     fn non_nvidia_machines_are_untouched() {
-        assert_eq!(decide(false, false, false), Decision::Skip(SKIP_NO_NVIDIA));
+        assert_eq!(decide(false, false, false, false), Decision::Skip(SKIP_NO_NVIDIA));
     }
 
     /// A human who has already set the variable — like the #6 reporter running
@@ -146,17 +196,37 @@ mod tests {
     /// it under him would silently swap the configuration he reported against.
     #[test]
     fn an_existing_setting_is_never_overridden() {
-        assert!(matches!(decide(true, true, false), Decision::Skip(_)));
-        assert!(matches!(decide(false, true, false), Decision::Skip(_)));
+        assert!(matches!(decide(true, true, false, false), Decision::Skip(_)));
+        assert!(matches!(decide(false, true, false, false), Decision::Skip(_)));
     }
 
     /// And the escape hatch has to beat the probe, or a machine the workaround
     /// harms has no way out.
     #[test]
     fn the_opt_out_beats_detection() {
-        assert_eq!(decide(true, false, true), Decision::Skip(SKIP_OPT_OUT));
+        assert_eq!(decide(true, false, true, false), Decision::Skip(SKIP_OPT_OUT));
         // …and beats an existing setting too, so one variable always wins.
-        assert_eq!(decide(true, true, true), Decision::Skip(SKIP_OPT_OUT));
+        assert_eq!(decide(true, true, true, false), Decision::Skip(SKIP_OPT_OUT));
+    }
+
+    /// The switch a user reaches for when the app will not start at all. It has
+    /// to beat every other rule, including the opt-out: those two say different
+    /// things ("do not guess for me" versus "I know what I need"), and someone
+    /// who set both has already had a launch fail.
+    #[test]
+    fn force_software_beats_everything_else() {
+        assert_eq!(decide(false, false, false, true), Decision::ForceSoftware);
+        assert_eq!(decide(true, false, false, true), Decision::ForceSoftware);
+        assert_eq!(decide(true, true, false, true), Decision::ForceSoftware);
+        assert_eq!(decide(true, true, true, true), Decision::ForceSoftware);
+    }
+
+    /// The ordinary machine must be untouched by the new switch existing. This
+    /// is the regression that would cost every working Linux user frame rate.
+    #[test]
+    fn an_unset_switch_changes_nothing() {
+        assert_eq!(decide(false, false, false, false), Decision::Skip(SKIP_NO_NVIDIA));
+        assert_eq!(decide(true, false, false, false), Decision::Disable);
     }
 
     /// The probe is filesystem shape, so it is worth pinning: a bare

@@ -99,8 +99,108 @@ function recordGpu(renderer: THREE.WebGLRenderer) {
   stickyFact(`[gpu] ${desc}${note}`);
 }
 
+/** Why the 3D context could not be created.
+ *
+ *  These are not the same problem and do not want the same thing asked of the
+ *  user, which is the whole reason the probe below exists: three throws the SAME
+ *  bare Error for a card with no WebGL2 and for one that has it but refused our
+ *  attributes (three.module.js:15213 and :15217 — no code, no cause).
+ *
+ *    no-webgl     nothing at all, not even WebGL1: driver missing or blocked
+ *    webgl1-only  GL works but only ES2. three r180 asks for "webgl2" and
+ *                 nothing else, so this is fatal to the viewport. An older
+ *                 NVIDIA card on the open-source nouveau driver is the case
+ *                 this was written for (field report, Debian Bookworm, G105M).
+ *    renderer     WebGL2 probes fine and three still refused, even without MSAA. */
+export type GpuFailure = "no-webgl" | "webgl1-only" | "renderer";
+
+export class NoWebGLError extends Error {
+  constructor(readonly failure: GpuFailure, readonly facts: string[], cause?: unknown) {
+    super(`3D context unavailable (${failure})`);
+    this.name = "NoWebGLError";
+    this.cause = cause;
+  }
+}
+
+/** What this machine says about its own GL, gathered on a THROWAWAY canvas.
+ *
+ *  Never probe the real #canvas. A canvas hands out exactly one context for its
+ *  lifetime: ask it for "webgl" and every later getContext("webgl2") returns
+ *  null forever, so a probe placed there would CAUSE the failure it is looking
+ *  for. The throwaway is released with WEBGL_lose_context afterwards because
+ *  contexts are a capped resource, and a machine already failing here is the
+ *  last one that can spare one.
+ *
+ *  Same spoofing caveat as recordGpu above: on Linux the renderer STRING is
+ *  fiction. Whether webgl2 exists at all, and gl.VERSION, are not — and those
+ *  are what pick the message. */
+function probeGl(): { webgl2: boolean; anyGl: boolean; facts: string[] } {
+  const probe = document.createElement("canvas");
+  let gl: WebGL2RenderingContext | WebGLRenderingContext | null = probe.getContext("webgl2");
+  const webgl2 = !!gl;
+  if (!gl) gl = probe.getContext("webgl");
+  const facts: string[] = [`webgl2: ${webgl2 ? "yes" : "no"}`];
+  if (!gl) {
+    facts.push("no WebGL context of any version");
+    return { webgl2, anyGl: false, facts };
+  }
+  try {
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+    const v = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+    facts.push(`renderer: ${r} (${v})`);
+    facts.push(`version: ${gl.getParameter(gl.VERSION)}`);
+    facts.push(`shading language: ${gl.getParameter(gl.SHADING_LANGUAGE_VERSION)}`);
+  } catch {
+    facts.push("renderer strings unreadable");
+  }
+  gl.getExtension("WEBGL_lose_context")?.loseContext();
+  return { webgl2, anyGl: true, facts };
+}
+
+/** The renderer, or a NoWebGLError saying WHICH kind of nothing this machine has.
+ *
+ *  THE RETRY IS NOT A GUESS, it recovers a context three already made and threw
+ *  away. When its attribute set is refused, three calls getContext("webgl2")
+ *  a second time with NO attributes purely to decide which message to throw
+ *  (three.module.js:15211) — and if that succeeds, a real context now exists on
+ *  the canvas, which three then discards by throwing anyway. Asking the same
+ *  canvas again returns that existing context (getContext ignores attributes
+ *  once a context of the same type exists), so this branch always recovers. The
+ *  cost is the default attribute set instead of ours, which for this app means
+ *  only that alpha is on, and setClearColor below writes alpha 1 regardless.
+ *
+ *  Worth knowing if a context-loss bug ever appears here: three registers its
+ *  contextlost/restored listeners BEFORE each attempt (three.module.js:15199)
+ *  and does not remove them when it throws, so the failed attempt leaves a set
+ *  behind on the canvas.
+ *
+ *  Facts go through stickyFact, not crumb: recordGpu cannot run on this path (it
+ *  needs the renderer that does not exist), so this is the ONLY way a bug report
+ *  from a machine that cannot draw learns what its GL is, and a sticky fact is
+ *  the one kind of breadcrumb that later toasts cannot evict. */
+function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
+  const { webgl2, anyGl, facts } = probeGl();
+  if (!webgl2) {
+    for (const f of facts) stickyFact(`[gpu] ${f}`);
+    throw new NoWebGLError(anyGl ? "webgl1-only" : "no-webgl", facts);
+  }
+  try {
+    return new THREE.WebGLRenderer({ canvas, antialias: true });
+  } catch {
+    try {
+      const plain = new THREE.WebGLRenderer({ canvas, antialias: false });
+      stickyFact("[gpu] the driver refused our context attributes, running on its defaults");
+      return plain;
+    } catch (e) {
+      for (const f of facts) stickyFact(`[gpu] ${f}`);
+      throw new NoWebGLError("renderer", facts, e);
+    }
+  }
+}
+
 export function createScene(canvas: HTMLCanvasElement): SceneBundle {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const renderer = createRenderer(canvas);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setClearColor(0x1a1d21, 1);
   recordGpu(renderer);

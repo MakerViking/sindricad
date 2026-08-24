@@ -1625,7 +1625,12 @@ button.finish:hover {
   flex-direction: column;
   align-items: center;
   gap: var(--s-2);
-  z-index: 2500;
+  /* 6000: above every modal layer, including .cmdk-backdrop at 5000 and the
+     GPU-fatal panel at 3900. A toast is transient feedback about the thing in
+     front of you, so being occluded by it makes it useless — the bug-report
+     "sent" and clipboard-fallback messages were invisible behind the very panel
+     whose job is to get that report filed. */
+  z-index: 6000;
   pointer-events: none;
 }
 .toast {
@@ -2863,4 +2868,88 @@ button.finish:hover {
   margin-right: 5px;
   vertical-align: middle;
   flex: 0 0 auto;
+}
+
+/* ---- no-3D fatal panel (ui/gpuFatal.ts) --------------------------------
+   Shown INSTEAD of the app when the WebGL2 context cannot be created, so it
+   sits above the app and has no way out: there is nothing behind it. Deliberately
+   BELOW .choice-backdrop's 4000, because the bug reporter this panel opens IS a
+   .choice-backdrop and has to land on top of the panel, not under it.
+   `top` clears the title bar: the window is undecorated, so covering that row
+   would take the close button with it. */
+.gpu-fatal-backdrop {
+  position: fixed;
+  inset: 36px 0 0 0; /* the title-bar row stays live — see the note above */
+  z-index: 3900;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-4);
+  background: var(--bg);
+  overflow: auto;
+}
+.gpu-fatal {
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  padding: 20px 22px;
+  max-width: 560px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.gpu-fatal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
+}
+.gpu-fatal-icon {
+  display: inline-flex;
+  color: var(--warn);
+}
+.gpu-fatal-icon svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+.gpu-fatal-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.gpu-fatal-why {
+  margin: 0 0 var(--s-4);
+}
+.gpu-fatal-note {
+  margin: var(--s-2) 0 var(--s-4);
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.gpu-fatal-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin-bottom: var(--s-2);
+}
+/* user-select on purpose: the whole point of both blocks is that they get
+   copied into a message to me */
+.gpu-fatal-cmds,
+.gpu-fatal-facts {
+  margin: 0 0 var(--s-4);
+  padding: var(--s-3);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+.gpu-fatal-row {
+  display: flex;
+  gap: var(--s-3);
+  justify-content: flex-end;
 }

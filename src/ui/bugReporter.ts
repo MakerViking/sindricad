@@ -24,8 +24,11 @@ const isTauri = () => "__TAURI_INTERNALS__" in window;
 export function createBugReporter(deps: {
   store: DocumentStore;
   geometry: GeometryBackend;
-  viewport: Viewport;
-  sketch: SketchMode;
+  // OPTIONAL, and the reason is the report that needs this button most: when the
+  // 3D context fails there is no Viewport and no SketchMode to hand it, and that
+  // machine is the only source of its own GL strings. See ui/gpuFatal.ts.
+  viewport?: Viewport;
+  sketch?: SketchMode;
 }) {
   const { store, geometry, viewport, sketch } = deps;
 
@@ -69,7 +72,7 @@ export function createBugReporter(deps: {
     // Scene stats FIRST: they answer the questions a performance report always
     // raises (how many triangles, how big the canvas, what frame rate), and
     // leading the list keeps them inside the server's breadcrumb cap.
-    const crumbs = [...viewport.sceneStats(), ...breadcrumbs()];
+    const crumbs = [...(viewport?.sceneStats() ?? []), ...breadcrumbs()];
 
     pushModal();
     const backdrop = document.createElement("div");
@@ -125,7 +128,7 @@ export function createBugReporter(deps: {
         desc.focus();
         return;
       }
-      const live = sketch.snapshotFeature();
+      const live = sketch?.snapshotFeature() ?? null;
       const sketchCrumb = openSketchCrumb(live);
       // prepended, not appended: the server caps the breadcrumb list, and the
       // same reasoning that puts scene stats first applies here. Used by the
