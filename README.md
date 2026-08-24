@@ -282,6 +282,7 @@ needs one extra step per platform. Open the section for your platform:
 | **Linux** (`.deb`, `.rpm`, AppImage) | glibc 2.34 or newer, plus WebKitGTK 4.1, libsoup 3 and GTK 3 from your distribution |
 | **Windows** | Windows 10 or 11, x86-64. Edge WebView2, which the setup exe fetches if it is missing |
 | **macOS** | Apple Silicon. There is no Intel build yet |
+| **Every platform** | A GPU driver that can give the webview a **WebGL 2** context, meaning OpenGL 3.3 or OpenGL ES 3.0 and up. The 3D viewport is WebGL 2 only. Without it the window opens showing the logo and nothing else: see [If the app opens with no menus](#if-the-app-opens-with-no-menus) |
 
 None of the Linux builds carry their own WebKit, the AppImage included. They use the one
 your distribution ships, which keeps them smaller and means they follow your distro's
@@ -403,6 +404,46 @@ rather than failing silently. Two usual causes: the rule above is missing, or
 Stop that service to let SindriCAD read it directly.
 
 </details>
+
+## Troubleshooting
+
+### If the app opens with no menus
+
+A window showing the SindriCAD logo in the top left and nothing else, no menu bar and
+no toolbar, means the 3D viewport could not start. The interface is built after the
+viewport, so when the viewport fails nothing after it runs. The logo is part of the
+static page, which is why it is the one thing still on screen.
+
+Almost always this is a graphics driver that cannot provide WebGL 2. Old hardware on an
+open-source driver, a virtual machine with no 3D acceleration, and some remote desktop
+sessions are the usual cases. Recent builds show a panel explaining this instead of a
+bare logo, and that panel names what your driver reported.
+
+Start the app from a terminal so you can read what it prints, and try these one at a
+time:
+
+```bash
+# Render on the CPU instead of the GPU. Slower on large models, but it provides
+# WebGL 2 on hardware or a driver that cannot.
+LIBGL_ALWAYS_SOFTWARE=1 sindricad
+
+# Send composited frames the slower route, avoiding the driver's DMA-BUF path.
+# SindriCAD already does this for itself on the Nvidia proprietary driver; on
+# nouveau and other drivers it has to be asked for.
+WEBKIT_DISABLE_DMABUF_RENDERER=1 sindricad
+```
+
+If you installed the AppImage, put the variable in front of the AppImage path instead
+of `sindricad`.
+
+Once you know which one works, set `SINDRICAD_FORCE_SOFTWARE_GL=1` instead and
+SindriCAD will apply both for you, so you can put it in the launcher rather than
+retyping it. To stop SindriCAD adjusting the renderer at all, set
+`SINDRICAD_NO_GPU_WORKAROUND=1`.
+
+If one of them fixes it, please say which, and what GPU and driver you are on, in an
+[issue](https://github.com/MakerViking/sindricad/issues). SindriCAD should be working
+this out for itself, and a report naming the driver is what lets me get there.
 
 ## Build and run
 

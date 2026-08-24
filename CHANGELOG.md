@@ -20,6 +20,79 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **On some machines SindriCAD opened showing only the logo, with no menus at
+  all.** Reported on Debian with a 2009 graphics card. The 3D view is built
+  before the rest of the interface, so when the graphics driver could not
+  provide it, everything after it stopped and the window was left showing the
+  bare page behind the app.
+
+  Instead of that, there is now a panel explaining what happened, what the
+  driver reported, and two things to try, with a button that sends the details
+  so the machine can be identified. The window keeps its buttons, so it can
+  still be closed. SindriCAD also retries once with simpler graphics settings
+  before giving up, which is enough on its own for some drivers.
+
+  If you know your machine needs it, `SINDRICAD_FORCE_SOFTWARE_GL=1` applies the
+  workaround at startup so it can go in the launcher rather than a terminal.
+
+### Changed
+
+- **The window title bar is gone, and its space with it.** SindriCAD was drawing
+  a full menu row directly under the system's own title bar, which showed the
+  same name a second time — about 65 pixels of the screen spent saying
+  "SindriCAD" twice. The app now draws its own title bar: the menu row carries
+  the window buttons, drags the window, and maximizes on a double-click, and all
+  of that height goes to the model instead.
+
+- **The app icon is the SindriCAD mark.** It had been the placeholder from the
+  day the project was created.
+
+### Added
+
+- **Text on a face has a third style: Flat.** The letters sit flush with the
+  surface and are told apart by filament alone, so a plate or a lid can carry a
+  label without a raised or sunken edge to catch on. Nothing about the shape
+  changes — the glyphs are cut into the face as their own regions, and the part
+  keeps its exact silhouette and volume. Works on flat and curved faces, the
+  same as emboss and engrave.
+
+  Because flat letters are invisible without their own filament, choosing the
+  style picks one for you: the first color in the palette that isn't the one the
+  body already prints in. Depth and bevel disappear from the panel, since
+  neither means anything to a letter with no height.
+
+### Fixed
+
+- **Exported models no longer come up as non-manifold in a slicer.** Two separate
+  faults, both in how the mesh was written rather than in its shape.
+
+  The file listed the same corner point several times over — once per face
+  touching it — and a slicer that reads the file literally counts that as
+  thousands of unjoined edges. Points that sit in the same place are now written
+  once and shared, in STL and both kinds of 3MF.
+
+  Underneath that, some triangles on a textured surface were wound the opposite
+  way round from their neighbours, so the two disagreed about which side was
+  outside. Every triangle is now turned to agree with the ones it touches, and
+  each closed shell to face outward.
+
+  Neither moves anything: same triangles, same volume, same size, down to the
+  last digit. Exports also warn now if a mesh is still open, so it is reported
+  here rather than found in the slicer.
+
+- **A textured model exported with holes along every face edge.** Reported by a
+  tester whose textured cube opened in OrcaSlicer with thousands of non-manifold
+  edges. A textured face adds vertices along its own border — that is what keeps
+  the pattern crisp right up to the edge — but the face on the other side still
+  spanned that border in one step, so the two sides no longer met vertex for
+  vertex and the slicer read the mismatch as a hole. Nothing was ever missing
+  from the surface, which is why the model still looked right on screen.
+
+  Both sides of a shared edge are now stitched to the same points, so STL, 3MF,
+  GLB and the Orca project file all export closed. This applies to any textured
+  face, whether its neighbour is textured or plain, and the model's shape,
+  volume and colors are unchanged.
+
 - **Colors set in SindriCAD now survive into OrcaSlicer.** Reported by a tester
   whose cube had three textured faces on three different filaments: the viewport
   showed three colors and Orca opened it in one. Nothing was broken on the way

@@ -36,3 +36,22 @@ See the **Dev quickstart** in [`README.md`](README.md). Before opening a PR:
 - Keep geometry in the Python sidecar; the frontend owns the document and viewport.
 - Reference geometry by **queryable selectors** (axis / normal / nearest-point),
   never by topology index, so references survive edits that renumber topology.
+
+### Running a second stack beside the first
+
+`npm run tauri:alt` puts vite on 5174 and the sidecar on 8766, so a second copy
+can run while the first is up. It sets everything inside this repo that is keyed
+to the port, including `SINDRI_EXTRA_ORIGINS` for the sidecar's own origin check.
+
+One thing it cannot set: the TinkerAtlas server sends
+`Content-Security-Policy: frame-ancestors ... http://localhost:5173`, so on 5174
+the browser refuses to render the welcome screen's remote pane and it appears as
+a **blank white rectangle**. Nothing is broken, and the app cannot detect it
+either: a cross-origin iframe never reports a load failure, and the native
+reachability ping still succeeds because `frame-ancestors` does not apply to it.
+Sign-in and everything else work normally.
+
+The general shape is worth remembering when adding anything port-dependent: a
+coupling that lives OUTSIDE this repo (a CSP allowlist, a CORS origin, an OAuth
+redirect registration) cannot be fixed by an alt-port script, so either register
+the alt port there too or write down which feature goes dead.
