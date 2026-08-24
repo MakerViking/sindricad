@@ -477,9 +477,24 @@ const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
 const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement;
 undoBtn.addEventListener("click", () => doUndo());
 redoBtn.addEventListener("click", () => doRedo());
+/** Enabled state for the title-bar undo/redo buttons.
+ *
+ *  It must ask the SKETCH when one is open, for the same reason doUndo does:
+ *  in-sketch geometry is not in the document, so `store.canUndo` knows nothing
+ *  about it. Reading the store alone left both buttons greyed out for the whole
+ *  time a sketch was open — on a fresh document, permanently — so the only
+ *  visible undo affordance was dead exactly where the in-sketch history had just
+ *  been built to make it work. Ctrl+Z still worked, which is why this reads as
+ *  "undo is gone" rather than "undo is broken".
+ *
+ *  The Edit menu (see the Menubar above) already asked the right question. This
+ *  is the same expression; the two must not answer differently. */
+function refreshUndoButtons() {
+  undoBtn.disabled = !(sketch.active ? sketch.canUndoSketch : store.canUndo);
+  redoBtn.disabled = !(sketch.active ? sketch.canRedoSketch : store.canRedo);
+}
 store.onDocChange(() => {
-  undoBtn.disabled = !store.canUndo;
-  redoBtn.disabled = !store.canRedo;
+  refreshUndoButtons();
 });
 store.onMeta(() => {
   docnameEl.textContent = (store.dirty ? "● " : "") + store.fileName;
@@ -1006,6 +1021,12 @@ let sketchWasActive = false;
 sketch.onState = () => {
   if (sketch.active && !sketchWasActive) palette.emitAll(); // apply palette opts
   sketchWasActive = sketch.active;
+  // The undo/redo buttons live and die with the sketch history while a sketch is
+  // open, and `store.onDocChange` cannot see that — the document does not change
+  // when you draw a line. onState is where every in-sketch undo checkpoint lands
+  // (see the `onState?.() // undo checkpoint` call sites in sketchMode), so it is
+  // the only hook that fires often enough for the buttons to stay honest.
+  refreshUndoButtons();
   ribbon.setContext(sketch.active ? "sketch" : "model");
   ribbon.setActiveSketchTool(sketch.tool);
   palette.setVisible(sketch.active);

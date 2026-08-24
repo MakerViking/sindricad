@@ -3563,7 +3563,14 @@ export class SketchMode {
    *   - DRAGS never reach here at all: queueDrag pumps directly, and endDrag
    *     banks the pre-drag snapshot as ONE step. */
   private bankIfChanged() {
-    if (this.active) this.history.bankIfChanged(this.snapshot());
+    if (!this.active) return;
+    // Notify only when a step was ACTUALLY banked. requestSolve is on every
+    // mutation path, but it does not itself call onState — most of its ~20 call
+    // sites happen to do so afterwards and some do not, which left the undo
+    // BUTTON's enabled state depending on which gesture you used. Gating on the
+    // return value makes the signal exact and costs nothing on the common case
+    // where nothing changed (a solve settling, a re-armed derived update).
+    if (this.history.bankIfChanged(this.snapshot())) this.onState?.();
   }
 
   /** Commit a finished drag as a single undo step. The pre-drag entities were
@@ -3574,10 +3581,11 @@ export class SketchMode {
     const before = this.dragSnapshot;
     this.dragSnapshot = null; // committed — drop the revert buffer
     if (!before || !this.active) return;
-    this.history.bankBefore(
+    const banked = this.history.bankBefore(
       { entities: before, constraints: this.constraints, patterns: this.patterns },
       this.snapshot(),
     );
+    if (banked) this.onState?.(); // the undo button just became live — see bankIfChanged
   }
 
   get canUndoSketch(): boolean { return this.history.canUndo; }
