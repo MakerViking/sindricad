@@ -42,6 +42,7 @@ import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
+import { niceStep } from "../ui/units";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -114,6 +115,34 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 ]);
 
 const GRID_STEP = 5;
+
+/** Cell size and centre for the sketch grid at a given zoom, in PLANE-LOCAL mm.
+ *
+ *  Exported and pure because it decides two things that are easy to get subtly
+ *  wrong and impossible to see afterwards:
+ *
+ *  1. The cell is `niceStep(worldPerPixel * 64)`, the SAME expression the ground
+ *     grid uses (viewport/scene.ts). The two grids have to agree about what a
+ *     given zoom looks like, or the lattice appears to jump when a sketch closes.
+ *  2. The centre is rounded to whole MAJOR cells. Grid snapping rounds in
+ *     plane-local coordinates off the plane origin (see snap.ts), so a visual
+ *     grid shifted by anything other than a whole multiple of the cell would
+ *     draw lines that are NOT the lines you snap to — the failure this whole
+ *     change exists to remove.
+ *
+ *  `key` is the memo: the render loop calls this every frame, so the caller
+ *  rebuilds only when it changes. */
+export function gridScaleFor(
+  worldPerPixel: number,
+  localX: number,
+  localY: number,
+): { cell: number; cx: number; cy: number; key: string } {
+  const cell = niceStep(worldPerPixel * 64); // ~64px cells
+  const major = cell * 5;
+  const cx = Math.round(localX / major) * major;
+  const cy = Math.round(localY / major) * major;
+  return { cell, cx, cy, key: `${cell}:${cx}:${cy}` };
+}
 
 // Map planegcs conflict ids back to constraint indices. Implicit ids (rect
 // edges `<id>~h0`, the drag pin) decode to null and are skipped.
@@ -262,6 +291,11 @@ export class SketchMode {
   private planeId: string | null = null;
   private store: DocumentStore | undefined;
   private grid: THREE.GridHelper | null = null;
+  /** current sketch-grid cell in mm — ALSO the grid-snap step, so what you snap
+   *  to is always the lattice you can see. Starts at GRID_STEP and is replaced by
+   *  updateGridScale on the first rendered frame. */
+  private gridCell = GRID_STEP;
+  private gridKey = ""; // cell+centre the grid was last built for
   // Sketch Palette options
   private gridVisible = true;
   private gridSnap = true;
@@ -426,7 +460,12 @@ export class SketchMode {
 
     this.viewport.suspendPicking = true;
     this.viewport.enterSketchView(this.plane.origin, this.plane.n, this.plane.v);
+    this.gridKey = ""; // force the first frame to build at the current zoom
     this.addGrid();
+    // The grid rescales with zoom from here on. Registered on the viewport
+    // rather than polled, because the only honest source for "how far are we
+    // zoomed in" is the frame that is about to be drawn.
+    this.viewport.onZoomScale = (wpp, tx, ty, tz) => this.updateGridScale(wpp, tx, ty, tz);
 
     const el = this.viewport.domElement;
     el.addEventListener("pointerdown", this.boundDown);
@@ -525,6 +564,7 @@ export class SketchMode {
     this.viewport.hoverEntity(null); // drop any Project-tool 3D hover highlight
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
+    this.viewport.onZoomScale = null; // stop rescaling a grid we are about to drop
     this.removeGrid();
     this.viewport.exitSketchView();
     this.viewport.rig.setOrbitLocked(false); // restore free orbit in model mode
@@ -2655,7 +2695,7 @@ export class SketchMode {
       p2d,
       this.candidates, // cached; rebuilt only when entities change
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
-      this.gridSnap ? GRID_STEP : 0,
+      this.gridSnap ? this.gridCell : 0,
     );
     return { p: res.point, kind: res.kind, world: this.plane.to3D(res.point.x, res.point.y) };
   }
@@ -3984,14 +4024,45 @@ export class SketchMode {
   }
 
   // --- grid --------------------------------------------------------------
-  private addGrid() {
+  /** Rescale the sketch grid to the current zoom, and recentre it on the view.
+   *
+   *  Called from the viewport's render loop (`onZoomScale`), so it is keyed and
+   *  returns immediately when neither the cell nor the centre has changed.
+   *
+   *  The grid used to be a single `GridHelper(400, 80)` built once on entry:
+   *  5 mm cells over a 400 mm square, fixed. Zoom out past 400 mm and it simply
+   *  ran out; zoom in to draw a 2 mm feature and the cells were still 5 mm, so
+   *  the finest thing you could snap to was 5 mm no matter how close you got.
+   *  It also made grid snapping wildly inconsistent: `snap()` only takes a grid
+   *  point within 10 px of the cursor, so at high zoom the 5 mm points were too
+   *  far apart to ever catch and at low zoom they were sub-pixel dense and
+   *  caught everything.
+   *
+   *  `niceStep(worldPerPixel * 64)` is the SAME expression the ground grid uses
+   *  (viewport/scene.ts), deliberately: the two grids have to agree about what
+   *  "5 mm" looks like or the lattice appears to jump when you finish a sketch.
+   *  DIVISIONS stay fixed and the extent follows the cell, which is what keeps
+   *  the line count bounded — an adaptive cell over a fixed 400 mm extent would
+   *  be 4,000 divisions at 0.1 mm. */
+  private updateGridScale(worldPerPixel: number, tx: number, ty: number, tz: number) {
+    if (!this.active) return;
+    const local = this.plane.to2D(new THREE.Vector3(tx, ty, tz));
+    const { cell, cx, cy, key } = gridScaleFor(worldPerPixel, local.x, local.y);
+    if (key === this.gridKey) return;
+    this.gridKey = key;
+    this.gridCell = cell;
+    this.addGrid(cell, cx, cy);
+  }
+
+  private addGrid(cell = this.gridCell, cx = 0, cy = 0) {
     this.removeGrid();
-    const grid = new THREE.GridHelper(400, 80, 0x44505c, 0x2c333a);
+    const DIVS = 80;
+    const grid = new THREE.GridHelper(cell * DIVS, DIVS, 0x44505c, 0x2c333a);
     // GridHelper lies in XZ; orient it onto the sketch plane (XY local)
     grid.quaternion.copy(this.plane.orientation()).multiply(
       new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2),
     );
-    grid.position.copy(this.plane.origin);
+    grid.position.copy(this.plane.to3D(cx, cy));
     (grid.material as THREE.Material).depthWrite = false;
     grid.renderOrder = 1;
     grid.visible = this.gridVisible;

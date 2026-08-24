@@ -130,6 +130,15 @@ export class Viewport {
   regionPickAt: ((clientX: number, clientY: number, additive: boolean) => boolean) | null = null;
   regionHoverAt: ((clientX: number, clientY: number) => boolean) | null = null;
   onBodySelectionChange: (() => void) | null = null; // fired when the body selection changes
+  /** Every rendered frame: the world mm covered by one screen pixel at the camera
+   *  target, plus that target. For plane-aligned geometry that has to rescale with
+   *  zoom the way the ground grid does — the sketch grid, which cannot BE the
+   *  ground grid because it sits on an arbitrary plane. Called from inside the
+   *  render loop, so an implementation must be cheap when nothing changed and
+   *  must never call requestRender(). */
+  onZoomScale:
+    | ((worldPerPixel: number, targetX: number, targetY: number, targetZ: number) => void)
+    | null = null;
   // "faces" = pick faces/edges (default); "bodies" = pick whole bodies (to move).
   private selectionMode: "faces" | "bodies" = "faces";
   suspendPicking = false;
@@ -2119,6 +2128,12 @@ export class Viewport {
         // keep the ground grid spacing/extent matched to the current zoom + pan
         const t = this.rig.controls.getTarget(this.scratchTarget);
         this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t), this.targetGridZ);
+        // ...and the SKETCH grid the same way. It lives on an arbitrary plane so
+        // it cannot be the same object, but it must rescale off the same number
+        // or the two disagree the moment you leave a sketch. The callback is
+        // expected to be cheap when nothing changed (it is keyed, like
+        // AdaptiveGrid) and must never call requestRender — this IS the frame.
+        this.onZoomScale?.(this.pixelWorldSize(t), t.x, t.y, t.z);
         this.scene.renderer.render(this.scene.scene, this.rig.active);
         this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
         this.fps.frame();
