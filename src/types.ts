@@ -469,6 +469,17 @@ export type Feature =
       // the pair. Independent of the end condition: with both set the solid spans
       // startOffset..target, not 0..target.
       startOffset?: Num;
+      // Sloped walls, in DEGREES (issue #41's "nice to have"). Positive narrows
+      // away from the sketch, negative widens — a draft angle for a moulded or
+      // printed part. Only applies to a plain distance extrude: with an `upTo`
+      // target the end face is the target plane, and a taper would fight it.
+      //
+      // The sidecar PROBES this in a throwaway process before building it. That
+      // is not caution for its own sake: the same OCCT path has been measured
+      // hanging for 600 s while holding the GIL, and returning silently corrupt
+      // solids (volume 0.0 with IsValid() false, and negative volumes) that only
+      // BRepCheck catches. A refused taper is reported, never quietly dropped.
+      taper?: Num;
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display

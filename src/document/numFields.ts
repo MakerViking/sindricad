@@ -30,6 +30,14 @@ function hasUpToTarget(f: Feature): boolean {
   );
 }
 
+/** A taper is only swept when the extrude goes a DISTANCE. With an up-to target
+ *  the end face IS the target plane, so the sidecar does not apply one — and an
+ *  input that swallows a number and changes nothing is the defect this file's
+ *  `applies` predicate exists to prevent. */
+function isBlindExtrude(f: Feature): boolean {
+  return f.type === "extrude" && f.upTo === undefined && f.upToPlane === undefined;
+}
+
 /** [field, label, kind] rows per feature type. */
 export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>> = {
   // "Start offset" lifts the profile off its sketch plane before the sweep;
@@ -40,6 +48,7 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>>
   extrude: [
     ["distance", "Distance", "length"],
     ["startOffset", "Start offset", "length"],
+    ["taper", "Taper", "angle", isBlindExtrude],
     ["upToOffset", "Target offset", "length", hasUpToTarget],
   ],
   fillet: [["radius", "Radius", "length"]],

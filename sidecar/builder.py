@@ -1913,7 +1913,7 @@ def _handle_extrude(f, ctx):
         for p in parts[1:]:
             solid = solid + p
     else:
-        solid = extrude(target, amount=ctx.val(f["distance"]))
+        solid = _extrude_maybe_tapered(f, ctx, target, prof_faces, ctx.val(f["distance"]))
     # Captured-visibility semantics: an extrude that carries
     # `hiddenBodies` uses THAT set (participants decided at feature
     # creation, MCAD-style — later eye toggles are pure display).
@@ -1925,6 +1925,59 @@ def _handle_extrude(f, ctx):
         else ctx.hidden_bodies
     )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid)
+
+
+def _extrude_maybe_tapered(f, ctx, target, prof_faces, amount):
+    """The plain (no up-to target) sweep — straight-walled, or tapered.
+
+    A `taper` of 0 or absent takes the ORIGINAL path untouched, `target` and
+    all: no probe, no fork, no per-face rebuild, so nothing about an ordinary
+    extrude changes. The taper path is deliberately more expensive, because it
+    is the one that can hang the kernel.
+    """
+    taper = ctx.val(f.get("taper") or 0)
+    if not taper:
+        return extrude(target, amount=amount)
+    if abs(taper) >= _MAX_TAPER_DEG:
+        raise ValueError(
+            f"Extrude: a taper of {taper:g}° folds the wall flat onto itself. "
+            f"Use an angle between -{_MAX_TAPER_DEG:g}° and {_MAX_TAPER_DEG:g}°."
+        )
+    if not prof_faces:
+        raise ValueError(
+            "Extrude: a taper needs a closed profile to slope — this sketch built no area."
+        )
+    # PROBE FIRST, on a process we can afford to lose. See _probe_tapers: this
+    # path does not only fail, it HANGS, and a hang in the geometry worker costs
+    # the whole session rather than this feature.
+    cleared = _probe_tapers(prof_faces, amount, taper)
+    bad = [i for i in range(len(prof_faces)) if not cleared.get(i, False)]
+    if bad:
+        n = len(prof_faces)
+        raise ValueError(
+            f"Extrude: a {taper:g}° taper doesn't work on "
+            f"{'this profile' if n == 1 else f'{len(bad)} of the {n} profiles'}"
+            " — the sloped walls run into themselves. Try a smaller angle, a "
+            "shorter distance, or a profile without such tight corners."
+        )
+    solids = []
+    for fc in prof_faces:
+        # Built AGAIN here rather than carried over from the probe: the probe ran
+        # in another process and only ever returned a verdict, never geometry.
+        out = _taper_solid(fc, amount, taper)
+        if out is None:
+            # The probe cleared it and the real build did not. Possible — the
+            # probe is a different process with its own kernel state — and it
+            # must still refuse rather than return a corrupt solid.
+            raise ValueError(
+                f"Extrude: the {taper:g}° taper failed on one of the profiles. "
+                "Try a smaller angle."
+            )
+        solids.append(out)
+    out = solids[0]
+    for s in solids[1:]:
+        out = out + s
+    return out
 
 
 def _report_edge_failures(f, ctx, edges, try_one):
@@ -6844,6 +6897,141 @@ def _taper_angle(bevel, depth):
     """The wall angle that moves the top edge in by `bevel` millimetres over
     `depth` of rise — so the control stays a WIDTH whichever style is chosen."""
     return math.degrees(math.atan2(bevel, depth))
+
+
+# A taper of exactly 90 degrees folds the wall flat onto itself; OCCT reports
+# that as an opaque failure, and everything approaching it builds a spike. Draft
+# refuses the same value for the same reason.
+_MAX_TAPER_DEG = 89.0
+_TAPER_PROBE_TIMEOUT = 30.0
+_TAPER_PROBE_CACHE = {}
+
+
+def _taper_solid(face, depth, angle_deg):
+    """A tapered prism from one planar profile, or None if it cannot be trusted.
+
+    Same validation as `_taper_prism` (which does this for glyphs) and for the
+    same measured reason: this is a path that returns CORRUPT GEOMETRY WITHOUT
+    RAISING. Over 62 glyphs, two came back silently wrong — volume 0.0 with
+    IsValid() false, and a NEGATIVE volume — and 'S', 'M' and 'W' at 20 degrees
+    and up returned entirely plausible volumes on self-intersected sidewalls
+    that only BRepCheck catches. A sketch profile is not a safer input than a
+    glyph; a honeycomb or a spline outline is considerably worse.
+
+    The volume bound is signed, because an extrude taper goes both ways:
+    a POSITIVE angle narrows away from the sketch, so the solid can only be
+    SMALLER than the straight prism; a negative angle widens it, so it can only
+    be larger. Either way a result on the wrong side of `flat` is proof the
+    walls crossed.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    try:
+        out = extrude(face, depth, taper=angle_deg)
+    except Exception:
+        return None
+    try:
+        if len(out.solids()) != 1:
+            return None
+        # HEIGHT FIRST, because this is the failure OCCT does not report. Ask for
+        # a taper steeper than the profile can carry and it does not raise and
+        # does not return anything corrupt — it builds the pyramid and STOPS AT
+        # THE APEX, silently giving you a shorter extrude than you asked for.
+        # Measured on a 20x20 square swept 10 mm: 46 deg returns 1287.59 mm³ and
+        # 50 deg returns 1118.80, which are exactly 1/3·A·h for h = 9.657 and
+        # 8.391 — the apex heights, not the 10 mm requested. Both are valid
+        # solids with plausible volumes, so neither BRepCheck nor the volume
+        # bound below can see it. Only the height can.
+        n = face.normal_at()
+        along = [v.X * n.X + v.Y * n.Y + v.Z * n.Z for v in out.vertices()]
+        if not along:
+            return None
+        got = max(along) - min(along)
+        if abs(got - abs(depth)) > max(1e-6, abs(depth) * 1e-4):
+            return None
+        v = out.volume
+        flat = face.area * abs(depth)
+        if angle_deg > 0:
+            ok = 0 < v <= flat * 1.001
+        elif angle_deg < 0:
+            ok = v >= flat * 0.999
+        else:
+            ok = abs(v - flat) <= flat * 0.001
+        if not ok:
+            return None
+        return out if BRepCheck_Analyzer(out.wrapped).IsValid() else None
+    except Exception:
+        return None
+
+
+def _probe_tapers(faces, depth, angle_deg):
+    """Clear every profile face through a THROWAWAY PROCESS before the real
+    worker touches it. Returns {index: bool}; anything unreported is False.
+
+    This is not belt-and-braces. The glyph version of this path was measured
+    HANGING: one shape at 40 degrees was still running after 30 seconds and
+    another consumed 600 s, and OCCT holds the GIL throughout, so no in-worker
+    deadline can fire — a SIGALRM armed for 1.0 s was observed arriving at
+    10.39 s, exactly when the kernel returned. Geometry runs in a max_workers=1
+    pool, so a hang costs the user their entire session, not just this feature.
+    A subprocess with a timeout is the only guard that works.
+
+    Cached on the profile's own bytes, so an unchanged document does not pay a
+    fork per rebuild.
+    """
+    breps = []
+    for fc in faces:
+        try:
+            breps.append(_shape_to_brep_b64(fc))
+        except Exception:
+            # unserialisable profile: report nothing for it, which reads as False
+            return {}
+    recipe = {"faces": breps, "depth": round(float(depth), 6), "angle": round(float(angle_deg), 4)}
+    key = (tuple(breps), recipe["depth"], recipe["angle"])
+    if key in _TAPER_PROBE_CACHE:
+        return _TAPER_PROBE_CACHE[key]
+    import subprocess
+
+    verdicts = {}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import builder; builder._taper_probe_main()"],
+            input=json.dumps(recipe), capture_output=True, text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=_TAPER_PROBE_TIMEOUT,
+        )
+        for line in proc.stdout.splitlines():
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue  # kernel/font chatter on stdout, not our protocol
+            if "done" in rec:
+                verdicts[rec["done"]] = bool(rec["ok"])
+    except subprocess.TimeoutExpired:
+        pass  # everything unreported stays unusable, which is the right default
+    _TAPER_PROBE_CACHE[key] = verdicts
+    return verdicts
+
+
+def _taper_probe_main():
+    """Entry point of the taper probe subprocess:
+    `python -c "import builder; builder._taper_probe_main()"` with the recipe as
+    JSON on stdin. One JSON line per face; a face that takes the process down
+    simply never reports, and the parent reads that as unusable."""
+    recipe = json.loads(sys.stdin.read())
+    depth, angle = recipe["depth"], recipe["angle"]
+    for i, b64 in enumerate(recipe["faces"]):
+        ok = False
+        try:
+            shp = _brep_b64_to_shape(b64)
+            fcs = shp.faces()
+            if fcs:
+                ok = _taper_solid(fcs[0], depth, angle) is not None
+        except Exception:
+            ok = False
+        # flushed per face: the NEXT one is what might not come back
+        print(json.dumps({"done": i, "ok": ok}), flush=True)
+
 
 
 def _bevel_recipe(f, ctx, radius, kinds):
