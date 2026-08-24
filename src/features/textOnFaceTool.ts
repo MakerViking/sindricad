@@ -351,6 +351,9 @@ export class TextOnFaceTool {
       {
         editing: this.editingId != null, fonts: this.fonts, initial,
         palette: this.store.colorPalette,
+        // so a flat text can auto-pick a filament that isn't the one the body
+        // already prints in — see textOnFacePanel's syncStyle
+        bodySlot: this.bodyId ? this.store.bodyColorSlot(this.bodyId) ?? null : null,
       },
       {
         onChange: (v) => this.schedulePreview(v),

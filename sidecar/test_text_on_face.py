@@ -467,6 +467,122 @@ def test_selector_binds_to_its_own_body():
     print(PASS, "the text binds to its selector's own body, not the active one")
 
 
+def _flat_glyph_faces(body):
+    """The faces a flat text claimed, by the slots it recorded."""
+    return body.get("_faceSlots") or {}
+
+
+def test_flat_text_imprints_without_changing_the_shape():
+    """The whole contract of the flat style: the part is untouched and only the
+    colouring differs. A volume that moved at all means it stopped being flat."""
+    part, errors, bodies = _rebuild(_box_and_text(operation="flat", text="Bodo",
+                                                  colorSlot=1))
+    assert not errors, errors
+    b = bodies[0]
+    assert len(b["shape"].solids()) == 1, "a flat text must not split the body"
+    assert abs(b["shape"].volume - 60 * 30 * 5) < 1e-9, \
+        f"flat text changed the volume by {b['shape'].volume - 9000:g} mm3"
+    # The host face is now a partition: several faces where there was one, and
+    # they still add up to the face that was there before. An exact face count
+    # would only be counting the font's counters, which is not the contract.
+    top = [f for f in b["shape"].faces() if abs(f.center().Z - 2.5) < 1e-9]
+    assert len(top) > 1, "the host face was not split at all"
+    assert abs(sum(f.area for f in top) - 60 * 30) < 1e-6, \
+        "the imprinted pieces do not add back up to the original face"
+    print(PASS, f"flat text splits the top face into {len(top)}, volume untouched")
+
+
+def test_flat_text_colours_the_glyphs_and_not_their_counters():
+    """The attribution rule the emboss path cannot supply.
+
+    "New AND off the text's plane" finds nothing here (a flat glyph IS in the
+    plane), and the obvious fallback — is this face's centre inside a glyph
+    outline — is wrong for exactly the letters that matter: an "o" is an annulus
+    whose centre of mass sits in its own hole. Matching the imprinted region's
+    (area, centre) fingerprint against the tool's is what gets both right."""
+    _p, errors, bodies = _rebuild(_box_and_text(operation="flat", text="Bodo 08",
+                                                colorSlot=2))
+    assert not errors, errors
+    slots = _flat_glyph_faces(bodies[0])
+    assert set(slots.values()) == {2}, slots
+    # "Bodo 08" is 6 glyphs and 8 counters (B and 8 have two each). Only the
+    # glyphs may be painted — a painted counter would fill in every "o".
+    assert len(slots) == 6, f"expected the 6 glyphs, got {len(slots)} painted faces"
+    painted_area = sum(
+        f.area for f in bodies[0]["shape"].faces() if builder._face_fp(f) in slots
+    )
+    want = _glyph_area("Bodo 08")
+    assert abs(painted_area - want) < 1e-6, \
+        f"painted {painted_area:g} mm2 against {want:g} mm2 of glyph"
+    print(PASS, f"flat text paints its 6 glyphs ({painted_area:.2f} mm2), not the 8 counters")
+
+
+def test_flat_text_survives_on_a_curved_face():
+    feats = [
+        {"id": "b", "type": "cylinder", "radius": 15, "height": 30},
+        {"id": "t1", "type": "textOnFace",
+         "face": {"kind": "face", "by": "nearest", "point": [15, 0, 0], "body": "body1"},
+         "pick": [15, 0, 0],
+         "plane": {"origin": [15, 0, 0], "normal": [1, 0, 0], "xdir": [0, 1, 0]},
+         "text": "Bodo", "height": 6, "align": "center",
+         "depth": 0.6, "operation": "flat", "colorSlot": 1},
+    ]
+    _p, errors, bodies = _rebuild(feats)
+    assert not errors, errors
+    b = bodies[0]
+    assert len(b["shape"].solids()) == 1
+    assert len(_flat_glyph_faces(b)) == 4, "one painted face per glyph"
+    ref = math.pi * 15 * 15 * 30
+    assert abs(b["shape"].volume - ref) < 1e-3 * ref, "the cylinder changed shape"
+    print(PASS, "flat text imprints onto a curved face through the same patch path")
+
+
+def test_flat_text_running_off_the_face_raises():
+    """An imprint that misses leaves NO trace — the shape is unchanged either
+    way, so a lost letter is invisible unless the build says so."""
+    _p, errors, _b = _rebuild(_box_and_text(operation="flat", text="Bodo",
+                                            colorSlot=1, u=200))
+    assert errors, "text parked off the face must not build silently"
+    assert "runs off this face" in errors[0]["message"], errors[0]
+    print(PASS, "a flat glyph that misses the face raises instead of vanishing")
+
+
+def test_flat_text_is_not_unified_away():
+    """A guard on the one refactor that would silently delete this feature.
+
+    `_serial_bool` — the obvious thing to reach for — ends in
+    ShapeUpgrade_UnifySameDomain, which merges coplanar neighbours and takes the
+    imprint straight back out (measured: 7 faces to 6 on a disc in a box top).
+    So `_imprint` must never be routed through it."""
+    from build123d import Circle, Compound, Plane
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    box = Box(20, 20, 20)
+    tool = Plane(origin=(0, 0, 10), z_dir=(0, 0, 1)) * Circle(3)
+    imprinted = builder._imprint(box, [tool])
+    assert len(imprinted.faces()) == 7, \
+        f"the imprint did not split the top face: {len(imprinted.faces())} faces"
+
+    # the exact tail of _serial_bool, run on the imprint
+    up = ShapeUpgrade_UnifySameDomain(imprinted.wrapped, True, True, True)
+    up.AllowInternalEdges(False)
+    up.Build()
+    assert len(Compound(up.Shape()).faces()) == 6, \
+        "UnifySameDomain no longer erases a coplanar imprint — re-check _imprint's warning"
+    print(PASS, "imprint splits the face, and _serial_bool's unify provably would undo it")
+
+
+def test_flat_text_ignores_depth_and_bevel():
+    """Both are meaningless flush with the surface. They stay on the feature so
+    switching style and back loses nothing, so they must not be validated —
+    a zero depth is a hard error for an emboss and a non-event here."""
+    _p, errors, bodies = _rebuild(_box_and_text(operation="flat", text="Ag",
+                                                colorSlot=1, depth=0, bevel=99))
+    assert not errors, errors
+    assert abs(bodies[0]["shape"].volume - 60 * 30 * 5) < 1e-9
+    print(PASS, "flat text ignores depth and bevel rather than refusing them")
+
+
 def main():
     print("Text-on-face tests")
     test_emboss_adds_exactly_the_glyph_volume()
@@ -493,6 +609,12 @@ def main():
     test_preview_outlines_match_the_committed_solid()
     test_moved_face_raises_instead_of_floating()
     test_selector_binds_to_its_own_body()
+    test_flat_text_imprints_without_changing_the_shape()
+    test_flat_text_colours_the_glyphs_and_not_their_counters()
+    test_flat_text_survives_on_a_curved_face()
+    test_flat_text_running_off_the_face_raises()
+    test_flat_text_is_not_unified_away()
+    test_flat_text_ignores_depth_and_bevel()
     print("ALL PASS")
 
 

@@ -594,7 +594,12 @@ export type Feature =
       text: string;
       height: Num;
       depth: Num;
-      operation: "emboss" | "engrave";
+      // "flat" is a third SHAPE, not a depth of zero: the glyphs are imprinted
+      // into the face so each becomes its own B-rep face, flush with the
+      // surface, and only `colorSlot` distinguishes them. `depth` and `bevel`
+      // are kept on the feature so switching style and back loses nothing, but
+      // the sidecar neither reads nor validates them on that path.
+      operation: "emboss" | "engrave" | "flat";
       font?: string;
       style?: "regular" | "bold" | "italic" | "bolditalic";
       align?: "left" | "center" | "right";
@@ -604,9 +609,14 @@ export type Feature =
       v?: Num;
       /** Palette slot the GLYPHS print on, independent of the body's own slot.
        *  Absent means "inherit the body's". The sidecar records exactly which
-       *  faces the emboss added (new AND off the text's plane — face ownership
-       *  alone is last-modifier and would claim the host face too), so this
-       *  colours the letters and not the surface they sit on. */
+       *  faces the text added — for an emboss or engrave, new AND off the text's
+       *  plane (face ownership alone is last-modifier and would claim the host
+       *  face too); for a flat text, the imprinted regions matched by their
+       *  (area, centre) fingerprint, since those ARE in the plane. Either way it
+       *  colours the letters and not the surface they sit on.
+       *
+       *  A flat text with no slot is invisible, so the panel picks one for you
+       *  the moment that style is chosen. */
       colorSlot?: number;
       // Bevel on the letter rim, as a WIDTH in mm — never an angle. With an
       // angle the offset would be depth*tan(angle), so editing the separately

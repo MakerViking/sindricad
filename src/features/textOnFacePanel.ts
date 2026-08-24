@@ -8,6 +8,23 @@
 
 import { icon, type IconName } from "../ui/icons";
 
+/** Which filament a flat text should take when the user hasn't chosen one.
+ *
+ *  Flat glyphs are imprinted flush with the face, so inheriting the body's
+ *  colour makes them invisible — and nothing else in the app can colour a face,
+ *  so the only way back is to reopen this panel. Picking the first slot that
+ *  ISN'T the body's own is what makes the letters appear the moment the style is
+ *  chosen. Falls back to slot 0 when the body already holds every alternative
+ *  (a one-colour palette), and to null when there is no palette at all — better
+ *  an uncoloured text than a slot index that indexes nothing.
+ *
+ *  Exported and pure so it can be tested: the repo has no jsdom, so the rest of
+ *  this panel is only reachable by hand. */
+export function autoGlyphSlot(paletteLength: number, bodySlot: number | null): number | null {
+  for (let i = 0; i < paletteLength; i++) if (i !== bodySlot) return i;
+  return paletteLength ? 0 : null;
+}
+
 export interface TextOnFaceValues {
   text: string;
   font?: string;
@@ -16,7 +33,7 @@ export interface TextOnFaceValues {
   align: "left" | "center" | "right";
   angle: number;
   depth: number;
-  operation: "emboss" | "engrave";
+  operation: "emboss" | "engrave" | "flat";
   bevel: number;
   bevelStyle: "auto" | "chamfer" | "fillet" | "taper";
   boxWidth?: number;
@@ -73,6 +90,9 @@ export class TextOnFacePanel {
       initial: Partial<TextOnFaceValues>;
       /** the document palette, for the glyph-colour chips */
       palette?: { name: string; color: string; material?: string }[];
+      /** the target body's own slot, so a flat text can auto-pick one that will
+       *  actually read against it */
+      bodySlot?: number | null;
     },
     handlers: {
       onCommit: (v: TextOnFaceValues) => void;
@@ -154,7 +174,8 @@ export class TextOnFacePanel {
 
     const height = num(init.height ?? 6, "0.5", "0.01");
     const depth = num(init.depth ?? 0.6, "0.1", "0.01");
-    row(label("Size mm"), height, label("Depth"), depth);
+    const depthLabel = label("Depth");
+    row(label("Size mm"), height, depthLabel, depth);
 
     // Placement. Seeded from where the click landed, so these open showing the
     // spot the user already chose rather than 0/0 — a field that disagrees with
@@ -165,7 +186,11 @@ export class TextOnFacePanel {
 
     const op = document.createElement("select");
     op.style.flex = "1";
-    for (const [v, t] of [["emboss", "Emboss (raised)"], ["engrave", "Engrave (cut)"]] as const) {
+    for (const [v, t] of [
+      ["emboss", "Emboss (raised)"],
+      ["engrave", "Engrave (cut)"],
+      ["flat", "Flat (color only)"],
+    ] as const) {
       const o = document.createElement("option");
       o.value = v; o.textContent = t;
       op.appendChild(o);
@@ -256,7 +281,27 @@ export class TextOnFacePanel {
     };
     bevel.addEventListener("input", syncBevel);
     syncBevel();
-    void bevelRow;
+
+    // Flat text is imprinted flush with the face, so depth and bevel do nothing
+    // to it — hide them rather than leave live-looking numbers on screen that
+    // the sidecar ignores.
+    //
+    // And PICK IT A FILAMENT. Flat glyphs that inherit the body's colour are
+    // invisible: the silhouette is unchanged by design, and there is no
+    // "colour this face" action anywhere else in the app, so the only way back
+    // is to reopen this panel. Choosing the first slot that isn't the body's
+    // own means the letters show up the moment the style is chosen.
+    const syncStyle = () => {
+      const flat = op.value === "flat";
+      for (const el of [depthLabel, depth]) el.style.display = flat ? "none" : "";
+      bevelRow.style.display = flat ? "none" : "";
+      if (flat && slot === null) {
+        slot = autoGlyphSlot((opts.palette ?? []).length, opts.bodySlot ?? null);
+        paintChips();
+      }
+    };
+    op.addEventListener("change", syncStyle);
+    syncStyle();
 
     this.read = () => {
       const s =

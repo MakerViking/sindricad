@@ -2935,8 +2935,91 @@ def _distance_to_surface(pt, face):
     return d.Value() if d.IsDone() else 1e9
 
 
+def _flat_text_imprint(f, body, face, plane, glyphs, planar):
+    """Glyphs FLUSH with the face: split the host face along their outlines so each
+    letter becomes its own B-rep face, and give those faces the text's filament.
+
+    No material moves. That IS the style — the part keeps its exact silhouette and
+    the lettering reads as colour alone, which is the thing a multi-filament
+    printer can do and a single-filament one cannot. So there is no depth, no
+    bevel, and no boolean here; the same glyph faces the emboss path would have
+    extruded are handed straight to `_imprint`.
+
+    Curved hosts come for free: `_text_patches_on_curved` already returns one patch
+    lying ON the face per glyph — the emboss path only thickens them afterwards —
+    and it already raises for text that runs off the edge or over too steep a
+    curve.
+
+    ATTRIBUTION CANNOT USE THE EMBOSS RULE. That one is "new AND off the text's
+    plane" (see `_handle_text_on_face`), and a flat glyph is IN the plane, so it
+    would find nothing; off-plane alone would paint the whole side of the part.
+    Point-in-outline fails on the same letters for a different reason: an "o" is
+    an annulus whose centre of mass sits in its own hole. What does work is that
+    the imprinted region is GEOMETRICALLY IDENTICAL to the tool face that split
+    it, so `_face_fp` — the quantized (area, centre) fingerprint the owner map
+    already runs on every face — names it exactly. The counter of an "o" becomes
+    its own face, matches no tool, and correctly keeps the body's colour."""
+    if planar:
+        tools = [plane * g for g in glyphs]
+    else:
+        # Same projection the emboss path uses — along the layout plane's own -Z,
+        # since that plane was built from the face at the pick point.
+        direction = (-plane.z_dir.X, -plane.z_dir.Y, -plane.z_dir.Z)
+        tools = _text_patches_on_curved(
+            [plane * g for g in glyphs], face, direction, f["pick"],
+            body["shape"].bounding_box().diagonal,
+        )
+
+    before = max(1, len(body["shape"].solids()))
+    was_vol = _try_vol(body["shape"])
+    # SOLIDS ONLY. A general fuse keeps every argument it was given, so a glyph
+    # that missed the face entirely comes back as a LOOSE FACE floating in the
+    # result compound (measured: text parked 60mm off a 40mm face left the solid
+    # untouched and four stray faces beside it). Keeping those would both hang
+    # sheet geometry off the body and satisfy the missing-glyph check below with
+    # the very tools that failed to imprint.
+    solids = _imprint(body["shape"], tools).solids()
+    if len(solids) != before:
+        raise ValueError(
+            "Text: the text isn't sitting on the face — re-pick the face."
+        )
+    result = _as_compound(solids)
+    now_vol = _try_vol(result)
+    if was_vol and now_vol is not None and abs(now_vol - was_vol) > 1e-6 * was_vol:
+        raise ValueError(
+            "Text: flat text should leave the shape alone, but this one changed "
+            "it — re-pick the face."
+        )
+
+    # A tool with no match imprinted nothing, which on this style means a letter
+    # that is simply absent — invisible, since nothing about the shape changed to
+    # give it away. Never let that ship quietly.
+    present = {_face_fp(fc) for fc in result.faces()}
+    glyph_fps = []
+    for t in tools:
+        fp = _face_fp(t)
+        if fp not in present:
+            raise ValueError(
+                "Text: the text runs off this face — make it smaller, or move it "
+                "away from the edge"
+            )
+        glyph_fps.append(fp)
+    slot = f.get("colorSlot")
+    if slot is not None:
+        body["_faceSlots"] = {
+            **(body.get("_faceSlots") or {}),
+            **{fp: int(slot) for fp in glyph_fps},
+        }
+    return result
+
+
 def _handle_text_on_face(f, ctx):
-    """Emboss (raise) or engrave (cut) text directly on a solid face.
+    """Emboss (raise), engrave (cut) or flat (colour only) text directly on a
+    solid face.
+
+    Flat is a different operation, not a depth of zero — it imprints instead of
+    booleaning, and lives in `_flat_text_imprint`. Everything below the glyph
+    build is the emboss/engrave path.
 
     Glyphs come from the SAME `_text_faces` the sketch Text tool uses, so face
     text and sketch text of one string are identical geometry out of one font
@@ -2956,10 +3039,13 @@ def _handle_text_on_face(f, ctx):
     pieces, which is never what someone typing a word meant.
     """
     op = f.get("operation", "emboss")
-    if op not in ("emboss", "engrave"):
+    if op not in ("emboss", "engrave", "flat"):
         raise ValueError(f"Text: unknown operation {op!r}")
-    depth = ctx.val(f["depth"])
-    if not (depth > 0):
+    # A flat text displaces nothing, so depth and bevel mean nothing to it. The
+    # fields stay on the feature — switching style and back must not lose what
+    # was typed — but they are neither read nor validated on this path.
+    depth = 0.0 if op == "flat" else ctx.val(f["depth"])
+    if op != "flat" and not (depth > 0):
         raise ValueError(f"Text: depth must be greater than 0 (got {depth:g})")
 
     groups = _group_sels_by_body(f["face"], ctx, "Text")
@@ -2987,6 +3073,12 @@ def _handle_text_on_face(f, ctx):
             f"Text: produced no glyphs — check the text isn't blank and that "
             f"{font} is installed"
         )
+
+    if op == "flat":
+        # Nothing to extrude, bevel or boolean: the glyphs stay in the surface
+        # and only their colour distinguishes them.
+        body["shape"] = _flat_text_imprint(f, body, face, plane, glyphs, planar)
+        return
 
     sign = 1.0 if op == "emboss" else -1.0
     bevel = ctx.val(f["bevel"]) if f.get("bevel") else 0.0
@@ -5215,6 +5307,32 @@ def _serial_bool(base, tool, kind):
     except Exception:
         pass  # keep the un-cleaned result rather than fail the whole boolean
     return Compound(shape)
+
+
+def _imprint(solid, tools):
+    """Split `solid`'s faces along `tools` — faces that already lie ON it — without
+    adding or removing any material.
+
+    A general fuse does exactly this: OCCT intersects every argument with every
+    other, so a face laid on the solid's own surface splits that surface along
+    its outline and the solid comes back with the same volume and one more face.
+
+    Deliberately NOT `_serial_bool`, and never followed by one: that ends with
+    `ShapeUpgrade_UnifySameDomain`, which merges coplanar neighbours — measured on
+    a disc imprinted into a box top, 7 faces straight back down to 6. Unifying
+    here would silently undo the whole operation.
+
+    Serial for the same reason `_serial_bool` is: the tools are many small
+    disjoint shapes, which is where OCCT's parallel BOP is pathologically slow."""
+    from OCP.BOPAlgo import BOPAlgo_Builder
+
+    bb = BOPAlgo_Builder()
+    bb.AddArgument(solid.wrapped)
+    for t in tools:
+        bb.AddArgument(t.wrapped)
+    bb.SetRunParallel(False)
+    bb.Perform()
+    return Compound(bb.Shape())
 
 
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
