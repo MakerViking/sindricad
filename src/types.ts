@@ -443,6 +443,32 @@ export type Feature =
       // one. An empty GROUP inside a non-empty entry is different again and the
       // sidecar refuses the whole anchor on it (`if not grp: return None`).
       regionHoleEntities?: string[][][];
+      // --- start and end conditions (issue #41, field report ffab4ece) --------
+      // The SAME vocabulary press-pull uses, resolved by the same sidecar helper
+      // (`_up_to_target`), so the two operations cannot drift apart on any of the
+      // refusals it enforces.
+      //
+      // `upTo` names a face to stop at, `upToPlane` a datumPlane feature id or
+      // "XY"/"XZ"/"YZ". Setting BOTH is invalid and the sidecar refuses it. With
+      // either one set, `distance` is NOT READ — the target decides how far — so
+      // a distance of 0 is legal here, unlike a plain extrude.
+      //
+      // A target is reproduced as the new end FACE, not approximated by a single
+      // sweep to its centre distance: a target tilted to the sketch would
+      // otherwise give a flat top, right along the centre line and silently
+      // wrong everywhere else.
+      upTo?: Selector;
+      upToPlane?: string;
+      // Shifts the landing ALONG THE EXTRUDE DIRECTION — positive past the
+      // target, negative short of it. Only means something with a target; the
+      // sidecar refuses it otherwise rather than reading the number and throwing
+      // it away.
+      upToOffset?: Num;
+      // Lifts the profile off its sketch plane BEFORE the sweep, along the same
+      // direction the sweep runs — the "start the extrude at an offset" half of
+      // the pair. Independent of the end condition: with both set the solid spans
+      // startOffset..target, not 0..target.
+      startOffset?: Num;
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display

@@ -1794,10 +1794,26 @@ def _handle_extrude(f, ctx):
     sk = entry["sketch"]
     if sk is None:
         raise ValueError("sketch has no closed profile to extrude")
+    # `upTo` / `upToPlane` / `upToOffset` — the SAME vocabulary press/pull uses,
+    # through the same helper, so the two operations cannot drift apart on any of
+    # the refusals it enforces. `sel_shape` is None because an extrude has no body
+    # of its own to resolve a face selector against: the tool emits a
+    # by:"nearest" point pick, which _up_to_target resolves globally across every
+    # body (aiming at another part is the whole point of "up to").
+    tgt_pt, tgt_n, up_any, up_off = _up_to_target(f, ctx, None, "Extrude")
     # A zero-distance extrude sweeps nothing; OCCT reports it as
     # Standard_ConstructionError. Negative IS meaningful (extrude the other way).
-    if ctx.val(f["distance"]) == 0:
+    # With an 'up to' target `distance` is not read at all — the target decides how
+    # far — so refusing 0 there would reject a perfectly good feature for a field
+    # nothing consults.
+    if not up_any and ctx.val(f["distance"]) == 0:
         raise ValueError("Extrude: distance must not be 0")
+    # `startOffset` lifts the profile off its sketch plane BEFORE the sweep, along
+    # the same direction the sweep runs. That is the "start the extrude at an
+    # offset" half of the Fusion start/end pair (issue #41); the end half is the
+    # `upTo` target above. Measured along the profile normal, so a positive offset
+    # starts in the same direction a positive distance extrudes.
+    start_off = ctx.val(f.get("startOffset") or 0)
     # region points (one per selected area) pick + combine specific
     # profiles; a ring (annulus) keeps its hole, several areas union.
     pts = f.get("regions")
@@ -1836,12 +1852,68 @@ def _handle_extrude(f, ctx):
                 sel.append(rf)
         if not sel:
             raise ValueError("no profile found under the selected area")
-        target = sel[0]
-        for s in sel[1:]:
+        prof_faces = sel
+    else:
+        # whole sketch: every cell it built. The plain path still extrudes `sk`
+        # itself (unchanged behaviour); the face list is what the up-to and
+        # start-offset paths need, because both are per-face constructions.
+        prof_faces = list(entry["faces"] or [])
+    if start_off:
+        if not prof_faces:
+            raise ValueError(
+                "Extrude: a start offset needs a profile to move — this sketch built no closed area."
+            )
+        # Every cell of one sketch is coplanar, so one normal moves them all.
+        sn = prof_faces[0].normal_at()
+        shift = Pos(sn.X * start_off, sn.Y * start_off, sn.Z * start_off)
+        prof_faces = [shift * fc for fc in prof_faces]
+    if pts or start_off:
+        target = prof_faces[0]
+        for s in prof_faces[1:]:
             target = target + s
     else:
-        target = sk  # whole sketch
-    solid = extrude(target, amount=ctx.val(f["distance"]))
+        target = sk  # whole sketch, unmoved — the original path, byte for byte
+    if up_any:
+        if not prof_faces:
+            raise ValueError(
+                "Extrude: an 'up to' target needs a profile to measure from — this "
+                "sketch built no closed area."
+            )
+        # Per profile face, and via _prism_to_plane rather than a single scalar
+        # sweep, for the reason that helper documents: the distance is measured at
+        # the face CENTRE, so a target that is not parallel to the sketch would
+        # give a FLAT-topped solid — right along the centre line and silently
+        # wrong everywhere else. Trimming on the plane makes the new face BE the
+        # target. `add` and `cut` are the two sides of the sketch plane; an extrude
+        # wants both, because a target that crosses the profile sends part of it
+        # each way.
+        parts = []
+        for fc in prof_faces:
+            d, trim_pt = _distance_to_target(fc, tgt_pt, tgt_n, up_off, "Extrude")
+            lo, hi = _face_travel_range(fc, trim_pt, tgt_n, "Extrude")
+            if max(abs(lo), abs(hi)) < _PP_NO_MOVE:
+                raise ValueError(
+                    "Extrude: the 'up to' target is already level with the sketch — "
+                    "there is nothing between them to make. Pick a different target, "
+                    "or set an offset."
+                )
+            # `part` bounds the overshoot cap, and for an extrude the profile IS
+            # the part being made — there is no prior body to measure against. The
+            # cap is on the TILT term alone, so this reads as "no more than
+            # _PP_MAX_OVERSHOOT x the profile's own span out of squareness", which
+            # is scale-free; a FAR but square-on target stays legal.
+            add, cut = _prism_to_plane(fc, d, trim_pt, tgt_n, fc, "Extrude")
+            parts += [p for p in (add, cut) if p is not None]
+        if not parts:
+            raise ValueError(
+                "Extrude: the 'up to' target doesn't bound this profile — pick a "
+                "target the sketch can actually reach."
+            )
+        solid = parts[0]
+        for p in parts[1:]:
+            solid = solid + p
+    else:
+        solid = extrude(target, amount=ctx.val(f["distance"]))
     # Captured-visibility semantics: an extrude that carries
     # `hiddenBodies` uses THAT set (participants decided at feature
     # creation, MCAD-style — later eye toggles are pure display).
@@ -2078,7 +2150,7 @@ def _handle_chamfer(f, ctx):
     _blend_edges(f, ctx, "Chamfer", lambda es: chamfer(es, length=d), lambda e: chamfer([e], length=d), d)
 
 
-def _bad_up_to_plane(up_plane, f, ctx):
+def _bad_up_to_plane(up_plane, f, ctx, label="Press/Pull"):
     """Why an `upToPlane` id didn't resolve to a datum — as an exception to raise.
 
     Four causes look identical from ctx.datums alone (the id simply isn't a key),
@@ -2086,65 +2158,67 @@ def _bad_up_to_plane(up_plane, f, ctx):
     reference, or repair an upstream feature. The document's feature list
     distinguishes them, so ask it rather than assuming the ordering case.
 
+    `label` names the operation in the sentence, because Extrude and Press/Pull
+    share this diagnostic and a user told "Press/Pull: ..." about an extrude goes
+    looking at the wrong tool.
+
     The id is UNTRUSTED document text and rides in `subject`, not in the sentence.
     """
     feats = list(ctx.features or ())
     ids = [g.get("id") for g in feats]
-    # position of the press/pull itself: everything at a LATER index is "not yet"
+    # position of the feature itself: everything at a LATER index is "not yet"
     here = ids.index(f.get("id")) if f.get("id") in ids else len(feats)
     at = next((i for i, gid in enumerate(ids) if gid == up_plane), None)
     if at is None:
-        msg = ("Press/Pull: the 'up to' plane is gone — the datum plane it points at "
+        msg = (f"{label}: the 'up to' plane is gone — the datum plane it points at "
                "was deleted. Re-pick a target.")
     elif feats[at].get("type") != "datumPlane":
-        msg = ("Press/Pull: the 'up to' plane points at a feature that isn't a datum "
+        msg = (f"{label}: the 'up to' plane points at a feature that isn't a datum "
                "plane. Pick a datum plane, or XY / XZ / YZ.")
     elif at > here:
-        msg = ("Press/Pull: the 'up to' plane isn't in the timeline yet — a datum plane "
-               "has to come BEFORE the press/pull that extrudes up to it.")
+        msg = (f"{label}: the 'up to' plane isn't in the timeline yet — a datum plane "
+               f"has to come BEFORE the {label.lower()} that extrudes up to it.")
     else:
         # earlier in the timeline, but never registered → its own feature failed
-        msg = ("Press/Pull: the 'up to' datum plane didn't build — fix that feature "
+        msg = (f"{label}: the 'up to' datum plane didn't build — fix that feature "
                "first, then this one can reach it.")
     return GeomError(msg, subject=up_plane)
 
 
-def _handle_press_pull(f, ctx):
-    # target the body that OWNS the picked face (sent by the tool),
-    # not just the active body — so press/pull on a multi-body model
-    # modifies the right body.
-    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Press/Pull")
-    if act is None:
-        raise ValueError("Press/Pull: the target body no longer exists")
-    # one or many faces, each pushed by the same distance along its own
-    # normal. Re-resolve every selector against the EVOLVING shape — each
-    # push renumbers topology, and the selectors are geometric, so this
-    # stays correct (the tool emits one by:"nearest" selector per face).
-    sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
-    # `upTo` / `upToPlane`: extrude each face UP TO a target surface instead of by
-    # a fixed distance. Capture the target plane once (point + normal) so every
-    # source face extrudes to the same surface.
-    #   upTo      — a face Selector (the topology-fingerprint vocabulary)
-    #   upToPlane — a datumPlane feature id, or "XY"/"XZ"/"YZ". NOT a Selector: a
-    #               datum has no topology to fingerprint, so it names itself the
-    #               way sketch.planeId and split.planeId already do.
+def _up_to_target(f, ctx, sel_shape, label="Press/Pull"):
+    """Resolve a feature's `upTo` / `upToPlane` / `upToOffset` into
+    `(target_point, target_normal, has_target, offset)`.
+
+    ONE implementation, two callers (press/pull and extrude), because every rule
+    below is a refusal that has already been argued out once and the two
+    operations must not drift apart on any of them:
+
+      * `upTo` and `upToPlane` are mutually exclusive
+      * a datum id that doesn't resolve gets `_bad_up_to_plane`'s four-way
+        diagnostic, never a bare KeyError
+      * a point pick resolves GLOBALLY across every body — the target only
+        contributes a PLANE, so "up to that other part" is legitimate
+      * an offset with NO target is REFUSED, not silently dropped
+
+    `sel_shape` is what a non-point `upTo` selector resolves against. Press/pull
+    passes the body it is modifying (its selectors are re-resolved against the
+    evolving shape); extrude has no such body, so it passes None and the
+    resolution falls to the global point pick — which is what the tool emits.
+    """
     up = f.get("upTo")
     up_plane = f.get("upToPlane")
     if up and up_plane:
         raise ValueError(
-            "Press/Pull: set an 'up to' face or an 'up to' plane, not both — clear one first."
+            f"{label}: set an 'up to' face or an 'up to' plane, not both — clear one first."
         )
     tgt_pt = tgt_n = None
     if up_plane:
         # ctx.datums is filled in TIMELINE ORDER, so a missing id can mean four
         # different things — and "isn't in the timeline YET" is only one of them.
-        # Guessing it for all four told a user whose datum had been DELETED that it
-        # "has to come BEFORE" the press/pull, the exact inverse of the truth. Look
-        # the id up in the document's own feature list to tell them apart.
         # (The id is document text: it rides in `subject`, never in the prose —
         # see untrusted.py and the BODY_SLOT note in errors.py.)
         if isinstance(up_plane, str) and up_plane not in ctx.datums and up_plane not in PLANES:
-            raise _bad_up_to_plane(up_plane, f, ctx)
+            raise _bad_up_to_plane(up_plane, f, ctx, label)
         pl = _plane_of(up_plane, ctx.datums)
         tgt_pt, tgt_n = pl.origin, pl.z_dir
     elif up:
@@ -2169,26 +2243,51 @@ def _handle_press_pull(f, ctx):
                         best = (dd_, fc)
             if best is not None:
                 tf = [best[1]]
-        if tf is None:
-            tf = resolve_faces(act["shape"], up, diag=ctx.diagnostics, feature_id=f.get("id"))
+        if tf is None and sel_shape is not None:
+            tf = resolve_faces(sel_shape, up, diag=ctx.diagnostics, feature_id=f.get("id"))
         if not tf:
-            raise ValueError("Press/Pull: the 'up to' target surface wasn't found")
+            raise ValueError(f"{label}: the 'up to' target surface wasn't found")
         tgt_pt, tgt_n = tf[0].center(), tf[0].normal_at()
     up_any = bool(up or up_plane)
     # `upToOffset` moves the landing along the extrude direction — positive past
     # the target, negative short of it — for a face target and a plane target alike.
     up_off = ctx.val(f.get("upToOffset") or 0)
     # ...and with NO target there is nothing to measure it from, so the number the
-    # user typed was read and then thrown away: `d` fell back to `distance` and the
-    # offset vanished with err == [] (a 3 mm push with a 7 mm offset gave 3 mm).
-    # Refuse rather than drop it — a wire that silently ignores a field is the same
-    # silent class as a boolean that changes nothing. A ZERO offset is not refused:
-    # it drops nothing, and a client that always sends the field must stay valid.
+    # user typed was read and then thrown away: the distance fell back to
+    # `distance` and the offset vanished with err == [] (a 3 mm push with a 7 mm
+    # offset gave 3 mm). Refuse rather than drop it — a wire that silently ignores
+    # a field is the same silent class as a boolean that changes nothing. A ZERO
+    # offset is not refused: it drops nothing, and a client that always sends the
+    # field must stay valid.
     if up_off and not up_any:
         raise ValueError(
-            "Press/Pull: 'up to offset' only means something with an 'up to' target — "
+            f"{label}: 'up to offset' only means something with an 'up to' target — "
             "pick a face or a plane to extrude up to, or clear the offset."
         )
+    return tgt_pt, tgt_n, up_any, up_off
+
+
+def _handle_press_pull(f, ctx):
+    # target the body that OWNS the picked face (sent by the tool),
+    # not just the active body — so press/pull on a multi-body model
+    # modifies the right body.
+    act = ctx.find_body(f["body"]) if f.get("body") else ctx.require_active("Press/Pull")
+    if act is None:
+        raise ValueError("Press/Pull: the target body no longer exists")
+    # one or many faces, each pushed by the same distance along its own
+    # normal. Re-resolve every selector against the EVOLVING shape — each
+    # push renumbers topology, and the selectors are geometric, so this
+    # stays correct (the tool emits one by:"nearest" selector per face).
+    sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
+    # `upTo` / `upToPlane`: extrude each face UP TO a target surface instead of by
+    # a fixed distance. Capture the target plane once (point + normal) so every
+    # source face extrudes to the same surface.
+    #   upTo      — a face Selector (the topology-fingerprint vocabulary)
+    #   upToPlane — a datumPlane feature id, or "XY"/"XZ"/"YZ". NOT a Selector: a
+    #               datum has no topology to fingerprint, so it names itself the
+    #               way sketch.planeId and split.planeId already do.
+    # Shared with extrude — see _up_to_target for the refusals it enforces.
+    tgt_pt, tgt_n, up_any, up_off = _up_to_target(f, ctx, act["shape"], "Press/Pull")
     dist = ctx.val(f["distance"])
     for sel in sels:
         found = resolve_faces(act["shape"], sel, diag=ctx.diagnostics, feature_id=f.get("id"))
@@ -6005,7 +6104,7 @@ def _refuse_if_cut_deletes_a_solid(part, cut):
     )
 
 
-def _prism_to_plane(face, d, target_pt, target_n, part):
+def _prism_to_plane(face, d, target_pt, target_n, part, label="Press/Pull"):
     """The material between `face` and the target plane, as `(add, cut)` — the half
     OUTSIDE the body and the half INSIDE it. Either may be None.
 
@@ -6041,7 +6140,7 @@ def _prism_to_plane(face, d, target_pt, target_n, part):
     if abs(denom) < 1e-6:
         # unreachable via _distance_to_target (which refuses first), but this is the
         # term the overshoot divides by — never let it become an infinite prism.
-        raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
+        raise ValueError(f"{label}: the face is parallel to the 'up to' surface — can't reach it")
     if abs(denom) < _PP_MIN_SQUARENESS:
         # Checked before the size-relative cap below, which a small face on a big
         # body slips straight past. 1/|n·N| is the amplification the whole
@@ -6049,7 +6148,7 @@ def _prism_to_plane(face, d, target_pt, target_n, part):
         # together — including the far-and-nearly-edge-on case where `d` alone
         # runs away.
         raise ValueError(
-            "Press/Pull: the 'up to' surface is too close to edge-on from this face — "
+            f"{label}: the 'up to' surface is too close to edge-on from this face — "
             "reaching it would build something far larger than the part. Pick a target "
             "more square to the face."
         )
@@ -6073,7 +6172,7 @@ def _prism_to_plane(face, d, target_pt, target_n, part):
         reach = None  # unmeasurable body: keep the old behaviour rather than refuse
     if reach and reach > 1e-9 and tilt > _PP_MAX_OVERSHOOT * reach:
         raise ValueError(
-            "Press/Pull: the 'up to' surface is too close to edge-on from this face — "
+            f"{label}: the 'up to' surface is too close to edge-on from this face — "
             f"reaching it would build something over {_PP_MAX_OVERSHOOT:g}x the size of "
             "the body. Pick a target more square to the face."
         )
@@ -6088,14 +6187,14 @@ def _prism_to_plane(face, d, target_pt, target_n, part):
     # prism keeps the other one.
     pos_keep = Keep.BOTTOM if denom > 0 else Keep.TOP
     neg_keep = Keep.TOP if denom > 0 else Keep.BOTTOM
-    lo, hi = _face_travel_range(face, target_pt, target_n)
+    lo, hi = _face_travel_range(face, target_pt, target_n, label)
     # Skip the side the face demonstrably never travels to — the ordinary
     # parallel-target gesture has only one, and this keeps its cost unchanged.
     add = _trim_prism_at(face, length, plane, pos_keep) if hi > _PP_NO_MOVE else None
     cut = _trim_prism_at(face, -length, plane, neg_keep) if lo < -_PP_NO_MOVE else None
     if add is None and cut is None:
         raise ValueError(
-            "Press/Pull: the 'up to' surface doesn't trim this face's extrusion — "
+            f"{label}: the 'up to' surface doesn't trim this face's extrusion — "
             "pick a target the face can actually reach."
         )
     return add, cut
@@ -6110,7 +6209,7 @@ def _trim_prism_at(face, length, plane, keep):
     return kept if kept.solids() else None
 
 
-def _face_travel_range(src_face, target_pt, target_n):
+def _face_travel_range(src_face, target_pt, target_n, label="Press/Pull"):
     """`(min, max)` of the signed distance each point of `src_face` must travel
     along the face's own normal to land on the target plane.
 
@@ -6123,7 +6222,7 @@ def _face_travel_range(src_face, target_pt, target_n):
     c, n = src_face.center(), src_face.normal_at()
     denom = n.dot(target_n)
     if abs(denom) < 1e-6:
-        raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
+        raise ValueError(f"{label}: the face is parallel to the 'up to' surface — can't reach it")
 
     def travel(p):
         return ((target_pt.X - p.X) * target_n.X
@@ -6148,7 +6247,7 @@ def _face_travel_range(src_face, target_pt, target_n):
     return min(ts), max(ts)
 
 
-def _distance_to_target(src_face, target_pt, target_n, offset=0.0):
+def _distance_to_target(src_face, target_pt, target_n, offset=0.0, label="Press/Pull"):
     """Signed distance to extrude `src_face` along its own normal so it lands on the
     target plane (a point `target_pt` on it + its normal `target_n`) — i.e. "up to
     that surface". Raises if the face is parallel to the target (it never reaches).
@@ -6174,13 +6273,13 @@ def _distance_to_target(src_face, target_pt, target_n, offset=0.0):
         gt = None
     if gt != GeomType.PLANE:
         raise ValueError(
-            "Press/Pull: 'up to' needs a FLAT source face — a curved face has no single "
+            f"{label}: 'up to' needs a FLAT source face — a curved face has no single "
             "direction to measure to the target along. Push it by a distance instead."
         )
     c, n = src_face.center(), src_face.normal_at()
     denom = n.X * target_n.X + n.Y * target_n.Y + n.Z * target_n.Z
     if abs(denom) < 1e-6:
-        raise ValueError("Press/Pull: the face is parallel to the 'up to' surface — can't reach it")
+        raise ValueError(f"{label}: the face is parallel to the 'up to' surface — can't reach it")
     num = (target_pt.X - c.X) * target_n.X + (target_pt.Y - c.Y) * target_n.Y + (target_pt.Z - c.Z) * target_n.Z
     d = num / denom
     if not offset:
