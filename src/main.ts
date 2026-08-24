@@ -17,6 +17,7 @@ import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
 import { toggleShortcutHUD } from "./input/shortcuts";
 import { checkForUpdates, scheduleStartupUpdateCheck, showAbout } from "./ui/updates";
+import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
@@ -59,6 +60,8 @@ import { openParamsDialog } from "./ui/paramsDialog";
 import { solveSketchFeature } from "./sketch/headlessSolve";
 import { setPrompt } from "./ui/prompt";
 import { getUnit, setUnit, asUnit } from "./ui/units";
+import { gpuFatalShown, showGpuFatal } from "./ui/gpuFatal";
+import { mountWindowControls } from "./ui/windowControls";
 import type { Feature, PlaneDef } from "./types";
 
 // Last-resort net: an uncaught error/rejection anywhere shouldn't fail silently
@@ -68,13 +71,20 @@ import type { Feature, PlaneDef } from "./types";
 // loop notification (harmless, and emitted by anything that resizes a canvas)
 // reaches the user as "Something went wrong": a 0.1.111 report from someone who
 // had just opened the app and done nothing carried seven of them.
+//
+// The GPU panel silences them too. A machine with no 3D context throws here
+// first, and "Something went wrong — check the console" on top of a panel that
+// already names the driver, the failure and two things to try is exactly the
+// message this reporter got INSTEAD of anything useful.
 window.addEventListener("unhandledrejection", (e) => {
   const reason = e.reason;
+  if (gpuFatalShown()) return;
   if (isBenignBrowserNoise(reason instanceof Error ? reason.message : reason)) return;
   console.error("Unhandled rejection:", reason);
   toast("Something went wrong — check the console for details", { kind: "error" });
 });
 window.onerror = (message, source, lineno, colno, error) => {
+  if (gpuFatalShown()) return;
   if (isBenignBrowserNoise(message)) return;
   console.error("Uncaught error:", error ?? message, source, lineno, colno);
   toast("Something went wrong — check the console for details", { kind: "error" });
@@ -84,8 +94,6 @@ window.onerror = (message, source, lineno, colno, error) => {
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const statusEl = document.getElementById("status")!;
 const contextTab = document.getElementById("context-tab")!;
-
-const viewport = new Viewport(canvas);
 
 const geometry = import.meta.env.VITE_GEOM === "rust" ? new TauriGeometry() : new Geometry();
 void geometry.init(); // fetch the per-launch sidecar auth token + open the socket
@@ -122,6 +130,44 @@ if ("__TAURI_INTERNALS__" in window) {
 // (checkRecovery below), so the only thing lost is the sample.
 const store = new DocumentStore(geometry, EMPTY_DOCUMENT);
 store.onWarning = (msg) => toast(msg);
+
+// THE VIEWPORT IS BUILT HERE, NOT AT THE TOP, and the reason is a field report:
+// on a machine with no WebGL2 this line throws, module evaluation of main.ts
+// ends, and the user is left with index.html's static shell — the logo, and no
+// menus at all ("black screen with the logo in the top left", Debian Bookworm,
+// NVIDIA G105M on nouveau). three r180 asks for a "webgl2" context and nothing
+// else, so an old driver takes the whole application down.
+//
+// It moved down exactly ONE statement group, to just past the store, because
+// showGpuFatal needs `store` and `geometry` to be able to file a bug report —
+// that report is the only way such a machine ever tells me what its GL is.
+// Nothing between the old position and here touches `viewport`. It is NOT moved
+// below the chrome: eleven tools plus the overlay, SketchMode and the SpaceMouse
+// all take it eagerly, and reordering this file that far is what shipped 8dc2f87
+// (a temporal-dead-zone throw that killed the entire keymap on two public betas).
+//
+// A machine that cannot draw does not get a degraded CAD app, it gets one screen
+// that says why and offers to send the details. Note that installAutosave and
+// checkRecovery below never run in that case: a "restore your document?" prompt
+// over a panel saying the app cannot draw has nowhere to go, and the snapshot
+// stays on disk for the next successful launch.
+// THE WINDOW BUTTONS GO UP FIRST, before anything that can throw. The window is
+// undecorated, so this row is the only close, minimise and resize the user has,
+// and the GPU-fatal path below ends module evaluation ~300 lines before the old
+// call site — which left a machine with no WebGL2 showing a panel it could not
+// dismiss in a window it could not close. It depends on nothing but the static
+// #titlebar from index.html and the Tauri window API, so it is safe this early,
+// and it is a no-op in a browser harness.
+mountWindowControls(document.getElementById("titlebar")!);
+
+let viewport: Viewport;
+try {
+  viewport = new Viewport(canvas);
+} catch (e) {
+  showGpuFatal(e, { store, geometry });
+  throw e;
+}
+
 // crash-safety: periodic recovery snapshots + restore-on-launch prompt
 installAutosave(store);
 void checkRecovery(store);
@@ -398,6 +444,12 @@ new Menubar(document.getElementById("menubar")!, [
     label: "Help",
     items: [
       { label: "Keyboard Shortcuts", shortcut: "?", onClick: () => toggleShortcutHUD() },
+      { separator: true, label: "" },
+      // A tester asked for "a reference manual or other description of each
+      // operation". Eight tutorial videos and a README already existed and
+      // nothing in the app linked to either, so Help offered no help at all.
+      { label: "Tutorial Videos (8)", onClick: () => void openHelp(TUTORIALS_URL) },
+      { label: "Guide on GitHub", onClick: () => void openHelp(GUIDE_URL) },
       { separator: true, label: "" },
       { label: "Check for Updates…", onClick: () => void checkForUpdates(true) },
       { label: "About SindriCAD", onClick: () => void showAbout() },
@@ -1125,6 +1177,13 @@ function handleAction(action: string) {
     return;
   }
   if (action === "finish") return void sketch.finish(true);
+  // Sketch > Check. On demand only: a warning at Finish would sit on the path
+  // every single sketch takes, and a checker's first job is to be trusted.
+  if (action === "check-sketch") {
+    if (sketch.active) sketch.runCheck();
+    else setStatus("Enter a sketch to check it", "");
+    return;
+  }
   if (action === "palette") return void palette.setVisible(true);
   // Undo/redo must be handled BEFORE the finish-the-sketch line below. They are
   // not 3D modeling commands: letting Ctrl+Z fall through would commit the sketch
