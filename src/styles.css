@@ -593,17 +593,29 @@ body {
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
+/* The caret has to be a PERMANENT affordance, not a hover-only one. Measured on
+   the old rule: a 24-unit viewBox with stroke-width 1.6 rendered at 10px gives an
+   effective stroke of 0.67 CSS px, on a transparent background with a transparent
+   border. Until you hovered it exactly, a split button was pixel-for-pixel a
+   plain button with a faint smudge, which is why a tester asked where Sweep and
+   Loft were while both sat behind one. It now carries a divider and a readable
+   colour at rest, and still lights up on hover. */
 .ribbon-split-arrow {
-  width: 14px;
+  width: 16px;
   padding: 0;
   background: transparent;
   border: 1px solid transparent;
-  border-left: none;
+  border-left: 1px solid var(--line);
   border-radius: 0 var(--r-md) var(--r-md) 0;
-  color: var(--text-mute);
+  color: var(--text-dim);
   cursor: pointer;
   font-size: 9px;
   transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+/* hovering anywhere on the pair hints that the arrow is its own target */
+.ribbon-split:hover .ribbon-split-arrow {
+  background: var(--raised);
+  color: var(--text);
 }
 .ribbon-split-arrow:hover {
   background: var(--accent-tint);
@@ -2739,7 +2751,9 @@ button.finish:hover {
 .tb-btn svg { width: 15px; height: 15px; display: block; flex: none; }
 .ribbon-overflow svg { width: 18px; height: 18px; display: block; flex: none; margin: 0 auto; }
 .ribbon-split-arrow { display: flex; align-items: center; justify-content: center; }
-.ribbon-split-arrow svg { width: 10px; height: 10px; display: block; flex: none; }
+/* 12px, and its own stroke-width: this block OVERRIDES the sizing in the
+   .ribbon-split-arrow rule above, so changing the size there alone does nothing. */
+.ribbon-split-arrow svg { width: 12px; height: 12px; display: block; flex: none; stroke-width: 2.2; }
 
 /* menus: a fixed-width leading slot so checked and unchecked items align. The
    old approach padded the label with four spaces, which never lined up. */

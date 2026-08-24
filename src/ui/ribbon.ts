@@ -191,6 +191,10 @@ export const SKETCH: Group[] = [
   {
     label: "CONSTRAINTS",
     items: [
+      // TOP LEVEL, not inside the split. A tester asked where Sweep and Loft
+      // were while both sat behind a caret; a tool whose whole job is to tell
+      // you what is wrong with your profile cannot be the one that hides.
+      { action: "check-sketch", label: "Check", iconName: "properties" },
       {
         label: "Constrain",
         children: [
@@ -355,24 +359,37 @@ export class Ribbon {
     let primary = first;
     const btn = document.createElement("button");
     btn.className = "ribbon-btn";
+    // Both tooltips are DERIVED from the children, never hand-written. The old
+    // text was `More ${it.label} tools`, and it.label is the FAMILY name, which
+    // for four of the six splits is also the first child's name — so the arrow
+    // on the Revolve button read "More Revolve tools" while the thing it was
+    // hiding was Loft and Sweep. A beta tester asked where Sweep and Loft were
+    // while both were one click away behind exactly that arrow.
+    const others = () => children.filter((c) => c !== primary).map((c) => c.label);
     const apply = () => {
       btn.dataset.action = primary.action;
-      btn.title = primary.key ? `${primary.label} (${primary.key})` : primary.label;
+      const base = primary.key ? `${primary.label} (${primary.key})` : primary.label;
+      const rest = others();
+      btn.title = rest.length ? `${base}\nAlso here: ${rest.join(", ")}` : base;
       btn.innerHTML = `${icon(primary.iconName)}<span>${esc(primary.label)}</span>`;
+      const label = rest.length ? `Also here: ${rest.join(", ")}` : `More ${it.label} tools`;
+      arrow.title = label;
+      arrow.setAttribute("aria-label", label);
     };
-    apply();
     btn.addEventListener("click", () => this.onAction?.(primary.action));
 
     const arrow = document.createElement("button");
     arrow.className = "ribbon-split-arrow";
-    arrow.title = `More ${it.label} tools`;
-    arrow.setAttribute("aria-label", `More ${it.label} tools`);
     arrow.innerHTML = icon("caretDown");
+    arrow.setAttribute("aria-haspopup", "menu");
+    arrow.setAttribute("aria-expanded", "false");
+    apply(); // after `arrow` exists: apply() now writes the arrow's tooltip too
     arrow.addEventListener("click", (e) => {
       e.stopPropagation();
       const wasMine = this.popupAnchor === arrow;
       this.closePopup();
       if (wasMine) return; // second click on the same arrow just closes
+      arrow.setAttribute("aria-expanded", "true");
       this.openDropdown(arrow, children, (picked) => {
         primary = picked;
         apply();
@@ -513,6 +530,12 @@ export class Ribbon {
     (this.overflowPopup as unknown as { _cleanup?: () => void })._cleanup?.();
     this.overflowPopup.remove();
     this.overflowPopup = null;
+    // Reset the split arrow's state HERE rather than at the click site: a popup
+    // also closes on an outside click, on Escape and on a reflow, and none of
+    // those go back through the arrow's own handler.
+    if (this.popupAnchor?.hasAttribute("aria-expanded")) {
+      this.popupAnchor.setAttribute("aria-expanded", "false");
+    }
     this.popupAnchor = null;
   }
 }

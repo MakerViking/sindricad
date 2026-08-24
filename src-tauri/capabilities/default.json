@@ -18,7 +18,9 @@
       "allow": [
         { "url": "https://tinkeratlas.com/*" },
         { "url": "http://localhost:3000/*" },
-        { "url": "https://github.com/MakerViking/sindricad/releases/*" }
+        { "url": "https://github.com/MakerViking/sindricad/releases/*" },
+        { "url": "https://github.com/MakerViking/sindricad#readme" },
+        { "url": "https://www.youtube.com/playlist*list=PLS7xEtXRFd1A" }
       ]
     },
     "fs:allow-read-text-file",
