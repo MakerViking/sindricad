@@ -112,6 +112,7 @@ export class ExtrudeTool {
   private editId: string | null = null; // committed feature id being edited
   private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
   private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
+  private editSeparateBodies: boolean | undefined; // ditto: an edit must not change body COUNT
   /** Areas of the feature being edited that this tool could NOT resolve, held
    *  exactly as the document has them and written straight back on commit. See
    *  startEdit: without this, editing the depth of a feature whose sketch has
@@ -195,6 +196,7 @@ export class ExtrudeTool {
     this.editId = featureId;
     this.editOp = f.operation;
     this.editHiddenBodies = f.hiddenBodies;
+    this.editSeparateBodies = f.separateBodies;
     // Carry the saved end condition through the edit. Not restoring it here is
     // how a depth tweak would silently turn an "up to that face" extrude back
     // into a blind one — `commit` writes what these fields hold, so anything
@@ -1007,6 +1009,14 @@ export class ExtrudeTool {
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
       // display toggles rewrite committed boolean history.
       ...(hiddenBodies !== undefined ? { hiddenBodies } : {}),
+      // NEW extrudes split into one body per connected lump; an EDIT keeps
+      // whatever the feature already had. Stamping it on edit would renumber the
+      // bodies of a document that never asked for it — see types.ts.
+      ...(this.editId
+        ? this.editSeparateBodies !== undefined
+          ? { separateBodies: this.editSeparateBodies }
+          : {}
+        : { separateBodies: true }),
     };
     const id = feature.id;
     if (this.editId) {

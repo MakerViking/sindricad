@@ -487,6 +487,20 @@ export type Feature =
       // builder falls back to the document's LIVE visibility map (old files
       // keep their exact behavior until re-saved through load-stamping).
       hiddenBodies?: string[];
+      // One body per CONNECTED lump instead of one body for the whole extrude:
+      // four separated slices of a ring become four bodies you can colour and
+      // move independently, which is what mainstream MCAD does. Connectivity is
+      // the KERNEL's answer, so two selected areas that share an edge still come
+      // back as ONE body.
+      //
+      // OPT-IN, and it has to stay that way. Body ids are POSITIONAL (`body1`,
+      // `body2`, … from a counter), so turning one body into four renumbers
+      // every body after it and silently re-aims any saved `body:"bodyN"`
+      // selector on a fillet, shell or press/pull. Absent = legacy feature,
+      // rebuilt exactly as before; the tool stamps it on NEW extrudes only, and
+      // an edit preserves whatever the feature already had. Same discipline as
+      // `hiddenBodies` above.
+      separateBodies?: boolean;
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }
   | { id: string; type: "chamfer"; edges: Selector | Selector[]; distance: Num }

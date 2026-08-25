@@ -1924,7 +1924,10 @@ def _handle_extrude(f, ctx):
         if "hiddenBodies" in f
         else ctx.hidden_bodies
     )
-    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid)
+    _boolean_into_bodies(
+        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid,
+        split_disjoint=bool(f.get("separateBodies")),
+    )
 
 
 def _extrude_maybe_tapered(f, ctx, target, prof_faces, amount):
@@ -5487,7 +5490,7 @@ def _imprint(solid, tools):
     return Compound(bb.Shape())
 
 
-def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
+def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
@@ -5506,6 +5509,34 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset()):
     # normalize to one Compound so overlap-testing and cut/join/intersect work.
     solid = _as_compound(solid)
     if op == "new":
+        # One body per CONNECTED lump, mainstream-MCAD style: extruding four
+        # separated slices of a ring gives four bodies, not one compound body you
+        # cannot colour or move independently. Reported 2026-08-26.
+        #
+        # Connectivity is decided by the KERNEL, not by bounding boxes. A bbox
+        # rule gets two things wrong: boxes can overlap while the solids touch
+        # nowhere (a disc sitting in a ring's hole — measured, and the case
+        # test_separate_bodies pins), and it cannot see that two areas sharing an
+        # EDGE are one lump. `_fuse_pattern_cells` is the right tool because it
+        # already carries the measured analysis: bbox-disjoint lumps skip the
+        # boolean entirely (a fuse of disjoint solids IS their compound), and only
+        # genuinely overlapping ones pay for the incremental chain. Splitting the
+        # result into `.solids()` then yields exactly the connected components —
+        # two slices that share an edge come back as ONE body, as they should.
+        #
+        # OPT-IN, because body ids are POSITIONAL (`body1`, `body2`, … from a
+        # counter). Turning one body into four renumbers every body after it and
+        # silently re-aims any saved `body:"bodyN"` selector on a fillet, shell or
+        # press/pull. So an old document, which has no `separateBodies` flag,
+        # rebuilds byte-identically; only features stamped by the current tool
+        # split. Same discipline as `hiddenBodies`.
+        if split_disjoint:
+            lumps = solid.solids()
+            if len(lumps) > 1:
+                fused = _fuse_pattern_cells(list(lumps))
+                for part in _as_compound(fused).solids():
+                    new_body(part)
+                return
         new_body(solid)
         return
     # Tick per body. `_bbox_overlap` runs the EXACT `bbox_of` on each candidate,

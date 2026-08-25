@@ -380,6 +380,14 @@ export class Viewport {
       return;
     }
     if (this.pickSuppressed) return;
+    // A visible sketch's profile areas are pickable in BOTH selection modes. The
+    // mode chooses face-vs-body granularity for the SOLID; a sketch profile is
+    // neither, so switching to Bodies has no business turning it off. It used to:
+    // the `return` below fired first and killed sketch hover and click outright,
+    // silently, with the only clue being a small "Faces/Bodies" chip in a row of
+    // camera buttons. Reported as "I can only select the sketch in sketch mode",
+    // after switching to Bodies to assign filament slots and never switching back.
+    if (this.regionHoverAt?.(e.clientX, e.clientY)) return;
     if (this.selectionMode === "bodies") return; // no face hover while picking bodies
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -403,6 +411,14 @@ export class Viewport {
     if (this.pickSuppressed) return;
     const rect = this.canvas.getBoundingClientRect();
 
+    // Sketch areas first, in EITHER mode — see handleHover for why. Without this
+    // the bodies branch below returns before regionPickAt is ever consulted.
+    if (
+      this.selectionMode === "bodies" &&
+      this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)
+    ) {
+      return;
+    }
     // --- Bodies mode: a click selects the WHOLE body under the cursor ---
     if (this.selectionMode === "bodies" && this.model && this.highlighter) {
       const bodyId = this.bodyIdAt(e.clientX, e.clientY);
