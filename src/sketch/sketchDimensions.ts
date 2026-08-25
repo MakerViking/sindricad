@@ -14,6 +14,7 @@ import { camHash } from "../viewport/camHash";
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, staggeredDefaults, type DimField } from "./entityDims";
+import { isOriginGeometry } from "./origin";
 import { fmtLength, parseField, displayValue, isPlainNumber } from "../ui/units";
 
 /** format a dim value for display: length in the display unit, angle in degrees;
@@ -135,6 +136,12 @@ export class SketchDimensions {
     // so a label and its own annotation lines never disagree
     const defaults = staggeredDefaults(entities);
     entities.forEach((e, i) => {
+      // The origin carries no dimensions. Its axes are conceptually INFINITE and
+      // their 20 m length is an implementation stand-in, so labelling it put two
+      // "20000 mm" badges over the origin of every sketch. dimensionSegments
+      // already skips these (via its construction filter); this is the other
+      // half of the same rule.
+      if (isOriginGeometry(e.id)) return;
       for (const d of entityDims(e, defaults.get(e.id))) {
         const expr = this.entityExprOf?.(i, d.field);
         const field = d.field;

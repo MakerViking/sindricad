@@ -630,7 +630,16 @@ export function curveObjects(
       // because it is fixed and none of those states can apply to it. A tester
       // could not find anything to anchor to precisely because there was nothing
       // on screen saying "this is 0,0".
-      add(pointMarker(plane, e.x, e.y, isOriginId(e.id) ? ORIGIN_COLOR : e.construction ? 0xffa64d : color));
+      // `!highlight` matches how projected geometry is drawn: the datum colour
+      // is the RESTING look, and an emphasis pass (selection, hover) must still
+      // win — the origin is selectable precisely so you can constrain to it, and
+      // a selection you cannot see reads as a selection that did not happen.
+      add(pointMarker(
+        plane,
+        e.x,
+        e.y,
+        isOriginId(e.id) && !highlight ? ORIGIN_COLOR : e.construction ? 0xffa64d : color,
+      ));
       continue;
     }
     if (e.type === "text") {
@@ -675,7 +684,7 @@ export function curveObjects(
     // The origin AXES are reference geometry, not the user's construction lines,
     // and they must not read as something you drew and forgot. Same colour as
     // the origin point, so the three together read as one datum.
-    const curve = isOriginGeometry(e.id)
+    const curve = isOriginGeometry(e.id) && !highlight
       ? polyline(pts, ORIGIN_COLOR)
       : !projected && e.construction
         ? constructionLine(pts)

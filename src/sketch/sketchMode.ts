@@ -3892,6 +3892,12 @@ export class SketchMode {
     };
     this.entities.forEach((e, i) => {
       cur = i;
+      // The origin offers NO drag handles. It is pinned, so a drag started on it
+      // is refused by the solver and nothing happens — but starting one still
+      // consumes the click, so the origin could not be SELECTED either. Reported
+      // as "it highlights but I can't select it": the click was being spent on a
+      // drag that could never move.
+      if (isOriginGeometry(e.id)) return;
       if (e.type === "line") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
       else if (e.type === "circle") consider(e.x, e.y);
       else if (e.type === "arc") { consider(e.x1, e.y1); consider(e.x2, e.y2); }

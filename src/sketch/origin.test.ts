@@ -23,6 +23,8 @@ import {
 import sketchModeSrc from "./sketchMode.ts?raw";
 import sketchSolveSrc from "./sketchSolve.ts?raw";
 import modifySrc from "./modify.ts?raw";
+import sketchDimsSrc from "./sketchDimensions.ts?raw";
+import overlaySrc from "./overlay.ts?raw";
 
 describe("the origin entity", () => {
   it("sits at 0,0 in plane coordinates", () => {
@@ -186,5 +188,35 @@ describe("origin geometry is reference, not a modify boundary", () => {
     const at = sketchModeSrc.indexOf("private guardProjected(");
     const body = sketchModeSrc.slice(at, at + 600);
     expect(body).toContain("isOriginGeometry(e?.id)");
+  });
+});
+
+describe("the origin is visible reference, not clutter or a dead click", () => {
+  it("carries no dimension labels", () => {
+    // The axes are conceptually infinite; the 20 m length is an implementation
+    // stand-in. Labelling it put two "20000 mm" badges over the origin of every
+    // sketch. dimensionSegments already skipped them via its construction
+    // filter — this is the other half of the same rule.
+    const at = sketchDimsSrc.indexOf("show(entities: ResolvedEntity[]");
+    expect(at, "sketchDimensions.show moved").toBeGreaterThan(-1);
+    const body = sketchDimsSrc.slice(at, at + 1400);
+    expect(body).toMatch(/if \(isOriginGeometry\(e\.id\)\) return;/);
+  });
+
+  it("offers no drag handle, so a click can SELECT it", () => {
+    // It is pinned, so a drag started on it is refused and nothing moves — but
+    // starting one still consumes the click, so it could not be selected either.
+    // Reported as "it highlights but I can't select it".
+    const at = sketchModeSrc.indexOf("private pickPoint(");
+    expect(at).toBeGreaterThan(-1);
+    const body = sketchModeSrc.slice(at, at + 900);
+    expect(body).toMatch(/if \(isOriginGeometry\(e\.id\)\) return;/);
+  });
+
+  it("lets an emphasis pass override the datum colour", () => {
+    // Selection has to be visible on it, or selecting it reads as nothing
+    // happening. Same `!highlight` rule projected geometry uses.
+    expect(overlaySrc).toMatch(/isOriginId\(e\.id\) && !highlight/);
+    expect(overlaySrc).toMatch(/isOriginGeometry\(e\.id\) && !highlight/);
   });
 });

@@ -3,7 +3,7 @@
 
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
-import { entitySegments, polygonPoints } from "./region";
+import { entitySegments, polygonPoints, rectCorners } from "./region";
 import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
@@ -210,8 +210,35 @@ export function trimEntity(
     return ents.flatMap((o, i) => (i === index ? pieces : [o]));
   }
 
-  if (e.type !== "line") return del(); // rectangle/spline + rigid polygon/slot: deleted whole
-  // defer: trim/break/offset on rigid polygon/slot no-op or explode; revisit when a user hits it
+  // A RECTANGLE is one entity, so trimming it used to delete all four edges —
+  // "I clicked the bottom line and the whole rectangle disappeared". It is four
+  // lines to the user, so explode it into four and trim the one that was
+  // clicked. The `defer ... revisit when a user hit it` note that used to live
+  // here has been redeemed; polygon/slot are genuinely rigid parametric shapes
+  // (a trimmed hexagon is not a hexagon) and a spline has no edges, so those
+  // keep the delete-whole behaviour until someone hits THAT.
+  //
+  // Exploding drops the rectangle's id, and with it the implicit `~h0`/`~v0`
+  // constraints the solver derives from the entity — they are generated at
+  // compile time, so nothing dangles. User constraints that named the rectangle
+  // are cleaned by the caller: afterModify() runs pruneConstraints().
+  if (e.type === "rectangle") {
+    const corners = rectCorners(e.x, e.y, e.width, e.height);
+    const edges: ResolvedEntity[] = corners.map((a, k) => {
+      const b = corners[(k + 1) % corners.length]!;
+      return { type: "line", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) };
+    });
+    // which edge was clicked — measured on the exploded lines, not guessed
+    let hit = 0;
+    let hitD = Infinity;
+    edges.forEach((ln, k) => {
+      const d = distToEntity(ln, click);
+      if (d < hitD) { hitD = d; hit = k; }
+    });
+    const exploded = ents.flatMap((o, i) => (i === index ? edges : [o]));
+    return trimEntity(exploded, index + hit, click);
+  }
+  if (e.type !== "line") return del(); // spline + rigid polygon/slot: deleted whole
 
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const params = new Set<number>([0, 1]);

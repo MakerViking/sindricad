@@ -95,3 +95,53 @@ describe("the trim call site (sketchMode source)", () => {
     expect(sketchSrc).not.toContain('if (this.tool === "trim") return this.trimClick(p);');
   });
 });
+
+// --- trimming a RECTANGLE ---------------------------------------------------
+//
+// Field report (2026-08-25, Thomas): "When I clicked the bottom line of the
+// rectangle, the whole rectangle disappeared when I had Trim selected."
+//
+// Pre-existing, and the code said so: `if (e.type !== "line") return del()`, with
+// a comment reading "defer: trim/break/offset on rigid polygon/slot no-op or
+// explode; revisit when a user hits it". A user hit it. A rectangle is ONE
+// entity to the code and four lines to the person looking at it, and trim has to
+// answer to the person.
+
+const rect = (id: string, x: number, y: number, width: number, height: number) =>
+  ({ type: "rectangle", id, x, y, width, height }) as never;
+
+/** surviving lines as [x1,y1,x2,y2], rounded */
+function survivors(out: unknown[]): number[][] {
+  return (out as { type: string; x1: number; y1: number; x2: number; y2: number }[])
+    .filter((e) => e.type === "line")
+    .map((e) => [e.x1, e.y1, e.x2, e.y2].map(Math.round));
+}
+
+describe("trimming a rectangle", () => {
+  // 100 x 150 centred at (50,75): edges on x=0, x=100, y=0, y=150
+  const R = () => [rect("r", 50, 75, 100, 150)];
+
+  it("removes only the edge you clicked, not the whole rectangle", () => {
+    const out = trimEntity(R(), 0, v(50, 0));
+    const kept = survivors(out);
+    expect(kept).toHaveLength(3); // was 0 — the entire rectangle vanished
+    // and the bottom edge (y=0 at both ends) is the one that went
+    expect(kept.some((l) => l[1] === 0 && l[3] === 0)).toBe(false);
+  });
+
+  it("splits the clicked edge at a crossing, keeping the rest of the rectangle", () => {
+    const ents = [rect("r", 50, 75, 100, 150), line("v", 30, -20, 30, 20)];
+    const kept = survivors(trimEntity(ents, 0, v(50, 0)));
+    // the 30..100 span of the bottom edge goes; 0..30 stays, as do the other
+    // three edges and the crossing line
+    expect(kept).toContainEqual([0, 0, 30, 0]);
+    expect(kept.some((l) => l[0] === 0 && l[1] === 0 && l[2] === 100)).toBe(false);
+  });
+
+  it("still deletes shapes that genuinely have no edges", () => {
+    // a polygon/slot is a rigid parametric shape — a trimmed hexagon is not a
+    // hexagon — so those keep the delete-whole behaviour deliberately.
+    const poly = { type: "polygon", id: "p", x: 0, y: 0, radius: 10, sides: 6, angle: 0 } as never;
+    expect(survivors(trimEntity([poly], 0, v(10, 0)))).toHaveLength(0);
+  });
+});
