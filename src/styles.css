@@ -3213,6 +3213,8 @@ button.finish:hover {
   margin-top: var(--s-4);
   font-size: 10.5px;
   color: var(--text-mute);
+}
+
 /* ---- tool cursor badge (src/ui/toolCursor.ts) ----
    The armed tool's icon trailing the pointer over the canvas. Positioned with a
    transform in device coordinates, so it is `fixed` and anchored at the origin —
