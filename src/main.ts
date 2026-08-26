@@ -12,6 +12,7 @@ import { isEditableTarget } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
 import { Inspector, editHint } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
+import { mountToolCursor } from "./ui/toolCursor";
 import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
@@ -309,6 +310,12 @@ if ("__TAURI_INTERNALS__" in window) {
 // --- UI ---
 const ribbon = new Ribbon(document.getElementById("ribbon")!);
 ribbon.onAction = handleAction;
+
+// The armed tool's icon, trailing the pointer over the canvas (issue #17). On
+// document.body rather than #viewport: it positions itself in device coordinates,
+// so it must not inherit a positioned ancestor's origin. Lives for the life of
+// the window — nothing here unmounts it.
+const toolCursor = mountToolCursor(document.body, canvas);
 
 // Cmd/Ctrl-K command palette — search + run any command (discoverability safety net)
 const cmdk = new CommandPalette(handleAction);
@@ -1029,6 +1036,11 @@ sketch.onState = () => {
   refreshUndoButtons();
   ribbon.setContext(sketch.active ? "sketch" : "model");
   ribbon.setActiveSketchTool(sketch.tool);
+  // Only while a sketch is open: sketch.tool keeps its last value after Finish,
+  // and the modeling tools have no equivalent broadcast to hook (each owns its
+  // own phase inside src/features), so outside a sketch there is nothing armed
+  // this can honestly report.
+  toolCursor.setTool(sketch.active ? sketch.tool : null);
   palette.setVisible(sketch.active);
   contextTab.textContent = sketch.active ? "SKETCH" : "SOLID";
   contextTab.classList.toggle("sketch", sketch.active);
