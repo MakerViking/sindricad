@@ -34,6 +34,13 @@ import { sceneStats } from "../diagnostics/sceneStats";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
+import {
+  loadPivotMode,
+  mountPivotButton,
+  resolvePivot,
+  savePivotMode,
+  type PivotMode,
+} from "./orbitPivot";
 import { setPrompt } from "../ui/prompt";
 import { setSketchLineResolution } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
@@ -169,6 +176,17 @@ export class Viewport {
   private needsRender = true;
   private lingerFrames = 3;
 
+  /** Which point the view swings around when you orbit (GitHub #17). Persisted,
+   *  and re-resolved at every drag start — "under the cursor" only means
+   *  anything at the instant the drag begins. */
+  private pivotMode: PivotMode = loadPivotMode();
+  /** Where the pointer was when the current gesture started. Recorded on WINDOW
+   *  in the CAPTURE phase: camera-controls binds its own pointerdown to the
+   *  canvas and fires 'controlstart' from inside it, so a canvas-level listener
+   *  is a coin toss on registration order, while a window capture listener is
+   *  guaranteed to have run first. */
+  private pressPos = { x: 0, y: 0 };
+
   constructor(private canvas: HTMLCanvasElement) {
     this.scene = createScene(canvas);
     this.progressive = new ProgressiveModel(this.scene.modelGroup, disposeBody);
@@ -195,13 +213,72 @@ export class Viewport {
     // remote desktops / fractional scaling), and without this the camera keeps a
     // stale aspect and the first fit lands the model off-screen.
     new ResizeObserver(() => this.resize()).observe(this.canvas);
-    // once the user drives the camera (orbit/pan/zoom), stop auto-framing.
+    // The pointer position at the moment a gesture starts, for the cursor
+    // orbit pivot (see applyOrbitPivot).
+    window.addEventListener(
+      "pointerdown",
+      (e) => {
+        this.pressPos = { x: e.clientX, y: e.clientY };
+      },
+      true,
+    );
     this.rig.controls.addEventListener("controlstart", () => {
+      // once the user drives the camera (orbit/pan/zoom), stop auto-framing.
       this.userMovedCamera = true;
+      this.applyOrbitPivot();
       this.requestRender();
     });
+    mountPivotButton(
+      () => this.pivotMode,
+      (m) => this.setOrbitPivotMode(m),
+    );
     this.installPointer();
     this.loop();
+  }
+
+  /** Orbit-pivot mode. Read/written by the control-strip button; exposed so a
+   *  future settings surface can drive it too. */
+  orbitPivotMode(): PivotMode {
+    return this.pivotMode;
+  }
+
+  setOrbitPivotMode(mode: PivotMode) {
+    this.pivotMode = mode;
+    savePivotMode(mode);
+  }
+
+  /** Aim the gesture that is starting at whatever the pivot mode asks for.
+   *  Only for an ORBIT: a pan or a dolly has no pivot, and setting one would
+   *  leave a screen-space offset for the rig to fold back out for nothing. */
+  private applyOrbitPivot() {
+    if (this.pivotMode === "view") return; // the default costs nothing
+    if (!this.rig.isOrbiting()) return;
+    const box = this.modelBox();
+    const point = resolvePivot(this.pivotMode, {
+      // The raycast is by far the most expensive input, so only pay for it in
+      // the one mode that reads it.
+      cursor:
+        this.pivotMode === "cursor"
+          ? this.surfacePointAt(this.pressPos.x, this.pressPos.y)
+          : null,
+      modelCentre: box ? box.getCenter(new THREE.Vector3()) : null,
+      camera: this.rig.controls.getPosition(new THREE.Vector3()),
+    });
+    if (point) this.rig.setOrbitPivot(point);
+  }
+
+  /** The model surface point under the cursor, or null when the ray hits
+   *  nothing. Deliberately NOT cursorWorldPoint: that invents a point at orbit
+   *  distance so zoom-to-cursor still tracks over empty space, which is right
+   *  for zoom and wrong here — orbiting about a point that is on nothing swings
+   *  the model around a centre the user cannot see or predict. */
+  private surfacePointAt(clientX: number, clientY: number): THREE.Vector3 | null {
+    if (!this.model) return null;
+    const hit = this.rayFrom(clientX, clientY).intersectObjects(
+      visibleBodyMeshes(this.model),
+      false,
+    )[0];
+    return hit ? hit.point.clone() : null;
   }
 
   /** Mark the next few frames dirty so the render loop actually draws them.
