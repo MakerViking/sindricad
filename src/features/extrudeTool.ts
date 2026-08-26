@@ -739,6 +739,13 @@ export class ExtrudeTool {
     this.phase = "drag";
     this.overlay.setHoverRegion(null);
     this.pickingTarget = false;
+    // Swing off the flat sketch view so the depth is visible. A prism grown from
+    // a sketch you are looking at straight-on extends exactly along the view
+    // axis, so it is invisible until you orbit — which is why every mainstream
+    // MCAD tilts here. No-ops when the camera is already at an angle, so a
+    // deliberate viewpoint is never yanked away. See Viewport.tiltOffAxis.
+    const plane = this.selected[0]?.plane;
+    if (plane) this.viewport.tiltOffAxis(plane.n);
     if (!this.editId) this.distance = 10; // a fresh extrude starts at 10 mm
     this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
     // Seed on BOTH paths, and lock the field either way.

@@ -80,6 +80,13 @@ export function sameStringMap(
   return true;
 }
 
+/** How far the camera swings when an extrude opens on a flat sketch view.
+ *  Roughly a three-quarter view: enough to read depth, not so much that the
+ *  profile you just picked becomes hard to recognise. Feel values — they want a
+ *  human eye, not a test. */
+const TILT_AZIMUTH = Math.PI / 7; // ~26 degrees around
+const TILT_POLAR = Math.PI / 7; // ~26 degrees over
+
 export class Viewport {
   readonly scene: SceneBundle;
   readonly rig: CameraRig;
@@ -464,6 +471,32 @@ export class Viewport {
   }
 
   // ---- Bodies selection mode + body helpers --------------------------------
+
+  /** Tilt off a straight-on view so an extrude's DEPTH is visible, the way
+   *  mainstream MCAD swings the camera when an extrude opens.
+   *
+   *  Only fires when the camera is looking very nearly ALONG the plane normal —
+   *  i.e. you are still in the flat sketch view, where a prism growing toward
+   *  you is invisible because it grows exactly along the view axis. If you have
+   *  already orbited to an angle, the view you chose is left alone: yanking the
+   *  camera away from a deliberate viewpoint is worse than not helping.
+   *
+   *  Animated on purpose, unlike `lookAtPlane`, which snaps. That one is a
+   *  precision operation and a half-finished transition ruins it; this one is
+   *  pure legibility, and camera-controls cancelling it the moment the user
+   *  touches the camera is exactly the behaviour wanted.
+   *
+   *  Returns whether it actually moved. */
+  tiltOffAxis(normal: THREE.Vector3): boolean {
+    const view = this.rig.active.getWorldDirection(new THREE.Vector3());
+    const n = normal.clone().normalize();
+    // |dot| because the camera may look at the plane from either side. 0.985 is
+    // about 10 degrees off-axis.
+    if (Math.abs(view.dot(n)) < 0.985) return false;
+    this.rig.controls.rotate(TILT_AZIMUTH, TILT_POLAR, true);
+    this.requestRender();
+    return true;
+  }
 
   setSelectionMode(m: "faces" | "bodies") {
     if (this.selectionMode === m) return;
