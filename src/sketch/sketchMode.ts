@@ -45,6 +45,7 @@ import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
 import { isOriginGeometry, originGeometry } from "./origin";
 import { boxFromDrag, entitiesInBox } from "./boxSelect";
+import { applicableConstraints, constraintLabel } from "./constraintMenu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -2943,6 +2944,41 @@ export class SketchMode {
 
   /** Right-click in select mode: select the entity under the cursor (if any) and
    *  offer Delete. Leaves camera navigation alone when nothing is hit/selected. */
+  /** Apply a constraint straight to an already-chosen selection.
+   *
+   *  Only reached for selections `applicableConstraints` vouched for, so every
+   *  operand here is a whole entity that IS a line or a round — no rectangle
+   *  edges to disambiguate. The constraint objects are the same shapes
+   *  ConstraintTools builds; this is a second ENTRY POINT to them, not a second
+   *  implementation of them. `moves` names the first-picked entity, matching the
+   *  solver-bias convention the click tools already stamp. */
+  private applyConstraintToSelection(t: SketchTool, sel: ResolvedEntity[]) {
+    const a = sel[0], b = sel[1];
+    if (!a) return;
+    const moves = a.id;
+    const push = (c: SketchConstraint) => {
+      this.constraints.push(c);
+      this.trialConstraint = c; // withdrawn again if this solve conflicts
+      this.pendingBias = { moves: [moves] };
+      this.requestSolve();
+      this.onState?.();
+    };
+    if (t === "horizontal") return push({ type: "horizontal", line: a.id });
+    if (t === "vertical") return push({ type: "vertical", line: a.id });
+    if (!b) return;
+    if (t === "parallel") return push({ type: "parallel", l1: a.id, l2: b.id });
+    if (t === "perpendicular") return push({ type: "perpendicular", l1: a.id, l2: b.id });
+    if (t === "collinear") return push({ type: "collinear", l1: a.id, l2: b.id });
+    if (t === "concentric") return push({ type: "concentric", c1: a.id, c2: b.id });
+    if (t === "equal") return push({ type: "equal", l1: a.id, l2: b.id });
+    if (t === "tangent") {
+      // the wire wants (line, circle) in that order whichever way round they were picked
+      const line = a.type === "line" ? a : b;
+      const round = a.type === "line" ? b : a;
+      return push({ type: "tangent", line: line.id, circle: round.id });
+    }
+  }
+
   private onContextMenu(e: MouseEvent) {
     if (!this.active) return;
     // a right-DRAG panned the camera — don't turn its release into a menu
@@ -2964,7 +3000,20 @@ export class SketchMode {
     e.preventDefault();
     const n = this.selected.size;
     const linked = this.selectedProjectedIds().size;
+    // Constraints that actually APPLY to this selection, first — GH #17's
+    // "a small menu showing only the valid/possible constraints for that
+    // selection". Offering them here is what makes them findable at all: the
+    // constraint tools live behind a caret in a ribbon group that collapses into
+    // an overflow menu on a laptop-width window, which is how two testers
+    // independently failed to find them.
+    const selEnts = this.entities.filter((e) => this.selected.has(e.id));
+    const cons = applicableConstraints(selEnts);
     const items: CtxItem[] = [
+      ...cons.map((t) => ({
+        label: constraintLabel(t),
+        onClick: () => this.applyConstraintToSelection(t, selEnts),
+      })),
+      ...(cons.length ? [{ separator: true, label: "" } as CtxItem] : []),
       ...(linked
         ? [{ label: linked > 1 ? `Break Link (${linked})` : "Break Link", onClick: () => this.breakSelectedLinks() }]
         : []),
