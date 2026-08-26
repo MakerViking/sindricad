@@ -836,6 +836,12 @@ export function polyline(points: THREE.Vector3[], color: number): THREE.Object3D
   return fatLine(points, color, false);
 }
 
+/** A dashed polyline — the marquee's CROSSING box, and anything else that needs
+ *  to read as "provisional" rather than as drawn geometry. */
+export function dashedPolyline(points: THREE.Vector3[], color: number): THREE.Object3D {
+  return fatLine(points, color, true);
+}
+
 /** A sketch curve as a fat line.
  *
  *  The world points are stashed on `userData.pts` because LineGeometry does NOT

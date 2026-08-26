@@ -8,7 +8,7 @@ import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
-import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
+import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
@@ -44,6 +44,7 @@ import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
 import { isOriginGeometry, originGeometry } from "./origin";
+import { boxFromDrag, entitiesInBox } from "./boxSelect";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -208,6 +209,10 @@ export class SketchMode {
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
   private lastDof = -1;
+  /** Marquee (box) selection in progress — GH #17. Started on a press in empty
+   *  space with the select tool, so it can never steal a gesture that had a
+   *  target: every branch that finds something under the cursor returns first. */
+  private boxSel: { from: THREE.Vector2; to: THREE.Vector2; shift: boolean } | null = null;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
   // click-vs-drag bookkeeping for a grabbed POINT: which entity owns it, where
   // the pointer went down (screen px), and whether it ever moved past the same
@@ -1356,12 +1361,13 @@ export class SketchMode {
         this.overlay.toggleRegionSelection(wr, e.shiftKey || e.ctrlKey || e.metaKey);
         return;
       }
-      // empty space → clear both entity and area selection
-      if (!e.shiftKey) {
-        this.selected.clear();
-        this.overlay.clearRegionSelection();
-      }
-      this.refreshActive();
+      // Empty space: begin a marquee. The selection is NOT cleared here any
+      // more — a box drag that ends up selecting nothing clears it in endDrag,
+      // and a plain click (no movement) clears it there too, so the old
+      // behaviour is preserved without pre-emptively wiping a selection the
+      // user may be about to extend with Shift.
+      this.boxSel = { from: raw.clone(), to: raw.clone(), shift: e.shiftKey };
+      try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
       return;
     }
     if (PATTERN_TOOLS.has(this.tool)) return this.patternClick(p);
@@ -2408,6 +2414,16 @@ export class SketchMode {
     if (this.rightDownAt && !this.rightDragged &&
       Math.hypot(e.clientX - this.rightDownAt.x, e.clientY - this.rightDownAt.y) > 5) {
       this.rightDragged = true;
+    }
+    // A marquee owns the pointer for as long as it is being dragged.
+    if (this.boxSel) {
+      const raw = this.planePoint(e);
+      if (raw) {
+        this.boxSel.to = raw.clone();
+        this.overlay.setPreview(this.boxPreview());
+        this.viewport.requestRender();
+      }
+      return;
     }
     if (this.active && this.tool === "project") {
       this.projectHover(e);
@@ -3942,7 +3958,55 @@ export class SketchMode {
     void this.pump();
   }
 
+  /** The marquee rectangle as preview geometry. A WINDOW box (drag rightwards)
+   *  is drawn solid and a CROSSING box dashed, which is how mainstream CAD tells
+   *  you which of the two you are about to get — the direction alone is
+   *  invisible once you have started moving. */
+  private boxPreview(): THREE.Object3D[] {
+    const b = this.boxSel;
+    if (!b) return [];
+    const { min, max, mode } = boxFromDrag(b.from, b.to);
+    const c = [
+      this.plane.to3D(min.x, min.y), this.plane.to3D(max.x, min.y),
+      this.plane.to3D(max.x, max.y), this.plane.to3D(min.x, max.y),
+      this.plane.to3D(min.x, min.y),
+    ];
+    return [mode === "crossing" ? dashedPolyline(c, SELECT_COLOR) : polyline(c, SELECT_COLOR)];
+  }
+
+  /** Finish a marquee: select what it covers, or clear when it covers nothing. */
+  private applyBoxSel() {
+    const b = this.boxSel;
+    this.boxSel = null;
+    this.overlay.setPreview([]);
+    if (!b) return;
+    const moved = b.from.distanceTo(b.to) > this.pickTol() * 0.5;
+    if (!moved) {
+      // a plain click in empty space — the old clear-everything behaviour
+      if (!b.shift) { this.selected.clear(); this.overlay.clearRegionSelection(); }
+      this.refreshActive();
+      return;
+    }
+    // Origin geometry is reference, never a selection target: a marquee over the
+    // whole sketch would otherwise always drag the axes in with it.
+    const hits = entitiesInBox(
+      this.entities.filter((e) => !isOriginGeometry(e.id)),
+      boxFromDrag(b.from, b.to),
+    );
+    if (!b.shift) this.selected.clear();
+    for (const id of hits) this.selected.add(id);
+    this.refreshActive();
+    this.onState?.();
+  }
+
   private endDrag(pointerId?: number) {
+    if (this.boxSel) {
+      if (pointerId != null) {
+        try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
+      }
+      this.applyBoxSel();
+      return;
+    }
     if (this.textBoxStart) {
       // finish a text placement: a real drag = a box (wrap width); a click = point anchor
       const s = this.textBoxStart, screen = this.textBoxScreen ?? { x: 0, y: 0 }, end = this.textBoxEnd;
