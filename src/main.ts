@@ -20,6 +20,7 @@ import { checkForUpdates, scheduleStartupUpdateCheck, showAbout } from "./ui/upd
 import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
+import { openShortcutSettings } from "./ui/shortcutSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { activePrinterId } from "./print/printerClient";
@@ -444,6 +445,7 @@ new Menubar(document.getElementById("menubar")!, [
     label: "Help",
     items: [
       { label: "Keyboard Shortcuts", shortcut: "?", onClick: () => toggleShortcutHUD() },
+      { label: "Customize Shortcuts…", onClick: () => openShortcutSettings() },
       { separator: true, label: "" },
       // A tester asked for "a reference manual or other description of each
       // operation". Eight tutorial videos and a README already existed and
