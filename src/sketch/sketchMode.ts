@@ -1338,6 +1338,28 @@ export class SketchMode {
           return;
         }
       }
+      // TEXT is draggable too (GH #17: "Unable to manually drag or adjust text
+      // position with the mouse in the sketch plane after creation"). It never
+      // reached the body-drag below because `pickEntity` cannot see it —
+      // entitySegments is empty for text, which is why the double-click above
+      // finds it through its glyph bounding box instead. `translated` has always
+      // handled a text entity, so arming the SAME drag is all that was missing;
+      // a press that does not move still falls through to selection in endDrag,
+      // and a double-click was already consumed above.
+      const te = this.textEntityAt(raw);
+      const teIdx = te ? this.entities.indexOf(te) : -1;
+      if (teIdx >= 0) {
+        this.moveDrag = {
+          idx: teIdx,
+          startClient: { x: e.clientX, y: e.clientY },
+          last: raw.clone(),
+          started: false,
+          shift: e.shiftKey,
+          stretch: [],
+        };
+        try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
+        return;
+      }
       // a real (hand-drawn) entity's body under the cursor → arm a body drag;
       // a plain click (no movement) falls through to selection in endDrag()
       const idx = pickEntity(this.entities, raw, this.pickTol());
