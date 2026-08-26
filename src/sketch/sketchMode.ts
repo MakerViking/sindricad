@@ -949,6 +949,21 @@ export class SketchMode {
           (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1)
         );
       }
+      // Same pair, same KIND replaces — but an aligned, a horizontal and a
+      // vertical dimension over one pair are three different constraints and
+      // must coexist, which the `c.type === k.type` guard already gives us.
+      // Both operand orders count as the same dim: re-dimensioning the other way
+      // round replaces rather than stacking a second one (the new pick's sign
+      // wins, which is the behaviour you want from a re-dimension).
+      if (
+        (c.type === "p2pDistanceX" && k.type === "p2pDistanceX") ||
+        (c.type === "p2pDistanceY" && k.type === "p2pDistanceY")
+      ) {
+        return (
+          (k.e1 === c.e1 && k.p1 === c.p1 && k.e2 === c.e2 && k.p2 === c.p2) ||
+          (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1)
+        );
+      }
       if (c.type === "p2lDistance" && k.type === "p2lDistance") {
         return k.e === c.e && k.p === c.p && k.line === c.line;
       }
@@ -2037,7 +2052,13 @@ export class SketchMode {
 
   /** the right-click overrides the pair matrix reads */
   private dimOptions(): DimOptions {
-    return this.dimRoundPref ? { roundPref: this.dimRoundPref } : {};
+    // The cursor is what makes the dimension SMART: with two points picked, where
+    // the label is being dragged chooses aligned / horizontal / vertical. It is
+    // passed on every re-resolve, which is why moving the mouse re-plans.
+    return {
+      ...(this.dimRoundPref ? { roundPref: this.dimRoundPref } : {}),
+      cursor: this.lastCursor.clone(),
+    };
   }
 
   /** WHICH dimension the open box belongs to: the plan shape plus the picks it

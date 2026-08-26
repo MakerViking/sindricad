@@ -49,6 +49,58 @@ export interface DimOptions {
   /** force a lone circle/arc to radius or diameter (default: circle ⇒ diameter,
    *  arc ⇒ radius, exactly like Fusion) */
   roundPref?: "radius" | "diameter";
+  /** Live cursor, in sketch-plane coordinates. Smart dimensioning: where you
+   *  drag the label decides WHICH point-to-point dimension you are creating.
+   *  Absent ⇒ the aligned distance, which is what every caller got before. */
+  cursor?: THREE.Vector2;
+}
+
+/** Which point-to-point dimension the cursor is asking for. */
+export type P2PDimKind = "aligned" | "horizontal" | "vertical";
+
+/** Smart dimensioning's decision (GH #17): with two points picked, the position
+ *  of the LABEL chooses between the aligned, horizontal and vertical distance.
+ *
+ *  The rule is "which dimension line is the user drawing?", not "which
+ *  quadrant is the cursor in". Each candidate has a direction its label is
+ *  offset along — a horizontal dimension's label sits ABOVE or BELOW the pair,
+ *  a vertical one's sits BESIDE it, and an aligned one's sits off to the side of
+ *  the line joining the two points. Pick the candidate whose expected offset
+ *  direction best matches where the cursor actually is. That is one comparison
+ *  rather than a pile of quadrant special-cases, and it behaves sensibly for a
+ *  pair at any angle instead of only for axis-aligned ones.
+ *
+ *  Degenerate on purpose: for an already-horizontal pair, "aligned" and
+ *  "horizontal" measure the same number, so a tie between them is harmless and
+ *  is left to fall whichever way the comparison lands.
+ *
+ *  A cursor sitting exactly on the midpoint has no direction to read, so it
+ *  keeps the aligned default rather than flickering between the three. */
+export function p2pDimKind(
+  a: THREE.Vector2,
+  b: THREE.Vector2,
+  cursor: THREE.Vector2,
+): P2PDimKind {
+  const off = cursor.clone().sub(mid(a, b));
+  if (off.lengthSq() < 1e-12) return "aligned";
+  off.normalize();
+  const d = b.clone().sub(a);
+  if (d.lengthSq() < 1e-12) return "aligned"; // coincident picks: nothing to align to
+  // the aligned dimension's label rides PERPENDICULAR to the pair
+  const perp = new THREE.Vector2(-d.y, d.x).normalize();
+  // |dot| because either side of each axis reads the same
+  const score: [P2PDimKind, number][] = [
+    ["aligned", Math.abs(off.dot(perp))],
+    // a HORIZONTAL dimension is offset vertically, and vice versa
+    ["horizontal", Math.abs(off.y)],
+    ["vertical", Math.abs(off.x)],
+  ];
+  let best: P2PDimKind = "aligned";
+  let bestScore = -Infinity;
+  for (const [kind, sc] of score) {
+    if (sc > bestScore) { bestScore = sc; best = kind; }
+  }
+  return best;
 }
 
 export type DimErrorCode =
@@ -397,18 +449,47 @@ function buildPlan(spec: {
 
 /** the shared distance plan: point-to-point, centre-to-centre, and the
  *  edge-length special case all land here */
-function p2pPlan(a: PointOp, b: PointOp, forceDriven: boolean, hint: string): DimPlan {
+function p2pPlan(
+  a: PointOp,
+  b: PointOp,
+  forceDriven: boolean,
+  hint: string,
+  cursor?: THREE.Vector2,
+): DimPlan {
+  // SMART DIMENSIONING (GH #17). Where the label is being dragged decides which
+  // of the three distances this is. With no cursor the answer is the aligned
+  // one, which is what every caller got before this existed.
+  const kind = cursor ? p2pDimKind(a.pos, b.pos, cursor) : "aligned";
+  const dx = b.pos.x - a.pos.x;
+  const dy = b.pos.y - a.pos.y;
+  // The X/Y measures are SIGNED — see types.ts. The displayed value carries that
+  // sign, so a horizontal dimension reads negative when b is left of a, and
+  // typing a negative value moves it to the other side rather than being
+  // silently absolutised.
+  const value = kind === "horizontal" ? dx : kind === "vertical" ? dy : a.pos.distanceTo(b.pos);
+  const type =
+    kind === "horizontal" ? "p2pDistanceX" : kind === "vertical" ? "p2pDistanceY" : "p2pDistance";
   return buildPlan({
-    kind: "distance", field: "distance", label: "D", fieldKind: "length",
-    value: a.pos.distanceTo(b.pos),
-    anchors: { a: a.pos, b: b.pos },
+    kind: "distance", field: "distance", label: kind === "horizontal" ? "DX" : kind === "vertical" ? "DY" : "D",
+    fieldKind: "length",
+    value,
+    // The witness lines follow the dimension the user is actually getting: an
+    // aligned dim spans the two points, a horizontal one spans their X gap at a
+    // common Y. Drawing point-to-point for all three would show a diagonal
+    // annotation labelled with a horizontal number.
+    anchors:
+      kind === "horizontal"
+        ? { a: a.pos, b: new THREE.Vector2(b.pos.x, a.pos.y) }
+        : kind === "vertical"
+          ? { a: a.pos, b: new THREE.Vector2(a.pos.x, b.pos.y) }
+          : { a: a.pos, b: b.pos },
     labelAnchor: mid(a.pos, b.pos),
     forceDriven,
     hint,
-    make: (value, place) => ({
-      type: "p2pDistance", e1: a.eid, p1: a.p, e2: b.eid, p2: b.p, value,
+    make: (v, place) => ({
+      type, e1: a.eid, p1: a.p, e2: b.eid, p2: b.p, value: v,
       ...(place ? { place } : {}),
-    }),
+    }) as SketchConstraint,
   });
 }
 
@@ -582,7 +663,7 @@ export function resolveDim(picks: DimTarget[], opts: DimOptions = {}): DimResolu
   if (!t1) return { error: "need-second", message: "", keepPicks: true };
   if (!t2) return resolveSingle(t1, opts);
   if (targetKey(t1) === targetKey(t2)) return { error: "same-entity", message: "" };
-  return resolvePair(t1, t2);
+  return resolvePair(t1, t2, opts);
 }
 
 function resolveSingle(t: DimTarget, opts: DimOptions): DimResolution {
@@ -670,8 +751,8 @@ function roundValuePlan(eid: string, r: number, c: V, what: string): DimPlan {
   });
 }
 
-function resolvePair(t1: DimTarget, t2: DimTarget): DimResolution {
-  const r = pairPlan(t1, t2);
+function resolvePair(t1: DimTarget, t2: DimTarget, opts: DimOptions = {}): DimResolution {
+  const r = pairPlan(t1, t2, opts);
   // "the first-picked entity moves" — stamped HERE, at the one place that still
   // knows the pick order. Every branch below normalises its operands by entity
   // id (so re-dimensioning the same pair the other way round REPLACES the dim
@@ -682,7 +763,7 @@ function resolvePair(t1: DimTarget, t2: DimTarget): DimResolution {
   return r;
 }
 
-function pairPlan(t1: DimTarget, t2: DimTarget): DimResolution {
+function pairPlan(t1: DimTarget, t2: DimTarget, opts: DimOptions = {}): DimResolution {
   const o1 = reduce(t1);
   if ("error" in o1) return o1;
   const o2 = reduce(t2);
@@ -725,7 +806,7 @@ function pairPlan(t1: DimTarget, t2: DimTarget): DimResolution {
         ? { error: "concentric", message: CONCENTRIC_MSG }
         : { error: "coincident-points", message: "Those two points are coincident — the distance measures 0, nothing to drive." };
     }
-    return p2pPlan(a, b, forceDriven, `Distance: type a value · click to place${drivenHint}`);
+    return p2pPlan(a, b, forceDriven, `Distance: type a value · click to place${drivenHint}`, opts.cursor);
   }
   if (a.kind === "point" || b.kind === "point") {
     const pt = a.kind === "point" ? a : (b as PointOp);

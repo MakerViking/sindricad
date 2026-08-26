@@ -124,3 +124,67 @@ describe("the three dimensions are genuinely different constraints", () => {
     expect(r.dof).toBeGreaterThan(0);
   });
 });
+
+// --- the CURSOR half: which of the three am I drawing? -----------------------
+//
+// The tool decides from where the label is being dragged. The rule is "which
+// dimension line is the user drawing", not "which quadrant is the cursor in":
+// a horizontal dimension's label sits above or below the pair, a vertical one's
+// sits beside it, an aligned one's sits off the perpendicular of the line
+// joining them. Scoring the cursor direction against those three expected offsets
+// is one comparison instead of a pile of quadrant cases, and it behaves for a
+// pair at ANY angle rather than only axis-aligned ones.
+
+import * as THREE from "three";
+import { p2pDimKind } from "./dimensionTool";
+
+const v = (x: number, y: number) => new THREE.Vector2(x, y);
+
+describe("p2pDimKind — the smart part of smart dimensioning", () => {
+  // a diagonal pair, so all three answers are genuinely different
+  const A = v(0, 0);
+  const B = v(40, 30);
+
+  it("dragging ABOVE the pair gives the HORIZONTAL distance", () => {
+    expect(p2pDimKind(A, B, v(20, 200))).toBe("horizontal");
+    expect(p2pDimKind(A, B, v(20, -200))).toBe("horizontal");
+  });
+
+  it("dragging BESIDE the pair gives the VERTICAL distance", () => {
+    expect(p2pDimKind(A, B, v(300, 15))).toBe("vertical");
+    expect(p2pDimKind(A, B, v(-300, 15))).toBe("vertical");
+  });
+
+  it("dragging off the PERPENDICULAR of the pair gives the aligned distance", () => {
+    // perpendicular to (40,30) is (-30,40) normalised — go that way from the mid
+    const perp = v(-30, 40).normalize().multiplyScalar(80);
+    expect(p2pDimKind(A, B, v(20, 15).add(perp))).toBe("aligned");
+    expect(p2pDimKind(A, B, v(20, 15).sub(perp))).toBe("aligned");
+  });
+
+  it("works for a pair at any angle, not just axis-aligned ones", () => {
+    // a steep pair: its perpendicular is nearly horizontal, so "aligned" and
+    // "vertical" compete — the aligned zone must still exist and be reachable
+    const a = v(0, 0), b = v(5, 90);
+    const perp = v(-90, 5).normalize().multiplyScalar(60);
+    expect(p2pDimKind(a, b, v(2.5, 45).add(perp))).toBe("aligned");
+    expect(p2pDimKind(a, b, v(2.5, 300))).toBe("horizontal");
+  });
+
+  it("holds the aligned default when the cursor has no direction to read", () => {
+    // exactly on the midpoint: any answer would be arbitrary, and flickering
+    // between three as the cursor crosses the centre is worse than picking one
+    expect(p2pDimKind(A, B, v(20, 15))).toBe("aligned");
+  });
+
+  it("survives coincident picks without dividing by zero", () => {
+    expect(p2pDimKind(A, A, v(10, 10))).toBe("aligned");
+  });
+
+  it("is stable either side of an axis — no flicker across the centre line", () => {
+    // the same zone must answer the same on both sides, or the dimension would
+    // change type as the label crosses the pair
+    for (const y of [200, -200]) expect(p2pDimKind(A, B, v(20, y))).toBe("horizontal");
+    for (const x of [300, -300]) expect(p2pDimKind(A, B, v(x, 15))).toBe("vertical");
+  });
+});
