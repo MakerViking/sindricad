@@ -3213,4 +3213,37 @@ button.finish:hover {
   margin-top: var(--s-4);
   font-size: 10.5px;
   color: var(--text-mute);
+/* ---- tool cursor badge (src/ui/toolCursor.ts) ----
+   The armed tool's icon trailing the pointer over the canvas. Positioned with a
+   transform in device coordinates, so it is `fixed` and anchored at the origin —
+   the module sets the whole offset, and nothing here may add to it or the two
+   would have to agree.
+
+   pointer-events: none is load-bearing, not hygiene: this sits over the canvas
+   under the pointer, so anything else makes every click in the app land on a
+   24px decoration instead of the model.
+
+   Deliberately not animated. A badge that eases toward the pointer lags it, and
+   a fade on show/hide would blur exactly the transition it exists to report —
+   which also means there is no motion here for prefers-reduced-motion to cut. */
+.tool-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 1900; /* over the viewport's own overlays, under menus (2000) and modals */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: rgba(18, 20, 25, 0.82);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-1);
+  color: var(--accent);
+}
+.tool-cursor svg {
+  width: 15px;
+  height: 15px;
 }
