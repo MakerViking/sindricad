@@ -21,6 +21,9 @@ import {
 } from "./region";
 import { worldPointInRegion } from "./regionSelect";
 import { dimensionSegments, asRound, dimRefPoints } from "./entityDims";
+import { Line2 } from "three/examples/jsm/lines/Line2.js";
+import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
+import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { isOriginId, isOriginGeometry } from "./origin";
 import { distToSeg } from "./geom2d";
 import { getCachedText, warmText } from "./textCache";
@@ -60,6 +63,47 @@ export const ORIGIN_COLOR = 0xffd257; // the fixed sketch origin — a datum, no
 export const DIM_COLOR = 0x8fa4bd; // muted blue-gray for dimension annotations
 const FILL_COLOR = 0x3a7bd5;
 
+/** Sketch CURVES are drawn as fat lines. GH #17: "Lines are currently too thin
+ *  and blend in visually with dimension lines. A thickness of 2-3px would solve
+ *  this." A plain THREE.Line cannot do it — WebGL ignores LineBasicMaterial's
+ *  `linewidth` in every browser, which is why the old value looked like 1px
+ *  whatever it was set to. Line2 is the same technique the 3D model edges
+ *  already use (viewport/edgeLines.ts).
+ *
+ *  Dimension ANNOTATIONS deliberately stay on the thin material: the reporter's
+ *  complaint was that geometry and annotation were indistinguishable, so making
+ *  both fat would lose the very distinction being asked for. */
+const SKETCH_LINE_WIDTH = 2.2;
+/** CSS pixels — the space LineMaterial measures `linewidth` in. Kept in step by
+ *  the viewport's resize (see setSketchLineResolution); a stale resolution makes
+ *  fat lines render at the wrong width or vanish. */
+const fatResolution = new THREE.Vector2(1, 1);
+const fatMats = new Map<string, LineMaterial>();
+function fatMat(color: number, dashed: boolean): LineMaterial {
+  const key = `${color}:${dashed}`;
+  let m = fatMats.get(key);
+  if (!m) {
+    m = new LineMaterial({
+      color,
+      linewidth: SKETCH_LINE_WIDTH,
+      depthTest: true,
+      dashed,
+      ...(dashed ? { dashSize: 1.6, gapSize: 1.0, dashScale: 1 } : {}),
+    });
+    m.resolution.copy(fatResolution);
+    fatMats.set(key, m);
+  }
+  return m;
+}
+
+/** Push the canvas size into every sketch fat-line material. Called from the
+ *  viewport's resize beside setEdgeResolution, in CSS pixels for the reason
+ *  documented there. */
+export function setSketchLineResolution(w: number, h: number) {
+  fatResolution.set(w, h);
+  for (const m of fatMats.values()) m.resolution.set(w, h);
+}
+
 const lineMats = new Map<number, THREE.LineBasicMaterial>();
 function lineMat(color: number): THREE.LineBasicMaterial {
   let m = lineMats.get(color);
@@ -74,12 +118,7 @@ function lineMat(color: number): THREE.LineBasicMaterial {
   return m;
 }
 // construction geometry: dashed orange (referenceable, not a profile)
-const CONSTRUCTION_MAT = new THREE.LineDashedMaterial({
-  color: 0xffa64d,
-  dashSize: 1.6,
-  gapSize: 1.0,
-  depthTest: true,
-});
+const CONSTRUCTION_COLOR = 0xffa64d;
 // projected reference geometry: purple (linked/fixed, Fusion-style); a stale
 // projection (source no longer resolves — last shape kept) tints amber
 const PROJECTED_COLOR = 0xb07fe8;
@@ -522,14 +561,23 @@ export class SketchOverlay {
       const tag = obj.userData as { sketchId?: string; entityId?: string };
       if (!tag.sketchId || !tag.entityId) continue;
       obj.traverse((o) => {
-        if (!(o as THREE.Line).isLine) return;
-        const pos = (o as THREE.Line).geometry.getAttribute("position");
-        if (!pos) return;
-        const paired = (o as THREE.LineSegments).isLineSegments === true;
+        // Fat sketch curves (Line2) carry their world points on userData: a
+        // LineGeometry has no `position` attribute and a Line2 is a Mesh, so the
+        // isLine + getAttribute path below cannot see them at all. Reading the
+        // stashed points keeps picking independent of the drawing technique.
+        const stashed = (o.userData as { pts?: THREE.Vector3[] }).pts;
+        const pos = stashed
+          ? null
+          : (o as THREE.Line).isLine
+            ? (o as THREE.Line).geometry.getAttribute("position")
+            : null;
+        if (!stashed && !pos) return;
+        const count = stashed ? stashed.length : pos!.count;
+        const paired = !stashed && (o as THREE.LineSegments).isLineSegments === true;
         let prev: { x: number; y: number } | null = null;
-        for (let i = 0; i < pos.count; i++) {
+        for (let i = 0; i < count; i++) {
           // geometry points are world coordinates (plane.to3D baked in)
-          const s = project(w.fromBufferAttribute(pos, i));
+          const s = project(stashed ? w.copy(stashed[i]!) : w.fromBufferAttribute(pos!, i));
           if (prev) {
             const d = distToSeg(prev, s, { x: clientX, y: clientY });
             if (d < bestD) {
@@ -653,9 +701,13 @@ export function curveObjects(
         add(endpointDot(plane, e.x1, e.y1, ENDPOINT_COLOR, endpointR));
         add(endpointDot(plane, e.x2, e.y2, ENDPOINT_COLOR, endpointR));
       } else if (e.type === "spline" && e.points.length) {
-        const a = e.points[0], b = e.points[e.points.length - 1];
-        if (a) add(endpointDot(plane, a.x, a.y, ENDPOINT_COLOR, endpointR));
-        if (b) add(endpointDot(plane, b.x, b.y, ENDPOINT_COLOR, endpointR));
+        // EVERY control point, not just the two ends. pickPoint already offers
+        // all of them as drag handles, so the interior ones were draggable and
+        // INVISIBLE — the exact shape of the rectangle-corner bug below, and of
+        // GH #17's "the spline control points are too small ... causing unwanted
+        // bumps": you cannot aim carefully at a handle you cannot see, so you
+        // grab whichever one the cursor happens to be nearest.
+        for (const q of e.points) add(endpointDot(plane, q.x, q.y, ENDPOINT_COLOR, endpointR));
       } else if (e.type === "rectangle") {
         // Corners 0..3, from dimRefPoints — the SAME source pickEndpoint reads,
         // so the two cannot drift about which corners are addressable. Not a
@@ -780,10 +832,27 @@ function pointMarker(plane: SketchPlane, x: number, y: number, color: number): T
   return seg;
 }
 
-export function polyline(points: THREE.Vector3[], color: number): THREE.Line {
-  const g = new THREE.BufferGeometry().setFromPoints(points);
-  const line = new THREE.Line(g, lineMat(color));
+export function polyline(points: THREE.Vector3[], color: number): THREE.Object3D {
+  return fatLine(points, color, false);
+}
+
+/** A sketch curve as a fat line.
+ *
+ *  The world points are stashed on `userData.pts` because LineGeometry does NOT
+ *  expose a `position` attribute — it packs instanceStart/instanceEnd — and a
+ *  Line2 is a Mesh, so `isLine` is false. Every picker that walked the geometry
+ *  would have silently stopped finding sketch curves. Carrying the points makes
+ *  picking independent of how the line happens to be drawn, which is sturdier
+ *  than teaching each picker a second geometry layout. */
+function fatLine(points: THREE.Vector3[], color: number, dashed: boolean): THREE.Object3D {
+  const g = new LineGeometry();
+  const flat: number[] = [];
+  for (const p of points) flat.push(p.x, p.y, p.z);
+  g.setPositions(flat);
+  const line = new Line2(g, fatMat(color, dashed));
+  if (dashed) line.computeLineDistances();
   line.renderOrder = 12;
+  line.userData.pts = points;
   return line;
 }
 
@@ -805,11 +874,8 @@ export function dimensionLineObjects(
   return [line];
 }
 
-function constructionLine(points: THREE.Vector3[]): THREE.Line {
-  const g = new THREE.BufferGeometry().setFromPoints(points);
-  const line = new THREE.Line(g, CONSTRUCTION_MAT);
-  line.computeLineDistances(); // required for dashing
-  line.renderOrder = 12;
+function constructionLine(points: THREE.Vector3[]): THREE.Object3D {
+  const line = fatLine(points, CONSTRUCTION_COLOR, true);
   return line;
 }
 

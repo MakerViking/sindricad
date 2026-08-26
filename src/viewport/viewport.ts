@@ -35,6 +35,7 @@ import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
 import { setPrompt } from "../ui/prompt";
+import { setSketchLineResolution } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { ViewCubeSide } from "../types";
 
@@ -2118,6 +2119,10 @@ export class Viewport {
     // radius by the device pixel ratio.)
     this.resolution.set(w, h);
     setEdgeResolution(this.model, this.resolution);
+    // Sketch curves are fat lines too (GH #17) and measure their width in the
+    // same CSS-pixel space. Missing this leaves them at whatever size the last
+    // canvas was — or invisible on the first frame, when it is 1x1.
+    setSketchLineResolution(w, h);
     // Keep the model framed while the user hasn't taken over the camera. This is
     // what corrects an off-centre first fit once the canvas size finally settles
     // (the actual cause of "the model renders in the corner and I can't aim at
