@@ -447,6 +447,77 @@ jobs:
           add darwin-aarch64 "$(find dist -name '*.app.tar.gz' | head -1)"  # macos-14 runners are arm64
           cat latest.json
 
+      - name: Snapshot download counts before this build destroys them
+        # GitHub stores download_count ON the asset object, and everything in
+        # the step below destroys asset objects: `--clobber` replaces the
+        # same-named ones, and the sweep at the end deletes the previous
+        # version's outright, because their filenames carry the version. So
+        # every counter on this release is about to reset to zero.
+        #
+        # That happened 67 times between 2026-08-05 and 2026-08-24, which is
+        # why the API reported 51 lifetime downloads for a beta that had 1,177
+        # unique release-page visitors in the preceding fortnight. GitHub keeps
+        # nothing about a deleted asset, so this is the last moment those
+        # numbers exist anywhere. TinkerAtlas keeps the history from here on.
+        #
+        # continue-on-error, and no `set -e`: losing a data point is bad,
+        # failing a release publish because a stats endpoint was down is worse.
+        continue-on-error: true
+        shell: bash
+        env:
+          RELEASE_STATS_URL: ${{ vars.RELEASE_STATS_URL }}
+          RELEASE_STATS_SECRET: ${{ secrets.RELEASE_STATS_SECRET }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${RELEASE_STATS_URL:-}" ] || [ -z "${RELEASE_STATS_SECRET:-}" ]; then
+            echo "NOTE: RELEASE_STATS_URL or RELEASE_STATS_SECRET unset — skipping snapshot"
+            exit 0
+          fi
+
+          R='${{ github.repository }}'
+          if ! gh api "repos/$R/releases/tags/beta" > release.json 2>/dev/null; then
+            echo "NOTE: no beta release yet — nothing to snapshot"
+            exit 0
+          fi
+
+          jq -c --arg repo "$R" '{
+            repo: $repo,
+            release_tag: "beta",
+            assets: [.assets[] | {id, name, download_count, created_at}]
+          }' release.json > payload.json
+
+          printf 'Snapshotting %s assets, %s downloads\n' \
+            "$(jq '.assets | length' payload.json)" \
+            "$(jq '[.assets[].download_count] | add // 0' payload.json)"
+
+          # Signed with python, not `openssl dgst -hmac "$SECRET"`: openssl takes
+          # the key as an argv element, which is readable from /proc by anything
+          # else on the runner.
+          sig=$(python3 -c '
+          import hashlib, hmac, os, sys
+          key = os.environ["RELEASE_STATS_SECRET"].encode()
+          body = open("payload.json", "rb").read()
+          sys.stdout.write("sha256=" + hmac.new(key, body, hashlib.sha256).hexdigest())
+          ')
+
+          # --data-binary, never -d: -d strips newlines, and jq -c emits a
+          # trailing one. The signature covers the exact bytes on disk, so any
+          # rewriting between signing and sending fails verification.
+          code=$(curl -sS -o response.txt -w '%{http_code}' \
+            --max-time 30 --retry 2 --retry-delay 5 \
+            -X POST "$RELEASE_STATS_URL" \
+            -H 'Content-Type: application/json' \
+            -H "x-signature-256: $sig" \
+            --data-binary @payload.json) || code=000
+
+          if [ "$code" = "200" ]; then
+            echo "Snapshot recorded: $(cat response.txt)"
+          else
+            echo "WARNING: snapshot POST returned $code — this build's download counts are lost."
+            cat response.txt 2>/dev/null || true
+          fi
+
       - name: Publish rolling beta release
         shell: bash
         run: |
