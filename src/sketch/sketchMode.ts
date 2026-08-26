@@ -3547,6 +3547,8 @@ export class SketchMode {
         case "symmetric": return hasPointOperand(c.e1) && hasPointOperand(c.e2) && hasLineOperand(c.line);
         case "radius": return roundIds.has(c.e);
         case "p2pDistance": return refIds.has(c.e1) && refIds.has(c.e2);
+        case "p2pDistanceX":
+        case "p2pDistanceY": return refIds.has(c.e1) && refIds.has(c.e2);
         case "p2lDistance": return refIds.has(c.e) && hasLineOperand(c.line);
         // rim (edge-to-edge) dims — a round operand is a circle OR an arc
         case "radialGap": return roundIds.has(c.inner) && roundIds.has(c.outer);

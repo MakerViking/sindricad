@@ -256,6 +256,16 @@ export type SketchConstraint =
   // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
   // resolves to its center. Point entities ignore the index.
   | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
+  // Smart dimensioning (GH #17): the HORIZONTAL and VERTICAL distances between
+  // two points, as opposed to p2pDistance's direct (aligned) one. Same operands,
+  // and the tool picks which of the three you get from where you drag the label.
+  //
+  // SIGNED, and the operand ORDER carries that sign: value is e2 - e1 along the
+  // axis, so swapping the picks negates it. That is deliberate — it is what lets
+  // a horizontal dimension say "to the left" — and it means these must never be
+  // canonicalised by sorting the operand ids the way an unsigned constraint can be.
+  | { type: "p2pDistanceX"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
+  | { type: "p2pDistanceY"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
   // p2lDistance: driving perpendicular distance from a picked point to a line
   // operand (same `p` semantics as p2pDistance; `line` may be a rect edge)
   | { type: "p2lDistance"; id?: string; e: string; p: number; line: string; value: number; driven?: boolean; place?: PlaceOffset }
