@@ -113,9 +113,10 @@ export class PressPullTool {
     }
     if (this.grabbing) {
       const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
-      // snap the drag to 0.1mm steps (MCAD-style); type a value for finer control
+      // snap the drag to a clean zoom-scaled step (MCAD-style); hold Ctrl/Cmd —
+      // or type a value — for finer control
       const raw = this.grabValue + (proj - this.grabProj);
-      const stepped = snap(raw, this.viewport.snapStep(this.anchor));
+      const stepped = snap(raw, this.viewport.snapStep(this.anchor, e.ctrlKey || e.metaKey));
       if (stepped === this.value) return; // same step — don't re-trigger an OCCT rebuild
       this.value = stepped;
       this.dim.updateFromCursor({ distance: Math.abs(this.value) });
@@ -203,6 +204,13 @@ export class PressPullTool {
       this.grabbing = true;
       this.grabValue = this.value;
       this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
+      // Grabbing the handle is as deliberate a statement of the value as typing
+      // one, so hand the box back to cursor tracking — otherwise it sits frozen
+      // at the typed or seeded figure while the geometry moves under it, and the
+      // arrow "does not display in the input field the distance manually pushed
+      // or pulled ... which makes the arrow effectively useless" (field report
+      // 215db097). Typing re-locks it on the next keystroke.
+      this.dim.unlock("distance");
       this.viewport.domElement.style.cursor = "grabbing";
     }
   }

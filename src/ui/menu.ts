@@ -71,6 +71,7 @@ export class Menubar {
     check.className = "menu-check";
     el.appendChild(check);
     const label = document.createElement("span");
+    label.className = "menu-label";
     label.textContent = item.label;
     el.appendChild(label);
     if (item.shortcut) {

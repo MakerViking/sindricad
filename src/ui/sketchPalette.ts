@@ -9,7 +9,15 @@ interface ToggleDef {
   default: boolean;
 }
 const TOGGLES: ToggleDef[] = [
-  { key: "lockView", label: "Lock to Plane", default: true },
+  // Off by default, and SketchMode.viewLocked agrees. Entering a sketch always
+  // squares the camera to the plane; locking additionally forbids orbiting away
+  // from it, which is not what mainstream MCAD does and is not what a user
+  // wants when the geometry they need to project sits BEHIND the sketch face:
+  // "In the Sketch workspace, it is not possible to rotate the view. As a
+  // result, it is impossible to select geometry located behind the sketch
+  // support face in order to project it onto the sketch" (field report
+  // 9e3da3c7). The lock stays available for anyone who wants it.
+  { key: "lockView", label: "Lock to Plane", default: false },
   { key: "construction", label: "Construction", default: false },
   { key: "reference", label: "Reference Dim", default: false },
   { key: "grid", label: "Sketch Grid", default: true },
@@ -20,6 +28,17 @@ const TOGGLES: ToggleDef[] = [
 ];
 
 export class SketchPalette {
+  /** The shipped default for one toggle. Exposed so the defaults can be asserted
+   *  against SketchMode's own copy — `lockView` is declared in both places and
+   *  a disagreement means the checkbox lies about what the camera is doing. */
+  static defaultFor(key: PaletteToggle): boolean {
+    return TOGGLES.find((t) => t.key === key)!.default;
+  }
+  /** Every toggle the palette offers, in display order. */
+  static toggleKeys(): PaletteToggle[] {
+    return TOGGLES.map((t) => t.key);
+  }
+
   private el: HTMLElement;
   private state: Record<PaletteToggle, boolean>;
   onToggle: ((key: PaletteToggle, value: boolean) => void) | null = null;

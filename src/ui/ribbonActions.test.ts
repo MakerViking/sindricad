@@ -81,3 +81,53 @@ describe("ribbon actions all reach a handler", () => {
     ).toEqual([]);
   });
 });
+
+// Reaching *a* handler is not the same as reaching the RIGHT one, and the
+// difference is a field report. "Rect Pattern" and "Circular Pat." live in the
+// SKETCH ribbon's PATTERN group and pattern sketch geometry; both were listed in
+// SKETCH_TOOLS, so the guard above was satisfied — while a click outside a sketch
+// fell into startSketch() and opened an interactive plane pick. The user had
+// selected a body and expected it patterned:
+//
+//   "I am trying to use RECT PATT and it doesn't work. I click the item I want to
+//    use. Then I click RECT PATT and it doesn't do anything." (a31a6213)
+//
+// It was not doing nothing — it was quietly waiting for a plane.
+describe("the pattern buttons pattern what their name says", () => {
+  const main = mainSrc;
+
+  it("routes a pattern click OUTSIDE a sketch to the body pattern", () => {
+    const at = main.indexOf("starters.startBodyPattern(");
+    expect(
+      at,
+      "nothing routes patternRect/patternCircular to a body pattern, so clicking Rect Pattern "
+        + "with a body selected opens a plane pick instead (field report a31a6213)",
+    ).toBeGreaterThan(-1);
+    const before = main.slice(Math.max(0, at - 400), at);
+    expect(
+      before,
+      "the body-pattern route is not guarded on being outside a sketch — it would hijack the "
+        + "sketch pattern tool while sketching",
+    ).toContain("!sketch.active");
+    for (const a of ["patternRect", "patternCircular"]) {
+      expect(before, `${a} is not routed to the body pattern`).toContain(`"${a}"`);
+    }
+  });
+
+  it("still reaches the SKETCH pattern tool while a sketch is open", () => {
+    // The sketch tools are the other half: inside a sketch these must keep
+    // setting the sketch tool, not append a body feature.
+    const at = main.indexOf("const SKETCH_TOOLS");
+    expect(at, "SKETCH_TOOLS is gone — this test's slice is stale").toBeGreaterThan(-1);
+    const table = main.slice(at, main.indexOf("]", at));
+    for (const a of ["patternRect", "patternCircular"]) {
+      expect(table, `${a} was removed from SKETCH_TOOLS — the sketch pattern tool is now unreachable`).toContain(a);
+    }
+  });
+
+  it("keeps the body Pattern entry point that already existed", () => {
+    // Modify > Move > Pattern still asks rect-or-circular; the new path only
+    // skips that question because the button already answered it.
+    expect(main, "the generic Pattern action lost its handler").toContain("starters.startPattern()");
+  });
+});

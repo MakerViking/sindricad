@@ -120,6 +120,10 @@ const ARGS: Record<string, unknown[]> = {
   startTexture: [],
   startTextOnFace: [],
   startPattern: [],
+  // The ribbon's "Rect Pattern" button already names the kind, so this skips the
+  // rect/circular dialog startPattern asks. Exercised with "rect"; "circular"
+  // differs only in the feature it appends.
+  startBodyPattern: ["rect"],
   startExtrude: [],
   repickReference: ["f1", [0, 0, 0]],
 };
@@ -361,5 +365,76 @@ describe("the ratchet itself", () => {
     expect(missing, `no ARGS entry: ${missing.join(", ")}`).toEqual([]);
     const stale = Object.keys(ARGS).filter((n) => !NAMES.includes(n));
     expect(stale, `ARGS names a starter that no longer exists: ${stale.join(", ")}`).toEqual([]);
+  });
+});
+
+// Move, when what is selected is a datum plane.
+//
+// A datum plane is a FEATURE, never a body, so it can never appear in
+// getSelectedBodies(). startMove's "none selected → active body" convenience
+// therefore fired and silently began dragging an unrelated body — the last one
+// in the build — while the user believed they were moving the plane they had
+// just clicked.
+//
+// There is no other way to move an offset plane (editFeature has no datumPlane
+// arm, planeOffsetTool is creation-only, moveTool takes bodies), so reaching for
+// Move here is the obvious gesture. Related to field report df10c0b3: "press/pull
+// to an offset plane, then move the offset plane and expect the surface to move
+// with the offset plane... does not visibly do this."
+describe("Move with a datum plane selected", () => {
+  const world = () => ({
+    busy: false,
+    bodies: [{ id: "body1", name: "Body1" }, { id: "body2", name: "Body2" }],
+    features: [{ id: "d1", type: "datumPlane" }],
+    regions: 0,
+  });
+
+  it("refuses, instead of dragging whichever body happens to be last", () => {
+    const h = harness(world());
+    (h.deps as { getSelectedFeature: () => string | null }).getSelectedFeature = () => "d1";
+    const starters = createFeatureStarters(h.deps as never);
+    starters.startMove();
+    expect(
+      h.log.join("\n"),
+      "Move started on a body while a datum plane was selected — the user asked to move the "
+        + "plane and something else moved instead",
+    ).not.toContain("moveTool.start");
+  });
+
+  it("says what to do instead, rather than refusing in silence", () => {
+    const h = harness(world());
+    (h.deps as { getSelectedFeature: () => string | null }).getSelectedFeature = () => "d1";
+    const starters = createFeatureStarters(h.deps as never);
+    starters.startMove();
+    // the harness routes setStatus into `log` as `status(...)`; `spoke` is only
+    // the modal/prompt sinks
+    const said = [...h.log, ...spoke].join("\n");
+    expect(said, "Move refused a datum plane without saying anything").toMatch(/status\(/);
+    expect(said, "the message does not point at the Offset field, which is the only way").toMatch(/Offset/i);
+  });
+
+  it("still moves the active body when nothing is selected at all", () => {
+    // The convenience itself is deliberate and must survive: this narrows it,
+    // it does not remove it.
+    const h = harness(world());
+    (h.deps as { getSelectedFeature: () => string | null }).getSelectedFeature = () => null;
+    const starters = createFeatureStarters(h.deps as never);
+    starters.startMove();
+    expect(
+      h.log.join("\n"),
+      "Move no longer falls back to the active body when nothing is selected",
+    ).toContain("moveTool.start");
+  });
+
+  it("still moves a selected BODY, plane or no plane", () => {
+    const h = harness(world());
+    (h.deps.viewport as { getSelectedBodies: () => string[] }).getSelectedBodies = () => ["body1"];
+    (h.deps as { getSelectedFeature: () => string | null }).getSelectedFeature = () => "d1";
+    const starters = createFeatureStarters(h.deps as never);
+    starters.startMove();
+    expect(
+      h.log.join("\n"),
+      "an explicit body selection must win — the plane selection is incidental there",
+    ).toContain("moveTool.start");
   });
 });

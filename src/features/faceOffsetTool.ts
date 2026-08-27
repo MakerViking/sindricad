@@ -145,6 +145,13 @@ export class FaceOffsetTool {
       this.grabbing = true;
       this.grabValue = this.value;
       this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
+      // Grabbing the handle is as deliberate a statement of the value as typing
+      // one, so hand the box back to cursor tracking — otherwise it sits frozen
+      // at the typed or seeded figure while the geometry moves under it, and the
+      // arrow "does not display in the input field the distance manually pushed
+      // or pulled ... which makes the arrow effectively useless" (field report
+      // 215db097). Typing re-locks it on the next keystroke.
+      this.dim.unlock("distance");
       this.viewport.domElement.style.cursor = "grabbing";
     }
   }

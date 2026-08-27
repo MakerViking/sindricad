@@ -6,6 +6,12 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     globals: false,
+    // Vitest stubs CSS out by default, and the stub for `styles.css?raw` is an
+    // EMPTY STRING, not an error. A test that reads the stylesheet as text then
+    // asserts against "" — every toContain fails and, far worse, every
+    // not.toContain passes for the wrong reason. Processing CSS costs a few ms
+    // and makes chromeLegibility.test.ts able to see the rules it checks.
+    css: true,
     coverage: {
       // scope the report to the core-logic dirs (loop target #15). The large
       // interactive-UI / Tauri / ws files (sketchMode, overlay, client, files)
