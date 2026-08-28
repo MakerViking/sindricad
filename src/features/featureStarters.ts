@@ -440,6 +440,21 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     if (needsBody("Move")) return;
     const bodies = store.buildState.result?.bodies ?? [];
     let ids = viewport.getSelectedBodies();
+    // A datum plane is a FEATURE, never a body, so it can never be in
+    // getSelectedBodies() — and the "none selected → active body" convenience
+    // below then silently started dragging an unrelated body instead. Selecting
+    // an offset plane and reaching for Move is an obvious gesture (there is no
+    // other way to move one), and it moved the wrong thing without a word.
+    // Related: field report df10c0b3, "then move the offset plane and expect the
+    // surface to move with the offset plane... does not visibly do this".
+    if (!ids.length) {
+      const sel = getSelectedFeature();
+      const f = sel ? store.document.features.find((x) => x.id === sel) : null;
+      if (f?.type === "datumPlane") {
+        setStatus("Move works on bodies. To move this plane, edit its Offset in the inspector.", "");
+        return;
+      }
+    }
     if (!ids.length && bodies.length) {
       const lastBody = bodies[bodies.length - 1];
       if (lastBody) ids = [lastBody.id]; // none selected → active body
@@ -741,12 +756,26 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       { value: "circular", label: "Circular", hint: "around axis" },
     ]);
     if (!kind) return;
+    addBodyPattern(kind);
+  }
+
+  /** The same body pattern, when the caller already knows which kind — the
+   *  ribbon's "Rect Pattern" / "Circular Pat." buttons name it, so asking again
+   *  would be a dialog with one sensible answer. Speaks if there is no body. */
+  function startBodyPattern(kind: "rect" | "circular") {
+    if (busy()) return;
+    if (needsBody(kind === "rect" ? "Rect Pattern" : "Circular Pattern")) return;
+    addBodyPattern(kind);
+  }
+
+  function addBodyPattern(kind: "rect" | "circular") {
     const id = store.nextId();
     if (kind === "rect") {
       store.addFeature({ id, type: "patternRect", countX: 3, countY: 1, spacingX: 30, spacingY: 30 } as Feature);
     } else {
       store.addFeature({ id, type: "patternCircular", count: 4, angle: 360, axis: "Z" } as Feature);
     }
+    selectFeature(id); // land in the inspector, where the counts and spacing are
   }
 
   function startExtrude() {
@@ -804,6 +833,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     startTexture,
     startTextOnFace,
     startPattern,
+    startBodyPattern,
     startExtrude,
     repickReference,
   };

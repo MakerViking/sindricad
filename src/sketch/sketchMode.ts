@@ -16,7 +16,7 @@ import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
-import { constraintGlyphs, diagnosisOf } from "./glyphs";
+import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, curveKind, lineOperand, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
@@ -37,6 +37,7 @@ import { applyDrivingDimsDirect } from "./directDims";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
+import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
 import { detectRegions, rectCorners } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
@@ -156,6 +157,13 @@ export class SketchMode {
   private candidates: SnapCandidate[] = []; // cached; rebuilt when entities change
   private base: THREE.Vector2 | null = null; // pending first point
   private chainStart: THREE.Vector2 | null = null; // first point of a line chain
+  /** Snap kind of the point most recently placed/hovered, and of the point
+   *  that became the current line's START. Auto-H/V must not move a point the
+   *  user snapped onto existing geometry (field report ecc3e0d6). */
+  private lastSnapKind: SnapKind = "free";
+  private basePinned = false;
+  /** the constraint the next click would add, drawn muted (field report 636afdcb) */
+  private pendingGlyph: ConstraintGlyph | null = null;
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
   private arcEnd: THREE.Vector2 | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
@@ -285,7 +293,7 @@ export class SketchMode {
   private textBoxStart: THREE.Vector2 | null = null;
   private textBoxEnd: THREE.Vector2 | null = null;
   private textBoxScreen: { x: number; y: number } | null = null;
-  private viewLocked = true; // lock the camera square to the sketch plane
+  private viewLocked = false; // orbit stays free inside a sketch (Fusion parity)
   private dim: DimInput;
   private dims: SketchDimensions;
   private glyphs: SketchGlyphs;
@@ -447,6 +455,10 @@ export class SketchMode {
     // of editable lengths for entities the user could not click. startSketch()
     // still overrides this immediately when a tool was asked for (L/C/R/A/P).
     this.setTool(this.editingId ? "select" : "rectangle");
+    // Square the camera to the plane on EVERY sketch entry, whether or not the
+    // orbit lock is on. Opening a sketch should always look at it; whether you
+    // may then orbit away is a separate question, and the one the toggle owns.
+    this.viewport.enterSketchView(this.plane.origin, this.plane.n, this.plane.v);
     this.setViewLocked(this.viewLocked); // apply lock-to-plane preference
     if (this.constraints.length > 0) this.requestSolve(); // restore DOF state
     this.onState?.();
@@ -628,8 +640,7 @@ export class SketchMode {
     if (this.dimPicks.length) this.refreshDimPlan();
     if (this.dimsVisible) this.dims.show(this.entities, this.plane, this.constraintDimExtras());
     else this.dims.hide();
-    if (this.glyphsVisible) this.glyphs.show(constraintGlyphs(this.entities, this.constraints), this.plane, this.conflictIdx, this.overIdx);
-    else this.glyphs.hide();
+    this.redrawGlyphs();
     // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
     // via redraw()) fires no pointer event, so force a frame or it won't draw until
     // the next mouse move.
@@ -1214,6 +1225,7 @@ export class SketchMode {
     if (!hit) return;
     e.preventDefault();
     const p = hit.p;
+    this.lastSnapKind = hit.kind;
 
     if (this.tool === "select") {
       // grab a point to drag it — connected/constrained geometry follows
@@ -1317,6 +1329,7 @@ export class SketchMode {
 
     if (!this.base) {
       this.base = p.clone();
+      this.basePinned = isGeometrySnap(hit.kind);
       if (this.tool === "line") this.chainStart = p.clone(); // remember loop start
       this.showDimFields();
       return;
@@ -2384,6 +2397,7 @@ export class SketchMode {
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     this.lastCursor.copy(hit.p);
+    this.lastSnapKind = hit.kind; // kept in step with lastCursor: the Enter-key commit reads both
     this.showSnap(hit);
 
     if (this.tool === "arc") {
@@ -2421,9 +2435,59 @@ export class SketchMode {
       this.dim.updateFromCursor(geom.dims);
       this.dim.position(e.clientX, e.clientY);
       this.overlay.setPreview([geom.preview]); // only the rubber-band redraws
+      this.previewPendingGlyph(geom.entity, hit.kind);
     } else {
       this.overlay.setPreview([]);
+      this.clearPendingGlyph();
     }
+  }
+
+  /** Show the constraint this click WOULD add, before it is added.
+   *
+   *  Point snaps have always drawn a marker under the cursor; the line
+   *  horizontal/vertical inference fired silently at commit, so the first sign of
+   *  it was a badge appearing on geometry the user had already committed to —
+   *  "when working with lines, there is no visual feedback indicating that a
+   *  constraint will be applied before clicking. The visual feedback appears to
+   *  work only with points" (field report 636afdcb).
+   *
+   *  This runs the SAME inference the commit will run, with the same pinning, so
+   *  the badge cannot promise a constraint the commit then declines to add. */
+  private previewPendingGlyph(entity: ResolvedEntity, cursorSnap: SnapKind) {
+    if (!this.glyphsVisible || entity.type !== "line" || this.tool !== "line") {
+      return this.clearPendingGlyph();
+    }
+    if (this.dim.isUserDriven("angle")) return this.clearPendingGlyph(); // typed angle wins; nothing inferred
+    const r = inferHorizontalVertical(entity, {
+      startPinned: this.basePinned,
+      endPinned: isGeometrySnap(cursorSnap),
+    });
+    if (!r.kind) return this.clearPendingGlyph();
+    this.pendingGlyph = {
+      cIndex: -1,
+      label: r.kind === "horizontal" ? "H" : "V",
+      pos: new THREE.Vector2((r.ends.x1 + r.ends.x2) / 2, (r.ends.y1 + r.ends.y2) / 2),
+      pending: true,
+    };
+    this.redrawGlyphs();
+  }
+
+  private clearPendingGlyph() {
+    if (!this.pendingGlyph) return;
+    this.pendingGlyph = null;
+    this.redrawGlyphs();
+  }
+
+  /** Repaint the glyph layer from the committed constraints plus any pending one. */
+  private redrawGlyphs() {
+    if (!this.glyphsVisible) return void this.glyphs.hide();
+    const live = constraintGlyphs(this.entities, this.constraints);
+    this.glyphs.show(
+      this.pendingGlyph ? [...live, this.pendingGlyph] : live,
+      this.plane,
+      this.conflictIdx,
+      this.overIdx,
+    );
   }
 
   private onKey(e: KeyboardEvent) {
@@ -2577,14 +2641,21 @@ export class SketchMode {
       const end = new THREE.Vector2(entity.x2, entity.y2);
       // clicked back on the start point → close the loop and end the chain
       const closing = this.chainStart != null && end.distanceTo(this.chainStart) < 1e-3;
-      // auto-infer horizontal/vertical (skip the closing seg + typed angles)
-      if (!closing && !this.dim.isUserDriven("angle")) this.inferLineConstraint(entity);
+      // auto-infer horizontal/vertical (skip the closing seg + typed angles).
+      // Both ends carry whether they were snapped ONTO existing geometry, so the
+      // correction never moves a point the user deliberately joined.
+      if (!closing && !this.dim.isUserDriven("angle")) {
+        this.inferLineConstraint(entity, this.basePinned, isGeometrySnap(this.lastSnapKind));
+      }
       if (closing) {
         this.base = null;
         this.chainStart = null;
         this.dim.hide();
       } else {
         this.base = new THREE.Vector2(entity.x2, entity.y2); // snapped endpoint
+        // the next segment starts where this one ended; that point is pinned iff
+        // this one's end was, or iff auto-H/V has now fixed it in place
+        this.basePinned = isGeometrySnap(this.lastSnapKind);
         this.showDimFields();
       }
     } else {
@@ -2598,19 +2669,21 @@ export class SketchMode {
   }
 
   /** If a freshly drawn line sits within a few degrees of horizontal/vertical,
-   *  snap it exactly and record the constraint (mainstream MCAD's auto-constrain). */
-  private inferLineConstraint(e: ResolvedEntity) {
+   *  snap it exactly and record the constraint (mainstream MCAD's auto-constrain).
+   *
+   *  `startPinned`/`endPinned` say which ends were placed on existing geometry.
+   *  Making the line exact means moving an endpoint, and this used to always move
+   *  the second one — destroying a join the user had just snapped, by exactly the
+   *  angular error their hand left (field report ecc3e0d6). See autoConstrain.ts. */
+  private inferLineConstraint(e: ResolvedEntity, startPinned = false, endPinned = false) {
     if (e.type !== "line") return;
-    const ang = (Math.atan2(e.y2 - e.y1, e.x2 - e.x1) * 180) / Math.PI;
-    const norm = ((ang % 180) + 180) % 180; // 0..180
-    const TOL = 3;
-    if (Math.min(norm, 180 - norm) <= TOL) {
-      e.y2 = e.y1; // exactly horizontal
-      this.constraints.push({ type: "horizontal", line: e.id });
-    } else if (Math.abs(norm - 90) <= TOL) {
-      e.x2 = e.x1; // exactly vertical
-      this.constraints.push({ type: "vertical", line: e.id });
-    }
+    const r = inferHorizontalVertical(e, { startPinned, endPinned });
+    if (!r.kind) return;
+    e.x1 = r.ends.x1;
+    e.y1 = r.ends.y1;
+    e.x2 = r.ends.x2;
+    e.y2 = r.ends.y2;
+    this.constraints.push({ type: r.kind, line: e.id });
   }
 
   private showDimFields() {

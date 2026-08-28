@@ -178,6 +178,114 @@ export function createCameraRig(
   );
 
   controls.dollyToCursor = true;
+
+  // --- free orbit ----------------------------------------------------------
+  // Rotate the camera OFFSET and the orbit UP-VECTOR together about the screen
+  // axes (yaw about visual up, pitch about visual right), then re-seat
+  // camera-controls in the rotated up-space. Because offset and up rotate by the
+  // same quaternion, the polar angle camera-controls sees NEVER changes — the
+  // pole travels with the camera, so its per-frame (0, π) clamp
+  // (Spherical.makeSafe) has nothing to bite. Axis signs match controls.rotate():
+  // +az orbits CCW seen from above, +pol tips the camera downward.
+  //
+  // A function declaration, not a method on `rig`: the pointer handlers below are
+  // registered before `rig` exists, and reaching through `rig` from them would be
+  // a temporal-dead-zone trap waiting for the first refactor that fires one early.
+  function tumbleBy(az: number, pol: number) {
+    const target = controls.getTarget(new THREE.Vector3());
+    const offset = controls.getPosition(new THREE.Vector3()).sub(target);
+    active.updateMatrixWorld();
+    // visual axes from the rendered orientation (roll bank included)
+    const right = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 0);
+    const vup = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 1);
+    const q = new THREE.Quaternion()
+      .setFromAxisAngle(vup.normalize(), az)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(right.normalize(), pol));
+    offset.applyQuaternion(q);
+    const u = persp.up.clone().applyQuaternion(q).normalize();
+    persp.up.copy(u);
+    ortho.up.copy(u);
+    controls.updateCameraUp();
+    controls.setLookAt(
+      target.x + offset.x,
+      target.y + offset.y,
+      target.z + offset.z,
+      target.x,
+      target.y,
+      target.z,
+      false,
+    );
+  }
+
+  // Drive MOUSE orbit through tumbleBy as well, instead of camera-controls'
+  // native ROTATE. Its rotate clamps the polar angle just short of the poles on
+  // every frame, so a middle-drag stops dead looking straight down and can never
+  // carry on over the top — "The view rotation is artificially constrained and
+  // cannot rotate freely beyond a certain limit" (field report 73038285). The
+  // SpaceMouse has orbited freely all along precisely because it took this path.
+  //
+  // Only presses that WOULD have been A.ROTATE are taken over; TRUCK (pan, on
+  // right-drag and on Shift+middle) stays with camera-controls, as does every
+  // touch gesture. The button map remains authoritative — this reads it rather
+  // than re-deriving which button orbits.
+  const TAU = Math.PI * 2;
+  type MouseAction = CameraControls["mouseButtons"]["left"];
+  let orbitDrag: { id: number; x: number; y: number; button: "left" | "middle"; restore: MouseAction } | null = null;
+
+  /** Which button map slot this press uses, or null for one we never orbit on. */
+  function slotFor(button: number): "left" | "middle" | null {
+    return button === 0 ? "left" : button === 1 ? "middle" : null;
+  }
+
+  function beginOrbit(e: PointerEvent) {
+    const slot = slotFor(e.button);
+    if (!slot || orbitDrag) return;
+    const action = controls.mouseButtons[slot];
+    if (action !== A.ROTATE) return; // pan, selection, or orbit-locked — not ours
+    // Hide it from camera-controls, which reads the map in its own (bubble-phase)
+    // pointerdown a moment from now, and restore the value on release.
+    orbitDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, button: slot, restore: action };
+    controls.mouseButtons[slot] = A.NONE;
+  }
+
+  function moveOrbit(e: PointerEvent) {
+    if (!orbitDrag || e.pointerId !== orbitDrag.id) return;
+    const dx = e.clientX - orbitDrag.x;
+    const dy = e.clientY - orbitDrag.y;
+    orbitDrag.x = e.clientX;
+    orbitDrag.y = e.clientY;
+    // camera-controls' own conversion, so the drag feels identical: it divides
+    // by HEIGHT for both axes (its comment: "to refer the resolution") and
+    // passes the negated pointer delta to rotate().
+    const h = dom.clientHeight || 1;
+    tumbleBy((-TAU * dx) / h, (-TAU * dy) / h);
+  }
+
+  function endOrbit(e: PointerEvent) {
+    if (!orbitDrag || e.pointerId !== orbitDrag.id) return;
+    controls.mouseButtons[orbitDrag.button] = orbitDrag.restore;
+    orbitDrag = null;
+  }
+
+  // Capture phase for the same reason the Alt+left mapping above uses it:
+  // camera-controls is constructed first and binds its own pointerdown to this
+  // element, so a bubble-phase listener would run after it had already read the
+  // map. The move/up pair goes on the document because a drag routinely leaves
+  // the canvas, and `pointercancel` matters — a lost pointer must not strand
+  // the button on A.NONE and kill orbit for the rest of the session.
+  dom.addEventListener("pointerdown", (e) => { if (e instanceof PointerEvent) beginOrbit(e); }, { capture: true });
+  const doc = dom.ownerDocument;
+  doc.addEventListener("pointermove", (e) => { if (e instanceof PointerEvent) moveOrbit(e); });
+  doc.addEventListener("pointerup", (e) => { if (e instanceof PointerEvent) endOrbit(e); });
+  doc.addEventListener("pointercancel", (e) => { if (e instanceof PointerEvent) endOrbit(e); });
+  window.addEventListener("blur", () => {
+    // focus loss mid-drag never delivers pointerup
+    if (orbitDrag) {
+      controls.mouseButtons[orbitDrag.button] = orbitDrag.restore;
+      orbitDrag = null;
+    }
+  });
+
   controls.setTarget(0, 0, 0, false);
 
   // Swap the active camera between projections, preserving apparent zoom in BOTH
@@ -403,6 +511,15 @@ export function createCameraRig(
         ortho.left = -halfH * aspect2;
         ortho.right = halfH * aspect2;
         ortho.updateProjectionMatrix();
+        // The frustum carries the scale, so the accumulated wheel zoom has to
+        // go — apparent half-height is (top − bottom) / 2 / zoom, and leaving a
+        // zoom of 0.2 on it means this "fit" frames five times the box it just
+        // measured. Fit appeared to work exactly once, at startup while zoom was
+        // still 1, and then never again: field report 76237688, "it would do it
+        // once but not do it again if I zoomed out ... ok in Persp or Auto but
+        // does not work properly in Ortho". Same idiom as swapProjection.
+        pendingOrthoZoom = null; // a queued wheel step must not re-apply over this
+        controls.zoomTo(1, false);
         dist = Math.max(controls.distance, r * 2);
       } else {
         dist = r / Math.sin((FOV * Math.PI) / 180 / 2);
@@ -511,37 +628,7 @@ export function createCameraRig(
       rollAngle += angle;
     },
     tumble(az, pol) {
-      // Rotate the camera OFFSET and the orbit UP-VECTOR together about the
-      // screen axes (yaw about visual up, pitch about visual right), then
-      // re-seat camera-controls in the rotated up-space. Because offset and up
-      // rotate by the same quaternion, the polar angle camera-controls sees
-      // NEVER changes — the pole travels with the camera, so its per-frame
-      // (0, π) clamp (Spherical.makeSafe) has nothing to bite. Axis signs
-      // match controls.rotate(): +az orbits CCW seen from above, +pol tips
-      // the camera downward.
-      const target = controls.getTarget(new THREE.Vector3());
-      const offset = controls.getPosition(new THREE.Vector3()).sub(target);
-      active.updateMatrixWorld();
-      // visual axes from the rendered orientation (roll bank included)
-      const right = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 0);
-      const vup = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 1);
-      const q = new THREE.Quaternion()
-        .setFromAxisAngle(vup.normalize(), az)
-        .multiply(new THREE.Quaternion().setFromAxisAngle(right.normalize(), pol));
-      offset.applyQuaternion(q);
-      const u = persp.up.clone().applyQuaternion(q).normalize();
-      persp.up.copy(u);
-      ortho.up.copy(u);
-      controls.updateCameraUp();
-      controls.setLookAt(
-        target.x + offset.x,
-        target.y + offset.y,
-        target.z + offset.z,
-        target.x,
-        target.y,
-        target.z,
-        false,
-      );
+      tumbleBy(az, pol);
     },
     setOrbitLocked(locked) {
       orbitLocked = locked;

@@ -91,14 +91,28 @@ export class FakeEl {
   focus() {
     fakeFocus.el = this;
   }
+  /** <input>.select(). Real inputs have it and the dim box calls it right after
+   *  focus(), so a stub without it cannot construct a tool that opens one. */
+  select() {}
   scrollIntoView() {}
 }
 
 /** Point the global `document` at the stub. Idempotent; call at module scope
- *  before constructing anything that calls document.createElement. */
+ *  before constructing anything that calls document.createElement.
+ *
+ *  `body` is a real FakeEl rather than a no-op: a component that mounts a
+ *  floating layer (DimInput, SketchGlyphs) appends to it in its CONSTRUCTOR, so
+ *  without one it cannot be constructed at all — and a test that cannot
+ *  construct the thing falls back to asserting source text. */
 export function installFakeDocument(): void {
   (globalThis as unknown as { document: unknown }).document = {
     createElement: (tag: string) => new FakeEl(tag),
+    body: new FakeEl("body"),
+    // Nothing here is mounted in a real page, so no id resolves. Returning null
+    // is the honest answer and every caller already handles it (setPrompt bails
+    // on a missing #prompt banner); the alternative is each test mocking a
+    // module it does not care about.
+    getElementById: () => null,
   };
 }
 

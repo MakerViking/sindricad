@@ -1273,7 +1273,23 @@ export class Viewport {
   }
 
   fitView() {
-    if (this.model) this.rig.fit(this.model.box, true);
+    // With no model this used to do nothing whatsoever, which is the worst
+    // possible moment for it: a user who has zoomed until the grid and origin
+    // are off screen reaches for Fit, and Fit is the one command that knows
+    // where "here" is. rig.fit() already answers an empty box with a
+    // human-scale view of the origin, so hand it one rather than returning.
+    this.rig.fit(this.model?.box ?? new THREE.Box3(), true);
+  }
+
+  /** Back to the startup view: iso orientation, framed on whatever exists — or
+   *  on the origin when nothing does. File > New leaves an empty document, and
+   *  it used to leave the camera exactly where it was: "the window view does not
+   *  reset itself, I got lost at least once when I zoomed out to the extent that
+   *  the origin and grid had disappeared ... the only quick way back was to exit
+   *  and reload SindriCAD" (field report 32887098). */
+  resetView() {
+    this.rig.setStandardView("iso");
+    this.fitView();
   }
 
   showAllPlanes(on: boolean) {
@@ -2043,9 +2059,19 @@ export class Viewport {
   }
 
   /** A clean drag/cursor snap step (nice 1/2/5 mm) for the current zoom at a world
-   *  point, so manipulator + sketch values read 5/1/0.5/0.1 mm, not 0.3425. */
-  snapStep(at: THREE.Vector3): number {
-    return niceStep(this.pixelWorldSize(at) * 8); // ~8px granularity
+   *  point, so manipulator + sketch values read 5/1/0.5/0.1 mm, not 0.3425.
+   *
+   *  `fine` — Ctrl/Cmd held during a handle drag — drops it by two decades, which
+   *  is below a pixel of travel at any sane zoom. It is the escape hatch for
+   *  someone who wants 2.35 mm and kept getting 2: "the manual chamfer adjustment
+   *  system using the arrow does not provide decimal feedback: you can see the
+   *  chamfer increasing or decreasing, but the value in the input field is
+   *  rounded to the nearest whole number" (field report f8d48678). The snap
+   *  itself is deliberate and stays the default — round numbers are what you want
+   *  almost every time, and zooming in already buys a finer step. */
+  snapStep(at: THREE.Vector3, fine = false): number {
+    const step = niceStep(this.pixelWorldSize(at) * 8); // ~8px granularity
+    return fine ? step / 100 : step;
   }
 
   private resize() {

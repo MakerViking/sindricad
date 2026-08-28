@@ -44,11 +44,34 @@ export const FACE_VIEWS: Record<
 // The cube's own surfaces are local; the two HOVER colours are the shared
 // selection accent, so hovering a cube face reads the same as selecting anything
 // else in the viewport.
-const COLOR_FACE = 0x2b313c;
-const COLOR_FACE_HOVER = C.SELECT;
+//
+// The face plates are painted whole — background AND label — into their canvas
+// texture, and the material carries NO tint. That is deliberate and it is the fix
+// for field report 7bed5869 ("In dark mode the navigation cube is nearly
+// impossible to see... text is unreadable, corner and edge controls are
+// invisible"). A MeshBasicMaterial's `color` MULTIPLIES its map, and the label
+// canvas was cleared to rgba(0,0,0,0) with `transparent: false` — so the alpha
+// was discarded and every face rendered as texRGB × COLOR_FACE: solid black
+// where the canvas was clear, and #cdd4de × #2b313c ≈ #222934 where the text
+// was. Near-black text on black. Multiplying can only ever darken, so no choice
+// of label colour could have rescued it; the tint had to go.
+export const COLOR_FACE = 0x2b313c;
+export const COLOR_FACE_HOVER = C.SELECT;
 const COLOR_EDGE = 0x3a4250;
 const COLOR_EDGE_HOVER = C.SELECT_HOT;
-const COLOR_OUTLINE = 0x161a20;
+// The solid filler under the face plates. Was 0x161a20 — near-black, so the gaps
+// between plates read as holes rather than as a cube.
+export const COLOR_BODY = 0x39414f;
+// The wireframe silhouette. Was 0x05070a: a black outline around a dark cube on a
+// dark viewport draws nothing at all, which is half of "nearly impossible to see".
+export const COLOR_OUTLINE = 0x6b7686;
+/** Label ink on an unhovered face, and on a hovered (accent-filled) one. */
+export const LABEL_INK = "#e8edf5";
+export const LABEL_INK_HOVER = "#10141a";
+/** Edge/corner nubs were opacity 0 until hovered — literally invisible, so
+ *  there was nothing to tell a user they could be clicked. Quiet, but present. */
+export const NUB_IDLE_OPACITY = 0.35;
+export const NUB_HOVER_OPACITY = 0.95;
 
 type PartKind = "face" | "edge" | "corner";
 interface Part {
@@ -118,7 +141,9 @@ export class ViewCube {
       const f = FACE_VIEWS[side];
       const tex = this.makeLabelTexture(side);
       const geo = new THREE.PlaneGeometry(0.78, 0.78);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, color: COLOR_FACE, transparent: false });
+      // No tint: the plate's canvas already holds its final colours (see the
+      // COLOR_FACE comment — a tint here multiplies the map and can only darken).
+      const mat = new THREE.MeshBasicMaterial({ map: tex, color: 0xffffff, transparent: false });
       const mesh = new THREE.Mesh(geo, mat);
       // orient the plate so its +Z points along the face normal, at the surface
       mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), f.normal);
@@ -138,7 +163,7 @@ export class ViewCube {
     // a solid filler cube under the plates so the body looks solid + occludes
     const body = new THREE.Mesh(
       new THREE.BoxGeometry(0.97, 0.97, 0.97),
-      new THREE.MeshBasicMaterial({ color: COLOR_OUTLINE }),
+      new THREE.MeshBasicMaterial({ color: COLOR_BODY }),
     );
     this.group.add(body);
 
@@ -153,14 +178,14 @@ export class ViewCube {
     // crisp wireframe outline around the cube
     const outline = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-      new THREE.LineBasicMaterial({ color: 0x05070a }),
+      new THREE.LineBasicMaterial({ color: COLOR_OUTLINE }),
     );
     this.group.add(outline);
   }
 
   private addNub(kind: "edge" | "corner", dir: THREE.Vector3, s: number, base: number, hover: number) {
     const geo = new THREE.BoxGeometry(s, s, s);
-    const mat = new THREE.MeshBasicMaterial({ color: base, transparent: true, opacity: 0.0 });
+    const mat = new THREE.MeshBasicMaterial({ color: base, transparent: true, opacity: NUB_IDLE_OPACITY });
     const mesh = new THREE.Mesh(geo, mat);
     // place at the cube surface in the direction's components (±HALF per nonzero axis)
     mesh.position.set(
@@ -192,14 +217,20 @@ export class ViewCube {
     return tex;
   }
 
-  private paintLabel(side: ViewCubeSide, redefined: boolean) {
+  private paintLabel(side: ViewCubeSide, redefined: boolean, hovered = false) {
     const entry = this.faceTextures.get(side);
     if (!entry) return;
     const { canvas, texture } = entry;
     const ctx = canvas.getContext("2d")!;
     const W = canvas.width;
+    // Fill the plate opaquely: the material no longer tints the map, so what is
+    // painted here is exactly what the user sees. Hover swaps the fill for the
+    // selection accent (and the ink for something readable on it) rather than
+    // multiplying a colour over the top, which could only darken.
     ctx.clearRect(0, 0, W, W);
-    ctx.fillStyle = "#cdd4de";
+    ctx.fillStyle = hovered ? C.hex(COLOR_FACE_HOVER) : C.hex(COLOR_FACE);
+    ctx.fillRect(0, 0, W, W);
+    ctx.fillStyle = hovered ? LABEL_INK_HOVER : LABEL_INK;
     ctx.font = "600 56px Inter, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -207,11 +238,16 @@ export class ViewCube {
     if (redefined) {
       // small accent dot marking a user-redefined side
       ctx.beginPath();
-      ctx.fillStyle = C.hex(C.SELECT);
+      ctx.fillStyle = hovered ? LABEL_INK_HOVER : C.hex(C.SELECT);
       ctx.arc(W / 2, W * 0.78, 9, 0, Math.PI * 2);
       ctx.fill();
     }
     texture.needsUpdate = true;
+  }
+
+  /** Repaint one face from the CURRENT hover + override state. */
+  private repaintFace(side: ViewCubeSide, hovered: boolean) {
+    this.paintLabel(side, !!this.hooks.getOverrides()[side], hovered);
   }
 
   /** refresh the "redefined" markers on faces (call when overrides change). */
@@ -322,14 +358,23 @@ export class ViewCube {
     if (part === this.hovered) return;
     if (this.hovered) {
       const m = this.hovered.mesh.material as THREE.MeshBasicMaterial;
-      m.color.setHex(this.hovered.baseColor);
-      if (this.hovered.kind !== "face") m.opacity = 0;
+      if (this.hovered.kind === "face" && this.hovered.side) {
+        // faces repaint their canvas; tinting the material would darken it
+        this.repaintFace(this.hovered.side, false);
+      } else {
+        m.color.setHex(this.hovered.baseColor);
+        m.opacity = NUB_IDLE_OPACITY;
+      }
     }
     this.hovered = part;
     if (part) {
       const m = part.mesh.material as THREE.MeshBasicMaterial;
-      m.color.setHex(part.hoverColor);
-      if (part.kind !== "face") m.opacity = 0.9;
+      if (part.kind === "face" && part.side) {
+        this.repaintFace(part.side, true);
+      } else {
+        m.color.setHex(part.hoverColor);
+        m.opacity = NUB_HOVER_OPACITY;
+      }
       this.canvas.style.cursor = "pointer";
     } else {
       this.canvas.style.cursor = "";

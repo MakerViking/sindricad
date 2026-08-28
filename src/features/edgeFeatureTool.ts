@@ -339,7 +339,7 @@ export class EdgeFeatureTool {
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
     setPrompt(
-      `Editing ${this.kind}: click an edge to add or remove it · drag the arrow or type a value · ` +
+      `Editing ${this.kind}: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · ` +
         `Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)`,
     );
     if (!this.raf) this.raf = requestAnimationFrame(this.boundTick);
@@ -390,7 +390,7 @@ export class EdgeFeatureTool {
       // snap to a clean step that scales with zoom (5/1/0.5/0.1mm), so the
       // radius/distance reads as a round number rather than 0.3425.
       const raw = this.grabValue + (proj - this.grabProj);
-      const step = this.viewport.snapStep(this.anchor);
+      const step = this.viewport.snapStep(this.anchor, e.ctrlKey || e.metaKey);
       const stepped = Math.max(step, snap(raw, step));
       if (stepped === this.value) return; // same step — don't re-trigger an OCCT rebuild
       this.value = stepped;
@@ -432,6 +432,13 @@ export class EdgeFeatureTool {
       this.grabbing = true;
       this.grabValue = this.value;
       this.grabProj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
+      // Grabbing the handle is as deliberate a statement of the value as typing
+      // one, so hand the box back to cursor tracking — otherwise it sits frozen
+      // at the typed or seeded figure while the geometry moves under it, and the
+      // arrow "does not display in the input field the distance manually pushed
+      // or pulled ... which makes the arrow effectively useless" (field report
+      // 215db097). Typing re-locks it on the next keystroke.
+      this.dim.unlock(this.field.name);
       this.viewport.domElement.style.cursor = "grabbing";
       return;
     }
@@ -511,7 +518,7 @@ export class EdgeFeatureTool {
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
     setPrompt(
-      `Drag the arrow to set ${this.field.name} · type a value + Enter · ` +
+      `Drag the arrow to set ${this.field.name} (hold Ctrl for fine steps) · type a value + Enter · ` +
         `click edges to add/remove them · click empty space to commit · Esc to cancel`,
     );
     this.pushPreview();
