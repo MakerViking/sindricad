@@ -8,6 +8,7 @@ import os
 import math
 import tempfile
 
+import builder
 from builder import rebuild, import_geometry
 from tessellate import tessellate, tessellate_bodies, edge_polylines, bbox
 from exporters import export
@@ -1827,6 +1828,70 @@ def test_region_names_its_cell_and_does_not_collapse():
 
 
 
+def test_blend_hang_guard():
+    """A fillet that HANGS must be refused, not allowed to wedge the session.
+
+    Found on a user's own part (Shroud.sindri, 28 features), sent as a feature
+    request — he had no idea it was broken. Feature `f33`, a 16-edge fillet at
+    r=1.6, never returns: the document rebuilt for 25 MINUTES on main without
+    completing, so it could not be opened at all. Bisected by prefix — the first
+    26 features build in 2.1 s, adding f33 never finishes — and five of its
+    sixteen edges hang INDIVIDUALLY too, so it is the body at that radius rather
+    than one pathological edge.
+
+    An in-worker deadline cannot catch this: OCCT holds the GIL for the whole
+    call (the taper path measured a SIGALRM armed for 1.0 s arriving at 10.39 s),
+    and geometry runs in a max_workers=1 pool, so one hang costs the whole
+    session. Hence a subprocess with a timeout.
+
+    What is asserted here is the part that must not regress: the guard is
+    NARROW. It refuses a hang and nothing else — an ordinary blend still builds,
+    and a blend that FAILS still fails with OCCT's own message rather than the
+    guard's, because "try a smaller length value(s)" is far more actionable.
+    """
+    # 1. an ordinary fillet is unaffected
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 20},
+        {"id": "f1", "type": "fillet",
+         "edges": {"kind": "edge", "by": "nearest", "point": [20, 20, 10]}, "radius": 3}]}
+    _, err, bodies = rebuild(doc)
+    assert not err, f"an ordinary fillet was refused: {err}"
+    solids = [b["shape"] for b in bodies if b.get("shape") is not None]
+    assert len(solids) == 1 and solids[0].volume < 40 * 40 * 20, "the fillet removed nothing"
+
+    # 2. an impossible radius still reports the KERNEL's message, not the guard's.
+    #    The guard only decides "did it finish", so a fast failure falls through
+    #    to the real call and keeps its own diagnosis.
+    doc2 = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 10, "width": 10, "height": 10},
+        {"id": "f1", "type": "fillet",
+         "edges": {"kind": "edge", "by": "nearest", "point": [5, 5, 0]}, "radius": 500}]}
+    _, err2, _ = rebuild(doc2)
+    assert err2, "a 500mm fillet on a 10mm box should fail"
+    msg = str(err2[0].get("message", ""))
+    assert "within" not in msg, (
+        "an impossible radius was reported as a TIMEOUT — the guard is pre-empting "
+        f"honest failures and hiding the kernel's message: {msg}")
+
+    # 3. the guard's own machinery answers the question it claims to
+    from build123d import Box
+    b = Box(10, 20, 30)
+    assert builder._probe_blend(b, list(b.edges())[:1], "fillet", 1.0), \
+        "a trivially valid fillet was refused by the probe"
+
+    # 4. edge ORDER survives the BREP round-trip, which is what lets the probe
+    #    name the same edges the worker resolved. If this ever stops holding,
+    #    the probe silently starts testing a DIFFERENT operation.
+    from geom_select import _edge_mid
+    mids = lambda sh: [tuple(round(float(c), 6) for c in (_edge_mid(e).X, _edge_mid(e).Y, _edge_mid(e).Z))
+                       for e in sh.edges()]
+    round_tripped = builder._brep_b64_to_shape(builder._shape_to_brep_b64(b))
+    assert mids(b) == mids(round_tripped), \
+        "BREP round-trip no longer preserves edge order — _probe_blend would test the wrong edges"
+
+    print("  blend-hang-guard OK: hang refused, honest failures keep the kernel's message")
+
+
 def test_fillet_failure_diagnostics():
     """When a fillet/chamfer fails, the per-edge probe names the offending
     edges' midpoints in an `edgeOpFailed` diagnostic (so the UI can paint
@@ -2914,6 +2979,7 @@ if __name__ == "__main__":
     test_holed_region_anchors_in_the_wall()
     test_region_anchor_refuses_and_keeps_a_correct_cell()
     test_region_names_its_cell_and_does_not_collapse()
+    test_blend_hang_guard()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()

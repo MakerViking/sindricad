@@ -2029,6 +2029,108 @@ def _group_sels_by_body(sel, ctx, label):
     return list(groups.values())
 
 
+
+# --- blend (fillet/chamfer) hang guard -------------------------------------
+#
+# OCCT's fillet can HANG INDEFINITELY on an awkward solid rather than failing.
+# Found on a user's own part (Shroud.sindri, 28 features): feature `f33`, a
+# 16-edge fillet at r=1.6, never returns — the document rebuilt for 25 minutes
+# without completing and could not be opened at all. Bisected by prefix: the
+# first 26 features build in 2.1 s, adding f33 never finishes. Five of its
+# sixteen edges hang INDIVIDUALLY too, so this is the body at that radius, not
+# one pathological edge — which also means `_report_edge_failures` would hang on
+# the same input, and it is skipped when the probe refuses.
+#
+# An in-worker deadline CANNOT save this: OCCT holds the GIL for the whole call,
+# and the taper path already measured a SIGALRM armed for 1.0 s arriving at
+# 10.39 s, exactly when the kernel returned. Geometry runs in a max_workers=1
+# pool, so one hang costs the user their entire session. A subprocess with a
+# timeout is the only guard that works — same conclusion, same shape, as
+# _probe_tapers.
+_BLEND_PROBE_TIMEOUT = 25.0
+_BLEND_PROBE_CACHE = {}
+
+
+def _probe_blend(body_shape, edges, kind, size):
+    """True if this blend completes in a throwaway process inside the timeout.
+
+    False means REFUSE it: either it raised there (the real build will raise the
+    same way, with a better message) or it ran past the deadline. Cached on the
+    body's bytes plus the edge midpoints and size, so an unchanged document pays
+    one fork, not one per rebuild.
+
+    Fails OPEN on any serialisation problem — an unserialisable body is not
+    evidence of a hang, and refusing it would break working documents.
+    """
+    try:
+        brep = _shape_to_brep_b64(body_shape)
+        # Identify the edges by INDEX into the body's own edge list, not by
+        # midpoint: a BREP round-trip preserves edge ORDER (asserted in
+        # test_smoke), and a nearest-midpoint re-match in the child would be
+        # both O(n*m) and — much worse — free to pick DIFFERENT edges, so the
+        # probe would be testing an operation the worker is not about to run.
+        # A probe that answers a different question can refuse a valid blend.
+        all_edges = list(body_shape.edges())
+        idxs = []
+        for e in edges:
+            hit = next((i for i, c in enumerate(all_edges) if c.wrapped.IsSame(e.wrapped)), None)
+            if hit is None:
+                return True  # cannot name it faithfully; do not block the build
+            idxs.append(hit)
+    except Exception:
+        return True  # cannot probe it; let the real build decide
+    key = (brep, tuple(idxs), kind, round(float(size), 6))
+    hit = _BLEND_PROBE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    import subprocess
+    recipe = {"brep": brep, "idxs": idxs, "kind": kind, "size": round(float(size), 6)}
+    # Default True: only a TIMEOUT refuses. If the child RAISED, the real call is
+    # about to raise the same way, and OCCT's own message ("try a smaller length
+    # value(s)") is far more actionable than anything this can say — so let it
+    # through and report properly. The probe exists to catch the hang, not to
+    # pre-empt an honest failure.
+    ok = True
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import builder; builder._blend_probe_main()"],
+            input=json.dumps(recipe), capture_output=True, text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            timeout=_BLEND_PROBE_TIMEOUT,
+        )
+        # The child prints one JSON line. Kernel and font chatter share stdout,
+        # so scan for our record rather than parsing the whole stream.
+        # Nothing to read back: a child that ran to completion — whether it
+        # succeeded or raised — is not a hang, and that is all this decides.
+    except subprocess.TimeoutExpired:
+        ok = False  # the hang this exists for
+    except Exception:
+        ok = True   # probe infrastructure failed; do not block a real build
+    _BLEND_PROBE_CACHE[key] = ok
+    return ok
+
+
+def _blend_probe_main():
+    """Child entry point for _probe_blend. Reads one JSON recipe on stdin and
+    prints one JSON line. Runs the SAME kernel call the worker would."""
+    rec = json.loads(sys.stdin.read())
+    out = {"blend": False}
+    try:
+        shape = _brep_b64_to_shape(rec["brep"])
+        all_edges = list(shape.edges())
+        idxs = rec["idxs"]
+        picked = [all_edges[i] for i in idxs if 0 <= i < len(all_edges)]
+        if len(picked) == len(idxs):
+            if rec["kind"] == "fillet":
+                fillet(picked, radius=rec["size"])
+            else:
+                chamfer(picked, length=rec["size"])
+            out["blend"] = True
+    except Exception:
+        out["blend"] = False
+    print(json.dumps(out), flush=True)
+
+
 def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
     """Shared fillet/chamfer body: blend every selected edge, per owning body.
 
@@ -2052,6 +2154,18 @@ def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
         if not edges:
             raise GeomError(f"no edge found to {label.lower()} on {BODY_SLOT}",
                             body_id=body["id"], subject=body.get("name"))
+        # Clear the whole blend through a throwaway process FIRST. A refusal
+        # here is either "it raises" (the real call below reports it properly)
+        # or "it never returns", which is the case this exists for and the only
+        # one an in-worker guard cannot catch. Refusing costs the user this
+        # feature; not refusing costs them the session.
+        if not _probe_blend(body["shape"], edges, label.lower(), blend_size):
+            raise GeomError(
+                f"{label} failed on {BODY_SLOT}: the kernel could not complete this "
+                f"{label.lower()} at {blend_size:g} within {_BLEND_PROBE_TIMEOUT:g}s. "
+                "Try a smaller value, or fewer edges at once.",
+                body_id=body["id"], subject=body.get("name"),
+            )
         try:
             new_shape = combined(edges)
         except Exception as combined_err:
