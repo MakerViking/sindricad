@@ -1703,15 +1703,127 @@ def test_region_anchor_refuses_and_keeps_a_correct_cell():
         f"only the rectangle, but that cell shares the profile's outer boundary — " \
         f"it is not a hole, so the mismatch must not condemn the anchor"
 
-    # ...and the guard still fires when the cell IS strictly inside the profile.
+    # ...and a rebuild that would anchor in the hole no longer gets that far: the
+    # hole's own cell is bounded by `inner` alone, so it cannot contain a reference
+    # that names `outer`, and the wall is the only cell left. This used to assert
+    # None — refuse, and let the stored point speak — which was the right answer
+    # while the rebuilt profile was the only evidence available. Naming the cell is
+    # strictly better than refusing: it is right even when the point is stale, which
+    # is the case the point cannot survive (a20cca53).
     holed = entry(_holed_sketch("shell", 0, 0))
     cells = [(fc, fc.bounding_box()) for fc in holed["faces"]]
-    assert _region_face_from_entities(holed, cells, ["outer"], None) is None, \
-        "an outer-loop-only rebuild of a holed region anchors in the hole: the " \
-        "cell is strictly inside the rebuilt profile, so the guard must fire"
+    wall = _region_face_from_entities(holed, cells, ["outer"], None)
+    assert wall is not None and abs(wall.area - 3600) < 1e-6, \
+        f"an outer-loop-only reference must resolve to the 3600mm2 WALL — the only " \
+        f"cell whose boundary contains `outer` — and not to the 6400mm2 hole its " \
+        f"solid rebuild anchors in; got " \
+        f"{'None' if wall is None else format(wall.area, '.3f')}"
 
     print("  anchor refusals OK: deleted, empty and severing hole groups all "
-          "refuse; an under-named reference keeps its cell; a hole is still caught")
+          "refuse; an under-named reference keeps its cell; a holed region names "
+          "its wall instead of anchoring in its hole")
+
+
+# Field report 953a6c3f, reduced to lines. An 80x230 outline split across the
+# middle, with a 60x210 outline drawn straight THROUGH that split — the shape of
+# the reporter's part, minus its corner arcs, which change nothing here.
+#
+# What makes it the reproduction is that the inner verticals cross the mid line:
+# each of the four cells is then bounded by a DIFFERENT set of entities, and the
+# two band cells are bounded by entities that do not close a loop on their own
+# (the inner three only close once trimmed at the crossing). That is the case an
+# entity anchor cannot rebuild, and used to answer wrongly rather than refuse.
+_BUG953_SKETCH = [
+    {"id": "oL", "type": "line", "x1": -40, "y1": 0, "x2": -40, "y2": -115},
+    {"id": "oB", "type": "line", "x1": -40, "y1": -115, "x2": 40, "y2": -115},
+    {"id": "oR", "type": "line", "x1": 40, "y1": -115, "x2": 40, "y2": 0},
+    {"id": "mid", "type": "line", "x1": 40, "y1": 0, "x2": -40, "y2": 0},
+    {"id": "tL", "type": "line", "x1": -40, "y1": 0, "x2": -40, "y2": 115},
+    {"id": "tT", "type": "line", "x1": -40, "y1": 115, "x2": 40, "y2": 115},
+    {"id": "tR", "type": "line", "x1": 40, "y1": 115, "x2": 40, "y2": 0},
+    {"id": "iL", "type": "line", "x1": -30, "y1": 105, "x2": -30, "y2": -105},
+    {"id": "iB", "type": "line", "x1": -30, "y1": -105, "x2": 30, "y2": -105},
+    {"id": "iR", "type": "line", "x1": 30, "y1": -105, "x2": 30, "y2": 105},
+    {"id": "iT", "type": "line", "x1": 30, "y1": 105, "x2": -30, "y2": 105},
+]
+_BAND_LO = ["oL", "oB", "oR", "mid", "iL", "iB", "iR"]   # 2900mm2, y -115..0
+_BAND_HI = ["tL", "tT", "tR", "mid", "iL", "iT", "iR"]   # 2900mm2, y 0..115
+_CORE_LO = ["mid", "iL", "iB", "iR"]                     # 6300mm2, y -105..0
+_CORE_HI = ["mid", "iL", "iT", "iR"]                     # 6300mm2, y 0..105
+
+
+def test_region_names_its_cell_and_does_not_collapse():
+    """Field report 953a6c3f: "I select the right parts of the sketch, but a
+    different part is extruded" — four picked areas built two.
+
+    Two of the four are the U-shaped bands, and a band's boundary entities do NOT
+    close a loop by themselves: three of the seven only close once trimmed where
+    the inner outline crosses the mid line. `Wire.combine` closed the other four
+    into the OUTER loop, the open wire was dropped, and the anchor came out of a
+    9200mm2 profile that is not any cell — landing, confidently, inside the 6300mm2
+    core. Containment succeeded, so nothing warned: the extrude reported no error
+    and quietly built half of what was asked for.
+
+    A cell is IDENTIFIED here rather than rebuilt: the arrangement knows which
+    entities bound each cell, so a reference that names them names the cell, and
+    no geometry has to be re-derived. The volumes below are the assertion that
+    matters — four areas must add up — and the labels are asserted too so the
+    failure says WHICH cell went wrong rather than only that a number moved."""
+    from builder import _build_sketch
+
+    entry = _build_sketch(
+        {"id": "s1", "type": "sketch", "plane": "XY", "entities": _BUG953_SKETCH},
+        lambda v: v)
+    got = {}
+    for fc, lbl in zip(entry["faces"], entry["cellEntities"]):
+        assert lbl is not None, \
+            f"a {fc.area:.1f}mm2 cell has no entity label: every edge of this " \
+            f"arrangement comes from a named line, so attribution must be total"
+        got[lbl] = round(fc.area, 3)
+    want = {frozenset(_BAND_LO): 2900.0, frozenset(_BAND_HI): 2900.0,
+            frozenset(_CORE_LO): 6300.0, frozenset(_CORE_HI): 6300.0}
+    assert got == want, \
+        f"the four cells must carry four DISTINCT entity sets:\n  got  {got}\n  " \
+        f"want {want}"
+
+    def extrude(regions, eids, dist=10):
+        part, err, _b = rebuild({"parameters": {}, "features": [
+            {"id": "s1", "type": "sketch", "plane": "XY",
+             "entities": _BUG953_SKETCH},
+            {"id": "ex", "type": "extrude", "sketch": "s1", "distance": dist,
+             "operation": "new", "regions": [list(p) for p in regions],
+             "regionEntities": eids,
+             "regionHoleEntities": [[] for _ in eids]}]})
+        assert not err, err
+        return part.volume
+
+    # The reported feature: four areas, and the whole outline is what they add to.
+    four = extrude([(0, -110, 0), (0, 110, 0), (0, -50, 0), (0, 50, 0)],
+                   [_BAND_LO, _BAND_HI, _CORE_LO, _CORE_HI])
+    assert abs(four - 184000) < 1, \
+        f"four picked areas collapsed: got {four:.1f}, want 184000.0 " \
+        f"(126000.0 is the two cores alone — the reported bug, where the bands' " \
+        f"references resolved into the cores and the union lost half the part)"
+
+    # The bands ALONE, which is the pair that used to resolve into the cores. The
+    # numbers are far apart on purpose: 2900 against 6300 per cell.
+    bands = extrude([(0, -110, 0), (0, 110, 0)], [_BAND_LO, _BAND_HI])
+    assert abs(bands - 58000) < 1, \
+        f"the bands resolved to the wrong cells: got {bands:.1f}, want 58000.0 " \
+        f"(126000.0 is the cores)"
+
+    # A reference saved BEFORE the inner outline existed names four entities that
+    # no cell carries exactly any more — the split gave both new pieces the inner
+    # ids too. Only the band's boundary still contains all four, so it is named
+    # without a tie-break. (This is `f4` in the reporter's document.)
+    presplit = extrude([(0, -110, 0)], [["oL", "oB", "oR", "mid"]])
+    assert abs(presplit - 29000) < 1, \
+        f"a pre-split reference must resolve to the 2900mm2 band that still " \
+        f"contains all of its entities: got {presplit:.1f}, want 29000.0 " \
+        f"(63000.0 is the core, which shares only `mid` with it)"
+
+    print("  953a6c3f OK: four picked areas build 184000 and not 126000; the "
+          "bands resolve to the bands; a pre-split reference names its band")
 
 
 
@@ -2801,6 +2913,7 @@ if __name__ == "__main__":
     test_region_follows_a_moved_entity()
     test_holed_region_anchors_in_the_wall()
     test_region_anchor_refuses_and_keeps_a_correct_cell()
+    test_region_names_its_cell_and_does_not_collapse()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()

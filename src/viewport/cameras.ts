@@ -64,6 +64,9 @@ export interface CameraRig {
    *  moving the picture. Resolve the point per gesture and set it at drag
    *  start; clearOrbitPivot() folds it away again. */
   setOrbitPivot(point: THREE.Vector3): void;
+  /** Announce an intercepted mouse orbit's start (camera-controls' own
+   *  `controlstart` does not fire for one — see beginOrbit). */
+  setOnOrbitStart(fn: () => void): void;
   /** Fold an orbit pivot back into a plain position/target pair. No-op when no
    *  pivot is set, and never changes what is on screen. */
   clearOrbitPivot(): void;
@@ -190,6 +193,123 @@ export function createCameraRig(
   );
 
   controls.dollyToCursor = true;
+
+  // --- free orbit ----------------------------------------------------------
+  // Rotate the camera OFFSET and the orbit UP-VECTOR together about the screen
+  // axes (yaw about visual up, pitch about visual right), then re-seat
+  // camera-controls in the rotated up-space. Because offset and up rotate by the
+  // same quaternion, the polar angle camera-controls sees NEVER changes — the
+  // pole travels with the camera, so its per-frame (0, π) clamp
+  // (Spherical.makeSafe) has nothing to bite. Axis signs match controls.rotate():
+  // +az orbits CCW seen from above, +pol tips the camera downward.
+  //
+  // A function declaration, not a method on `rig`: the pointer handlers below are
+  // registered before `rig` exists, and reaching through `rig` from them would be
+  // a temporal-dead-zone trap waiting for the first refactor that fires one early.
+  function tumbleBy(az: number, pol: number) {
+    const target = controls.getTarget(new THREE.Vector3());
+    const offset = controls.getPosition(new THREE.Vector3()).sub(target);
+    active.updateMatrixWorld();
+    // visual axes from the rendered orientation (roll bank included)
+    const right = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 0);
+    const vup = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 1);
+    const q = new THREE.Quaternion()
+      .setFromAxisAngle(vup.normalize(), az)
+      .multiply(new THREE.Quaternion().setFromAxisAngle(right.normalize(), pol));
+    offset.applyQuaternion(q);
+    const u = persp.up.clone().applyQuaternion(q).normalize();
+    persp.up.copy(u);
+    ortho.up.copy(u);
+    controls.updateCameraUp();
+    controls.setLookAt(
+      target.x + offset.x,
+      target.y + offset.y,
+      target.z + offset.z,
+      target.x,
+      target.y,
+      target.z,
+      false,
+    );
+  }
+
+  // Drive MOUSE orbit through tumbleBy as well, instead of camera-controls'
+  // native ROTATE. Its rotate clamps the polar angle just short of the poles on
+  // every frame, so a middle-drag stops dead looking straight down and can never
+  // carry on over the top — "The view rotation is artificially constrained and
+  // cannot rotate freely beyond a certain limit" (field report 73038285). The
+  // SpaceMouse has orbited freely all along precisely because it took this path.
+  //
+  // Only presses that WOULD have been A.ROTATE are taken over; TRUCK (pan, on
+  // right-drag and on Shift+middle) stays with camera-controls, as does every
+  // touch gesture. The button map remains authoritative — this reads it rather
+  // than re-deriving which button orbits.
+  /** Called when an intercepted mouse orbit BEGINS — the replacement for
+   *  camera-controls' `controlstart`, which no longer fires for one. Set by the
+   *  viewport, which uses it to aim the orbit pivot. */
+  let onOrbitStart: (() => void) | undefined;
+  const TAU = Math.PI * 2;
+  type MouseAction = CameraControls["mouseButtons"]["left"];
+  let orbitDrag: { id: number; x: number; y: number; button: "left" | "middle"; restore: MouseAction } | null = null;
+
+  /** Which button map slot this press uses, or null for one we never orbit on. */
+  function slotFor(button: number): "left" | "middle" | null {
+    return button === 0 ? "left" : button === 1 ? "middle" : null;
+  }
+
+  function beginOrbit(e: PointerEvent) {
+    const slot = slotFor(e.button);
+    if (!slot || orbitDrag) return;
+    const action = controls.mouseButtons[slot];
+    if (action !== A.ROTATE) return; // pan, selection, or orbit-locked — not ours
+    // Hide it from camera-controls, which reads the map in its own (bubble-phase)
+    // pointerdown a moment from now, and restore the value on release.
+    orbitDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, button: slot, restore: action };
+    controls.mouseButtons[slot] = A.NONE;
+    // camera-controls fires `controlstart` when IT begins a gesture, and the
+    // viewport hangs the orbit pivot off that event. Taking the press away from
+    // it also took that event away, so the pivot silently stopped being applied
+    // to mouse orbits — announce the start ourselves.
+    onOrbitStart?.();
+  }
+
+  function moveOrbit(e: PointerEvent) {
+    if (!orbitDrag || e.pointerId !== orbitDrag.id) return;
+    const dx = e.clientX - orbitDrag.x;
+    const dy = e.clientY - orbitDrag.y;
+    orbitDrag.x = e.clientX;
+    orbitDrag.y = e.clientY;
+    // camera-controls' own conversion, so the drag feels identical: it divides
+    // by HEIGHT for both axes (its comment: "to refer the resolution") and
+    // passes the negated pointer delta to rotate().
+    const h = dom.clientHeight || 1;
+    tumbleBy((-TAU * dx) / h, (-TAU * dy) / h);
+  }
+
+  function endOrbit(e: PointerEvent) {
+    if (!orbitDrag || e.pointerId !== orbitDrag.id) return;
+    controls.mouseButtons[orbitDrag.button] = orbitDrag.restore;
+    orbitDrag = null;
+  }
+
+  // Capture phase for the same reason the Alt+left mapping above uses it:
+  // camera-controls is constructed first and binds its own pointerdown to this
+  // element, so a bubble-phase listener would run after it had already read the
+  // map. The move/up pair goes on the document because a drag routinely leaves
+  // the canvas, and `pointercancel` matters — a lost pointer must not strand
+  // the button on A.NONE and kill orbit for the rest of the session.
+  dom.addEventListener("pointerdown", (e) => { if (e instanceof PointerEvent) beginOrbit(e); }, { capture: true });
+  const doc = dom.ownerDocument;
+  doc.addEventListener("pointermove", (e) => { if (e instanceof PointerEvent) moveOrbit(e); });
+  doc.addEventListener("pointerup", (e) => { if (e instanceof PointerEvent) endOrbit(e); });
+  doc.addEventListener("pointercancel", (e) => { if (e instanceof PointerEvent) endOrbit(e); });
+  window.addEventListener("blur", () => {
+    // focus loss mid-drag never delivers pointerup
+    if (orbitDrag) {
+      controls.mouseButtons[orbitDrag.button] = orbitDrag.restore;
+      orbitDrag = null;
+    }
+  });
+
   controls.setTarget(0, 0, 0, false);
 
   // Swap the active camera between projections, preserving apparent zoom in BOTH
@@ -378,7 +498,11 @@ export function createCameraRig(
       // Fold a finished orbit pivot away, but only once the motion has settled:
       // clearOrbitPivot() writes with enableTransition=false, which would snap
       // a damped orbit's tail dead if it landed mid-glide.
-      if (!controls.active && controls.currentAction === A.NONE) clearOrbitPivot();
+      // `!orbitDrag` for the same reason isOrbiting checks it: during an
+      // intercepted mouse orbit camera-controls is idle and currentAction is
+      // NONE, so without this the pivot would be folded away on the first frame
+      // of the very drag it was set for.
+      if (!controls.active && controls.currentAction === A.NONE && !orbitDrag) clearOrbitPivot();
       const swapped = applyAutoProjection();
       // Apply the persistent roll AFTER camera-controls positions the camera.
       // update() always rewrites the orientation from its own spherical state,
@@ -521,6 +645,15 @@ export function createCameraRig(
         ortho.left = -halfH * aspect2;
         ortho.right = halfH * aspect2;
         ortho.updateProjectionMatrix();
+        // The frustum carries the scale, so the accumulated wheel zoom has to
+        // go — apparent half-height is (top − bottom) / 2 / zoom, and leaving a
+        // zoom of 0.2 on it means this "fit" frames five times the box it just
+        // measured. Fit appeared to work exactly once, at startup while zoom was
+        // still 1, and then never again: field report 76237688, "it would do it
+        // once but not do it again if I zoomed out ... ok in Persp or Auto but
+        // does not work properly in Ortho". Same idiom as swapProjection.
+        pendingOrthoZoom = null; // a queued wheel step must not re-apply over this
+        controls.zoomTo(1, false);
         dist = Math.max(controls.distance, r * 2);
       } else {
         dist = r / Math.sin((FOV * Math.PI) / 180 / 2);
@@ -633,40 +766,20 @@ export function createCameraRig(
       rollAngle += angle;
     },
     tumble(az, pol) {
+      // The SpaceMouse tumble is its own gesture, with no press to hang a pivot
+      // on, so any pivot left over from a mouse orbit is folded away first
+      // (#45's rule, kept). Mouse orbit reaches tumbleBy DIRECTLY and must NOT
+      // clear it — the pivot is the whole point of that drag.
       clearOrbitPivot();
-      // Rotate the camera OFFSET and the orbit UP-VECTOR together about the
-      // screen axes (yaw about visual up, pitch about visual right), then
-      // re-seat camera-controls in the rotated up-space. Because offset and up
-      // rotate by the same quaternion, the polar angle camera-controls sees
-      // NEVER changes — the pole travels with the camera, so its per-frame
-      // (0, π) clamp (Spherical.makeSafe) has nothing to bite. Axis signs
-      // match controls.rotate(): +az orbits CCW seen from above, +pol tips
-      // the camera downward.
-      const target = controls.getTarget(new THREE.Vector3());
-      const offset = controls.getPosition(new THREE.Vector3()).sub(target);
-      active.updateMatrixWorld();
-      // visual axes from the rendered orientation (roll bank included)
-      const right = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 0);
-      const vup = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 1);
-      const q = new THREE.Quaternion()
-        .setFromAxisAngle(vup.normalize(), az)
-        .multiply(new THREE.Quaternion().setFromAxisAngle(right.normalize(), pol));
-      offset.applyQuaternion(q);
-      const u = persp.up.clone().applyQuaternion(q).normalize();
-      persp.up.copy(u);
-      ortho.up.copy(u);
-      controls.updateCameraUp();
-      controls.setLookAt(
-        target.x + offset.x,
-        target.y + offset.y,
-        target.z + offset.z,
-        target.x,
-        target.y,
-        target.z,
-        false,
-      );
+      tumbleBy(az, pol);
     },
     isOrbiting() {
+      // A MOUSE orbit no longer goes through camera-controls at all — the press
+      // is taken from it so the rotation can pass the poles (see beginOrbit), so
+      // its `currentAction` stays NONE for the whole drag. Reading only that
+      // would report "not orbiting" for the primary case and the pivot would
+      // never be applied.
+      if (orbitDrag) return true;
       // Mask, not equality: currentAction is an OR of every active button.
       // Deliberately only the plain rotate actions — a two-finger dolly-rotate
       // already has a pivot of its own (the pinch centre).
@@ -675,6 +788,9 @@ export function createCameraRig(
     },
     setOrbitPivot,
     clearOrbitPivot,
+    setOnOrbitStart(fn: () => void) {
+      onOrbitStart = fn;
+    },
     setOrbitLocked(locked) {
       orbitLocked = locked;
       // middle-drag pans while locked (no orbit); restore orbit on unlock

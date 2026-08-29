@@ -41,6 +41,17 @@ export class SketchGlyphs {
     this.plane = plane;
     for (const g of glyphs) {
       const el = document.createElement("div");
+      if (g.pending) {
+        // Not a constraint yet — the one this click would add. Muted, and NOT
+        // clickable: there is nothing to delete, and offering a delete target
+        // for something that does not exist is worse than no affordance at all.
+        el.className = "sketch-glyph pending";
+        el.textContent = g.label;
+        el.title = "Will be applied when you click";
+        this.root.appendChild(el);
+        this.items.push({ el, pos: g.pos });
+        continue;
+      }
       const st = diagnosisOf(g.cIndex, conflicts, over);
       el.className = st ? `sketch-glyph ${st}` : "sketch-glyph";
       el.textContent = g.label;

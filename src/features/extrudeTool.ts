@@ -13,6 +13,7 @@
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
+import { drawOnTop } from "../viewport/gizmos";
 import type { RegionRef, SketchOverlay, WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { Feature, Selector } from "../types";
@@ -855,6 +856,7 @@ export class ExtrudeTool {
     const dir = plane.n.clone().multiplyScalar(sign);
     if (!this.arrow) {
       this.arrow = new THREE.ArrowHelper(dir, anchor, Math.max(depth, ARROW_MIN_MM), 0xffd24a, 6, 3);
+      drawOnTop(this.arrow);
       this.viewport.addToScene(this.arrow);
     } else {
       this.arrow.position.copy(anchor);

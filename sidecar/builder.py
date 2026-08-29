@@ -1836,10 +1836,14 @@ def _handle_extrude(f, ctx):
         for i, p in enumerate(pts):
             # `_region_face_from_entities`, never the raw anchor: the check that
             # the rebuilt profile IS the cell the anchor landed in lives inside it,
-            # and a caller that skips it inherits field 19314fdc.
+            # and a caller that skips it inherits field 19314fdc. The stored point
+            # goes in too — it is the tie-break when the ids name several cells,
+            # and it is only ever consulted there among the cells the ids permit.
             rf = (
                 _region_face_from_entities(
-                    entry, cells, ents[i], hole_ents[i] if i < len(hole_ents) else None
+                    entry, cells, ents[i],
+                    hole_ents[i] if i < len(hole_ents) else None,
+                    Vector(*p), ctx.diagnostics, f.get("id"),
                 )
                 if i < len(ents)
                 else None
@@ -7705,9 +7709,18 @@ def _build_sketch(f, val, datums=None):
     # crossing a profile carves it into separately-selectable sub-areas (mainstream MCAD
     # parity), and touching/overlapping loops split at the shared boundaries. This
     # mirrors the frontend arrangement (src/sketch/region.ts).
-    located_faces = _subdivide_faces(all_edges, plane)
+    #
+    # `cell_eids` stays index-parallel to `located_faces` all the way out: it is how
+    # a stored region reference NAMES a cell (see _region_cells_by_entities), so a
+    # face appended without a label must get an explicit None rather than be left
+    # short — a short list would silently relabel every later cell.
+    located_faces, cell_eids = _subdivide_faces(all_edges, plane, by_ent)
     for tf in text_local:  # each glyph is separately region-selectable in mixed geometry
-        located_faces.extend((plane * tf).faces())
+        for face in (plane * tf).faces():
+            located_faces.append(face)
+            # glyph contours never enter the arrangement (see the `text` branch
+            # above), so there is no splitter history to attribute them from
+            cell_eids.append(None)
 
     if faces:
         # Union the loop faces into the whole-sketch profile in ONE OCCT boolean
@@ -7727,6 +7740,7 @@ def _build_sketch(f, val, datums=None):
             for fc in faces:
                 for face in (plane * fc).faces():
                     located_faces.append(face)
+                    cell_eids.append(None)  # no arrangement ran: nothing to attribute
     elif located_faces:
         # Crossing-only sketch (e.g. an "X", or free lines that only close by
         # crossing): no clean per-loop face, but the arrangement recovers the
@@ -7737,10 +7751,10 @@ def _build_sketch(f, val, datums=None):
             sk = Compound(list(sk))
     else:
         return {"sketch": None, "faces": [], "wire": path_wire,
-                "edgesByEntity": by_ent, "plane": plane}
+                "edgesByEntity": by_ent, "plane": plane, "cellEntities": []}
 
     return {"sketch": sk, "faces": located_faces, "wire": path_wire,
-            "edgesByEntity": by_ent, "plane": plane}
+            "edgesByEntity": by_ent, "plane": plane, "cellEntities": cell_eids}
 
 
 def _path_wire(edges, plane):
@@ -7840,6 +7854,20 @@ def _region_anchor_from_entities(entry, eids, hole_eids=None):
         if eds is None:
             return None
         try:
+            # Every named edge must end up IN that face. `_faces_from_edges` drops
+            # a wire that will not close, which is right for the whole-sketch
+            # profile (open path edges are legitimate there) and silently wrong
+            # here: field 953a6c3f names the 11 entities bounding a U-shaped cell,
+            # 6 of them close into the OUTER loop on their own and the other 5 only
+            # close once trimmed at the crossing. Dropping the open wire rebuilt the
+            # outer profile — 9189mm2 against the cell's 2900 — and anchored inside
+            # a neighbouring cell. These are UNTRIMMED entity edges, so "they close
+            # by themselves" is the only case this function can honestly answer.
+            wires = Wire.combine(eds)
+            for wr in wires:
+                closed = wr.is_closed
+                if not (closed() if callable(closed) else closed):
+                    return None
             faces = _faces_from_edges(eds)
         except Exception:
             return None
@@ -7890,22 +7918,73 @@ def _region_anchor_from_entities(entry, eids, hole_eids=None):
         return None
 
 
-def _region_face_from_entities(entry, cells, eids, hole_eids=None):
-    """The arrangement cell a stored region reference means, rebuilt from the
+def _region_cells_by_entities(entry, cells, eids, hole_eids=None):
+    """The arrangement cells a stored region reference is ALLOWED to mean, by name.
+
+    This is the sidecar half of `regionsByEntities` in src/sketch/region.ts, and it
+    is deliberately the same two tiers in the same order:
+
+      EXACT — the cell's boundary entities are exactly the ones named. Unambiguous
+      whenever it hits, and it hits for every reference written by the current
+      tracer against an unchanged sketch. It survives the user MOVING the geometry
+      (field a20cca53), because moving a circle does not change which entities bound
+      a cell — only where they are.
+
+      COVERED — the cell's boundary CONTAINS every named entity. Drawing a line
+      across a saved profile re-traces it into pieces that each carry the new entity
+      too, so no cell has the saved set any more; the pieces still carry all of it.
+      Hole ids never narrow this tier, matching the frontend: the hole set is the
+      part most likely to have legitimately changed (or, for every document written
+      between 0.1.123 and the release that added `regionHoleEntities`, never to have
+      been recorded), and demanding it would push those references back onto the
+      stale point this exists to replace.
+
+    Several results mean the ids genuinely cannot tell the cells apart — a line
+    splitting a square gives both halves the same set — and the caller breaks that
+    tie. NONE means the ids name nothing live, and the caller keeps its old
+    behaviour rather than guessing.
+
+    Unlabelled cells (`None`) never match: see `_subdivide_faces`."""
+    labels = entry.get("cellEntities") or []
+    if not eids or len(labels) != len(cells):
+        return []
+    want = frozenset(eids)
+    with_holes = want.union(*[frozenset(g) for g in (hole_eids or []) if g]) \
+        if hole_eids else want
+    covered = [(c, lbl) for c, lbl in zip(cells, labels)
+               if lbl is not None and want <= lbl]
+    exact = [c for c, lbl in covered if lbl <= with_holes]
+    return exact or [c for c, _lbl in covered]
+
+
+def _region_face_from_entities(entry, cells, eids, hole_eids=None, point=None,
+                               diag=None, feature_id=None):
+    """The arrangement cell a stored region reference means, resolved from the
     sketch ENTITIES it recorded instead of from its interior point — or None, and
     then the caller must fall back to that point.
 
-    THIS is the function to call. `_region_anchor_from_entities` derives the point;
-    the invariant that makes the point safe to use lives here, because a caller
-    that only derives it inherits field 19314fdc. The rebuilt profile must BE the
-    cell the anchor landed in: 0.1.123 through 0.1.144 wrote `regionEntities` with
-    no `regionHoleEntities`, so a holed region from one of those documents rebuilds
-    SOLID and its anchor is inside the hole — live on every file they saved, with
-    nothing moved, and no "does this region have holes" test can see it because the
-    ids are absent. The areas disagree loudly when it happens (10000 against the
-    6400 hole cell on the reported shell, 3600 against the 1256.6 hole of a
-    centred-hole plate) while a correct anchor matches its cell exactly, curved
-    boundaries included.
+    THIS is the function to call. Two mechanisms, in order of how much they can be
+    trusted:
+
+    1. NAME the cell (`_region_cells_by_entities`). A reference records the
+       entities bounding the area the user clicked, and the arrangement knows which
+       entities bound each cell, so one named cell needs no geometry at all. This is
+       the answer for field 953a6c3f, where four picked areas collapsed to two.
+
+    2. Only when the name is ambiguous or dead: REBUILD the profile from those
+       entities and see which cell its interior point lands in
+       (`_region_anchor_from_entities`), and where even that refuses, fall back to
+       the stored point — but restricted to the cells the ids already permit, so a
+       stale point can no longer wander into a hole or a neighbour.
+
+    The rebuilt profile must BE the cell the anchor landed in: 0.1.123 through
+    0.1.144 wrote `regionEntities` with no `regionHoleEntities`, so a holed region
+    from one of those documents rebuilds SOLID and its anchor is inside the hole —
+    live on every file they saved, with nothing moved, and no "does this region have
+    holes" test can see it because the ids are absent. The areas disagree loudly when
+    it happens (10000 against the 6400 hole cell on the reported shell, 3600 against
+    the 1256.6 hole of a centred-hole plate) while a correct anchor matches its cell
+    exactly, curved boundaries included.
 
     The mismatch alone is not enough to condemn the anchor, though. A reference
     that names only SOME of its boundary entities also rebuilds bigger than its
@@ -7915,14 +7994,30 @@ def _region_face_from_entities(entry, cells, eids, hole_eids=None):
     profile, while a cell that is merely a piece of it shares the profile's outer
     boundary. So the cell must clear the profile's bounding box on every axis that
     has room (the plane's normal has none) before a mismatch counts."""
+    cands = _region_cells_by_entities(entry, cells, eids, hole_eids)
+    if len(cands) == 1:
+        return cands[0][0]
+    # Ambiguous (several cells carry the same ids) or dead (the sketch changed
+    # under the reference). Either way the geometry decides from here, and when
+    # the ids DID narrow the field it decides among those cells only.
+    pool = cands or cells
     anchor = _region_anchor_from_entities(entry, eids, hole_eids)
     if anchor is None:
+        # No anchor and no single name. If the ids still permit a subset of the
+        # cells, the stored point picks inside it — it can only choose cells the
+        # ids allow, which is what makes it safe here. It carries `diag` because
+        # THIS is the point being resolved: a point nowhere near the cells its own
+        # ids permit is stale, and the re-pick offer has to survive the narrowing.
+        # Otherwise say nothing, and the caller resolves the point against the
+        # whole sketch as it always has.
+        if cands and point is not None:
+            return _region_face_at(pool, point, diag, feature_id)
         return None
     pt, area, bbox = anchor
     # No diagnostics on this attempt: `regionStale` is about the stored POINT, and
     # if the anchor is not accepted the point is resolved by the caller and gets to
     # speak for itself.
-    rf = _region_face_at(cells, pt)
+    rf = _region_face_at(pool, pt)
     if rf is None:
         return None
     off = abs(rf.area - area)
@@ -8055,7 +8150,7 @@ def _face_contains(face, p):
         return False
 
 
-def _subdivide_faces(edges, plane):
+def _subdivide_faces(edges, plane, by_ent=None):
     """Planar arrangement of all sketch edges into minimal faces, located onto the
     sketch plane. This is what lets a curve CROSSING a profile carve it into
     separately-selectable sub-areas (MCAD parity), and touching/overlapping loops
@@ -8065,11 +8160,24 @@ def _subdivide_faces(edges, plane):
     then keep only the ENCLOSED cells (those not touching the cover boundary). Real
     curved edges are preserved (smooth extrude) and faces with holes come out
     natively, so `_region_face_at` needs no change. Mirrors the frontend arrangement
-    in src/sketch/region.ts (planarize + traceLoops). Returns [] on empty/failure so
-    the caller falls back to per-loop faces — this is a 2D edge split, unlike the
-    reverted 3D UnifySameDomain, and stays well under ~30 ms even for dense grids."""
+    in src/sketch/region.ts (planarize + traceLoops). Returns ([], []) on
+    empty/failure so the caller falls back to per-loop faces — this is a 2D edge
+    split, unlike the reverted 3D UnifySameDomain, and stays well under ~30 ms even
+    for dense grids.
+
+    Returns `(cells, labels)`. `labels[i]` is the frozenset of SKETCH ENTITY ids
+    bounding cell i — the cell's identity, and the thing a stored region reference
+    actually names (`_region_cells_by_entities`). It comes from the splitter's own
+    history (`Modified()` per tool edge), so it is exact rather than a geometric
+    guess. `by_ent` is `{entity id: [its local edges]}`; without it every label is
+    None and the caller loses only the identity tier.
+
+    A label is None whenever ANY boundary edge of the cell could not be attributed.
+    A partial set is worse than no set: it is a SUBSET of the true one, and the
+    matching tiers are subset relations, so it would silently claim to be a
+    different region."""
     if not edges:
-        return []
+        return [], []
     try:
         from OCP.BOPAlgo import BOPAlgo_Splitter
         from OCP.TopoDS import TopoDS
@@ -8099,6 +8207,51 @@ def _subdivide_faces(edges, plane):
         sp.Perform()
         res = sp.Shape()
 
+        # Which entity each surviving edge PIECE came from. `Modified` is the
+        # splitter's own record of what it cut an input edge into; an edge it did
+        # not touch reports nothing and survives as itself. Keyed on TShape because
+        # that is what a located/oriented copy of the same edge shares — see the
+        # `.Moved()` note in `_body_fingerprint`.
+        #
+        # Isolated from the arrangement's own try/except ON PURPOSE. Attribution is
+        # an ADDITION: without it region references fall back to the anchor and the
+        # stored point, which is where they were before. Letting a failure here
+        # reach the outer handler would return no cells at all and cost the whole
+        # sketch its sub-area picking — a much larger loss than the one being
+        # guarded against.
+        eid_of = {}
+        try:
+            for eid, own in (by_ent or {}).items():
+                for ed in own:
+                    wr = _wrapped_or_none(ed)
+                    if wr is None:
+                        continue
+                    pieces = 0
+                    for piece in sp.Modified(wr):
+                        eid_of[piece.TShape()] = eid
+                        pieces += 1
+                    if not pieces:
+                        eid_of[wr.TShape()] = eid
+        except Exception:
+            eid_of = {}
+
+        def label(face):
+            """The entity ids bounding `face`, or None if any edge is unattributed."""
+            if not eid_of:
+                return None
+            got = set()
+            try:
+                boundary = face.edges()
+            except Exception:
+                return None
+            for ed in boundary:
+                wr = _wrapped_or_none(ed)
+                eid = eid_of.get(wr.TShape()) if wr is not None else None
+                if eid is None:
+                    return None
+                got.add(eid)
+            return frozenset(got)
+
         bx0, bx1 = cx - w / 2, cx + w / 2
         by0, by1 = cy - h / 2, cy + h / 2
 
@@ -8109,17 +8262,20 @@ def _subdivide_faces(edges, plane):
                     return True
             return False
 
-        cells = []
+        cells, labels = [], []
         exp = TopExp_Explorer(res, TopAbs_FACE)
         while exp.More():
             fc = Face(TopoDS.Face_s(exp.Current()))
             if not on_cover(fc):  # drop the cover's own exterior cells
+                # label BEFORE locating: `eid_of` is keyed on the unlocated pieces
+                lbl = label(fc)
                 for face in (plane * fc).faces():
                     cells.append(face)
+                    labels.append(lbl)
             exp.Next()
-        return cells
+        return cells, labels
     except Exception:
-        return []
+        return [], []
 
 
 def _faces_from_edges(edges):

@@ -1770,14 +1770,21 @@ button.finish:hover {
 .tree-folder:hover {
   background: var(--raised);
 }
+/* Small carets are the thinnest chrome in the app and were on the WEAKEST colour
+   tier. --text-mute on --panel is 3.96:1 — legal for a non-text control and still
+   too faint to find, which is what a tester reported: "a lot of the small control
+   arrows next to icons and other areas of the screen are almost invisible - really
+   need improving - not a lot of point to having an on screen control if you can't
+   see it" (field report f156e0a0). Same reasoning already applied to
+   .ribbon-split-arrow; this brings the rest into line. */
 .tree-caret {
   width: 12px;
   font-size: 9px;
-  color: var(--text-mute);
+  color: var(--text-dim);
   transition: color var(--t-fast) var(--ease);
 }
 .tree-folder:hover .tree-caret {
-  color: var(--text-dim);
+  color: var(--text);
 }
 .tree-count {
   font-size: 10px;
@@ -1894,6 +1901,19 @@ button.finish:hover {
   box-shadow: var(--shadow-1);
 }
 .sketch-glyph:hover { border-color: var(--accent-hot); color: var(--accent-hot); }
+/* A constraint the next click WOULD add — not one that exists. Muted and inert:
+   the live counterpart of the point-snap marker, for the line inferences that
+   used to fire with no warning at all (field report 636afdcb). */
+.sketch-glyph.pending {
+  background: rgba(18, 20, 25, 0.6);
+  border-style: dashed;
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+  cursor: default;
+  pointer-events: none;
+  box-shadow: none;
+}
+.sketch-glyph.pending:hover { border-color: var(--text-dim); color: var(--text-dim); }
 .sketch-glyph.conflict { border-color: var(--flag-conflict); color: var(--flag-conflict); }
 .sketch-glyph.over { border-color: var(--warn); color: var(--warn); }
 .sketch-glyphs.glyphs-passive .sketch-glyph { pointer-events: none; cursor: default; }
@@ -2104,8 +2124,8 @@ button.finish:hover {
   -webkit-appearance: none;
   background-color: var(--panel-2);
   /* custom caret since we removed the native one */
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
-    linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+  background-image: linear-gradient(45deg, transparent 50%, var(--text) 50%),
+    linear-gradient(135deg, var(--text) 50%, transparent 50%);
   background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
@@ -2721,7 +2741,7 @@ button.finish:hover {
 /* browser tree */
 .feature-icon svg { width: 15px; height: 15px; display: block; flex: none; }
 .tree-caret { display: flex; align-items: center; justify-content: center; }
-.tree-caret svg { width: 11px; height: 11px; display: block; flex: none; }
+.tree-caret svg { width: 11px; height: 11px; display: block; flex: none; stroke-width: 2.2; }
 .tree-eye { display: inline-flex; align-items: center; }
 .tree-eye svg { width: 14px; height: 14px; display: block; flex: none; }
 .pal-sync {
@@ -2764,9 +2784,18 @@ button.finish:hover {
   align-items: center;
   color: var(--accent);
 }
-.menu-check svg { width: 12px; height: 12px; display: block; flex: none; }
+.menu-check svg { width: 12px; height: 12px; display: block; flex: none; stroke-width: 2.2; }
+/* The label takes the slack. Without this the row has 2 or 3 children under
+   `justify-content: space-between`, which pushed the label hard right on items
+   with no shortcut and centred it on items with one — reported by two users on
+   two platforms, wrong in every build since the check slot was added. */
+.menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
 .ctx-caret { display: inline-flex; align-items: center; }
-.ctx-caret svg { width: 12px; height: 12px; display: block; flex: none; }
+.ctx-caret svg { width: 12px; height: 12px; display: block; flex: none; stroke-width: 2.2; }
 
 /* dialogs + toasts */
 .modal-close { display: inline-flex; align-items: center; justify-content: center; }

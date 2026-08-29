@@ -14,6 +14,17 @@ export interface ConstraintGlyph {
   cIndex: number; // index into the constraints array (delete target)
   label: string; // short symbol shown in the badge
   pos: THREE.Vector2; // 2D sketch-plane position
+  /** A constraint that is not applied yet — the one this click WOULD add. Drawn
+   *  in a muted style with no delete affordance.
+   *
+   *  Field report 636afdcb: "Automatic constraint detection works with both
+   *  points and lines. However, when working with lines, there is no visual
+   *  feedback indicating that a constraint will be applied before clicking. The
+   *  visual feedback appears to work only with points." Point snaps have always
+   *  drawn a marker as you hover; the horizontal/vertical inference on a line
+   *  fired silently at commit, so the first sign of it was a glyph appearing on
+   *  geometry that had already been drawn. */
+  pending?: true;
 }
 
 /** The solver's diagnosis of a constraint, or null if clean. Conflict (can't be

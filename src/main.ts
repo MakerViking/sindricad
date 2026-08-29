@@ -7,6 +7,7 @@ import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { DocumentStore, EMPTY_DOCUMENT } from "./document/store";
+import { soleFeatureForBody } from "./document/bodyMaker";
 import { Timeline } from "./ui/timeline";
 import { isEditableTarget } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
@@ -201,7 +202,7 @@ const loftTool = new LoftTool(viewport, overlay, store);
 const moveTool = new MoveTool(viewport, store);
 const measure = new MeasureTool(viewport);
 const section = new SectionTool(viewport);
-const planeOffset = new PlaneOffsetTool(viewport);
+const planeOffset = new PlaneOffsetTool(viewport, store);
 const textureTool = new TextureTool(viewport, store);
 const textOnFaceTool = new TextOnFaceTool(viewport, store, geometry);
 
@@ -365,6 +366,7 @@ async function newDocument() {
   }
   if (sketch.active) sketch.cancel();
   store.newDocument();
+  viewport.resetView(); // a new document starts at the home view, not wherever the last one ended
 }
 // Open must exit an active sketch first — else the in-progress sketch's curves
 // orphan on screen (loading the new doc doesn't touch the active-sketch overlay).
@@ -789,13 +791,41 @@ tree.onDeleteBody = (id) => store.removeBody(id);
 viewport.onBodySelectionChange = () => {
   tree.refresh();
   if (toolBusy()) return;
-  const n = viewport.getSelectedBodies().length;
-  setPrompt(n ? `${n} bod${n > 1 ? "ies" : "y"} selected — Move (M) to drag · Esc to clear` : null);
+  const sel = viewport.getSelectedBodies();
+  // Selecting the body opens its maker's values in the inspector. A box created
+  // from the Primitives menu appears in the browser ONLY as a body row, and
+  // that row used to set the viewport selection and nothing else — so there was
+  // no path from "I just made a box" to its Length/Width/Height except double-
+  // clicking the timeline chip or clicking a face in Faces mode. The reporter
+  // found neither: "the dimensions do not change ... certainly not intuitive"
+  // (18abd1bb, and c8531ceb before it). soleFeatureForBody returns null for a
+  // body more than one feature touched, so the panel is only ever hijacked
+  // where the answer is unambiguous.
+  if (sel.length === 1) {
+    const maker = soleFeatureForBody(store.buildState.result?.bodies, sel[0]!);
+    // inspector only, NOT selectFeature: the tree must keep showing the BODY as
+    // the selected row, which is what the user clicked.
+    if (maker) inspector.select(maker);
+  }
+  setPrompt(sel.length ? `${sel.length} bod${sel.length > 1 ? "ies" : "y"} selected — Move (M) to drag · Esc to clear` : null);
 };
-// Esc clears the body selection while in Bodies mode
+// Esc clears the ambient selection the prompt just promised it would.
+// NOT gated on `viewport.selecting` any more: clicking a body in the browser
+// tree calls setSelectedBodies whatever the mode is, so in the default Faces
+// mode the body went orange, the prompt said "Esc to clear", and Escape did
+// nothing — reported twice, by two users on two builds (58ea6926, b2ac3ceb).
+// Faces/edges made the same promise via onSelectionChange and had NO handler
+// at all; same defect, so it is cleared here too.
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && viewport.selecting === "bodies" && !toolBusy() && viewport.getSelectedBodies().length) {
-    viewport.setSelectedBodies([]);
+  // `!toolBusy()` rather than an early return: a running tool owns Escape and
+  // will cancel itself, so this is "not my key", not a refusal to voice — the
+  // same shape as the region handler above (featureStarters.test.ts reads it).
+  if (e.key === "Escape" && !toolBusy() && !sketch.active) {
+    if (viewport.getSelectedBodies().length) viewport.setSelectedBodies([]);
+    else if (viewport.selectedEdgeSelectors().length) {
+      viewport.clearSelection();
+      setPrompt(null);
+    }
   }
 });
 
@@ -1143,6 +1173,14 @@ function editFeature(id: string) {
     case "textOnFace":
       if (!textOnFaceTool.startEdit(id, done)) toInspector();
       break;
+    // An offset plane had NO arm at all, so it fell to the default below and the
+    // only way to move one was to type a number into the inspector's Offset
+    // field. Nothing in the app could drag it: this tool was creation-only and
+    // Move takes bodies. Re-opening it here gives the same arrow that placed it
+    // (field report df10c0b3).
+    case "datumPlane":
+      if (!planeOffset.startEdit(id, done)) toInspector();
+      break;
     default:
       // The remaining 24 types have no interactive tool at all; a cylinder
       // reached this arm as a bare `break;` and gave no sign whatsoever, which
@@ -1196,6 +1234,18 @@ function handleAction(action: string) {
   if (action === "select") {
     if (sketch.active) sketch.setTool("select");
     else setStatus("Enter a sketch to select sketch geometry", "");
+    return;
+  }
+  // "Rect Pattern" / "Circular Pat." sit in the SKETCH ribbon's PATTERN group and
+  // pattern sketch GEOMETRY. Outside a sketch they fell through to the generic
+  // sketch-tool arm below, which opens an interactive PLANE PICK — so a user who
+  // had selected a body and clicked Rect Pattern got a prompt they did not read
+  // and a button that appeared dead: "I click the item I want to use. Then I
+  // click RECT PATT and it doesn't do anything" (field report a31a6213). Outside
+  // a sketch, pattern the BODY, which is what the name promises; startBodyPattern
+  // speaks if there is no body to pattern.
+  if (!sketch.active && (action === "patternRect" || action === "patternCircular")) {
+    starters.startBodyPattern(action === "patternRect" ? "rect" : "circular");
     return;
   }
   // sketch CREATE tools: switch tool while sketching, else start a sketch with it
@@ -1502,6 +1552,23 @@ window.addEventListener("keydown", (e) => {
     selectFeature(null);
   }
 });
+
+// F5 and Ctrl/Cmd+R are the BROWSER's reload, and this is a webview. Reloading
+// throws the document away — the frontend owns it, the sidecar holds no state —
+// and the app comes back offering to restore a recovery file. A user reached for
+// F5 mid-operation expecting the viewport to refresh and got exactly that: "so I
+// pressed F5 to see if it would refresh it... it took me to some dialogue which
+// seemed to be a recovery document" (field report c2cac5f3). A desktop modeller
+// has nothing to refresh, so the key should do nothing at all rather than
+// silently discard unsaved work.
+//
+// Capture phase, so it lands before any tool's own keydown handler. Left working
+// in DEV: reloading the shell by hand is part of working on it.
+window.addEventListener("keydown", (e) => {
+  if (import.meta.env.DEV) return;
+  const reload = e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r");
+  if (reload) e.preventDefault();
+}, true);
 
 // file shortcuts (work everywhere, even mid-sketch)
 window.addEventListener("keydown", (e) => {
