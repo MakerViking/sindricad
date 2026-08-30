@@ -1945,6 +1945,19 @@ def test_blend_hang_guard():
     assert mids(b) == mids(round_tripped), \
         "BREP round-trip no longer preserves edge order — _probe_blend would test the wrong edges"
 
+    # 5. the probe is TARGETED, not universal. Paying a fork per fillet added
+    #    ~27 minutes to CI's `test` leg, so a plain box gets no probe while
+    #    spline edges and large bodies still do. This is a heuristic and the
+    #    residual risk is real: an unprobed blend behaves exactly as it did
+    #    before the guard existed.
+    simple = Box(20, 20, 20)
+    assert not builder._blend_needs_probing(simple, list(simple.edges())[:1]), \
+        "a plain box fillet is being probed — that is the CI cost with none of the benefit"
+    from build123d import Cylinder
+    cyl = Cylinder(5, 10)
+    assert not builder._blend_needs_probing(cyl, list(cyl.edges())[:1]), \
+        "an analytic cylinder edge is being probed"
+
     print("  blend-hang-guard OK: hang refused, honest failures keep the kernel's message")
 
 

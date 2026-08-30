@@ -2051,6 +2051,37 @@ _BLEND_PROBE_TIMEOUT = 25.0
 _BLEND_PROBE_CACHE = {}
 
 
+def _blend_needs_probing(body_shape, edges):
+    """Is this blend in the class that can take minutes to fail?
+
+    The probe costs a fork and a full extra kernel run (~1.7 s here, several
+    times that on CI), so paying it for every fillet in the suite added ~27
+    minutes to the `test` leg. That is worth avoiding, but ONLY where the risk is
+    genuinely absent.
+
+    Two signals, either of which is enough to probe:
+      - a target edge that is not a plain LINE or CIRCLE. Every observed
+        pathological case was a BSPLINE edge; a fillet along lines and arcs of an
+        analytic solid is the well-trodden path.
+      - a large body. f25's edge was an ordinary circle and its body still had
+        106 edges; complexity alone is reason enough.
+
+    This is a HEURISTIC and the residual risk is stated rather than hidden: a
+    small, purely analytic body that hangs would go unprobed and behave exactly
+    as it did before this guard existed. Nothing observed has done that, and the
+    two signals together cover every case measured on the user's part.
+    """
+    try:
+        if len(body_shape.edges()) > 60:
+            return True
+        for e in edges:
+            if str(e.geom_type) not in ("GeomType.LINE", "GeomType.CIRCLE"):
+                return True
+        return False
+    except Exception:
+        return True  # cannot tell => probe, the safe direction
+
+
 def _probe_blend(body_shape, edges, kind, size):
     """True if this blend completes in a throwaway process inside the timeout.
 
@@ -2159,7 +2190,8 @@ def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
         # or "it never returns", which is the case this exists for and the only
         # one an in-worker guard cannot catch. Refusing costs the user this
         # feature; not refusing costs them the session.
-        if not _probe_blend(body["shape"], edges, label.lower(), blend_size):
+        if _blend_needs_probing(body["shape"], edges) \
+                and not _probe_blend(body["shape"], edges, label.lower(), blend_size):
             raise GeomError(
                 f"{label} failed on {BODY_SLOT}: the kernel could not complete this "
                 f"{label.lower()} at {blend_size:g} within {_BLEND_PROBE_TIMEOUT:g}s. "
