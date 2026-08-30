@@ -5406,6 +5406,7 @@ def _serial_bool(base, tool, kind):
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse, BRepAlgoAPI_Cut, BRepAlgoAPI_Common
     from OCP.TopTools import TopTools_ListOfShape
     from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+    from OCP.BRepCheck import BRepCheck_Analyzer
 
     op = {"fuse": BRepAlgoAPI_Fuse, "cut": BRepAlgoAPI_Cut, "common": BRepAlgoAPI_Common}[kind]()
     la = TopTools_ListOfShape(); la.Append(base.wrapped)
@@ -5416,12 +5417,30 @@ def _serial_bool(base, tool, kind):
     op.SetTools(lb)
     op.SetRunParallel(False)
     op.Build()
-    shape = op.Shape()
-    up = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
+    raw = op.Shape()
+    shape = raw
+    up = ShapeUpgrade_UnifySameDomain(raw, True, True, True)
     up.AllowInternalEdges(False)
     try:
         up.Build()
-        shape = up.Shape()
+        cleaned = up.Shape()
+        # UnifySameDomain is a TIDY-UP, and it is not allowed to cost us a valid
+        # solid. It can RETURN SUCCESSFULLY and hand back a broken shape: on a
+        # user's part (Shroud.sindri, feature f12 — a 360-degree revolve cut) it
+        # turned a valid 36-face solid into one carrying an invalid face with a
+        # 0.017 mm sliver edge, and reported nothing. Everything downstream then
+        # inherited it — a chamfer on that body failed at EVERY size, including
+        # 0.01, with OCCT's misleading "try a smaller length value(s)", and two
+        # fillets took ~10 minutes EACH to fail. The document could not be opened.
+        #
+        # So the tidy-up is only accepted when it leaves the solid at least as
+        # valid as it found it. Checked in this direction on purpose: a boolean
+        # that was ALREADY invalid is a different problem, and refusing the
+        # cleanup there would change results for no reason.
+        if BRepCheck_Analyzer(raw).IsValid() and not BRepCheck_Analyzer(cleaned).IsValid():
+            shape = raw
+        else:
+            shape = cleaned
     except Exception:
         pass  # keep the un-cleaned result rather than fail the whole boolean
     return Compound(shape)
