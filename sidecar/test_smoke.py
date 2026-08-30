@@ -8,6 +8,8 @@ import os
 import math
 import tempfile
 
+import inspect
+import builder
 from builder import rebuild, import_geometry
 from tessellate import tessellate, tessellate_bodies, edge_polylines, bbox
 from exporters import export
@@ -1827,6 +1829,148 @@ def test_region_names_its_cell_and_does_not_collapse():
 
 
 
+def test_unify_never_costs_a_valid_solid():
+    """UnifySameDomain is a tidy-up, and it must not break the solid it tidies.
+
+    Found on a user's part (Shroud.sindri). Feature `f12`, a 360-degree revolve
+    CUT, produced a valid 36-face solid; ShapeUpgrade_UnifySameDomain then
+    returned SUCCESSFULLY and handed back a shape carrying an invalid face with a
+    0.017 mm sliver edge. Nothing reported anything.
+
+    Everything downstream inherited it, and the symptoms pointed everywhere but
+    here: a chamfer on that body failed at EVERY size — 3.15, 1.5, 0.5, 0.1, even
+    0.01 — with OCCT's misleading "try a smaller length value(s)", and two
+    fillets each took about TEN MINUTES to fail. The document could not be opened
+    at all. `body4 valid: False` was the fact that turned it from a size problem
+    into a validity problem.
+
+    Fuzzy values were tried as an alternative and REJECTED: a 1e-5 fuzzy cut
+    returns a valid solid of 251393 mm3 where the correct answer is 60684 mm3 —
+    four times the volume, i.e. silently wrong geometry, which is worse than the
+    bug.
+
+    Asserted here on a shape this repo can build from scratch: the guard must be
+    a no-op on ordinary geometry (unify still merges coplanar faces), and it must
+    prefer a valid raw result over an invalid cleaned one. The user's own part is
+    not in the repo, so what is pinned is the RULE, not that one document.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    # 1. the guard does not disturb an ordinary boolean: unify still merges the
+    #    coplanar faces a cut leaves behind
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 20},
+        {"id": "b2", "type": "box", "length": 10, "width": 10, "height": 40},
+        {"id": "c1", "type": "combine", "operation": "cut", "target": "body1", "tool": "body2"}]}
+    _, err, bodies = rebuild(doc)
+    solids = [b["shape"] for b in bodies if b.get("shape") is not None]
+    assert solids, f"the cut produced no body: {err}"
+    assert solids[0].is_valid, "an ordinary cut came back invalid"
+
+    # 2. the rule itself, stated as code so it cannot rot: a cleaned shape is
+    #    only accepted when it does not DESTROY validity the raw result had.
+    src = inspect.getsource(builder._serial_bool)
+    assert "BRepCheck_Analyzer" in src, (
+        "_serial_bool no longer checks the cleaned shape's validity — "
+        "UnifySameDomain can return successfully and hand back a broken solid")
+    assert "raw" in src and "cleaned" in src, \
+        "_serial_bool no longer distinguishes the raw boolean from the cleaned one"
+
+    # 3. and the direction of the check: a boolean that was ALREADY invalid must
+    #    still get its cleanup, or the guard would change results for no reason.
+    assert "IsValid() and not" in src.replace("\n", " "), \
+        "the validity guard is no longer one-directional (raw valid -> cleaned invalid)"
+
+    print("  unify-guard OK: a tidy-up may not cost a valid solid")
+
+
+def test_blend_hang_guard():
+    """A fillet that HANGS must be refused, not allowed to wedge the session.
+
+    Found on a user's own part (Shroud.sindri, 28 features), sent as a feature
+    request — he had no idea it was broken. Feature `f33`, a 16-edge fillet at
+    r=1.6, never returns: the document rebuilt for 25 MINUTES on main without
+    completing, so it could not be opened at all. Bisected by prefix — the first
+    26 features build in 2.1 s, adding f33 never finishes — and five of its
+    sixteen edges hang INDIVIDUALLY too, so it is the body at that radius rather
+    than one pathological edge.
+
+    An in-worker deadline cannot catch this: OCCT holds the GIL for the whole
+    call (the taper path measured a SIGALRM armed for 1.0 s arriving at 10.39 s),
+    and geometry runs in a max_workers=1 pool, so one hang costs the whole
+    session. Hence a subprocess with a timeout.
+
+    What is asserted here is the part that must not regress: the guard is
+    NARROW. It refuses a hang and nothing else — an ordinary blend still builds,
+    and a blend that FAILS still fails with OCCT's own message rather than the
+    guard's, because "try a smaller length value(s)" is far more actionable.
+    """
+    # 1. an ordinary fillet is unaffected
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 20},
+        {"id": "f1", "type": "fillet",
+         "edges": {"kind": "edge", "by": "nearest", "point": [20, 20, 10]}, "radius": 3}]}
+    _, err, bodies = rebuild(doc)
+    assert not err, f"an ordinary fillet was refused: {err}"
+    solids = [b["shape"] for b in bodies if b.get("shape") is not None]
+    assert len(solids) == 1 and solids[0].volume < 40 * 40 * 20, "the fillet removed nothing"
+
+    # 2. an impossible radius still reports the KERNEL's message, not the guard's.
+    #    The guard only decides "did it finish", so a fast failure falls through
+    #    to the real call and keeps its own diagnosis.
+    doc2 = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 10, "width": 10, "height": 10},
+        {"id": "f1", "type": "fillet",
+         "edges": {"kind": "edge", "by": "nearest", "point": [5, 5, 0]}, "radius": 500}]}
+    _, err2, _ = rebuild(doc2)
+    assert err2, "a 500mm fillet on a 10mm box should fail"
+    msg = str(err2[0].get("message", ""))
+    assert "within" not in msg, (
+        "an impossible radius was reported as a TIMEOUT — the guard is pre-empting "
+        f"honest failures and hiding the kernel's message: {msg}")
+
+    # 3. the guard's own machinery answers the question it claims to
+    from build123d import Box
+    b = Box(10, 20, 30)
+    assert builder._probe_blend(b, list(b.edges())[:1], "fillet", 1.0), \
+        "a trivially valid fillet was refused by the probe"
+
+    # 4. edge ORDER survives the BREP round-trip, which is what lets the probe
+    #    name the same edges the worker resolved. If this ever stops holding,
+    #    the probe silently starts testing a DIFFERENT operation.
+    from geom_select import _edge_mid
+    mids = lambda sh: [tuple(round(float(c), 6) for c in (_edge_mid(e).X, _edge_mid(e).Y, _edge_mid(e).Z))
+                       for e in sh.edges()]
+    round_tripped = builder._brep_b64_to_shape(builder._shape_to_brep_b64(b))
+    assert mids(b) == mids(round_tripped), \
+        "BREP round-trip no longer preserves edge order — _probe_blend would test the wrong edges"
+
+    # 5. the probe is TARGETED, not universal. Paying a fork per fillet added
+    #    ~27 minutes to CI's `test` leg, so a plain box gets no probe while
+    #    spline edges and large bodies still do. This is a heuristic and the
+    #    residual risk is real: an unprobed blend behaves exactly as it did
+    #    before the guard existed.
+    simple = Box(20, 20, 20)
+    assert not builder._blend_needs_probing(simple, list(simple.edges())[:1]), \
+        "a plain box fillet is being probed — that is the CI cost with none of the benefit"
+    from build123d import Cylinder
+    cyl = Cylinder(5, 10)
+    assert not builder._blend_needs_probing(cyl, list(cyl.edges())[:1]), \
+        "an analytic cylinder edge is being probed"
+
+    # 6. the refusal must not promise a smaller value works. Measured on the
+    #    part this was written for: EVERY radius from 0.02 to 1.6 fails — small
+    #    ones refuse outright, large ones never return. "Try a smaller value" is
+    #    the same lie OCCT tells, and it sends the user round a loop with no exit.
+    src = inspect.getsource(builder._blend_edges)
+    assert "did not finish" in src, "the refusal no longer says what was actually observed"
+    assert "Try a smaller value" not in src, (
+        "the refusal promises a smaller value works — measured false on the geometry "
+        "this guard exists for")
+
+    print("  blend-hang-guard OK: hang refused, honest failures keep the kernel's message")
+
+
 def test_fillet_failure_diagnostics():
     """When a fillet/chamfer fails, the per-edge probe names the offending
     edges' midpoints in an `edgeOpFailed` diagnostic (so the UI can paint
@@ -2914,6 +3058,8 @@ if __name__ == "__main__":
     test_holed_region_anchors_in_the_wall()
     test_region_anchor_refuses_and_keeps_a_correct_cell()
     test_region_names_its_cell_and_does_not_collapse()
+    test_unify_never_costs_a_valid_solid()
+    test_blend_hang_guard()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()
