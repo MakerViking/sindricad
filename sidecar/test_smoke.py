@@ -1958,6 +1958,16 @@ def test_blend_hang_guard():
     assert not builder._blend_needs_probing(cyl, list(cyl.edges())[:1]), \
         "an analytic cylinder edge is being probed"
 
+    # 6. the refusal must not promise a smaller value works. Measured on the
+    #    part this was written for: EVERY radius from 0.02 to 1.6 fails — small
+    #    ones refuse outright, large ones never return. "Try a smaller value" is
+    #    the same lie OCCT tells, and it sends the user round a loop with no exit.
+    src = inspect.getsource(builder._blend_edges)
+    assert "did not finish" in src, "the refusal no longer says what was actually observed"
+    assert "Try a smaller value" not in src, (
+        "the refusal promises a smaller value works — measured false on the geometry "
+        "this guard exists for")
+
     print("  blend-hang-guard OK: hang refused, honest failures keep the kernel's message")
 
 

@@ -2192,10 +2192,19 @@ def _blend_edges(f, ctx, label, combined, one_edge, blend_size):
         # feature; not refusing costs them the session.
         if _blend_needs_probing(body["shape"], edges) \
                 and not _probe_blend(body["shape"], edges, label.lower(), blend_size):
+            # Deliberately does NOT promise that a smaller value helps. That is
+            # the same lie OCCT tells with "try a smaller length value(s)", and
+            # it is measurably wrong here: on the part this guard was written
+            # for, EVERY radius from 0.02 to 1.6 fails — the small ones refuse
+            # outright, the large ones never return. Saying "try smaller" would
+            # send the user round a loop with no exit. Name what was actually
+            # observed, and point at the two geometric causes worth checking.
             raise GeomError(
-                f"{label} failed on {BODY_SLOT}: the kernel could not complete this "
-                f"{label.lower()} at {blend_size:g} within {_BLEND_PROBE_TIMEOUT:g}s. "
-                "Try a smaller value, or fewer edges at once.",
+                f"{label} failed on {BODY_SLOT}: the kernel did not finish this "
+                f"{label.lower()} at {blend_size:g} within {_BLEND_PROBE_TIMEOUT:g}s — it "
+                "neither succeeded nor failed. A different size sometimes helps; where an "
+                "edge curves tighter than the blend, or its two faces meet almost "
+                "tangentially, no size will.",
                 body_id=body["id"], subject=body.get("name"),
             )
         try:
