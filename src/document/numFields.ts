@@ -18,18 +18,39 @@ export type FieldKind = "length" | "angle" | "count";
  *  the first three slots and is unaffected. */
 export type NumFieldRow = [string, string, FieldKind] | [string, string, FieldKind, (f: Feature) => boolean];
 
-/** A press/pull only honours `upToOffset` when it HAS an up-to target — without
- *  one the sidecar extrudes the plain distance and the offset is ignored, so
- *  the row was an input that swallowed the number and changed nothing (field
- *  report, bug #88). The wire refuses that combination too; this keeps the user
- *  from typing into it in the first place. */
+/** A press/pull or an extrude only honours `upToOffset` when it HAS an up-to
+ *  target — without one the sidecar extrudes the plain distance and the offset is
+ *  ignored, so the row was an input that swallowed the number and changed nothing
+ *  (field report, bug #88). The wire refuses that combination too; this keeps the
+ *  user from typing into it in the first place. */
 function hasUpToTarget(f: Feature): boolean {
-  return f.type === "press-pull" && (f.upTo !== undefined || f.upToPlane !== undefined);
+  return (
+    (f.type === "press-pull" || f.type === "extrude") &&
+    (f.upTo !== undefined || f.upToPlane !== undefined)
+  );
+}
+
+/** A taper is only swept when the extrude goes a DISTANCE. With an up-to target
+ *  the end face IS the target plane, so the sidecar does not apply one — and an
+ *  input that swallows a number and changes nothing is the defect this file's
+ *  `applies` predicate exists to prevent. */
+function isBlindExtrude(f: Feature): boolean {
+  return f.type === "extrude" && f.upTo === undefined && f.upToPlane === undefined;
 }
 
 /** [field, label, kind] rows per feature type. */
 export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>> = {
-  extrude: [["distance", "Distance", "length"]],
+  // "Start offset" lifts the profile off its sketch plane before the sweep;
+  // "Target offset" is measured along the EXTRUDE direction and only means
+  // anything with an up-to target (see hasUpToTarget). Distance stays offered
+  // even with a target set — the sidecar ignores it there, but clearing the
+  // target has to restore a depth rather than drop the user at 0.
+  extrude: [
+    ["distance", "Distance", "length"],
+    ["startOffset", "Start offset", "length"],
+    ["taper", "Taper", "angle", isBlindExtrude],
+    ["upToOffset", "Target offset", "length", hasUpToTarget],
+  ],
   fillet: [["radius", "Radius", "length"]],
   chamfer: [["distance", "Length", "length"]],
   // "Target offset" is measured along the EXTRUDE direction, not the target's

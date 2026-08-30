@@ -3145,3 +3145,136 @@ button.finish:hover {
   font-size: 10px;
   color: var(--text-mute);
 }
+
+/* ---- keyboard shortcut editor (ui/shortcutSettings.ts) ---- */
+.ks-intro {
+  font-size: 11px;
+  color: var(--text-mute);
+  line-height: 1.5;
+  margin-bottom: var(--s-4);
+}
+.ks-section {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-mute);
+  margin: var(--s-5) 0 var(--s-2);
+}
+.ks-section:first-of-type {
+  margin-top: 0;
+}
+.ks-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 3px 0;
+}
+.ks-label {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+/* Sized to the widest label it has to hold ("Shift+H", "Press a key…") so the
+   column doesn't reflow the moment a row starts recording. */
+.ks-key {
+  min-width: 108px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--accent-hot);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+  cursor: pointer;
+}
+.ks-key:hover {
+  border-color: var(--line-hover);
+  background: var(--raised);
+}
+.ks-key.recording {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-hot);
+}
+.ks-key.unbound {
+  color: var(--text-mute);
+  font-style: italic;
+}
+.ks-icon-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+}
+.ks-icon-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.ks-icon-btn:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--text);
+}
+.ks-icon-btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+/* Lives in .modal-foot, which is justify-content: flex-end — push the buttons
+   away so the message reads as a status line, not a third button. */
+.ks-status {
+  margin-right: auto;
+  align-self: center;
+  font-size: 11px;
+  color: var(--warn);
+  max-width: 60%;
+  line-height: 1.4;
+}
+.shortcut-hud-foot {
+  flex-basis: 100%;
+  margin-top: var(--s-4);
+  font-size: 10.5px;
+  color: var(--text-mute);
+}
+
+/* ---- tool cursor badge (src/ui/toolCursor.ts) ----
+   The armed tool's icon trailing the pointer over the canvas. Positioned with a
+   transform in device coordinates, so it is `fixed` and anchored at the origin —
+   the module sets the whole offset, and nothing here may add to it or the two
+   would have to agree.
+
+   pointer-events: none is load-bearing, not hygiene: this sits over the canvas
+   under the pointer, so anything else makes every click in the app land on a
+   24px decoration instead of the model.
+
+   Deliberately not animated. A badge that eases toward the pointer lags it, and
+   a fade on show/hide would blur exactly the transition it exists to report —
+   which also means there is no motion here for prefers-reduced-motion to cut. */
+.tool-cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 1900; /* over the viewport's own overlays, under menus (2000) and modals */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: rgba(18, 20, 25, 0.82);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-1);
+  color: var(--accent);
+}
+.tool-cursor svg {
+  width: 15px;
+  height: 15px;
+}

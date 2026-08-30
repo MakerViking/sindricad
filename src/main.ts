@@ -13,6 +13,7 @@ import { isEditableTarget } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
 import { Inspector, editHint } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
+import { mountToolCursor } from "./ui/toolCursor";
 import { CommandPalette } from "./ui/commandPalette";
 import { SketchPalette } from "./ui/sketchPalette";
 import { installKeymap } from "./input/keymap";
@@ -21,6 +22,7 @@ import { checkForUpdates, scheduleStartupUpdateCheck, showAbout } from "./ui/upd
 import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
+import { openShortcutSettings } from "./ui/shortcutSettings";
 import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { activePrinterId } from "./print/printerClient";
@@ -311,6 +313,12 @@ if ("__TAURI_INTERNALS__" in window) {
 const ribbon = new Ribbon(document.getElementById("ribbon")!);
 ribbon.onAction = handleAction;
 
+// The armed tool's icon, trailing the pointer over the canvas (issue #17). On
+// document.body rather than #viewport: it positions itself in device coordinates,
+// so it must not inherit a positioned ancestor's origin. Lives for the life of
+// the window — nothing here unmounts it.
+const toolCursor = mountToolCursor(document.body, canvas);
+
 // Cmd/Ctrl-K command palette — search + run any command (discoverability safety net)
 const cmdk = new CommandPalette(handleAction);
 window.addEventListener("keydown", (e) => {
@@ -446,6 +454,7 @@ new Menubar(document.getElementById("menubar")!, [
     label: "Help",
     items: [
       { label: "Keyboard Shortcuts", shortcut: "?", onClick: () => toggleShortcutHUD() },
+      { label: "Customize Shortcuts…", onClick: () => openShortcutSettings() },
       { separator: true, label: "" },
       // A tester asked for "a reference manual or other description of each
       // operation". Eight tutorial videos and a README already existed and
@@ -479,9 +488,24 @@ const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
 const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement;
 undoBtn.addEventListener("click", () => doUndo());
 redoBtn.addEventListener("click", () => doRedo());
+/** Enabled state for the title-bar undo/redo buttons.
+ *
+ *  It must ask the SKETCH when one is open, for the same reason doUndo does:
+ *  in-sketch geometry is not in the document, so `store.canUndo` knows nothing
+ *  about it. Reading the store alone left both buttons greyed out for the whole
+ *  time a sketch was open — on a fresh document, permanently — so the only
+ *  visible undo affordance was dead exactly where the in-sketch history had just
+ *  been built to make it work. Ctrl+Z still worked, which is why this reads as
+ *  "undo is gone" rather than "undo is broken".
+ *
+ *  The Edit menu (see the Menubar above) already asked the right question. This
+ *  is the same expression; the two must not answer differently. */
+function refreshUndoButtons() {
+  undoBtn.disabled = !(sketch.active ? sketch.canUndoSketch : store.canUndo);
+  redoBtn.disabled = !(sketch.active ? sketch.canRedoSketch : store.canRedo);
+}
 store.onDocChange(() => {
-  undoBtn.disabled = !store.canUndo;
-  redoBtn.disabled = !store.canRedo;
+  refreshUndoButtons();
 });
 store.onMeta(() => {
   docnameEl.textContent = (store.dirty ? "● " : "") + store.fileName;
@@ -1036,8 +1060,19 @@ let sketchWasActive = false;
 sketch.onState = () => {
   if (sketch.active && !sketchWasActive) palette.emitAll(); // apply palette opts
   sketchWasActive = sketch.active;
+  // The undo/redo buttons live and die with the sketch history while a sketch is
+  // open, and `store.onDocChange` cannot see that — the document does not change
+  // when you draw a line. onState is where every in-sketch undo checkpoint lands
+  // (see the `onState?.() // undo checkpoint` call sites in sketchMode), so it is
+  // the only hook that fires often enough for the buttons to stay honest.
+  refreshUndoButtons();
   ribbon.setContext(sketch.active ? "sketch" : "model");
   ribbon.setActiveSketchTool(sketch.tool);
+  // Only while a sketch is open: sketch.tool keeps its last value after Finish,
+  // and the modeling tools have no equivalent broadcast to hook (each owns its
+  // own phase inside src/features), so outside a sketch there is nothing armed
+  // this can honestly report.
+  toolCursor.setTool(sketch.active ? sketch.tool : null);
   palette.setVisible(sketch.active);
   contextTab.textContent = sketch.active ? "SKETCH" : "SOLID";
   contextTab.classList.toggle("sketch", sketch.active);

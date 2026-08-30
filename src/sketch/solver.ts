@@ -31,6 +31,13 @@ export type SConstraint =
   | { id: string; type: "perpendicular"; l1: string; l2: string }
   | { id: string; type: "equal"; l1: string; l2: string }
   | { id: string; type: "distance"; a: PointId; b: PointId; value: number }
+  // AXIS-ALIGNED distances (smart-dimension's horizontal / vertical results).
+  // planegcs has no p2p_distance_x, so these ride its generic `difference` on
+  // the points' own x / y params: b.<axis> - a.<axis> = value. SIGNED, unlike
+  // `distance` — which is what makes them able to express "B is 20 to the LEFT
+  // of A" and is why the tool must order the operands, not sort them.
+  | { id: string; type: "distanceX"; a: PointId; b: PointId; value: number }
+  | { id: string; type: "distanceY"; a: PointId; b: PointId; value: number }
   | { id: string; type: "p2lDistance"; p: PointId; line: string; value: number }
   | { id: string; type: "diameter"; circle: string; value: number }
   | { id: string; type: "tangentLC"; line: string; circle: string }
@@ -283,6 +290,15 @@ function toGcsConstraint(c: SConstraint): any {
       return { id: c.id, type: "equal_length", l1_id: c.l1, l2_id: c.l2 };
     case "distance":
       return { id: c.id, type: "p2p_distance", p1_id: c.a, p2_id: c.b, distance: c.value };
+    case "distanceX":
+    case "distanceY":
+      // param2 - param1 = difference (planegcs semantics, same as radiusDifference)
+      return {
+        id: c.id, type: "difference",
+        param1: { o_id: c.a, prop: c.type === "distanceX" ? "x" : "y" },
+        param2: { o_id: c.b, prop: c.type === "distanceX" ? "x" : "y" },
+        difference: c.value,
+      };
     case "p2lDistance":
       return { id: c.id, type: "p2l_distance", p_id: c.p, l_id: c.line, distance: c.value };
     case "diameter":

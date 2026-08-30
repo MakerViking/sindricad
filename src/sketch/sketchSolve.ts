@@ -22,6 +22,7 @@ import { rectCorners } from "./region";
 import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
 import type { SketchConstraint } from "../types";
 import { isDriven, projEndSamples } from "../types";
+import { isOriginGeometry, isOriginId } from "./origin";
 
 // Below this a line has no usable direction, so any angular constraint on it is
 // vacuously satisfiable — which is how a conflicting sketch "solves" by folding
@@ -173,6 +174,11 @@ export async function compileAndSolve(
       const p2 = getPoint(e.x2, e.y2);
       lines.push({ id: e.id, p1, p2 });
       ends.set(e.id, [p1, p2]);
+      // The origin AXES are pinned exactly like the origin point: mergeable, so
+      // a user endpoint made coincident with one is anchored by it, and fixed so
+      // the axis itself never moves. Not via projPts — an axis is not projected
+      // geometry and must not be described as such.
+      if (isOriginGeometry(e.id)) { fixedPts.add(p1); fixedPts.add(p2); }
     } else if (e.type === "circle") {
       const c = getPoint(e.x, e.y, false); // center is not an endpoint
       circles.push({ id: e.id, center: c, radius: e.radius });
@@ -209,7 +215,15 @@ export async function compileAndSolve(
       splineMap.set(e.id, e.points.map((p, k) => getPoint(p.x, p.y, k === 0 || k === last)));
     } else if (e.type === "point") {
       // a sketch point is mergeable so it can snap onto / coincide with geometry
-      pointMap.set(e.id, getPoint(e.x, e.y, true));
+      const pid = getPoint(e.x, e.y, true);
+      pointMap.set(e.id, pid);
+      // ...and the ORIGIN is additionally PINNED, the same way projected
+      // geometry is. Mergeable AND fixed is the combination that matters: a user
+      // endpoint made coincident with it fuses onto a fixed point and is
+      // anchored by it, which is what stops a dimensioned sketch drifting.
+      // Deliberately NOT via projPts — a drag refused by the origin should not
+      // be reported as "that is projected geometry".
+      if (isOriginId(e.id)) fixedPts.add(pid);
     } else if (e.type === "projected") {
       // Fixed reference geometry (Fusion Project): compiles as pinned planegcs
       // primitives so user constraints/dims can attach to it. Endpoints are
@@ -390,6 +404,13 @@ export async function compileAndSolve(
     else if (c.type === "p2pDistance") {
       const a = dimPoint(c.e1, c.p1), b = dimPoint(c.e2, c.p2);
       if (a && b && a !== b) cons.push({ id, type: "distance", a, b, value: c.value });
+    }
+    else if (c.type === "p2pDistanceX" || c.type === "p2pDistanceY") {
+      // Operand order is load-bearing: these are SIGNED, so a and b must stay
+      // as the user picked them (see types.ts).
+      const a = dimPoint(c.e1, c.p1), b = dimPoint(c.e2, c.p2);
+      const kind = c.type === "p2pDistanceX" ? "distanceX" : "distanceY";
+      if (a && b && a !== b) cons.push({ id, type: kind, a, b, value: c.value });
     }
     else if (c.type === "p2lDistance") {
       const p = dimPoint(c.e, c.p);
@@ -839,6 +860,10 @@ export async function compileAndSolve(
           case "perpendicular": { if (!fxLine(c.l1) || !fxLine(c.l2)) return null; const d1 = lineDir(c.l1), d2 = lineDir(c.l2); return Math.abs(d1.x * d2.x + d1.y * d2.y); }
           case "equal": return fxLine(c.l1) && fxLine(c.l2) ? Math.abs(lineLen(c.l1) - lineLen(c.l2)) : null;
           case "distance": return fx(c.a) && fx(c.b) ? Math.abs(dist(c.a, c.b) - c.value) : null;
+          // SIGNED, so the residual is against the signed separation — |b-a|
+          // would read a correctly-satisfied "20 to the left" as a 40 error.
+          case "distanceX": return fx(c.a) && fx(c.b) ? Math.abs((P(c.b).x - P(c.a).x) - c.value) : null;
+          case "distanceY": return fx(c.a) && fx(c.b) ? Math.abs((P(c.b).y - P(c.a).y) - c.value) : null;
           case "p2lDistance": return fx(c.p) && fxLine(c.line) ? Math.abs(perpDist(c.p, c.line) - c.value) : null;
           case "diameter": return fxRound(c.circle) ? Math.abs(2 * radiusOf.get(c.circle)! - c.value) : null;
           case "circleRadius": return fxRound(c.circle) ? Math.abs(radiusOf.get(c.circle)! - c.value) : null;

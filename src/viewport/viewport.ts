@@ -34,7 +34,15 @@ import { sceneStats } from "../diagnostics/sceneStats";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
+import {
+  loadPivotMode,
+  mountPivotButton,
+  resolvePivot,
+  savePivotMode,
+  type PivotMode,
+} from "./orbitPivot";
 import { setPrompt } from "../ui/prompt";
+import { setSketchLineResolution } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { ViewCubeSide } from "../types";
 
@@ -79,6 +87,13 @@ export function sameStringMap(
   for (const k of ka) if (av[k] !== bv[k]) return false;
   return true;
 }
+
+/** How far the camera swings when an extrude opens on a flat sketch view.
+ *  Roughly a three-quarter view: enough to read depth, not so much that the
+ *  profile you just picked becomes hard to recognise. Feel values — they want a
+ *  human eye, not a test. */
+const TILT_AZIMUTH = Math.PI / 7; // ~26 degrees around
+const TILT_POLAR = Math.PI / 7; // ~26 degrees over
 
 export class Viewport {
   readonly scene: SceneBundle;
@@ -130,6 +145,15 @@ export class Viewport {
   regionPickAt: ((clientX: number, clientY: number, additive: boolean) => boolean) | null = null;
   regionHoverAt: ((clientX: number, clientY: number) => boolean) | null = null;
   onBodySelectionChange: (() => void) | null = null; // fired when the body selection changes
+  /** Every rendered frame: the world mm covered by one screen pixel at the camera
+   *  target, plus that target. For plane-aligned geometry that has to rescale with
+   *  zoom the way the ground grid does — the sketch grid, which cannot BE the
+   *  ground grid because it sits on an arbitrary plane. Called from inside the
+   *  render loop, so an implementation must be cheap when nothing changed and
+   *  must never call requestRender(). */
+  onZoomScale:
+    | ((worldPerPixel: number, targetX: number, targetY: number, targetZ: number) => void)
+    | null = null;
   // "faces" = pick faces/edges (default); "bodies" = pick whole bodies (to move).
   private selectionMode: "faces" | "bodies" = "faces";
   suspendPicking = false;
@@ -151,6 +175,17 @@ export class Viewport {
   // dirty so the very first frame after construction paints.
   private needsRender = true;
   private lingerFrames = 3;
+
+  /** Which point the view swings around when you orbit (GitHub #17). Persisted,
+   *  and re-resolved at every drag start — "under the cursor" only means
+   *  anything at the instant the drag begins. */
+  private pivotMode: PivotMode = loadPivotMode();
+  /** Where the pointer was when the current gesture started. Recorded on WINDOW
+   *  in the CAPTURE phase: camera-controls binds its own pointerdown to the
+   *  canvas and fires 'controlstart' from inside it, so a canvas-level listener
+   *  is a coin toss on registration order, while a window capture listener is
+   *  guaranteed to have run first. */
+  private pressPos = { x: 0, y: 0 };
 
   constructor(private canvas: HTMLCanvasElement) {
     this.scene = createScene(canvas);
@@ -178,13 +213,78 @@ export class Viewport {
     // remote desktops / fractional scaling), and without this the camera keeps a
     // stale aspect and the first fit lands the model off-screen.
     new ResizeObserver(() => this.resize()).observe(this.canvas);
-    // once the user drives the camera (orbit/pan/zoom), stop auto-framing.
-    this.rig.controls.addEventListener("controlstart", () => {
+    // The pointer position at the moment a gesture starts, for the cursor
+    // orbit pivot (see applyOrbitPivot).
+    window.addEventListener(
+      "pointerdown",
+      (e) => {
+        this.pressPos = { x: e.clientX, y: e.clientY };
+      },
+      true,
+    );
+    const gestureStarted = () => {
+      // once the user drives the camera (orbit/pan/zoom), stop auto-framing.
       this.userMovedCamera = true;
+      this.applyOrbitPivot();
       this.requestRender();
-    });
+    };
+    this.rig.controls.addEventListener("controlstart", gestureStarted);
+    // A MOUSE orbit is intercepted before camera-controls sees it (so it can
+    // pass the poles), which means `controlstart` never fires for one and the
+    // pivot was silently never applied to the gesture it matters most for. The
+    // rig announces that start itself.
+    this.rig.setOnOrbitStart(gestureStarted);
+    mountPivotButton(
+      () => this.pivotMode,
+      (m) => this.setOrbitPivotMode(m),
+    );
     this.installPointer();
     this.loop();
+  }
+
+  /** Orbit-pivot mode. Read/written by the control-strip button; exposed so a
+   *  future settings surface can drive it too. */
+  orbitPivotMode(): PivotMode {
+    return this.pivotMode;
+  }
+
+  setOrbitPivotMode(mode: PivotMode) {
+    this.pivotMode = mode;
+    savePivotMode(mode);
+  }
+
+  /** Aim the gesture that is starting at whatever the pivot mode asks for.
+   *  Only for an ORBIT: a pan or a dolly has no pivot, and setting one would
+   *  leave a screen-space offset for the rig to fold back out for nothing. */
+  private applyOrbitPivot() {
+    if (this.pivotMode === "view") return; // the default costs nothing
+    if (!this.rig.isOrbiting()) return;
+    const box = this.modelBox();
+    const point = resolvePivot(this.pivotMode, {
+      // The raycast is by far the most expensive input, so only pay for it in
+      // the one mode that reads it.
+      cursor:
+        this.pivotMode === "cursor"
+          ? this.surfacePointAt(this.pressPos.x, this.pressPos.y)
+          : null,
+      modelCentre: box ? box.getCenter(new THREE.Vector3()) : null,
+      camera: this.rig.controls.getPosition(new THREE.Vector3()),
+    });
+    if (point) this.rig.setOrbitPivot(point);
+  }
+
+  /** The model surface point under the cursor, or null when the ray hits
+   *  nothing. Deliberately NOT cursorWorldPoint: that invents a point at orbit
+   *  distance so zoom-to-cursor still tracks over empty space, which is right
+   *  for zoom and wrong here — orbiting about a point that is on nothing swings
+   *  the model around a centre the user cannot see or predict. */
+  private surfacePointAt(clientX: number, clientY: number): THREE.Vector3 | null {
+    if (!this.model) return null;
+    const hit = this.rayFrom(clientX, clientY).intersectObjects(
+      visibleBodyMeshes(this.model),
+      false,
+    )[0];
+    return hit ? hit.point.clone() : null;
   }
 
   /** Mark the next few frames dirty so the render loop actually draws them.
@@ -371,6 +471,14 @@ export class Viewport {
       return;
     }
     if (this.pickSuppressed) return;
+    // A visible sketch's profile areas are pickable in BOTH selection modes. The
+    // mode chooses face-vs-body granularity for the SOLID; a sketch profile is
+    // neither, so switching to Bodies has no business turning it off. It used to:
+    // the `return` below fired first and killed sketch hover and click outright,
+    // silently, with the only clue being a small "Faces/Bodies" chip in a row of
+    // camera buttons. Reported as "I can only select the sketch in sketch mode",
+    // after switching to Bodies to assign filament slots and never switching back.
+    if (this.regionHoverAt?.(e.clientX, e.clientY)) return;
     if (this.selectionMode === "bodies") return; // no face hover while picking bodies
     if (!this.model || !this.highlighter) return;
     const rect = this.canvas.getBoundingClientRect();
@@ -394,6 +502,14 @@ export class Viewport {
     if (this.pickSuppressed) return;
     const rect = this.canvas.getBoundingClientRect();
 
+    // Sketch areas first, in EITHER mode — see handleHover for why. Without this
+    // the bodies branch below returns before regionPickAt is ever consulted.
+    if (
+      this.selectionMode === "bodies" &&
+      this.regionPickAt?.(e.clientX, e.clientY, e.ctrlKey || e.metaKey || e.shiftKey)
+    ) {
+      return;
+    }
     // --- Bodies mode: a click selects the WHOLE body under the cursor ---
     if (this.selectionMode === "bodies" && this.model && this.highlighter) {
       const bodyId = this.bodyIdAt(e.clientX, e.clientY);
@@ -439,6 +555,32 @@ export class Viewport {
   }
 
   // ---- Bodies selection mode + body helpers --------------------------------
+
+  /** Tilt off a straight-on view so an extrude's DEPTH is visible, the way
+   *  mainstream MCAD swings the camera when an extrude opens.
+   *
+   *  Only fires when the camera is looking very nearly ALONG the plane normal —
+   *  i.e. you are still in the flat sketch view, where a prism growing toward
+   *  you is invisible because it grows exactly along the view axis. If you have
+   *  already orbited to an angle, the view you chose is left alone: yanking the
+   *  camera away from a deliberate viewpoint is worse than not helping.
+   *
+   *  Animated on purpose, unlike `lookAtPlane`, which snaps. That one is a
+   *  precision operation and a half-finished transition ruins it; this one is
+   *  pure legibility, and camera-controls cancelling it the moment the user
+   *  touches the camera is exactly the behaviour wanted.
+   *
+   *  Returns whether it actually moved. */
+  tiltOffAxis(normal: THREE.Vector3): boolean {
+    const view = this.rig.active.getWorldDirection(new THREE.Vector3());
+    const n = normal.clone().normalize();
+    // |dot| because the camera may look at the plane from either side. 0.985 is
+    // about 10 degrees off-axis.
+    if (Math.abs(view.dot(n)) < 0.985) return false;
+    this.rig.controls.rotate(TILT_AZIMUTH, TILT_POLAR, true);
+    this.requestRender();
+    return true;
+  }
 
   setSelectionMode(m: "faces" | "bodies") {
     if (this.selectionMode === m) return;
@@ -2086,6 +2228,10 @@ export class Viewport {
     // radius by the device pixel ratio.)
     this.resolution.set(w, h);
     setEdgeResolution(this.model, this.resolution);
+    // Sketch curves are fat lines too (GH #17) and measure their width in the
+    // same CSS-pixel space. Missing this leaves them at whatever size the last
+    // canvas was — or invisible on the first frame, when it is 1x1.
+    setSketchLineResolution(w, h);
     // Keep the model framed while the user hasn't taken over the camera. This is
     // what corrects an off-centre first fit once the canvas size finally settles
     // (the actual cause of "the model renders in the corner and I can't aim at
@@ -2145,6 +2291,12 @@ export class Viewport {
         // keep the ground grid spacing/extent matched to the current zoom + pan
         const t = this.rig.controls.getTarget(this.scratchTarget);
         this.scene.grid.update(t.x, t.y, this.pixelWorldSize(t), this.targetGridZ);
+        // ...and the SKETCH grid the same way. It lives on an arbitrary plane so
+        // it cannot be the same object, but it must rescale off the same number
+        // or the two disagree the moment you leave a sketch. The callback is
+        // expected to be cheap when nothing changed (it is keyed, like
+        // AdaptiveGrid) and must never call requestRender — this IS the frame.
+        this.onZoomScale?.(this.pixelWorldSize(t), t.x, t.y, t.z);
         this.scene.renderer.render(this.scene.scene, this.rig.active);
         this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
         this.fps.frame();

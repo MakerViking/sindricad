@@ -256,6 +256,16 @@ export type SketchConstraint =
   // rectangle corner (rectCorners CCW order), 2 = arc center; a circle always
   // resolves to its center. Point entities ignore the index.
   | { type: "p2pDistance"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
+  // Smart dimensioning (GH #17): the HORIZONTAL and VERTICAL distances between
+  // two points, as opposed to p2pDistance's direct (aligned) one. Same operands,
+  // and the tool picks which of the three you get from where you drag the label.
+  //
+  // SIGNED, and the operand ORDER carries that sign: value is e2 - e1 along the
+  // axis, so swapping the picks negates it. That is deliberate — it is what lets
+  // a horizontal dimension say "to the left" — and it means these must never be
+  // canonicalised by sorting the operand ids the way an unsigned constraint can be.
+  | { type: "p2pDistanceX"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
+  | { type: "p2pDistanceY"; id?: string; e1: string; p1: number; e2: string; p2: number; value: number; driven?: boolean; place?: PlaceOffset }
   // p2lDistance: driving perpendicular distance from a picked point to a line
   // operand (same `p` semantics as p2pDistance; `line` may be a rect edge)
   | { type: "p2lDistance"; id?: string; e: string; p: number; line: string; value: number; driven?: boolean; place?: PlaceOffset }
@@ -443,6 +453,43 @@ export type Feature =
       // one. An empty GROUP inside a non-empty entry is different again and the
       // sidecar refuses the whole anchor on it (`if not grp: return None`).
       regionHoleEntities?: string[][][];
+      // --- start and end conditions (issue #41, field report ffab4ece) --------
+      // The SAME vocabulary press-pull uses, resolved by the same sidecar helper
+      // (`_up_to_target`), so the two operations cannot drift apart on any of the
+      // refusals it enforces.
+      //
+      // `upTo` names a face to stop at, `upToPlane` a datumPlane feature id or
+      // "XY"/"XZ"/"YZ". Setting BOTH is invalid and the sidecar refuses it. With
+      // either one set, `distance` is NOT READ — the target decides how far — so
+      // a distance of 0 is legal here, unlike a plain extrude.
+      //
+      // A target is reproduced as the new end FACE, not approximated by a single
+      // sweep to its centre distance: a target tilted to the sketch would
+      // otherwise give a flat top, right along the centre line and silently
+      // wrong everywhere else.
+      upTo?: Selector;
+      upToPlane?: string;
+      // Shifts the landing ALONG THE EXTRUDE DIRECTION — positive past the
+      // target, negative short of it. Only means something with a target; the
+      // sidecar refuses it otherwise rather than reading the number and throwing
+      // it away.
+      upToOffset?: Num;
+      // Lifts the profile off its sketch plane BEFORE the sweep, along the same
+      // direction the sweep runs — the "start the extrude at an offset" half of
+      // the pair. Independent of the end condition: with both set the solid spans
+      // startOffset..target, not 0..target.
+      startOffset?: Num;
+      // Sloped walls, in DEGREES (issue #41's "nice to have"). Positive narrows
+      // away from the sketch, negative widens — a draft angle for a moulded or
+      // printed part. Only applies to a plain distance extrude: with an `upTo`
+      // target the end face is the target plane, and a taper would fight it.
+      //
+      // The sidecar PROBES this in a throwaway process before building it. That
+      // is not caution for its own sake: the same OCCT path has been measured
+      // hanging for 600 s while holding the GIL, and returning silently corrupt
+      // solids (volume 0.0 with IsValid() false, and negative volumes) that only
+      // BRepCheck catches. A refused taper is reported, never quietly dropped.
+      taper?: Num;
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display
@@ -450,6 +497,20 @@ export type Feature =
       // builder falls back to the document's LIVE visibility map (old files
       // keep their exact behavior until re-saved through load-stamping).
       hiddenBodies?: string[];
+      // One body per CONNECTED lump instead of one body for the whole extrude:
+      // four separated slices of a ring become four bodies you can colour and
+      // move independently, which is what mainstream MCAD does. Connectivity is
+      // the KERNEL's answer, so two selected areas that share an edge still come
+      // back as ONE body.
+      //
+      // OPT-IN, and it has to stay that way. Body ids are POSITIONAL (`body1`,
+      // `body2`, … from a counter), so turning one body into four renumbers
+      // every body after it and silently re-aims any saved `body:"bodyN"`
+      // selector on a fillet, shell or press/pull. Absent = legacy feature,
+      // rebuilt exactly as before; the tool stamps it on NEW extrudes only, and
+      // an edit preserves whatever the feature already had. Same discipline as
+      // `hiddenBodies` above.
+      separateBodies?: boolean;
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }
   | { id: string; type: "chamfer"; edges: Selector | Selector[]; distance: Num }

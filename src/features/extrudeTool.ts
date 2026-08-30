@@ -16,7 +16,7 @@ import type { Viewport } from "../viewport/viewport";
 import { drawOnTop } from "../viewport/gizmos";
 import type { RegionRef, SketchOverlay, WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
-import type { Feature } from "../types";
+import type { Feature, Selector } from "../types";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
@@ -113,11 +113,19 @@ export class ExtrudeTool {
   private editId: string | null = null; // committed feature id being edited
   private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
   private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
+  private editSeparateBodies: boolean | undefined; // ditto: an edit must not change body COUNT
   /** Areas of the feature being edited that this tool could NOT resolve, held
    *  exactly as the document has them and written straight back on commit. See
    *  startEdit: without this, editing the depth of a feature whose sketch has
    *  partly changed DELETES the areas the tool could not draw. */
   private editCarried: CarriedRegion[] = [];
+  // --- end condition: "extrude UP TO that face / plane" (issue #41) ---------
+  // The same three-field vocabulary press/pull uses, and set through the same
+  // one-way door (`setUpTo`), because the sidecar REFUSES a feature carrying
+  // both a face target and a plane target rather than picking one.
+  private upTo: Selector | null = null;
+  private upToPlane: string | null = null;
+  private pickingTarget = false; // waiting for the user to click the up-to target
   /** while editing, this sketch is forced visible so its regions exist
    *  (consumed sketches hide by default) — main.ts's isSketchVisible honors it. */
   forcedSketchId: string | null = null;
@@ -145,6 +153,13 @@ export class ExtrudeTool {
     this.active = true;
     this.phase = "pick";
     this.onDone = onDone;
+    // A fresh extrude has no end condition. Cleared HERE and not in beginDrag,
+    // which startEdit also calls and which re-runs when the user re-states the
+    // area set — clearing there would silently drop a saved target on every
+    // edit, the same class as the carried areas this tool already protects.
+    this.upTo = null;
+    this.upToPlane = null;
+    this.pickingTarget = false;
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
@@ -182,6 +197,14 @@ export class ExtrudeTool {
     this.editId = featureId;
     this.editOp = f.operation;
     this.editHiddenBodies = f.hiddenBodies;
+    this.editSeparateBodies = f.separateBodies;
+    // Carry the saved end condition through the edit. Not restoring it here is
+    // how a depth tweak would silently turn an "up to that face" extrude back
+    // into a blind one — `commit` writes what these fields hold, so anything
+    // startEdit does not load, commit deletes.
+    this.upTo = f.upTo ?? null;
+    this.upToPlane = f.upToPlane ?? null;
+    this.pickingTarget = false;
     this.distance = f.distance;
     this.forcedSketchId = f.sketch;
 
@@ -524,6 +547,31 @@ export class ExtrudeTool {
       }
     } else {
       e.preventDefault();
+      // T-mode: this click names the surface to extrude UP TO. Consume EVERY
+      // click here — a miss must never fall through to the clean-click-commits
+      // path below and fire a stray plain commit (the same audit finding that
+      // shaped press/pull's version of this branch).
+      if (this.pickingTarget) {
+        e.stopImmediatePropagation();
+        const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
+        if (hit) {
+          this.setUpTo(hit.selector);
+          void this.commit();
+          return;
+        }
+        // A datum plane is a legitimate target too (field report ffab4ece), but
+        // only on a body MISS — the same BODY-FIRST precedence
+        // viewport.handleClick uses, so a plane's 80x80 quad floating in front
+        // of the solid can never steal a face pick.
+        const datumId = this.viewport.pickDatumAt(e.clientX, e.clientY);
+        if (datumId) {
+          this.setUpTo(datumId);
+          void this.commit();
+          return;
+        }
+        setPrompt("Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back");
+        return;
+      }
       // A modifier-held click means "change the area set", not "commit". Edit mode
       // is otherwise a trap: startEdit restores the saved areas and goes straight
       // to drag, so beginDrag's "Ctrl-click areas to add/remove" prompt had no
@@ -643,18 +691,62 @@ export class ExtrudeTool {
     void this.commit();
   }
 
+  /** `upTo` (a face) and `upToPlane` (a datum id) are mutually exclusive by
+   *  contract — the sidecar REFUSES a feature carrying both rather than picking
+   *  one — so every target set goes through here and clears the other. */
+  private setUpTo(target: Selector | string) {
+    if (typeof target === "string") {
+      this.upToPlane = target;
+      this.upTo = null;
+    } else {
+      this.upTo = target;
+      this.upToPlane = null;
+    }
+  }
+
   private onKey(e: KeyboardEvent) {
     if (this.dim.isActive && e.target instanceof HTMLInputElement) {
       if (e.key === "Escape") this.cancel();
       return;
     }
-    if (e.key === "Escape") this.cancel();
-    else if (e.key === "Enter" && this.phase === "pick" && this.selected.length) this.beginDrag();
+    if (e.key === "Escape") {
+      // Esc out of target-picking goes back to the depth gesture rather than
+      // cancelling the whole extrude — the same two-level Escape press/pull has.
+      if (this.pickingTarget) {
+        this.pickingTarget = false;
+        // restore the field T-mode hid: leaving it hidden would strand the user
+        // with no way to type a depth, and leaving it ACTIVE during the pick let
+        // Enter commit a plain distance mid-target-pick.
+        this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
+        this.dim.seed("distance", this.distance);
+        setPrompt(
+          "Drag the arrow or type a value + Enter · T = extrude up to a face or plane · " +
+            "click to commit · Esc to cancel",
+        );
+        return;
+      }
+      this.cancel();
+      return;
+    }
+    if (e.key === "Enter" && this.phase === "pick" && this.selected.length) this.beginDrag();
+    else if ((e.key === "t" || e.key === "T") && this.phase === "drag" && !this.pickingTarget) {
+      this.pickingTarget = true;
+      this.dim.hide(); // Enter must not commit a plain distance while picking
+      setPrompt("Click the face or plane to extrude UP TO (any face, any body) · Esc to go back");
+    }
   }
 
   private beginDrag() {
     this.phase = "drag";
     this.overlay.setHoverRegion(null);
+    this.pickingTarget = false;
+    // Swing off the flat sketch view so the depth is visible. A prism grown from
+    // a sketch you are looking at straight-on extends exactly along the view
+    // axis, so it is invisible until you orbit — which is why every mainstream
+    // MCAD tilts here. No-ops when the camera is already at an angle, so a
+    // deliberate viewpoint is never yanked away. See Viewport.tiltOffAxis.
+    const plane = this.selected[0]?.plane;
+    if (plane) this.viewport.tiltOffAxis(plane.n);
     if (!this.editId) this.distance = 10; // a fresh extrude starts at 10 mm
     this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
     // Seed on BOTH paths, and lock the field either way.
@@ -911,11 +1003,29 @@ export class ExtrudeTool {
       regions: areas.map((a) => a.point),
       regionEntities: areas.map((a) => a.entityIds),
       regionHoleEntities: areas.map((a) => a.holeEntityIds),
+      // End condition, when one was picked. Written only when set, so a plain
+      // extrude's feature object is unchanged — and never both, which the
+      // sidecar refuses (`setUpTo` is the one door that guarantees it).
+      //
+      // `distance` above still rides along and is deliberately NOT cleared: the
+      // sidecar does not read it while a target is set, and keeping it means
+      // clearing the target in the inspector restores the depth the user had
+      // rather than dropping them at 0.
+      ...(this.upTo ? { upTo: this.upTo } : {}),
+      ...(this.upToPlane ? { upToPlane: this.upToPlane } : {}),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
       // display toggles rewrite committed boolean history.
       ...(hiddenBodies !== undefined ? { hiddenBodies } : {}),
+      // NEW extrudes split into one body per connected lump; an EDIT keeps
+      // whatever the feature already had. Stamping it on edit would renumber the
+      // bodies of a document that never asked for it — see types.ts.
+      ...(this.editId
+        ? this.editSeparateBodies !== undefined
+          ? { separateBodies: this.editSeparateBodies }
+          : {}
+        : { separateBodies: true }),
     };
     const id = feature.id;
     if (this.editId) {

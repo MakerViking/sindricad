@@ -4,6 +4,7 @@
 
 import * as THREE from "three";
 import CameraControls from "camera-controls";
+import { foldPivot } from "./orbitPivot";
 
 CameraControls.install({ THREE });
 
@@ -55,6 +56,20 @@ export interface CameraRig {
   tumble(az: number, pol: number): void;
   /** Lock out mouse orbit (sketch "lock to plane"); middle-drag pans instead. */
   setOrbitLocked(locked: boolean): void;
+  /** True while the gesture in progress is an ORBIT, as opposed to a pan or a
+   *  dolly. Lets the viewport decide whether a drag wants an orbit pivot
+   *  without importing camera-controls' action vocabulary. */
+  isOrbiting(): boolean;
+  /** Swing the NEXT rotate about `point` instead of the view centre, WITHOUT
+   *  moving the picture. Resolve the point per gesture and set it at drag
+   *  start; clearOrbitPivot() folds it away again. */
+  setOrbitPivot(point: THREE.Vector3): void;
+  /** Announce an intercepted mouse orbit's start (camera-controls' own
+   *  `controlstart` does not fire for one — see beginOrbit). */
+  setOnOrbitStart(fn: () => void): void;
+  /** Fold an orbit pivot back into a plain position/target pair. No-op when no
+   *  pivot is set, and never changes what is on screen. */
+  clearOrbitPivot(): void;
   lookAtPlane(
     origin: THREE.Vector3,
     normal: THREE.Vector3,
@@ -228,6 +243,10 @@ export function createCameraRig(
   // right-drag and on Shift+middle) stays with camera-controls, as does every
   // touch gesture. The button map remains authoritative — this reads it rather
   // than re-deriving which button orbits.
+  /** Called when an intercepted mouse orbit BEGINS — the replacement for
+   *  camera-controls' `controlstart`, which no longer fires for one. Set by the
+   *  viewport, which uses it to aim the orbit pivot. */
+  let onOrbitStart: (() => void) | undefined;
   const TAU = Math.PI * 2;
   type MouseAction = CameraControls["mouseButtons"]["left"];
   let orbitDrag: { id: number; x: number; y: number; button: "left" | "middle"; restore: MouseAction } | null = null;
@@ -246,6 +265,11 @@ export function createCameraRig(
     // pointerdown a moment from now, and restore the value on release.
     orbitDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, button: slot, restore: action };
     controls.mouseButtons[slot] = A.NONE;
+    // camera-controls fires `controlstart` when IT begins a gesture, and the
+    // viewport hangs the orbit pivot off that event. Taking the press away from
+    // it also took that event away, so the pivot silently stopped being applied
+    // to mouse orbits — announce the start ourselves.
+    onOrbitStart?.();
   }
 
   function moveOrbit(e: PointerEvent) {
@@ -349,6 +373,97 @@ export function createCameraRig(
     return true;
   }
 
+  // ---- orbit pivot ---------------------------------------------------------
+  //
+  // Orbiting about a point that is NOT the view centre is expressed as
+  // camera-controls' focalOffset: setOrbitPoint() puts the orbit target on the
+  // pivot and shifts the camera back by exactly as much in screen space, so the
+  // picture is unchanged and the next rotate swings about the pivot.
+  //
+  // The catch is that a live focalOffset makes controls.getPosition() report a
+  // camera that is NOT the one being rendered, and nearly everything else in
+  // this file is built on those two being the same thing — zoomBy's
+  // dolly-to-cursor similarity above all, which pins a world point to its pixel
+  // by scaling the camera/target pair about it. So the offset is FOLDED BACK
+  // OUT as soon as the gesture that needed it has settled.
+  //
+  // The fold is invisible because translating the camera AND the target by the
+  // same vector leaves both the rendered position and the orientation
+  // untouched: setLookAt only ever sees the pair, and the pair is only moved.
+  //
+  // Nothing here touches the camera up-vector, so it cannot walk into the
+  // gimbal-lock hazard restoreUp() guards against — the pole is unmoved.
+  const tmpOffset = new THREE.Vector3();
+  // The camera/target pair from just before the pivot was set. Only meaningful
+  // until the next controls.update(), which is exactly the window in which the
+  // rendered camera does not yet reflect the offset and so cannot be measured.
+  let pivotStash: { pos: THREE.Vector3; target: THREE.Vector3 } | null = null;
+
+  function orbitPivotSet(): boolean {
+    return controls.getFocalOffset(tmpOffset).lengthSq() > 0;
+  }
+
+  function setOrbitPivot(point: THREE.Vector3) {
+    clearOrbitPivot(); // never stack a pivot on a pivot
+    // camera-controls builds the compensating offset from the camera's current
+    // basis, and two things about that basis are not what it assumes here:
+    //  - update() banks `rollAngle` on top of camera-controls' own orientation
+    //    every frame. Left on, the bank is baked into the offset and then
+    //    applied a second time on the next frame, tipping the view.
+    //  - setOrbitPoint reads matrixWorldInverse, which only a render recomputes
+    //    — and this viewport renders on demand, so the last drawn frame is not
+    //    a promise that it is current. Invert it here instead of trusting that.
+    if (rollAngle !== 0) active.rotateZ(-rollAngle);
+    active.updateMatrixWorld();
+    active.matrixWorldInverse.copy(active.matrixWorld).invert();
+    pivotStash = {
+      pos: controls.getPosition(new THREE.Vector3(), false),
+      target: controls.getTarget(new THREE.Vector3(), false),
+    };
+    controls.setOrbitPoint(point.x, point.y, point.z);
+    if (rollAngle !== 0) {
+      active.rotateZ(rollAngle);
+      active.updateMatrixWorld();
+    }
+  }
+
+  function clearOrbitPivot() {
+    const stash = pivotStash;
+    pivotStash = null;
+    if (!orbitPivotSet()) return;
+    const pos = controls.getPosition(new THREE.Vector3(), false);
+    const target = controls.getTarget(new THREE.Vector3(), false);
+    // active.position is where the offset actually put the camera; foldPivot
+    // moves the reported pair onto it without re-aiming anything.
+    const folded = foldPivot(pos, target, active.position);
+    controls.setFocalOffset(0, 0, 0, false);
+    if (stash) {
+      // No frame has been drawn since the pivot was set, so active.position is
+      // still the PRE-pivot camera and the fold above is meaningless. Nothing
+      // has been orbited yet either, which is what makes restoring the stashed
+      // pair exactly equivalent.
+      controls.setLookAt(
+        stash.pos.x,
+        stash.pos.y,
+        stash.pos.z,
+        stash.target.x,
+        stash.target.y,
+        stash.target.z,
+        false,
+      );
+      return;
+    }
+    controls.setLookAt(
+      folded.pos.x,
+      folded.pos.y,
+      folded.pos.z,
+      folded.target.x,
+      folded.target.y,
+      folded.target.z,
+      false,
+    );
+  }
+
   const rig: CameraRig = {
     controls,
     get active() {
@@ -377,6 +492,17 @@ export function createCameraRig(
     update(dt: number) {
       pendingOrthoZoom = null; // camera.zoom is authoritative again after this update
       const moved = controls.update(dt);
+      // The rendered camera now reflects any pivot offset, so clearOrbitPivot()
+      // can measure it instead of falling back to the stash.
+      pivotStash = null;
+      // Fold a finished orbit pivot away, but only once the motion has settled:
+      // clearOrbitPivot() writes with enableTransition=false, which would snap
+      // a damped orbit's tail dead if it landed mid-glide.
+      // `!orbitDrag` for the same reason isOrbiting checks it: during an
+      // intercepted mouse orbit camera-controls is idle and currentAction is
+      // NONE, so without this the pivot would be folded away on the first frame
+      // of the very drag it was set for.
+      if (!controls.active && controls.currentAction === A.NONE && !orbitDrag) clearOrbitPivot();
       const swapped = applyAutoProjection();
       // Apply the persistent roll AFTER camera-controls positions the camera.
       // update() always rewrites the orientation from its own spherical state,
@@ -396,6 +522,10 @@ export function createCameraRig(
       return controls.distance * Math.tan((FOV * Math.PI) / 360);
     },
     zoomBy(factor: number, pivot?: THREE.Vector3) {
+      // Everything below treats getPosition() as the rendered camera, which an
+      // orbit pivot's screen-space offset falsifies — a wheel notch during the
+      // damped tail of an orbit would drift the point under the cursor.
+      clearOrbitPivot();
       const f = Math.max(0.1, Math.min(10, factor));
       if (usingOrtho) {
         // ortho.zoom only commits at the next controls.update(); fast wheels
@@ -480,6 +610,10 @@ export function createCameraRig(
       }
     },
     fit(box: THREE.Box3, enableTransition = true) {
+      // A live pivot offset would survive the setTarget/setPosition below and
+      // leave the model framed off-centre — Fit that does not centre. Same
+      // reason in setStandardView, setViewDir, lookAtPlane, restoreUp, tumble.
+      clearOrbitPivot();
       // Manual fit that PRESERVES the current view direction. (camera-controls'
       // fitToBox resets the orbit to an axis view under a Z-up camera.)
       const center = box.getCenter(new THREE.Vector3());
@@ -533,6 +667,7 @@ export function createCameraRig(
       );
     },
     setStandardView(view: StandardView) {
+      clearOrbitPivot();
       rollAngle = 0;
       // a free tumble may have left the orbit up-vector anywhere; a standard
       // view means "square me to the world" — restore Z-up first
@@ -555,6 +690,7 @@ export function createCameraRig(
       controls.setPosition(t.x + n.x, t.y + n.y, t.z + n.z, true);
     },
     setViewDir(dir, up) {
+      clearOrbitPivot();
       rollAngle = 0;
       // orient to a free direction with a chosen up. The camera keeps using +Z
       // up afterward for orbiting unless `up` differs; for the cube's axis views
@@ -578,6 +714,7 @@ export function createCameraRig(
       );
     },
     lookAtPlane(origin, normal, up) {
+      clearOrbitPivot();
       rollAngle = 0;
       // Square the camera to a sketch plane: up = sketch +Y, look down -normal.
       // INSTANT (no transition): camera-controls aborts animated transitions on
@@ -600,6 +737,7 @@ export function createCameraRig(
       );
     },
     restoreUp() {
+      clearOrbitPivot();
       rollAngle = 0;
       // Re-seat the orbit AFTER changing up: updateCameraUp() only rebuilds the
       // internal up-basis — the stored spherical state still encodes the OLD
@@ -628,7 +766,30 @@ export function createCameraRig(
       rollAngle += angle;
     },
     tumble(az, pol) {
+      // The SpaceMouse tumble is its own gesture, with no press to hang a pivot
+      // on, so any pivot left over from a mouse orbit is folded away first
+      // (#45's rule, kept). Mouse orbit reaches tumbleBy DIRECTLY and must NOT
+      // clear it — the pivot is the whole point of that drag.
+      clearOrbitPivot();
       tumbleBy(az, pol);
+    },
+    isOrbiting() {
+      // A MOUSE orbit no longer goes through camera-controls at all — the press
+      // is taken from it so the rotation can pass the poles (see beginOrbit), so
+      // its `currentAction` stays NONE for the whole drag. Reading only that
+      // would report "not orbiting" for the primary case and the pivot would
+      // never be applied.
+      if (orbitDrag) return true;
+      // Mask, not equality: currentAction is an OR of every active button.
+      // Deliberately only the plain rotate actions — a two-finger dolly-rotate
+      // already has a pivot of its own (the pinch centre).
+      const a = controls.currentAction;
+      return (a & A.ROTATE) === A.ROTATE || (a & A.TOUCH_ROTATE) === A.TOUCH_ROTATE;
+    },
+    setOrbitPivot,
+    clearOrbitPivot,
+    setOnOrbitStart(fn: () => void) {
+      onOrbitStart = fn;
     },
     setOrbitLocked(locked) {
       orbitLocked = locked;

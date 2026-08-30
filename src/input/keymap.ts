@@ -3,7 +3,7 @@
 // while typing in inputs. Ctrl/Cmd combos handle undo/redo (file shortcuts are
 // handled centrally in main.ts).
 
-import { resolveShortcut } from "./shortcuts";
+import { normalizeKey, resolveShortcut } from "./shortcuts";
 
 export function installKeymap(
   onAction: (a: string) => void,
@@ -29,9 +29,10 @@ export function installKeymap(
 
     if (e.key === "Escape") return onAction("escape");
 
-    // "?" arrives as key "?" with shift held — resolve it without the shift flag
-    const key = e.key === "?" ? "?" : k;
-    const shift = e.key === "?" ? false : e.shiftKey;
+    // normalizeKey (shared with the rebind capture, so a key the settings panel
+    // recorded is the same key this looks up) drops the shift flag on symbols
+    // like "?" that only exist shifted.
+    const { key, shift } = normalizeKey(e);
     const action = resolveShortcut(key, shift, context());
     if (action) {
       // Stop the keystroke from also landing in any input a tool focuses in

@@ -8,7 +8,7 @@ import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
-import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
+import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
@@ -43,6 +43,10 @@ import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
+import { niceStep } from "../ui/units";
+import { isOriginGeometry, originGeometry } from "./origin";
+import { boxFromDrag, entitiesInBox } from "./boxSelect";
+import { applicableConstraints, constraintLabel } from "./constraintMenu";
 import { ConstraintTools, CONSTRAINT_TOOLS, type ConstraintHost } from "./constraintTools";
 import { PatternFlow, PATTERN_TOOLS, ENTITY_PATTERNS, type PatternHost } from "./patternFlow";
 import { ProjectPanel } from "./projectPanel";
@@ -116,6 +120,34 @@ const MODIFY_TOOLS = new Set<SketchTool>([
 
 const GRID_STEP = 5;
 
+/** Cell size and centre for the sketch grid at a given zoom, in PLANE-LOCAL mm.
+ *
+ *  Exported and pure because it decides two things that are easy to get subtly
+ *  wrong and impossible to see afterwards:
+ *
+ *  1. The cell is `niceStep(worldPerPixel * 64)`, the SAME expression the ground
+ *     grid uses (viewport/scene.ts). The two grids have to agree about what a
+ *     given zoom looks like, or the lattice appears to jump when a sketch closes.
+ *  2. The centre is rounded to whole MAJOR cells. Grid snapping rounds in
+ *     plane-local coordinates off the plane origin (see snap.ts), so a visual
+ *     grid shifted by anything other than a whole multiple of the cell would
+ *     draw lines that are NOT the lines you snap to — the failure this whole
+ *     change exists to remove.
+ *
+ *  `key` is the memo: the render loop calls this every frame, so the caller
+ *  rebuilds only when it changes. */
+export function gridScaleFor(
+  worldPerPixel: number,
+  localX: number,
+  localY: number,
+): { cell: number; cx: number; cy: number; key: string } {
+  const cell = niceStep(worldPerPixel * 64); // ~64px cells
+  const major = cell * 5;
+  const cx = Math.round(localX / major) * major;
+  const cy = Math.round(localY / major) * major;
+  return { cell, cx, cy, key: `${cell}:${cx}:${cy}` };
+}
+
 // Map planegcs conflict ids back to constraint indices. Implicit ids (rect
 // edges `<id>~h0`, the drag pin) decode to null and are skipped.
 function parseConflictIdx(ids: string[]): Set<number> {
@@ -186,6 +218,10 @@ export class SketchMode {
   private constraints: SketchConstraint[] = []; // persistent constraints (solved)
   private patterns: SketchPattern[] = []; // associative pattern definitions
   private lastDof = -1;
+  /** Marquee (box) selection in progress — GH #17. Started on a press in empty
+   *  space with the select tool, so it can never steal a gesture that had a
+   *  target: every branch that finds something under the cursor returns first. */
+  private boxSel: { from: THREE.Vector2; to: THREE.Vector2; shift: boolean } | null = null;
   private dragFrom: THREE.Vector2 | null = null; // grabbed point's current position
   // click-vs-drag bookkeeping for a grabbed POINT: which entity owns it, where
   // the pointer went down (screen px), and whether it ever moved past the same
@@ -270,6 +306,11 @@ export class SketchMode {
   private planeId: string | null = null;
   private store: DocumentStore | undefined;
   private grid: THREE.GridHelper | null = null;
+  /** current sketch-grid cell in mm — ALSO the grid-snap step, so what you snap
+   *  to is always the lattice you can see. Starts at GRID_STEP and is replaced by
+   *  updateGridScale on the first rendered frame. */
+  private gridCell = GRID_STEP;
+  private gridKey = ""; // cell+centre the grid was last built for
   // Sketch Palette options
   private gridVisible = true;
   private gridSnap = true;
@@ -432,9 +473,19 @@ export class SketchMode {
       }
     }
 
+    // The origin goes in AFTER the edit branch above, so it lands on a new
+    // sketch and a reopened one alike — a document saved before this existed
+    // gains one simply by being opened. Synthetic: stripped again in
+    // snapshotFeature, so it is never written back. See origin.ts.
+    this.entities.unshift(...originGeometry());
     this.viewport.suspendPicking = true;
     this.viewport.enterSketchView(this.plane.origin, this.plane.n, this.plane.v);
+    this.gridKey = ""; // force the first frame to build at the current zoom
     this.addGrid();
+    // The grid rescales with zoom from here on. Registered on the viewport
+    // rather than polled, because the only honest source for "how far are we
+    // zoomed in" is the frame that is about to be drawn.
+    this.viewport.onZoomScale = (wpp, tx, ty, tz) => this.updateGridScale(wpp, tx, ty, tz);
 
     const el = this.viewport.domElement;
     el.addEventListener("pointerdown", this.boundDown);
@@ -483,7 +534,9 @@ export class SketchMode {
       type: "sketch",
       plane: this.plane.serialize(),
       ...(this.planeId ? { planeId: this.planeId } : {}),
-      entities: this.entities.filter((e) => e.id !== TEXT_PREVIEW_ID).map(toSketchEntity),
+      entities: this.entities
+        .filter((e) => e.id !== TEXT_PREVIEW_ID && !isOriginGeometry(e.id))
+        .map(toSketchEntity),
       ...(this.constraints.length > 0 ? { constraints: this.constraints.map((c) => ({ ...c })) } : {}),
       ...(this.patterns.length > 0 ? { patterns: this.patterns.map((p) => ({ ...p })) } : {}),
     };
@@ -537,6 +590,7 @@ export class SketchMode {
     this.viewport.hoverEntity(null); // drop any Project-tool 3D hover highlight
     this.overlay.setPreview([]);
     this.overlay.setSnap(null);
+    this.viewport.onZoomScale = null; // stop rescaling a grid we are about to drop
     this.removeGrid();
     this.viewport.exitSketchView();
     this.viewport.rig.setOrbitLocked(false); // restore free orbit in model mode
@@ -912,6 +966,21 @@ export class SketchMode {
           (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1)
         );
       }
+      // Same pair, same KIND replaces — but an aligned, a horizontal and a
+      // vertical dimension over one pair are three different constraints and
+      // must coexist, which the `c.type === k.type` guard already gives us.
+      // Both operand orders count as the same dim: re-dimensioning the other way
+      // round replaces rather than stacking a second one (the new pick's sign
+      // wins, which is the behaviour you want from a re-dimension).
+      if (
+        (c.type === "p2pDistanceX" && k.type === "p2pDistanceX") ||
+        (c.type === "p2pDistanceY" && k.type === "p2pDistanceY")
+      ) {
+        return (
+          (k.e1 === c.e1 && k.p1 === c.p1 && k.e2 === c.e2 && k.p2 === c.p2) ||
+          (k.e1 === c.e2 && k.p1 === c.p2 && k.e2 === c.e1 && k.p2 === c.p1)
+        );
+      }
       if (c.type === "p2lDistance" && k.type === "p2lDistance") {
         return k.e === c.e && k.p === c.p && k.line === c.line;
       }
@@ -1221,6 +1290,24 @@ export class SketchMode {
       this.dimensionClick(raw, e);
       return;
     }
+    // TRIM takes the RAW cursor, never the snapped point — the same carve-out
+    // the dimension tool above makes, for a sharper reason. The entire gesture
+    // is "which side of the crossings am I pointing at", and the strongest snap
+    // targets near a line you are trimming ARE those crossings. Snapping put the
+    // click exactly on a span boundary, which belongs to both spans, so the span
+    // search took the earlier one and trim deleted the piece NEXT TO the one
+    // under the cursor. Measured on a line crossed at x=-5 and x=+5: aiming at
+    // the middle span but snapping to x=-5 removed the LEFT span instead.
+    //
+    // This also has to come BEFORE the `if (!hit) return` below: a click with
+    // nothing to snap to must still trim.
+    if (this.tool === "trim") {
+      const raw = this.planePoint(e);
+      if (!raw) return;
+      e.preventDefault();
+      this.trimClick(raw);
+      return;
+    }
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     e.preventDefault();
@@ -1264,6 +1351,28 @@ export class SketchMode {
           return;
         }
       }
+      // TEXT is draggable too (GH #17: "Unable to manually drag or adjust text
+      // position with the mouse in the sketch plane after creation"). It never
+      // reached the body-drag below because `pickEntity` cannot see it —
+      // entitySegments is empty for text, which is why the double-click above
+      // finds it through its glyph bounding box instead. `translated` has always
+      // handled a text entity, so arming the SAME drag is all that was missing;
+      // a press that does not move still falls through to selection in endDrag,
+      // and a double-click was already consumed above.
+      const te = this.textEntityAt(raw);
+      const teIdx = te ? this.entities.indexOf(te) : -1;
+      if (teIdx >= 0) {
+        this.moveDrag = {
+          idx: teIdx,
+          startClient: { x: e.clientX, y: e.clientY },
+          last: raw.clone(),
+          started: false,
+          shift: e.shiftKey,
+          stretch: [],
+        };
+        try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
+        return;
+      }
       // a real (hand-drawn) entity's body under the cursor → arm a body drag;
       // a plain click (no movement) falls through to selection in endDrag()
       const idx = pickEntity(this.entities, raw, this.pickTol());
@@ -1287,12 +1396,13 @@ export class SketchMode {
         this.overlay.toggleRegionSelection(wr, e.shiftKey || e.ctrlKey || e.metaKey);
         return;
       }
-      // empty space → clear both entity and area selection
-      if (!e.shiftKey) {
-        this.selected.clear();
-        this.overlay.clearRegionSelection();
-      }
-      this.refreshActive();
+      // Empty space: begin a marquee. The selection is NOT cleared here any
+      // more — a box drag that ends up selecting nothing clears it in endDrag,
+      // and a plain click (no movement) clears it there too, so the old
+      // behaviour is preserved without pre-emptively wiping a selection the
+      // user may be about to extend with Shift.
+      this.boxSel = { from: raw.clone(), to: raw.clone(), shift: e.shiftKey };
+      try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
       return;
     }
     if (PATTERN_TOOLS.has(this.tool)) return this.patternClick(p);
@@ -1316,7 +1426,7 @@ export class SketchMode {
     if (this.tool === "circle3") return this.circle3Click(p);
     if (this.tool === "centerRectangle") return this.centerRectClick(p);
     if (this.tool === "mirror") return this.mirrorClick(p);
-    if (this.tool === "trim") return this.trimClick(p);
+    // (trim is handled above, on the RAW cursor — see the carve-out there)
     if (this.tool === "fillet") return this.filletClick(p);
     if (this.tool === "chamfer") return this.chamferClick(p);
     if (this.tool === "move" || this.tool === "copy") return this.moveClick(p);
@@ -1984,7 +2094,13 @@ export class SketchMode {
 
   /** the right-click overrides the pair matrix reads */
   private dimOptions(): DimOptions {
-    return this.dimRoundPref ? { roundPref: this.dimRoundPref } : {};
+    // The cursor is what makes the dimension SMART: with two points picked, where
+    // the label is being dragged chooses aligned / horizontal / vertical. It is
+    // passed on every re-resolve, which is why moving the mouse re-plans.
+    return {
+      ...(this.dimRoundPref ? { roundPref: this.dimRoundPref } : {}),
+      cursor: this.lastCursor.clone(),
+    };
   }
 
   /** WHICH dimension the open box belongs to: the plan shape plus the picks it
@@ -2334,6 +2450,16 @@ export class SketchMode {
     if (this.rightDownAt && !this.rightDragged &&
       Math.hypot(e.clientX - this.rightDownAt.x, e.clientY - this.rightDownAt.y) > 5) {
       this.rightDragged = true;
+    }
+    // A marquee owns the pointer for as long as it is being dragged.
+    if (this.boxSel) {
+      const raw = this.planePoint(e);
+      if (raw) {
+        this.boxSel.to = raw.clone();
+        this.overlay.setPreview(this.boxPreview());
+        this.viewport.requestRender();
+      }
+      return;
     }
     if (this.active && this.tool === "project") {
       this.projectHover(e);
@@ -2710,7 +2836,7 @@ export class SketchMode {
       p2d,
       this.candidates, // cached; rebuilt only when entities change
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
-      this.gridSnap ? GRID_STEP : 0,
+      this.gridSnap ? this.gridCell : 0,
     );
     return { p: res.point, kind: res.kind, world: this.plane.to3D(res.point.x, res.point.y) };
   }
@@ -2881,7 +3007,9 @@ export class SketchMode {
    *  + re-solve via the shared modify tail. */
   private deleteSelected() {
     if (!this.selected.size) return;
-    this.entities = this.entities.filter((en) => !this.selected.has(en.id));
+    // the origin is not deletable: it is not the user's geometry, and losing it
+    // mid-sketch would silently unanchor everything constrained to it
+    this.entities = this.entities.filter((en) => !this.selected.has(en.id) || isOriginGeometry(en.id));
     this.selected.clear();
     dismissContextMenu(); // the Delete key can fire while the right-click menu is open
     this.afterModify();
@@ -2889,6 +3017,41 @@ export class SketchMode {
 
   /** Right-click in select mode: select the entity under the cursor (if any) and
    *  offer Delete. Leaves camera navigation alone when nothing is hit/selected. */
+  /** Apply a constraint straight to an already-chosen selection.
+   *
+   *  Only reached for selections `applicableConstraints` vouched for, so every
+   *  operand here is a whole entity that IS a line or a round — no rectangle
+   *  edges to disambiguate. The constraint objects are the same shapes
+   *  ConstraintTools builds; this is a second ENTRY POINT to them, not a second
+   *  implementation of them. `moves` names the first-picked entity, matching the
+   *  solver-bias convention the click tools already stamp. */
+  private applyConstraintToSelection(t: SketchTool, sel: ResolvedEntity[]) {
+    const a = sel[0], b = sel[1];
+    if (!a) return;
+    const moves = a.id;
+    const push = (c: SketchConstraint) => {
+      this.constraints.push(c);
+      this.trialConstraint = c; // withdrawn again if this solve conflicts
+      this.pendingBias = { moves: [moves] };
+      this.requestSolve();
+      this.onState?.();
+    };
+    if (t === "horizontal") return push({ type: "horizontal", line: a.id });
+    if (t === "vertical") return push({ type: "vertical", line: a.id });
+    if (!b) return;
+    if (t === "parallel") return push({ type: "parallel", l1: a.id, l2: b.id });
+    if (t === "perpendicular") return push({ type: "perpendicular", l1: a.id, l2: b.id });
+    if (t === "collinear") return push({ type: "collinear", l1: a.id, l2: b.id });
+    if (t === "concentric") return push({ type: "concentric", c1: a.id, c2: b.id });
+    if (t === "equal") return push({ type: "equal", l1: a.id, l2: b.id });
+    if (t === "tangent") {
+      // the wire wants (line, circle) in that order whichever way round they were picked
+      const line = a.type === "line" ? a : b;
+      const round = a.type === "line" ? b : a;
+      return push({ type: "tangent", line: line.id, circle: round.id });
+    }
+  }
+
   private onContextMenu(e: MouseEvent) {
     if (!this.active) return;
     // a right-DRAG panned the camera — don't turn its release into a menu
@@ -2910,7 +3073,20 @@ export class SketchMode {
     e.preventDefault();
     const n = this.selected.size;
     const linked = this.selectedProjectedIds().size;
+    // Constraints that actually APPLY to this selection, first — GH #17's
+    // "a small menu showing only the valid/possible constraints for that
+    // selection". Offering them here is what makes them findable at all: the
+    // constraint tools live behind a caret in a ribbon group that collapses into
+    // an overflow menu on a laptop-width window, which is how two testers
+    // independently failed to find them.
+    const selEnts = this.entities.filter((e) => this.selected.has(e.id));
+    const cons = applicableConstraints(selEnts);
     const items: CtxItem[] = [
+      ...cons.map((t) => ({
+        label: constraintLabel(t),
+        onClick: () => this.applyConstraintToSelection(t, selEnts),
+      })),
+      ...(cons.length ? [{ separator: true, label: "" } as CtxItem] : []),
       ...(linked
         ? [{ label: linked > 1 ? `Break Link (${linked})` : "Break Link", onClick: () => this.breakSelectedLinks() }]
         : []),
@@ -3060,7 +3236,22 @@ export class SketchMode {
 
   /** Projected geometry is FIXED reference geometry: every modify/transform seam
    *  calls this and bails with one consistent toast. Delete stays allowed. */
+  /** Refuse a modify/transform gesture aimed at geometry the user does not own,
+   *  and say which kind it is. Two kinds, deliberately one guard: every seam that
+   *  must refuse one must refuse the other, and splitting them is how a seam ends
+   *  up covering only half.
+   *
+   *  The origin case matters more than it looks. `pickEntity` already prefers
+   *  real geometry, so an axis is only ever picked when nothing else is near —
+   *  but trimming one would find no crossings (they are excluded as boundaries)
+   *  and `trimEntity` deletes a curve with no usable crossing WHOLE. Without
+   *  this, one stray click in empty space along y=0 would silently delete the X
+   *  axis for the rest of the session. */
   private guardProjected(e: ResolvedEntity | undefined): boolean {
+    if (isOriginGeometry(e?.id)) {
+      toast("The sketch origin is fixed reference geometry — snap and constrain to it, but it can't be edited");
+      return true;
+    }
     if (e?.type !== "projected") return false;
     toast(PROJECTED_FIXED_MSG);
     return true;
@@ -3537,6 +3728,8 @@ export class SketchMode {
         case "symmetric": return hasPointOperand(c.e1) && hasPointOperand(c.e2) && hasLineOperand(c.line);
         case "radius": return roundIds.has(c.e);
         case "p2pDistance": return refIds.has(c.e1) && refIds.has(c.e2);
+        case "p2pDistanceX":
+        case "p2pDistanceY": return refIds.has(c.e1) && refIds.has(c.e2);
         case "p2lDistance": return refIds.has(c.e) && hasLineOperand(c.line);
         // rim (edge-to-edge) dims — a round operand is a circle OR an arc
         case "radialGap": return roundIds.has(c.inner) && roundIds.has(c.outer);
@@ -3636,7 +3829,14 @@ export class SketchMode {
    *   - DRAGS never reach here at all: queueDrag pumps directly, and endDrag
    *     banks the pre-drag snapshot as ONE step. */
   private bankIfChanged() {
-    if (this.active) this.history.bankIfChanged(this.snapshot());
+    if (!this.active) return;
+    // Notify only when a step was ACTUALLY banked. requestSolve is on every
+    // mutation path, but it does not itself call onState — most of its ~20 call
+    // sites happen to do so afterwards and some do not, which left the undo
+    // BUTTON's enabled state depending on which gesture you used. Gating on the
+    // return value makes the signal exact and costs nothing on the common case
+    // where nothing changed (a solve settling, a re-armed derived update).
+    if (this.history.bankIfChanged(this.snapshot())) this.onState?.();
   }
 
   /** Commit a finished drag as a single undo step. The pre-drag entities were
@@ -3647,10 +3847,11 @@ export class SketchMode {
     const before = this.dragSnapshot;
     this.dragSnapshot = null; // committed — drop the revert buffer
     if (!before || !this.active) return;
-    this.history.bankBefore(
+    const banked = this.history.bankBefore(
       { entities: before, constraints: this.constraints, patterns: this.patterns },
       this.snapshot(),
     );
+    if (banked) this.onState?.(); // the undo button just became live — see bankIfChanged
   }
 
   get canUndoSketch(): boolean { return this.history.canUndo; }
@@ -3874,6 +4075,12 @@ export class SketchMode {
     };
     this.entities.forEach((e, i) => {
       cur = i;
+      // The origin offers NO drag handles. It is pinned, so a drag started on it
+      // is refused by the solver and nothing happens — but starting one still
+      // consumes the click, so the origin could not be SELECTED either. Reported
+      // as "it highlights but I can't select it": the click was being spent on a
+      // drag that could never move.
+      if (isOriginGeometry(e.id)) return;
       if (e.type === "line") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
       else if (e.type === "circle") consider(e.x, e.y);
       else if (e.type === "arc") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
@@ -3895,7 +4102,55 @@ export class SketchMode {
     void this.pump();
   }
 
+  /** The marquee rectangle as preview geometry. A WINDOW box (drag rightwards)
+   *  is drawn solid and a CROSSING box dashed, which is how mainstream CAD tells
+   *  you which of the two you are about to get — the direction alone is
+   *  invisible once you have started moving. */
+  private boxPreview(): THREE.Object3D[] {
+    const b = this.boxSel;
+    if (!b) return [];
+    const { min, max, mode } = boxFromDrag(b.from, b.to);
+    const c = [
+      this.plane.to3D(min.x, min.y), this.plane.to3D(max.x, min.y),
+      this.plane.to3D(max.x, max.y), this.plane.to3D(min.x, max.y),
+      this.plane.to3D(min.x, min.y),
+    ];
+    return [mode === "crossing" ? dashedPolyline(c, SELECT_COLOR) : polyline(c, SELECT_COLOR)];
+  }
+
+  /** Finish a marquee: select what it covers, or clear when it covers nothing. */
+  private applyBoxSel() {
+    const b = this.boxSel;
+    this.boxSel = null;
+    this.overlay.setPreview([]);
+    if (!b) return;
+    const moved = b.from.distanceTo(b.to) > this.pickTol() * 0.5;
+    if (!moved) {
+      // a plain click in empty space — the old clear-everything behaviour
+      if (!b.shift) { this.selected.clear(); this.overlay.clearRegionSelection(); }
+      this.refreshActive();
+      return;
+    }
+    // Origin geometry is reference, never a selection target: a marquee over the
+    // whole sketch would otherwise always drag the axes in with it.
+    const hits = entitiesInBox(
+      this.entities.filter((e) => !isOriginGeometry(e.id)),
+      boxFromDrag(b.from, b.to),
+    );
+    if (!b.shift) this.selected.clear();
+    for (const id of hits) this.selected.add(id);
+    this.refreshActive();
+    this.onState?.();
+  }
+
   private endDrag(pointerId?: number) {
+    if (this.boxSel) {
+      if (pointerId != null) {
+        try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
+      }
+      this.applyBoxSel();
+      return;
+    }
     if (this.textBoxStart) {
       // finish a text placement: a real drag = a box (wrap width); a click = point anchor
       const s = this.textBoxStart, screen = this.textBoxScreen ?? { x: 0, y: 0 }, end = this.textBoxEnd;
@@ -4031,14 +4286,45 @@ export class SketchMode {
   }
 
   // --- grid --------------------------------------------------------------
-  private addGrid() {
+  /** Rescale the sketch grid to the current zoom, and recentre it on the view.
+   *
+   *  Called from the viewport's render loop (`onZoomScale`), so it is keyed and
+   *  returns immediately when neither the cell nor the centre has changed.
+   *
+   *  The grid used to be a single `GridHelper(400, 80)` built once on entry:
+   *  5 mm cells over a 400 mm square, fixed. Zoom out past 400 mm and it simply
+   *  ran out; zoom in to draw a 2 mm feature and the cells were still 5 mm, so
+   *  the finest thing you could snap to was 5 mm no matter how close you got.
+   *  It also made grid snapping wildly inconsistent: `snap()` only takes a grid
+   *  point within 10 px of the cursor, so at high zoom the 5 mm points were too
+   *  far apart to ever catch and at low zoom they were sub-pixel dense and
+   *  caught everything.
+   *
+   *  `niceStep(worldPerPixel * 64)` is the SAME expression the ground grid uses
+   *  (viewport/scene.ts), deliberately: the two grids have to agree about what
+   *  "5 mm" looks like or the lattice appears to jump when you finish a sketch.
+   *  DIVISIONS stay fixed and the extent follows the cell, which is what keeps
+   *  the line count bounded — an adaptive cell over a fixed 400 mm extent would
+   *  be 4,000 divisions at 0.1 mm. */
+  private updateGridScale(worldPerPixel: number, tx: number, ty: number, tz: number) {
+    if (!this.active) return;
+    const local = this.plane.to2D(new THREE.Vector3(tx, ty, tz));
+    const { cell, cx, cy, key } = gridScaleFor(worldPerPixel, local.x, local.y);
+    if (key === this.gridKey) return;
+    this.gridKey = key;
+    this.gridCell = cell;
+    this.addGrid(cell, cx, cy);
+  }
+
+  private addGrid(cell = this.gridCell, cx = 0, cy = 0) {
     this.removeGrid();
-    const grid = new THREE.GridHelper(400, 80, 0x44505c, 0x2c333a);
+    const DIVS = 80;
+    const grid = new THREE.GridHelper(cell * DIVS, DIVS, 0x44505c, 0x2c333a);
     // GridHelper lies in XZ; orient it onto the sketch plane (XY local)
     grid.quaternion.copy(this.plane.orientation()).multiply(
       new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2),
     );
-    grid.position.copy(this.plane.origin);
+    grid.position.copy(this.plane.to3D(cx, cy));
     (grid.material as THREE.Material).depthWrite = false;
     grid.renderOrder = 1;
     grid.visible = this.gridVisible;

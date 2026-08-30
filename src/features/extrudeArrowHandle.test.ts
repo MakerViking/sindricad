@@ -194,6 +194,7 @@ function harness(
     },
   };
 
+  const tilts: THREE.Vector3[] = [];
   const viewport = {
     suspendPicking: false,
     pointInSolid: (p: THREE.Vector3) => p.z < 0,
@@ -215,6 +216,11 @@ function harness(
     projectToScreen: (w: THREE.Vector3) =>
       opts.topDown ? { x: CX + w.x * S, y: CY - w.y * S } : { x: CX + w.y * S, y: CY - w.z * S },
     pixelWorldSize: () => 1 / S,
+    // beginDrag swings the camera off a straight-on sketch view so the depth is
+    // visible. Recorded rather than ignored: these tests drive beginDrag from
+    // BOTH a top-down and a side view, so a stub that silently swallowed it
+    // would hide the guard that keeps an already-angled view alone.
+    tiltOffAxis: (n: THREE.Vector3) => { tilts.push(n.clone()); return true; },
     camera: {
       getWorldDirection: (v: THREE.Vector3) => (opts.topDown ? v.set(0, 0, -1) : v.set(-1, 0, 0)),
     },
@@ -235,7 +241,7 @@ function harness(
     overArrow: (cx: number, cy: number) => boolean;
     dim: { getValue: (n: string) => number | null; isUserDriven: (n: string) => boolean };
   };
-  return { tool, t, el, written, viewport };
+  return { tool, t, el, written, viewport, tilts };
 }
 
 const move = (clientX: number, clientY: number, buttons = 0) =>

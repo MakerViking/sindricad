@@ -3,7 +3,8 @@
 
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
-import { entitySegments, polygonPoints } from "./region";
+import { entitySegments, polygonPoints, rectCorners } from "./region";
+import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
 import { coincKey } from "./sketchSolve";
@@ -96,7 +97,12 @@ function arcGeom(e: { x1: number; y1: number; x2: number; y2: number; mx: number
 function circleCrossAngles(ents: ResolvedEntity[], index: number, C: THREE.Vector2, R: number): number[] {
   const out: number[] = [];
   ents.forEach((o, i) => {
-    if (i === index) return;
+    // The origin axes are REFERENCE, not a modify boundary. They exist in every
+    // sketch and span it, so counting them as crossings would silently change
+    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
+    // every document ever made. Snap to them, constrain to them, do not cut on
+    // them.
+    if (i === index || isOriginGeometry(o.id)) return;
     for (const [a, b] of entitySegments(o)) {
       for (const h of segCircleIntersect(a, b, C, R)) out.push(Math.atan2(h.y - C.y, h.x - C.x));
     }
@@ -115,16 +121,29 @@ export function pickEntity(
   p: THREE.Vector2,
   tol: number,
 ): number {
-  let best = -1;
-  let bestD = tol;
-  ents.forEach((e, i) => {
-    const d = distToEntity(e, p);
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  });
-  return best;
+  // YOUR geometry always beats REFERENCE geometry. The origin axes run through
+  // 0,0 and stretch across the sketch, so anything you draw along an axis — the
+  // bottom edge of a rectangle on y=0, a line from the origin — sits exactly on
+  // top of one. Nearest-wins alone would then be decided by list order, and the
+  // origin is inserted first, so the axis would win every tie and clicking your
+  // own line would select the axis instead. Two passes rather than a distance
+  // fudge: a penalty would still lose to the axis for anything a hair further
+  // from the cursor, which is the same bug with extra arithmetic.
+  const nearestIn = (want: boolean): number => {
+    let best = -1;
+    let bestD = tol;
+    ents.forEach((e, i) => {
+      if (isOriginGeometry(e.id) !== want) return;
+      const d = distToEntity(e, p);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+  const own = nearestIn(false);
+  return own >= 0 ? own : nearestIn(true);
 }
 
 function distToEntity(e: ResolvedEntity, p: THREE.Vector2): number {
@@ -191,13 +210,45 @@ export function trimEntity(
     return ents.flatMap((o, i) => (i === index ? pieces : [o]));
   }
 
-  if (e.type !== "line") return del(); // rectangle/spline + rigid polygon/slot: deleted whole
-  // defer: trim/break/offset on rigid polygon/slot no-op or explode; revisit when a user hits it
+  // A RECTANGLE is one entity, so trimming it used to delete all four edges —
+  // "I clicked the bottom line and the whole rectangle disappeared". It is four
+  // lines to the user, so explode it into four and trim the one that was
+  // clicked. The `defer ... revisit when a user hit it` note that used to live
+  // here has been redeemed; polygon/slot are genuinely rigid parametric shapes
+  // (a trimmed hexagon is not a hexagon) and a spline has no edges, so those
+  // keep the delete-whole behaviour until someone hits THAT.
+  //
+  // Exploding drops the rectangle's id, and with it the implicit `~h0`/`~v0`
+  // constraints the solver derives from the entity — they are generated at
+  // compile time, so nothing dangles. User constraints that named the rectangle
+  // are cleaned by the caller: afterModify() runs pruneConstraints().
+  if (e.type === "rectangle") {
+    const corners = rectCorners(e.x, e.y, e.width, e.height);
+    const edges: ResolvedEntity[] = corners.map((a, k) => {
+      const b = corners[(k + 1) % corners.length]!;
+      return { type: "line", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) };
+    });
+    // which edge was clicked — measured on the exploded lines, not guessed
+    let hit = 0;
+    let hitD = Infinity;
+    edges.forEach((ln, k) => {
+      const d = distToEntity(ln, click);
+      if (d < hitD) { hitD = d; hit = k; }
+    });
+    const exploded = ents.flatMap((o, i) => (i === index ? edges : [o]));
+    return trimEntity(exploded, index + hit, click);
+  }
+  if (e.type !== "line") return del(); // spline + rigid polygon/slot: deleted whole
 
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const params = new Set<number>([0, 1]);
   ents.forEach((o, i) => {
-    if (i === index) return;
+    // The origin axes are REFERENCE, not a modify boundary. They exist in every
+    // sketch and span it, so counting them as crossings would silently change
+    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
+    // every document ever made. Snap to them, constrain to them, do not cut on
+    // them.
+    if (i === index || isOriginGeometry(o.id)) return;
     const hits: THREE.Vector2[] = [];
     if (o.type === "circle") hits.push(...segCircleIntersect(p1, p2, v(o.x, o.y), o.radius));
     else for (const [a, b] of entitySegments(o)) {
@@ -214,6 +265,12 @@ export function trimEntity(
   if (sorted.length <= 2) return ents.filter((_, i) => i !== index); // no crossing → delete
 
   const tc = Math.max(0, Math.min(1, paramOnSeg(p1, p2, click)));
+  // The caller passes the RAW cursor, never a snapped point. That matters here
+  // and not anywhere else in this file: a crossing belongs to the span on either
+  // side of it, so a click landing exactly on one picks whichever comes first —
+  // deleting the piece NEXT TO the one under the cursor. Snapping aimed clicks
+  // straight at the crossings, which is precisely the input this cannot resolve.
+  // See sketchMode's trim carve-out.
   let lo = 0, hi = 1;
   for (let i = 0; i < sorted.length - 1; i++) {
     const a = sorted[i], b = sorted[i + 1];
@@ -762,7 +819,12 @@ export function extendLine(
   let bestT = extendEnd2 ? 1 : 0;
   let found = false;
   ents.forEach((o, i) => {
-    if (i === index) return;
+    // The origin axes are REFERENCE, not a modify boundary. They exist in every
+    // sketch and span it, so counting them as crossings would silently change
+    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
+    // every document ever made. Snap to them, constrain to them, do not cut on
+    // them.
+    if (i === index || isOriginGeometry(o.id)) return;
     const hits: THREE.Vector2[] = [];
     if (o.type === "circle") hits.push(...segCircleIntersect(far, farEnd, v(o.x, o.y), o.radius));
     else for (const [a, b] of entitySegments(o)) {
