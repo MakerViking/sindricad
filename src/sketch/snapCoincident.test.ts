@@ -23,8 +23,9 @@ vi.mock("@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url", () => ({
 import { compileAndSolve } from "./sketchSolve";
 import type { SketchConstraint } from "../types";
 import * as THREE from "three";
-import { candidatesFromEntities, snap, type ResolvedEntity } from "./snap";
+import { candidatesFromEntities, snap, snapCoincidences, type ResolvedEntity, type PointRef } from "./snap";
 import { rectCorners } from "./region";
+import sketchSrc from "./sketchMode.ts?raw";
 
 /** snap() needs a screen projection; identity is fine for these. */
 const toScreen = (p: THREE.Vector2) => ({ x: p.x, y: p.y });
@@ -165,5 +166,154 @@ describe("the solver joins the points these refs name", () => {
     const b = r.entities.find((e) => e.id === "b") as Extract<ResolvedEntity, { type: "line" }>;
     const gap = Math.hypot(b.x1 - a.x2, b.y1 - a.y2);
     expect(gap, `a ${gap.toExponential(1)} mm gap survived the solve`).toBeLessThan(1e-9);
+  });
+});
+
+// WHICH entities actually get a constraint. This is the half that shipped
+// broken: emitSnapCoincidences had an `arc` branch, but its only call site was
+// commitFromCursor, and computeGeometry only ever returns a line, rectangle or
+// circle. Arcs commit through arcClick and splines through finishSpline, so the
+// arc branch was unreachable and an arc snapped onto a line kept the micro-gap.
+//
+// The decision was pulled out of SketchMode into snapCoincidences precisely so
+// this can be asserted on the entity a gesture really produces, rather than on
+// source text — constructing a real SketchMode boots the viewport and solver,
+// which is why nothing saw this.
+describe("which drawn entities owe a coincident", () => {
+  const target = line("t", 0, 0, 10, 0);
+  const arc = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity =>
+    ({ type: "arc", id, x1, y1, x2, y2, mx: (x1 + x2) / 2, my: y1 + 3 });
+  const emit = (e: ResolvedEntity, s: PointRef | null, en: PointRef | null, ents: ResolvedEntity[] = []) =>
+    snapCoincidences(e, s, en, [target, ...ents, e], []);
+
+  it("an ARC drawn from a snapped point gets one", () => {
+    const a = arc("a1", 10, 0, 25, 0);
+    expect(emit(a, { id: "t", idx: 1 }, null)).toEqual([
+      { type: "coincident", e1: "t", p1: 1, e2: "a1", p2: 0 },
+    ]);
+  });
+
+  it("an arc snapped at BOTH ends gets both, start=0 and end=1", () => {
+    const other = line("o", 25, 0, 40, 0);
+    const a = arc("a1", 10, 0, 25, 0);
+    expect(emit(a, { id: "t", idx: 1 }, { id: "o", idx: 0 }, [other])).toEqual([
+      { type: "coincident", e1: "t", p1: 1, e2: "a1", p2: 0 },
+      { type: "coincident", e1: "o", p1: 0, e2: "a1", p2: 1 },
+    ]);
+  });
+
+  it("a LINE still gets one", () => {
+    const l = line("l1", 10, 0, 20, 8);
+    expect(emit(l, { id: "t", idx: 1 }, null)).toEqual([
+      { type: "coincident", e1: "t", p1: 1, e2: "l1", p2: 0 },
+    ]);
+  });
+
+  it("a rectangle and a circle get NOTHING, deliberately", () => {
+    // their "ends" are not the points the gesture snapped, so a constraint
+    // there would join something the user never aimed at
+    const r: ResolvedEntity = { type: "rectangle", id: "r1", x: 5, y: 5, width: 10, height: 4 };
+    const c: ResolvedEntity = { type: "circle", id: "c1", x: 10, y: 0, radius: 3 };
+    expect(emit(r, { id: "t", idx: 1 }, null)).toEqual([]);
+    expect(emit(c, { id: "t", idx: 1 }, null)).toEqual([]);
+  });
+
+  it("a spline gets nothing, and that is a known deferral not an oversight", () => {
+    // finishSpline never reaches here. Pinned so that wiring it up later has to
+    // change this expectation deliberately rather than silently.
+    const sp: ResolvedEntity = { type: "spline", id: "s1", points: [{ x: 10, y: 0 }, { x: 20, y: 5 }] };
+    expect(emit(sp, { id: "t", idx: 1 }, null)).toEqual([]);
+  });
+});
+
+describe("the emitter refuses nonsense", () => {
+  const target = line("t", 0, 0, 10, 0);
+
+  it("will not join an entity to itself", () => {
+    const l = line("l1", 10, 0, 20, 0);
+    expect(snapCoincidences(l, { id: "l1", idx: 0 }, null, [target, l], [])).toEqual([]);
+  });
+
+  it("will not name an entity that no longer exists", () => {
+    const l = line("l1", 10, 0, 20, 0);
+    expect(snapCoincidences(l, { id: "ghost", idx: 1 }, null, [target, l], [])).toEqual([]);
+  });
+
+  it("will not duplicate a constraint already recorded, in either operand order", () => {
+    const l = line("l1", 10, 0, 20, 0);
+    const already: SketchConstraint[] = [{ type: "coincident", e1: "l1", p1: 0, e2: "t", p2: 1 }];
+    expect(snapCoincidences(l, { id: "t", idx: 1 }, null, [target, l], already)).toEqual([]);
+  });
+
+  it("treats both ends landing on one point as two DIFFERENT joins, not a duplicate", () => {
+    // they differ in p2 (0 and 1), so they are genuinely two constraints. Pinned
+    // because it is the case that looks like a duplicate and is not — an
+    // in-commit dedup here would silently drop the second end.
+    const l = line("l1", 10, 0, 10, 0);
+    const both = { id: "t", idx: 1 };
+    expect(snapCoincidences(l, both, both, [target, l], [])).toEqual([
+      { type: "coincident", e1: "t", p1: 1, e2: "l1", p2: 0 },
+      { type: "coincident", e1: "t", p1: 1, e2: "l1", p2: 1 },
+    ]);
+  });
+});
+
+// End to end, through the real solver: an arc drawn onto a line's end must STAY// on it. Without the fix above the arc carried no constraint at all, so the
+// micro-gap it was drawn with simply persisted.
+describe("the solver keeps a snapped ARC joined", () => {
+  it("closes an arc-to-line micro-gap and keeps it closed", async () => {
+    const ents: ResolvedEntity[] = [
+      line("a", 0, 0, 20, 0),
+      // drawn a hundredth of a millimetre off the line's end, as the report describes
+      { type: "arc", id: "arc", x1: 20.01, y1: 0.01, x2: 35, y2: 0, mx: 27.5, my: 6 },
+    ];
+    const r = await compileAndSolve(ents, [{ type: "coincident", e1: "a", p1: 1, e2: "arc", p2: 0 }]);
+    expect(r.ok, "the solver refused a coincident on an arc's start").toBe(true);
+    const a = r.entities.find((e) => e.id === "a") as Extract<ResolvedEntity, { type: "line" }>;
+    const arc = r.entities.find((e) => e.id === "arc") as Extract<ResolvedEntity, { type: "arc" }>;
+    const gap = Math.hypot(arc.x1 - a.x2, arc.y1 - a.y2);
+    expect(gap, `a ${gap.toExponential(1)} mm arc-to-line gap survived the solve`).toBeLessThan(1e-6);
+    // and it joined the arc's START, not its end
+    expect(Math.hypot(arc.x1 - 20, arc.y1 - 0), "it joined the wrong end of the arc").toBeLessThan(0.2);
+  });
+});
+
+// THE WIRING, which is what actually broke. snapCoincidences having an arc case
+// proves nothing on its own: the old emitter had one too, and it was dead,
+// because arcs commit through arcClick and only commitFromCursor called the
+// emitter. The tests above would ALL have passed while a drawn arc got nothing.
+//
+// Source text, not an import: constructing a real SketchMode boots the viewport,
+// overlay and solver (same reason and same limitation as trimRawCursor.test.ts).
+// So this pins the EXPRESSION at each commit path.
+describe("every commit path that can owe a coincident calls the emitter", () => {
+  const commits = [
+    // [what commits it, the source marker for its body, the refs it must pass]
+    ["arcClick", "private arcClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef)"],
+    ["commitFromCursor", "private commitFromCursor(", "this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef)"],
+  ] as const;
+
+  for (const [name, marker, call] of commits) {
+    it(`${name} emits, with the refs its own gesture captured`, () => {
+      const at = sketchSrc.indexOf(marker);
+      expect(at, `${name} is gone — this test is pinning nothing`).toBeGreaterThan(-1);
+      const body = sketchSrc.slice(at, at + 1600);
+      expect(body, `${name} pushes an entity but never emits its coincidences`).toContain(call);
+    });
+  }
+
+  it("arcClick captures a ref at BOTH of its first two clicks", () => {
+    // pointer MOVES overwrite lastSnapRef between clicks, so reading it at
+    // commit time would give the third click's ref for both ends
+    const at = sketchSrc.indexOf("private arcClick(");
+    const body = sketchSrc.slice(at, at + 1600);
+    expect(body).toContain("this.arcStartRef = this.lastSnapRef");
+    expect(body).toContain("this.arcEndRef = this.lastSnapRef");
+  });
+
+  it("the emitter takes its refs as arguments, not off `this`", () => {
+    // the arc path cannot use baseRef/lastSnapRef, so a signature that reads
+    // them internally is what made a second call site impossible to add safely
+    expect(sketchSrc).toContain("private emitSnapCoincidences(\n    entity: ResolvedEntity,\n    startRef: PointRef | null,\n    endRef: PointRef | null,\n  )");
   });
 });

@@ -35,7 +35,7 @@ import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect } from "./directDims";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
-import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
+import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
 import { detectRegions, rectCorners } from "./region";
@@ -204,6 +204,14 @@ export class SketchMode {
   private pendingGlyph: ConstraintGlyph | null = null;
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
   private arcEnd: THREE.Vector2 | null = null;
+  /** what the arc's first and second clicks were SNAPPED ONTO, captured at the
+   *  click because pointer MOVES overwrite lastSnapRef between them.
+   *
+   *  Deliberately not cleared alongside arcStart/arcEnd at the four cancel sites:
+   *  a commit requires both points to be set, and each is set together with its
+   *  ref by this arc's own clicks, so a stale ref can never be read. */
+  private arcStartRef: PointRef | null = null;
+  private arcEndRef: PointRef | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
   private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants)
   private polygonSides = 6; // n for the polygon tool
@@ -1460,8 +1468,10 @@ export class SketchMode {
   private arcClick(p: THREE.Vector2) {
     if (!this.arcStart) {
       this.arcStart = p.clone();
+      this.arcStartRef = this.lastSnapRef;
     } else if (!this.arcEnd) {
       this.arcEnd = p.clone();
+      this.arcEndRef = this.lastSnapRef;
     } else {
       const a = this.arcStart;
       const b = this.arcEnd;
@@ -1477,6 +1487,11 @@ export class SketchMode {
       };
       if (this.constructionMode) ent.construction = true;
       this.entities.push(ent);
+      // same join the line tool gets: the arc's ends were placed by snaps, so
+      // they must be CONSTRAINED to what they landed on, not merely copied from
+      // it (field report ecc3e0d6). The third click is the through-point, which
+      // is not a solver point and so is never emitted for.
+      this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef);
       this.arcStart = null;
       this.arcEnd = null;
       this.refreshActive();
@@ -2779,7 +2794,7 @@ export class SketchMode {
     // these micro-gaps prevent the lines from being truly joined and can
     // subsequently cause cracks during extrusion, as well as undetected or
     // missing regions" (field report ecc3e0d6).
-    this.emitSnapCoincidences(entity);
+    this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef);
     if (this.tool === "line" && entity.type === "line") {
       const end = new THREE.Vector2(entity.x2, entity.y2);
       // clicked back on the start point → close the loop and end the chain
@@ -2812,39 +2827,18 @@ export class SketchMode {
     this.onState?.();
   }
 
-  /** Emit `coincident` for each end of a freshly drawn entity that was SNAPPED
-   *  onto an existing solver point.
-   *
-   *  Which ends exist, and their point indices, follow sketchSolve's
-   *  `endpointPoint` (see PointRef in snap.ts): a line's 0/1, an arc's start/end,
-   *  a spline's first/last. Anything else — a rectangle drawn corner to corner, a
-   *  circle — is not emitted for, because its "ends" are not the points the
-   *  gesture snapped and a constraint there would join something the user never
-   *  aimed at.
-   *
-   *  Refuses the three ways a coincident can be nonsense, matching what the
-   *  manual Coincident tool already refuses: the same entity on both sides
-   *  (it would collapse the shape), a duplicate of a constraint already present,
-   *  and a reference to an entity that no longer exists. */
-  private emitSnapCoincidences(entity: ResolvedEntity) {
-    const ends: [PointRef | null, number][] =
-      entity.type === "line" || entity.type === "arc"
-        ? [[this.baseRef, 0], [this.lastSnapRef, 1]]
-        : entity.type === "spline"
-          ? [[this.baseRef, 0], [this.lastSnapRef, 1]]
-          : [];
-    for (const [ref, idx] of ends) {
-      if (!ref) continue;
-      if (ref.id === entity.id) continue; // cannot join a thing to itself
-      if (!this.entities.some((e) => e.id === ref.id)) continue; // target is gone
-      const dup = this.constraints.some(
-        (c) => c.type === "coincident"
-          && ((c.e1 === ref.id && c.p1 === ref.idx && c.e2 === entity.id && c.p2 === idx)
-            || (c.e2 === ref.id && c.p2 === ref.idx && c.e1 === entity.id && c.p1 === idx)),
-      );
-      if (dup) continue;
-      this.constraints.push({ type: "coincident", e1: ref.id, p1: ref.idx, e2: entity.id, p2: idx });
-    }
+  /** Record the `coincident` constraints a freshly drawn entity owes to the
+   *  snaps that placed it. The decision lives in `snapCoincidences` (snap.ts),
+   *  which is pure and therefore testable without booting a viewport; this only
+   *  hands it the current state and appends what comes back. */
+  private emitSnapCoincidences(
+    entity: ResolvedEntity,
+    startRef: PointRef | null,
+    endRef: PointRef | null,
+  ) {
+    this.constraints.push(
+      ...snapCoincidences(entity, startRef, endRef, this.entities, this.constraints),
+    );
   }
 
   /** If a freshly drawn line sits within a few degrees of horizontal/vertical,
