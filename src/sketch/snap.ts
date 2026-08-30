@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import type { DimPlace, ProjectedCurve, ProjectedSource } from "../types";
 import { asRound } from "./entityDims";
+import { rectCorners } from "./region";
 
 export type SnapKind =
   | "free"
@@ -16,15 +17,46 @@ export type SnapKind =
   | "on-x"
   | "on-y";
 
+/** WHICH solver point a snap candidate IS, when the solver can address it.
+ *
+ *  Snapping has always copied the coordinate and stopped there, so two points
+ *  that coincided the moment you drew them could be driven apart by any later
+ *  solve — the deeper half of field report ecc3e0d6 ("the lines should
+ *  automatically be constrained"). Carrying the identity is what lets the commit
+ *  emit a real `coincident` constraint instead.
+ *
+ *  `idx` follows sketchSolve's `endpointPoint` EXACTLY, because that is what
+ *  resolves a coincident constraint's operands:
+ *    line     0 = (x1,y1), 1 = (x2,y2)
+ *    arc      0 = start, anything else = end
+ *    spline   0 = first fit point, anything else = last
+ *    point    the point itself, index ignored
+ *    rectangle 0..3 in `rectCorners` CCW order (bl, br, tr, tl)
+ *
+ *  Use the entity's OWN id with a corner index, NEVER the `R~k` edge spelling:
+ *  `endpointPoint` consults `rectMap` first, `dimPoint` agrees, and every
+ *  dimension and `fix` already record it that way. `R~k` also solves and prunes
+ *  identically, but nothing emits it deliberately and it historically rendered
+ *  no glyph. */
+export interface PointRef {
+  id: string;
+  idx: number;
+}
+
 export interface SnapCandidate {
   p: THREE.Vector2;
   kind: SnapKind;
   priority: number; // higher wins
+  /** absent when the solver cannot address this point — a line's MIDPOINT and a
+   *  circle's CENTRE are real snap targets but not solver points that
+   *  `endpointPoint` can resolve, so they snap the coordinate and emit nothing. */
+  ref?: PointRef;
 }
 
 export interface SnapResult {
   point: THREE.Vector2;
   kind: SnapKind;
+  ref?: PointRef;
 }
 
 export function snap(
@@ -54,7 +86,7 @@ export function snap(
     }
   }
 
-  if (best) return { point: best.p.clone(), kind: best.kind };
+  if (best) return { point: best.p.clone(), kind: best.kind, ...(best.ref ? { ref: best.ref } : {}) };
 
   if (gridStep <= 0) return { point: raw.clone(), kind: "free" }; // grid snap off
 
@@ -75,19 +107,24 @@ export function candidatesFromEntities(
   entities: ResolvedEntity[],
 ): SnapCandidate[] {
   const out: SnapCandidate[] = [];
-  const add = (x: number, y: number, kind: SnapKind, priority: number) =>
-    out.push({ p: new THREE.Vector2(x, y), kind, priority });
+  const add = (x: number, y: number, kind: SnapKind, priority: number, ref?: PointRef) =>
+    out.push({ p: new THREE.Vector2(x, y), kind, priority, ...(ref ? { ref } : {}) });
 
   for (const e of entities) {
     if (e.type === "line") {
-      add(e.x1, e.y1, "endpoint", 100);
-      add(e.x2, e.y2, "endpoint", 100);
+      add(e.x1, e.y1, "endpoint", 100, { id: e.id, idx: 0 });
+      add(e.x2, e.y2, "endpoint", 100, { id: e.id, idx: 1 });
       add((e.x1 + e.x2) / 2, (e.y1 + e.y2) / 2, "midpoint", 80);
     } else if (e.type === "rectangle") {
       const hw = e.width / 2;
       const hh = e.height / 2;
-      for (const sx of [-1, 1])
-        for (const sy of [-1, 1]) add(e.x + sx * hw, e.y + sy * hh, "endpoint", 100);
+      // rectCorners, NOT a nested sx/sy loop. The loop this replaces walked
+      // bl, tl, br, tr while the solver indexes corners bl, br, tr, tl — so an
+      // index taken from it would name the WRONG corner, silently, and the
+      // constraint would drag the rectangle inside out. One source of truth.
+      rectCorners(e.x, e.y, e.width, e.height).forEach((c, i) =>
+        add(c.x, c.y, "endpoint", 100, { id: e.id, idx: i }),
+      );
       add(e.x, e.y, "center", 90);
       // edge midpoints
       add(e.x, e.y + hh, "midpoint", 80);
@@ -97,13 +134,19 @@ export function candidatesFromEntities(
     } else if (e.type === "circle") {
       add(e.x, e.y, "center", 90);
     } else if (e.type === "arc") {
-      add(e.x1, e.y1, "endpoint", 100);
-      add(e.x2, e.y2, "endpoint", 100);
-      add(e.mx, e.my, "midpoint", 80);
+      add(e.x1, e.y1, "endpoint", 100, { id: e.id, idx: 0 });
+      add(e.x2, e.y2, "endpoint", 100, { id: e.id, idx: 1 });
+      add(e.mx, e.my, "midpoint", 80); // the through-point is not a solver point
     } else if (e.type === "spline") {
-      for (const p of e.points) add(p.x, p.y, "endpoint", 100); // fit points snap
+      // Only the ENDS are addressable: endpointPoint maps idx 0 to the first fit
+      // point and anything else to the LAST, so an interior fit point would
+      // resolve to the wrong end. Interior points still snap, silently.
+      const last = e.points.length - 1;
+      e.points.forEach((p, i) =>
+        add(p.x, p.y, "endpoint", 100, i === 0 || i === last ? { id: e.id, idx: i === 0 ? 0 : 1 } : undefined),
+      );
     } else if (e.type === "point") {
-      add(e.x, e.y, "endpoint", 110); // a placed point is a strong snap target
+      add(e.x, e.y, "endpoint", 110, { id: e.id, idx: 0 }); // a placed point is a strong snap target
     } else if (e.type === "projected") {
       // projected reference curves snap like their native counterparts — that's
       // half the point of projecting. Centers come from asRound (the one

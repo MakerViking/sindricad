@@ -35,7 +35,7 @@ import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect } from "./directDims";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
-import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
+import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
 import { detectRegions, rectCorners } from "./region";
@@ -194,6 +194,12 @@ export class SketchMode {
    *  user snapped onto existing geometry (field report ecc3e0d6). */
   private lastSnapKind: SnapKind = "free";
   private basePinned = false;
+  /** The solver point the current base / last cursor was SNAPPED ONTO, when
+   *  there is one. Snapping used to copy the coordinate and stop, so a join
+   *  survived only until the next solve moved either side (field ecc3e0d6).
+   *  Carried here so commitFromCursor can emit a real coincident constraint. */
+  private baseRef: PointRef | null = null;
+  private lastSnapRef: PointRef | null = null;
   /** the constraint the next click would add, drawn muted (field report 636afdcb) */
   private pendingGlyph: ConstraintGlyph | null = null;
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
@@ -1313,6 +1319,7 @@ export class SketchMode {
     e.preventDefault();
     const p = hit.p;
     this.lastSnapKind = hit.kind;
+    this.lastSnapRef = hit.ref ?? null;
 
     if (this.tool === "select") {
       // grab a point to drag it — connected/constrained geometry follows
@@ -1440,6 +1447,7 @@ export class SketchMode {
     if (!this.base) {
       this.base = p.clone();
       this.basePinned = isGeometrySnap(hit.kind);
+      this.baseRef = hit.ref ?? null;
       if (this.tool === "line") this.chainStart = p.clone(); // remember loop start
       this.showDimFields();
       return;
@@ -2524,6 +2532,7 @@ export class SketchMode {
     if (!hit) return;
     this.lastCursor.copy(hit.p);
     this.lastSnapKind = hit.kind; // kept in step with lastCursor: the Enter-key commit reads both
+    this.lastSnapRef = hit.ref ?? null;
     this.showSnap(hit);
 
     if (this.tool === "arc") {
@@ -2763,6 +2772,14 @@ export class SketchMode {
     if (this.constructionMode) entity.construction = true;
     entity.id = newEntityId(); // stamp a stable id (computeGeometry left it "")
     this.entities.push(entity);
+    // Turn the snaps that PLACED this entity into real coincident constraints,
+    // before anything else can move either side. Snapping used to copy the
+    // coordinate and stop, so the join lasted exactly until the next solve —
+    // "the tool creates a very small gap of a few hundredths of a millimetre...
+    // these micro-gaps prevent the lines from being truly joined and can
+    // subsequently cause cracks during extrusion, as well as undetected or
+    // missing regions" (field report ecc3e0d6).
+    this.emitSnapCoincidences(entity);
     if (this.tool === "line" && entity.type === "line") {
       const end = new THREE.Vector2(entity.x2, entity.y2);
       // clicked back on the start point → close the loop and end the chain
@@ -2782,6 +2799,7 @@ export class SketchMode {
         // the next segment starts where this one ended; that point is pinned iff
         // this one's end was, or iff auto-H/V has now fixed it in place
         this.basePinned = isGeometrySnap(this.lastSnapKind);
+        this.baseRef = this.lastSnapRef;
         this.showDimFields();
       }
     } else {
@@ -2792,6 +2810,41 @@ export class SketchMode {
     this.overlay.setPreview([]);
     this.requestSolve(); // re-solve if any constraints exist (updates DOF colour)
     this.onState?.();
+  }
+
+  /** Emit `coincident` for each end of a freshly drawn entity that was SNAPPED
+   *  onto an existing solver point.
+   *
+   *  Which ends exist, and their point indices, follow sketchSolve's
+   *  `endpointPoint` (see PointRef in snap.ts): a line's 0/1, an arc's start/end,
+   *  a spline's first/last. Anything else — a rectangle drawn corner to corner, a
+   *  circle — is not emitted for, because its "ends" are not the points the
+   *  gesture snapped and a constraint there would join something the user never
+   *  aimed at.
+   *
+   *  Refuses the three ways a coincident can be nonsense, matching what the
+   *  manual Coincident tool already refuses: the same entity on both sides
+   *  (it would collapse the shape), a duplicate of a constraint already present,
+   *  and a reference to an entity that no longer exists. */
+  private emitSnapCoincidences(entity: ResolvedEntity) {
+    const ends: [PointRef | null, number][] =
+      entity.type === "line" || entity.type === "arc"
+        ? [[this.baseRef, 0], [this.lastSnapRef, 1]]
+        : entity.type === "spline"
+          ? [[this.baseRef, 0], [this.lastSnapRef, 1]]
+          : [];
+    for (const [ref, idx] of ends) {
+      if (!ref) continue;
+      if (ref.id === entity.id) continue; // cannot join a thing to itself
+      if (!this.entities.some((e) => e.id === ref.id)) continue; // target is gone
+      const dup = this.constraints.some(
+        (c) => c.type === "coincident"
+          && ((c.e1 === ref.id && c.p1 === ref.idx && c.e2 === entity.id && c.p2 === idx)
+            || (c.e2 === ref.id && c.p2 === ref.idx && c.e1 === entity.id && c.p1 === idx)),
+      );
+      if (dup) continue;
+      this.constraints.push({ type: "coincident", e1: ref.id, p1: ref.idx, e2: entity.id, p2: idx });
+    }
   }
 
   /** If a freshly drawn line sits within a few degrees of horizontal/vertical,
@@ -2831,14 +2884,14 @@ export class SketchMode {
     if (!world) return null;
     const p2d = this.plane.to2D(world);
     // Hold Ctrl to suppress snapping for fine placement (raw cursor position).
-    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world };
+    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world, ref: undefined as PointRef | undefined };
     const res = snap(
       p2d,
       this.candidates, // cached; rebuilt only when entities change
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
       this.gridSnap ? this.gridCell : 0,
     );
-    return { p: res.point, kind: res.kind, world: this.plane.to3D(res.point.x, res.point.y) };
+    return { p: res.point, kind: res.kind, ref: res.ref, world: this.plane.to3D(res.point.x, res.point.y) };
   }
 
   private showSnap(hit: { kind: SnapKind; world: THREE.Vector3 } | null) {
