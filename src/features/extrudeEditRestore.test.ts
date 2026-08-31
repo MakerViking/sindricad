@@ -892,3 +892,83 @@ describe("ExtrudeTool.startEdit with a MIXED document (some areas have no ids)",
     expect(f.regions).toHaveLength(2);
   });
 });
+
+// The same contract as the areas above, on the values only the inspector can set.
+//
+// GH #41 (paulgcrabb) asked for start offsets, taper and a target offset. The
+// geometry for all three shipped in 0.1.193 — but the Extrude TOOL has no field
+// for any of them, so they were reachable only by typing into the inspector
+// after the feature existed. `commit` rebuilds the feature as a fresh literal
+// and spreads back only what `startEdit` loaded, and `store.replaceFeature`
+// assigns that object wholesale. So re-opening the tool on such a feature and
+// committing ANY change — a bare depth nudge — silently deleted every one of
+// them. startEdit's own comment already stated the rule that was being broken:
+// "anything startEdit does not load, commit deletes".
+describe("an edit carries the inspector-only values through", () => {
+  const withValues = (extra: Record<string, unknown> = {}) =>
+    doc(shell(), {
+      regions: [[45, 0, 0]],
+      regionEntities: [["outer"]],
+      regionHoleEntities: [[["inner"]]],
+      startOffset: 4,
+      taper: 7,
+      ...extra,
+    });
+
+  it("keeps startOffset and taper across a plain edit", async () => {
+    const { tool, written, commit } = harness(withValues());
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+    expect(written.feature, "commit never wrote the feature").not.toBeNull();
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.startOffset, "a bare edit deleted the typed start offset").toBe(4);
+    expect(f.taper, "a bare edit deleted the typed taper").toBe(7);
+  });
+
+  it("keeps upToOffset while its target survives the edit", async () => {
+    const { tool, written, commit } = harness(
+      withValues({ upToPlane: "XY", upToOffset: 3 }),
+    );
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.upToPlane, "the end condition itself was dropped").toBe("XY");
+    expect(f.upToOffset, "the target offset was dropped alongside a surviving target").toBe(3);
+  });
+
+  it("drops upToOffset when no target survives, because the sidecar refuses an orphan", async () => {
+    // An offset with nothing to offset FROM is a rebuild error, so carrying it
+    // past a cleared target would turn an edit into a broken document. This is
+    // the one case where dropping the value is the correct behaviour.
+    const { tool, written, commit } = harness(withValues({ upToOffset: 3 }));
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.upTo ?? f.upToPlane, "no target should exist here").toBeUndefined();
+    expect(f.upToOffset, "an orphan target offset was written").toBeUndefined();
+  });
+
+  it("does NOT let a fresh extrude inherit the last edited feature's values", async () => {
+    // start() has to clear them: the tool instance is reused, and inheriting a
+    // previous feature's taper would silently deform an unrelated extrude.
+    // Asserted on the carried fields rather than through a second commit — a
+    // fresh extrude has no areas, so its commit cancels before writing anything
+    // and could not observe this either way.
+    const { tool, written, commit } = harness(withValues());
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    await commit();
+    expect((written.feature as unknown as Record<string, unknown>).taper).toBe(7);
+
+    const carried = tool as unknown as {
+      editStartOffset?: unknown;
+      editTaper?: unknown;
+      editUpToOffset?: unknown;
+    };
+    expect(carried.editTaper, "the edit left its taper on the tool").toBe(7);
+
+    tool.start(() => {});
+    expect(carried.editStartOffset, "a fresh extrude inherited a start offset").toBeUndefined();
+    expect(carried.editTaper, "a fresh extrude inherited a taper").toBeUndefined();
+    expect(carried.editUpToOffset, "a fresh extrude inherited a target offset").toBeUndefined();
+  });
+});

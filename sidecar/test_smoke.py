@@ -6,6 +6,7 @@ Run:  uv run python test_smoke.py
 
 import os
 import math
+import struct
 import tempfile
 
 import inspect
@@ -1829,6 +1830,87 @@ def test_region_names_its_cell_and_does_not_collapse():
 
 
 
+
+def test_unify_is_never_handed_an_invalid_shape_on_import():
+    """UnifySameDomain SEGFAULTS on an invalid solid, so it must never see one.
+
+    GH #49 (alwin4711): importing a Bambu Studio project 3MF killed the geometry
+    worker outright, which the app reports as the generic "the geometry kernel
+    crashed on this operation". The file is VALID and lib3mf reads it fine. What
+    died was the cleanup pass: `_refacet_clean` sews the mesh and rebuilds a
+    solid, that rebuilt solid was invalid (BRepCheck_InvalidImbricationOfWires),
+    and `ShapeUpgrade_UnifySameDomain.Build()` on it segfaulted.
+
+    A segfault is NOT an exception. `_maybe_unify` wraps its body in
+    `except Exception` and that catches exactly nothing here — the process is
+    gone, so no fallback, no error message, no traceback.
+
+    The rule pinned here is the one that generalises: on the mesh-import path,
+    nothing invalid reaches UnifySameDomain. The reporter's file is not in the
+    repo (it is a user's part), so this builds its own invalid shape instead:
+    two interpenetrating boxes in one mesh sew into an invalid solid, which was
+    measured reaching `_maybe_unify` from `_sew_mesh_file` before this guard —
+    a SECOND call site on the same path as the one that crashed.
+
+    Note `_explode_solids` is deliberately left unguarded: it calls unify once
+    per body and the validity check costs ~0.06 s each, which is minutes on a
+    3,000-body assembly.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    def _write_stl(tris, path):
+        with open(path, "wb") as f:
+            f.write(b"\0" * 80)
+            f.write(struct.pack("<I", len(tris)))
+            for tri in tris:
+                f.write(struct.pack("<3f", 0, 0, 0))
+                for pt in tri:
+                    f.write(struct.pack("<3f", *pt))
+                f.write(struct.pack("<H", 0))
+
+    def _box(sx=20.0, sy=20.0, sz=20.0, ox=0.0, oy=0.0, oz=0.0):
+        v = [(ox, oy, oz), (ox + sx, oy, oz), (ox + sx, oy + sy, oz), (ox, oy + sy, oz),
+             (ox, oy, oz + sz), (ox + sx, oy, oz + sz), (ox + sx, oy + sy, oz + sz),
+             (ox, oy + sy, oz + sz)]
+        out = []
+        for a, b, c, d in [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4),
+                           (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)]:
+            out.append((v[a], v[b], v[c]))
+            out.append((v[a], v[c], v[d]))
+        return out
+
+    path = os.path.join(tempfile.gettempdir(), "sindri_invalid_unify.stl")
+    _write_stl(_box() + _box(ox=10.0, oy=10.0, oz=10.0), path)
+
+    # 1. the shape really is invalid, otherwise this test proves nothing
+    seen = []
+    original = builder._maybe_unify
+
+    def spy(shape):
+        seen.append(BRepCheck_Analyzer(shape.wrapped).IsValid())
+        return original(shape)
+
+    builder._maybe_unify = spy
+    try:
+        import_geometry(path, "stl")
+    except ValueError:
+        pass  # a refusal is a fine outcome; a dead process is not
+    finally:
+        builder._maybe_unify = original
+
+    assert seen, "unify was never called, so this test is not exercising the path"
+    assert all(seen), (
+        f"an INVALID shape reached UnifySameDomain (validity per call: {seen}) — "
+        "that is the GH #49 segfault, and it will kill the worker on the right input"
+    )
+
+    # 2. and the guard has not broken the ordinary case: a clean box mesh still
+    #    merges its coplanar triangles down to 6 real faces
+    good = os.path.join(tempfile.gettempdir(), "sindri_valid_unify.stl")
+    _write_stl(_box(), good)
+    faces = import_geometry(good, "stl")["faces"]
+    assert faces == 6, f"a plain box mesh should merge to 6 faces, got {faces}"
+
 def test_unify_never_costs_a_valid_solid():
     """UnifySameDomain is a tidy-up, and it must not break the solid it tidies.
 
@@ -3059,6 +3141,7 @@ if __name__ == "__main__":
     test_region_anchor_refuses_and_keeps_a_correct_cell()
     test_region_names_its_cell_and_does_not_collapse()
     test_unify_never_costs_a_valid_solid()
+    test_unify_is_never_handed_an_invalid_shape_on_import()
     test_blend_hang_guard()
     test_fillet_failure_diagnostics()
     test_scale_and_move()

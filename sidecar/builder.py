@@ -236,6 +236,25 @@ def _maybe_unify(shape):
     return shape
 
 
+def _unify_if_valid(shape):
+    """`_maybe_unify`, but never on an invalid shape.
+
+    `ShapeUpgrade_UnifySameDomain.Build()` SEGFAULTS on an invalid solid — it
+    does not raise — so `_maybe_unify`'s own `except Exception` catches nothing:
+    the worker process dies and the app reports the generic "geometry kernel
+    crashed on this operation" (GH #49, a Bambu Studio project 3MF).
+
+    Deliberately NOT folded into `_maybe_unify` itself. `_explode_solids` calls
+    that once per body, and BRepCheck_Analyzer costs roughly 0.06 s per body, so
+    on a 3,000-body assembly this would add minutes of pure checking to a path
+    that has never been seen to hit the problem."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    if not BRepCheck_Analyzer(shape.wrapped).IsValid():
+        return shape
+    return _maybe_unify(shape)
+
+
 def _list_shapes(lst):
     """Elements of an OCP shape list WITHOUT draining its Python iterator.
 
@@ -604,12 +623,31 @@ def _refacet_clean(shape, tol=0.12, debug=False):
                 print("refacet: sew produced no solids")
             return shape
         cleaned = solids[0] if len(solids) == 1 else Compound(solids)
+
+        from OCP.BRepCheck import BRepCheck_Analyzer
+
+        # UnifySameDomain SEGFAULTS on an invalid solid — it does not raise — and
+        # the sew + SolidFromShell rebuild above can produce one. A single face
+        # carrying BRepCheck_InvalidImbricationOfWires is enough (GH #49, a Bambu
+        # Studio project 3MF). A segfault takes the whole worker process with it,
+        # which the app then reports as the generic "geometry kernel crashed", so
+        # `_maybe_unify`'s own `except Exception` is no protection whatsoever.
+        #
+        # The `ok` check below already asks IsValid(), but it is too late twice
+        # over: it runs on what UnifySameDomain returns (so only if we survived
+        # the call), and its own `_explode_solids(cleaned)` term is evaluated
+        # BEFORE the IsValid() term and is itself a `_maybe_unify` call site.
+        # Refacet is best-effort by contract, so an invalid rebuild falls back to
+        # the faceted original exactly like every other failure here.
+        if not BRepCheck_Analyzer(cleaned.wrapped).IsValid():
+            if debug:
+                print("refacet: rebuilt solid is invalid, skipping unify")
+            return shape
+
         # merge the facet-length collinear edge segments left on the region
         # boundaries (faces are already maximal; this unifies EDGES)
         cleaned = _maybe_unify(cleaned)
         progress_tick(keep_index=True)  # the hard validation below is several more OCCT calls
-
-        from OCP.BRepCheck import BRepCheck_Analyzer
 
         if debug:
             print(f"refacet: {len(cleaned.faces())} faces (was {n}), "
@@ -1218,7 +1256,14 @@ def _sew_mesh_file(path):
     # into. It also gives sew+unify+refacet its own stall budget instead of
     # sharing a deadline sized from the file's byte count.
     _import_phase(IMPORT_PHASE_CANONICALIZE)
-    shape = _maybe_unify(shape)
+    # Guarded, for the same reason as in `_refacet_clean`: a sewn mesh can be
+    # invalid (two interpenetrating solids in one file is enough to produce one,
+    # measured), and UnifySameDomain segfaults on invalid input rather than
+    # raising. Skipping the merge leaves more faces, so such a file is refused by
+    # the MAX_IMPORT_FACES check below instead of killing the worker — which is
+    # the right outcome anyway: an invalid solid should not become an "editable"
+    # model.
+    shape = _unify_if_valid(shape)
     # collapse facet debris (slivers + near-coplanar staircases) so the
     # import is genuinely editable — crisp faces, crisp edges (best-effort;
     # returns the input unchanged on any doubt)
