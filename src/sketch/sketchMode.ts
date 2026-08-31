@@ -2107,9 +2107,17 @@ export class SketchMode {
    *  came from (rim/tangent MODE included — a rim distance and a centre distance
    *  between the same pair share a field set but are different dimensions).
    *  Re-showing the box on a change is what stops a value typed for one
-   *  dimension being committed as another. */
+   *  dimension being committed as another.
+   *
+   *  The field LABEL is part of the identity, and load-bearing for smart
+   *  dimensioning: aligned, horizontal and vertical point-to-point distances all
+   *  build `kind: "distance"` with `fieldKey: "distance:length"`, so without the
+   *  label they are indistinguishable here. Dragging the cursor would then flip
+   *  the constraint from p2pDistance to p2pDistanceX underneath a box still
+   *  reading "D", and the committed constraint would not be the one on screen. */
   private dimIdentity(plan: DimPlan): string {
-    return `${plan.kind}:${plan.fieldKey}|${this.dimPicks.map(targetIdentity).join("+")}`;
+    const label = plan.fields[0]?.label ?? "";
+    return `${plan.kind}:${plan.fieldKey}:${label}|${this.dimPicks.map(targetIdentity).join("+")}`;
   }
 
   /** Re-resolve the current picks against the LIVE entity list. Every solve
@@ -2380,6 +2388,17 @@ export class SketchMode {
     const p = this.planePoint(e);
     if (!p) return;
     this.lastCursor.copy(p);
+    // SMART DIMENSIONING, the live half (GH #17, Moi455). `dimOptions` already
+    // passes the cursor and `p2pDimKind` already chooses aligned / horizontal /
+    // vertical from it — but nothing re-resolved the plan while the label was
+    // being dragged, so the choice was frozen at the instant of the second pick.
+    // At that instant the cursor sits ON the point just clicked, which is the
+    // one position where the aligned distance can never win, so a two-point
+    // dimension could only ever come out horizontal or vertical.
+    //
+    // Gated on `!dimPlaced`: once the label is placed the dimension is settled,
+    // and re-planning then would re-show the box and destroy anything typed.
+    if (this.dimPicks.length === 2 && !this.dimPlaced && this.dimPlan) this.refreshDimPlan();
     const preview: THREE.Object3D[] = [];
     for (const t of this.dimPicks) preview.push(...this.dimTargetObjects(t, 0x33aaff));
     const cand = this.dimPicks.length < 2 ? pickDimTarget(this.entities, p, this.pickTol()) : null;

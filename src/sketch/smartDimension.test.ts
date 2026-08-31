@@ -136,7 +136,8 @@ describe("the three dimensions are genuinely different constraints", () => {
 // pair at ANY angle rather than only axis-aligned ones.
 
 import * as THREE from "three";
-import { p2pDimKind } from "./dimensionTool";
+import { p2pDimKind, resolveDim, isDimError, type DimTarget } from "./dimensionTool";
+import sketchSrc from "./sketchMode.ts?raw";
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
@@ -186,5 +187,105 @@ describe("p2pDimKind — the smart part of smart dimensioning", () => {
     // change type as the label crosses the pair
     for (const y of [200, -200]) expect(p2pDimKind(A, B, v(20, y))).toBe("horizontal");
     for (const x of [300, -300]) expect(p2pDimKind(A, B, v(x, 15))).toBe("vertical");
+  });
+});
+
+// WHY the whole mechanism above was unreachable, and what makes it reachable.
+//
+// GH #17 (Moi455) asked for dimensioning that switches between horizontal,
+// vertical and direct distance as you move the cursor. Everything above shipped
+// in 0.1.193 and is correct — and none of it could be observed, because
+// `sketchMode.dimensionHover` never re-resolved the plan while the label was
+// being dragged. The choice was frozen at the instant of the SECOND PICK.
+//
+// That instant is the worst possible sample point, which the first test here
+// pins as a property rather than an anecdote.
+describe("the plan must be re-resolved while the label is dragged", () => {
+  const A = v(0, 0);
+  const B = v(40, 30);
+
+  it("freezing the choice at the second click makes ALIGNED unreachable", () => {
+    // At the second click the cursor is BY DEFINITION on the point just picked.
+    // From either endpoint the aligned zone is never the answer, so a dimension
+    // planned once, at that moment, can only ever be horizontal or vertical —
+    // exactly what the reporter described.
+    expect(p2pDimKind(A, B, A)).not.toBe("aligned");
+    expect(p2pDimKind(A, B, B)).not.toBe("aligned");
+    // ...while a cursor dragged off the pair's perpendicular does give aligned,
+    // so the information was there all along and was simply never sampled again.
+    const perp = v(-30, 40).normalize().multiplyScalar(80);
+    expect(p2pDimKind(A, B, v(20, 15).add(perp))).toBe("aligned");
+  });
+
+  it("the three kinds build DIFFERENT constraints, so re-resolving changes the result", () => {
+    const pt = (id: string, x: number, y: number): DimTarget => ({
+      kind: "point",
+      e: { type: "point", id, x, y } as never,
+      p: 0,
+      pos: v(x, y),
+    });
+    const picks = [pt("a", 0, 0), pt("b", 40, 30)];
+    const kindOf = (cursor: THREE.Vector2) => {
+      const r = resolveDim(picks, { cursor });
+      if (isDimError(r)) throw new Error("resolveDim refused a plain point pair");
+      return { type: (r.make(1) as { type: string }).type, label: r.fields[0]?.label };
+    };
+    const perp = v(-30, 40).normalize().multiplyScalar(80);
+    expect(kindOf(v(20, 200))).toEqual({ type: "p2pDistanceX", label: "DX" });
+    expect(kindOf(v(300, 15))).toEqual({ type: "p2pDistanceY", label: "DY" });
+    expect(kindOf(v(20, 15).add(perp))).toEqual({ type: "p2pDistance", label: "D" });
+  });
+
+  it("the three are indistinguishable by kind+fieldKey, so identity needs the LABEL", () => {
+    // This is the trap that makes the fix more than one line. All three plans
+    // are kind "distance" with fieldKey "distance:length". SketchMode re-shows
+    // the value box only when its dimIdentity changes, so an identity built from
+    // kind+fieldKey alone would let the constraint flip from p2pDistance to
+    // p2pDistanceX under a box still labelled "D" — a value typed for one
+    // dimension committed as another.
+    const pt = (id: string, x: number, y: number): DimTarget => ({
+      kind: "point", e: { type: "point", id, x, y } as never, p: 0, pos: v(x, y),
+    });
+    const picks = [pt("a", 0, 0), pt("b", 40, 30)];
+    const plan = (cursor: THREE.Vector2) => {
+      const r = resolveDim(picks, { cursor });
+      if (isDimError(r)) throw new Error("refused");
+      return r;
+    };
+    const perp = v(-30, 40).normalize().multiplyScalar(80);
+    const h = plan(v(20, 200));
+    const a = plan(v(20, 15).add(perp));
+    expect(`${h.kind}:${h.fieldKey}`).toBe(`${a.kind}:${a.fieldKey}`); // identical!
+    expect(h.fields[0]?.label).not.toBe(a.fields[0]?.label); // the only difference
+  });
+});
+
+// The wiring, which is what actually broke. Source text, not an import:
+// constructing a real SketchMode boots the viewport, overlay and solver, and no
+// test in this repo does it — which is precisely how a fully tested chooser
+// shipped with nothing calling it. Same approach and same limitation as
+// trimRawCursor.test.ts.
+describe("sketchMode wires the live re-plan (source)", () => {
+  it("dimensionHover re-resolves the plan while the label is unplaced", () => {
+    const at = sketchSrc.indexOf("private dimensionHover(");
+    expect(at, "dimensionHover is gone — this test pins nothing").toBeGreaterThan(-1);
+    const body = sketchSrc.slice(at, at + 1400);
+    expect(
+      body,
+      "dimensionHover no longer re-resolves: the dimension kind is frozen at the second pick again",
+    ).toContain("this.refreshDimPlan()");
+    expect(
+      body,
+      "the re-plan must be gated on !dimPlaced, or placing the label re-shows the box and destroys what was typed",
+    ).toContain("!this.dimPlaced");
+  });
+
+  it("dimIdentity includes the field label", () => {
+    const at = sketchSrc.indexOf("private dimIdentity(");
+    const body = sketchSrc.slice(at, at + 400);
+    expect(
+      body,
+      "dimIdentity dropped the label — aligned/horizontal/vertical are indistinguishable again",
+    ).toContain("fields[0]?.label");
   });
 });
