@@ -16,7 +16,7 @@ import type { Viewport } from "../viewport/viewport";
 import { drawOnTop } from "../viewport/gizmos";
 import type { RegionRef, SketchOverlay, WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
-import type { Feature, Selector } from "../types";
+import type { Feature, Num, Selector } from "../types";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
@@ -114,6 +114,14 @@ export class ExtrudeTool {
   private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
   private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
   private editSeparateBodies: boolean | undefined; // ditto: an edit must not change body COUNT
+  /** Values that only the inspector can set, carried through an edit unchanged.
+   *  The tool offers no field for any of them, so if `startEdit` does not load
+   *  them `commit` deletes them — and a bare depth nudge would throw away
+   *  numbers the user typed (GH #41). Same contract as the end condition above
+   *  it: what startEdit does not load, commit destroys. */
+  private editStartOffset: Num | undefined;
+  private editTaper: Num | undefined;
+  private editUpToOffset: Num | undefined;
   /** Areas of the feature being edited that this tool could NOT resolve, held
    *  exactly as the document has them and written straight back on commit. See
    *  startEdit: without this, editing the depth of a feature whose sketch has
@@ -159,6 +167,12 @@ export class ExtrudeTool {
     // edit, the same class as the carried areas this tool already protects.
     this.upTo = null;
     this.upToPlane = null;
+    // A FRESH extrude must not inherit the last edited feature's inspector
+    // values. Cleared here rather than in beginDrag for the same reason as the
+    // end condition above: startEdit calls beginDrag too.
+    this.editStartOffset = undefined;
+    this.editTaper = undefined;
+    this.editUpToOffset = undefined;
     this.pickingTarget = false;
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
@@ -204,6 +218,10 @@ export class ExtrudeTool {
     // startEdit does not load, commit deletes.
     this.upTo = f.upTo ?? null;
     this.upToPlane = f.upToPlane ?? null;
+    // Inspector-only values ride along untouched, for the same reason.
+    this.editStartOffset = f.startOffset;
+    this.editTaper = f.taper;
+    this.editUpToOffset = f.upToOffset;
     this.pickingTarget = false;
     this.distance = f.distance;
     this.forcedSketchId = f.sketch;
@@ -1013,6 +1031,18 @@ export class ExtrudeTool {
       // rather than dropping them at 0.
       ...(this.upTo ? { upTo: this.upTo } : {}),
       ...(this.upToPlane ? { upToPlane: this.upToPlane } : {}),
+      // Inspector-only values, carried through an edit. The tool has no field
+      // for any of them, so before this they were deleted by any edit — a plain
+      // depth nudge threw away a typed start offset or taper (GH #41).
+      //
+      // `upToOffset` is written ONLY while a target survives the edit: the
+      // sidecar refuses an offset with nothing to offset FROM, so carrying it
+      // past a cleared target would turn an edit into a rebuild error.
+      ...(this.editStartOffset !== undefined ? { startOffset: this.editStartOffset } : {}),
+      ...(this.editTaper !== undefined ? { taper: this.editTaper } : {}),
+      ...(this.editUpToOffset !== undefined && (this.upTo || this.upToPlane)
+        ? { upToOffset: this.editUpToOffset }
+        : {}),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
