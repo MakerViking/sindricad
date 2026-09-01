@@ -277,6 +277,18 @@ jobs:
         shell: pwsh
         run: ./scripts/build-sidecar-runtime.ps1
 
+      # --- the license texts that ship inside the bundle ---
+      # AFTER the runtime, because most texts are copied out of its site-packages:
+      # taking them from the artefact that actually ships is what stops them drifting
+      # from what went out. Node, so one script covers all three legs.
+      #
+      # This step FAILS the build when a required text cannot be found. That is the
+      # point of it: NOTICE.md claimed these were bundled while nothing bundled them,
+      # and a promise with nothing enforcing it is how that survived to a public
+      # release. See scripts/collect-licenses.mjs.
+      - name: Collect bundled license texts
+        run: node scripts/collect-licenses.mjs
+
       # linuxdeploy resolves every ELF's dependencies by soname lookup, which can't
       # see the runtime's manylinux-vendored dirs (scipy.libs etc. reference their
       # mangled sonames via $ORIGIN rpaths). First AppImage run died on exactly that:
