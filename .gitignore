@@ -44,6 +44,12 @@ proving-ground/
 # bundled Python sidecar runtime (built by scripts/build-sidecar-runtime.sh, ~800MB)
 src-tauri/sidecar-runtime/
 
+# bundled license texts (assembled by scripts/collect-licenses.mjs at build time).
+# Generated, not authored: the texts are copied out of the artefacts that actually
+# ship, so a checked-in copy could drift from what went out. The two texts no
+# dependency provides ARE checked in, under licenses/.
+src-tauri/LICENSES/
+
 # secrets / local env: never commit
 .env
 .env.*

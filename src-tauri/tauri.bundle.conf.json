@@ -3,7 +3,8 @@
   "bundle": {
     "createUpdaterArtifacts": true,
     "resources": {
-      "sidecar-runtime": "sidecar-runtime"
+      "sidecar-runtime": "sidecar-runtime",
+      "LICENSES": "LICENSES"
     }
   }
 }

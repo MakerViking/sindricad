@@ -1,8 +1,20 @@
 # Third-Party Notices
 
 SindriCAD incorporates the following third-party components. This file satisfies the
-attribution and source-availability requirements of their licenses. Full license texts
-are bundled under `LICENSES/` in distributed builds.
+attribution and source-availability requirements of their licenses.
+
+Full license texts ship inside the application, under `LICENSES/`. They are assembled at
+build time by `scripts/collect-licenses.mjs`, which copies each text out of the artefact
+that actually ships it -- `node_modules/`, the sidecar runtime's `site-packages/`, or the
+vendored Rust under `third_party/` -- so a bundled text cannot drift from the code it
+covers. The two that no dependency provides are checked in under `licenses/`; see the
+README there for which and why.
+
+**That script fails the build if a required text is missing**, which is deliberate. This
+paragraph previously claimed the texts were bundled while nothing bundled them: there was
+no `LICENSES/` directory, nothing created one, and the bundle config listed no such
+resource. A compliance promise with nothing enforcing it is how that reached a public
+release unnoticed.
 
 No dependency is under the GPL or AGPL; nothing here requires SindriCAD's own source to
 be published. The copyleft components below are **weak-copyleft** (LGPL, plus one

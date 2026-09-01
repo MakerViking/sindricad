@@ -198,6 +198,12 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The installers now include the full license texts of the libraries inside
+  them.** NOTICE.md has always said these texts ship under `LICENSES/`, and no
+  build before this one actually included them. Every build now collects 61
+  texts from the libraries it bundles, plus the Open CASCADE license and
+  exception, and the build fails if a required text is missing.
+
 - **A 3MF with colours in it opens again, including the ones SindriCAD writes.**
   Any 3MF carrying colour or material information failed to import at all, with
   a raw "Resource not found" or "unknown error" from the mesh library. That is
