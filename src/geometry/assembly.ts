@@ -59,6 +59,9 @@ export interface WireRebuildResult {
   bodies?: WireBody[];
   bbox?: { min: number[]; max: number[] } | null;
   diagnostics?: RebuildResult["diagnostics"];
+  // the plane each face-anchored feature actually resolved to, keyed by feature
+  // id — header JSON like diagnostics, never inside a per-body payload
+  planes?: RebuildResult["planes"];
   featureError?: RebuildResult["featureError"];
   featureErrors?: RebuildResult["featureErrors"];
   // projection refresh entries ride the top-level header as plain JSON (never
@@ -224,7 +227,7 @@ export class RebuildAssembly {
     const sig = manifest.length === 0 ? null : JSON.stringify([
       sizes.map((m) => [m.id, m.etag, m.name, m.nodeRef, m.faceCount]),
       head.bbox,
-      head.diagnostics, head.featureError, head.featureErrors, head.projectionUpdates,
+      head.diagnostics, head.planes, head.featureError, head.featureErrors, head.projectionUpdates,
     ]);
     if (
       sig !== null && sig === lastSig && lastAssembled !== null
@@ -276,6 +279,7 @@ export class RebuildAssembly {
       bodies: meta,
     };
     if (head.diagnostics) out.diagnostics = head.diagnostics;
+    if (head.planes) out.planes = head.planes;
     if (head.featureError) out.featureError = head.featureError;
     if (head.featureErrors) out.featureErrors = head.featureErrors;
     if (head.projectionUpdates) out.projectionUpdates = head.projectionUpdates;

@@ -88,6 +88,14 @@ export function sameStringMap(
   return true;
 }
 
+/** How far a face's vertices may sit off the picked plane and still count as
+ *  planar, as a FRACTION of the model's bbox diagonal (see faceAnchor). Relative
+ *  because the two things it has to clear — tessellation sag and the float error
+ *  of a world-space transform — both scale with the model. Loose by three orders
+ *  of magnitude against a real curved face (a barrel's far side is r away, not
+ *  1e-4·diag) and tight by three against float noise, so nothing sits near it. */
+const FACE_PLANARITY_TOL = 1e-4;
+
 /** How far the camera swings when an extrude opens on a flat sketch view.
  *  Roughly a three-quarter view: enough to read depth, not so much that the
  *  profile you just picked becomes hard to recognise. Feel values — they want a
@@ -1510,6 +1518,44 @@ export class Viewport {
       normal: [normal.x, normal.y, normal.z],
       xdir: [xdir.x, xdir.y, xdir.z],
     };
+  }
+
+  /** The face REFERENCE to store beside a plane that pickFacePlane just returned,
+   *  so the sidecar can re-derive that plane from the live face on every rebuild
+   *  and the sketch follows the face when the body changes upstream (GH #52).
+   *
+   *  Composed from pickFaceForPressPull rather than raycasting again by hand, so
+   *  the stored point is the same on-surface hit point every other face selector
+   *  in the app carries, and the body stamp comes from the same place.
+   *
+   *  Null on a CURVED face. pickFacePlane happily returns a tangent plane there
+   *  and that plane is a fine thing to draw on — but there is no face frame to
+   *  follow, and re-deriving one from a barrel would slide the sketch to
+   *  wherever the tessellation happened to put the hit triangle. Null also when
+   *  the owning body is unknown: an unstamped selector resolves against the
+   *  sidecar's ACTIVE body (see _group_sels_by_body), which is the silent
+   *  wrong-body fault this repo has shipped twice — no anchor at all is merely
+   *  today's behaviour, an anchor on the wrong body moves the sketch.
+   *
+   *  Callers must SAY when this returns null: an unanchored sketch looks exactly
+   *  like an anchored one until the day the face moves without it. */
+  faceAnchor(clientX: number, clientY: number, plane: PlaneDef): Selector | null {
+    const hit = this.pickFaceForPressPull(clientX, clientY);
+    if (!hit || !hit.bodyId) return null;
+    const tris = this.faceTriangles(hit.faceId);
+    if (!tris.length) return null;
+    // Planarity gate: every vertex of the face within `tol` of the picked plane.
+    // The tolerance scales with the model's bbox diagonal because tessellation
+    // sag and float error both do — a fixed absolute number is either too tight
+    // for a 300 mm part or loose enough to call a 2 mm pin's barrel flat.
+    const n = new THREE.Vector3(...plane.normal);
+    const d = n.dot(new THREE.Vector3(...plane.origin));
+    const diag = this.model ? this.model.box.getSize(new THREE.Vector3()).length() : 0;
+    const tol = FACE_PLANARITY_TOL * (diag || 1);
+    for (const t of tris) {
+      for (const v of [t.a, t.b, t.c]) if (Math.abs(n.dot(v) - d) > tol) return null;
+    }
+    return { ...hit.selector, body: hit.bodyId };
   }
 
   /** Edge-only pick for the fillet/chamfer edge-selection tools. */

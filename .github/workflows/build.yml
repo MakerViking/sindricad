@@ -159,6 +159,12 @@ jobs:
           # see it — and volume can't either (that suite asserts the two
           # documents are volume-identical). Unlisted, it would be inert.
           uv run python test_sealed_void.py
+          # Face-anchored sketch/datum planes (GH #52), beside the backstop above.
+          # Same reason it has to be listed: its oracles are SHELL COUNT and
+          # CENTRE OF MASS, and it asserts on purpose that the three documents it
+          # builds are volume-identical — so nothing else in this list can fail
+          # when this one breaks.
+          uv run python test_sketch_on_face.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script
@@ -689,6 +695,18 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/presspull_dispatch_e2e.cjs
+
+      # GH #52 in the real app, and the only place the whole chain is exercised:
+      # a face pick through real pointer events, the anchor it stores, the plane
+      # the sidecar re-derives, and the snapshotFeature re-bake that silently
+      # reverts the follow when the sketch is reopened. Every layer of that is
+      # unit-tested separately and each layer passes while the feature is broken,
+      # so this file is the only oracle for the seam.
+      - name: Sketch-on-face end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_on_face_e2e.cjs
 
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,

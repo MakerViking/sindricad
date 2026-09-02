@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, SketchConstraint, SketchPattern } from "../types";
+import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
@@ -304,6 +304,9 @@ export class SketchMode {
    *  one. Round-tripped through finish() so re-editing a sketch never silently
    *  downgrades it from a live datum link to a baked placement. */
   private planeId: string | null = null;
+  /** The body FACE this sketch was placed on, when it was picked off one. Same
+   *  round-trip contract as `planeId` above, for the same reason. */
+  private faceAnchor: Selector | null = null;
   private store: DocumentStore | undefined;
   private grid: THREE.GridHelper | null = null;
   /** current sketch-grid cell in mm — ALSO the grid-snap step, so what you snap
@@ -438,12 +441,21 @@ export class SketchMode {
    *  placement: `plane` is still stored (as the resolved cache every frontend
    *  consumer reads), but the sidecar prefers the id, so editing the datum's
    *  offset later moves this sketch. Without it an offset plane's distance is
-   *  baked into the origin and gone. */
-  enter(plane: PlaneSpec, store: DocumentStore, editId?: string, planeId?: string) {
+   *  baked into the origin and gone.
+   *
+   *  `face` is the same idea one level down: the body face the plane was picked
+   *  off, so the sidecar re-derives the plane from the live face and the sketch
+   *  follows the face when the body changes upstream (GH #52). Both are carried
+   *  through the identical three places — stored here, re-adopted on edit,
+   *  re-emitted in snapshotFeature — because snapshotFeature is what a re-edit
+   *  writes back: drop it in any one of the three and the next commit silently
+   *  bakes the stale plane and un-anchors the sketch. */
+  enter(plane: PlaneSpec, store: DocumentStore, editId?: string, planeId?: string, face?: Selector) {
     this.active = true;
     this.editingId = editId ?? null;
     this.plane = this.overlay.planeFor(plane);
     this.planeId = planeId ?? null;
+    this.faceAnchor = face ?? null;
     this.store = store;
     this.history.reset(); // fresh history per session (armed once entities load)
     if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
@@ -469,6 +481,7 @@ export class SketchMode {
         // keep an existing datum link across a re-edit (the caller only passes
         // planeId when it just created the datum)
         if (f.planeId) this.planeId = f.planeId;
+        if (f.face) this.faceAnchor = f.face;
         for (const p of this.patterns) notePatternId(p.id); // reserve ids so new ones don't collide
       }
     }
@@ -534,6 +547,7 @@ export class SketchMode {
       type: "sketch",
       plane: this.plane.serialize(),
       ...(this.planeId ? { planeId: this.planeId } : {}),
+      ...(this.faceAnchor ? { face: this.faceAnchor } : {}),
       entities: this.entities
         .filter((e) => e.id !== TEXT_PREVIEW_ID && !isOriginGeometry(e.id))
         .map(toSketchEntity),

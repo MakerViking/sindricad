@@ -8,7 +8,8 @@
 // geometry only and leaves the shared materials intact.
 
 import * as THREE from "three";
-import type { CadDocument, PlaneSpec } from "../types";
+import type { CadDocument, PlaneDef, PlaneSpec } from "../types";
+import { planeOf } from "../document/planeOf";
 import { SketchPlane } from "./plane";
 import { resolveEntities } from "./resolve";
 import {
@@ -219,8 +220,16 @@ export class SketchOverlay {
    *  solid's own edges visible/selectable. */
   sketchVisible: (id: string) => boolean = () => true;
 
+  /** The planes the last rebuild actually USED, for face-anchored sketches (see
+   *  document/planeOf). Injected the same way as sketchVisible rather than
+   *  passed to update(), because update() has four call sites and only the app
+   *  can see the build state. Default = none, i.e. every sketch draws at its own
+   *  cached plane, which is what a document with no anchor wants anyway. */
+  resolvedPlanes: () => Record<string, PlaneDef> | undefined = () => undefined;
+
   /** Rebuild committed sketch curves + region fills from the document. */
   update(doc: CadDocument, hiddenSketchId: string | null = null) {
+    const resolved = this.resolvedPlanes();
     this.clearGroup(this.committed);
     this.clearGroup(this.fills);
     this.regions = [];
@@ -229,7 +238,7 @@ export class SketchOverlay {
       if (f.type !== "sketch") continue;
       if (f.id === hiddenSketchId) continue; // active sketch drawn by the editor
       if (!this.sketchVisible(f.id)) continue; // hidden (e.g. consumed by a feature)
-      const plane = this.planeFor(f.plane);
+      const plane = this.planeFor(planeOf(f, resolved));
       const ents = resolveEntities(f, doc.parameters);
 
       for (const obj of curveObjects(ents, plane, CURVE_COLOR)) {

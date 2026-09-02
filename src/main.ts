@@ -56,7 +56,8 @@ import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
 import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStarters";
-import { ambiguousDiagFor } from "./features/repickReference";
+import { repairableDiagFor } from "./features/repickReference";
+import { planeOf } from "./document/planeOf";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
@@ -525,10 +526,10 @@ timeline.onEdit = (id) => editFeature(id);
 // Read the diagnostics off the LATEST build each time rather than caching: the
 // menu opens long after the build, and a feature repaired in between must stop
 // offering the repair.
-timeline.canRepick = (id) => !!ambiguousDiagFor(store.buildState.result?.diagnostics, id);
+timeline.canRepick = (id) => !!repairableDiagFor(store.buildState.result?.diagnostics, id);
 timeline.onRepick = (id) => {
-  const amb = ambiguousDiagFor(store.buildState.result?.diagnostics, id);
-  if (amb?.at) starters.repickReference(id, amb.at);
+  const repairable = repairableDiagFor(store.buildState.result?.diagnostics, id);
+  if (repairable?.at) starters.repickReference(id, repairable.at);
 };
 tree.onSelect = selectFeature;
 // clicking a construction plane in the viewport selects it (so it can be cut by)
@@ -640,6 +641,13 @@ const starters = createFeatureStarters({
 /** A datum plane's world placement (source spec + offset along its normal) as a
  *  PlaneDef — lets "Sketch on plane" / "Offset plane" work straight off the quad. */
 function datumPlaneDef(f: Extract<Feature, { type: "datumPlane" }>): PlaneDef {
+  // A face-anchored datum (GH #52) is re-derived by the sidecar every rebuild
+  // and comes back in `planes` as its FINAL placement — source face plus the
+  // offset already applied — so use it verbatim; re-applying `offset` here would
+  // double it. Without this the quad, "Sketch on plane" and "Offset plane" all
+  // draw and bake the pre-edit position while the geometry sits at the new one.
+  const resolved = store.buildState.result?.planes?.[f.id];
+  if (resolved) return resolved;
   const sp = new SketchPlane(f.plane);
   const off = f.offset ?? 0;
   return {
@@ -719,6 +727,10 @@ function isSketchVisible(id: string): boolean {
   return store.sketchVisibilityOverride(id) ?? !isSketchConsumed(id);
 }
 overlay.sketchVisible = isSketchVisible;
+// Face-anchored sketches draw where the LAST REBUILD put them, not where their
+// cached `plane` says (document/planeOf) — otherwise the curves sit at the old
+// height while the cut they drive lands at the new one.
+overlay.resolvedPlanes = () => store.buildState.result?.planes;
 tree.isSketchVisible = isSketchVisible;
 tree.onToggleSketch = (id) => {
   store.setSketchVisibility(id, !isSketchVisible(id));
@@ -969,13 +981,14 @@ store.onBuild((s) => {
         const f = store.document.features.find((x) => x.id === e.feature_id);
         const label = f ? (FEATURE_META[f.type as keyof typeof FEATURE_META]?.label ?? f.type) : e.feature_id;
         const id = e.feature_id;
-        // An ambiguous saved reference is the one failure the user can actually
-        // fix from here, so offer the repair instead of a bare "Show". These are
-        // old files whose stored point identifies no single face — without this
-        // the toast is a dead end.
-        const amb = ambiguousDiagFor(s.result?.diagnostics, id);
-        const action = amb?.at
-          ? { label: "Re-pick face", onClick: () => starters.repickReference(id, amb.at!) }
+        // A saved reference a face pick can repair is the one failure the user
+        // can actually fix from here, so offer the repair instead of a bare
+        // "Show" (repairableDiagFor owns which codes qualify — broader than
+        // ambiguity, but NOT every fallback). Without this the toast is a dead
+        // end.
+        const repairable = repairableDiagFor(s.result?.diagnostics, id);
+        const action = repairable?.at
+          ? { label: "Re-pick face", onClick: () => starters.repickReference(id, repairable.at!) }
           : { label: "Show", onClick: () => selectFeature(id) };
         toast(`⚠ ${label} failed: ${featureErrorText(e, s.result.bodies)}`, { kind: "error", action });
         if (id === lastCommittedId) selectFeature(id);
@@ -985,6 +998,12 @@ store.onBuild((s) => {
     }
   }
   syncDatumPlanes();
+  // Repaint the committed sketch curves too. They are drawn at the plane the
+  // LAST BUILD resolved (overlay.resolvedPlanes), and every mutation path emits
+  // the document BEFORE it schedules the rebuild — so the doc-change repaint
+  // always runs against the PREVIOUS build's planes, and a face-anchored sketch
+  // would stay one edit behind the cut it drives until something else changed.
+  if (s.result && !s.building && !sketch.active) overlay.update(store.document);
   if (s.errorMessage) {
     setStatus(`⚠ ${s.errorFeatureId ?? ""}: ${s.errorMessage}`, "error");
   } else if (!s.building) {
@@ -1157,7 +1176,11 @@ function editFeature(id: string) {
   };
   switch (f.type) {
     case "sketch":
-      sketch.enter(f.plane, store, id);
+      // planeOf, not f.plane: reopening a face-anchored sketch must start from
+      // the plane the last rebuild resolved, because snapshotFeature bakes
+      // whatever we open with straight back into `plane` on close. Opening at
+      // the stale cache and closing unchanged silently undoes the follow.
+      sketch.enter(planeOf(f, store.buildState.result?.planes), store, id);
       break;
     case "fillet":
     case "chamfer":

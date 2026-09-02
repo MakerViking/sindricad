@@ -58,6 +58,7 @@ and on `ResolveDiag` entries.
 |---|---|
 | `ambiguousReference` | a selector matched several candidates and refused to guess |
 | `referenceNotFound` | a selector matched nothing |
+| `planeTilted` | a face-anchored sketch/datum plane's face is no longer parallel to the saved plane; it kept the saved placement |
 | `sealedVoid` | a cut closed a cavity inside the body instead of reaching a surface |
 | `cancelled` | the user cancelled; rides beside the `cancelled: true` sibling |
 | `timedOut` | a hard wall-clock job timeout |
@@ -160,10 +161,18 @@ Reply `result` is one of:
     "bodies": [ /* one entry per live body, full payload or "unchanged" stub */ ],
     "bbox": { "min": [x,y,z], "max": [x,y,z] },
     "diagnostics": [ /* selector resolutions worth reporting; see below */ ],
+    "planes": { "<featureId>": { "origin": [x,y,z], "normal": [x,y,z], "xdir": [x,y,z] } }, // optional
     "featureError": { "message": "...", "feature_id": "..." },   // optional
     "featureErrors": [ { "message": "...", "feature_id": "..." }, ... ]  // optional
   }
   ```
+  `planes` carries the placement the rebuild actually USED for every `face`-anchored
+  sketch and datum plane (GH #52) — the feature's own `plane` is only the cache written
+  when it was last edited, and the sidecar re-derives the frame from the resolved face
+  each rebuild. A datum's entry is its FINAL placement, with `offset` already applied.
+  Features with no `face` are absent; a client with no entry must fall back to the
+  document's cached plane. It is read off the datum registry at the END of the build, so
+  it is complete on a checkpoint-resume too.
   `featureError`/`featureErrors` are present only when one or more features failed and
   were recorded as no-ops; the geometry that *did* build is still returned (a failing
   feature never blanks the whole model). `featureError` is the most-downstream failure,
@@ -645,7 +654,7 @@ and each chunk decodes independently. The framing rides in one extra envelope fi
 ```
 
 - **`seq: 0` (the head)** carries every non-body field (`protocol`, `bbox`,
-  `diagnostics`, `projectionUpdates`, `featureError(s)`) plus a **`manifest`**: one entry
+  `diagnostics`, `planes`, `projectionUpdates`, `featureError(s)`) plus a **`manifest`**: one entry
   per body of the reply, in final order, as `{id, name, etag, nodeRef?, unchanged?}` plus
   `{faceCount, nVerts3, nIdx, nTris, nEdges, hasNormals?}` **for full bodies only**.
   Sizes are absent on stubs by design - the sidecar does not have them, because those

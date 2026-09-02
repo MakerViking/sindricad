@@ -18,9 +18,26 @@ import type { TextureTool } from "./textureTool";
 import type { TextOnFaceTool } from "./textOnFaceTool";
 import { choose } from "../ui/choice";
 import { setPrompt } from "../ui/prompt";
+import { toast } from "../ui/toast";
 import { DimInput } from "../sketch/dimInput";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
 import { findSelectorAt, replaceSelectorAt } from "./repickReference";
+
+/** Said out loud whenever a plane is picked off a curved face. The plane itself
+ *  is real and usable (pickFacePlane returns the tangent), but nothing anchors
+ *  it, so it will NOT follow later edits the way a planar-face pick does — and
+ *  the two are indistinguishable on screen. Shared with contextMenus, which
+ *  offers the same two entries from the right-click menu.
+ *
+ *  Two nouns, because the picker is shared by four flows: warning about "this
+ *  sketch" while the user is placing a Datum Plane names a feature that is not
+ *  being created. Split Body passes NEITHER — it bakes an absolute plane and has
+ *  no `face` field at all (types.ts), so no follow was ever on offer there and
+ *  the whole warning would be about nothing. */
+export const CURVED_FACE_NOTE =
+  "Curved face — this sketch sits on a tangent plane and will not follow later edits.";
+export const CURVED_FACE_NOTE_PLANE =
+  "Curved face — this plane sits on a tangent and will not follow later edits.";
 
 /** The one wording for "another tool owns the app right now", shared by every
  *  surface that can refuse for that reason — the starters below, the ribbon
@@ -171,7 +188,18 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
 
   let pendingPickCleanup: (() => void) | null = null;
 
-  function pickPlaneInteractive(promptText: string, onPick: (spec: PlaneSpec) => void) {
+  /** `onPick` receives the plane AND, when the click landed on a planar body
+   *  face, the selector that names that face. The plane alone is a frozen
+   *  placement: the sketch or datum built from it never moves again, which is
+   *  GH #52 ("sketch on a face does not follow the face"). The selector is what
+   *  lets the sidecar re-derive the plane every rebuild. Absent for the base
+   *  planes (nothing to follow) and for curved faces (nothing to follow it
+   *  BY — see viewport.faceAnchor), and the curved case says so out loud. */
+  function pickPlaneInteractive(
+    promptText: string,
+    onPick: (spec: PlaneSpec, face?: Selector) => void,
+    unanchoredNote: string | null = CURVED_FACE_NOTE,
+  ) {
     if (busy()) return;
     setPlanePick(true);
     viewport.showAllPlanes(true);
@@ -192,14 +220,17 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       // a face of the body takes priority over the base-plane quads behind it
-      const spec = viewport.pickFacePlane(e.clientX, e.clientY) ?? viewport.pickPlane(e.clientX, e.clientY);
+      const facePlane = viewport.pickFacePlane(e.clientX, e.clientY);
+      const spec = facePlane ?? viewport.pickPlane(e.clientX, e.clientY);
       if (!spec) return;
+      const anchor = facePlane ? viewport.faceAnchor(e.clientX, e.clientY, facePlane) : null;
+      if (facePlane && !anchor && unanchoredNote) toast(unanchoredNote, { kind: "warning" });
       // consume this click fully and run on the NEXT frame, so it can't bleed
       // into the sketch's own first-corner placement.
       e.preventDefault();
       e.stopImmediatePropagation();
       cleanup();
-      requestAnimationFrame(() => onPick(spec));
+      requestAnimationFrame(() => onPick(spec, anchor ?? undefined));
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") cleanup();
@@ -222,8 +253,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   }
 
   function startSketch(tool?: SketchTool) {
-    pickPlaneInteractive("Select a plane or a planar face of a body to sketch on", (spec) => {
-      sketch.enter(spec, store);
+    pickPlaneInteractive("Select a plane or a planar face of a body to sketch on", (spec, face) => {
+      sketch.enter(spec, store, undefined, undefined, face);
       if (tool) sketch.setTool(tool);
     });
   }
@@ -239,12 +270,14 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // editable scalar offset), and enters the sketch BY ID, so changing the offset
   // in the inspector moves the sketch with it.
   function offsetPlane() {
-    pickPlaneInteractive("Select a plane or face to offset from", (spec) => {
+    pickPlaneInteractive("Select a plane or face to offset from", (spec, face) => {
       const src = new SketchPlane(spec);
       planeOffset.start(src, (def) => {
         if (!def) return;
         const id = store.nextId();
-        store.addFeature({ id, type: "datumPlane", plane: spec, offset: offsetAlong(def, src) } as Feature);
+        // `face` rides on the DATUM, not the sketch: the datum is what owns the
+        // source plane here, and the sketch follows it by id.
+        store.addFeature({ id, type: "datumPlane", plane: spec, ...(face ? { face } : {}), offset: offsetAlong(def, src) } as Feature);
         sketch.enter(def, store, undefined, id);
       });
     });
@@ -255,26 +288,27 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // reused as a sketch / split reference. We store the SOURCE plane + a scalar
   // offset (not a baked plane) so the offset stays editable in the inspector.
   function createDatumPlane() {
-    pickPlaneInteractive("Select a plane or face for the datum plane", (spec) => {
+    pickPlaneInteractive("Select a plane or face for the datum plane", (spec, face) => {
       const src = new SketchPlane(spec);
       planeOffset.start(src, (def) => {
         if (!def) return;
         const id = store.nextId();
-        store.addFeature({ id, type: "datumPlane", plane: spec, offset: offsetAlong(def, src) } as Feature);
+        store.addFeature({ id, type: "datumPlane", plane: spec, ...(face ? { face } : {}), offset: offsetAlong(def, src) } as Feature);
         selectFeature(id);
       });
-    });
+    }, CURVED_FACE_NOTE_PLANE);
   }
 
   // Right-click → "Offset plane from face": same as Datum Plane but the source is
-  // the right-clicked face (no separate pick step).
-  function offsetPlaneFromFace(face: PlaneDef) {
+  // the right-clicked face (no separate pick step) — so the caller, not a pick
+  // here, supplies the face anchor.
+  function offsetPlaneFromFace(face: PlaneDef, anchor?: Selector) {
     if (busy()) return;
     const src = new SketchPlane(face);
     planeOffset.start(src, (def) => {
       if (!def) return;
       const id = store.nextId();
-      store.addFeature({ id, type: "datumPlane", plane: face, offset: offsetAlong(def, src) } as Feature);
+      store.addFeature({ id, type: "datumPlane", plane: face, ...(anchor ? { face: anchor } : {}), offset: offsetAlong(def, src) } as Feature);
       selectFeature(id);
     });
   }
@@ -317,7 +351,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       planeOffset.start(new SketchPlane(spec), (def) => {
         if (def) store.addFeature({ id: store.nextId(), type: "split", plane: def, keep, body, groupSides: true } as Feature);
       });
-    });
+      // no note: a split bakes its plane and has no `face` field, so there is no
+      // follow here to lose and nothing to warn about
+    }, null);
   }
 
   // Cut ALL visible bodies by a construction plane (right-click a plane → Cut, or

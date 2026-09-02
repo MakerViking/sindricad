@@ -126,7 +126,26 @@ export class PlaneOffsetTool {
     this.editId = featureId;
     this.onEditDone = onDone;
     const offset = typeof f.offset === "number" ? f.offset : 0;
-    this.begin(new SketchPlane(f.plane), offset);
+    // The SOURCE plane, as the last rebuild resolved it. A face-anchored datum's
+    // cached `plane` goes stale the moment its face moves (GH #52), and the
+    // sidecar reports the FINAL placement in `planes` — so back the offset out
+    // of that instead of seeding from the cache. This is not cosmetic: the
+    // scalar the user drags is measured from this base and then applied by the
+    // sidecar to the RESOLVED base, so a stale base commits the plane somewhere
+    // the user never dropped it.
+    const resolved = this.store.buildState.result?.planes?.[f.id];
+    const src = resolved
+      ? new SketchPlane({
+          origin: [
+            resolved.origin[0] - resolved.normal[0] * offset,
+            resolved.origin[1] - resolved.normal[1] * offset,
+            resolved.origin[2] - resolved.normal[2] * offset,
+          ],
+          normal: resolved.normal,
+          xdir: resolved.xdir,
+        })
+      : new SketchPlane(f.plane);
+    this.begin(src, offset);
     // Seed rather than track: the saved offset must hold until the user
     // deliberately drags the handle or retypes, or the first pointer move would
     // wipe the value they came here to adjust.

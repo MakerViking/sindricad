@@ -1052,9 +1052,11 @@ def _rebuild_job(document, tolerance, known=None):
 
     diag = []
     proj = []
+    planes = {}
     known = known or {}
     t0 = time.monotonic()
-    part, errors, bodies = rebuild_cached(document, diagnostics=diag, projections=proj)
+    part, errors, bodies = rebuild_cached(document, diagnostics=diag, projections=proj,
+                                          planes=planes)
     t_rebuild = time.monotonic() - t0
     if errors and part is None and not bodies:
         # nothing built at all — the document is unusable, surface as fatal
@@ -1128,6 +1130,8 @@ def _rebuild_job(document, tolerance, known=None):
     result = {"protocol": 2, "bodies": out, "bbox": doc_bbox}
     if diag:  # only attach when a selector resolved with low confidence
         result["diagnostics"] = diag
+    if planes:  # only when the document has a face-anchored sketch / datum plane
+        result["planes"] = planes
     if proj:  # only attach when the projection refresh found real changes
         result["projectionUpdates"] = proj
     if errors:

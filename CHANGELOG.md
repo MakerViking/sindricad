@@ -20,6 +20,32 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A sketch drawn on a body's face now follows that face.** Reported in
+  [#52](https://github.com/MakerViking/sindricad/issues/52). Sketching on the top
+  of a 10 mm box and cutting a pocket, then changing the box to 20 mm, left the
+  sketch at the old height: the pocket was cut 10 mm inside the part, where it
+  sealed a hidden cavity that printed as a hollow. Nothing warned, because the
+  sketch only remembered a position, not the face it was picked on.
+
+  A sketch, or a datum plane, made on a face now remembers the face as well and
+  finds it again on every rebuild, so the sketch moves with the face when
+  something upstream changes. The sketch's own coordinate system stays put: no
+  in-plane shift, no rotation, and the grid it snaps to is the same one as
+  before. Sketches on the base planes and on offset planes are unchanged.
+
+  When the face can no longer be found with confidence, because it was cut
+  away, tilted, or split into two faces on different planes, the sketch stays
+  where it was and the timeline shows an amber marker on it saying so, with a
+  Re-pick button to point it at the right face. It never guesses. Sketching on a
+  curved face still works as before, on a flat plane touching the surface, and a
+  note at pick time says that such a sketch will not follow later edits.
+
+  **Documents saved before this build keep their sketches where they were.** The
+  face was never recorded, so there is nothing to follow, and an existing sketch
+  cannot be converted in place. To get a sketch that follows, draw it again on
+  the face (right-click the face, "Sketch on this face") and point the extrude
+  at the new sketch.
+
 - **A cut that closes a cavity inside a body is now flagged.** The shape above
   is exactly what an older document with a stale sketch produces, and it is
   invisible from outside: same volume, one body, one more shell. Any extrude,

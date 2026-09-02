@@ -940,6 +940,7 @@ export class Geometry implements GeometryBackend {
       bbox: r.bbox as RebuildResult["bbox"],
     };
     if (r.diagnostics) out.diagnostics = r.diagnostics;
+    if (r.planes) out.planes = r.planes;
     if (r.featureError) out.featureError = r.featureError;
     if (r.featureErrors) out.featureErrors = r.featureErrors;
     if (r.projectionUpdates) out.projectionUpdates = r.projectionUpdates;

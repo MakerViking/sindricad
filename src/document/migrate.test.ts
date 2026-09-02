@@ -139,4 +139,32 @@ describe("migrateDocument", () => {
     migrateDocument(doc); // idempotent
     expect(JSON.stringify(doc)).toBe(before);
   });
+
+  it("the sketch/datum `face` anchor does NOT bump FORMAT_VERSION", () => {
+    // GH #52 adds one optional key to two feature arms — the same shape as the
+    // v3->v4 `planeId` addition above, and it gets the same answer: no bump.
+    // A bump costs every OLDER build the "made by a newer version — unknown data
+    // may be lost" warning on EVERY document the new build saves, including the
+    // overwhelming majority that carry no anchor at all. `plane` stays written
+    // as the resolved cache, so an old build still places the sketch correctly;
+    // it simply stops following the face.
+    expect(FORMAT_VERSION).toBe(5);
+    const doc = v1({
+      version: 5,
+      features: [
+        { id: "b1", type: "box", length: 20, width: 20, height: 10 },
+        { id: "s1", type: "sketch",
+          plane: { origin: [0, 0, 5], normal: [0, 0, 1], xdir: [1, 0, 0] },
+          face: { kind: "face", by: "nearest", point: [9.5, 0, 5], body: "body1" },
+          entities: [{ type: "circle", id: "c1", radius: 3, x: 0, y: 0 }] },
+        { id: "dp1", type: "datumPlane", plane: "XY", offset: 4,
+          face: { kind: "face", by: "nearest", point: [9.5, 0, 5], body: "body1" } },
+      ],
+    });
+    const before = JSON.stringify(doc);
+    expect(migrateDocument(doc)).toEqual([]); // in-format: no warnings
+    expect(JSON.stringify(doc)).toBe(before); // and not one byte rewritten
+    migrateDocument(doc); // idempotent
+    expect(JSON.stringify(doc)).toBe(before);
+  });
 });

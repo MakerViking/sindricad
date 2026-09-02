@@ -14,8 +14,9 @@ import { isInspectorEditable } from "./inspector";
 import { allCommands } from "./commands";
 import { FEATURE_META } from "./featureMeta";
 import { keyHint } from "../input/shortcuts";
-import { TOOL_BUSY_MESSAGE } from "../features/featureStarters";
-import type { Feature, PlaneDef } from "../types";
+import { TOOL_BUSY_MESSAGE, CURVED_FACE_NOTE, CURVED_FACE_NOTE_PLANE } from "../features/featureStarters";
+import { toast } from "./toast";
+import type { Feature, PlaneDef, Selector } from "../types";
 import type { EdgeHit, FaceHit } from "../viewport/picking";
 
 export interface ContextMenusDeps {
@@ -36,7 +37,7 @@ export interface ContextMenusDeps {
   getLastAction: () => string | null;
   setLastAction: (action: string) => void;
   startCutByPlane: (planeId: string) => void | Promise<void>;
-  offsetPlaneFromFace: (face: PlaneDef) => void;
+  offsetPlaneFromFace: (face: PlaneDef, anchor?: Selector) => void;
 }
 
 export function createContextMenus(deps: ContextMenusDeps) {
@@ -104,14 +105,20 @@ export function createContextMenus(deps: ContextMenusDeps) {
   }
 
   function openFaceMenu(x: number, y: number, hit: FaceHit) {
-    const plane = viewport.pickFacePlane(x, y); // null on curved faces
+    const plane = viewport.pickFacePlane(x, y);
+    // The reference that makes a sketch/datum built here FOLLOW this face on
+    // later rebuilds (GH #52). Null on a curved face — `plane` is still a
+    // perfectly good tangent to draw on, so the entries stay enabled and the
+    // click says so instead (CURVED_FACE_NOTE), matching the ribbon's own pick.
+    const anchor = plane ? viewport.faceAnchor(x, y, plane) : null;
+    const noteIfUnanchored = (note: string) => { if (plane && !anchor) toast(note, { kind: "warning" }); };
     const bodyId = viewport.faceIdToBodyId(hit.faceId);
     const ownerId = featureForFace(hit.faceId);
     const owner = ownerId ? store.document.features.find((f) => f.id === ownerId) : undefined;
     const ownerLabel = owner ? (FEATURE_META[owner.type as keyof typeof FEATURE_META]?.label ?? owner.type) : "";
     const items: CtxItem[] = [
       { label: "Press/Pull face", shortcut: keyHint("presspull"), onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); handleAction("presspull"); }) },
-      { label: "Sketch on this face", shortcut: keyHint("sketch"), disabled: !plane, onClick: unlessBusy(() => { if (plane) sketch.enter(plane, store); }) },
+      { label: "Sketch on this face", shortcut: keyHint("sketch"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE); sketch.enter(plane, store, undefined, undefined, anchor ?? undefined); } }) },
       { label: "Measure from here", shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
       { separator: true, label: "" },
       {
@@ -121,7 +128,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
           setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
         }),
       },
-      { label: "Offset plane from face", shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) offsetPlaneFromFace(plane); }) },
+      { label: "Offset plane from face", shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE_PLANE); offsetPlaneFromFace(plane, anchor ?? undefined); } }) },
       { separator: true, label: "" },
       ...(owner
         ? [{ label: `${isInspectorEditable(owner.type) ? "Edit" : "Select"} ${ownerLabel}`, onClick: unlessBusy(() => editFeature(owner.id)) }]

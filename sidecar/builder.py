@@ -42,7 +42,6 @@ import time
 import traceback
 from collections import ChainMap
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 import font_guard  # noqa: F401  MUST precede build123d — see font_guard.py
 
@@ -89,8 +88,10 @@ from build123d import (
 )
 
 from geom_select import (
+    REASON_TIE_CANONICAL,
     resolve_edges,
     resolve_faces,
+    resolve_face_on_plane,
     edge_fingerprint,
     _edge_mid,
     _edge_dir,
@@ -99,6 +100,8 @@ from geom_select import (
     _edge_center,
     _edge_cost,
     _edge_dedup_key,
+    _face_normal,
+    _unit,
     _bbox_diag,
     POS_DRIFT,
     REL_DRIFT,
@@ -112,7 +115,7 @@ AXES = {"X": Axis.X, "Y": Axis.Y, "Z": Axis.Z}
 KEEP = {"top": Keep.TOP, "bottom": Keep.BOTTOM, "both": Keep.BOTH}
 
 
-def _sketch_plane_ref(f):
+def _sketch_plane_ref(f, datums=None):
     """A sketch's plane reference, preferring a by-id datum link over the baked
     placement. Follows the `split` precedent: a datum id lives in its OWN
     `planeId` field rather than being smuggled into `plane`, so `plane` stays a
@@ -120,8 +123,30 @@ def _sketch_plane_ref(f):
     the frontend can place the sketch without resolving the datum first).
 
     This is what makes an offset plane stay editable: edit the datum's offset and
-    the sketch follows, instead of the distance being baked into `plane.origin`."""
+    the sketch follows, instead of the distance being baked into `plane.origin`.
+
+    A `face`-anchored sketch returns its OWN id, because _handle_sketch registers
+    the plane it re-derived from the face under that id in `datums`. The
+    membership check is LOAD-BEARING, not defensive: _build_sketch is also called
+    on the disk-checkpoint replay path and from _recompute_projections, and
+    returning an id that is not in the registry makes _plane_of raise "unknown
+    plane reference" — which kills the SKETCH, and with it every extrude
+    downstream. No entry means no anchor was resolved, so fall through to the
+    cached `plane`, which is exactly what the fallback stores anyway.
+    """
+    if f.get("face") and datums and f["id"] in datums:
+        return f["id"]
     return f.get("planeId") or f["plane"]
+
+
+def _plane_spec(origin, xdir, normal):
+    """A PlaneDef {origin, xdir, normal} from three build123d Vectors — the shape
+    `datums` holds and the wire's `planes` map carries."""
+    return {
+        "origin": [origin.X, origin.Y, origin.Z],
+        "xdir": [xdir.X, xdir.Y, xdir.Z],
+        "normal": [normal.X, normal.Y, normal.Z],
+    }
 
 
 def _plane_of(spec, datums=None):
@@ -1784,7 +1809,14 @@ class _RebuildCtx:
     named handle onto that existing state, not new state)."""
 
     val: object            # resolve a parameter name to its value (or pass a literal through)
-    datums: dict            # datumPlane feature id -> PlaneSpec
+    datums: dict            # datumPlane feature id -> PlaneSpec — AND, for a
+                            # `face`-anchored sketch, the sketch's own id -> the
+                            # plane re-derived from its face. Do NOT "clean up"
+                            # the sketch-keyed entries: this registry is what
+                            # both resume tiers persist and restore, which is
+                            # what lets the disk-checkpoint sketch replay place
+                            # an anchored sketch without re-resolving geometry
+                            # it no longer has (see _sketch_plane_ref).
     sketches: dict          # sketch feature id -> {"sketch":, "faces":, "wire":, ...}
     bodies: list            # ordered [{id, name, shape}] — mutated in place by handlers
     diagnostics: object     # optional list; low-confidence selector-v2 resolutions append here
@@ -1805,6 +1837,13 @@ class _RebuildCtx:
 
 
 def _handle_sketch(f, ctx):
+    # A face-anchored sketch re-derives its plane from the picked face on every
+    # rebuild, so it FOLLOWS an upstream edit (GH #52). Registered in ctx.datums
+    # under the SKETCH's own id — see _sketch_plane_ref for why that indirection
+    # is what keeps the checkpoint-replay path sound. _face_anchored_plane always
+    # registers something, resolved or cached, so the sketch always builds.
+    if f.get("face"):
+        ctx.datums[f["id"]] = _face_anchored_plane(f, ctx, "Sketch")
     ctx.sketches[f["id"]] = _build_sketch(f, ctx.val, ctx.datums)
     # Associative projection refresh (opt-in, like diagnostics): re-resolve
     # projected entities against the timeline-prefix state we're sitting on
@@ -1818,14 +1857,16 @@ def _handle_datum_plane(f, ctx):
     # / splits can reference it by id. Validate it resolves here so a
     # bad datum flags at its own feature. `offset` shifts the source
     # plane along its normal; we store the resolved offset plane.
-    base = _plane_of(f["plane"], ctx.datums)
+    #
+    # The `face` anchor applies to the SOURCE plane, before the offset: the
+    # cached `plane` is the face's own plane and `offset` rides on top of it, so
+    # anchoring the offset result instead would compound the offset on every
+    # rebuild.
+    base = _plane_of(_face_anchored_plane(f, ctx, "Plane") if f.get("face")
+                     else f["plane"], ctx.datums)
     off = f.get("offset") or 0
     origin = base.origin + base.z_dir * off
-    ctx.datums[f["id"]] = {
-        "origin": [origin.X, origin.Y, origin.Z],
-        "xdir": [base.x_dir.X, base.x_dir.Y, base.x_dir.Z],
-        "normal": [base.z_dir.X, base.z_dir.Y, base.z_dir.Z],
-    }
+    ctx.datums[f["id"]] = _plane_spec(origin, base.x_dir, base.z_dir)
 
 
 def _handle_extrude(f, ctx):
@@ -3131,6 +3172,53 @@ def _guard_text_plane(plane, face):
         raise ValueError("Text: the face this text sits on has moved — re-pick the face")
 
 
+def _face_anchored_plane(f, ctx, label):
+    """The plane of a `face`-anchored sketch / datumPlane, RE-DERIVED from the
+    picked face — or the cached `plane` when the reference no longer resolves.
+
+    THE ROOT-VS-LEAF ASYMMETRY. _guard_text_plane, ten lines up, answers the same
+    question by RAISING. This one never does, and the difference is deliberate: a
+    textOnFace is a LEAF, so a raise costs one red chip and everything else in the
+    document still builds. A sketch is a ROOT — raise here and it never registers,
+    `_require_sketch` fails, and every extrude/revolve/loft downstream silently
+    becomes a no-op. So doubt falls back to the cached plane: the geometry is then
+    exactly what it is today, never worse, and an amber diagnostic carrying the
+    selector's own point gives the user a Re-pick button. If you are here to make
+    the two consistent, make TEXT fall back, not this raise.
+    (The one exception is a selector naming a body that is gone: _group_sels_by_body
+    raises the existing "the target body no longer exists", which is a timeline
+    ordering mistake rather than a drifted reference, and reads as an error today.)
+
+    The frame it builds, every step load-bearing:
+      normal : the face's, flipped back to the cached side, so signed extrude
+               distances keep their meaning
+      origin : n * n.dot(face.center()) — the WORLD ORIGIN projected onto the
+               face's plane, which is bit-for-bit what pickFacePlane computed
+               from the raycast hit (n.p is the same scalar for every point p of
+               a plane). Re-deriving from the centroid instead would move the
+               sketch sideways when a fillet eats one corner, and would break the
+               grid lattice the viewport keeps sketches on.
+      xdir   : the SAVED xdir, Gram-Schmidt'd against the new normal, so there is
+               zero in-plane rotation. Re-deriving it from pickFacePlane's
+               world-axis rule would spin every entity 90 degrees the moment a
+               normal drifted across |n.z| = 0.9.
+    """
+    cached = _plane_of(f["plane"], ctx.datums)
+    fallback = _plane_spec(cached.origin, cached.x_dir, cached.z_dir)
+    groups = _group_sels_by_body(f["face"], ctx, label)
+    if len(groups) != 1:
+        return fallback  # one face of one body, by construction of the pick
+    body, sels = groups[0]
+    face = resolve_face_on_plane(body["shape"], sels[0], cached.z_dir, label,
+                                 ctx.diagnostics, f.get("id"))
+    if face is None:
+        return fallback  # it already said why, in the user's words
+    n_raw = _face_normal(face)
+    n = n_raw if n_raw.dot(cached.z_dir) >= 0 else n_raw * -1.0
+    return _plane_spec(n * n.dot(face.center()),
+                       _unit(cached.x_dir - n * cached.x_dir.dot(n)), n)
+
+
 def _taper_glyph_prisms(glyphs, plane, depth, bevel, f, ctx):
     """Sloped-wall glyph prisms, or none of them.
 
@@ -3702,7 +3790,7 @@ def _make_val(params):
 
 
 def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist=None,
-            projections=None):
+            projections=None, planes=None, datums_out=None):
     """Return (part, errors, bodies).
 
     part    : the merged build123d solid/compound of all bodies, or None.
@@ -3724,6 +3812,15 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
               entries (see _recompute_projections). Steady state appends NOTHING —
               that convergence contract is what terminates the frontend's
               associative refresh loop.
+
+    planes    : optional dict; when given, filled with {feature id -> PlaneDef}
+              for every feature carrying a `face` anchor — the plane this build
+              ACTUALLY used, resolved or fallen back. Read-only output: nothing
+              writes it back into the document, so there is no convergence
+              contract and no resume cap to think about.
+    datums_out : optional dict; when given, receives the whole datum registry
+              (datum planes + anchored sketches), for callers that need to
+              resolve a plane reference against the same state the build used.
 
     Incremental-rebuild hooks (both default off → identical to a plain full rebuild):
       resume        : (start_index, snapshot) — restore the build state captured
@@ -3965,6 +4062,20 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                 on_feature_tick(i)
             except Exception:
                 pass
+
+    # The planes this build used, read straight off the final registry rather
+    # than accumulated as features run. That is what makes it correct on every
+    # resume path: a snapshot restores `datums` wholesale, so an anchored sketch
+    # inside the reused prefix is in here even though its handler never ran.
+    if datums_out is not None:
+        datums_out.update(datums)
+    if planes is not None:
+        # Typed, because `face` is also textOnFace's own selector field (the same
+        # name on purpose — it is what makes the shipped Re-pick repair cover
+        # both), and a text feature registers no plane.
+        planes.update({g["id"]: dict(datums[g["id"]]) for g in features
+                       if g.get("type") in ("sketch", "datumPlane")
+                       and g.get("face") and g.get("id") in datums})
 
     # A disjoint join (e.g. two bodies that don't touch) yields a ShapeList, which
     # has no single `.wrapped` TopoDS shape. Normalize each body to one Compound so
@@ -4504,7 +4615,8 @@ def _restore_from_disk(store, chain_keys):
 _RAM_SNAP_WINDOW = int(os.environ.get("SINDRI_RAM_SNAP_WINDOW", "300"))
 
 
-def rebuild_cached(document, diagnostics=None, projections=None, readonly=False):
+def rebuild_cached(document, diagnostics=None, projections=None, readonly=False,
+                   planes=None, datums_out=None):
     """Incremental rebuild: reuse cached per-feature state for the unchanged document
     PREFIX and re-run only from the first changed feature. Resume sources, deepest
     wins: (1) in-RAM per-feature snapshots from the previous build in this worker,
@@ -4627,6 +4739,7 @@ def rebuild_cached(document, diagnostics=None, projections=None, readonly=False)
     part, errors, bodies = rebuild(
         document, diagnostics=diagnostics, resume=resume,
         snapshots_out=snaps_out, persist=persist, projections=projections,
+        planes=planes, datums_out=datums_out,
     )
     elapsed = time.monotonic() - t_build
 
@@ -7819,7 +7932,7 @@ def _build_sketch(f, val, datums=None):
     segments are assembled into closed wires and turned into faces, so an
     interactively-drawn polyline profile can be extruded like in mainstream MCAD.
     """
-    plane = _plane_of(_sketch_plane_ref(f), datums)
+    plane = _plane_of(_sketch_plane_ref(f, datums), datums)
     faces = []
     edges = []  # free-form line + arc edges, assembled into faces below
     all_edges = []  # EVERY entity's boundary as local edges, for planar subdivision
@@ -8435,7 +8548,8 @@ def _region_face_at(cells, P, diag=None, feature_id=None):
                 "resolved": 1,
                 "confidence": 0.0,
                 "lossy": True,
-                "reason": "no profile contains the stored region point",
+                "reason": ("This area reference no longer lands inside any profile "
+                           "of its sketch — the nearest one was used."),
                 "at": [round(float(P.X), 6), round(float(P.Y), 6), round(float(P.Z), 6)],
                 "offBy": round(float(off), 4),
             })
@@ -8924,7 +9038,7 @@ def _recompute_projections(f, ctx):
             if isinstance(e, dict) and e.get("type") == "projected" and e.get("id")]
     if not ents:
         return
-    plane = _plane_of(_sketch_plane_ref(f), ctx.datums)
+    plane = _plane_of(_sketch_plane_ref(f, ctx.datums), ctx.datums)
     # features strictly BEFORE this sketch: the prefix a source may live in
     prefix = []
     for ft in ctx.features or []:
@@ -9023,22 +9137,6 @@ def _fresh_projection(e, plane, prefix, curve_fresh, ctx):
     return None  # unknown kind: unresolvable
 
 
-def _collect_datums(document):
-    """The datumPlane registry for a document WITHOUT running a rebuild — datum
-    planes are pure plane algebra over specs stored in the doc (no body
-    geometry), so replaying just them mirrors what rebuild() registers. A datum
-    that fails to resolve is skipped (its sketch already flags red at rebuild)."""
-    datums = {}
-    ctx = SimpleNamespace(datums=datums)
-    for f in document.get("features", []):
-        if f.get("type") == "datumPlane":
-            try:
-                _handle_datum_plane(f, ctx)
-            except Exception:
-                pass
-    return datums
-
-
 def project_geometry(document, plane_spec, sources):
     """The projectGeometry aux-op: resolve each source against the PREFIX document
     (the frontend truncates at the sketch's timeline position) and project the
@@ -9055,8 +9153,13 @@ def project_geometry(document, plane_spec, sources):
     Returns {"results": [{source_index, ok, curves: [{fp?, curve}], error?}]}
     — `fp` (a sidecar-authored edge fingerprint for a by:"match" selector) only
     for body-edge sources; sketch curves are tracked by stable ids."""
-    _part, _errors, bodies = rebuild_cached(document, readonly=True)
-    datums = _collect_datums(document)
+    # The datum registry comes back from the build itself, not from a replay of
+    # the document's datum features: a `face`-anchored datum needs the bodies to
+    # resolve, and a bodies-free replay would silently answer with its stale
+    # cached plane while the rebuild used the followed one.
+    datums = {}
+    _part, _errors, bodies = rebuild_cached(document, readonly=True,
+                                            datums_out=datums)
     plane = _plane_of(plane_spec, datums)
     results = []
     for i, src in enumerate(sources):
@@ -9481,7 +9584,7 @@ def _judge_match(want, got, kind, diag_span, bbox_diag):
     # when no `nth` says which one is meant, and records it — the same shape as
     # an already-shipped wrong press/pull.
     for d in diag_span or ():
-        if d.get("reason") == "tie; canonical-first":
+        if d.get("reason") == REASON_TIE_CANONICAL:
             m["tied"] = True
             reasons.append("several candidates tied and nothing said which")
 

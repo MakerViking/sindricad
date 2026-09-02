@@ -80,7 +80,8 @@ export class Timeline {
   private busySince = 0; // ms timestamp the current busy op started, 0 = idle
   onSelect: ((id: string) => void) | null = null;
   onEdit: ((id: string) => void) | null = null;
-  /** offer "Re-pick face…" for this feature? (an ambiguous reference was reported) */
+  /** offer "Re-pick face…" for this feature? (its last build reported a saved
+   *  reference the user can repair by picking a face — see repairableDiagFor) */
   canRepick: ((id: string) => boolean) | null = null;
   onRepick: ((id: string) => void) | null = null;
   private selectedId: string | null = null;
@@ -407,9 +408,10 @@ export class Timeline {
 
   // --- right-click context menu (shared engine in ui/menu.ts) ---
   private openMenu(e: MouseEvent, id: string, i: number, suppressed: boolean, editable: boolean) {
-    // "Re-pick" only appears when THIS feature's last build reported an ambiguous
-    // saved reference — offering it on a healthy feature would invite users to
-    // overwrite references that are working.
+    // "Re-pick" only appears when THIS feature's last build reported a saved
+    // reference a face pick can actually repair (repairableDiagFor owns that
+    // list, and it is wider than ambiguity) — offering it on a healthy feature
+    // would invite users to overwrite references that are working.
     const repick = this.canRepick?.(id)
       ? [{ label: "Re-pick face…", onClick: () => this.onRepick?.(id) }]
       : [];

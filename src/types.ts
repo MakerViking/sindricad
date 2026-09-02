@@ -413,7 +413,16 @@ export type Feature =
   // cache, so every frontend consumer keeps working without resolving datums —
   // and an older build opening the file still places the sketch correctly.
   // This is what makes an offset plane's distance stay editable after creation.
-  | { id: string; type: "sketch"; plane: PlaneSpec; planeId?: string; entities: SketchEntity[]; constraints?: SketchConstraint[]; patterns?: SketchPattern[]; name?: string }
+  //
+  // `face` (optional) is the BODY FACE the plane was picked off, as a selector.
+  // Named `face` DELIBERATELY: it is already in repickReference.ts SELECTOR_FIELDS
+  // and isNearestAt hard-requires by:"nearest", so the shipped Re-pick repair
+  // covers it with no new plumbing — the same reason textOnFace chose the name.
+  // `plane` STAYS written as the resolved cache: no frontend consumer resolves a
+  // selector, and an older build must still place the sketch. When `face` is
+  // present the sidecar re-derives the plane from the resolved face every
+  // rebuild, so the sketch follows an upstream edit (GH #52).
+  | { id: string; type: "sketch"; plane: PlaneSpec; planeId?: string; face?: Selector; entities: SketchEntity[]; constraints?: SketchConstraint[]; patterns?: SketchPattern[]; name?: string }
   | {
       id: string;
       type: "extrude";
@@ -553,7 +562,10 @@ export type Feature =
   // sketches and splits reference it by id (resolved to its PlaneSpec on rebuild).
   // `plane` is the source reference and `offset` shifts along its normal (mm), so
   // the offset stays editable after creation; absent offset = coincident.
-  | { id: string; type: "datumPlane"; plane: PlaneSpec; offset?: number; name?: string }
+  // `face` mirrors the sketch arm above: the body face the source plane was
+  // picked off, so the datum (and everything referencing it by id) follows that
+  // face when the body changes upstream.
+  | { id: string; type: "datumPlane"; plane: PlaneSpec; face?: Selector; offset?: number; name?: string }
   // An imported body (STL/3MF/STEP/OBJ/GLB). The sewn/native solid is embedded as
   // a base64 BREP string so the document is self-contained and rebuilds
   // deterministically without the original file. `solid` is false for a
@@ -980,6 +992,12 @@ export interface RebuildResult {
   bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string; nodeRef?: string }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
+  /** feature id -> the plane the sidecar actually USED this rebuild, for every
+   *  feature carrying `face` (resolved from the face, or fallen back to the
+   *  cached one). READ-ONLY: the frontend looks it up, it is never written back
+   *  into the document. So there is no undo question, no convergence contract
+   *  and no resume cap (contrast projectionUpdates, which needed all three). */
+  planes?: Record<string, PlaneDef>;
   // set when features failed but the rest of the timeline still built — the
   // mesh above is everything EXCEPT the failed features' effects. featureError
   // is the LAST (most downstream) failure — the one closest to the user's

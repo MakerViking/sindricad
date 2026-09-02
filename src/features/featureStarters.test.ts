@@ -165,6 +165,9 @@ function harness(world: World) {
       set suspendPicking(v: boolean) { act(`suspendPicking(${v})`); },
       get suspendPicking() { return false; },
       pickFacePlane: () => null,
+      // the face-reference pick that rides alongside pickFacePlane; null here
+      // because pickFacePlane already says "no body face under the cursor"
+      faceAnchor: () => null,
       hoverFaceAt: () => {},
       hoverPlane: () => {},
       clearHover: () => {},

@@ -52,20 +52,23 @@ function stubViewport() {
 
 interface Patch { id: string; patch: Record<string, unknown> }
 
-function stubStore(features: Record<string, unknown>[], bound = false) {
+function stubStore(features: Record<string, unknown>[], bound = false, planes?: Record<string, unknown>) {
   const patches: Patch[] = [];
   return {
     patches,
     store: {
       document: { features },
+      // the last rebuild's resolved planes — a face-anchored datum's cached
+      // `plane` is stale the moment its face moves (GH #52)
+      buildState: { result: planes ? { planes } : undefined },
       isParamBound: () => bound,
       updateFeature: (id: string, patch: Record<string, unknown>) => patches.push({ id, patch }),
     },
   };
 }
 
-function make(features: Record<string, unknown>[], bound = false) {
-  const { store, patches } = stubStore(features, bound);
+function make(features: Record<string, unknown>[], bound = false, planes?: Record<string, unknown>) {
+  const { store, patches } = stubStore(features, bound, planes);
   const tool = new PlaneOffsetTool(stubViewport() as never, store as never);
   return { tool, patches };
 }
@@ -125,6 +128,23 @@ describe("re-opening an offset plane", () => {
   it("treats a plane with no saved offset as zero rather than throwing", () => {
     const { tool } = make([datum(undefined)]);
     expect(tool.startEdit("d1", () => {})).toBe(true);
+  });
+
+  it("anchors the gizmo on the plane the last build resolved, not the stale cache", () => {
+    // A face-anchored datum (GH #52) moves with its face, and the sidecar reports
+    // the FINAL placement (offset already applied) in RebuildResult.planes. The
+    // drag is measured from the SOURCE plane and the committed scalar is applied
+    // by the sidecar to the resolved source — so seeding from the cached `plane`
+    // is not a cosmetic offset in the ghost, it lands the plane `resolved -
+    // cached` mm from where the user dropped it.
+    const { tool } = make(
+      [datum(2)],
+      false,
+      { d1: { origin: [0, 0, 12], normal: [0, 0, 1], xdir: [1, 0, 0] } },
+    );
+    tool.startEdit("d1", () => {});
+    const anchor = (tool as unknown as { anchor: { z: number } }).anchor;
+    expect(anchor.z, "the drag arrow started from the stale cached plane").toBeCloseTo(10, 9);
   });
 });
 
@@ -269,5 +289,26 @@ describe("where the drag handle sits", () => {
     drag(tool, 25);
     commit(tool);
     expect(patches[0]!.patch, "the committed offset is relative to the arrow, not the source").toEqual({ offset: 25 });
+  });
+});
+
+describe("a face-anchored datum's placement reaches the rest of the app", () => {
+  it("datumPlaneDef uses the plane the build resolved, without re-applying offset", () => {
+    // datumPlaneDef is "one formula for quad, sketch and offset targets": the 3D
+    // quad (syncDatumPlanes), "Sketch on plane" and "Offset plane"
+    // (contextMenus). Computing it from `f.plane + offset` draws and BAKES the
+    // pre-edit placement of a face-anchored datum while the geometry sits at the
+    // new one — and the sidecar's entry already has the offset applied, so
+    // adding it again would double it.
+    const at = mainSrc.indexOf("function datumPlaneDef(");
+    expect(at, "datumPlaneDef is gone — check its consumers").toBeGreaterThan(-1);
+    const body = mainSrc.slice(at, mainSrc.indexOf("\n}", at));
+    expect(
+      body,
+      "datumPlaneDef ignores RebuildResult.planes again: a face-anchored datum "
+        + "draws, sketches and re-offsets at its stale cached plane",
+    ).toContain("store.buildState.result?.planes?.[f.id]");
+    expect(body.indexOf("if (resolved) return resolved;"), "the resolved plane must be returned verbatim")
+      .toBeGreaterThan(-1);
   });
 });
