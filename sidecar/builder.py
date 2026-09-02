@@ -1976,6 +1976,7 @@ def _handle_extrude(f, ctx):
     _boolean_into_bodies(
         ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid,
         split_disjoint=bool(f.get("separateBodies")),
+        diag=ctx.diagnostics, feature_id=f.get("id"),
     )
 
 
@@ -2663,7 +2664,8 @@ def _handle_revolve(f, ctx):
             f"revolution ({f.get('axis', 'Z')}). Move it fully to one side "
             f"(it may touch the axis, but not cross it). [{type(ex).__name__}]"
         )
-    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
+                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
 
 
 def _handle_loft(f, ctx):
@@ -2699,7 +2701,8 @@ def _handle_loft(f, ctx):
             "Loft failed to blend these profiles — they may be coincident, "
             f"identical, or too dissimilar to connect. [{type(ex).__name__}]"
         )
-    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
+                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
 
 
 def _handle_sweep(f, ctx):
@@ -2714,7 +2717,8 @@ def _handle_sweep(f, ctx):
     # every visible overlapping body, with the loud no-op guards. (Sweep used to
     # inline `act["shape"] + solid` / `- solid` against only the active body —
     # unguarded, and a Cut with no active body silently created a new body.)
-    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies)
+    _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
+                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
 
 
 def _blob_top_children(shape):
@@ -3053,7 +3057,8 @@ def _handle_thicken(f, ctx):
     # Default "new": a thickened surface body is its own body. "join" merges it
     # into the solids it touches (thickening a face of an existing part).
     _boolean_into_bodies(
-        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies
+        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies,
+        diag=ctx.diagnostics, feature_id=f.get("id"),
     )
 
 
@@ -5623,6 +5628,54 @@ def _try_vol(shape):
         return None
 
 
+def _shell_count(shape):
+    """How many SHELLS (closed or open surface skins) the shape has, or None when
+    OCCT can't say. This is the only cheap oracle that separates a cut which broke
+    the body's surface from one that sealed a cavity INSIDE it: both leave one
+    solid and — measured — the exact same volume (7858.628 mm3 for the stale-plane
+    case and its open-pocket control alike), so volume is a FALSE oracle here.
+    Second shell = second skin = an internal void."""
+    try:
+        return len(shape.shells())
+    except Exception:
+        return None
+
+
+def _sealed_void_diag(diag, feature_id, solid):
+    """Record that a cut closed a cavity inside the body instead of breaking its
+    surface — the shape of GH #52, where a sketch plane baked at the old top face
+    stays buried after the body grows and the pocket becomes an invisible bubble.
+
+    A DIAGNOSTIC, never an error: a deliberate hollow is legal geometry, and this
+    fires on documents that were built on purpose as well as on stale ones.
+    `resolved`/`confidence`/`lossy` are required by the wire type but mean nothing
+    here — nothing was RESOLVED — so they carry neutral values. `lossy` in
+    particular must stay False: it is the flag `project_geometry` refuses a source
+    selection on, and it means "a best-effort MATCH was taken", which this is not.
+    `at` is where the cavity is (the cutting prism's centre) so the UI can point
+    at it; it is NOT a selector point, and `sealedVoid` is deliberately absent
+    from the re-pickable codes — there is no reference to re-pick."""
+    if diag is None:
+        return
+    try:
+        c = _as_compound(solid).center()
+        at = [round(float(c.X), 6), round(float(c.Y), 6), round(float(c.Z), 6)]
+    except Exception:
+        at = None
+    entry = {
+        "feature_id": feature_id,
+        "kind": "sealedVoid",
+        "resolved": 0,
+        "confidence": 0.0,
+        "lossy": False,
+        "reason": "This cut closed a cavity inside the body.",
+        "code": "sealedVoid",
+    }
+    if at is not None:
+        entry["at"] = at
+    diag.append(entry)
+
+
 def _noop_eps(ref):
     """Volume change smaller than this (per the op's reference volume) counts as
     "the boolean did nothing": an absolute floor plus a 0.01% relative slice,
@@ -5713,7 +5766,8 @@ def _imprint(solid, tools):
     return Compound(bb.Shape())
 
 
-def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False):
+def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False,
+                         diag=None, feature_id=None):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
@@ -5726,7 +5780,11 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     measured by volume and, when it changed nothing (or Intersect would empty a
     body), raises ValueError — the rebuild loop records it as a feature error and
     flags the feature red, instead of silently doing nothing. Volume-read failures
-    fall through to the old behavior (never raise a misleading no-op error)."""
+    fall through to the old behavior (never raise a misleading no-op error).
+
+    A Cut that SEALS a void (shell count goes up) is the one wrong-looking result
+    that isn't wrong enough to refuse — a deliberate hollow is legal — so it pushes
+    a `sealedVoid` diagnostic onto `diag` instead, keyed to `feature_id`."""
     # Extruding several DISJOINT region faces (e.g. 38 selected honeycomb cells)
     # yields a build123d ShapeList, which has no .bounding_box()/boolean ops —
     # normalize to one Compound so overlap-testing and cut/join/intersect work.
@@ -5809,14 +5867,29 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         # compute every cut first, measure how much came off, and only commit when
         # the extrude actually removed material from some body.
         results, removed, measured = [], 0.0, False
+        sealed = False
         for b in hits:
             before = _try_vol(b["shape"])
+            # Shell counting is paid ONLY when someone is collecting diagnostics.
+            # Measured FLAT at ~0.010 ms from a 6-face box to a 906-face plate —
+            # OCCT walks shells, not faces — so the cost is per hit body, not per
+            # face; the gate is there so a caller that discards diagnostics
+            # (previews, exports) pays nothing at all.
+            shells_before = _shell_count(b["shape"]) if diag is not None else None
             newshape = _serial_bool(_as_compound(b["shape"]), solid, "cut")
             after = _try_vol(newshape)
             results.append((b, newshape))
             if before is not None and after is not None:
                 measured = True
                 removed += max(0.0, before - after)
+            # The sealed-void backstop. A cut that ADDS a shell did not break the
+            # surface, it closed a bubble inside the body — the invisible result
+            # of GH #52. Detected on the RESULT, so it also catches the ~all
+            # existing .sindri files that carry no face anchor and never will.
+            if shells_before is not None:
+                shells_after = _shell_count(newshape)
+                if shells_after is not None and shells_after > shells_before:
+                    sealed = True
         if not hits or (measured and removed < eps(prism_vol)):
             raise ValueError(
                 "Cut removed nothing — the extrude doesn't reach any body. "
@@ -5824,6 +5897,13 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
             )
         for b, newshape in results:
             b["shape"] = newshape
+        # One entry per FEATURE, not per body: a cut that bridges two bodies and
+        # seals both is still one thing the user did, and the timeline shows one
+        # chip. Pushed after the commit loop so a raising no-op guard reports the
+        # error alone rather than an error plus an advisory about a cut that was
+        # then thrown away.
+        if sealed:
+            _sealed_void_diag(diag, feature_id, solid)
     elif op == "intersect":
         if not hits:
             raise ValueError(

@@ -20,6 +20,19 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A cut that closes a cavity inside a body is now flagged.** The shape above
+  is exactly what an older document with a stale sketch produces, and it is
+  invisible from outside: same volume, one body, one more shell. Any extrude,
+  revolve, loft or sweep cut that seals a void now shows an amber marker on the
+  feature reading "This cut closed a cavity inside the body." It is a note, not
+  an error, since a deliberate hollow is legitimate.
+
+  The same amber marker now appears on any feature that built with a warning:
+  a saved reference that resolved loosely, a sketch region whose stored point
+  no longer lands in a profile, or a feature skipped because the body it points
+  at is gone. Those situations are not new and used to pass without a mark;
+  hovering the marker shows the reason.
+
 - **Importing some 3MF files reported "the geometry kernel crashed".** Reported
   with a project file written by Bambu Studio. The file was fine: the crash was
   in the cleanup pass that turns imported triangles back into flat, editable

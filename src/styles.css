@@ -1159,6 +1159,13 @@ button.active {
   color: var(--error);
   background: var(--error-tint);
 }
+/* Built, but with something to say (a stale reference, a sealed void). Amber and
+   NOT tinted, so it reads as quieter than the red above at a glance across a
+   100-chip strip — the build succeeded. */
+.timeline-node.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
 .timeline-node.rolled {
   opacity: 0.38;
 } /* past the rollback marker = not built */

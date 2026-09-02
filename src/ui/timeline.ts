@@ -44,21 +44,22 @@ function buildProgress(
   };
 }
 
-/** A feature chip's hover text: position, name, build error, and what the two
- *  gestures on it will do. Pure and exported so the promise it makes is tested
- *  directly — the fork used to live inline in the chip builder, where the only
- *  thing a test could see was that the file mentioned `isInspectorEditable`,
- *  which stays true even if the string goes back to promising an edit on every
- *  row (field report c8531ceb). */
+/** A feature chip's hover text: position, name, the build error OR the amber
+ *  diagnostic (`note` — they are mutually exclusive by construction, see
+ *  diagMap), and what the two gestures on it will do. Pure and exported so the
+ *  promise it makes is tested directly — the fork used to live inline in the
+ *  chip builder, where the only thing a test could see was that the file
+ *  mentioned `isInspectorEditable`, which stays true even if the string goes
+ *  back to promising an edit on every row (field report c8531ceb). */
 export function featureTooltip(
   index: number,
   label: string,
-  errMsg: string | undefined,
+  note: string | undefined,
   editable: boolean,
 ): string {
   return (
     `${index + 1} · ${label}` +
-    (errMsg ? `\n⚠ ${errMsg}` : "") +
+    (note ? `\n⚠ ${note}` : "") +
     (editable ? "\ndouble-click to edit · right-click for more" : "\nright-click for more")
   );
 }
@@ -183,11 +184,33 @@ export class Timeline {
     return m;
   }
 
+  /** every feature that BUILT but reported something worth saying: id -> reason.
+   *
+   *  Keyed on "has a diagnostic and no error", deliberately generic rather than
+   *  on a list of codes — the sidecar only records diagnostics that are worth
+   *  acting on (geom_select._push_diag drops a confident, unambiguous
+   *  resolution), and every new advisory it learns to emit should light the chip
+   *  the day it lands rather than the day someone remembers to extend a list
+   *  here. `errors` wins: a feature that failed is red, not amber, and its own
+   *  message is the useful one.
+   *
+   *  First reason wins per feature: the chip is 28px and this is its tooltip. */
+  private diagMap(errors: Map<string, string>): Map<string, string> {
+    const m = new Map<string, string>();
+    for (const d of this.store.buildState.result?.diagnostics ?? []) {
+      const id = d.feature_id;
+      if (!id || !d.reason || errors.has(id) || m.has(id)) continue;
+      m.set(id, d.reason);
+    }
+    return m;
+  }
+
   private render() {
     const { features } = this.store.document;
     const build = this.store.buildState;
     const rollback = this.store.rollbackIndex;
     const errors = this.errorMap();
+    const diags = this.diagMap(errors);
     const keepScroll = this.scroller.scrollLeft;
 
     this.renderTransport(rollback, features.length);
@@ -218,7 +241,7 @@ export class Timeline {
 
     features.forEach((f, i) => {
       if (i === rollback) this.track.appendChild(this.marker());
-      this.track.appendChild(this.node(f, i, i >= rollback, errors.get(f.id)));
+      this.track.appendChild(this.node(f, i, i >= rollback, errors.get(f.id), diags.get(f.id)));
     });
     if (rollback >= features.length) this.track.appendChild(this.marker());
 
@@ -279,6 +302,7 @@ export class Timeline {
     i: number,
     rolledBack: boolean,
     errMsg: string | undefined,
+    warnMsg: string | undefined,
   ): HTMLElement {
     // Unknown feature types must render, not crash: a document from a newer
     // version (or a migration tool) with a type this build doesn't know would
@@ -293,6 +317,10 @@ export class Timeline {
     node.dataset.id = f.id;
     if (this.selectedId === f.id) node.classList.add("selected");
     if (errMsg) node.classList.add("error");
+    // amber, and only where there is no red: the build SUCCEEDED, so the chip
+    // must not read as a failure. diagMap already excludes failing features, so
+    // the two classes cannot both land — this `else` is the second lock.
+    else if (warnMsg) node.classList.add("warn");
     if (rolledBack) node.classList.add("rolled");
     if (suppressed) node.classList.add("suppressed");
     // Only promise the double-click where it opens something — the same
@@ -301,7 +329,7 @@ export class Timeline {
     // the meta lookup above: an unknown type is not editable here, so it gets
     // the quieter tooltip rather than a promise this build cannot keep.
     const editable = isInspectorEditable(f.type as keyof typeof FEATURE_META);
-    node.title = featureTooltip(i, meta.label, errMsg, editable);
+    node.title = featureTooltip(i, meta.label, errMsg ?? warnMsg, editable);
     // icon() returns trusted markup built from a fixed table — it must NOT go through
     // esc(), which would render the SVG source as visible text.
     node.innerHTML = `<span class="glyph">${icon(meta.iconName)}</span>`;

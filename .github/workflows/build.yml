@@ -154,6 +154,11 @@ jobs:
           # drives ops over the real socket end to end, including the v4 -> v5
           # geometry migration.
           uv run python test_fullstack.py
+          # The sealed-void backstop (GH #52). Its subject is a cut that produces
+          # a WRONG-BUT-GREEN body, so no error-count assertion anywhere else can
+          # see it — and volume can't either (that suite asserts the two
+          # documents are volume-identical). Unlisted, it would be inert.
+          uv run python test_sealed_void.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script

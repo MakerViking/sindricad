@@ -58,6 +58,7 @@ and on `ResolveDiag` entries.
 |---|---|
 | `ambiguousReference` | a selector matched several candidates and refused to guess |
 | `referenceNotFound` | a selector matched nothing |
+| `sealedVoid` | a cut closed a cavity inside the body instead of reaching a surface |
 | `cancelled` | the user cancelled; rides beside the `cancelled: true` sibling |
 | `timedOut` | a hard wall-clock job timeout |
 | `stalled` | no worker heartbeat; the kernel was restarted |
