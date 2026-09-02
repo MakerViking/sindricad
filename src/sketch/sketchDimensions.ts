@@ -201,6 +201,15 @@ export class SketchDimensions {
     const label: DimLabel = { el, ...d };
     el.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
+      // Primary button only. A badge sits ON the geometry it labels (a line's
+      // length badge lands at the midpoint, exactly where a user aims to
+      // right-click that line), and onOverlapPick REPLACES the selection with
+      // the single entity under the cursor — so an unguarded right press ate a
+      // two-entity selection before its constraint menu was ever built, and
+      // rebuilt the badge out from under its own contextmenu handler. A
+      // secondary press selects nothing, starts no drag, and leaves this
+      // element alive for the contextmenu below; middle-drag stays camera pan.
+      if (e.button !== 0) return;
       this.suppressClick = false;
       label.suppressEdit = this.onOverlapPick?.(e) ?? false;
       // onOverlapPick rebuilds every label when geometry claims the pick, so
