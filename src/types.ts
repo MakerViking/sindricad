@@ -877,7 +877,7 @@ export interface ResolveDiag {
   // "edgeOpFailed" = a fillet/chamfer failed and `failed` names the edges the
   // sidecar's per-edge probe blamed (or ALL members when only the combination
   // fails), so the UI can paint exactly those edges red;
-  // "sealedVoid" = a Cut raised the body's shell count, i.e. it closed a cavity
+  // "sealedVoid" = a Cut gave a solid a second shell, i.e. it closed a cavity
   // INSIDE the body instead of breaking its surface. Not a resolution at all —
   // it describes the RESULT, so `resolved`/`confidence`/`lossy` carry neutral
   // values on it — and not an error either, because a deliberate hollow is legal.
