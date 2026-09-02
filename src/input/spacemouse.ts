@@ -36,6 +36,13 @@ export interface SpaceMouseConfig {
   // = puck flies the camera (inverse of object on pan + orbit).
   mode: "object" | "camera";
   deadzone: number; // ignore |axis| below this (jitter)
+  // Cross-axis filter: suppress any axis below this FRACTION of the strongest
+  // MAPPED axis of the same frame; 0 = off. A real puck leaks a few counts onto
+  // its neighbours under a hard deflection, and once that leak clears the
+  // absolute deadzone it is indistinguishable from deliberate input (GH #39: a
+  // ~30-count push/pull leak while tilting 200 counts zoomed the view). Raising
+  // the deadzone instead would kill legitimate slow input for everyone.
+  crossAxis: number;
   // pan/zoom are ZOOM-PROPORTIONAL (scaled by rig.viewScale() — the visible
   // view height): a puck deflection moves the view by the same FRACTION of
   // what's on screen at any zoom. Fixed world-unit steps made the puck feel
@@ -55,6 +62,7 @@ export interface SpaceMouseConfig {
 const DEFAULTS: SpaceMouseConfig = {
   mode: "object",
   deadzone: 24,
+  crossAxis: 0.25,
   panSens: 0.0000006,
   zoomSens: 0.0000007,
   orbitSens: 0.0000022,
@@ -75,6 +83,50 @@ const DEFAULTS: SpaceMouseConfig = {
 const V1_PAN_DEFAULT = 0.00006;
 const V1_ZOOM_DEFAULT = 0.0001;
 
+// A crossAxis of 1 would mean "only the single strongest axis is ever heard",
+// and anything above it silences EVERY axis including the strongest — a puck
+// that appears completely dead, which is a far worse bug than the leak this
+// filter exists to fix. So a garbled or hand-edited value is clamped, not
+// trusted, both on load and on set.
+const CROSS_AXIS_MAX = 0.9;
+function clampCrossAxis(v: number | undefined): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return DEFAULTS.crossAxis;
+  return Math.min(CROSS_AXIS_MAX, Math.max(0, v));
+}
+
+/** Condition one frame of raw axis counts: per-axis deadzone, then the
+ *  cross-axis filter. The single source of truth — the viewport motion loop and
+ *  the settings preview both call this, so they can never disagree.
+ *
+ *  The deadzone runs FIRST for readability, NOT for correctness: measured over
+ *  200,000 random frames, taking the peak on the raw frame instead gives a
+ *  byte-identical result. It cannot differ while CROSS_AXIS_MAX is below 1 — a
+ *  peak under the deadzone yields a gate of at most 0.9 x deadzone, which is
+ *  below the deadzone, so it can never zero an axis the deadzone spared. Raise
+ *  that clamp to 1 or above and the ordering starts to matter.
+ *
+ *  The peak is taken over only the axes some action is bound to, because an
+ *  unmapped axis drives nothing and must not be able to silence the ones that
+ *  do. The comparison is strict, so the strongest axis always survives and two
+ *  equal axes both survive. */
+export function filterMotion(m: Motion, cfg: SpaceMouseConfig): Motion {
+  const out: Motion = { ...ZERO };
+  for (const a of AXIS_NAMES) out[a] = Math.abs(m[a]) < cfg.deadzone ? 0 : m[a];
+
+  const ratio = clampCrossAxis(cfg.crossAxis);
+  if (ratio <= 0) return out;
+  let peak = 0;
+  for (const b of Object.values(cfg.bind ?? {})) {
+    if (b) peak = Math.max(peak, Math.abs(out[b.src]));
+  }
+  if (peak === 0) return out;
+  const gate = peak * ratio;
+  for (const a of AXIS_NAMES) {
+    if (Math.abs(out[a]) < gate) out[a] = 0;
+  }
+  return out;
+}
+
 const KEY = "sindricad.spacemouse.config";
 const LEGACY_MODE_KEY = "sindricad.spacemouse.mode";
 
@@ -86,6 +138,7 @@ function loadConfig(): SpaceMouseConfig {
       const saved = JSON.parse(raw) as Partial<SpaceMouseConfig>;
       const savedBind = saved.bind;
       Object.assign(cfg, saved);
+      cfg.crossAxis = clampCrossAxis(cfg.crossAxis);
       // migrate v1 (absolute world-unit) pan/zoom sens to the v2 proportional
       // semantics, keeping the user's multiplier relative to the old defaults
       if ((saved.sensVersion ?? 1) < 2) {
@@ -140,6 +193,7 @@ export function setSpaceMouseConfig(patch: Partial<SpaceMouseConfig>) {
   // other binding. Merge the rest, then merge bind per-action into the existing one.
   const { bind, ...rest } = patch;
   Object.assign(CONFIG, rest);
+  if ("crossAxis" in rest) CONFIG.crossAxis = clampCrossAxis(CONFIG.crossAxis);
   if (bind) Object.assign(CONFIG.bind, bind);
   persist();
 }
@@ -198,10 +252,9 @@ export async function initSpaceMouse(
     if (pressed) onButton(pressed);
   });
 
-  const dz = (v: number) => (Math.abs(v) < CONFIG.deadzone ? 0 : v);
-  /** signed, deadzoned value of the raw axis a binding points at (0 if unbound) */
-  const val = (b: AxisBinding | undefined, m: Motion) =>
-    b ? (b.invert ? -1 : 1) * dz(m[b.src]) : 0;
+  /** signed value of the raw axis a binding points at (0 if unbound) */
+  const val = (b: AxisBinding | undefined, f: Motion) =>
+    b ? (b.invert ? -1 : 1) * f[b.src] : 0;
   let last = performance.now();
 
   const loop = () => {
@@ -211,7 +264,10 @@ export async function initSpaceMouse(
     last = now;
 
     // if the device stopped sending (missed the centering report), decay to zero
-    const m = now - lastEvent > CONFIG.staleMs ? ZERO : motion;
+    const raw = now - lastEvent > CONFIG.staleMs ? ZERO : motion;
+    // condition the whole frame ONCE, not per binding: two actions bound to the
+    // same axis must never disagree about whether that axis moved
+    const m = filterMotion(raw, CONFIG);
     const controls = viewport.rig.controls;
     // object mode manipulates the model → inverse of camera mode on pan + orbit
     const modeSign = CONFIG.mode === "object" ? -1 : 1;

@@ -10,6 +10,7 @@ import {
   AXIS_LABELS,
   AXIS_NAMES,
   ACTION_LABELS,
+  filterMotion,
   getLatestMotion,
   getSpaceMouseConfig,
   onSpaceMouseMotion,
@@ -132,6 +133,23 @@ export class SpaceMouseSettings {
     right.appendChild(this.slider("Zoom", cfg.zoomSens, 0, 0.0000035, (v) => setSpaceMouseConfig({ zoomSens: v })));
     right.appendChild(this.slider("Rotate", cfg.orbitSens, 0, 0.00001, (v) => setSpaceMouseConfig({ orbitSens: v })));
     right.appendChild(this.slider("Deadzone", cfg.deadzone, 0, 200, (v) => setSpaceMouseConfig({ deadzone: v }), 1));
+    // Cross-axis filter, as a percentage of the strongest axis. 0 turns it off.
+    // Capped at 60%: past that a deliberate combined gesture stops working long
+    // before the filter buys anything more.
+    right.appendChild(
+      this.slider(
+        "Cross-axis filter",
+        Math.round(cfg.crossAxis * 100),
+        0,
+        60,
+        (v) => setSpaceMouseConfig({ crossAxis: v / 100 }),
+        1,
+        (v) => `${Math.round(v)}%`,
+      ),
+    );
+    right.appendChild(
+      text("div", "Ignores a weak axis while another axis is much stronger, so a hard tilt doesn't also zoom.", "sm-hint"),
+    );
 
     right.appendChild(text("div", "Axis mapping", "sm-section"));
     for (const action of Object.keys(ACTION_LABELS) as ActionName[]) {
@@ -166,6 +184,7 @@ export class SpaceMouseSettings {
     max: number,
     onInput: (v: number) => void,
     step?: number,
+    format: (v: number) => string = fmt,
   ): HTMLElement {
     const row = el("div", "sm-row");
     row.appendChild(text("span", label, "sm-slabel"));
@@ -175,10 +194,10 @@ export class SpaceMouseSettings {
     r.max = String(max);
     r.step = String(step ?? (max - min) / 100);
     r.value = String(value);
-    const out = text("span", fmt(value), "sm-sval");
+    const out = text("span", format(value), "sm-sval");
     r.oninput = () => {
       const v = parseFloat(r.value);
-      out.textContent = fmt(v);
+      out.textContent = format(v);
       onInput(v);
     };
     row.append(r, out);
@@ -212,16 +231,32 @@ export class SpaceMouseSettings {
   }
 
   // --- live axis bars ---
+  // The bar always shows the RAW count the device sent (Rust does no
+  // conditioning), and its colour says what the app then did with it: muted =
+  // below the deadzone, dimmed = the cross-axis filter dropped it because
+  // another axis is much stronger, full accent = it is driving the camera.
   private updateBars(m: Motion) {
     const SCALE = 350; // raw axis range is roughly +/-350
+    const cfg = getSpaceMouseConfig();
+    const f = filterMotion(m, cfg);
     for (const a of AXIS_NAMES) {
       const bar = this.bars.get(a);
       if (!bar) continue;
       const v = Math.max(-1, Math.min(1, m[a] / SCALE));
       bar.style.width = `${Math.abs(v) * 50}%`;
       bar.style.left = v >= 0 ? "50%" : `${50 - Math.abs(v) * 50}%`;
-      const dead = Math.abs(m[a]) < getSpaceMouseConfig().deadzone;
+      const dead = Math.abs(m[a]) < cfg.deadzone;
+      const suppressed = !dead && f[a] === 0;
       bar.style.background = dead ? "var(--text-mute, #6b7280)" : "var(--accent, #ff7a3c)";
+      bar.style.opacity = suppressed ? "0.35" : "1";
+      const note = suppressed ? `${AXIS_LABELS[a]}: suppressed by the cross-axis filter` : "";
+      if (note) {
+        bar.setAttribute("title", note);
+        bar.setAttribute("aria-label", note);
+      } else {
+        bar.removeAttribute("title");
+        bar.removeAttribute("aria-label");
+      }
     }
   }
 
@@ -276,11 +311,13 @@ export class SpaceMouseSettings {
     const cfg = getSpaceMouseConfig();
     const stale = now - this.clock > cfg.staleMs;
     const m = stale ? { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 } : this.lastMotion;
-    const dz = (v: number) => (Math.abs(v) < cfg.deadzone ? 0 : v);
+    // the SAME conditioning the viewport loop runs, so the preview and the real
+    // view can never disagree about what the puck is saying
+    const f = filterMotion(m, cfg);
     const val = (a: ActionName) => {
       const b = cfg.bind[a];
       if (!b) return 0; // tolerate a missing binding instead of crashing the loop
-      return (b.invert ? -1 : 1) * dz(m[b.src]);
+      return (b.invert ? -1 : 1) * f[b.src];
     };
 
     // Drive the cube with EVERY mapped action so any gesture gives feedback:

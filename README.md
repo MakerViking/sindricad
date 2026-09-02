@@ -381,8 +381,11 @@ reason, and the command above will not help it.
 <summary><b>3Dconnexion SpaceMouse</b> (optional, one udev rule on Linux)</summary>
 
 SindriCAD reads a SpaceMouse natively for 6DOF camera navigation, with the two
-buttons mapped to Fit and Home/ISO. Plug it in: no driver or configuration
-needed. Sensitivity and axis inversion live in Settings.
+buttons mapped to Fit and Home/ISO. Plug it in and quit any 3Dconnexion driver
+that is running (3DxWare, 3Dconnexion Home, or spacenavd): SindriCAD talks to
+the device itself, and a driver left running can drive the view a second time
+through emulated scrolling. Sensitivity, axis inversion, the deadzone and the
+cross-axis filter live in Settings.
 
 On **Linux** the device node (`/dev/hidrawN`) is root-only until a udev rule
 grants the logged-in user access. The `.deb` and `.rpm` packages install that

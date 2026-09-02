@@ -2109,9 +2109,14 @@ button.finish:hover {
   border-radius: var(--r-md);
   background: var(--bg);
 }
+/* First track holds a slider's name. 70px fitted Pan/Zoom/Rotate/Deadzone and
+   nothing longer: "Cross-axis filter" measures 76-85px in every font in the
+   stack, so it wrapped to two lines and made its row half again as tall as its
+   neighbours. Widened rather than shortening the label, which is the only text
+   that says what the control does. */
 .sm-row {
   display: grid;
-  grid-template-columns: 70px 1fr 52px;
+  grid-template-columns: 92px 1fr 52px;
   align-items: center;
   gap: 8px;
 }
