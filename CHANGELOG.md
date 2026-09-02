@@ -59,6 +59,54 @@ This file starts on 2026-08-03. For anything before that, see the
   at is gone. Those situations are not new and used to pass without a mark;
   hovering the marker shows the reason.
 
+- **A mesh file with more than one object was refused as too detailed to
+  import.** Reported with a two-object Bambu Studio 3MF. The check that asks
+  whether an imported mesh reduced to something editable was measuring the
+  whole file at once, so two objects that each passed comfortably were refused
+  as a pair, and a plate of a dozen parts was charged twelve times the budget
+  of the same parts imported one at a time. Each body is now judged on its own,
+  including a body that is an open shell rather than a solid, and when one
+  really is too faceted the message says which one it is instead of quoting a
+  total. A separate, much higher whole-file limit still stops a file that would
+  be too much to draw at once, with a message that says that is what it is.
+
+  Counting the triangles in a 3MF was wrong on the same kind of file for the
+  same reason: Bambu Studio, Orca and PrusaSlicer put each object in its own
+  part and leave the top-level part as a list of references, and only that
+  first part was being read. A 9,268 triangle file counted as 122, which sized
+  its loading deadline from almost nothing. Every part is counted now.
+
+- **An extrude aimed at a face or plane could never go back to a plain
+  distance.** Nothing in the app could remove an up-to target once it was set,
+  and because Taper is hidden while a target exists, taper was out of reach for
+  good on such a feature. The inspector now shows an "Up to" row naming the
+  plane (or "Picked face") with a button that clears it; clearing puts the
+  feature back on a plain distance, 10 mm if it had no depth left, and brings
+  Taper back. In the Extrude tool, Shift+T clears the target during the depth
+  step, and the prompts now say that T picks one. Press/pull features get the
+  same row.
+
+- **Tilting the SpaceMouse also zoomed the view.** A 6DOF puck leaks a few
+  counts onto its neighbouring axes when pushed hard, and about 30 counts of
+  push/pull during a firm tilt was enough to clear the 24-count deadzone and
+  start a slow, continuous zoom. Every axis was conditioned on its own, so
+  nothing could tell a leak from a deliberate nudge. Motion is now filtered
+  across axes as well: an axis weaker than 25 percent of the strongest axis in
+  the same frame is ignored, so the tilt orbits and nothing else happens. A pure
+  push/pull still zooms, and two strong axes at once still both work. There is a
+  "Cross-axis filter" slider under Deadzone in 3D Mouse Settings to make it
+  stronger, weaker or off, the live axis bars dim an axis the filter is
+  ignoring, and the settings preview cube uses the same filter as the real view
+  so the two can no longer disagree.
+
+- **Right-clicking a sketch line at its midpoint threw away a multi-entity
+  selection.** The line's length badge sits right there, and its press handler
+  acted on any mouse button, so a right-click replaced the selection with that
+  one line and the menu offered Horizontal and Vertical instead of Parallel,
+  Perpendicular, Equal and Collinear. Only the left button acts on a badge now.
+  Multi-select in a sketch is Shift+click or a box drag; Ctrl+click still
+  replaces the selection.
+
 - **Importing some 3MF files reported "the geometry kernel crashed".** Reported
   with a project file written by Bambu Studio. The file was fine: the crash was
   in the cleanup pass that turns imported triangles back into flat, editable
