@@ -2610,6 +2610,213 @@ def test_refacet_clean():
           f"volume preserved ({cleaned.volume:.1f})")
 
 
+def _holed_plate_files(d):
+    """Two STLs: one plate, and the SAME plate twice as a two-object file.
+
+    Box(40,40,5) with a 4x4 grid of through-holes reads back as 220 faces, so
+    the pair reads back as 436 (two disconnected shells, one per plate). Written
+    at the same tessellation both times so the two-object file is exactly twice
+    the one-object file and nothing else moved."""
+    from build123d import (Box, Circle, Compound, GridLocations, Pos, export_stl,
+                           extrude)
+
+    one = Box(40, 40, 5) - Compound(
+        [loc * extrude(Circle(2.0), amount=5, both=True)
+         for loc in GridLocations(9, 9, 4, 4)])
+    two = Compound([one, Pos(60, 0, 0) * one])
+    out = []
+    for label, shp in (("one", one), ("two", two)):
+        p = os.path.join(d, f"{label}.stl")
+        export_stl(shp, p, tolerance=0.05, angular_tolerance=0.2)
+        out.append(p)
+    return out
+
+
+def test_the_face_limit_is_judged_per_body():
+    """GH #49: a file is refused for the SUM of its bodies' faces.
+
+    MAX_IMPORT_FACES answers "did this ONE body reduce to something editable",
+    and it was compared against the face count of the whole sewn compound. A
+    Bambu/Orca project 3MF is inherently multi-object, so the reporter's two
+    bodies — 1,850 and 1,737 faces, BOTH under the 2,000 limit — were refused
+    together at their sum of 3,587. Nothing about his geometry is organic; the
+    gate measured the wrong thing.
+
+    The limit is monkeypatched down instead of building two genuinely
+    1,900-face bodies, which costs ~160 s to import; this plate costs ~2.4 s."""
+    d = tempfile.mkdtemp()
+    one_stl, two_stl = _holed_plate_files(d)
+
+    keep = (builder.MAX_IMPORT_FACES, builder.MAX_IMPORT_TOTAL_FACES)
+    try:
+        builder.MAX_IMPORT_FACES = 300
+        builder.MAX_IMPORT_TOTAL_FACES = 100_000
+        n1 = import_geometry(one_stl, "stl")["faces"]
+        assert n1 == 220, f"one plate imported as {n1} faces, want 220"
+        n2 = import_geometry(two_stl, "stl")["faces"]
+        assert n2 == 436, (
+            f"two copies of a plate that passes at {n1} faces imported as {n2}, "
+            f"want 436")
+
+        # ...and a body that is ITSELF over the limit is still refused, naming
+        # which of the two it is.
+        builder.MAX_IMPORT_FACES = 200
+        try:
+            import_geometry(two_stl, "stl")
+            assert False, "a 220-face body must still be refused at a 200 limit"
+        except ValueError as ex:
+            assert "clean editable" in str(ex), ex
+            assert "of 2 " in str(ex) and "body" in str(ex), (
+                f"the refusal must say WHICH body is organic, got: {ex}")
+
+        # ...and the total backstop is a separate guard with its own message.
+        builder.MAX_IMPORT_FACES = 300
+        builder.MAX_IMPORT_TOTAL_FACES = 300
+        try:
+            import_geometry(two_stl, "stl")
+            assert False, "436 total faces must trip a 300-face total backstop"
+        except ValueError as ex:
+            assert "too much detail" in str(ex), ex
+            assert "clean editable" not in str(ex), (
+                f"the viewport backstop must not read as an editability "
+                f"judgement: {ex}")
+    finally:
+        builder.MAX_IMPORT_FACES, builder.MAX_IMPORT_TOTAL_FACES = keep
+    print(f"  per-body face limit OK: 1 plate {n1} faces, 2 plates {n2} faces, "
+          f"both admitted at a {300}-face PER-BODY limit")
+
+
+def test_peek_counts_every_model_part_of_a_3mf():
+    """The twin of test_heartbeat's exactness test, for the worker's own count.
+
+    builder._peek_triangle_count feeds the MAX_IMPORT_TRIANGLES gate, and it
+    read only the FIRST .model part. In the 3MF production extension that
+    Bambu, Orca and PrusaSlicer all write, 3D/3dmodel.model is a manifest of
+    <build><item> references holding ZERO triangles and the geometry lives in
+    3D/Objects/*.model, so the density gate saw 0 triangles for the reporter's
+    9,268-triangle file. Lives here rather than in test_heartbeat because this
+    is builder's own count; the SERVER process is the one that must never
+    import builder (build123d's import-time font scan — see
+    server._mesh_triangle_estimate), and test_heartbeat imports both on purpose
+    so it can compare them."""
+    import zipfile
+
+    d = tempfile.mkdtemp()
+    tri = b'<triangle v1="0" v2="1" v3="2"/>'
+
+    def _part(n):
+        return (b'<?xml version="1.0"?><model><resources><object id="1"><mesh>'
+                b"<vertices/><triangles>" + tri * n
+                + b"</triangles></mesh></object></resources></model>")
+
+    def _manifest(objectids):
+        items = b"".join(b'<item objectid="%d"/>' % i for i in objectids)
+        return (b'<?xml version="1.0"?><model><resources/><build>'
+                + items + b"</build></model>")
+
+    bambu = os.path.join(d, "bambu.3mf")
+    with zipfile.ZipFile(bambu, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _manifest([2, 3]))
+        z.writestr("3D/Objects/object_2.model", _part(3_000))
+        z.writestr("3D/Objects/object_3.model", _part(2_000))
+    got = builder._peek_triangle_count(bambu, "3mf")
+    # +1 per triangle-bearing part: "<triangle" also matches each part's own
+    # <triangles> container element. Over, never under.
+    assert 5_000 <= got <= 5_002, f"counted {got} triangles across 2 parts, want 5,000"
+
+    # Placements are NOT counted. The production extension lets ONE part be
+    # placed by several <build><item> entries, but build123d's Mesher walks
+    # GetMeshObjects() and never reads a build item, so a part placed twice is
+    # READ ONCE — measured, a real production-extension 3MF placing one 12-face
+    # box 1, 2 and 20 times reads back as a single 12-face shape every time.
+    # This count feeds a HARD REFUSAL below, so scaling by placements rejected
+    # healthy plates for triangles that no code path builds.
+    inst = os.path.join(d, "instanced.3mf")
+    with zipfile.ZipFile(inst, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _manifest([2, 2]))
+        z.writestr("3D/Objects/object_2.model", _part(3_000))
+    once = os.path.join(d, "once.3mf")
+    with zipfile.ZipFile(once, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _manifest([2]))
+        z.writestr("3D/Objects/object_2.model", _part(3_000))
+    got2 = builder._peek_triangle_count(inst, "3mf")
+    assert got2 == builder._peek_triangle_count(once, "3mf"), (
+        f"placing a part twice changed the count ({got2} vs "
+        f"{builder._peek_triangle_count(once, '3mf')}) — the reader builds one "
+        f"copy either way")
+    assert 3_000 <= got2 <= 3_001, (
+        f"2 items placing 1 part counted {got2}, want the ~3,000 on disk")
+
+    # ...and the refusal that count feeds does not fire on a mixed plate. One
+    # big object plus a small one duplicated is the ordinary Bambu/Orca plate,
+    # and an averaged placement factor over the whole file charged the big part
+    # for the small one's copies: 31,002 real triangles were reported as
+    # 155,010 and refused as "almost certainly an organic/scanned model".
+    plate = os.path.join(d, "plate.3mf")
+    with zipfile.ZipFile(plate, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", _manifest([2, 3, 3, 3, 3, 3, 3, 3, 3]))
+        z.writestr("3D/Objects/object_2.model", _part(30_000))
+        z.writestr("3D/Objects/object_3.model", _part(1_000))
+    got3 = builder._peek_triangle_count(plate, "3mf")
+    assert 31_000 <= got3 <= 31_002, (
+        f"a plate of 31,000 triangles with one part placed 8 times counted "
+        f"{got3}")
+    assert got3 <= builder.MAX_IMPORT_TRIANGLES, (
+        f"{got3:,} would refuse a 31,000-triangle plate as too dense")
+
+    # The zip-bomb sentinel still fires, and now on the TOTAL declared size:
+    # three parts of 40 MiB each are past the 64 MiB scan window together while
+    # none of them is past it alone.
+    bomb = os.path.join(d, "bomb.3mf")
+    with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as z:
+        for i in (1, 2, 3):
+            z.writestr(f"3D/Objects/object_{i}.model", b"\0" * (40 * 1024 * 1024))
+    assert builder._peek_triangle_count(bomb, "3mf") > builder.MAX_IMPORT_TRIANGLES, \
+        "a 120 MiB 3MF split across three parts walked straight past the scan window"
+    print(f"  3MF peek OK: {got:,} triangles across 2 parts, {got2:,} for a "
+          f"part placed twice, {got3:,} for a mixed plate, split zip bomb refused")
+
+
+def test_a_loose_shell_is_judged_as_a_body_of_its_own():
+    """A mesh file mixing a watertight and a non-watertight object.
+
+    build123d hands back a bare Shell for anything that does not close
+    (Mesher._get_shape returns the outer shell when it is not manifold), so
+    such a file sews to a compound holding a Solid AND a Shell. _explode_solids
+    fell back to the whole shape only when there were NO solids, so on a mixed
+    compound it returned just the solid — and the caller's face gates are both
+    computed from that list. Measured on a 3MF holding a clean box plus an open
+    scanned strip: 60 of the compound's 66 faces were counted by neither
+    MAX_IMPORT_FACES nor the whole-file backstop, and the organic body rode
+    into the document unjudged."""
+    from build123d import Box, Compound, Shell
+
+    from builder import _explode_solids
+
+    solid = Box(10, 10, 10)
+    # an OPEN shell: a box's faces minus one, so it cannot close into a solid
+    open_shell = Shell(Box(6, 6, 6).faces()[:-1])
+    assert len(open_shell.solids()) == 0, "the fixture stopped being a loose shell"
+    mixed = Compound([solid, open_shell])
+
+    bodies = _explode_solids(mixed)
+    per_body = [len(b.faces()) for b in bodies]
+    assert len(bodies) == 2, (
+        f"a solid + a loose shell is two bodies, the gate saw {len(bodies)}: "
+        f"{per_body}")
+    assert sum(per_body) == len(mixed.faces()), (
+        f"the gates judge {sum(per_body)} of the compound's "
+        f"{len(mixed.faces())} faces — the difference is invisible to both "
+        f"MAX_IMPORT_FACES and MAX_IMPORT_TOTAL_FACES")
+
+    # a shape with no solid at all is still one body, and a plain solid is not
+    # double-counted by the loose-child pass
+    assert len(_explode_solids(open_shell)) == 1
+    assert [len(b.faces()) for b in _explode_solids(Compound([solid]))] == [6]
+    print(f"  loose-shell body OK: {per_body} faces over 2 bodies, "
+          f"{sum(per_body)} of {len(mixed.faces())} judged")
+
+
 def test_unify_body():
     """cleanUp's inter-solid unify: a body whose boolean joins left glued,
     interpenetrating solids plus an inside-out duplicate fuses into ONE clean
@@ -3121,6 +3328,9 @@ if __name__ == "__main__":
     test_canonicalize_import()
     test_tool_fill()
     test_refacet_clean()
+    test_the_face_limit_is_judged_per_body()
+    test_peek_counts_every_model_part_of_a_3mf()
+    test_a_loose_shell_is_judged_as_a_body_of_its_own()
     test_unify_body()
     test_error_continues()
     test_delete_face_retarget()

@@ -701,7 +701,10 @@ def _fake_meshes(ntri):
     the end a bytes-per-triangle guess under-counts — which is the direction
     that reaps a healthy import.
 
-    Returns [(label, path, fmt, ntri)]."""
+    Returns [(label, path, fmt, ntri, slack)], where `slack` is how many counts
+    over `ntri` the encoding is allowed to read: "<triangle" also matches each
+    .model part's own <triangles> container element, so a 3MF is over by one
+    PER PART. Over, never under."""
     import json as _json
     import struct
     import tempfile
@@ -720,25 +723,44 @@ def _fake_meshes(ntri):
              b"vertex 0 1 0\nendloop\nendfacet\n")
     out.append(("ascii STL, compact floats",
                 _w("compact.stl", b"solid x\n" + facet * ntri + b"endsolid x\n"),
-                "stl", ntri))
+                "stl", ntri, 0))
     out.append(("OBJ, triangle faces",
                 _w("tri.obj", b"v 0 0 0\n" * (ntri * 3) + b"f 1 2 3\n" * ntri),
-                "obj", ntri))
+                "obj", ntri, 0))
     # Blender's default export is QUADS: half as many `f` lines as triangles,
     # so a face-line count (which is what builder._peek_triangle_count does) is
     # exactly 0.5x here and the budget it buys is 0.25x.
     nquad = ntri // 2
     out.append(("OBJ, quad faces (fanned)",
                 _w("quad.obj", b"v 0 0 0\n" * (nquad * 4) + b"f 1 2 3 4\n" * nquad),
-                "obj", nquad * 2))
-    model = (b'<?xml version="1.0"?><model><resources><object id="1"><mesh>'
-             b"<vertices/><triangles>"
-             + b'<triangle v1="0" v2="1" v3="2"/>' * ntri
-             + b"</triangles></mesh></object></resources></model>")
+                "obj", nquad * 2, 0))
+    tri = b'<triangle v1="0" v2="1" v3="2"/>'
+
+    def _mesh_part(n, oid=1):
+        return (b'<?xml version="1.0"?><model><resources><object id="%d"><mesh>'
+                % oid + b"<vertices/><triangles>" + tri * n
+                + b"</triangles></mesh></object></resources></model>")
+
     p3 = os.path.join(d, "m.3mf")
     with zipfile.ZipFile(p3, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("3D/3dmodel.model", model)
-    out.append(("3MF", p3, "3mf", ntri))
+        z.writestr("3D/3dmodel.model", _mesh_part(ntri))
+    out.append(("3MF", p3, "3mf", ntri, 1))
+    # A Bambu Studio / Orca / PrusaSlicer PROJECT file, which is what a user
+    # actually saves: the 3MF production extension puts each object in its own
+    # part under 3D/Objects/, and 3D/3dmodel.model is left as a manifest of
+    # <build><item> references holding ZERO triangles. Reading only the first
+    # .model part therefore counts nothing at all (GH #49: the reporter's
+    # 9,268-triangle file estimated 122 triangles and got the budget floor).
+    half = ntri // 2
+    pb = os.path.join(d, "bambu.3mf")
+    with zipfile.ZipFile(pb, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model",
+                   b'<?xml version="1.0"?><model><resources/><build>'
+                   b'<item objectid="2"/><item objectid="3"/>'
+                   b"</build></model>")
+        z.writestr("3D/Objects/object_2.model", _mesh_part(half, 2))
+        z.writestr("3D/Objects/object_3.model", _mesh_part(ntri - half, 3))
+    out.append(("3MF, Bambu project (geometry in 3D/Objects)", pb, "3mf", ntri, 2))
     # A GLB's triangle count lives in its accessors, and the file itself can be
     # a few hundred bytes however dense the mesh is — which is why sizing it
     # from BYTES is hopeless rather than merely inaccurate.
@@ -752,8 +774,8 @@ def _fake_meshes(ntri):
     doc += b" " * (-len(doc) % 4)  # glTF requires 4-byte chunk alignment
     glb = (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(doc))
            + struct.pack("<I", len(doc)) + b"JSON" + doc)
-    out.append(("GLB", _w("m.glb", glb), "glb", ntri))
-    out.append(("binary STL", _fake_binary_stl(ntri), "stl", ntri))
+    out.append(("GLB", _w("m.glb", glb), "glb", ntri, 0))
+    out.append(("binary STL", _fake_binary_stl(ntri), "stl", ntri, 0))
     return d, out
 
 
@@ -783,11 +805,12 @@ def test_the_triangle_count_is_exact_for_every_mesh_encoding():
     d, fixtures = _fake_meshes(ntri)
     try:
         worst = 1e9
-        for label, path, fmt, truth in fixtures:
+        for label, path, fmt, truth, slack in fixtures:
             got = server._mesh_triangle_estimate(path, fmt)
-            # +1 tolerance: "<triangle" also matches 3MF's own <triangles>
-            # container element. Over by one, never under.
-            assert truth <= got <= truth + 1, (
+            # `slack` is the container-element tolerance the encoding earns:
+            # "<triangle" also matches 3MF's own <triangles> element, once per
+            # .model part. Over by that much, never under.
+            assert truth <= got <= truth + slack, (
                 "%s: counted %d triangles, not %d (%.2fx) — %.1f B/tri"
                 % (label, got, truth, got / truth,
                    os.path.getsize(path) / truth))
@@ -799,7 +822,7 @@ def test_the_triangle_count_is_exact_for_every_mesh_encoding():
             assert budget >= server._mesh_import_budget(truth), (
                 "%s: handed a %.0fs deadline for a read that honestly needs "
                 "%.0fs" % (label, budget, server._mesh_import_budget(truth)))
-            assert budget <= server._mesh_import_budget(truth + 1), (
+            assert budget <= server._mesh_import_budget(truth + slack), (
                 "%s: %.0fs is more than the honest %.0fs — the watchdog is "
                 "being softened, not fixed"
                 % (label, budget, server._mesh_import_budget(truth)))
@@ -808,6 +831,93 @@ def test_the_triangle_count_is_exact_for_every_mesh_encoding():
               f"{ntri:,} tri; tightest budget {worst:.2f}x the honest one")
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _multipart_3mf(path, per_part, items=None):
+    """A production-extension 3MF: a manifest root plus one .model part per
+    entry of `per_part` (its triangle count). `items` is the objectid list the
+    root's <build> places, defaulting to one item per part."""
+    import zipfile
+
+    tri = b'<triangle v1="0" v2="1" v3="2"/>'
+    oids = list(range(2, 2 + len(per_part))) if items is None else items
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model",
+                   b'<?xml version="1.0"?><model><resources/><build>'
+                   + b"".join(b'<item objectid="%d"/>' % o for o in oids)
+                   + b"</build></model>")
+        for i, n in enumerate(per_part):
+            z.writestr("3D/Objects/object_%d.model" % (i + 2),
+                       b'<?xml version="1.0"?><model><resources><object id="%d">'
+                       % (i + 2) + b"<mesh><vertices/><triangles>" + tri * n
+                       + b"</triangles></mesh></object></resources></model>")
+    return path
+
+
+def test_an_instanced_3mf_counts_what_gets_built():
+    """Two things the multi-part count must not get wrong.
+
+    INSTANCING. The 3MF production extension lets one part be PLACED several
+    times by <build><item>. Those placements are NOT counted, because nothing
+    builds them: build123d's Mesher walks GetMeshObjects() and never reads a
+    build item, so a part placed twice is READ ONCE — measured, one 12-face box
+    placed 1, 2 and 20 times reads back as a single 12-face shape every time.
+    Scaling by the placements was not erring long in a safe direction, it was
+    counting geometry no code path produces; the deadline this number sizes
+    does not scale with placements either.
+
+    THE SCAN WINDOW. MAX_IMPORT_SCAN_BYTES is a budget for the WHOLE file, not
+    for each part: a bomb split into 100 parts that are each under the window
+    must still refuse. With the window shrunk to just over one part, the exact
+    count has to give up and the estimate fall back to bytes rather than walk
+    them all."""
+    import tempfile
+
+    import server
+
+    d = tempfile.mkdtemp(prefix="sindri-3mf-parts-")
+    real = server.MAX_IMPORT_SCAN_BYTES
+    try:
+        # one part, placed twice: 2,000 on disk and 2,000 read (+1 container).
+        # Asserted against the SAME part placed once, so the test fails if the
+        # placements ever start moving the number again.
+        inst = _multipart_3mf(os.path.join(d, "instanced.3mf"), [2_000],
+                              items=[2, 2])
+        got = server._mesh_triangle_estimate(inst, "3mf")
+        once = _multipart_3mf(os.path.join(d, "once.3mf"), [2_000], items=[2])
+        plain = server._mesh_triangle_estimate(once, "3mf")
+        assert got == plain, (
+            "placing a part twice changed the count (%d vs %d) — the reader "
+            "builds one copy either way" % (got, plain))
+        assert 2_000 <= got <= 2_002, (
+            "2 items placing 1 part counted %d, want the ~2,000 that gets "
+            "read" % got)
+
+        four = _multipart_3mf(os.path.join(d, "four.3mf"), [500] * 4)
+        exact = server._mesh_triangle_estimate(four, "3mf")
+        assert 2_000 <= exact <= 2_004, exact
+        one_part_bytes = 500 * len(b'<triangle v1="0" v2="1" v3="2"/>')
+        server.MAX_IMPORT_SCAN_BYTES = one_part_bytes + 512
+        # The EXACT count is what the window governs, and giving up is the only
+        # thing here that a per-part budget can break on its own. Asserted
+        # BEFORE the estimate below: `capped > exact` also goes red when the
+        # byte fallback breaks (a different hunk, in a different function), so
+        # leading with it named the wrong cause — it reported "the scan window
+        # is being spent PER PART" while the window was working perfectly.
+        assert server._mesh_triangle_count(four, "3mf") is None, (
+            "the scan window is being spent PER PART: four parts still counted "
+            "exactly with a window that fits one")
+        capped = server._mesh_triangle_estimate(four, "3mf")
+        assert capped > exact, (
+            "a given-up count must fall back to the byte estimate and err "
+            "LONG: got %d against an exact %d — either the fallback is not "
+            "summing every .model part, or it is not being reached"
+            % (capped, exact))
+    finally:
+        server.MAX_IMPORT_SCAN_BYTES = real
+        shutil.rmtree(d, ignore_errors=True)
+    print(f"{PASS} an instanced 3MF counts the {got:,} triangles it actually "
+          f"reads, and the scan window is spent across parts, not per part")
 
 
 def test_an_uncountable_mesh_errs_LONG_rather_than_short():
@@ -833,7 +943,7 @@ def test_an_uncountable_mesh_errs_LONG_rather_than_short():
     real = server.MAX_IMPORT_SCAN_BYTES
     try:
         server.MAX_IMPORT_SCAN_BYTES = 4096  # every text fixture is past this
-        for label, path, fmt, truth in fixtures:
+        for label, path, fmt, truth, _slack in fixtures:
             if fmt == "glb" or label == "binary STL":
                 continue  # neither is scanned: both count from a header
             got = server._mesh_triangle_estimate(path, fmt)
@@ -1064,6 +1174,7 @@ if __name__ == "__main__":
     test_the_stall_line_names_the_phase_it_reaped()
     test_a_mesh_import_is_budgeted_by_triangles_not_bytes()
     test_the_triangle_count_is_exact_for_every_mesh_encoding()
+    test_an_instanced_3mf_counts_what_gets_built()
     test_an_uncountable_mesh_errs_LONG_rather_than_short()
     test_the_budget_clears_every_import_measured_across_the_range()
     test_the_import_budget_cannot_be_talked_into_infinity()

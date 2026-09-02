@@ -878,6 +878,18 @@ MAX_IMPORT_TRIANGLES = 150_000  # reject before the slow read (avoids the timeou
 MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/curved,
                                 # not a clean editable model (a prismatic CAD part —
                                 # even with fillets — merges to far fewer faces).
+                                # Judged PER BODY: the number was calibrated on single
+                                # parts, and charging a two-object project file the SUM
+                                # of its bodies refused files whose bodies each passed
+                                # (GH #49: 1,850 + 1,737 against a 2,000 limit).
+# The whole-file backstop that per-body limiting needs. This is a VIEWPORT COST
+# guard, not an editability judgement: MAX_IMPORT_FACES asks "is this one body a
+# clean CAD part", this one asks "can we draw all of it at once". Without it a
+# genuinely organic file split into 50 sub-2,000-face bodies walks straight in at
+# ~100k faces. 20,000 is a FIRST GUESS, not a measured ceiling — nobody has
+# measured where the viewport actually starts to hurt, so treat it as a number to
+# revisit with a real measurement, not as a calibrated one.
+MAX_IMPORT_TOTAL_FACES = 20_000
 # Untrusted-input guards (an import path or embedded BREP comes from a .sindri doc
 # the user opened, which may be hostile). Caps bound the worst case BEFORE a heavy
 # read/parse, so a crafted file can't OOM the worker or aim a parser fuzz at OCCT.
@@ -936,7 +948,24 @@ def _peek_triangle_count(path, fmt):
     """Best-effort triangle count straight from the file, WITHOUT building a B-rep,
     so a too-dense import fails fast. Streams large files in chunks (stops past the
     cap) so a multi-GB ASCII STL or a lying-header 3MF can't be slurped into memory.
-    Returns None when it can't tell."""
+    Returns None when it can't tell.
+
+    A 3MF is summed over EVERY .model part, not just the first: the production
+    extension that Bambu, Orca and PrusaSlicer write leaves 3D/3dmodel.model as
+    a manifest of <build><item> references with zero triangles and puts the
+    geometry in 3D/Objects/*.model, so reading the first part alone counted 0
+    for the whole file (GH #49). The sum errs LONG by one per part, for that
+    part's <triangles> container element.
+
+    The placements in <build> are deliberately NOT counted. build123d's Mesher
+    reads GetMeshObjects() and never looks at a build item, so a part placed 20
+    times is read ONCE: measured, a production-extension 3MF placing one 12-face
+    box 1, 2 and 20 times reads back as one shape of 12 faces and volume 1000
+    every time. Scaling the sum by the placements charged this gate for geometry
+    that is never built, and because the gate is a HARD REFUSAL (see
+    import_geometry) erring long here means rejecting a healthy plate with a
+    fabricated number in the message: one 40,000-triangle part placed 4 times
+    was refused as "~160,004 triangles"."""
     cap = MAX_IMPORT_TRIANGLES
     try:
         if fmt == "stl":
@@ -950,16 +979,29 @@ def _peek_triangle_count(path, fmt):
         if fmt == "3mf":
             import zipfile
             with zipfile.ZipFile(path) as z:
-                model = next((n for n in z.namelist() if n.lower().endswith(".model")), None)
-                if not model:
+                parts = [n for n in z.namelist() if n.lower().endswith(".model")]
+                if not parts:
                     return None
-                # zip-bomb guard: the declared UNCOMPRESSED model size is in the
-                # central directory (no decompress). If it's past the scan window,
-                # return a sentinel above the cap so the caller rejects it.
-                if z.getinfo(model).file_size > MAX_IMPORT_SCAN_BYTES:
+                # zip-bomb guard: the declared UNCOMPRESSED sizes are in the
+                # central directory (no decompress), and the budget is the TOTAL
+                # over every part — 100 parts of 63 MiB each are a bomb even
+                # though none of them is one alone. Past the scan window, return
+                # a sentinel above the cap so the caller rejects it.
+                if sum(z.getinfo(n).file_size for n in parts) > MAX_IMPORT_SCAN_BYTES:
                     return cap + 1
-                with z.open(model) as fh:  # stream-decompress, bounded by max_bytes
-                    return _count_stream(fh, b"<triangle", cap, MAX_IMPORT_SCAN_BYTES)
+                total = 0
+                budget = MAX_IMPORT_SCAN_BYTES
+                for nm in parts:
+                    size = z.getinfo(nm).file_size
+                    with z.open(nm) as fh:  # stream-decompress, bounded by budget
+                        total += _count_stream(fh, b"<triangle", cap, budget)
+                    # Charged ONCE per part. The guard above bounds the sum of
+                    # the parts by the window, so budget >= size on every pass
+                    # and `_count_stream` can never be handed an exhausted
+                    # window — which matters because it returns a FLOOR when it
+                    # is cut short, and this function has no way to say so.
+                    budget -= size
+                return total
         if fmt == "obj":
             n = 0
             with open(path, "rb") as fh:
@@ -972,6 +1014,29 @@ def _peek_triangle_count(path, fmt):
     except Exception:
         return None
     return None
+
+
+def _loose_children(shape):
+    """The DIRECT children of a compound that carry no solid of their own.
+
+    Direct children, not `.shells()`: every solid owns a shell, so shelling the
+    whole shape would count each solid twice."""
+    w = getattr(shape, "wrapped", None)
+    if w is None:
+        return []
+    from OCP.TopAbs import TopAbs_ShapeEnum
+    from OCP.TopoDS import TopoDS_Iterator
+
+    if w.ShapeType() != TopAbs_ShapeEnum.TopAbs_COMPOUND:
+        return []
+    out = []
+    it = TopoDS_Iterator(w)
+    while it.More():
+        child = _wrap_topods(it.Value())
+        if child is not None and not child.solids():
+            out.append(child)
+        it.Next()
+    return out
 
 
 def _explode_solids(shape):
@@ -998,6 +1063,16 @@ def _explode_solids(shape):
             bld.MakeSolid(mk)
             bld.Add(mk, sh.wrapped)
             out.append(_maybe_unify(_wrap_topods(mk)))
+    # A compound can MIX a solid with a non-solid, and the `if not solids`
+    # fallback above never fires for it. A mesh file holding one watertight and
+    # one non-watertight object sews to exactly that: build123d hands back a
+    # Shell for anything that does not close (Mesher._get_shape returns the bare
+    # outer shell when `not outer_shell.is_manifold`). Dropping those made the
+    # caller's per-body face gates blind to them — measured, 60 of a compound's
+    # 66 faces were counted by neither MAX_IMPORT_FACES nor the whole-file
+    # backstop, so a scanned organic part rode into the document alongside a
+    # clean bracket. Judge each loose child as a body in its own right.
+    out.extend(_loose_children(shape))
     return out
 
 
@@ -1293,12 +1368,30 @@ def _sew_mesh_file(path):
     # import is genuinely editable — crisp faces, crisp edges (best-effort;
     # returns the input unchanged on any doubt)
     shape = _refacet_clean(shape)
-    nf = len(shape.faces())
+    # Judged PER BODY. "Did this reduce to something editable" is a question
+    # about ONE part, and a project file from Bambu, Orca or PrusaSlicer is
+    # inherently several parts, so summing them charged a multi-object plate N
+    # times the budget of the same parts imported one at a time (GH #49).
+    bodies = _explode_solids(shape) or [shape]
+    per_body = [len(b.faces()) for b in bodies]
+    nf = max(per_body)
     if nf > MAX_IMPORT_FACES:
+        # Name the offending body: with twelve objects in the file, a bare
+        # number says nothing about WHICH one is the organic mesh.
+        which = (f"body {per_body.index(nf) + 1} of {len(per_body)} has "
+                 f"{nf:,} faces" if len(per_body) > 1 else f"{nf:,} faces")
         raise ValueError(
-            f"This mesh didn't reduce to a clean editable model ({nf:,} faces — a "
-            f"curved/organic surface stays faceted). SindriCAD edits prismatic CAD "
-            f"models; import a STEP or a flat-faced part."
+            f"This mesh didn't reduce to a clean editable model ({which}; a "
+            f"curved/organic surface stays faceted). SindriCAD edits prismatic "
+            f"CAD models; import a STEP or a flat-faced part."
+        )
+    total = sum(per_body)
+    if total > MAX_IMPORT_TOTAL_FACES:
+        raise ValueError(
+            f"This file has too much detail to open ({total:,} faces across "
+            f"{len(per_body):,} bodies, the limit is {MAX_IMPORT_TOTAL_FACES:,}). "
+            f"Each part is simple enough on its own, so import fewer objects at "
+            f"a time."
         )
     return shape
 

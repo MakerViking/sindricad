@@ -3034,19 +3034,35 @@ def _mesh_triangle_count(path, fmt):
                                             MAX_IMPORT_SCAN_BYTES)
             return n if (complete and n) else None
         if fmt == "3mf":
-            # The .model's UNCOMPRESSED size comes from the zip central
-            # directory, so the bomb check costs no decompression; the count
-            # itself streams the model through the same bounded window.
+            # Summed over EVERY .model part, not just the first: the production
+            # extension that Bambu, Orca and PrusaSlicer write leaves
+            # 3D/3dmodel.model as a manifest of <build><item> references with
+            # zero triangles and puts the geometry in 3D/Objects/*.model, so
+            # reading the first part alone counted 0 for the whole file (GH #49).
+            #
+            # The UNCOMPRESSED sizes come from the zip central directory, so the
+            # bomb check costs no decompression; the counts stream through a
+            # window that is a RUNNING TOTAL across the parts, because 100 parts
+            # of 63 MiB each are a bomb even though none of them is one alone.
             import zipfile
 
             with zipfile.ZipFile(path) as z:
-                model = next((nm for nm in z.namelist()
-                              if nm.lower().endswith(".model")), None)
-                if model is None or z.getinfo(model).file_size > MAX_IMPORT_SCAN_BYTES:
+                parts = [nm for nm in z.namelist()
+                         if nm.lower().endswith(".model")]
+                if not parts:
                     return None
-                with z.open(model) as fh:
-                    n, complete = _count_needle(fh, b"<triangle", cap,
-                                                MAX_IMPORT_SCAN_BYTES)
+                budget = MAX_IMPORT_SCAN_BYTES
+                n = 0
+                complete = True
+                for nm in parts:
+                    size = z.getinfo(nm).file_size
+                    if size > budget:
+                        return None     # past the window: not countable cheaply
+                    with z.open(nm) as fh:
+                        got, ok = _count_needle(fh, b"<triangle", cap, budget)
+                    budget -= size
+                    complete = complete and ok
+                    n += got
             return n if (complete and n) else None
         if fmt == "obj":
             n = _obj_triangle_count(path, cap, MAX_IMPORT_SCAN_BYTES)
@@ -3069,9 +3085,22 @@ def _mesh_triangle_estimate(path, fmt):
 
         binary STL  uint32 at byte 80 (and the 84 + 50n size identity)
         ASCII STL   one "facet normal" per triangle
-        3MF         one "<triangle" per triangle, stream-decompressed
         OBJ         corners of every `f` line, minus 2 per line (fan)
         glTF/GLB    accessor counts in the JSON chunk, times node instances
+
+    3MF is the exception, and it errs LONG on purpose: one "<triangle" per
+    triangle summed over EVERY .model part (the production extension that Bambu
+    and Orca write puts each object in its own part under 3D/Objects/), which
+    over-counts by one per part for the <triangles> container element. The
+    direction is deliberate — a count that is short buys a short deadline, and
+    a short deadline reaps a healthy import.
+
+    The <build> placements are NOT counted, and scaling by them would not be
+    erring long in a safe direction — it would be counting geometry that is
+    never read. build123d's Mesher walks GetMeshObjects() and ignores build
+    items entirely, so a part placed 20 times is read once (measured: 1, 2 and
+    20 placements of the same part all read back as one 12-face shape). The read
+    work this deadline sizes therefore does not scale with placements either.
 
     Deliberately NOT builder._peek_triangle_count, which is the same idea:
     importing builder pulls build123d — and its import-time system font scan,
@@ -3099,9 +3128,14 @@ def _mesh_triangle_estimate(path, fmt):
             import zipfile
 
             with zipfile.ZipFile(path) as z:
-                model = next((nm for nm in z.namelist()
-                              if nm.lower().endswith(".model")), None)
-                size = z.getinfo(model).file_size if model else size
+                # Every .model part, for the same reason the exact count sums
+                # them: a Bambu/Orca project's root part is a manifest of a few
+                # hundred bytes and the geometry is in 3D/Objects/*.model, so
+                # sizing from the first part alone read ~122 triangles for a
+                # 9,268-triangle file (GH #49).
+                parts = sum(z.getinfo(nm).file_size for nm in z.namelist()
+                            if nm.lower().endswith(".model"))
+                size = parts or size
         return int(size / per)
     except Exception:
         return 0  # unreadable/odd file: fall back to the byte-derived budget
