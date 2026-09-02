@@ -1,0 +1,33 @@
+# The read-only MCP server, as its OWN crate rather than a second `[[bin]]` of
+# the app.
+#
+# It was a bin of `sindricad` first, and that broke the Windows MSI: WiX refused
+# with ICE30, "the target file 'sindri-mcp.exe' is installed by two different
+# components", because Tauri's bundler picks up the app package's extra binary
+# AND `externalBin` stages the same file. Two components, one path, no install.
+#
+# Separating it fixes that at the root and removes the `default-run` workaround
+# the same coupling forced — `tauri build` no longer produces this binary at all,
+# so nothing can double-install it.
+#
+# NOT a workspace member of src-tauri, deliberately: sharing target/release is
+# exactly what let the bundler see it.
+#
+# It links none of the app: no Tauri, no webview, no OCCT. serde_json is the only
+# real dependency, which is why the JSON-RPC here is hand-rolled rather than
+# pulling the MCP SDK — Cargo has no release-age gate the way npm and bun do on
+# this machine, and this binary ships in the installer.
+[package]
+name = "sindri-mcp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "AGPL-3.0-only"
+description = "Read-only MCP server for the document open in SindriCAD"
+
+[[bin]]
+name = "sindri-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"

@@ -5,6 +5,7 @@
 
 #[cfg(feature = "rust-geom")]
 mod geom;
+mod agent_ipc;
 // `pub` so the cross-language seam test (tests/container_seam.rs) can drive the
 // container the way `container_save` / `container_open` do. Nothing outside the
 // crate consumes it in the app itself.
@@ -307,7 +308,8 @@ pub fn run() {
         tinkeratlas::ta_publish,
         tinkeratlas::ta_avatar,
         tinkeratlas::ta_bug_report,
-        spacemouse::spacemouse_inventory
+        spacemouse::spacemouse_inventory,
+        agent_ipc::agent_result
     ]);
     #[cfg(not(feature = "rust-geom"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -348,7 +350,8 @@ pub fn run() {
         tinkeratlas::ta_publish,
         tinkeratlas::ta_avatar,
         tinkeratlas::ta_bug_report,
-        spacemouse::spacemouse_inventory
+        spacemouse::spacemouse_inventory,
+        agent_ipc::agent_result
     ]);
 
     let app = builder
@@ -372,6 +375,9 @@ pub fn run() {
             // anyway, and counting it would eat into the timeout.
             app.manage(FrontendReady(std::sync::atomic::AtomicBool::new(false)));
             watch_frontend_load(app.handle().clone());
+            // The agent bridge (read-only MCP). Best-effort by design: if it
+            // cannot bind, the app is exactly the app it was before.
+            agent_ipc::start(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -379,6 +385,9 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
+            // Before the sidecar: a stale socket would make the next launch's
+            // shim connect to a path nothing is listening on.
+            agent_ipc::shutdown(app_handle);
             if let Some(s) = app_handle.try_state::<Sidecar>() {
                 s.kill();
             }
