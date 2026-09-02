@@ -972,3 +972,61 @@ describe("an edit carries the inspector-only values through", () => {
     expect(carried.editUpToOffset, "a fresh extrude inherited a target offset").toBeUndefined();
   });
 });
+
+// GH #41: an up-to target was permanent once committed. `commit` writes what
+// the tool holds and deletes what it does not, so a gesture that empties both
+// target fields is all the tool half needs — and because the Taper row is
+// hidden while a target exists, this is what makes taper reachable again on a
+// feature that was once aimed at a face. The inspector's own "Up to" row is the
+// primary control; Shift-T is parity for someone already in the tool.
+describe("Shift-T clears the up-to target of the feature being edited", () => {
+  const withTarget = (extra: Record<string, unknown>) =>
+    doc(shell(), {
+      regions: [[45, 0, 0]],
+      regionEntities: [["outer"]],
+      regionHoleEntities: [[["inner"]]],
+      ...extra,
+    });
+  const shiftT = (tool: ReturnType<typeof harness>["tool"]) =>
+    (tool as unknown as { onKey: (e: KeyboardEvent) => void }).onKey(
+      { key: "T", shiftKey: true, target: null } as unknown as KeyboardEvent,
+    );
+
+  it("commits a plain-distance extrude, keeping the saved depth", async () => {
+    const { tool, written, commit } = harness(withTarget({ upToPlane: "XY", upToOffset: 3 }));
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+
+    shiftT(tool);
+    await commit();
+
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.upToPlane, "the up-to plane survived the clear gesture").toBeUndefined();
+    expect(f.upTo, "the up-to face survived the clear gesture").toBeUndefined();
+    expect(f.upToOffset, "an orphan target offset was written").toBeUndefined();
+    expect(f.distance, "clearing the target must restore the saved depth").toBe(5);
+  });
+
+  it("clears a picked FACE target too", async () => {
+    const FACE = { kind: "face", by: "nearest", point: [0, 0, 10] };
+    const { tool, written, commit } = harness(withTarget({ upTo: FACE }));
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+
+    shiftT(tool);
+    await commit();
+
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.upTo, "the up-to face survived the clear gesture").toBeUndefined();
+    expect(f.distance).toBe(5);
+  });
+
+  it("leaves an untouched target alone — only the gesture clears it", async () => {
+    const { tool, written, commit } = harness(withTarget({ upToPlane: "XY", upToOffset: 3 }));
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+
+    await commit();
+
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.upToPlane).toBe("XY");
+    expect(f.upToOffset).toBe(3);
+  });
+});

@@ -12,8 +12,9 @@ import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, p
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities, toSketchEntity } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
-import { FEATURE_NUM_FIELDS as NUM_FIELDS } from "../document/numFields";
+import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
+import { icon } from "./icons";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
@@ -184,6 +185,22 @@ export class Inspector {
       }
       box.appendChild(row);
     }
+
+    // The up-to target is not a number, so it cannot live in FEATURE_NUM_FIELDS
+    // with the rows above — and until this row existed nothing in the app could
+    // delete one. An extrude or press/pull committed with "up to that face" was
+    // aimed at it forever, which also meant Taper (hidden while a target exists)
+    // was out of reach forever. GH #41.
+    if (hasUpToTarget(f)) {
+      const planeId = (f as { upToPlane?: string }).upToPlane;
+      const target = planeId === undefined ? "Picked face" : planeLabel(this.store.document.features, planeId);
+      box.appendChild(
+        targetRow(target, () => {
+          this.store.clearUpToTarget(f.id);
+          this.render();
+        }),
+      );
+    }
   }
 
   /** Route raw field input: plain number → display-unit value write (keeps a
@@ -199,6 +216,18 @@ export class Inspector {
     }
     return this.store.setTargetExpr(target, raw, kind);
   }
+}
+
+/** The name the browser tree shows for an up-to plane: "XY plane" for an origin
+ *  plane, a datum's own name (a rename wins) or "PlaneN" by its position among
+ *  the datums, and the raw id only if nothing in the document matches — a
+ *  deleted datum must never make the inspector throw mid-render. */
+function planeLabel(features: readonly Feature[], id: string): string {
+  if (id === "XY" || id === "XZ" || id === "YZ") return `${id} plane`;
+  const datums = features.filter((f) => f.type === "datumPlane");
+  const i = datums.findIndex((f) => f.id === id);
+  if (i < 0) return id;
+  return (datums[i] as { name?: string }).name || `Plane${i + 1}`;
 }
 
 function title(text: string, spaced = false): HTMLElement {
@@ -234,5 +263,36 @@ function textRow(label: string, value: string, commit: (raw: string) => string |
   // text input so an expression / parameter name is allowed
   const input = validatedInput(value, commit, "number, parameter name, or expression (e.g. width/2 + 5)");
   row.append(lab, input);
+  return row;
+}
+
+/** The "Up to" row: what this feature is aimed at, and the only control that
+ *  un-aims it. Read-only text rather than an input — the value is a datum id or
+ *  a picked face, neither of which can be typed. The row keeps the panel's
+ *  two-column grid: the name and the button share the second column, which
+ *  `.param-row-target` widens for them. Without that the fixed 84px input track
+ *  left 58px for the text, and "Picked face" needs 68.5px — measured, the
+ *  button wrapped onto a second line under the name and the row rendered 38px
+ *  tall against its neighbours' 29px. */
+function targetRow(value: string, onClear: () => void): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "param-row param-row-target";
+  const lab = document.createElement("label");
+  lab.textContent = "Up to";
+  const cell = document.createElement("span");
+  cell.className = "param-target";
+  const name = document.createElement("span");
+  name.textContent = value;
+  name.title = value;
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "params-del";
+  clear.title = "Clear the up-to target and extrude by distance instead";
+  // icon-only control: the accessible name has to come from the button itself
+  clear.setAttribute("aria-label", "Clear the up-to target");
+  clear.innerHTML = icon("close");
+  clear.addEventListener("click", onClear);
+  cell.append(name, clear);
+  row.append(lab, cell);
   return row;
 }

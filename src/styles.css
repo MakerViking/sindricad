@@ -1332,6 +1332,24 @@ button.active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The "Up to" row's value is text + a clear button, not an input. It needs more
+   than the 84px input track ("Picked face" alone measures 68.5px against the
+   58px left after the button) but keeps the same right edge, so the column
+   still lines up with the inputs above it. */
+.param-row-target {
+  grid-template-columns: 1fr 110px;
+}
+.param-target {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.param-target > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .param-row input {
   background: var(--panel-2);
   border: 1px solid var(--line-strong);

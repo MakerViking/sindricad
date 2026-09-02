@@ -10,7 +10,7 @@ import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
-import { writeTarget } from "./numFields";
+import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
  *  dim isn't in the document until the sketch commits, so the binding travels
@@ -823,6 +823,45 @@ export class DocumentStore {
       const i = d.features.findIndex((f) => f.id === id);
       if (i >= 0) d.features[i] = { ...d.features[i], ...patch } as Feature;
     });
+  }
+
+  /** Drop an extrude / press-pull's up-to target and go back to a plain
+   *  distance. Nothing else in the app could delete `upTo`/`upToPlane`, so a
+   *  feature committed with "up to that face" was stuck with it — and taper,
+   *  which the inspector hides while a target exists, was stuck out of reach
+   *  with it (GH #41).
+   *
+   *  The keys are DELETED, not set to undefined: `hasUpToTarget` and the sidecar
+   *  both read presence, and a key holding undefined is still a key to every
+   *  `in`/Object.keys reader on the way to the wire.
+   *
+   *  A parameter bound to `upToOffset` is deleted along with the target. That
+   *  removes a binding the USER authored, deliberately: the offset is illegal
+   *  the moment the target goes (the sidecar refuses an offset with nothing to
+   *  offset from), and leaving the def in place means the recompute inside this
+   *  very mutate writes the orphan straight back. */
+  clearUpToTarget(id: string) {
+    const f = this.doc.features.find((x) => x.id === id) as (Feature & { upTo?: unknown; upToPlane?: unknown }) | undefined;
+    if (!f || (f.upTo === undefined && f.upToPlane === undefined)) return;
+    this.mutate((d) => {
+      const i = d.features.findIndex((x) => x.id === id);
+      if (i < 0) return;
+      const next = { ...d.features[i] } as Feature & { upTo?: unknown; upToPlane?: unknown; upToOffset?: unknown; distance?: unknown };
+      delete next.upTo;
+      delete next.upToPlane;
+      delete next.upToOffset;
+      // An up-to feature never read its distance, so it can legitimately be 0 —
+      // and a plain extrude of 0 is refused by the sidecar. Give the user the
+      // same depth a fresh extrude starts at rather than a red timeline chip.
+      if (next.distance === undefined || next.distance === 0) next.distance = DEFAULT_EXTRUDE_DISTANCE;
+      d.features[i] = next as Feature;
+      const defs = d.paramDefs;
+      if (!defs) return;
+      for (const [name, def] of Object.entries(defs)) {
+        const t = def.target;
+        if (t?.kind === "feature" && t.feature === id && t.field === "upToOffset") delete defs[name];
+      }
+    }, true); // a structural feature change, like replaceFeature — rebuild now
   }
 
   replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[]) {

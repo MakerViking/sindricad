@@ -22,6 +22,11 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { axisDragDistance, pixelDistanceToSegment } from "./manipulator";
 import { choose } from "../ui/choice";
+// One number for "the depth a fresh extrude starts at", shared with the store:
+// clearing an up-to target has to restore a depth, and two constants would
+// drift. It lives in the document layer because the store cannot import this
+// file (that would pull the viewport stack into the document layer).
+import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
 
 type Phase = "pick" | "drag";
 type Op = "new" | "join" | "cut" | "intersect";
@@ -76,7 +81,7 @@ export class ExtrudeTool {
   active = false;
   private phase: Phase = "pick";
   private selected: WorldRegion[] = [];
-  private distance = 10;
+  private distance = DEFAULT_EXTRUDE_DISTANCE;
   private preview: THREE.Group | null = null;
   private previewMat: THREE.MeshStandardMaterial | null = null;
   private previewKey = ""; // depth+sign+selection of the built preview geometry
@@ -747,7 +752,36 @@ export class ExtrudeTool {
       return;
     }
     if (e.key === "Enter" && this.phase === "pick" && this.selected.length) this.beginDrag();
-    else if ((e.key === "t" || e.key === "T") && this.phase === "drag" && !this.pickingTarget) {
+    else if (
+      (e.key === "T" || e.key === "t") &&
+      e.shiftKey &&
+      this.phase === "drag" &&
+      !this.pickingTarget &&
+      (this.upTo || this.upToPlane)
+    ) {
+      // Shift-T is the tool's half of GH #41: `setUpTo` could only ever SET a
+      // target, so an extrude aimed at a face could not be turned back into a
+      // plain-depth one from here — and taper, which the inspector hides while a
+      // target exists, stayed out of reach with it. Tested BEFORE the plain-T
+      // branch below, which would otherwise swallow the same key press. The
+      // inspector's "Up to" row is the discoverable control; this is parity for
+      // someone already in the tool.
+      this.upTo = null;
+      this.upToPlane = null;
+      // An up-to extrude never read its distance, so it can legitimately be 0 —
+      // and a plain extrude of 0 is refused by the sidecar. Same substitution
+      // the inspector's clear makes (store.clearUpToTarget), and the field is
+      // re-seeded so the user sees the depth they are about to commit.
+      if (this.distance === 0) {
+        this.distance = DEFAULT_EXTRUDE_DISTANCE;
+        this.dim.seed("distance", this.distance);
+        this.updatePreview();
+      }
+      setPrompt(
+        "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · " +
+          "T = up to a face or plane · click to commit · Esc to cancel",
+      );
+    } else if ((e.key === "t" || e.key === "T") && !e.shiftKey && this.phase === "drag" && !this.pickingTarget) {
       this.pickingTarget = true;
       this.dim.hide(); // Enter must not commit a plain distance while picking
       setPrompt("Click the face or plane to extrude UP TO (any face, any body) · Esc to go back");
@@ -765,7 +799,7 @@ export class ExtrudeTool {
     // deliberate viewpoint is never yanked away. See Viewport.tiltOffAxis.
     const plane = this.selected[0]?.plane;
     if (plane) this.viewport.tiltOffAxis(plane.n);
-    if (!this.editId) this.distance = 10; // a fresh extrude starts at 10 mm
+    if (!this.editId) this.distance = DEFAULT_EXTRUDE_DISTANCE; // a fresh extrude starts there
     this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
     // Seed on BOTH paths, and lock the field either way.
     //
@@ -785,7 +819,7 @@ export class ExtrudeTool {
     setPrompt(
       this.editId
         ? "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to " +
-            "add/remove · click to commit · Esc to cancel " +
+            "add/remove · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel " +
             "(later features are hidden while editing)"
         : // Advertise the area toggle here too. The pick-phase prompt says
           // "Ctrl-click adds areas", but a plain click jumps straight to drag, so
@@ -799,7 +833,7 @@ export class ExtrudeTool {
           // one that describes a gesture the tool no longer has is the same fault
           // in reverse.
           "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · " +
-          "negative = cut · click to commit · Esc to cancel",
+          "negative = cut · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel",
     );
     this.positionDim();
     this.updatePreview();

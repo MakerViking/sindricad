@@ -18,12 +18,23 @@ export type FieldKind = "length" | "angle" | "count";
  *  the first three slots and is unaffected. */
 export type NumFieldRow = [string, string, FieldKind] | [string, string, FieldKind, (f: Feature) => boolean];
 
+/** The depth a fresh extrude starts at, in mm — and the depth a feature falls
+ *  back to when its up-to target is cleared (an up-to extrude never read
+ *  `distance`, so it can legitimately be 0, and the sidecar refuses a blind
+ *  extrude of 0). It lives here, in the document layer, so the extrude tool and
+ *  the store can share ONE number: the store cannot import the tool without
+ *  pulling the whole viewport stack into the document layer. */
+export const DEFAULT_EXTRUDE_DISTANCE = 10;
+
 /** A press/pull or an extrude only honours `upToOffset` when it HAS an up-to
  *  target — without one the sidecar extrudes the plain distance and the offset is
  *  ignored, so the row was an input that swallowed the number and changed nothing
  *  (field report, bug #88). The wire refuses that combination too; this keeps the
- *  user from typing into it in the first place. */
-function hasUpToTarget(f: Feature): boolean {
+ *  user from typing into it in the first place.
+ *
+ *  Exported because the inspector also decides from it whether to offer the
+ *  "Up to" row and its clear button (GH #41). */
+export function hasUpToTarget(f: Feature): boolean {
   return (
     (f.type === "press-pull" || f.type === "extrude") &&
     (f.upTo !== undefined || f.upToPlane !== undefined)
@@ -131,6 +142,15 @@ export interface ResolvedTarget {
   sketch?: string;
 }
 
+/** Fields the document does not HAVE when their row's `applies` predicate is
+ *  false, as opposed to merely hiding. The distinction is the sidecar's: it
+ *  REFUSES an `upToOffset` with no target to offset from, while it silently
+ *  ignores a `taper` under one — so only the first is a dangling binding when
+ *  its predicate turns false. `resolveTarget` is what params.recompute uses to
+ *  decide whether to garbage-collect a parameter, so widening this set deletes
+ *  user-authored bindings. */
+const ILLEGAL_WHEN_INAPPLICABLE = new Set<string>(["upToOffset"]);
+
 /** Find the object+field a ParamTarget points at, or null if it no longer
  *  exists (deleted feature/entity/constraint — the caller decides what a
  *  dangling binding means). */
@@ -144,6 +164,26 @@ export function resolveTarget(doc: CadDocument, target: ParamTarget): ResolvedTa
       const f = doc.features.find((x) => x.id === target.feature);
       const row = f && FEATURE_NUM_FIELDS[f.type]?.find(([field]) => field === target.field);
       if (!f || !row) return null;
+      // A row whose value is ILLEGAL without its predicate is not a field the
+      // document has — matching on the name alone let a parameter bound to
+      // `upToOffset` keep resolving after the up-to target was cleared, and the
+      // recompute inside every mutate then wrote the orphan offset straight
+      // back onto the feature (which the sidecar refuses to build).
+      //
+      // Scoped to those fields rather than to every row with a predicate. An
+      // `applies` predicate is a RENDER gate — most of them mean "hidden right
+      // now", not "gone". `taper` carries one, and treating it as an existence
+      // test made params.recompute read a taper binding as dangling the moment
+      // the extrude gained a target: it deleted the user's parameter silently,
+      // clearing the target again did not bring it back, and a parameter that
+      // something else referenced was stamped "its dimension or feature no
+      // longer exists" about a feature sitting in the timeline. A taper under
+      // an up-to target is merely IGNORED by the sidecar, never refused, so the
+      // binding is free to keep resolving.
+      if (ILLEGAL_WHEN_INAPPLICABLE.has(target.field)) {
+        const applies = row[3];
+        if (applies && !applies(f)) return null;
+      }
       return { holder: f as unknown as Record<string, unknown>, field: target.field, kind: row[2] };
     }
     case "constraint": {

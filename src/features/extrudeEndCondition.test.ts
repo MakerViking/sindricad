@@ -17,6 +17,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { ExtrudeTool } from "./extrudeTool";
+import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
 
 (globalThis as unknown as { document: unknown }).document ??= {
   createElement: () => ({
@@ -97,6 +98,8 @@ const click = () =>
   }) as unknown as PointerEvent;
 
 const key = (k: string) => ({ key: k, target: null }) as unknown as KeyboardEvent;
+/** Shift held: what the keyboard actually delivers for Shift-T is key "T". */
+const shiftKey = (k: string) => ({ key: k, target: null, shiftKey: true }) as unknown as KeyboardEvent;
 
 const FACE: Sel = { kind: "face", by: "nearest", point: [0, 0, 10] };
 
@@ -202,6 +205,55 @@ describe("ExtrudeTool up-to target", () => {
     expect(t.upTo).toBeNull();
     expect(t.upToPlane).toBeNull();
     expect(t.pickingTarget).toBe(true); // still waiting, not silently dropped
+  });
+
+  // GH #41: a target used to be a one-way door — `setUpTo` could only SET one,
+  // so a saved "up to that face" extrude could never go back to a plain depth
+  // (and taper, hidden while a target exists, stayed unreachable forever). The
+  // inspector's row is the primary control; this is the tool's parity gesture.
+  it("Shift-T clears a face target without cancelling the tool", () => {
+    const { t } = harness();
+    t.setUpTo(FACE);
+
+    t.onKey(shiftKey("T"));
+
+    expect(t.upTo, "the face target survived Shift-T").toBeNull();
+    expect(t.upToPlane).toBeNull();
+    expect(t.pickingTarget, "Shift-T armed a re-pick instead of clearing").toBe(false);
+    expect(t.active, "Shift-T cancelled the whole extrude").toBe(true);
+  });
+
+  it("Shift-T clears a datum-plane target too", () => {
+    const { t } = harness();
+    t.setUpTo("d1");
+
+    t.onKey(shiftKey("T"));
+
+    expect(t.upToPlane, "the plane target survived Shift-T").toBeNull();
+    expect(t.upTo).toBeNull();
+  });
+
+  it("Shift-T gives a target-only extrude a real depth to fall back on", () => {
+    // An up-to extrude never read its distance, so it can legitimately sit at 0
+    // — and a plain extrude of 0 is refused by the sidecar. Clearing the target
+    // has to leave a depth that builds, not a red timeline chip.
+    const { t } = harness();
+    t.setUpTo("d1");
+    t.distance = 0;
+
+    t.onKey(shiftKey("T"));
+
+    expect(t.distance, "the cleared extrude commits a zero depth").toBe(DEFAULT_EXTRUDE_DISTANCE);
+  });
+
+  it("plain T still arms picking, and Shift-T with nothing to clear is inert", () => {
+    const { t } = harness();
+
+    t.onKey(shiftKey("T"));
+    expect(t.pickingTarget, "Shift-T armed a pick with no target set").toBe(false);
+
+    t.onKey(key("t"));
+    expect(t.pickingTarget).toBe(true);
   });
 
   it("T does nothing in the pick phase — there is no extrude to aim yet", () => {
