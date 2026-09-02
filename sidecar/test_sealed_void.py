@@ -130,10 +130,42 @@ def test_a_deliberate_hollow_is_not_an_error():
     print("  hollow builds green — a diagnostic, never an error")
 
 
+def test_a_cut_that_splits_the_body_is_not_a_void():
+    """Found in the field on the first real file this ran against
+    (Laptop-stand.sindri, feature f55): a through-slot that cuts a body in TWO
+    raised the shell count from 1 to 2 — two solids, one skin each — and the
+    backstop called that a sealed cavity. A raw shell delta cannot tell a
+    second PIECE from a second SKIN; shells minus solids can, because a void is
+    a solid wearing more than one shell. Both spellings of a split are covered:
+    the plain cut (one body holding two solids) and `separateBodies`, which is
+    what that file used."""
+    for separate in (False, True):
+        doc = {"parameters": {}, "features": [
+            {"id": "b1", "type": "box", "length": BOX, "width": BOX, "height": 10},
+            # a 2 mm wide slot right through the middle, taller than the box
+            {"id": "s2", "type": "sketch",
+             "plane": {"origin": [0, 0, 5], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+             "entities": [{"id": "r1", "type": "rectangle", "width": 2,
+                           "height": 2 * BOX, "x": 0, "y": 0}]},
+            {"id": "x1", "type": "extrude", "sketch": "s2", "distance": -20,
+             "operation": "cut", "separateBodies": separate},
+        ]}
+        diag = []
+        _part, errors, bodies = rebuild(doc, diagnostics=diag)
+        assert errors == [], errors
+        shells = sum(len(b["shape"].shells()) for b in bodies)
+        solids = sum(len(b["shape"].solids()) for b in bodies)
+        assert solids == 2 and shells == 2, (separate, solids, shells)
+        sealed = [d for d in diag if d.get("kind") == "sealedVoid"]
+        assert not sealed, f"separateBodies={separate}: a split is not a cavity, got {sealed}"
+    print("  a cut that splits the body into two pieces stays silent")
+
+
 if __name__ == "__main__":
     test_sealed_void_is_reported()
     test_open_pocket_is_silent()
     test_volume_cannot_tell_the_two_apart()
     test_a_caller_that_collects_no_diagnostics_still_builds()
     test_a_deliberate_hollow_is_not_an_error()
+    test_a_cut_that_splits_the_body_is_not_a_void()
     print("ALL PASS")

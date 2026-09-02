@@ -5741,15 +5741,20 @@ def _try_vol(shape):
         return None
 
 
-def _shell_count(shape):
-    """How many SHELLS (closed or open surface skins) the shape has, or None when
-    OCCT can't say. This is the only cheap oracle that separates a cut which broke
-    the body's surface from one that sealed a cavity INSIDE it: both leave one
-    solid and — measured — the exact same volume (7858.628 mm3 for the stale-plane
-    case and its open-pocket control alike), so volume is a FALSE oracle here.
-    Second shell = second skin = an internal void."""
+def _void_count(shape):
+    """How many INTERNAL VOIDS the shape has — shells beyond one per solid — or
+    None when OCCT can't say. This is the only cheap oracle that separates a cut
+    which broke the body's surface from one that sealed a cavity INSIDE it: both
+    leave one solid and — measured — the exact same volume (7858.628 mm3 for the
+    stale-plane case and its open-pocket control alike), so volume is a FALSE
+    oracle here. A void is a solid wearing a second skin.
+
+    Shells MINUS solids, not shells alone: a cut that splits a body into two
+    PIECES also goes from one shell to two (one skin each), and the raw shell
+    delta called that a cavity on the first real file it met (Laptop-stand's
+    f55, a through-slot with separateBodies)."""
     try:
-        return len(shape.shells())
+        return len(shape.shells()) - len(shape.solids())
     except Exception:
         return None
 
@@ -5895,7 +5900,7 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     flags the feature red, instead of silently doing nothing. Volume-read failures
     fall through to the old behavior (never raise a misleading no-op error).
 
-    A Cut that SEALS a void (shell count goes up) is the one wrong-looking result
+    A Cut that SEALS a void (a solid gains a second shell) is the one wrong-looking result
     that isn't wrong enough to refuse — a deliberate hollow is legal — so it pushes
     a `sealedVoid` diagnostic onto `diag` instead, keyed to `feature_id`."""
     # Extruding several DISJOINT region faces (e.g. 38 selected honeycomb cells)
@@ -5983,25 +5988,25 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         sealed = False
         for b in hits:
             before = _try_vol(b["shape"])
-            # Shell counting is paid ONLY when someone is collecting diagnostics.
+            # Void counting is paid ONLY when someone is collecting diagnostics.
             # Measured FLAT at ~0.010 ms from a 6-face box to a 906-face plate —
             # OCCT walks shells, not faces — so the cost is per hit body, not per
             # face; the gate is there so a caller that discards diagnostics
             # (previews, exports) pays nothing at all.
-            shells_before = _shell_count(b["shape"]) if diag is not None else None
+            voids_before = _void_count(b["shape"]) if diag is not None else None
             newshape = _serial_bool(_as_compound(b["shape"]), solid, "cut")
             after = _try_vol(newshape)
             results.append((b, newshape))
             if before is not None and after is not None:
                 measured = True
                 removed += max(0.0, before - after)
-            # The sealed-void backstop. A cut that ADDS a shell did not break the
+            # The sealed-void backstop. A cut that ADDS a void did not break the
             # surface, it closed a bubble inside the body — the invisible result
             # of GH #52. Detected on the RESULT, so it also catches the ~all
             # existing .sindri files that carry no face anchor and never will.
-            if shells_before is not None:
-                shells_after = _shell_count(newshape)
-                if shells_after is not None and shells_after > shells_before:
+            if voids_before is not None:
+                voids_after = _void_count(newshape)
+                if voids_after is not None and voids_after > voids_before:
                     sealed = True
         if not hits or (measured and removed < eps(prism_vol)):
             raise ValueError(
