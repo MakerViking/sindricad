@@ -20,6 +20,58 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Importing some 3MF files reported "the geometry kernel crashed".** Reported
+  with a project file written by Bambu Studio. The file was fine: the crash was
+  in the cleanup pass that turns imported triangles back into flat, editable
+  faces. On some parts that pass builds a solid the geometry kernel considers
+  invalid, and the face-merging step that follows would take the whole geometry
+  process down rather than return an error. That process dying is what the
+  generic crash message was reporting.
+
+  Invalid solids are now detected before that step, on both of the paths that
+  could reach it, and the import falls back to the uncleaned mesh instead of
+  dying. The same crash was reachable without importing anything, through the
+  Clean Up command, and that route is fixed too.
+
+  Note this stops the crash rather than making every file import. A mesh that
+  does not reduce to a clean editable model is still refused, now with a clear
+  message saying so.
+
+- **Editing an extrude threw away its start offset, taper and target offset.**
+  Those three are typed in the inspector panel, and the Extrude tool has no
+  field for any of them. Re-opening a feature with the tool and committing any
+  change, even a small depth adjustment, deleted every one of them. They now
+  ride through an edit untouched. Values typed in the inspector always survived
+  saving and reopening the file; it was only the tool edit that lost them.
+
+- **Dimensioning two points always gave a horizontal or vertical distance, never
+  the direct one.** Which of the three you get is meant to follow the cursor as
+  you drag the label, and the choice was instead being made once, at the moment
+  of the second click. At that moment the cursor is sitting on the point just
+  clicked, which is the one place the direct distance can never be chosen, so it
+  was unreachable.
+
+  Dragging the label now switches between them live: above the pair gives the
+  horizontal distance, beside it the vertical, and out to the side the direct
+  distance, with the label reading DX, DY or D to match.
+
+- **Text in menus sat in the wrong place.** Reported on Kubuntu, but it was
+  wrong on every platform. Rows without a keyboard shortcut pushed their label
+  hard to the right, and rows with one left it stranded in the middle, because
+  the label had no rule telling it to take up the leftover space beside the
+  check-mark slot.
+
+### Added
+
+- **Extrude can start away from the sketch plane, and its walls can taper.** A
+  start offset moves the beginning of the extrude along its direction of travel,
+  a target offset does the same for an up-to target, and a taper angle slopes
+  the walls. All three are entered in the inspector panel after the extrude
+  exists, rather than while drawing it. These shipped some builds ago and were
+  never written down here, which is why nobody knew to look for them.
+
+### Fixed
+
 - **On some machines SindriCAD opened showing only the logo, with no menus at
   all.** Reported on Debian with a 2009 graphics card. The 3D view is built
   before the rest of the interface, so when the graphics driver could not
