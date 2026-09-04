@@ -165,6 +165,17 @@ jobs:
           # builds are volume-identical — so nothing else in this list can fail
           # when this one breaks.
           uv run python test_sketch_on_face.py
+          # GH #49: a fitted cylinder face is wrapped in a trimmed surface, so
+          # build123d's Face.radius reads None and every radius-aware selector
+          # path silently skipped it. Its fixture is hand-built OCCT (the shape
+          # the mesh fitter emits), which no document-level suite can produce, so
+          # unlisted it would be inert.
+          uv run python test_face_radius.py
+          # GH #49: surface fitting on mesh import. Its oracle is the SURFACE-TYPE
+          # CENSUS and the direct-modelling ops — the faceted import it replaces is
+          # already valid, watertight, one solid and within 0.02% on volume, so
+          # every other suite in this list stays green when fitting breaks.
+          uv run python test_surface_fit.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script

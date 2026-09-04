@@ -1288,11 +1288,15 @@ def test_offset_face_and_thicken():
     _p, e, _ = build({"id": "th", "type": "thicken", "faces": top, "thickness": 0})
     assert e and "thickness is zero" in e[0]["message"], f"zero thicken must be refused, got {e}"
 
-    # An imported STL body: _refacet_clean reduces it to real BRep faces, so
-    # offsetting one is legitimate and MUST work — this pins the deliberate
-    # decision not to blanket-refuse "faceted" bodies. (Meshes that don't reduce
-    # are already rejected at import by MAX_IMPORT_FACES, and server.py's
-    # out-of-process worker is the backstop if OCCT still crashes.)
+    # An imported STL body: since GH #49 `_fit_surfaces` recognises the wall, so
+    # this cylinder arrives as 3 faces (1 Cylinder, 2 Plane) rather than the 26
+    # planes `_refacet_clean` used to leave. Offsetting the top cap MUST still
+    # work — this pins the deliberate decision not to blanket-refuse "faceted"
+    # bodies, and it is also the control on the refuse-don't-dent screen: the
+    # cap's neighbours sit at 90 degrees, so nothing about it reads as one facet
+    # of an unrecognised curve. (Meshes that don't reduce are already rejected at
+    # import by MAX_IMPORT_FACES, and server.py's out-of-process worker is the
+    # backstop if OCCT still crashes.)
     d = tempfile.mkdtemp()
     path = os.path.join(d, "cyl.stl")
     export(Cylinder(6, 20), "stl", path)
@@ -1309,24 +1313,59 @@ def test_offset_face_and_thicken():
 
 
 def test_simplify_mesh():
-    """Importing a dense cylinder mesh then Simplify Mesh cuts the facet count
-    (near-coplanar walls merge) while the volume is preserved within tolerance."""
-    from build123d import Cylinder
+    """Simplify Mesh cuts the facet count of a body that is STILL FACETED, while
+    the volume is preserved within tolerance.
+
+    RE-BLESSED for GH #49. The old fixture was a dense cylinder STL, on the
+    reading that a cylinder mesh is what "still faceted" looks like. Surface
+    fitting made that false: the same file now imports as 3 faces (one real
+    Cylinder and two caps) and Simplify Mesh on it is 3 -> 3, so the strict
+    reduction the test existed to pin had quietly become impossible to observe.
+    The intent is unchanged and the body is different: a CONE, which v1 does not
+    fit, so it arrives as hundreds of leftover facets with real work left to do.
+    The cylinder stays as the control on the other side of that: a body the
+    importer already made analytic has nothing for Simplify Mesh to take away,
+    and it must not damage it either."""
+    from build123d import Cone, Cylinder
     d = tempfile.mkdtemp()
-    p = os.path.join(d, "cyl.stl")
-    export(Cylinder(6, 20), "stl", p)
+
+    p = os.path.join(d, "cone.stl")
+    export(Cone(8, 0, 20), "stl", p)
     payload = import_geometry(p, "stl")
     doc = {"parameters": {}, "features": [
-        {"id": "im", "type": "import", "format": "stl", "name": "cyl", "geom": payload["geom"]}]}
+        {"id": "im", "type": "import", "format": "stl", "name": "cone", "geom": payload["geom"]}]}
     base, e0, _ = rebuild(doc)
     f_before = len(base.faces())
     doc["features"].append({"id": "sm", "type": "simplifyMesh", "tolerance": 15})
     simp, e1, _ = rebuild(doc)
     f_after = len(simp.faces())
     assert not e0 and not e1, (e0, e1)
-    assert f_after < f_before, f"simplify should reduce faces ({f_before}→{f_after})"
+    # Measured 483 -> 62 (volume 1340.1593 -> 1338.9263). The bar is a real cut,
+    # not the exact number, which moves with the tessellator.
+    assert f_before > 100, (
+        f"the fixture must still be faceted for this to test anything, got "
+        f"{f_before} faces")
+    assert f_after < f_before / 2, \
+        f"simplify should roughly halve a faceted cone ({f_before}→{f_after})"
     assert abs(simp.volume - base.volume) / base.volume < 0.1, "volume should stay close"
-    print(f"  simplify-mesh OK: cylinder {f_before}→{f_after} faces, vol {simp.volume:.0f}")
+
+    # The control: an import the fitter already turned into analytic faces.
+    pc = os.path.join(d, "cyl.stl")
+    export(Cylinder(6, 20), "stl", pc)
+    cyl_payload = import_geometry(pc, "stl")
+    cdoc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "stl", "name": "cyl",
+         "geom": cyl_payload["geom"]},
+        {"id": "sm", "type": "simplifyMesh", "tolerance": 15}]}
+    csimp, e2, _ = rebuild(cdoc)
+    assert not e2, e2
+    assert len(csimp.faces()) == 3, (
+        f"a fitted cylinder is already 3 faces; Simplify Mesh must leave it "
+        f"alone, got {len(csimp.faces())}")
+    assert abs(csimp.volume - 2261.9467) < 1.0, (
+        f"Simplify Mesh damaged an analytic body: vol {csimp.volume:.4f}")
+    print(f"  simplify-mesh OK: faceted cone {f_before}→{f_after} faces, vol "
+          f"{simp.volume:.0f}; a fitted cylinder stays at 3 faces")
 
 
 def test_sweep():
@@ -2168,7 +2207,14 @@ def test_multibody_import_and_guards():
         import_geometry(sp, "stl")
         assert False, "organic sphere should be rejected"
     except ValueError as ex:
-        assert "clean editable" in str(ex) or "dense" in str(ex), ex
+        # The wording of this refusal was rewritten for GH #49 (it now says
+        # fitting was tried first and what it could not recognise stays
+        # faceted), so match on what will not move: the refusal quotes a count
+        # and points somewhere useful. A sphere fits NOTHING in v1 — no
+        # cylinders in it — so it is still refused at 7,413 faces.
+        msg = str(ex)
+        assert "faces" in msg or "triangles" in msg, ex
+        assert "STEP" in msg, ex
     print("  multibody-import OK: 2-object STL+3MF → 2 bodies each; organic mesh rejected cleanly")
 
 
@@ -2613,10 +2659,14 @@ def test_refacet_clean():
 def _holed_plate_files(d):
     """Two STLs: one plate, and the SAME plate twice as a two-object file.
 
-    Box(40,40,5) with a 4x4 grid of through-holes reads back as 220 faces, so
-    the pair reads back as 436 (two disconnected shells, one per plate). Written
-    at the same tessellation both times so the two-object file is exactly twice
-    the one-object file and nothing else moved."""
+    Box(40,40,5) with a 4x4 grid of through-holes reads back as 22 faces once
+    surface fitting has run (16 bore cylinders + 6 walls), so the pair reads
+    back as 44 (two disconnected shells, one per plate). Written at the same
+    tessellation both times so the two-object file is exactly twice the
+    one-object file and nothing else moved.
+
+    It was 220 and 436 before GH #49, when each bore arrived as ten flat
+    strips."""
     from build123d import (Box, Circle, Compound, GridLocations, Pos, export_stl,
                            extrude)
 
@@ -2643,47 +2693,56 @@ def test_the_face_limit_is_judged_per_body():
     gate measured the wrong thing.
 
     The limit is monkeypatched down instead of building two genuinely
-    1,900-face bodies, which costs ~160 s to import; this plate costs ~2.4 s."""
+    1,900-face bodies, which costs ~160 s to import; this plate costs ~2.4 s.
+
+    RE-BLESSED for the fitter: the plate is 22 faces now, not 220, because its
+    sixteen bores each became one cylinder. The brackets scale with it (300/200
+    -> 30/20) and the three cases they separate are exactly the ones they always
+    were: both bodies admitted, one body over on its own, the pair over the
+    total backstop."""
     d = tempfile.mkdtemp()
     one_stl, two_stl = _holed_plate_files(d)
 
     keep = (builder.MAX_IMPORT_FACES, builder.MAX_IMPORT_TOTAL_FACES)
     try:
-        builder.MAX_IMPORT_FACES = 300
+        builder.MAX_IMPORT_FACES = 30
         builder.MAX_IMPORT_TOTAL_FACES = 100_000
         n1 = import_geometry(one_stl, "stl")["faces"]
-        assert n1 == 220, f"one plate imported as {n1} faces, want 220"
+        assert n1 == 22, f"one plate imported as {n1} faces, want 22"
         n2 = import_geometry(two_stl, "stl")["faces"]
-        assert n2 == 436, (
+        assert n2 == 44, (
             f"two copies of a plate that passes at {n1} faces imported as {n2}, "
-            f"want 436")
+            f"want 44")
 
         # ...and a body that is ITSELF over the limit is still refused, naming
         # which of the two it is.
-        builder.MAX_IMPORT_FACES = 200
+        builder.MAX_IMPORT_FACES = 20
         try:
             import_geometry(two_stl, "stl")
-            assert False, "a 220-face body must still be refused at a 200 limit"
+            assert False, "a 22-face body must still be refused at a 20 limit"
         except ValueError as ex:
-            assert "clean editable" in str(ex), ex
+            assert "recognised" in str(ex), (
+                f"the refusal must say fitting was tried first, got: {ex}")
+            assert "22 faces" in str(ex), (
+                f"the refusal must quote the POST-FIT count, got: {ex}")
             assert "of 2 " in str(ex) and "body" in str(ex), (
                 f"the refusal must say WHICH body is organic, got: {ex}")
 
         # ...and the total backstop is a separate guard with its own message.
-        builder.MAX_IMPORT_FACES = 300
-        builder.MAX_IMPORT_TOTAL_FACES = 300
+        builder.MAX_IMPORT_FACES = 30
+        builder.MAX_IMPORT_TOTAL_FACES = 30
         try:
             import_geometry(two_stl, "stl")
-            assert False, "436 total faces must trip a 300-face total backstop"
+            assert False, "44 total faces must trip a 30-face total backstop"
         except ValueError as ex:
             assert "too much detail" in str(ex), ex
-            assert "clean editable" not in str(ex), (
+            assert "recognised" not in str(ex), (
                 f"the viewport backstop must not read as an editability "
                 f"judgement: {ex}")
     finally:
         builder.MAX_IMPORT_FACES, builder.MAX_IMPORT_TOTAL_FACES = keep
     print(f"  per-body face limit OK: 1 plate {n1} faces, 2 plates {n2} faces, "
-          f"both admitted at a {300}-face PER-BODY limit")
+          f"both admitted at a 30-face PER-BODY limit")
 
 
 def test_peek_counts_every_model_part_of_a_3mf():

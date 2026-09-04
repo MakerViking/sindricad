@@ -335,10 +335,51 @@ def _is_planar(f):
 
 
 def _face_radius(f):
-    try:
-        return float(f.radius)
-    except Exception:
+    """Radius of a cylindrical or spherical face, else None.
+
+    `Face.radius` answers None for ANY face whose surface is a
+    `Geom_RectangularTrimmedSurface`, whatever lies underneath (build123d
+    two_d.py:1245 gates on exactly that). ShapeFix_Face puts that wrapper around
+    every cylinder the mesh-import fitter builds, so a fitted bore reported the
+    right `geom_type` and the right area while its radius read None — which made
+    `query_entities(..., {'surface':'cylinder','radius':{...}})` return ZERO on
+    it, and made `face_fingerprint` author a `by:"match"` reference WEAKER than
+    the same reference on a kernel-built cylinder. Both call sites come through
+    here, so they are fixed together.
+
+    `BRepAdaptor_Surface` resolves the trim and reports the underlying analytic
+    surface. Rebuilding the face on `.BasisSurface()` does not (measured).
+
+    The GeomAbs gate is not decoration: `.Cylinder()` on a planar face raises
+    Standard_NoSuchObject. The `_face_surface` gate in FRONT of everything is
+    there so a dense imported body's thousands of planar facets leave with one
+    geom_type read and no adaptor — `face_fingerprint` calls this on every face
+    it authors, and `Face.radius` would read geom_type again anyway. Measured on
+    3,600 planar faces: 4.51 us/face before this change, 4.30 us/face after; a
+    cylindrical face pays 9.4 us for the second geom_type read, and a body has
+    thousands of the former and a handful of the latter.
+    """
+    if _face_surface(f) not in ("cylinder", "sphere"):
         return None
+    try:
+        r = f.radius
+        if r is not None:
+            return float(r)
+    except Exception:
+        pass
+    try:
+        from OCP.BRepAdaptor import BRepAdaptor_Surface
+        from OCP.GeomAbs import GeomAbs_SurfaceType
+
+        ad = BRepAdaptor_Surface(f.wrapped)
+        t = ad.GetType()
+        if t == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+            return float(ad.Cylinder().Radius())
+        if t == GeomAbs_SurfaceType.GeomAbs_Sphere:
+            return float(ad.Sphere().Radius())
+    except Exception:
+        pass
+    return None
 
 
 # --- concentric rank (scale-invariant rim discriminator) ---------------------

@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 
 os.environ.setdefault("SINDRI_DISK_CACHE", "0")  # the checkpoint test brings its own store
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,20 +34,35 @@ N_BODIES = 4
 class _Ticks:
     """Count heartbeat ticks published while the block runs, then put back
     whatever hook was installed before. The worker installs a real one at
-    startup; a test must never leave its counter in its place."""
+    startup; a test must never leave its counter in its place.
+
+    `at` and `index` keep the WHEN and the WHAT of each tick, for the checks
+    that care about the gap between two of them rather than about how many
+    there were."""
 
     def __enter__(self):
         self.n = 0
+        self.at = []
+        self.index = []
         self._prev = builder.on_feature_tick
         builder.on_feature_tick = self._count
         return self
 
-    def _count(self, _index):
+    def _count(self, index):
         self.n += 1
+        self.at.append(time.perf_counter())
+        self.index.append(index)
 
     def __exit__(self, *_exc):
         builder.on_feature_tick = self._prev
         return False
+
+    def widest_gap(self, start, end):
+        """The longest stretch of work with no tick in it, seconds. `start` and
+        `end` bracket the call, so a run that ticks only in its middle cannot
+        pass by leaving its first or last second silent."""
+        marks = [start] + self.at + [end]
+        return max(b - a for a, b in zip(marks, marks[1:]))
 
 
 def _boxes(n, spacing=40.0, overlap=False):
@@ -546,18 +562,20 @@ def test_server_relaxes_its_own_stdio_error_handler():
 # from INSIDE them, and the parts that are one blocking OCCT call must be
 # budgeted for honestly.
 
-def test_refacet_ticks_from_inside_its_loops():
+def test_the_long_mesh_passes_tick_from_inside_their_loops():
     """The lesson this project already paid for: a progress tick AROUND a long
-    loop proves nothing — the gap the watchdog sees is INSIDE it. _refacet_clean
-    is the longest stretch on the mesh-import path that HAS loops (it published
-    nothing at all before), so this pins that every tick site is loop-nested. A
-    later edit that hoists one out would restore the reap."""
+    loop proves nothing — the gap the watchdog sees is INSIDE it. Both long
+    stretches of the mesh-import path that HAVE loops are checked here, because
+    the second one was written against the first as a model and would inherit
+    the same defect: `_refacet_clean` (which published nothing at all before)
+    and `_fit_surfaces` (GH #49, which walks the face graph three times and then
+    rebuilds a face per region). A later edit that hoists a tick out of a loop
+    in either would restore the reap."""
     import ast
 
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "builder.py")).read()
-    fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.FunctionDef) and n.name == "_refacet_clean")
+    tree = ast.parse(src)
 
     def _tick_calls(node):
         # The body of the `_tick_every` helper is the DEFINITION of a tick, not
@@ -571,21 +589,148 @@ def test_refacet_ticks_from_inside_its_loops():
                 and c.func.id in ("progress_tick", "_tick_every")
                 and id(c) not in skip]
 
-    inside = []
-    for loop in [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.While))]:
-        inside += [c.func.id for c in _tick_calls(loop)]
-    total = len(_tick_calls(fn))
-    assert len(inside) >= 3, (
-        "_refacet_clean publishes from only %d loop bodies — the watchdog reaps "
-        "on the gap INSIDE a loop, not around it" % len(inside))
-    # The two exceptions are deliberate and named: single blocking OCCT calls
-    # (sew.Perform / ShapeFix_Shape.Perform) with nothing to tick inside, where a
-    # tick BETWEEN them is the only honest signal there is.
-    assert total - len(inside) <= 3, (
-        "%d tick sites sit outside every loop; only the sew/ShapeFix pair should"
-        % (total - len(inside)))
-    print(f"{PASS} _refacet_clean ticks from {len(inside)} loop-nested sites "
-          f"({total} total)")
+    for name in ("_refacet_clean", "_fit_surfaces"):
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == name)
+        inside = []
+        for loop in [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.While))]:
+            inside += [c.func.id for c in _tick_calls(loop)]
+        total = len(_tick_calls(fn))
+        assert len(inside) >= 3, (
+            "%s publishes from only %d loop bodies — the watchdog reaps "
+            "on the gap INSIDE a loop, not around it" % (name, len(inside)))
+        # The exceptions are deliberate and named: single blocking OCCT calls
+        # (sew.Perform / ShapeFix_Shape.Perform) with nothing to tick inside,
+        # where a tick BETWEEN them is the only honest signal there is.
+        assert total - len(inside) <= 3, (
+            "%s: %d tick sites sit outside every loop; only the sew/ShapeFix "
+            "pair should" % (name, total - len(inside)))
+        print(f"{PASS} {name} ticks from {len(inside)} loop-nested sites "
+              f"({total} total)")
+
+
+def test_the_fitter_never_goes_quiet_for_a_second():
+    """A19: `_fit_surfaces` runs for a quarter of a minute on a dense mesh and
+    must not be silent for as much as a second of it.
+
+    The AST guard above is structural and can be satisfied by a tick in a loop
+    that runs twice. This is the behavioural half: real work, real clock, and
+    the widest gap measured from the call in to the call out, so a run that only
+    ticks in its middle cannot pass.
+
+    WHY THE WHOLE IMPORT IS NOT THE SUBJECT. Measured on this fixture, an
+    end-to-end import has two gaps past a second and neither is a missing tick:
+    2.35 s inside `Mesher().read()` and 7.44 s inside `_refacet_clean`'s
+    sew + ShapeFix pair. Both are ONE blocking OCCT call with no Python between
+    its ends — OCP holds the GIL for the whole of it, so a watchdog thread gets
+    zero wakeups and there is nothing there to tick from. Those are covered by
+    the triangle-derived import budget instead (see the tests below), which is
+    the split this file's other half already documents. What ticking can cover
+    is the code with loops in it, and that is what is asserted here.
+
+    The fixture is ~10k triangles rather than the 41k the plan quoted: 10k
+    already buys 12 s of fitting, and 41k would put one CI test into minutes for
+    no extra signal.
+
+    THE BAR IS A WALL CLOCK, SO THE MARGIN MATTERS. The widest gap is one stride
+    of the seed loop, i.e. pure single-core code time — `progress_tick` does no
+    rate limiting, so nothing absorbs a slower core. At the seed loop's original
+    stride of 64 this measured 0.44 s against the 1 s bar on an idle
+    developer box, 0.66 s pinned to two contended cores, and it went red on that
+    same box under ordinary concurrent load. A shared CI runner is slower per
+    core than either, so the fix was to shrink the stride rather than to raise
+    the bar: at stride 8 the same fixture measures 0.19 s for the same 13 s of
+    work. If this ever trips again, shrink the stride again — the bar is only
+    meaningful while the `t1 - t0 > 3.0` precondition below sits well under
+    it."""
+    from build123d import Box, Cylinder, Pos, export_stl
+
+    d = tempfile.mkdtemp()
+    src = Box(60, 60, 10)
+    for i in (0, 1):
+        for j in (0, 1):
+            src -= Pos(-20 + 40 * i, -20 + 40 * j, 0) * Cylinder(3, 20)
+    path = os.path.join(d, "four_bores.stl")
+    export_stl(src, path, tolerance=0.004, angular_tolerance=0.02)
+    ntri = (os.path.getsize(path) - 84) // 50
+
+    # The shape as `_fit_surfaces` receives it: read, sewn, coplanar facets
+    # merged. Done outside the timed block, because the read is one of the two
+    # blocking calls this test is deliberately not about.
+    from build123d import Compound, Mesher
+
+    shapes = Mesher().read(path)
+    uni = builder._unify_if_valid(
+        shapes[0] if len(shapes) == 1 else Compound(list(shapes)))
+
+    with _Ticks() as t:
+        t0 = time.perf_counter()
+        fitted = builder._fit_surfaces(uni)
+        t1 = time.perf_counter()
+    gap = t.widest_gap(t0, t1)
+    print(f"  fitter on {ntri:,} triangles / {len(uni.faces())} faces: "
+          f"{t1 - t0:.2f} s, {t.n} ticks, widest silent gap {gap:.3f} s "
+          f"-> {len(fitted.faces())} faces")
+
+    # Preconditions, so a green here is never a fixture that finished too fast
+    # to say anything, or one the fitter declined.
+    assert fitted is not uni, "the fixture must actually fit for this to mean anything"
+    assert t1 - t0 > 3.0, (
+        f"the fit took only {t1 - t0:.2f} s; a 1 s bar proves nothing about it")
+    assert gap <= 1.0, (
+        f"the fitter went {gap:.3f} s without a heartbeat; the watchdog reaps on "
+        f"the gap, so every loop in it has to publish from inside")
+    # A bare liveness tick would overwrite the name of the phase that is running
+    # (test_a_liveness_tick_leaves_the_running_phase_named, one level down).
+    assert set(t.index) == {builder.HB_KEEP_INDEX}, (
+        f"the fitter published indices {sorted(set(t.index))}; every tick from "
+        f"inside a named phase must be keep_index")
+    print(f"{PASS} _fit_surfaces never goes quiet for {gap:.3f} s")
+
+
+def test_the_fitter_ticks_per_body_on_a_plate_of_small_parts():
+    """A19, the multi-body half: a compound of many small prismatic solids is
+    the one shape the fitter's own loops cannot tick from.
+
+    Both face-graph loops tick on `scanned % 256` with `scanned` starting at 1,
+    so a solid under 256 faces never ticks from them, and a solid that seeds
+    nothing returns before the grow and claim loops (which do tick from index 0)
+    ever run. The per-solid recursion is what a multi-object slicer plate goes
+    through, so the whole of it used to accumulate as ONE silent stretch:
+    measured 0.10 / 0.50 / 1.52 / 3.00 s at 100 / 500 / 1500 / 3000 six-faced
+    boxes, ZERO ticks in every case, growing linearly with the body count.
+    Bounded by MAX_IMPORT_TOTAL_FACES rather than by anything a watchdog can
+    see, and the whole silent cost is paid BEFORE that limit is checked.
+
+    Deliberately a floor on ticks and not a face-count assertion: the fitter is
+    supposed to decline every one of these bodies, so the property is that it
+    says so out loud while doing it."""
+    from build123d import Box, Compound, Pos
+
+    n = 300
+    parts = Compound([Pos(40.0 * i, 0, 0) * Box(20, 20, 10) for i in range(n)])
+    assert len(parts.solids()) == n, "precondition: one solid per box"
+
+    with _Ticks() as t:
+        t0 = time.perf_counter()
+        out = builder._fit_surfaces(parts)
+        t1 = time.perf_counter()
+    gap = t.widest_gap(t0, t1)
+    print(f"  fitter on {n} prismatic bodies: {t1 - t0:.2f} s, {t.n} ticks, "
+          f"widest silent gap {gap:.3f} s")
+
+    assert out is parts, (
+        "precondition: the fitter must DECLINE every one of these bodies, so "
+        "the only ticks available are the per-body ones")
+    assert t.n >= n, (
+        f"the per-solid recursion published {t.n} ticks for {n} bodies; a body "
+        f"under 256 faces cannot tick from the face-graph loops, so without one "
+        f"tick per body the whole recursion is silent")
+    assert set(t.index) == {builder.HB_KEEP_INDEX}, (
+        f"the fitter published indices {sorted(set(t.index))}; a liveness tick "
+        f"must not erase the running phase")
+    print(f"{PASS} the fitter ticks per body ({t.n} for {n}), widest gap "
+          f"{gap:.3f} s")
 
 
 def test_a_liveness_tick_leaves_the_running_phase_named():
@@ -1169,7 +1314,9 @@ if __name__ == "__main__":
     test_the_reaper_logs_when_its_stdout_can_take_it()
     test_the_stall_line_survives_a_failed_pool_rebuild()
     test_server_relaxes_its_own_stdio_error_handler()
-    test_refacet_ticks_from_inside_its_loops()
+    test_the_long_mesh_passes_tick_from_inside_their_loops()
+    test_the_fitter_never_goes_quiet_for_a_second()
+    test_the_fitter_ticks_per_body_on_a_plate_of_small_parts()
     test_a_liveness_tick_leaves_the_running_phase_named()
     test_the_stall_line_names_the_phase_it_reaped()
     test_a_mesh_import_is_budgeted_by_triangles_not_bytes()
