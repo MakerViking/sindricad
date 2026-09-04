@@ -1018,6 +1018,7 @@ export class Geometry implements GeometryBackend {
       geom: string; name: string; solid: boolean; faces: number; color?: string;
       nodes?: { name: string; parent: number | null; color?: string }[];
       parts?: { node: number; faces: number }[];
+      fitted?: number; faceted?: number; fitSkipped?: string;
     }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
@@ -1026,6 +1027,11 @@ export class Geometry implements GeometryBackend {
         ...(r.color !== undefined ? { color: r.color } : {}),
         ...(r.nodes !== undefined ? { nodes: r.nodes } : {}),
         ...(r.parts !== undefined ? { parts: r.parts } : {}),
+        // Surface-fitting counts (GH #49), spread like the rest: a sidecar that
+        // predates the fitter sends none of them and the reply is unchanged.
+        ...(r.fitted !== undefined ? { fitted: r.fitted } : {}),
+        ...(r.faceted !== undefined ? { faceted: r.faceted } : {}),
+        ...(r.fitSkipped !== undefined ? { fitSkipped: r.fitSkipped } : {}),
       };
     }
     if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: "import cancelled" };

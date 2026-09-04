@@ -881,7 +881,12 @@ export interface ResolveDiag {
   // INSIDE the body instead of breaking its surface. Not a resolution at all —
   // it describes the RESULT, so `resolved`/`confidence`/`lossy` carry neutral
   // values on it — and not an error either, because a deliberate hollow is legal.
-  kind: "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid";
+  // "cleanUpFitted" = Clean Up's surface-fitting pass read N flat faces as
+  // cylinders. Same shape and the same neutral values as sealedVoid: it too
+  // describes a RESULT, and it too is legal (that pass is what re-fits a
+  // pre-#49 import). It exists because the pass has no provenance to read, so a
+  // deliberately many-sided prism you drew yourself is fitted just as readily.
+  kind: "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
@@ -1031,7 +1036,31 @@ export type ImportReply =
       // present only for a STEP that carried a real assembly tree; see the
       // `import` feature above for what they mean
       nodes?: { name: string; parent: number | null; color?: string }[];
-      parts?: { node: number; faces: number }[] }
+      parts?: { node: number; faces: number }[];
+      // Surface fitting on a mesh import (GH #49), all optional: a STEP import
+      // and any sidecar that predates the fitter send NONE of them, which reads
+      // as "nothing to say" rather than as zero. Reported to the user by
+      // describeSurfaceFit() in src/io/files.ts; nothing is persisted in the
+      // document, since a re-import (or Clean Up) recomputes it.
+      //
+      // `fitted` counts the faces of the imported bodies that are now real
+      // analytic curved surfaces (cylinders in v1), `faceted` the faces that are
+      // still raw tessellation — the ones press/pull and offsetFace refuse on.
+      // They are counts of the SAME body, so fitted + faceted <= faces (the rest
+      // are true planes).
+      fitted?: number;
+      faceted?: number;
+      // Why fitting did not run, or ran and was thrown away. The sidecar today
+      // sends exactly ONE of these, "checks" (the fitted body failed its
+      // geometry gates, so the faceted import was kept): a fitter that simply
+      // found nothing curved returns the body unchanged and stays SILENT,
+      // because "there was nothing to recognise here" is not news. "dense" (too
+      // many faces to analyse) and "coarse" (tessellation too coarse to tell a
+      // curve from a corner) are the plan's other two reasons, kept as forward
+      // compatibility for a newer sidecar; nothing emits them yet, so do not
+      // write code that branches on them arriving. Absent when fitting ran
+      // normally.
+      fitSkipped?: string }
   // `cancelled` = the user stopped it. Distinct from a failure so the UI can
   // dismiss quietly instead of showing an error the user already knows about.
   | { ok: false; cancelled?: boolean; message: string };

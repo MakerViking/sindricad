@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 
-import { describeImportCapability, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot, needsUnassignedConfirm } from "./files";
+import { describeImportCapability, describeSurfaceFit, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot, needsUnassignedConfirm } from "./files";
 
 // Both mappers are TOTAL — an unrecognised extension silently becomes "step"
 // rather than erroring. That is deliberate (the save dialog can hand back a bare
@@ -418,5 +418,102 @@ describe("needsUnassignedConfirm and face-level color", () => {
 
   it("still warns when the faces carry no slots at all", () => {
     expect(needsUnassignedConfirm(storeWithFacePaint([null, null]), ["b1"])).toBe(true);
+  });
+});
+
+// --- surface fitting on mesh import (GH #49) ---------------------------------
+//
+// The fitter is silent by design: it either recognises curved surfaces or leaves
+// them faceted, and either way the import "works". The toast is the only place
+// the user learns WHICH happened, so an import that quietly stayed faceted (and
+// will therefore refuse a press/pull on that wall) must not read the same as one
+// that came back fully editable. Both counts are quoted for that reason.
+//
+// Every key is optional: a backend that predates the fitter, and a STEP import,
+// send none of them, and that has to stay silent rather than claiming zero.
+describe("describeSurfaceFit", () => {
+  it("says nothing when the reply carries no fitting counts", () => {
+    expect(describeSurfaceFit({})).toBeNull();
+  });
+
+  it("says nothing when nothing was recognised", () => {
+    // Today's faceted import. Claiming "0 curved surfaces" on every STL would be
+    // noise, so the release notes promise a message only when something WAS
+    // recognised. Note what this costs: a mesh whose curves are all cones or
+    // spheres comes back like this and most of its faces will refuse
+    // Press/Pull, with no warning until the user tries one. If that trade is
+    // ever reversed, the new branch goes AFTER the fitSkipped lookup — a
+    // declined fit also has faceted > 0, and preempting it would replace a true
+    // sentence with a false one.
+    expect(describeSurfaceFit({ fitted: 0, faceted: 120 })).toBeNull();
+  });
+
+  it("quotes both counts when part of the body stayed faceted", () => {
+    const msg = describeSurfaceFit({ fitted: 12, faceted: 3587 });
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain("12 curved surfaces");
+    expect(msg!).toContain("3,587");              // thousands separator, like the capability toast
+    expect(msg!).toMatch(/stayed faceted/);
+    expect(msg!).not.toContain("—");              // house style: no em-dashes
+  });
+
+  it("does not claim leftovers when the whole body was recognised", () => {
+    const msg = describeSurfaceFit({ fitted: 1, faceted: 0 });
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain("1 curved surface.");  // singular, not "1 curved surfaces"
+    expect(msg!).not.toMatch(/1 faces/);
+    expect(msg!).toMatch(/No faces stayed faceted/i);
+  });
+
+  it("reads naturally for a single leftover face", () => {
+    const msg = describeSurfaceFit({ fitted: 2, faceted: 1 });
+    expect(msg!).toContain("1 face stayed faceted");
+    expect(msg!).not.toContain("1 faces");
+  });
+
+  it("gives the one reason the sidecar sends its own sentence", () => {
+    // "checks" is the ONLY reason `_fit_surfaces` writes, and the sidecar's own
+    // test pins it reaching the reply. This leg is the copy check for the
+    // sentence a user can actually be shown.
+    const checks = describeSurfaceFit({ fitSkipped: "checks" });
+    expect(checks).not.toBeNull();
+    expect(checks!).toMatch(/faceted/);
+    expect(checks!).not.toContain("—");           // house style: no em-dashes
+  });
+
+  it("renders the forward-compatible reasons distinctly, though none is sent yet", () => {
+    // "dense" and "coarse" are the plan's other two reasons and nothing in the
+    // sidecar emits either, so no user has seen these strings. They are kept so
+    // a newer sidecar that grows a density screen renders without a frontend
+    // change; this leg only guarantees they would not collide or read as one
+    // vague sentence. It is NOT coverage of shipped behaviour.
+    const dense = describeSurfaceFit({ fitSkipped: "dense" });
+    const coarse = describeSurfaceFit({ fitSkipped: "coarse" });
+    const checks = describeSurfaceFit({ fitSkipped: "checks" });
+    for (const m of [dense, coarse]) {
+      expect(m).not.toBeNull();
+      expect(m!).toMatch(/faceted/);
+      expect(m!).not.toContain("—");
+    }
+    // Distinct on purpose: "too dense to look", "too coarse to be sure" and
+    // "the fit failed its checks" are three different things to do about it.
+    expect(new Set([dense, coarse, checks]).size).toBe(3);
+  });
+
+  it("stays quiet on a skip reason it does not know", () => {
+    // A reason added in the sidecar later must not surface as a half-sentence.
+    expect(describeSurfaceFit({ fitSkipped: "banana" })).toBeNull();
+  });
+
+  it("never reports a nonsense count", () => {
+    expect(describeSurfaceFit({ fitted: NaN, faceted: 3 })).toBeNull();
+    expect(describeSurfaceFit({ fitted: -3, faceted: 5 })).toBeNull();
+    // An unusable leftover count degrades to the recognised sentence rather
+    // than printing "NaN faces stayed faceted".
+    const msg = describeSurfaceFit({ fitted: 4, faceted: NaN });
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain("4 curved surfaces");
+    expect(msg!).not.toMatch(/NaN/);
+    expect(msg!).not.toMatch(/faceted/);
   });
 });

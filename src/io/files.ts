@@ -612,6 +612,63 @@ export function importedBodyCount(res: { parts?: { node: number; faces: number }
   return res.parts?.length ?? 1;
 }
 
+// Why the sidecar did not fit curved surfaces, in the user's words. Kept as a
+// map so an unknown reason (a sidecar newer than this build) stays SILENT rather
+// than surfacing as a half-sentence about a reason this build cannot name.
+//
+// ONLY "checks" IS REACHABLE TODAY. The sidecar's `_fit_surfaces` writes that
+// one reason and no other: a fit that simply found nothing curved returns the
+// body unchanged and says nothing, because "there was nothing to recognise" is
+// not news. The other two are the plan's reason set, kept here so a newer
+// sidecar that grows a density screen renders correctly with no frontend
+// change. Neither has ever been sent, so neither has been seen by a user; if
+// one is wired up, re-check its wording against what that screen actually does
+// before shipping it.
+const FIT_SKIP_REASONS: Record<string, string> = {
+  // forward compatibility only, see above
+  dense: "This mesh is too dense for me to look for curved surfaces, so every face stayed faceted.",
+  coarse: "This mesh is too coarse to tell a curve from a corner, so every face stayed faceted.",
+  // the fit built, then failed a geometry gate (volume, watertightness, validity)
+  checks: "I found curved surfaces here, but the rebuilt body did not pass its checks, so I kept the faceted import.",
+};
+
+function isCount(n: number | undefined): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0;
+}
+
+/** What to tell the user about surface fitting on a mesh import, or null when
+ *  there is nothing to say. Pure, so the wording can be tested without a
+ *  backend, a file or a toast.
+ *
+ *  Fitting is invisible otherwise: a faceted import and a fitted one both "work",
+ *  and the user only finds out which they got when press/pull refuses on a wall
+ *  that is still tessellation. So an import that came back partly faceted has to
+ *  say so, with both counts, and one that recognised nothing at all has to stay
+ *  quiet rather than announcing a zero on the path that has not changed.
+ *
+ *  THE SILENCE IS DELIBERATE AND THE RELEASE NOTES SAY SO. A mesh whose curves
+ *  are all cones or spheres comes back with fitted 0, no skip reason, and no
+ *  toast, on a body where most faces will refuse Press/Pull. The CHANGELOG used
+ *  to promise "a message after the import" flat, which was untrue for exactly
+ *  that import; it now promises one only when something was recognised. If this
+ *  is ever changed to speak up on fitted 0, the branch belongs AFTER the
+ *  fitSkipped lookup below, not before it: a declined fit has faceted > 0 too,
+ *  and preempting it would replace a true sentence with a false one. */
+export function describeSurfaceFit(res: { fitted?: number; faceted?: number; fitSkipped?: string }): string | null {
+  if (isCount(res.fitted) && res.fitted > 0) {
+    const n = res.fitted.toLocaleString();
+    const found = res.fitted === 1 ? `Recognised 1 curved surface.` : `Recognised ${n} curved surfaces.`;
+    // A leftover count the sidecar did not send (or sent as nonsense) is not
+    // worth guessing at: say what was recognised and stop.
+    if (!isCount(res.faceted)) return found;
+    if (res.faceted === 0) return `${found} No faces stayed faceted.`;
+    const m = res.faceted.toLocaleString();
+    const rest = res.faceted === 1 ? `1 face stayed faceted.` : `${m} faces stayed faceted.`;
+    return `${found} ${rest}`;
+  }
+  return res.fitSkipped ? FIT_SKIP_REASONS[res.fitSkipped] ?? null : null;
+}
+
 
 async function importPath(store: DocumentStore, geometry: GeometryBackend, path: string) {
   const fmt = extToImportFormat(path);
@@ -657,9 +714,14 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
   // the app is broken. Non-blocking on purpose: this is a heads-up about a
   // measured limit, not a refusal, and everything except orbiting is unaffected.
   const capability = describeImportCapability(importedBodyCount(res));
-  if (capability) {
+  // What the fitter made of the mesh. Second toast rather than one merged
+  // sentence: the two are about different things (how the document will FEEL vs
+  // what it is made of), and either can be absent.
+  const surfaces = describeSurfaceFit(res);
+  if (capability || surfaces) {
     const { toast } = await import("../ui/toast");
-    toast(capability, { kind: "info" });
+    if (capability) toast(capability, { kind: "info" });
+    if (surfaces) toast(surfaces, { kind: "info" });
   }
 
   // Carry the file's own colour onto the body it produced. The body doesn't
