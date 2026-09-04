@@ -150,6 +150,56 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Importing a mesh now recognises the round holes and rounded edges in it.**
+  Asked for in [#49](https://github.com/MakerViking/sindricad/issues/49). An STL
+  or 3MF only carries triangles, so a 3 mm bore used to arrive as sixty-odd flat
+  strips. You could select one of them, but nothing treated it as a hole: it had
+  no radius to search for, picking it picked a strip, pushing it dented that
+  strip, and a fillet on its rim failed.
+
+  Importing now looks for the curved surfaces those triangles came from and
+  rebuilds them as real geometry. Flat faces were already recognised; what is
+  new is cylinders, which covers bores, round bosses, and the fillets that run
+  along a straight edge. A rim comes back as one circle rather than a ring of
+  short lines, so it can be filleted, chamfered and dimensioned. On a 40 mm
+  plate with a 3 mm hole, 23 faces become 7 and the hole reports its radius as
+  3.000.
+
+  What cannot be recognised stays exactly as it was, face by face, so a partly
+  round part still imports and the parts of it that were understood are usable.
+  Cones and spheres are not recognised in this version, and neither is anything
+  the file left too coarse to read. Blends that wrap around a corner are not
+  recognised as one surface yet, and that includes the fillet around the rim of
+  a hole and a rounded corner: they come back as a run of narrow cylinders whose
+  radii are approximate, so do not dimension those. The true bores and bosses,
+  and the fillets that run along a straight edge, are exact. When curved
+  surfaces were recognised, a message after the import says how many, and how
+  many faces stayed faceted, so you know which kind of model you have before you
+  start editing it. An import that recognised nothing says nothing, and looks
+  exactly like an import did before this build.
+
+  **A face that meets its neighbour at the shallow angle of a tessellation facet
+  now refuses Press/Pull, Offset Face and Thicken** rather than moving that one
+  facet and leaving a dent in the wall. A real flat face on a mesh body is
+  unaffected, including the flat top of a body whose sides are still faceted:
+  its neighbours meet it at a right angle. The test is the angle, not where the
+  body came from, so it also refuses on shapes you drew yourself where two flat
+  faces meet at less than 25 degrees, such as a polygon of fifteen or more sides
+  or a shallow ridge. The message says so in those words rather than blaming an
+  import.
+
+  **Documents imported before this build can be re-fitted with Clean Up.** The
+  triangles are long gone by then, so the recovery is partial and a hole may
+  come back very slightly wide; re-importing the original mesh gives the exact
+  answer. Clean Up rebuilds the faces, so a saved reference to a face of that
+  body may need re-picking afterwards. It only helps a body that is still
+  entirely faceted: once some curved surfaces have been recognised, Clean Up
+  leaves that body alone. It can also re-read a many-sided prism you drew
+  yourself as a cylinder, which moves its volume by about a percent, so keep it
+  for bodies that need repairing. When it does recognise curved surfaces, an
+  amber marker on the feature says how many, so a body that was meant to stay
+  flat is never changed in silence: delete the Clean Up to get it back.
+
 - **Extrude can start away from the sketch plane, and its walls can taper.** A
   start offset moves the beginning of the extrude along its direction of travel,
   a target offset does the same for an up-to target, and a taper angle slopes
