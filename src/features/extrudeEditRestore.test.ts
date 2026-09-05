@@ -129,6 +129,9 @@ function harness(document_: CadDocument) {
     addToScene() {},
     removeFromScene() {},
     projectToScreen: () => ({ x: 0, y: 0 }),
+    // teardown puts out whatever the up-to target pick lit
+    clearHover() {},
+    hoverDatum() {},
     domElement: {
       style: {},
       addEventListener() {},

@@ -133,6 +133,9 @@ export class Viewport {
   private datumGroup = new THREE.Group();
   private datumQuads: THREE.Mesh[] = [];
   private selectedDatum: string | null = null;
+  // the plane under the cursor during an up-to target pick — a channel of its
+  // own so hovering (and un-hovering) can never dim the SELECTED plane
+  private hoveredDatum: string | null = null;
   private dragMoved = false;
   private downPos = { x: 0, y: 0 };
   // "redefine cube side from a model face" pick mode (null = not active)
@@ -905,15 +908,36 @@ export class Viewport {
       this.datumGroup.add(m);
       this.datumQuads.push(m);
     }
-    this.highlightDatum(this.selectedDatum);
+    this.hoveredDatum = null; // the quads these ids named are gone
+    this.paintDatums();
   }
 
   /** Brighten the selected construction plane; others stay faint. */
   highlightDatum(id: string | null) {
     this.selectedDatum = id;
+    this.paintDatums();
+  }
+
+  /** Brighten the construction plane under the cursor (null = none).
+   *
+   *  Separate from highlightDatum because the two channels overlap: an up-to
+   *  target pick hovers planes while one of them may already be SELECTED, and
+   *  reusing highlightDatum for hover would both clobber `selectedDatum` and
+   *  dim the selected plane the moment the cursor left it. Same shape as
+   *  hoverPlane over showAllPlanes for the three world planes. */
+  hoverDatum(id: string | null) {
+    if (id === this.hoveredDatum) return; // pointermove fires per pixel
+    this.hoveredDatum = id;
+    this.paintDatums();
+  }
+
+  /** The one writer of datum-quad opacity: selected outranks hovered outranks
+   *  idle, so the two channels compose instead of fighting. */
+  private paintDatums() {
     for (const q of this.datumQuads) {
+      const id = q.userData.datumId as string;
       (q.material as THREE.MeshBasicMaterial).opacity =
-        q.userData.datumId === id ? 0.32 : 0.12;
+        id === this.selectedDatum ? 0.32 : id === this.hoveredDatum ? 0.24 : 0.12;
     }
     this.requestRender();
   }

@@ -111,6 +111,27 @@ export class PressPullTool {
       this.viewport.domElement.style.cursor = faceId != null ? "pointer" : "default";
       return;
     }
+    // T mode ("extrude up to"): show what the click would bind. Without this the
+    // tool hit-tests only its own arrow while the mode is armed, so sweeping
+    // over a face or an offset plane looks exactly like sweeping over nothing
+    // (field report c0cfee48: "no highlight, so I could not tell it was aimed at
+    // the plane" — the click did bind it).
+    //
+    // The highlight has to tell the truth about onDown, so it mirrors that
+    // branch's precedence exactly: a body hit blocks the datum fallback, and one
+    // of the operation's OWN faces binds nothing at all. Lighting up a plane the
+    // click would ignore is worse than no highlight. One raycast: hoverFaceAt
+    // and pickFaceForPressPull search the same meshes, so the faceIds check
+    // stands in for the second call.
+    if (this.pickingTarget) {
+      const faceId = this.viewport.hoverFaceAt(e.clientX, e.clientY);
+      const targetable = faceId != null && !this.faceIds.includes(faceId);
+      if (!targetable) this.viewport.clearHover();
+      const datumId = faceId == null ? this.viewport.pickDatumAt(e.clientX, e.clientY) : null;
+      this.viewport.hoverDatum(datumId);
+      this.viewport.domElement.style.cursor = targetable || datumId ? "pointer" : "default";
+      return;
+    }
     if (this.grabbing) {
       const proj = axisDragDistance(this.viewport, e.clientX, e.clientY, this.anchor, this.axis);
       // snap the drag to a clean zoom-scaled step (MCAD-style); hold Ctrl/Cmd —
@@ -261,6 +282,10 @@ export class PressPullTool {
     if (e.key === "Escape") {
       if (this.pickingTarget) {
         this.pickingTarget = false;
+        // leaving T mode must take its highlights with it, or the last face and
+        // plane the cursor passed stay lit over a tool that no longer aims at them
+        this.viewport.clearHover();
+        this.viewport.hoverDatum(null);
         // restore the distance field T-mode hid (audit bug #2: leaving it
         // active let Enter commit a plain distance mid-target-pick)
         this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
@@ -446,6 +471,7 @@ export class PressPullTool {
     this.dim.hide();
     this.disposeGizmo();
     this.viewport.clearHover();
+    this.viewport.hoverDatum(null);
     this.viewport.suspendPicking = false;
     this.active = false;
     this.grabbing = false;
