@@ -366,6 +366,7 @@ export class SketchMode {
     this.dims.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.dims.onPlanePoint = (cx, cy) => this.planePointAt(cx, cy);
     this.dims.onEntityPlace = (i, f, ox, oy, done) => this.commitEntityPlace(i, f, ox, oy, done);
+    this.dims.onEntityConstraint = (i, f) => this.entityDimConstraint(i, f);
     this.dims.onLabelMenu = (e, del) => {
       // Disabled rather than absent on an entity dim: a circle's diameter is a
       // property of the circle, so there is no constraint to remove, and saying
@@ -377,6 +378,11 @@ export class SketchMode {
     this.glyphs = new SketchGlyphs(viewport);
     this.glyphs.onDelete = (i) => this.deleteConstraint(i);
     this.glyphs.onOverlapPick = (e) => this.labelOverlapSelect(e);
+    this.glyphs.onMenu = (e, i) => {
+      contextMenu(e.clientX, e.clientY, [
+        { label: "Delete constraint", danger: true, onClick: () => this.deleteConstraint(i) },
+      ]);
+    };
     this.boundDown = (e) => this.onPointerDown(e);
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
@@ -888,6 +894,30 @@ export class SketchMode {
       const def = staggeredDefaults(this.entities).get(cur.id);
       return entityDims(cur, def).find((d) => d.field === field)?.labelPos ?? null;
     });
+  }
+
+  /** The driving constraint behind an ENTITY dim badge, in the three answers
+   *  SketchDimensions.onEntityConstraint asks for. Only a line's LENGTH and a
+   *  circle's DIAMETER can be governed — exactly the two editDimension turns
+   *  into a driving constraint — so everything else is intrinsic and reports
+   *  null. Resolved against the live constraints with the same matcher
+   *  setDrivingDimension.sameTarget uses, so a badge and a re-dimension can
+   *  never disagree about which constraint is "the" one for this field. */
+  private entityDimConstraint(index: number, field: DimField): (() => void) | "free" | null {
+    const e = this.entities[index];
+    if (!e) return null;
+    const governs =
+      e.type === "line" && field === "length"
+        ? (c: SketchConstraint) => c.type === "distance" && c.line === e.id
+        : e.type === "circle" && field === "diameter"
+          ? (c: SketchConstraint) => c.type === "diameter" && c.circle === e.id
+          : null;
+    if (!governs) return null;
+    const at = this.constraints.findIndex(governs);
+    // A measurement, honestly labelled: the badge shows what the geometry
+    // currently IS, and nothing holds it there (report fd7dcc5f).
+    if (at < 0) return "free";
+    return () => this.deleteConstraint(at);
   }
 
   /** Persist a dragged CONSTRAINT dim placement (the placed dims — see

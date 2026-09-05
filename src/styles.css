@@ -1892,6 +1892,14 @@ button.finish:hover {
   border-color: var(--text-dim);
   color: var(--text-dim);
 }
+/* an entity badge nothing drives: a live measurement of the geometry, not a
+   driving dimension. Muted border so a measured ⌀ and a driving ⌀ stop reading
+   as the same thing — but it stays editable (typing a value is what creates the
+   driving constraint), so it keeps the pointer cursor and the accent hover. */
+.sketch-dim-measured {
+  border-style: dashed;
+  border-color: var(--text-dim);
+}
 /* solver-flagged dimensions: red = conflicting, amber = redundant/over-defined */
 .sketch-dim.conflict { border-color: var(--flag-conflict); color: var(--flag-conflict); }
 .sketch-dim.over { border-color: var(--warn); color: var(--warn); }

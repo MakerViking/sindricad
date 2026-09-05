@@ -366,7 +366,8 @@ export function isPlacedDim(
   c: SketchConstraint,
 ): c is Extract<SketchConstraint, { driven?: boolean }> {
   switch (c.type) {
-    case "p2pDistance": case "p2lDistance": case "radius": case "angle":
+    case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY":
+    case "p2lDistance": case "radius": case "angle":
     case "radialGap": case "c2cDistance": case "c2lDistance": case "p2cDistance":
     case "offset":
       return true;

@@ -53,10 +53,15 @@ interface DimLabel {
    *  never jumps on release. */
   placeCommit?: (ox: number, oy: number, done: boolean) => THREE.Vector2 | null;
   /** Remove the constraint this label drives. Present ONLY on constraint-backed
-   *  dims: an entity dim (a circle's diameter, a rectangle's width) is an
-   *  intrinsic property of the entity with no constraint to delete, so its
-   *  label offers the action disabled rather than not at all. */
+   *  dims: an entity dim (a rectangle's width) is an intrinsic property of the
+   *  entity with no constraint to delete, so its label offers the action
+   *  disabled rather than not at all. */
   onDelete?: () => void;
+  /** This badge's value COULD be governed by a driving constraint and isn't —
+   *  it is a live measurement of the geometry. Renders muted so a measured ⌀
+   *  and a driving ⌀ stop being pixel-identical (report fd7dcc5f). Still
+   *  editable: typing a value is what creates the driving constraint. */
+  measured?: boolean;
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value); valueMm
@@ -93,6 +98,18 @@ export class SketchDimensions {
    *  UI); `del` is the label's delete action, or null when the label is an entity
    *  dim and there is nothing to delete. */
   onLabelMenu: ((e: MouseEvent, del: (() => void) | null) => void) | null = null;
+  /** The driving constraint behind an ENTITY dim, resolved by the owner against
+   *  the live constraint list. Three answers, because the badge has three
+   *  states:
+   *    a function → a driving constraint governs this field; the badge deletes
+   *                 it (report ad6f8d54: a line's length and a circle's
+   *                 diameter render through the entity badge, which offered no
+   *                 delete at all, so those two dims were unremovable)
+   *    "free"     → the field CAN be governed and nothing governs it: the badge
+   *                 is a measurement, and renders as one
+   *    null       → the field is intrinsic (a rectangle's width): no constraint
+   *                 exists for it either way. */
+  onEntityConstraint: ((index: number, field: DimField) => (() => void) | "free" | null) | null = null;
 
   /** The label the Delete key acts on. Set by a click or a right-click, dropped
    *  on the next rebuild — a selection whose element no longer exists must not
@@ -145,6 +162,7 @@ export class SketchDimensions {
       for (const d of entityDims(e, defaults.get(e.id))) {
         const expr = this.entityExprOf?.(i, d.field);
         const field = d.field;
+        const backing = this.onEntityConstraint?.(i, field) ?? null;
         this.addLabel({
           anchor: d.labelPos,
           valueMm: d.valueMm,
@@ -153,6 +171,8 @@ export class SketchDimensions {
           placeCommit: (ox, oy, done) => this.onEntityPlace?.(i, field, ox, oy, done) ?? null,
           ...(this.onEditExpr ? { commitExpr: (raw: string) => this.onEditExpr!(i, field, raw) } : {}),
           ...(expr ? { expr } : {}),
+          ...(typeof backing === "function" ? { onDelete: backing } : {}),
+          ...(backing === "free" ? { measured: true } : {}),
         });
       }
     });
@@ -193,6 +213,7 @@ export class SketchDimensions {
     const fx = !!d.expr && !isPlainNumber(d.expr);
     const cls = ["sketch-dim"];
     if (d.driven) cls.push("sketch-dim-driven");
+    if (d.measured) cls.push("sketch-dim-measured");
     if (fx) cls.push("sketch-dim-fx");
     if (d.conflict) cls.push("conflict");
     else if (d.over) cls.push("over");
@@ -232,7 +253,9 @@ export class SketchDimensions {
     if (d.driven) {
       el.title = "Reference dimension (measured, not driving)";
     } else {
-      el.title = fx ? `= ${d.expr} · click to edit` : "Click to edit, drag to move";
+      el.title = fx ? `= ${d.expr} · click to edit`
+        : d.measured ? "Measured — click to set a driving dimension, drag to move"
+        : "Click to edit, drag to move";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         if (label.suppressEdit || this.suppressClick) {
@@ -369,9 +392,23 @@ export class SketchDimensions {
     input.focus();
     input.select();
     const revert = () => { label.el.textContent = fmtDim(label.valueMm, label.kind, label.driven, fx); };
-    input.addEventListener("input", () => input.classList.remove("input-error"));
+    // Nothing typed since focus, so a Delete still means "delete this
+    // dimension". Report ad6f8d54: "trying to delete a dimension... nothing
+    // happens" — a left-click opens this editor and focuses it, so the Delete
+    // that follows lands on an editable target, SketchMode.onKey bails, and all
+    // the key did was clear the (fully selected) input text.
+    let pristine = true;
+    input.addEventListener("input", () => {
+      pristine = false;
+      input.classList.remove("input-error");
+    });
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      if (pristine && (e.key === "Delete" || e.key === "Backspace") && label.onDelete) {
+        e.preventDefault();
+        label.onDelete();
+        return;
+      }
       if (e.key === "Enter") {
         const raw = input.value.trim();
         if (label.commitExpr && (!isPlainNumber(raw) || label.expr !== undefined)) {
