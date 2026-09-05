@@ -719,6 +719,16 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/sketch_on_face_e2e.cjs
 
+      # Picking on a document with NO solid in it. The suppress-while-streaming
+      # flag is only reachable through a real chunked reply, and the case that
+      # broke it is a build whose mesh is EMPTY — neither is reproducible in a
+      # unit test, which is why this ran green while the gesture was dead.
+      - name: Profile pre-selection end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/region_preselect_e2e.cjs
+
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,
       # which happens during module evaluation, long before geometry connects.
