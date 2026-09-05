@@ -3,11 +3,14 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
 import { applyProjectionUpdate } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
+import { applyDrivingDimsDirect, drivingDimFor, upsertDrivingDim } from "../sketch/directDims";
+import { entityDims } from "../sketch/entityDims";
+import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
@@ -664,13 +667,131 @@ export class DocumentStore {
     f: Extract<Feature, { type: "sketch" }>,
     parameters: CadDocument["parameters"],
   ): Promise<Extract<Feature, { type: "sketch" }>["entities"] | null> {
-    if (!(f.constraints ?? []).length || !this.headlessSolve) return null;
-    const solved = await this.headlessSolve(f, parameters);
-    if (!solved) {
-      this.onParamSolveIssue?.(f.id);
-      return null;
+    const r = await this.solveSketchOutcome(f, parameters);
+    if (r.status === "failed" || r.status === "unavailable") this.onParamSolveIssue?.(f.id);
+    return r.status === "solved" ? r.entities : null;
+  }
+
+  /** The same solve, with its two failure modes kept apart — they need opposite
+   *  handling and a bare null cannot say which happened:
+   *
+   *  - `failed`: the solve RAN and could not satisfy the sketch. It says nothing
+   *    about where the geometry should go, so the coordinates stay put.
+   *  - `unavailable`: there is no solver on this machine (SolverUnavailable, or
+   *    none injected). Nothing will EVER drive a constraint here, so a typed
+   *    dimension has to be applied directly (directDims) or the user types a
+   *    number and watches nothing happen — the 0.1.100 WebView2 reports.
+   *
+   *  Doing the direct write on `failed` too would be the mirror bug: geometry
+   *  moved to a size the solver just said is inconsistent with everything else. */
+  private async solveSketchOutcome(
+    f: Extract<Feature, { type: "sketch" }>,
+    parameters: CadDocument["parameters"],
+  ): Promise<
+    | { status: "solved"; entities: Extract<Feature, { type: "sketch" }>["entities"] }
+    | { status: "nothing" | "failed" | "unavailable" }
+  > {
+    if (!(f.constraints ?? []).length) return { status: "nothing" };
+    if (!this.headlessSolve) return { status: "unavailable" };
+    try {
+      const solved = await this.headlessSolve(f, parameters);
+      return solved ? { status: "solved", entities: solved.entities } : { status: "failed" };
+    } catch (e) {
+      // solveSketchFeature only lets SolverUnavailable out; anything else is a
+      // bug on our side. Either way there is no solved geometry, and this must
+      // not become an app-level error — the param cascade calls it in a loop.
+      console.error("headless sketch solve unavailable:", e);
+      return { status: "unavailable" };
     }
-    return solved.entities;
+  }
+
+  // --- sketch dimensions edited from OUTSIDE the sketch editor (inspector) ---
+
+  /** Injected (main.ts): a dimension of the OPEN sketch was edited in the
+   *  inspector — hand it to the live session (SketchMode.applyDimensionEdit),
+   *  the mirror of onParamsApplied/onProjectionsApplied. The document copy of an
+   *  open sketch is never written from here: the session copied the entities at
+   *  enter() and writes its own back at finish(), so a doc-side edit would be
+   *  invisible on canvas and then silently discarded. */
+  onSketchDimEdit?: (sketchId: string, entityId: string, field: DimField, mm: number) => void;
+
+  /** Edit one sketch entity's dimension (the inspector's sketch rows), with the
+   *  same semantics as editing that dimension's label on the canvas: a line's
+   *  length and a circle's diameter become DRIVING constraints (drivingDimFor)
+   *  and the sketch re-solves, so tangent/attached geometry follows. Writing the
+   *  coordinates instead is not equivalent — a radius is a free variable to the
+   *  solver, so the next solve takes the typed value straight back out.
+   *
+   *  Every other dimension (rectangle W/H, slot width, polygon radius) has no
+   *  constraint form and stays a coordinate write, exactly as on the canvas.
+   *
+   *  `entityIndex` indexes the sketch's own `entities` (which resolveRealEntities
+   *  maps 1:1). Serialized on paramChain, and constraint + solved coordinates
+   *  land in ONE mutate = one undo step = one rebuild. */
+  setSketchDimension(sketchId: string, entityIndex: number, field: DimField, mm: number) {
+    const f = this.doc.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sketchId);
+    if (!f) return;
+    if ((this.openSketchId?.() ?? null) === sketchId) {
+      // The session addresses its entities by id (its array can have moved on
+      // since enter()). A pre-id document entity has no stable id to name here,
+      // so its inspector edit reaches nothing while the sketch is open — one
+      // more reason not to write the copy Finish throws away.
+      const id = f.entities[entityIndex]?.id;
+      if (id) this.onSketchDimEdit?.(sketchId, id, field, mm);
+      return;
+    }
+    this.paramChain = this.paramChain
+      .then(() => this.commitSketchDimension(sketchId, entityIndex, field, mm))
+      .catch((e) => {
+        console.error("sketch dimension edit failed:", e);
+        this.onWarning?.("Sketch dimension failed to apply — see the console for details.");
+      });
+  }
+
+  private async commitSketchDimension(sketchId: string, entityIndex: number, field: DimField, mm: number): Promise<void> {
+    const cur = this.doc.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sketchId);
+    if (!cur) return;
+    const e = resolveRealEntities(cur, this.doc.parameters)[entityIndex];
+    if (!e) return;
+    // A constraint names its entity by id, so an entity that has never been
+    // given one (a pre-id saved file) keeps the coordinate write.
+    const docId = cur.entities[entityIndex]?.id;
+    const dim = docId ? drivingDimFor({ type: e.type, id: docId }, field, mm) : null;
+    // Only the edited entity is ever re-serialized: the others keep their
+    // parameter references (resolve would have baked them out to numbers).
+    const withEdited = () => cur.entities.map((ent, j) => (j === entityIndex ? toSketchEntity(e) : ent));
+    let next: Extract<Feature, { type: "sketch" }>;
+    if (dim) {
+      next = { ...cur, constraints: upsertDrivingDim(cur.constraints ?? [], dim) };
+    } else {
+      const d = entityDims(e).find((x) => x.field === field);
+      if (!d) return;
+      d.write(mm); // mutates the resolved copy
+      next = { ...cur, entities: withEdited() };
+    }
+    const r = await this.solveSketchOutcome(next, this.doc.parameters);
+    if (r.status === "solved") next = { ...next, entities: r.entities };
+    else if (r.status === "failed") this.onParamSolveIssue?.(sketchId);
+    else if (r.status === "unavailable" && dim && applyDrivingDimsDirect([e], [dim])) {
+      // No solver on this machine (see directDims): the typed value has to go
+      // into the geometry here, or it is recorded and never seen. The constraint
+      // stays, so a working solver drives it properly later. Only when the
+      // solver is ABSENT — after a solve that ran and failed, the same write
+      // would move geometry to a size that solve just called inconsistent.
+      next = { ...next, entities: withEdited() };
+    }
+    // The solve was awaited, so the document may have moved on: a plain mutate
+    // (entity delete, undo) is not serialized on paramChain, and SketchMode can
+    // have entered this very sketch. Same guard commitProjectionRefresh keeps —
+    // applying `next` now would resurrect the pre-edit entities, or write the
+    // document copy of a sketch that is open after all.
+    if (this.doc.features.find((x) => x.id === sketchId) !== cur) return;
+    if ((this.openSketchId?.() ?? null) === sketchId) return;
+    this.mutate((d) => {
+      const i = d.features.findIndex((x) => x.id === sketchId);
+      // REPLACE the feature object — the delta wire protocol diffs by reference.
+      if (i >= 0) d.features[i] = next;
+    });
   }
 
   /** The shared commit tail: apply `fn`, keep the parameter invariant (bound

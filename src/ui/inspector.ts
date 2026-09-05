@@ -10,7 +10,7 @@ import type { Feature, Num, ParamTarget } from "../types";
 import { FEATURE_META } from "./featureMeta";
 import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, parseField, fromDisplay } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
-import { resolveEntities, toSketchEntity } from "../sketch/resolve";
+import { resolveEntities } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
 import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
@@ -123,8 +123,10 @@ export class Inspector {
     this.el.appendChild(box);
 
     // sketch: editable per-entity dimensions (same descriptors as the in-canvas
-    // labels). Editing entity i serializes just that entity back to numbers and
-    // leaves the others (and their parameter references) untouched.
+    // labels). The store applies the value with the SAME semantics as the canvas
+    // editor — a length/diameter becomes a driving constraint and the sketch
+    // re-solves — and owns the open-sketch case; this panel only reports the
+    // gesture (field report 8b49c06e).
     if (f.type === "sketch") {
       box.appendChild(title(`Sketch · ${f.id}`, true));
       const resolved = resolveEntities(f, doc.parameters);
@@ -132,11 +134,7 @@ export class Inspector {
         for (const d of entityDims(e)) {
           box.appendChild(
             numberRow(`${d.label} ${unit}`, displayValue(d.valueMm), (v) => {
-              const copy = resolveEntities(f, doc.parameters)[i];
-              if (!copy) return;
-              entityDims(copy).find((x) => x.field === d.field)?.write(fromDisplay(v));
-              const entities = f.entities.map((ent, j) => (j === i ? toSketchEntity(copy) : ent));
-              this.store.updateFeature(f.id, { entities } as Partial<Feature>);
+              this.store.setSketchDimension(f.id, i, d.field, fromDisplay(v));
             }),
           );
         }

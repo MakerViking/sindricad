@@ -14,11 +14,54 @@
 // This is a stand-in, not a solver. The constraints are left in place, so once a
 // real solver is available it drives the geometry properly and a sketch authored
 // here is indistinguishable from one authored on a working machine.
+//
+// Because "which dimensions are constraints" is the fact this file is built on,
+// it is also stated here once (drivingDimFor) for both editors to share.
 
 import type { ResolvedEntity } from "./snap";
-import type { SketchConstraint } from "../types";
+import type { DimField, SketchConstraint } from "../types";
+import { isDimConstraint, newConstraintId } from "./id";
 
 const EPS = 1e-9;
+
+/** Which entity dimension edits through a DRIVING solver constraint rather than
+ *  by writing coordinates, and what that constraint is. The single definition
+ *  of that rule: SketchMode.editDimension (in-canvas label) and
+ *  DocumentStore.setSketchDimension (the inspector, sketch closed) both ask
+ *  here, because two copies would drift and the difference is visible — a raw
+ *  radius write is a free variable to the solver and gets solved straight back
+ *  out, while a driving diameter holds the typed value and moves whatever is
+ *  attached to it.
+ *
+ *  null = no constraint form; the caller writes the number into the entity
+ *  (rectangle W/H, slot width, polygon radius, line angle). */
+export function drivingDimFor(
+  e: { type: ResolvedEntity["type"]; id: string },
+  field: DimField,
+  mm: number,
+): SketchConstraint | null {
+  if (e.type === "line" && field === "length") return { type: "distance", line: e.id, value: mm };
+  if (e.type === "circle" && field === "diameter") return { type: "diameter", circle: e.id, value: mm };
+  return null;
+}
+
+/** Add-or-replace one of the above on a constraint list, returning a new array.
+ *  A replacement inherits the replaced dim's id so a parameter binding survives
+ *  retyping the dimension (same rule as SketchMode.setDrivingDimension, whose
+ *  dedup covers every other dimension kind as well). */
+export function upsertDrivingDim(constraints: SketchConstraint[], c: SketchConstraint): SketchConstraint[] {
+  const sameTarget = (k: SketchConstraint): boolean =>
+    (c.type === "distance" && k.type === "distance" && k.line === c.line) ||
+    (c.type === "diameter" && k.type === "diameter" && k.circle === c.circle);
+  let replacedId: string | undefined;
+  const kept = constraints.filter((k) => {
+    if (!sameTarget(k)) return true;
+    if (isDimConstraint(k) && k.id) replacedId = k.id;
+    return false;
+  });
+  const dim = isDimConstraint(c) && !c.id ? { ...c, id: replacedId ?? newConstraintId() } : c;
+  return [...kept, dim];
+}
 
 /** Apply what can be applied without solving. Mutates `entities` in place and
  *  returns true if anything actually moved.
