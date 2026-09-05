@@ -248,7 +248,17 @@ body {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  min-width: 220px;
+  /* Size to the widest ROW. The containing block is .menu, which is only as wide
+     as its "File"/"Edit" button (~50px), and shrink-to-fit for an absolutely
+     positioned box is min(max(min-content, available), max-content) — with
+     `available` that small it always resolved to MIN-CONTENT, i.e. the longest
+     single WORD. The popup was therefore held open by min-width alone, so
+     whether rows wrapped or left a wide empty margin down the right-hand side
+     came down to whichever font the platform substituted (the app asks for Inter
+     and does not ship it). Reported from Windows 11 twice. */
+  width: max-content;
+  min-width: 180px;
+  max-width: calc(100vw - 24px);
   background: var(--panel-2);
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
@@ -268,7 +278,12 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  /* No row gap: this used to be 24px, which is the shortcut column's
+     reservation, and applying it to the check→label pair as well indented every
+     label 53px from the popup's left edge — even in File and Edit, where
+     nothing is checkable. The 24px now lives on .menu-shortcut, which is the
+     only child that wants it. */
+  gap: 0;
   width: 100%;
   background: none;
   border: none;
@@ -289,6 +304,7 @@ body {
   pointer-events: none;
 }
 .menu-shortcut {
+  margin-left: 24px; /* the shortcut column's own breathing room (was .menu-item's gap) */
   color: var(--text-mute);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -2810,6 +2826,7 @@ button.finish:hover {
 .menu-check {
   flex: 0 0 auto;
   width: 14px;
+  margin-right: 8px;
   display: inline-flex;
   align-items: center;
   color: var(--accent);
