@@ -719,6 +719,16 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/sketch_on_face_e2e.cjs
 
+      # Getting OUT of a sketch: Finish on one nobody drew in must add nothing,
+      # and Cancel Sketch must leave without committing. The store side is unit
+      # tested, but the row in the Browser — the thing the two reporters had to
+      # tick, select and delete — only exists in a running app.
+      - name: Sketch exit end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_exit_e2e.cjs
+
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,
       # which happens during module evaluation, long before geometry connects.

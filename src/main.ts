@@ -606,7 +606,7 @@ let planePick = false;
 const NON_REPEATABLE = new Set([
   "new", "open", "save", "saveas", "export", "import",
   "print-export", "print-orca", "print-send", "welcome", "ta-publish",
-  "undo", "redo", "compute-all", "shortcut-help", "finish", "palette",
+  "undo", "redo", "compute-all", "shortcut-help", "finish", "cancel-sketch", "palette",
   "select", // a mode switch, not a command — "Repeat Select" would be nonsense
   "fit", "iso", "top", "front", "right", "persp",
   "selmode", "selmode-faces", "selmode-bodies",
@@ -1247,6 +1247,34 @@ const SKETCH_MODIFY: Record<string, SketchTool> = {
   symmetric: "symmetric",
   fix: "fix",
 };
+
+/** Leave a sketch WITHOUT committing it. Until this existed the only exit from
+ *  the sketcher was the green Finish (Escape just returns to the select tool,
+ *  and any 3D command commits first), so a sketch entered by accident — Offset
+ *  Plane opens one on the plane it makes — could only be got rid of by
+ *  committing it and then deleting the row (d911463c, 40c85f97). cancel() drops
+ *  the session and never touches the datum, so the plane survives.
+ *
+ *  The confirm is gated on there being something to lose: leaving a sketch you
+ *  never drew in is not a decision worth a dialog, and that is the exact case
+ *  both reports were stuck in. window.confirm is a no-op in Tauri's WebKitGTK
+ *  webview, so this uses the native dialog like newDocument() does. */
+async function cancelSketch() {
+  if (!sketch.active) return;
+  if (sketch.hasDrawnGeometry()) {
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    const ok = await ask("Leave this sketch and throw away what you drew in it?", {
+      title: "Cancel Sketch",
+      kind: "warning",
+      okLabel: "Discard sketch",
+      cancelLabel: "Keep editing",
+    });
+    if (!ok) return;
+  }
+  sketch.cancel();
+  setStatus("Sketch cancelled", "");
+}
+
 function handleAction(action: string) {
   if (!NON_REPEATABLE.has(action)) lastAction = action; // for "Repeat <command>"
   // Select is in neither table below because it draws and modifies nothing — it
@@ -1285,6 +1313,7 @@ function handleAction(action: string) {
     return;
   }
   if (action === "finish") return void sketch.finish(true);
+  if (action === "cancel-sketch") return void cancelSketch();
   // Sketch > Check. On demand only: a warning at Finish would sit on the path
   // every single sketch takes, and a checker's first job is to be trusted.
   if (action === "check-sketch") {

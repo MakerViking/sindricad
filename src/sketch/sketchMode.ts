@@ -179,6 +179,14 @@ function fpClose(a: EdgeFingerprint, b: EdgeFingerprint): boolean {
 // committed — filtered out at serialization and dropped on tool switch/cancel.
 const TEXT_PREVIEW_ID = "__textpreview__";
 
+/** Did the user actually draw anything in this snapshot? Reads the SERIALISED
+ *  feature, where the synthetic origin geometry has already been stripped —
+ *  counting `SketchMode.entities` instead is what made the old empty-sketch
+ *  guard dead, because entering a sketch injects three entities of its own. */
+function hasDrawnContent(f: Feature | null): boolean {
+  return !!f && f.type === "sketch" && (f.entities.length > 0 || (f.patterns?.length ?? 0) > 0);
+}
+
 export class SketchMode {
   active = false;
   tool: SketchTool = "select";
@@ -538,7 +546,10 @@ export class SketchMode {
    *  which cost a repro on the 2026-08-02 dimension report; the bug reporter now
    *  splices this in. Shared with finish() so the two can never disagree.
    *
-   *  Null when no sketch is open, or when nothing has been drawn yet. */
+   *  Null when no sketch is open. NOT null for a sketch nothing has been drawn
+   *  in yet — that case reports an empty `entities` array, which is exactly the
+   *  crumb the bug reporter needs. The decision not to COMMIT an empty sketch
+   *  lives in finish(), not here. */
   snapshotFeature(): Feature | null {
     if (!this.active || !this.store) return null;
     if (this.entities.length === 0 && this.patterns.length === 0) return null;
@@ -556,11 +567,32 @@ export class SketchMode {
     };
   }
 
+  /** Does this session hold geometry the user drew? The synthetic origin does
+   *  not count, so a sketch you have only opened reports false. Drives both the
+   *  empty-commit guard below and whether Cancel Sketch is worth a confirm. */
+  hasDrawnGeometry(): boolean {
+    return hasDrawnContent(this.snapshotFeature());
+  }
+
   finish(commit = true) {
     if (!this.active) return;
     const store = this.store!;
     this.patternFlow.flushOnFinish(); // may add patterns — must precede the snapshot
-    const sketch = commit ? this.snapshotFeature() : null;
+    // Don't commit a sketch nobody drew in. Creating an Offset Plane opens a
+    // sketch on it automatically, so a user who only wanted the plane pressed
+    // Finish and got an empty sketch row to hunt down and delete (d911463c,
+    // 40c85f97). snapshotFeature() has an emptiness guard of its own, but it has
+    // been DEAD since the origin landed: enter() unshifts three synthetic
+    // entities, so `entities.length` is never 0 on a fresh sketch. The test
+    // belongs at this commit boundary rather than inside the shared serialiser,
+    // because the bug reporter reads that serialiser and needs the open-sketch
+    // crumb even when the sketch is empty.
+    //
+    // `editingId` is load-bearing: erasing every entity from an EXISTING sketch
+    // and pressing Finish must still write the deletion through replaceFeature,
+    // not skip the commit and silently restore what was deleted.
+    const snap = commit ? this.snapshotFeature() : null;
+    const sketch = snap && (this.editingId || hasDrawnContent(snap)) ? snap : null;
     if (sketch) {
       if (this.editingId) {
         store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id));
