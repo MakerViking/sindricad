@@ -215,8 +215,12 @@ describe("the origin is visible reference, not clutter or a dead click", () => {
 
   it("lets an emphasis pass override the datum colour", () => {
     // Selection has to be visible on it, or selecting it reads as nothing
-    // happening. Same `!highlight` rule projected geometry uses.
+    // happening. Same `!highlight` rule projected geometry uses. The AXES go
+    // further — they draw solid in the emphasis colour rather than falling
+    // through to the dashed construction style, which is what made a stolen
+    // click read as "the origin axis turned dotted"; that one is asserted on
+    // the rendered material in overlay.test.ts.
     expect(overlaySrc).toMatch(/isOriginId\(e\.id\) && !highlight/);
-    expect(overlaySrc).toMatch(/isOriginGeometry\(e\.id\) && !highlight/);
+    expect(overlaySrc).toMatch(/highlight \? drawColor : ORIGIN_COLOR/);
   });
 });

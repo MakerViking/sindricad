@@ -40,6 +40,7 @@ import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
 import { detectRegions, rectCorners } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
+import { stepDoublePress, type PressRecord } from "../input/doublePress";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
@@ -1240,6 +1241,24 @@ export class SketchMode {
     }
   }
 
+  /** The entities a badge's click may be handed to: everything the user DREW,
+   *  and nothing else.
+   *
+   *  The geometry-beats-label rule exists so a badge cannot swallow a click
+   *  aimed at real geometry underneath it. Reference geometry is the one thing
+   *  that rule must not cover: `pickEntity` falls back to the origin axes when
+   *  none of your own geometry is in range, and under a badge none ever is —
+   *  every badge is laid out at least LABEL_CLEAR_PX (18 px) off the geometry it
+   *  labels, twice the 9 px pick tolerance. So for a rectangle centred on the
+   *  origin the height badge sits exactly on the X axis and the width badge
+   *  exactly on the Y axis, and the axis (at distance 0) took every click: the
+   *  badge was permanently uneditable and the only feedback was the axis
+   *  lighting up. Reported 2026-09-05. The axes are ±10 000 mm long and stay
+   *  directly clickable everywhere they are not under a badge. */
+  private ownEntities(): ResolvedEntity[] {
+    return this.entities.filter((e) => !isOriginGeometry(e.id));
+  }
+
   /** Geometry-beats-label: called from a dimension badge's pointerdown when the
    *  badge sits over sketch geometry (common at low zoom — the badge is a DOM
    *  element above the canvas, so the canvas never sees the click). Select the
@@ -1250,8 +1269,9 @@ export class SketchMode {
     if (this.tool !== "select") return false;
     const raw = this.planePoint(e);
     if (!raw) return false;
-    const idx = pickEntity(this.entities, raw, this.pickTol());
-    const ent = idx >= 0 ? this.entities[idx] : undefined;
+    const own = this.ownEntities();
+    const idx = pickEntity(own, raw, this.pickTol());
+    const ent = idx >= 0 ? own[idx] : undefined;
     if (!ent) return false;
     if (e.shiftKey) {
       if (!this.selected.delete(ent.id)) this.selected.add(ent.id);
@@ -1272,11 +1292,25 @@ export class SketchMode {
     const raw = this.planePoint(e);
     if (!raw) return false;
     const midDimension = this.dimPicks.length > 0;
-    if (!midDimension && !pickDimTarget(this.entities, raw, this.pickTol())) {
+    // ownEntities, for the same reason as labelOverlapSelect: pickDimTarget
+    // falls through to pickEntity, so the origin axes claimed a centred shape's
+    // badges here too.
+    if (!midDimension && !pickDimTarget(this.ownEntities(), raw, this.pickTol())) {
       return false; // the annotation owns this click
     }
     this.dimensionClick(raw, e);
     return true;
+  }
+
+  /** True when this press is the SECOND of a double-click. `PointerEvent.detail`
+   *  is always 0 in a pointerdown handler, so both double-click paths below —
+   *  edit a pattern, edit text — were dead; this is the same recogniser a
+   *  dimension badge uses, so a double-click means one thing everywhere. */
+  private lastPress: PressRecord = null;
+  private doublePress(e: PointerEvent): boolean {
+    const { next, double } = stepDoublePress(this.lastPress, e);
+    this.lastPress = next;
+    return double;
   }
 
   private onPointerDown(e: PointerEvent) {
@@ -1286,6 +1320,12 @@ export class SketchMode {
     this.dims.clearSelection();
     if (e.button === 2) { this.rightDownAt = { x: e.clientX, y: e.clientY }; this.rightDragged = false; }
     if (e.button !== 0) return; // left only; middle/right still navigate
+    // Recognised HERE rather than read off `e.detail`, and recorded for every
+    // primary press so the pairing can't drift: this handler is registered on
+    // `pointerdown`, where Chromium leaves `detail` at 0 (mousedown carries 1
+    // then 2). The two double-click paths below — edit a pattern, edit text —
+    // gated on `e.detail >= 2` and so never ran in the shipped webview.
+    const doubleClick = this.doublePress(e);
     // Project picks 3D model geometry / committed sketch curves — it needs the
     // raw client coords, so it branches BEFORE the plane-point conversion.
     if (this.tool === "project") {
@@ -1351,14 +1391,14 @@ export class SketchMode {
       const derived = this.derivedEntities();
       const di = pickEntity(derived, raw, this.pickTol());
       const de = di >= 0 ? derived[di] : undefined;
-      if (de && e.detail >= 2) {
+      if (de && doubleClick) {
         this.editPattern(de.id.split("#")[0] ?? de.id);
         return;
       }
       // DOUBLE-click text → re-open the text panel to edit it in place. (Text isn't
       // pickable as an entity — entitySegments is empty — so it's found via its glyph
       // group's bounding box, a generous hit that lands even between letters.)
-      if (e.detail >= 2) {
+      if (doubleClick) {
         const te = this.textEntityAt(raw);
         if (te) {
           this.editText(te, e);

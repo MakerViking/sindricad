@@ -5,7 +5,8 @@
 // into doc entities is covered by the step-4 refresh e2e).
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { curveObjects, SketchOverlay, ENDPOINT_COLOR } from "./overlay";
+import { curveObjects, SketchOverlay, ENDPOINT_COLOR, SELECT_COLOR, ORIGIN_COLOR } from "./overlay";
+import { originAxisEntities } from "./origin";
 import { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 
@@ -139,5 +140,30 @@ describe("setPendingPoints — every held point gets a marker", () => {
       .map((c) => [c.position.x, c.position.y]);
     expect(shown).toContainEqual([0, 0]);
     expect(shown, "both markers landed on the same point").toContainEqual([10, 5]);
+  });
+});
+
+// A selected origin axis fell through to constructionLine() — DASHED, in the
+// construction colour, ignoring the pass colour entirely. That is what made the
+// centred-rectangle badge bug unreadable: the only visible response to a click
+// the axis had stolen was "the horizontal origin axis turns dotted", which
+// reads as a rendering glitch rather than as a selection. The axes are
+// REFERENCE geometry, not construction lines you drew and forgot.
+describe("curveObjects — a selected origin axis reads as a selection", () => {
+  const plane = new SketchPlane("XY");
+  const axis = originAxisEntities()[0]!; // __originX__
+  const dashedOf = (o: THREE.Object3D): boolean =>
+    !!((o as THREE.Line).material as unknown as { dashed?: boolean }).dashed;
+
+  it("draws solid in the emphasis colour when selected", () => {
+    const objs = curveObjects([axis], plane, SELECT_COLOR, true);
+    expect(matColor(objs[0]!)).toBe(SELECT_COLOR);
+    expect(dashedOf(objs[0]!), "a selected axis still draws dashed").toBe(false);
+  });
+
+  it("still draws solid in the datum colour at rest", () => {
+    const objs = curveObjects([axis], plane, 0xffffff);
+    expect(matColor(objs[0]!)).toBe(ORIGIN_COLOR);
+    expect(dashedOf(objs[0]!)).toBe(false);
   });
 });
