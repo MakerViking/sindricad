@@ -35,6 +35,7 @@ vi.stubGlobal("cancelAnimationFrame", () => {});
 const viewport = {
   camera: new THREE.PerspectiveCamera(),
   projectToScreen: () => ({ x: 0, y: 0 }),
+  projectToOverlay: () => ({ x: 0, y: 0, width: 900, height: 700 }),
 } as unknown as Viewport;
 const plane = {
   to3D: (x: number, y: number, out = new THREE.Vector3()) => out.set(x, y, 0),
