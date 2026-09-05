@@ -727,6 +727,15 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/webgl_fallback_e2e.cjs
 
+      # Also no SC_TOKEN: the bug reporter is built to work with the geometry
+      # engine dead, which is its whole point. The thing under test is the
+      # browser's own click retargeting — a drag out of the card reports its
+      # click on the backdrop — so only a real engine can see it.
+      - name: Bug dialog backdrop end-to-end
+        env:
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/bug_dialog_backdrop_e2e.cjs
+
       - name: Sidecar log on failure
         if: failure()
         run: tail -50 /tmp/ci_sidecar.log /tmp/ci_vite.log || true
