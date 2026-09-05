@@ -453,7 +453,10 @@ describe("bug #86 — a dimension moves what you dimensioned, not what you measu
     expect(rect.width).not.toBe(40); // the rectangle paid, which is the bug
     expect(rect.width).toBeGreaterThan(39.5); // ...a little, not a collapse
     expect(rect.width).toBeLessThan(40);
-    expect(rect.x).toBe((40 - rect.width) / 2); // the LEFT edge is the one that moved
+    // toBeCloseTo, not toBe: on the CI runner the solver lands 1e-16 off the
+    // exact half, and an exact-float compare on a solver output is the wrong
+    // oracle (see the comment above).
+    expect(rect.x).toBeCloseTo((40 - rect.width) / 2, 9); // the LEFT edge is the one that moved
   });
 
   it("anchors do not change what the solver reports", async () => {
@@ -535,7 +538,7 @@ describe("bug #86 — a dimension moves what you dimensioned, not what you measu
     expect(biased.ok).toBe(true);
     expect(biased.conflicts).toEqual([]);
     expect(circ(biased).radius).toBe(5); // untouched, not merely closer than free
-    expect(circ(biased).x).toBe(0);
+    expect(circ(biased).x).toBeCloseTo(0, 12); // -9.9e-33 on the CI runner: a solver output, not a literal
     expect(circ(biased).y).toBeCloseTo(0, 12);
     // never worse than today, stated as the measurement it is
     expect(Math.abs(circ(biased).radius - 5)).toBeLessThan(Math.abs(circ(free).radius - 5));
