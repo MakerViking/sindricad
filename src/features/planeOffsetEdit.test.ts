@@ -293,22 +293,33 @@ describe("where the drag handle sits", () => {
 });
 
 describe("a face-anchored datum's placement reaches the rest of the app", () => {
-  it("datumPlaneDef uses the plane the build resolved, without re-applying offset", () => {
+  it("datumPlaneDef uses the plane the build resolved, without re-applying offset", async () => {
     // datumPlaneDef is "one formula for quad, sketch and offset targets": the 3D
-    // quad (syncDatumPlanes), "Sketch on plane" and "Offset plane"
+    // quad (activeDatumPlanes), "Sketch on plane" and "Offset plane"
     // (contextMenus). Computing it from `f.plane + offset` draws and BAKES the
     // pre-edit placement of a face-anchored datum while the geometry sits at the
     // new one — and the sidecar's entry already has the offset applied, so
     // adding it again would double it.
-    const at = mainSrc.indexOf("function datumPlaneDef(");
-    expect(at, "datumPlaneDef is gone — check its consumers").toBeGreaterThan(-1);
-    const body = mainSrc.slice(at, mainSrc.indexOf("\n}", at));
+    //
+    // It lived in main.ts and could only be checked as source text; it now lives
+    // in document/planeOf, so call it.
+    const { datumPlaneDef } = await import("../document/planeOf");
+    const f = { id: "d1", type: "datumPlane" as const, plane: XY, offset: 20 };
+
+    expect(datumPlaneDef(f, undefined).origin, "no resolved entry: source plane + offset")
+      .toEqual([0, 0, 20]);
+
+    const resolved = { origin: [0, 0, 35] as [number, number, number], normal: [0, 0, 1] as [number, number, number], xdir: [1, 0, 0] as [number, number, number] };
     expect(
-      body,
-      "datumPlaneDef ignores RebuildResult.planes again: a face-anchored datum "
-        + "draws, sketches and re-offsets at its stale cached plane",
-    ).toContain("store.buildState.result?.planes?.[f.id]");
-    expect(body.indexOf("if (resolved) return resolved;"), "the resolved plane must be returned verbatim")
-      .toBeGreaterThan(-1);
+      datumPlaneDef(f, { d1: resolved }).origin,
+      "the resolved plane must be returned verbatim — re-applying offset would give 55",
+    ).toEqual([0, 0, 35]);
+  });
+
+  it("main.ts still routes the quad through it", () => {
+    // The consumers take datumPlaneDef as a dependency (contextMenus,
+    // featureStarters); the quad reaches it via activeDatumPlanes.
+    expect(mainSrc, "main.ts stopped using the shared placement rule")
+      .toContain("activeDatumPlanes(store.document.features");
   });
 });
