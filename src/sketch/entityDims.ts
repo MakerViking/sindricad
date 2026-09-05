@@ -365,6 +365,31 @@ export function lineOperandAt(e: ResolvedEntity, p: { x: number; y: number }): s
   return curveKind(e) === "line" ? e.id : null;
 }
 
+/** The curve to HIGHLIGHT for what a constraint click would take from `e` at
+ *  `p`: the single rectangle EDGE under the cursor, as a synthetic line, or the
+ *  entity itself when it presents no edge of its own.
+ *
+ *  A rectangle is one entity and four line operands, and every constraint tool
+ *  hovered it as the ENTITY — so pointing at one side lit all four, while the
+ *  dimension tool, which resolves the same click to one edge, lit one. A field
+ *  report on 2026-09-01 read that difference exactly: "when selecting, it is the
+ *  whole geometry that is selected rather than the individual line... this does
+ *  not happen with the distance tool", and concluded from it that a rectangle
+ *  was not an assembly of lines at all. The pick was always per-edge; only the
+ *  feedback was not.
+ *
+ *  Comes back as a `line` ENTITY rather than as a segment because that is what
+ *  the overlay draws (curveObjects), and it carries the OPERAND's id, so
+ *  whatever reads the preview can say which edge was meant. Everything else is
+ *  returned as itself, not as a copy: a projected line renders in its own style
+ *  and a synthetic stand-in would quietly lose it. */
+export function hoverOperandCurve(e: ResolvedEntity, p: { x: number; y: number }): ResolvedEntity {
+  if (e.type !== "rectangle") return e;
+  const id = lineOperandAt(e, p);
+  const seg = id ? lineOperand(new Map([[e.id, e]]), id) : null;
+  return id && seg ? ({ type: "line", id, ...seg } as ResolvedEntity) : e;
+}
+
 /** The center + radius a round entity presents to snap/marker/dimension flows:
  *  native circles/arcs and projected circle/arc curves. THE one
  *  circumcenter-for-projected-arc rule (arcCenterRadius reconstructs both arc

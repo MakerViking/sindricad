@@ -17,7 +17,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, lineOperand, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
@@ -2992,7 +2992,16 @@ export class SketchMode {
       ));
     }
     const hit = idx >= 0 ? this.entities[idx] : undefined;
-    if (hit) preview.push(...curveObjects([hit], this.plane, 0xff5555, true));
+    // A constraint tool takes a rectangle's EDGE, never the rectangle, so it
+    // highlights the edge under the cursor and not all four sides — the
+    // difference a reporter saw against the dimension tool and read as "the
+    // rectangle is one entity, not lines" (hoverOperandCurve). Every other tool
+    // here (trim, fillet, move...) really does act on the whole entity, so it
+    // keeps the whole-entity highlight.
+    if (hit) {
+      const curve = CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p) : hit;
+      preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
+    }
     // The point under the cursor, for the tools that consume one. It goes on
     // AFTER the entity highlight so it paints on top: an endpoint and the curve
     // owning it are both under the cursor at once, and the click takes the
@@ -3019,10 +3028,11 @@ export class SketchMode {
     // cannot disagree about which point is addressable.
     if (CONSTRAINT_TOOLS.has(this.tool)) return this.constraintTools.hoverPoint(p);
     if (this.tool !== "dimension") return null;
-    // Dimensioning resolves through dimRefPoints, which is a SUPERSET of the
-    // constraint picker: it also exposes circle and arc centres. Borrowing the
-    // constraint picker here would leave a centre unlit while a click on it
-    // works perfectly, so this searches the list dimensions actually use.
+    // Dimensioning resolves through dimRefPoints — the same list the constraint
+    // picker enumerates since 2026-09-05, so the two hovers now light the same
+    // points. They did NOT before: a circle or arc centre was dimensionable and
+    // fixable while every constraint tool ignored it, and a click on one landed
+    // on nothing at all.
     const tol = this.pickTol();
     let best: { x: number; y: number } | null = null;
     let bestD = tol * tol;
@@ -3708,20 +3718,13 @@ export class SketchMode {
     // entities that own a center (circle/arc), for concentric/radius/equalRadius
     const roundIds = ids((e) => { const k = curveKind(e); return k === "circle" || k === "arc"; });
     const curveIds = ids((e) => curveKind(e) !== undefined);
-    // Entities that own an addressable endpoint (line/arc/spline/point;
-    // projected line/arc/poly), which coincident/midpoint/symmetric name.
-    // RECTANGLES are in this set as of 2026-08-17: their four corners became
-    // pickable points (constraintTools.pickEndpoint) and endpointPoint resolves
-    // them, so leaving them out would have every rect-corner coincident survive
-    // its own solve and then be silently deleted by the next trim/fillet/delete
-    // — the constraint would work until the user touched anything else.
-    const endIds = ids(
-      (e) =>
-        e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "point" ||
-        e.type === "rectangle" ||
-        (e.type === "projected" && e.curve.kind !== "circle"),
-    );
-    // entities exposing at least one dimensionable reference point (p2p/p2l/fix targets)
+    // entities exposing at least one reference point — the operand set for the
+    // dimensions (p2p/p2l/fix) AND, since 2026-09-05, for the point CONSTRAINTS:
+    // constraintTools.pickEndpoint enumerates this same dimRefPoints list, so
+    // "what a dimension can name" and "what a coincident can name" are one set
+    // rather than two that drift. They did drift, twice, and both times the
+    // narrower one silently deleted constraints the solver was honouring:
+    // rectangles were missing from it until 2026-08-17 and circles until now.
     const refIds = ids((e) => dimRefPoints(e).length > 0);
     const rectIds = ids((e) => e.type === "rectangle");
     // A line OPERAND is either a live line entity or a rectangle EDGE
@@ -3745,7 +3748,7 @@ export class SketchMode {
     // the agent-control API can carry it. Accept both here: deleting a
     // constraint the solver honours is the silent-drop failure again, one layer
     // up.
-    const hasPointOperand = (id: string) => endIds.has(id) || hasLineOperand(id);
+    const hasPointOperand = (id: string) => refIds.has(id) || hasLineOperand(id);
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return hasLineOperand(c.line);

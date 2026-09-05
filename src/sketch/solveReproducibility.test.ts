@@ -105,13 +105,15 @@ describe("an unrelated earlier solve makes an identical solve stop repeating its
     // inherently ambiguous to the solver, so the flip below is caused by
     // something and is not just how this sketch always behaves.
     //
-    // Cold, the solver lands on the COLLAPSED branch every time (width 5.16e-9),
-    // which the rectangle guard now refuses — so every cold solve reports not-ok
-    // and hands back the untouched 40 mm rectangle. Repeatability is what this
-    // test is about and it is unchanged; which of the two answers is repeated is
-    // not, and the guard is why they now all read 40.
+    // Cold, the solver's first pass lands on the COLLAPSED branch every time
+    // (width 5.16e-9). Since 2026-09-05 that pass is refused by the rectangle
+    // guard and re-solved from a shape-preserving seed, which finds the real
+    // answer — so every cold solve now comes back ok with the rectangle at its
+    // full 40 mm and symmetric satisfied. Repeatability is what this test is
+    // about and it is unchanged; which of the two answers is repeated is not.
     const cold = await repeat(REPEATS, bistableCase);
-    expect(cold.every((r) => !r.ok), "cold, every solve lands on the collapsed branch and is refused").toBe(true);
+    expect(cold.every((r) => r.ok), "cold, every solve lands on a real answer").toBe(true);
+    expect(cold.every((r) => r.residual <= 1e-6), "and every one of them satisfies symmetric").toBe(true);
     expect(distinct(cold.map((r) => r.width)),
       "cold, the same input gives the same rectangle every time").toBe(1);
   });
@@ -128,27 +130,28 @@ describe("an unrelated earlier solve makes an identical solve stop repeating its
       + "delete it rather than loosening it.")
       .toBeGreaterThan(1);
 
-    // and the two answers are not near-misses: one of them has no area at all,
-    // so the guard refuses it and hands back the pre-solve 40 mm rectangle.
-    // Comparing 40 against the surviving branch's 33.49 is still a whole
-    // rectangle apart, and it is now the REFUSAL that tells them apart rather
-    // than a silent zero.
+    // and the two answers are not near-misses: 40 against 33.49 is a whole
+    // rectangle apart. Both are legitimate — nothing in this sketch says how
+    // wide the rectangle should be — and both now SATISFY the constraint, which
+    // is the part that changed on 2026-09-05: the second answer used to be a
+    // zero-width rectangle, refused by the guard and reported to the user as a
+    // conflict.
     expect(Math.max(...widths) - Math.min(...widths),
       "the two answers differ by a whole rectangle").toBeGreaterThan(1);
-    expect(warm.some((r) => !r.ok), "one of the two answers is a refused collapse")
-      .toBe(true);
-    expect(warm.some((r) => r.ok), "and the other is a real solve").toBe(true);
-    expect(Math.min(...warm.map((r) => r.width)),
+    expect(warm.every((r) => r.ok), "both answers are real solves").toBe(true);
+    expect(warm.every((r) => r.residual <= 1e-6), "and both satisfy symmetric").toBe(true);
+    expect(Math.min(...widths),
       "no collapsed rectangle reaches the document on either branch").toBeGreaterThan(1e-3);
   });
 
-  it("both answers are still legitimate solver outcomes — one is now caught", async () => {
+  it("both answers are still legitimate solver outcomes", async () => {
     // This is what made it dangerous rather than merely untidy: there was no
     // error to report, because the solver is right both times and the sketch
     // never said which of the two it wanted. That has not changed. What HAS
-    // changed is that one of the two answers is a rectangle with no area, and
-    // the guard refuses to write it — so the bistability survives as a shape
-    // that flips between "solved" and "refused", never as data loss.
+    // changed, twice: the collapsed answer is caught by the rectangle guard
+    // (2026-08-17) and then re-solved from a shape-preserving seed into a real
+    // one (2026-09-05). So the bistability survives as two valid widths, and no
+    // longer as a shape that flips between "solved" and "refused".
     await unrelatedSolve(40);
     const warm = await repeat(REPEATS, bistableCase);
     for (const r of warm) {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import {
-  constraintDims, dimensionSegments, entityDims, lineOperand, lineRimPoints,
+  constraintDims, dimensionSegments, entityDims, hoverOperandCurve, lineOperand, lineRimPoints,
   staggeredDefaults,
   pointRimPoints, rimGap, rimGapPoints, rimNesting,
 } from "./entityDims";
@@ -127,6 +127,40 @@ describe("lineOperand (rect-edge line operands)", () => {
     expect(lineOperand(byId, "l~0")).toBeNull();
     expect(lineOperand(byId, "gone~0")).toBeNull();
     expect(lineOperand(byId, "gone")).toBeNull();
+  });
+});
+
+describe("hoverOperandCurve (what a constraint tool highlights under the cursor)", () => {
+  // Reported 2026-09-01: under a constraint tool, pointing at ONE side of a
+  // rectangle lit all four, while the dimension tool lit the one side — so the
+  // rectangle read as a single indivisible thing, which is exactly the sentence
+  // the report made. The pick was per-edge all along.
+  const r: ResolvedEntity = { type: "rectangle", id: "r", width: 20, height: 10, x: 0, y: 0 };
+
+  it("gives the ONE edge under the cursor, as a line carrying that operand's id", () => {
+    // just under the bottom edge, which runs (-10,-5) -> (10,-5)
+    expect(hoverOperandCurve(r, { x: 2, y: -5.4 }))
+      .toEqual({ type: "line", id: "r~0", x1: -10, y1: -5, x2: 10, y2: -5 });
+    // and beside the right edge, (10,-5) -> (10,5)
+    expect(hoverOperandCurve(r, { x: 10.4, y: 1 }))
+      .toEqual({ type: "line", id: "r~1", x1: 10, y1: -5, x2: 10, y2: 5 });
+  });
+
+  it("is a SEGMENT, not the rectangle: three of the four sides are not in it", () => {
+    // The teeth. A helper that returned the rectangle would satisfy "one curve"
+    // and still light every side, which is the bug.
+    const c = hoverOperandCurve(r, { x: 2, y: -5.4 });
+    expect(c.type, "a rectangle came back as itself").toBe("line");
+    const seg = c as { x1: number; y1: number; x2: number; y2: number };
+    expect(Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1), "one 20 mm side, not a 60 mm perimeter")
+      .toBeCloseTo(20, 9);
+  });
+
+  it("hands back everything else unchanged, so a projected line keeps its own style", () => {
+    const l: ResolvedEntity = { type: "line", id: "l", x1: 0, y1: 0, x2: 3, y2: 4 };
+    const c: ResolvedEntity = { type: "circle", id: "c", radius: 2, x: 0, y: 20 };
+    expect(hoverOperandCurve(l, { x: 1, y: 1 })).toBe(l);
+    expect(hoverOperandCurve(c, { x: 2, y: 20 })).toBe(c);
   });
 });
 
