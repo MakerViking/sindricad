@@ -114,11 +114,14 @@ export interface SolveInput {
    *  completely inert. That is not what this ABI does — the numbers above are
    *  from the installed wasm.
    *
-   *  Circles only in practice: an ARC's radius is reachable through its centre
-   *  and endpoints (planegcs `arc_rules`), so whoever anchors those has already
-   *  anchored the radius — sketchSolve says so at the call site and does not
-   *  emit one. Add an `arc_radius` arm here if a caller ever needs it. */
-  radiusAnchors?: { id: string; radius: number }[];
+   *  `arc: true` spells the pin as planegcs's `arc_radius` instead of
+   *  `circle_radius`. A NON-mover arc still needs none: its radius is reachable
+   *  through its centre and endpoints (planegcs `arc_rules`), so whoever
+   *  anchored those anchored the radius, and sketchSolve says so at the call
+   *  site. A MOVER arc has none of them anchored — they belong to the mover —
+   *  so its radius is as free as a circle's, and it grows under tangency
+   *  without this. */
+  radiusAnchors?: { id: string; radius: number; arc?: boolean }[];
 }
 export interface SolveResult {
   points: Record<PointId, { x: number; y: number }>;
@@ -231,7 +234,9 @@ export async function solveSketch(input: SolveInput): Promise<SolveResult> {
   // A radius anchor needs no helper primitive — the value goes straight on the
   // constraint.
   (input.radiusAnchors ?? []).forEach((a, i) => {
-    prims.push({ id: `__crad${i}`, type: "circle_radius", c_id: a.id, radius: a.radius, temporary: true });
+    prims.push(a.arc
+      ? { id: `__crad${i}`, type: "arc_radius", a_id: a.id, radius: a.radius, temporary: true }
+      : { id: `__crad${i}`, type: "circle_radius", c_id: a.id, radius: a.radius, temporary: true });
   });
 
   w.push_primitives_and_params(prims);

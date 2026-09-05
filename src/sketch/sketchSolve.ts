@@ -593,10 +593,12 @@ export async function compileAndSolve(
   //   circle radii too       a circle's radius hangs off no point, so pinning
   //                            its centre alone leaves the solver free to pay in
   //                            radius — which on the tangent gesture it did,
-  //                            harder than with no bias at all. (An arc's does
-  //                            hang off points; see below.)
+  //                            harder than with no bias at all. (An arc's DOES
+  //                            hang off points, so a non-mover arc needs no pin
+  //                            of its own; a mover arc, whose points are free by
+  //                            definition, does. See below.)
   const anchors: { point: string; x: number; y: number }[] = [];
-  const radiusAnchors: { id: string; radius: number }[] = [];
+  const radiusAnchors: { id: string; radius: number; arc?: boolean }[] = [];
   if (bias?.moves.length) {
     // A mover spelled as a rectangle EDGE (`R~3`) is the rectangle. `own()`
     // already attributes an edge's corners to the rectangle, so without this
@@ -707,18 +709,20 @@ export async function compileAndSolve(
     // PROJECTED circle is skipped for the same reason a fixed point is — its
     // `~r` pin already holds the radius rigid and a second pin is noise.
     //
-    // CIRCLES ONLY, deliberately. An ARC needs no radius pin: its centre is
-    // compiled as a non-mergeable point (compileArc), so nothing can ever merge
-    // onto it and a non-mover arc's centre is therefore always anchored — and
-    // `arc_rules` holds both endpoints on the circle, so centre + either
-    // endpoint already fixes the radius. Measured: adding an arc_radius pin
-    // changes no arc solve this suite can construct. The tangent-on-an-arc test
-    // covers that the radius does stay put; it just does not need this to.
+    // CIRCLES ONLY here, deliberately. A NON-MOVER arc needs no radius pin: its
+    // centre is compiled as a non-mergeable point (compileArc), so nothing can
+    // ever merge onto it and a non-mover arc's centre is therefore always
+    // anchored — and `arc_rules` holds both endpoints on the circle, so centre +
+    // either endpoint already fixes the radius. Measured: adding an arc_radius
+    // pin changes no arc solve this suite can construct. The tangent-on-an-arc
+    // test covers that the radius does stay put; it just does not need this to.
+    // (A MOVER arc is the opposite case — none of those points are anchored,
+    // because they belong to the mover. See the second loop below.)
     for (const c of circles) {
       if (movers.has(c.id) || projRounds.has(c.id)) continue;
       if (reachableRounds.has(c.id)) radiusAnchors.push({ id: c.id, radius: c.radius });
     }
-    // ...and the MOVER's own radius, on a rim distance ONLY.
+    // ...and the MOVER's own radius, on a POSITION gesture ONLY.
     //
     // A rim dim ("6 mm from this circle's EDGE to that line") measures a
     // position, not a size, so the mover paying in radius is never what the
@@ -729,17 +733,33 @@ export async function compileAndSolve(
     // hands back the free solve — which moves the LINE the user measured FROM.
     // So the one gesture the policy exists for did not apply to itself, invisibly.
     //
+    // TANGENCY is the same shape of gesture and belongs in the same set — field
+    // report fd7dcc5f. "Make this circle touch that edge" says where the circle
+    // goes, not how big it is, but with both free planegcs splits the correction
+    // evenly: circle r10 in a 100x60 rectangle, tangent to the bottom edge,
+    // circle picked first landed at centre y -10 with the radius grown 10 -> 20.
+    // What made it read as arbitrary rather than merely wrong is that typing a
+    // value into the circle's ⌀ badge creates a driving `diameter`, which lands
+    // in `radiusGoverned` below and vetoes the split — so the SAME gesture moved
+    // the circle when it happened to carry a dimension and resized it when it
+    // did not, through two badges that render identically.
+    //
     // Scoped hard, because a radius pin on the mover is exactly wrong for a SIZE
     // dim: any constraint that governs this circle's radius (diameter, radius,
     // equal-radius, an offset's `difference`) vetoes the pin. That is what keeps
     // "equal-radius moves the circle you picked first" — where the mover's radius
     // MUST change — working.
-    const rimMovers = new Set<string>();
+    const positionMovers = new Set<string>();
     const radiusGoverned = new Set<string>();
     for (const c of cons) {
-      if (c.type === "rimGap") { rimMovers.add(c.round1); rimMovers.add(c.round2); }
-      else if (c.type === "rimLine") rimMovers.add(c.round);
-      else if (c.type === "rimPoint") rimMovers.add(c.round);
+      if (c.type === "rimGap") { positionMovers.add(c.round1); positionMovers.add(c.round2); }
+      else if (c.type === "rimLine") positionMovers.add(c.round);
+      else if (c.type === "rimPoint") positionMovers.add(c.round);
+      else if (c.type === "tangentLC") positionMovers.add(c.circle);
+      else if (c.type === "tangentLA") positionMovers.add(c.arc);
+      else if (c.type === "tangentCC") { positionMovers.add(c.c1); positionMovers.add(c.c2); }
+      else if (c.type === "tangentCA") { positionMovers.add(c.circle); positionMovers.add(c.arc); }
+      else if (c.type === "tangentAA") { positionMovers.add(c.a1); positionMovers.add(c.a2); }
       else if (c.type === "diameter" || c.type === "circleRadius") radiusGoverned.add(c.circle);
       else if (c.type === "arcRadius") radiusGoverned.add(c.arc);
       else if (c.type === "equalRadiusCC") { radiusGoverned.add(c.c1); radiusGoverned.add(c.c2); }
@@ -749,7 +769,13 @@ export async function compileAndSolve(
     }
     for (const c of circles) {
       if (!movers.has(c.id) || projRounds.has(c.id)) continue;
-      if (rimMovers.has(c.id) && !radiusGoverned.has(c.id)) radiusAnchors.push({ id: c.id, radius: c.radius });
+      if (positionMovers.has(c.id) && !radiusGoverned.has(c.id)) radiusAnchors.push({ id: c.id, radius: c.radius });
+    }
+    // The arc half, spelled `arc_radius`. Measured before it: a mover arc under
+    // tangent grew 5 -> 7.95, the circle bug with a different primitive name.
+    for (const a of arcs) {
+      if (!movers.has(a.id) || projRounds.has(a.id)) continue;
+      if (positionMovers.has(a.id) && !radiusGoverned.has(a.id)) radiusAnchors.push({ id: a.id, radius: a.radius, arc: true });
     }
   }
   // A LAST bound, because reachability is not one. Scoping the anchors to what
