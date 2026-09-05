@@ -576,6 +576,106 @@ describe("bug #86 — a dimension moves what you dimensioned, not what you measu
     expect(arcOf(free)).toBeGreaterThan(7); // what it does without the pin
   });
 
+  it("the circle you PICKED keeps its size under tangent — it moves instead", async () => {
+    // Field report fd7dcc5f: "tangent grew my circle instead of moving it".
+    // Tangency measures a POSITION, exactly like a rim dim, so the mover paying
+    // in radius is never what the gesture meant — but `rimMovers` listed only
+    // the three rim dims, so a mover circle under tangent kept BOTH a free
+    // centre and a free radius and planegcs split the correction evenly between
+    // them: measured on HEAD, centre y -10 (half the gap) and radius 10 -> 20.
+    const seed = (): any[] => [
+      { type: "rectangle", id: "R", x: 0, y: 0, width: 100, height: 60 },
+      { type: "circle", id: "C", x: 0, y: 0, radius: 10 },
+    ];
+    const tangent: any[] = [{ type: "tangent2", a: "C", b: "R~0" }]; // R~0 is the bottom edge
+    const r = await compileAndSolve(seed(), tangent, undefined, { moves: ["C"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const c = r.entities.find((e) => e.id === "C");
+    const rect = r.entities.find((e) => e.id === "R");
+    if (c?.type !== "circle" || rect?.type !== "rectangle") throw new Error("geometry lost");
+    expect(c.radius).toBe(10); // the mover was not resized
+    expect(c.y).toBeCloseTo(-20, 9); // it MOVED: tangent to the edge at y=-30
+    expect(rect.width).toBeCloseTo(100, 9); // the rectangle held
+    expect(rect.height).toBeCloseTo(60, 9);
+  });
+
+  it("...and lands in the SAME place whether or not the circle carries a diameter", async () => {
+    // The invariant the report is actually about. The auto ⌀ badge is
+    // measurement-only (entityDims reads e.radius; nothing creates a
+    // constraint), so with only the badge the radius is a free variable and the
+    // tangent resizes; TYPE a value into that same badge and the driving
+    // `diameter` vetoes the radius, so the tangent translates. Two identical
+    // -looking badges, two different gestures. Pinning the mover's radius makes
+    // the undimensioned answer equal the dimensioned one.
+    const seed = (): any[] => [
+      { type: "rectangle", id: "R", x: 0, y: 0, width: 100, height: 60 },
+      { type: "circle", id: "C", x: 0, y: 0, radius: 10 },
+    ];
+    const tangent: any[] = [{ type: "tangent2", a: "C", b: "R~0" }];
+    const withDim: any[] = [...tangent, { type: "diameter", circle: "C", value: 20 }];
+    const bare = await compileAndSolve(seed(), tangent, undefined, { moves: ["C"] });
+    const dimmed = await compileAndSolve(seed(), withDim, undefined, { moves: ["C"] });
+    const circ = (r: { entities: ResolvedEntity[] }) => {
+      const e = r.entities.find((x) => x.id === "C");
+      if (e?.type !== "circle") throw new Error("circle lost");
+      return e;
+    };
+    expect(bare.ok).toBe(true);
+    expect(dimmed.ok).toBe(true);
+    expect(circ(bare).radius).toBeCloseTo(circ(dimmed).radius, 9);
+    expect(circ(bare).x).toBeCloseTo(circ(dimmed).x, 9);
+    expect(circ(bare).y).toBeCloseTo(circ(dimmed).y, 9);
+  });
+
+  it("a mover ARC keeps its radius under tangent too", async () => {
+    // The non-mover arc above needs no pin of its own (its centre is anchored
+    // and `arc_rules` does the rest), but a MOVER arc has neither: its centre is
+    // free because it belongs to the mover, so the radius is free as well and
+    // the arc grows. Measured on HEAD: 5 -> 7.95. This is the one radius anchor
+    // that has to be spelled `arc_radius` rather than `circle_radius`.
+    const seed = (): any[] => [
+      { type: "line", id: "L", x1: -20, y1: 8, x2: 20, y2: 8 },
+      { type: "arc", id: "A", x1: -5, y1: 0, x2: 5, y2: 0, mx: 0, my: 5 },
+    ];
+    const tangent: any[] = [{ type: "tangent2", a: "A", b: "L" }];
+    const r = await compileAndSolve(seed(), tangent, undefined, { moves: ["A"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const a = r.entities.find((e) => e.id === "A");
+    const l = r.entities.find((e) => e.id === "L");
+    if (a?.type !== "arc" || l?.type !== "line") throw new Error("geometry lost");
+    // circumcircle of the three solved points — the sagitta shortcut the test
+    // above uses only holds while the arc stays a half circle on a fixed chord
+    const d = 2 * (a.x1 * (a.y2 - a.my) + a.x2 * (a.my - a.y1) + a.mx * (a.y1 - a.y2));
+    const s1 = a.x1 * a.x1 + a.y1 * a.y1, s2 = a.x2 * a.x2 + a.y2 * a.y2, s3 = a.mx * a.mx + a.my * a.my;
+    const cx = (s1 * (a.y2 - a.my) + s2 * (a.my - a.y1) + s3 * (a.y1 - a.y2)) / d;
+    const cy = (s1 * (a.mx - a.x2) + s2 * (a.x1 - a.mx) + s3 * (a.x2 - a.x1)) / d;
+    expect(Math.hypot(a.x1 - cx, a.y1 - cy)).toBeCloseTo(5, 6); // radius held
+    expect(cy).toBeCloseTo(3, 6); // and it MOVED: centre 5 below the line at y=8
+    expect(l.y1).toBeCloseTo(8, 9); // the non-mover line held
+    expect(l.y2).toBeCloseTo(8, 9);
+  });
+
+  it("circle-to-circle tangent moves the circle you picked, not both radii", async () => {
+    // Same arm, the other operand shape. On HEAD the picked circle grew 5 ->
+    // 11.93 while its centre crept to 10.07; pinned, it translates whole.
+    const seed = (): any[] => [
+      { type: "circle", id: "A", x: 0, y: 0, radius: 5 },
+      { type: "circle", id: "B", x: 30, y: 0, radius: 12 },
+    ];
+    const tangent: any[] = [{ type: "tangent2", a: "A", b: "B" }];
+    const r = await compileAndSolve(seed(), tangent, undefined, { moves: ["A"] });
+    expect(r.ok).toBe(true);
+    expect(r.conflicts).toEqual([]);
+    const a = r.entities.find((e) => e.id === "A");
+    const b = r.entities.find((e) => e.id === "B");
+    if (a?.type !== "circle" || b?.type !== "circle") throw new Error("geometry lost");
+    expect(a.radius).toBeCloseTo(5, 9); // the mover kept its size
+    expect(b.radius).toBeCloseTo(12, 9); // the non-mover was already covered
+    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeCloseTo(17, 6); // externally tangent
+  });
+
   it("equal-radius moves the circle you picked first, not the other one", async () => {
     // The gesture that read as fixed while doing nothing: constraintTools passes
     // `moves` on the equalRadius path, but until radii were anchored the bias
