@@ -54,6 +54,10 @@ function harness() {
       clearHover: () => {},
       pickPlane: () => null,
       selectedFacesForPressPull: () => null,
+      // nothing pre-selected, so Sketch reaches the interactive picker this
+      // file drives (the face-first path is sketchOnPreselectedFace.test.ts)
+      selectedFaceSketchPlane: () => null,
+      clearSelection: () => {},
       selectedEdgeSelectors: () => [],
       selectOnlyEdge: () => {},
       getSelectedBodies: () => [] as string[],

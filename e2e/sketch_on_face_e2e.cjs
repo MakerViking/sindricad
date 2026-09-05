@@ -1,7 +1,9 @@
 // A sketch drawn on a body FACE, in a real browser: does it stay on the grid,
 // and does it FOLLOW the face when the body changes?
 //
-// Two field reports, one file, because they are the same pick.
+// Two field reports, one file, because they are the same pick. A third arrived
+// later (fe6513f9, section (e)): selecting the face first and pressing Sketch
+// ignored the selection and demanded the same face again.
 //
 // (1) Grid. Reported 2026-08-02 (0.1.77, Windows), with the document attached:
 //     "center is getting off from grid, sketch #1 was snapped to grid, went to
@@ -36,10 +38,12 @@
 //
 // Usage (from the repo root), with vite on 5173 and the sidecar on 8765:
 //   SC_TOKEN=<the sidecar token> node e2e/sketch_on_face_e2e.cjs
-// SC_CHROME overrides the browser binary (CI uses /usr/bin/google-chrome).
+// SC_CHROME overrides the browser binary (CI uses /usr/bin/google-chrome), and
+// SC_URL the dev server, for running it beside another checkout on side ports.
 const { chromium } = require("playwright-core");
 
 const TOKEN = process.env.SC_TOKEN;
+const URL = process.env.SC_URL || "http://localhost:5173";
 if (!TOKEN) { console.error("set SC_TOKEN"); process.exit(1); }
 
 let fails = 0;
@@ -79,7 +83,7 @@ const EMPTY = { version: 5, units: "mm", parameters: {}, features: [] };
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   page.on("pageerror", (e) => console.log("PAGEERROR:", e.message));
 
-  await page.goto(`http://localhost:5173/?token=${TOKEN}`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${URL}/?token=${TOKEN}`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => !!window.__sindri, null, { timeout: 30000 });
   await page.keyboard.press("Escape"); // the welcome modal is part of toolBusy()
   await page.waitForTimeout(400);
@@ -347,6 +351,83 @@ const EMPTY = { version: 5, units: "mm", parameters: {}, features: [] };
   check(legacy.planes === null,
     "no `planes` entry, because nothing in this document is anchored",
     JSON.stringify(legacy.planes));
+
+  // ===== (e) the Sketch button honours a face that is ALREADY selected =====
+  // Reported (fe6513f9): "I select a face, hit Sketch, and it asks me to select
+  // the face" — Press/Pull two buttons away already works off the selection.
+  // The unit tests can only see which branch startSketch takes; this is the
+  // only place the real click, the real selection and the real sidecar are in
+  // the path, and the payoff check is the last one: a sketch entered this way
+  // has to be ANCHORED like a clicked one, or face-first sketching would have
+  // quietly re-introduced GH #52 for everybody who uses it.
+  console.log("\n=== (e) select a face, press Sketch: no second pick ===");
+  await load(EMPTY);
+  await load(BOX); // top face at z = 5
+  await page.evaluate(() => window.__sindri.viewport.fit?.());
+  await page.waitForTimeout(600);
+
+  const preFacePt = await screenOf([12, 7, 5]); // off-centre on the top face
+  await clickAt(preFacePt);
+  const selCount = await page.evaluate(() => window.__sindri.viewport.getSelectedFaceIds().length);
+  check(selCount === 1, "a plain click selected exactly one face", `${selCount} selected`);
+
+  await page.evaluate(() => window.__sindri.handleAction("sketch"));
+  await page.waitForTimeout(400);
+  const preEntered = await page.evaluate(() => ({
+    active: window.__sindri.sketch.active,
+    origin: window.__sindri.sketch.plane?.origin,
+    prompt: document.getElementById("prompt")?.textContent ?? "",
+    stillSelected: window.__sindri.viewport.getSelectedFaceIds().length,
+  }));
+  check(preEntered.active === true,
+    "Sketch entered on the selected face with NO second click",
+    `prompt=${JSON.stringify(preEntered.prompt)}`);
+  check(!/Select a plane/.test(preEntered.prompt),
+    "and it did not arm the plane picker as well", JSON.stringify(preEntered.prompt));
+  check(Math.abs((preEntered.origin?.z ?? -1) - 5) < 1e-6,
+    "on the top face's plane (z=5)", `origin=${JSON.stringify(preEntered.origin)}`);
+  check(Math.abs(preEntered.origin?.x ?? 9) < 1e-6 && Math.abs(preEntered.origin?.y ?? 9) < 1e-6,
+    "with the shared grid lattice — origin is the world-origin projection, not the face centroid",
+    `origin=${JSON.stringify(preEntered.origin)}`);
+  check(preEntered.stillSelected === 0,
+    "and the face was released, not left armed for the next tool",
+    `${preEntered.stillSelected} still selected`);
+
+  if (preEntered.active) {
+    const a2 = await page.evaluate(() => {
+      const s = window.__sindri;
+      const p = s.viewport.projectToScreen(s.sketch.plane.to3D(-6, -6));
+      return { x: Math.round(p.x), y: Math.round(p.y) };
+    });
+    const b2 = await page.evaluate(() => {
+      const s = window.__sindri;
+      const p = s.viewport.projectToScreen(s.sketch.plane.to3D(6, 6));
+      return { x: Math.round(p.x), y: Math.round(p.y) };
+    });
+    await clickAt(a2);
+    await clickAt(b2);
+    await settle(() => page.evaluate(() => window.__sindri.sketch.finish(true)));
+  }
+
+  const preSk = await page.evaluate(() => {
+    const f = window.__sindri.store.document.features.filter((x) => x.type === "sketch").at(-1);
+    return f ? { id: f.id, face: f.face ?? null, n: f.entities.length } : null;
+  });
+  check(!!preSk?.face, "the committed sketch carries a `face` anchor too",
+    JSON.stringify(preSk?.face));
+  check(typeof preSk?.face?.body === "string" && preSk.face.body.length > 0,
+    "stamped with the owning body", `body=${preSk?.face?.body}`);
+
+  await settle(() => page.evaluate(() => window.__sindri.store.updateFeature("b1", { height: 20 })));
+  const preFollowed = await page.evaluate((sid) => {
+    const r = window.__sindri.store.buildState.result;
+    return { resolved: r?.planes?.[sid] ?? null, errors: r?.featureErrors ?? [] };
+  }, preSk?.id);
+  check(Math.abs((preFollowed.resolved?.origin?.[2] ?? -1) - 10) < 1e-6,
+    "and it FOLLOWS the face when the box grows, like a clicked one",
+    `z=${preFollowed.resolved?.origin?.[2]}`);
+  check(preFollowed.errors.length === 0, "build still green",
+    JSON.stringify(preFollowed.errors));
 
   console.log(`\n${fails === 0 ? "ALL PASS" : `${fails} FAILED`}`);
   await browser.close();

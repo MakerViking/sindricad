@@ -174,6 +174,11 @@ function harness(world: World) {
       pickPlane: () => null,
       // null = no face pre-selected, so startExtrude takes its region branch
       selectedFacesForPressPull: () => null,
+      // same for the Sketch button: no usable pre-selection, so it arms the
+      // interactive plane pick (the face-first path is
+      // src/features/sketchOnPreselectedFace.test.ts)
+      selectedFaceSketchPlane: () => null,
+      clearSelection: () => act("clearSelection"),
       selectedEdgeSelectors: () => [],
       selectOnlyEdge: () => {},
       getSelectedBodies: () => [] as string[],

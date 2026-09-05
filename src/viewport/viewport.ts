@@ -96,6 +96,34 @@ export function sameStringMap(
  *  1e-4·diag) and tight by three against float noise, so nothing sits near it. */
 const FACE_PLANARITY_TOL = 1e-4;
 
+/** The planarity tolerance in millimetres for this model: relative, so it
+ *  scales with the part (see FACE_PLANARITY_TOL). Falls back to the unit box
+ *  when nothing is loaded. */
+function planarityTol(view: { box: THREE.Box3 } | null): number {
+  const diag = view ? view.box.getSize(new THREE.Vector3()).length() : 0;
+  return FACE_PLANARITY_TOL * (diag || 1);
+}
+
+/** Is every vertex of `tris` within `tol` of the plane `n · x = d`? The gate
+ *  that separates "a face you can sketch on and follow" from a curved face,
+ *  whose tangent plane is perfectly drawable but re-derives from whichever
+ *  triangle of the barrel the tessellation happened to hand over.
+ *
+ *  A face with no triangles is not planar-by-vacuum: it is a face we know
+ *  nothing about, and the callers all treat that as "decline". */
+function faceLiesOnPlane(
+  tris: THREE.Triangle[],
+  n: THREE.Vector3,
+  d: number,
+  tol: number,
+): boolean {
+  if (!tris.length) return false;
+  for (const t of tris) {
+    for (const v of [t.a, t.b, t.c]) if (Math.abs(n.dot(v) - d) > tol) return false;
+  }
+  return true;
+}
+
 /** How far the camera swings when an extrude opens on a flat sketch view.
  *  Roughly a three-quarter view: enough to read depth, not so much that the
  *  profile you just picked becomes hard to recognise. Feel values — they want a
@@ -1542,20 +1570,55 @@ export class Viewport {
   faceAnchor(clientX: number, clientY: number, plane: PlaneDef): Selector | null {
     const hit = this.pickFaceForPressPull(clientX, clientY);
     if (!hit || !hit.bodyId) return null;
-    const tris = this.faceTriangles(hit.faceId);
-    if (!tris.length) return null;
-    // Planarity gate: every vertex of the face within `tol` of the picked plane.
-    // The tolerance scales with the model's bbox diagonal because tessellation
-    // sag and float error both do — a fixed absolute number is either too tight
-    // for a 300 mm part or loose enough to call a 2 mm pin's barrel flat.
     const n = new THREE.Vector3(...plane.normal);
     const d = n.dot(new THREE.Vector3(...plane.origin));
-    const diag = this.model ? this.model.box.getSize(new THREE.Vector3()).length() : 0;
-    const tol = FACE_PLANARITY_TOL * (diag || 1);
-    for (const t of tris) {
-      for (const v of [t.a, t.b, t.c]) if (Math.abs(n.dot(v) - d) > tol) return null;
-    }
+    if (!faceLiesOnPlane(this.faceTriangles(hit.faceId), n, d, planarityTol(this.model))) return null;
     return { ...hit.selector, body: hit.bodyId };
+  }
+
+  /** The sketch plane of the face the user has ALREADY selected, so pressing
+   *  Sketch can use that face instead of demanding a second click on it.
+   *  Reported: "I select the face, hit Sketch, and it asks me to select the
+   *  face" — Press/Pull two buttons away already honours the same selection.
+   *
+   *  Built on selectedFacesForPressPull, not on a raycast of its own: the
+   *  normal, the on-surface anchor and the face selector all come from there
+   *  when a tool works off the selection, and a second recipe for those three is
+   *  how two routes to one face drift apart.
+   *
+   *  The plane itself is composed exactly as pickFacePlane composes it — origin
+   *  = the GLOBAL origin projected onto the face plane (see the grid-lattice
+   *  reasoning there, this is NOT the face centroid), xdir by the same
+   *  gram-schmidt — so selecting a face and clicking it give the same U/V axes
+   *  and the same grid.
+   *
+   *  Null when there is nothing to be sure about, and the caller then falls back
+   *  to the interactive pick (which prompts, so the refusal is never silent):
+   *  no selection; more than one face, which names more than one plane; a CURVED
+   *  face, where the tangent has no frame to follow (see faceAnchor); or an
+   *  unknown owning body, since an unstamped face selector resolves against the
+   *  sidecar's ACTIVE body. */
+  selectedFaceSketchPlane(): { plane: PlaneDef; face: Selector } | null {
+    const sel = this.selectedFacesForPressPull();
+    if (!sel || sel.faceIds.length !== 1 || !sel.bodyId) return null;
+    const faceId = sel.faceIds[0];
+    const selector = sel.selectors[0];
+    if (faceId === undefined || !selector) return null;
+    const normal = sel.normal.clone().normalize();
+    const d = normal.dot(sel.anchor);
+    if (!faceLiesOnPlane(this.faceTriangles(faceId), normal, d, planarityTol(this.model))) return null;
+    const origin = normal.clone().multiplyScalar(d);
+    const ref =
+      Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+    const xdir = ref.sub(normal.clone().multiplyScalar(ref.dot(normal))).normalize();
+    return {
+      plane: {
+        origin: [origin.x, origin.y, origin.z],
+        normal: [normal.x, normal.y, normal.z],
+        xdir: [xdir.x, xdir.y, xdir.z],
+      },
+      face: { ...selector, body: sel.bodyId },
+    };
   }
 
   /** Edge-only pick for the fillet/chamfer edge-selection tools. */
