@@ -374,6 +374,12 @@ export class Geometry implements GeometryBackend {
   private progressListeners = new Set<(feature: number, meshed: number, meshTotal: number) => void>();
   private reconnectTimer: number | null = null;
   private reconnectDelay = 500; // ms; doubles on each failed attempt, capped, reset on open
+  /** Non-null once the shell has told us the engine is GONE (`sidecar:died`).
+   *  While halted we neither dial nor queue: there is no respawn on the Rust
+   *  side, so every further attempt is a guaranteed failure that only produces
+   *  another "connection lost". The string is the message refused calls carry.
+   *  Cleared by resumeReconnect() — only the user gets to restart the loop. */
+  private halted: string | null = null;
   // Protocol-v2 per-body mesh cache: the sidecar answers unchanged bodies with
   // an etag stub instead of re-sending their (multi-MB) mesh; we keep the last
   // full payload per body and reassemble the merged RebuildResult locally, so
@@ -566,6 +572,7 @@ export class Geometry implements GeometryBackend {
   }
 
   private scheduleReconnect() {
+    if (this.halted !== null) return; // the engine is gone; retrying only spams
     if (this.reconnectTimer != null) return;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -573,6 +580,42 @@ export class Geometry implements GeometryBackend {
     }, this.reconnectDelay);
     // back off for next time; a successful onopen resets this to the floor
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 10_000);
+  }
+
+  /** Stop dialling: the shell reported the geometry engine dead or unable to
+   *  start, and there is no respawn behind the socket (the per-launch auth token
+   *  would have to rotate — see sidecar.rs). Field reports 647aadcc / 91b20cce /
+   *  a58966e5: the sidecar exited at startup on an OpenBLAS allocation failure
+   *  and the client then reconnected forever, settling each queued rebuild with
+   *  "geometry engine connection lost" every ~12 s — so the user was told nine
+   *  times about the symptom and never once about the cause.
+   *
+   *  Everything in flight or queued is settled with `message`, because a call
+   *  left pending forever leaves DocumentStore.rebuildNow()'s `rebuilding` flag
+   *  set and silently no-ops every later rebuild. */
+  haltReconnect(message: string) {
+    this.halted = message;
+    if (this.reconnectTimer != null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.outbox = [];
+    for (const [id, resolve] of this.pending) resolve({ id, ok: false, error: { message } });
+    this.pending.clear();
+    for (const s of this.streams.values()) clearTimeout(s.timer);
+    this.streams.clear();
+    this.ws?.close(); // no-op if it is already closed; onclose re-checks `halted`
+    this.emitStatus();
+  }
+
+  /** The user asked to try again. Goes back to the bottom of the backoff and
+   *  dials once through the normal path, so a stray onclose from the old socket
+   *  cannot open a second one. */
+  resumeReconnect() {
+    if (this.halted === null) return;
+    this.halted = null;
+    this.reconnectDelay = 500;
+    this.scheduleReconnect();
   }
 
   /** Decode ONE binary frame (see server.py's _encode_binary_reply / _frame_bytes
@@ -780,6 +823,13 @@ export class Geometry implements GeometryBackend {
       const tooLarge = tooLargeToSend(raw.length);
       if (tooLarge) {
         resolve({ id, ok: false, error: { message: tooLarge } } as RawReply<T>);
+        return;
+      }
+      // Engine gone (haltReconnect): refuse now rather than queue. The outbox
+      // only drains on an onopen that is never coming, so queueing here would
+      // leave rebuildNow() awaiting forever with `rebuilding` stuck true.
+      if (this.halted !== null) {
+        resolve({ id, ok: false, error: { message: this.halted } } as RawReply<T>);
         return;
       }
       // the pending map is heterogeneous across calls with different T, so

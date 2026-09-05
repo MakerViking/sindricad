@@ -2,6 +2,7 @@ import "./styles.css";
 import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
+import { ENGINE_DOWN, sidecarDeathMessage, type SidecarDeathPayload } from "./geometry/sidecarDeath";
 import { featureErrorText } from "./geometry/featureErrorText";
 import { TauriGeometry } from "./geometry/tauriClient";
 import { listen } from "@tauri-apps/api/event";
@@ -112,18 +113,42 @@ void geometry.init(); // fetch the per-launch sidecar auth token + open the sock
 // same line is in sidecar.log, which a bug report attaches.
 // `kind` separates a real crash from "the port was already taken", which is not a
 // crash at all and needs a different thing asked of the user (bug 2c0cd78a, where
-// a taken port was reported as "The geometry engine crashed (exit code 1)").
+// a taken port was reported as "The geometry engine crashed (exit code 1)") — and
+// from "it never started at all", which is what Windows reports 647aadcc /
+// 91b20cce / a58966e5 turned out to be (the sidecar exited during import on an
+// OpenBLAS allocation failure).
+//
+// Whatever the kind, the socket behind it is never coming back in this session:
+// nothing respawns the sidecar. So this ALSO stops the client's reconnect loop.
+// Left running, it settled every queued rebuild with "geometry engine connection
+// lost" roughly every 12 seconds — which is all those reporters were ever told,
+// and why an extrude looked like it "disappeared" (it was in the timeline; the
+// model behind it could not be rebuilt). One message, and a way to ask again.
+let engineDown = false;
 if ("__TAURI_INTERNALS__" in window) {
-  void listen<{ kind: string; cause: string }>("sidecar:died", (e) => {
-    const p = e.payload;
-    const cause = p && typeof p.cause === "string" && p.cause ? p.cause : "";
-    const msg =
-      p && p.kind === "port_in_use"
-        ? `SindriCAD could not start its geometry engine: ${cause}. Another copy of SindriCAD may still be running. Close it and open SindriCAD again.`
-        : `The geometry engine crashed${cause ? ` (${cause})` : ""}. Save your work, then restart SindriCAD.`;
-    toast(msg, {
+  void listen<SidecarDeathPayload>("sidecar:died", (e) => {
+    engineDown = true;
+    // haltReconnect emits a status change, which is what repaints the status
+    // line through the subscriber further down — this listener deliberately
+    // does NOT call setStatus itself, because it can fire on a run where module
+    // evaluation stopped early (the no-WebGL2 path throws ~300 lines above the
+    // helpers) and setStatus's breadcrumb state would still be in its TDZ.
+    if (geometry instanceof Geometry) geometry.haltReconnect(ENGINE_DOWN);
+    toast(sidecarDeathMessage(e.payload), {
       kind: "error",
-      timeout: 60000,
+      timeout: 0, // sticky: this ends the session's modelling, it must not scroll away
+      action: {
+        label: "Try again",
+        // `engineDown` is NOT cleared here. Nothing respawns the sidecar, so
+        // "Try again" is a re-dial that will usually fail, and clearing the flag
+        // put the status line back to "connecting to sidecar…" for the rest of
+        // the session — the exact lie this change removes, and unrecoverable
+        // because the supervisor emits `sidecar:died` only once. It is cleared
+        // below, by an actual connection.
+        onClick: () => {
+          if (geometry instanceof Geometry) geometry.resumeReconnect();
+        },
+      },
     });
   });
 }
@@ -1018,8 +1043,18 @@ function syncDatumPlanes() {
 }
 
 geometry.onStatus((connected) => {
-  if (!connected) setStatus("connecting to sidecar…", "error");
-  else void store.rebuildNow();
+  // "connecting to sidecar…" is only true while we are actually still dialling.
+  // Once the shell has reported the engine gone the client has stopped, and a
+  // status line that keeps promising a connection is the same lie the endless
+  // reconnect toast was.
+  if (!connected) setStatus(engineDown ? ENGINE_DOWN : "connecting to sidecar…", "error");
+  else {
+    // A socket that actually opened is the only thing that can retire the
+    // report of a dead engine: after "Try again" the flag stays set until one
+    // does, so the status line is never optimistic on the strength of a click.
+    engineDown = false;
+    void store.rebuildNow();
+  }
 });
 
 const SKETCH_PROMPTS: Record<string, string> = {
