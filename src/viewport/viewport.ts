@@ -131,6 +131,53 @@ function faceLiesOnPlane(
 const TILT_AZIMUTH = Math.PI / 7; // ~26 degrees around
 const TILT_POLAR = Math.PI / 7; // ~26 degrees over
 
+/** One datum/construction plane as the viewport draws it. */
+export type DatumPlaneQuad = {
+  id: string;
+  origin: [number, number, number];
+  normal: [number, number, number];
+};
+
+/** Smallest construction-plane quad, in mm — what an empty document gets, and
+ *  the size the app drew for everything before the sizing below existed. */
+const DATUM_QUAD_MIN = 80;
+/** Quad edge as a multiple of the model's bbox diagonal.
+ *
+ *  MEASURED, not guessed. A datum floats ABOVE the face it hovers over, so its
+ *  boundary's projection walks in over that face as the camera tilts — covering
+ *  the model in plan view is not enough. Counting the tint-boundary pixels that
+ *  land on the solid, on report f45fe95c's own document in the running app
+ *  (e2e/datum_plane_quad_e2e.cjs, which is that measurement):
+ *
+ *    quad     top view    iso view
+ *    80 mm    410 px      236 px     (what shipped)
+ *    131 mm     0 px      434 px     (1.25 x diagonal)
+ *    184 mm     0 px        0 px     (1.75 x diagonal)
+ *
+ *  1.75 is the first round factor that is clean at the view the app opens at.
+ *  Nothing finite is clean at EVERY framing: the closer the camera, the wider
+ *  the cone and the further in the boundary sweeps, and the real answer there is
+ *  to stop drawing a plane a press/pull has already consumed. */
+const DATUM_QUAD_DIAG = 1.75;
+
+/** The square a construction plane is drawn as.
+ *
+ *  It has to REACH PAST THE MODEL. Field report f45fe95c: the quad was a
+ *  hardcoded 80x80 mm, and the reporter's part was 83.7 mm across, so the quad's
+ *  boundary stopped 1.9 mm inside each end of the top face. The plane floated
+ *  20 mm above that face, so the boundary's projection slid across the face as
+ *  he orbited — a faint straight line over the solid that moved with the camera,
+ *  which is exactly what he reported as "stray lines in space". The quad was
+ *  drawing correctly; it was simply too small for the part.
+ *
+ *  Sized from the bounding box (not the camera) so it is stable while orbiting,
+ *  and floored at the old 80 mm so a small or empty document is unchanged. */
+export function datumQuadGeometry(box: THREE.Box3 | null): THREE.PlaneGeometry {
+  const diag = box && !box.isEmpty() ? box.getSize(new THREE.Vector3()).length() : 0;
+  const size = Math.max(DATUM_QUAD_MIN, DATUM_QUAD_DIAG * diag);
+  return new THREE.PlaneGeometry(size, size);
+}
+
 export class Viewport {
   readonly scene: SceneBundle;
   readonly rig: CameraRig;
@@ -160,6 +207,9 @@ export class Viewport {
   // persistent construction/datum planes (translucent quads, click to select)
   private datumGroup = new THREE.Group();
   private datumQuads: THREE.Mesh[] = [];
+  /** The plane definitions behind datumQuads, kept so setModel can re-lay the
+   *  quads at the new model's size (see datumQuadGeometry). */
+  private datumPlaneDefs: DatumPlaneQuad[] = [];
   private selectedDatum: string | null = null;
   // the plane under the cursor during an up-to target pick — a channel of its
   // own so hovering (and un-hovering) can never dim the SELECTED plane
@@ -907,9 +957,8 @@ export class Viewport {
 
   /** Render the document's datum/construction planes as translucent quads that
    *  can be clicked to select (and then cut by). */
-  setDatumPlanes(
-    planes: { id: string; origin: [number, number, number]; normal: [number, number, number] }[],
-  ) {
+  setDatumPlanes(planes: DatumPlaneQuad[]) {
+    this.datumPlaneDefs = planes;
     for (const q of this.datumQuads) {
       this.datumGroup.remove(q);
       q.geometry.dispose();
@@ -925,7 +974,7 @@ export class Viewport {
         side: THREE.DoubleSide,
         depthWrite: false,
       });
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(80, 80), mat);
+      const m = new THREE.Mesh(datumQuadGeometry(this.model?.box ?? null), mat);
       m.position.set(p.origin[0], p.origin[1], p.origin[2]);
       m.quaternion.setFromUnitVectors(
         up,
@@ -1285,6 +1334,10 @@ export class Viewport {
     this.picker.invalidate(); // edge geometry just changed — drop cached targets
     this.highlighter = new Highlighter(this.model);
     this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
+    // The datum quads are sized from the model's bounding box, so a build that
+    // changes the box has to re-lay them — otherwise a plane keeps the previous
+    // model's size and its boundary can end mid-body again (report f45fe95c).
+    if (this.datumPlaneDefs.length) this.setDatumPlanes(this.datumPlaneDefs);
     this.applyAnalysis(); // paints the analysis overlay, or assigned body colors when "none"
     if (this.zebra) this.applyZebra();
     if (this.combs) this.applyCombs();

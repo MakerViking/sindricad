@@ -82,11 +82,22 @@ export class AdaptiveGrid {
  *  Radeon. The reliable Linux check is the process's open DRI fds, not WebGL.
  *
  *  Still worth recording: it is real on the other two platforms, and knowing it
- *  is spoofed is itself the answer when a Linux report blames the GPU. */
+ *  is spoofed is itself the answer when a Linux report blames the GPU.
+ *
+ *  DEPTH_BITS and the granted context attributes are recorded alongside it
+ *  because, unlike the renderer string, they are REAL on every platform. A
+ *  shallow depth buffer makes hidden edges and construction planes bleed through
+ *  the solid, which is what report f45fe95c was first blamed on; measuring
+ *  WebKitGTK showed 24 bits and killed that theory, but the next report of lines
+ *  through a model should settle it from the log instead of from a rig. */
 function recordGpu(renderer: THREE.WebGLRenderer) {
   let desc = "unknown";
+  let depth = "";
   try {
     const gl = renderer.getContext();
+    const a = gl.getContextAttributes();
+    depth = `depth bits: ${gl.getParameter(gl.DEPTH_BITS)}, samples: ${gl.getParameter(gl.SAMPLES)}`
+      + `, attributes: depth=${a?.depth} stencil=${a?.stencil} antialias=${a?.antialias}`;
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
     const r = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
     const v = ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
@@ -98,6 +109,7 @@ function recordGpu(renderer: THREE.WebGLRenderer) {
   const note = spoofed ? " — reported by WebKitGTK, which spoofs this; not the real GPU" : "";
   (window as { __gpu?: string }).__gpu = desc + note;
   stickyFact(`[gpu] ${desc}${note}`);
+  if (depth) stickyFact(`[gpu] ${depth}`);
 }
 
 /** Why the 3D context could not be created.

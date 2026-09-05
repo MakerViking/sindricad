@@ -743,6 +743,17 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/centre_rect_dim_e2e.cjs
+      # Field report f45fe95c: a construction plane drawn as a hardcoded 80x80
+      # quad ends mid-body on any part wider than that, and its boundary slides
+      # across the face while orbiting — "lines overlaying the surface of the
+      # body … they moved as I rotated it". Nothing but a rendered frame can see
+      # it: the quad geometry is valid at every size, and whether its edge lands
+      # on the solid depends on the camera. The file carries its own RED control.
+      - name: Construction-plane quad end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/datum_plane_quad_e2e.cjs
 
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,
