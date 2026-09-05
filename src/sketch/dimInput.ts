@@ -76,6 +76,23 @@ export class DimInput {
       input.type = "text";
       input.inputMode = "decimal";
       input.autocomplete = "off";
+      // Ctrl+Z/Ctrl+Y with the caret in here used to be swallowed: keymap.ts
+      // ignores every keystroke aimed at an input, and a modal 3D tool focuses
+      // this box and re-asserts focus on the next frame — so for the whole time
+      // a fillet/chamfer/extrude was open the app's undo was unreachable and the
+      // WebView applied its own text undo instead (field report a0a76571, "even
+      // Undo does not work"). While the text is UNCHANGED since it took focus
+      // there IS no text edit to undo, so the keystroke belongs to the app; this
+      // attribute is how keymap.ts tells the two apart.
+      input.setAttribute("data-undo-passthrough", "1");
+      let atFocus = input.value;
+      const markUndoTarget = () => {
+        input.setAttribute("data-undo-passthrough", input.value === atFocus ? "1" : "0");
+      };
+      input.addEventListener("focus", () => {
+        atFocus = input.value;
+        markUndoTarget();
+      });
       wrap.appendChild(input);
       this.root.appendChild(wrap);
       const field: Field = { def, input, userDriven: false };
@@ -83,6 +100,7 @@ export class DimInput {
       input.addEventListener("keydown", (e) => this.onKey(e, field));
       input.addEventListener("input", () => {
         field.userDriven = true; // typing freezes the field from cursor tracking
+        markUndoTarget();
       });
       return field;
     });
@@ -142,9 +160,24 @@ export class DimInput {
     } else if (e.key === "Enter") {
       e.preventDefault();
       this.commit();
+    } else if (this.isAppUndo(e, field)) {
+      // Let it bubble to keymap.ts, which routes it to the app's undo. Without
+      // this the stopPropagation below hid Ctrl+Z from the app for the whole
+      // time a tool held focus in this box (see the show() comment).
+      return;
     }
     // Escape is handled by the owning tool's capture-phase keydown listener.
     e.stopPropagation(); // never let drawing shortcuts fire while typing
+  }
+
+  /** Ctrl+Z / Ctrl+Y that belongs to the APP rather than to this box: the
+   *  combo, on a field whose text is unchanged since it took focus — so there
+   *  is no typing here for the WebView's text history to undo. */
+  private isAppUndo(e: KeyboardEvent, field: Field): boolean {
+    if (!e.ctrlKey && !e.metaKey) return false;
+    const k = e.key.toLowerCase();
+    if (k !== "z" && k !== "y") return false;
+    return field.input.getAttribute("data-undo-passthrough") === "1";
   }
 
   /** tool pushes cursor-derived values in MM; only tracking fields accept them */

@@ -1298,6 +1298,184 @@ def test_the_import_budget_cannot_be_talked_into_infinity():
           f"{at_cap:.0f}s, and a hostile count buys no more")
 
 
+# --- what the status frame says while a feature builds ----------------------
+#
+# Field report a0a76571 (0.1.193): "the meshing never finishes" on a document
+# where nothing was meshing — a chamfer was building. Two facts made the status
+# frame lie about it. The tick fires AFTER a feature, so the feature actually
+# running is never the one named; and when the whole prefix comes out of the
+# cache (start == len - 1, the shape of every "add one feature" edit) the loop
+# ticks nothing at all until the new feature completes. What went on the wire for
+# that whole wait was the PREVIOUS job's leftover index, because nothing cleared
+# it at job start. -1/-1/-1 renders as "meshing…" at 0%.
+
+
+def test_the_running_feature_is_named_while_it_runs():
+    """The index published DURING feature i names feature i.
+
+    Read from inside a feature handler, which is the only place that can see what
+    a status frame sent at that moment would have carried — asserting on the
+    ticks afterwards would pass just as happily with every one of them a feature
+    late."""
+    import server
+
+    hb, hb_idx = _StubValue(0), _StubValue(-1)  # -1: what the last job left
+    doc = {"parameters": {}, "features": [
+        {"id": "b1", "type": "box", "length": 10, "width": 10, "height": 10},
+        {"id": "b2", "type": "box", "length": 12, "width": 12, "height": 12},
+    ]}
+    seen = []
+    real = builder._FEATURE_HANDLERS["box"]
+
+    def _spy(f, ctx):
+        seen.append(hb_idx.value)
+        return real(f, ctx)
+
+    prev = builder.on_feature_tick
+    builder.on_feature_tick = server._heartbeat_hook(hb, hb_idx)
+    builder._FEATURE_HANDLERS["box"] = _spy
+    try:
+        _part, err, _bodies = builder.rebuild(doc)
+    finally:
+        builder._FEATURE_HANDLERS["box"] = real
+        builder.on_feature_tick = prev
+    assert not err, err
+    assert seen == [0, 1], (
+        "the status frame named %r while features 0 and 1 were building — a slow "
+        "feature is reported as the one before it, and the first feature of a job "
+        "as -1, which the timeline renders as 'meshing...' at 0%%" % (seen,))
+    print(f"{PASS} the running feature is published before it runs, not after")
+
+
+def test_a_job_starts_from_nothing_in_progress():
+    """A job inherits no progress from the job before it.
+
+    The worker is reused, so a read-only op — or a rebuild whose whole prefix
+    came out of the cache and therefore ticks only at the end — published the
+    LAST job's feature index and mesh counts for its entire duration."""
+    import server
+
+    saved = (server._HB, server._HB_IDX, server._HB_MESH, server._HB_MESH_TOTAL)
+    hb, hb_idx = _StubValue(0), _StubValue(7)  # 7: the last job's last feature
+    mesh, mesh_total = _StubValue(4), _StubValue(4)
+    server._HB, server._HB_IDX = hb, hb_idx
+    server._HB_MESH, server._HB_MESH_TOTAL = mesh, mesh_total
+    try:
+        # what a status frame sent at any point during the job would carry
+        during = server._job_entry(
+            lambda: (hb_idx.value, mesh.value, mesh_total.value))
+    finally:
+        server._HB, server._HB_IDX, server._HB_MESH, server._HB_MESH_TOTAL = saved
+    assert during == (-1, -1, -1), (
+        "a job that publishes nothing of its own reported %r — the previous job's "
+        "progress, presented as this one's" % (during,))
+    print(f"{PASS} every job starts from 'nothing in progress'")
+
+
+# --- the fillet/chamfer hang probe -----------------------------------------
+#
+# Same report, the other half of "never finishes". The probe forks a whole
+# interpreter (~1.7 s here, several times that on a cold Windows box) and used to
+# do it once per SIZE, blocking silently for up to _BLEND_PROBE_TIMEOUT. So a
+# drag or a retype paid a fresh fork per value, and a slow one told the
+# supervisor nothing — which reaps a worker whose heartbeat has not moved for 60
+# seconds, and reports it as "one operation stalled over 60 seconds".
+
+
+class _FakeForks:
+    """Stand in for the probe's child process, counting forks and never
+    launching one. Patches BOTH subprocess entry points so the count is honest
+    whichever one the code under test reaches for.
+
+    `slices` is how many waits the child survives, for the liveness check."""
+
+    def __init__(self, slices=1):
+        self.n = 0
+        self.slices = slices
+
+    def __enter__(self):
+        import subprocess
+
+        self._sp = subprocess
+        self._run, self._popen = subprocess.run, subprocess.Popen
+        outer = self
+
+        class _Proc:
+            def __init__(self, *_a, **_k):
+                outer.n += 1
+                self.left = outer.slices
+                self.stdin = _Sink()
+
+            def wait(self, timeout=None):
+                self.left -= 1
+                if self.left > 0:
+                    raise outer._sp.TimeoutExpired("probe", timeout or 0)
+                return 0
+
+            def kill(self):
+                self.left = 0
+
+        def _fake_run(*_a, **_k):
+            outer.n += 1
+            return None
+
+        subprocess.run, subprocess.Popen = _fake_run, _Proc
+        return self
+
+    def __exit__(self, *_exc):
+        self._sp.run, self._sp.Popen = self._run, self._popen
+        return False
+
+
+class _Sink:
+    def write(self, _s):
+        pass
+
+    def close(self):
+        pass
+
+
+def _probe_fixture():
+    from build123d import Box
+
+    part = Box(20, 20, 10)
+    builder._BLEND_PROBE_CACHE.clear()
+    return part, list(part.edges())[:1]
+
+
+def test_a_blend_probe_costs_one_fork_for_every_size_under_it():
+    """Three descending sizes on one edge set: one fork, not three.
+
+    A blend that COMPLETED at 2 mm completes at 0.5 mm — shrinking it cannot
+    invent a hang — so the pass covers everything below it. That is the whole
+    cost during a drag, and the reason the viewport lagged so far behind the
+    typed number that changing it looked like it did nothing."""
+    part, edges = _probe_fixture()
+    with _FakeForks() as forks:
+        for size in (2.0, 1.0, 0.5):
+            assert builder._probe_blend(part, edges, "chamfer", size), size
+    assert forks.n == 1, \
+        f"{forks.n} forks for three descending sizes — one per keystroke of a retype"
+    # ...and a LARGER size is a question the pass did not answer, so it is asked.
+    with _FakeForks() as bigger:
+        builder._probe_blend(part, edges, "chamfer", 4.0)
+    assert bigger.n == 1, "a size above the one that passed was never probed"
+    print(f"{PASS} one fork covers every smaller size; a larger one still probes")
+
+
+def test_a_slow_blend_probe_keeps_publishing_liveness():
+    """A probe that takes several seconds must not look like a wedged worker."""
+    part, edges = _probe_fixture()
+    with _FakeForks(slices=3), _Ticks() as t:
+        builder._probe_blend(part, edges, "fillet", 3.0)
+    assert t.n >= 2, \
+        f"a probe spanning 3 wait slices published {t.n} ticks — silence is what gets reaped"
+    assert all(i == builder.HB_KEEP_INDEX for i in t.index), (
+        "a probe's liveness tick overwrote the name of the feature that owns it "
+        f"(indices {t.index})")
+    print(f"{PASS} a slow probe ticks {t.n}x and leaves the feature named")
+
+
 if __name__ == "__main__":
     print("heartbeat ticks (stall watchdog)")
     test_export_mesh_ticks_on_every_tier()
@@ -1326,4 +1504,8 @@ if __name__ == "__main__":
     test_the_budget_clears_every_import_measured_across_the_range()
     test_the_import_budget_cannot_be_talked_into_infinity()
     test_the_document_ops_no_longer_use_a_wall_clock()
+    test_the_running_feature_is_named_while_it_runs()
+    test_a_job_starts_from_nothing_in_progress()
+    test_a_blend_probe_costs_one_fork_for_every_size_under_it()
+    test_a_slow_blend_probe_keeps_publishing_liveness()
     print("all heartbeat tests passed")

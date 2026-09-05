@@ -763,6 +763,16 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/sketch_exit_e2e.cjs
+      # Field report a0a76571, both halves of it that are about what the app
+      # FAILS TO SAY: a chamfer the kernel refuses, and Ctrl+Z with the caret in
+      # the tool's dimension box. Neither is reachable from a unit test — one
+      # needs a real sidecar refusal arriving while a preview is live, the other
+      # needs a real focused <input> in a real WebView.
+      - name: Chamfer feedback end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/chamfer_feedback_e2e.cjs
 
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,

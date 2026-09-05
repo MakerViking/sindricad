@@ -13,9 +13,10 @@ import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { Feature, Selector } from "../types";
+import type { Feature, RebuildResult, Selector } from "../types";
 import { midMatchTol, polylineMid, edgeSelectorFrom } from "../viewport/edgeMatch";
 import { DimInput } from "../sketch/dimInput";
+import { featureErrorText } from "../geometry/featureErrorText";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
@@ -77,6 +78,12 @@ export class EdgeFeatureTool {
   private downOnGizmo = false;
   private raf = 0;
 
+  // --- the prompt banner ---
+  // The tool's own instruction line, kept so a kernel refusal (below) can be
+  // shown OVER it and then cleared back to it.
+  private basePrompt = "";
+  private failureText: string | null = null; // last refusal reported, or null
+
   private dim = new DimInput();
   private onDone: ((id: string | null) => void) | null = null;
 
@@ -103,6 +110,32 @@ export class EdgeFeatureTool {
       : { name: "distance", label: "D" };
   }
 
+  /** Show the tool's instruction line, remembering it: a kernel refusal is
+   *  displayed over the top and this is what it clears back to. */
+  private prompt(text: string) {
+    this.basePrompt = text;
+    setPrompt(this.failureText ?? text);
+  }
+
+  /** Say so when the kernel REFUSED the live preview.
+   *
+   *  main.ts suppresses the feature-error toast for the whole time a preview is
+   *  live (a preview's failures usually resolve on commit or cancel), so a
+   *  fillet/chamfer OCCT will not perform — "Failed creating a chamfer, try a
+   *  smaller length value(s)", which it says for most edges of some bodies —
+   *  left the UNCHANGED model on screen and said nothing at all. That is field
+   *  report a0a76571: "the chamfer appears to have the same size regardless of
+   *  the value I enter". Reported once per distinct message, from the build
+   *  listener, so a preview that keeps failing states it once and not per frame.
+   */
+  private reportPreviewFailure(result: RebuildResult) {
+    const err = (result.featureErrors ?? []).find((e) => e.feature_id === this.previewId);
+    const text = err ? featureErrorText(err, result.bodies) : null;
+    if (text === this.failureText) return;
+    this.failureText = text;
+    setPrompt(text ? `⚠ ${this.kind} failed: ${text}` : this.basePrompt);
+  }
+
   start(kind: Kind, onDone: (id: string | null) => void) {
     if (this.active) return;
     this.active = true;
@@ -110,6 +143,7 @@ export class EdgeFeatureTool {
     this.phase = "pick";
     this.onDone = onDone;
     this.tangent = null;
+    this.previewId = ""; // no preview yet — nothing for a build to blame on us
     this.viewport.suspendPicking = true; // we drive our own edge-only picking
     this.viewport.emphasizeEdges(true); // light up all edges so they're easy to target
     const el = this.viewport.domElement;
@@ -118,12 +152,18 @@ export class EdgeFeatureTool {
     el.addEventListener("pointerup", this.boundUp);
     window.addEventListener("keydown", this.boundKey, true);
 
+    // A preview the kernel refuses has to say so — see reportPreviewFailure.
+    this.unsubBuild = this.store.onBuild((s) => {
+      if (s.building || !s.result) return;
+      this.reportPreviewFailure(s.result);
+    });
+
     // pre-selection (Ctrl-click): skip the pick phase and go straight to the drag
     const pre = this.viewport.selectedEdgeSelectors();
     if (pre.length) {
       this.beginDrag(pre, this.anchorFromSelectors(pre), null);
     } else {
-      setPrompt(`Select an edge to ${kind} (Ctrl-click first to pre-select several)`);
+      this.prompt(`Select an edge to ${kind} (Ctrl-click first to pre-select several)`);
     }
   }
 
@@ -163,7 +203,7 @@ export class EdgeFeatureTool {
     el.addEventListener("pointerdown", this.boundDown, true);
     el.addEventListener("pointerup", this.boundUp);
     window.addEventListener("keydown", this.boundKey, true);
-    setPrompt("Rolling back to edit… (later features are hidden while editing)");
+    this.prompt("Rolling back to edit… (later features are hidden while editing)");
 
     // Roll the model to just before the feature; the NEXT completed build shows
     // the sharp member edges, which we snapshot as ghosts before pushing the
@@ -177,6 +217,7 @@ export class EdgeFeatureTool {
         this.enterEditUI();
         this.pushPreview();
       } else if (this.editId) {
+        this.reportPreviewFailure(s.result);
         this.recolorGhostsFromDiagnostics(s.result.diagnostics);
       }
     });
@@ -338,7 +379,7 @@ export class EdgeFeatureTool {
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
-    setPrompt(
+    this.prompt(
       `Editing ${this.kind}: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · ` +
         `Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)`,
     );
@@ -517,7 +558,7 @@ export class EdgeFeatureTool {
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
-    setPrompt(
+    this.prompt(
       `Drag the arrow to set ${this.field.name} (hold Ctrl for fine steps) · type a value + Enter · ` +
         `click edges to add/remove them · click empty space to commit · Esc to cancel`,
     );
@@ -538,8 +579,16 @@ export class EdgeFeatureTool {
       this.dim.position(s.x, s.y);
       if (!this.grabbing && this.dim.isUserDriven(this.field.name)) {
         const v = this.dim.getValue(this.field.name);
-        if (v != null && Math.abs(v - this.value) > 1e-6) {
-          this.value = Math.max(0.001, v);
+        // Clamp FIRST and compare against the clamped figure. The guard used to
+        // test the raw typed number and store a clamped one, so any entry below
+        // the floor — "0", the first keystroke of "0.5", or a negative — stayed
+        // different from the stored value forever and fired a full sidecar
+        // rebuild EVERY FRAME for as long as that text sat in the box: a build
+        // chip that never cleared, and an undo whose rebuild was immediately
+        // superseded by the next preview push.
+        const next = v == null ? null : Math.max(0.001, v);
+        if (next != null && Math.abs(next - this.value) > 1e-6) {
+          this.value = next;
           this.pushPreview();
         }
       }
@@ -594,14 +643,14 @@ export class EdgeFeatureTool {
       this.axis.copy(this.computeAxis());
       this.quat.setFromUnitVectors(Y_AXIS, this.axis);
       this.pushPreview();
-      setPrompt(
+      this.prompt(
         `${verb} ${this.kind}: ${sels.length} edge${sels.length === 1 ? "" : "s"} · click edges to add/remove · ` +
           `Enter/click empty space to ${this.editId ? "apply" : "commit"} · Esc to cancel`,
       );
     } else {
       if (this.editId) this.store.setEditPreview(null);
       else this.store.setPreview(null);
-      setPrompt(`No edges selected — click an edge to add one · Esc to cancel`);
+      this.prompt(`No edges selected — click an edge to add one · Esc to cancel`);
     }
   }
 
@@ -620,7 +669,7 @@ export class EdgeFeatureTool {
     if (v != null) this.value = v;
     if (this.value < 1e-3) return this.cancel(); // ignore zero
     if (this.currentSelectors().length === 0) {
-      setPrompt("No edges selected — click an edge to add one · Esc to cancel");
+      this.prompt("No edges selected — click an edge to add one · Esc to cancel");
       return; // deleting is an explicit timeline action, not an implicit empty commit
     }
     const feature = this.buildFeature();
@@ -659,6 +708,8 @@ export class EdgeFeatureTool {
     this.unsubBuild = null;
     this.editId = null;
     this.awaitingRollback = false;
+    this.basePrompt = "";
+    this.failureText = null;
     this.viewport.emphasizeEdges(false);
     this.viewport.clearHover();
     this.viewport.suspendPicking = false;

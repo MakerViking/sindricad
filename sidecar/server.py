@@ -2450,14 +2450,26 @@ def _job_entry(fn, *args):
 
     One tick here fixes both: _run_stall resets its clock whenever the counter
     moves, so the budget measures EXECUTION stall, and an empty document gets the
-    one tick it could never otherwise produce. It deliberately does NOT touch
-    _HB_IDX — no feature is in progress yet, and -1 already means "none".
+    one tick it could never otherwise produce.
 
     This does not lengthen the budget. A job that starts and then wedges still
     stops ticking and is still reaped after STALL_TIMEOUT; only the clock's
-    origin moves, from when the job was queued to when it began."""
+    origin moves, from when the job was queued to when it began.
+
+    It DOES clear both published-progress channels, which is a later fix: the
+    worker is reused, so a job that published nothing of its own (a rebuild whose
+    whole prefix came out of the cache, every read-only op) inherited whatever
+    the LAST job left behind — a stale feature index, and mesh counts from a
+    meshing pass that finished minutes ago. Starting every job from "nothing in
+    progress" is what makes -1 mean what it says."""
     if _HB is not None:
         _HB.value += 1
+    if _HB_IDX is not None:
+        try:
+            _HB_IDX.value = -1
+        except Exception:
+            pass  # progress bookkeeping must never fail the job
+    _set_mesh_progress(-1, -1)
     return fn(*args)
 
 

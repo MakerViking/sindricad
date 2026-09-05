@@ -38,6 +38,14 @@ const sphere = { id: "p1", type: "sphere", radius: 10 } as unknown as Feature;
 const pressPull = {
   id: "e1", type: "extrude", sketch: "s1", operation: "join", upToPlane: "d1", upToOffset: 0,
 } as unknown as Feature;
+// A chamfer's Length is on the same path (numFields maps chamfer -> distance),
+// so it went the same way. Pinned here as its own case because a0a76571 named
+// the chamfer and every other case here is a different feature type — NOT as a
+// claim that this file fixes that report, whose chamfer never reached the
+// document at all: OCCT refused it. See edgeFeatureToolPreview.test.ts.
+const chamfer = {
+  id: "ch1", type: "chamfer", edges: { kind: "edge", point: [0, 0, 5] }, distance: 1,
+} as unknown as Feature;
 
 describe("writeTarget replaces the owning feature object", () => {
   beforeEach(() => {
@@ -81,6 +89,16 @@ describe("writeTarget replaces the owning feature object", () => {
       expect((after as unknown as { radius: number }).radius).toBe(30);
       expect(after).not.toBe(before);
     });
+  });
+
+  it("a chamfer Length edit yields a new feature reference", () => {
+    const store = makeStore([chamfer]);
+    const before = store.document.features[0];
+    store.setTargetValue({ kind: "feature", feature: "ch1", field: "distance" }, 5, "length");
+    const after = store.document.features[0];
+    expect((after as unknown as { distance: number }).distance).toBe(5);
+    expect(after, "the panel would show 5 mm and the sidecar would keep building 1")
+      .not.toBe(before);
   });
 
   it("a no-op write keeps the reference (nothing to ship)", () => {
