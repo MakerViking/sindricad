@@ -70,11 +70,13 @@ function mount(ents: ResolvedEntity[], cons: SketchConstraint[]) {
 }
 
 /** a mouse/pointer event as the handlers read it, carrying the sketch-plane
- *  point the badge sits at (the overlap hook converts screen→plane for real) */
-const evt = (at: THREE.Vector2, button = 0) => ({
+ *  point the badge sits at (the overlap hook converts screen→plane for real).
+ *  `client` is the SCREEN position: the double-press detector reads it, so two
+ *  presses that land far apart must not be read as one double-click. */
+const evt = (at: THREE.Vector2, button = 0, client = { x: 0, y: 0 }) => ({
   button,
-  clientX: 0,
-  clientY: 0,
+  clientX: client.x,
+  clientY: client.y,
   plane: at,
   stopPropagation: () => {},
   preventDefault: () => {},
@@ -157,6 +159,20 @@ describe("report 59c5a7d7: a parallel glyph on its own line", () => {
     m.badges()[0]!.dispatch("pointerdown", evt(g.pos));
     m.badges()[0]!.dispatch("click", evt(g.pos)); // the press's own trailing click
     expect(cons).toHaveLength(before - 1);
+  });
+
+  it("two presses on the same badge far apart on screen are not a double-click", () => {
+    // The badge is one element wherever the camera is, so without the screen
+    // distance guard a click here, a pan, and a click there would read as a
+    // double-click and delete a constraint the user only ever single-clicked.
+    const { ents, cons } = load();
+    const m = mount(ents, cons);
+    const g = constraintGlyphs(ents, cons).find((q) => q.label === "∥")!;
+    const before = cons.length;
+    m.badges()[0]!.dispatch("pointerdown", evt(g.pos, 0, { x: 400, y: 120 }));
+    m.badges()[0]!.dispatch("click", evt(g.pos, 0, { x: 400, y: 120 }));
+    m.badges()[0]!.dispatch("pointerdown", evt(g.pos, 0, { x: 402, y: 300 }));
+    expect(cons).toHaveLength(before);
   });
 });
 

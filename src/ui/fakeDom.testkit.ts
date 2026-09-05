@@ -2,8 +2,9 @@
 // plain node vitest run and read the result back. Deliberately NOT jsdom: it
 // covers the handful of DOM calls our panels actually make (createElement,
 // append/appendChild, innerHTML = "", classList, title/textContent/dataset,
-// addEventListener, querySelector by TAG, focus, scrollIntoView), so a test can
-// assert what the user sees instead of what the source file says.
+// addEventListener, querySelector by TAG, focus, select + the selection range,
+// scrollIntoView), so a test can assert what the user sees instead of what the
+// source file says.
 //
 // It lives outside any *.test.ts so both inspectorPanel.test.ts (where it was
 // born) and featureEditReachable.test.ts can render against the same stub;
@@ -91,9 +92,20 @@ export class FakeEl {
   focus() {
     fakeFocus.el = this;
   }
+  /** The caret/selection range, as a real <input> reports it. Modelled rather
+   *  than stubbed because a handler can legitimately branch on it: the dim
+   *  editor treats Delete as "remove this dimension" only while the whole text
+   *  is still selected the way select() left it, and as ordinary text editing
+   *  once the user has clicked a caret into it. A stub that always read 0/0
+   *  could not tell those two apart. */
+  selectionStart: number | null = 0;
+  selectionEnd: number | null = 0;
   /** <input>.select(). Real inputs have it and the dim box calls it right after
    *  focus(), so a stub without it cannot construct a tool that opens one. */
-  select() {}
+  select() {
+    this.selectionStart = 0;
+    this.selectionEnd = this.value.length;
+  }
   scrollIntoView() {}
 }
 

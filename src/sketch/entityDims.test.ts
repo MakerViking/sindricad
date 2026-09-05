@@ -151,8 +151,23 @@ describe("constraintDims: the horizontal/vertical (DX/DY) distances", () => {
     expect(driven[0]!.valueMm).toBeCloseTo(-30, 6); // measured e2 - e1 along X
   });
 
-  it("is placeable and draggable like every other placed dim", () => {
-    const dims = constraintDims(ents, [
+  // The sign has to travel to the BADGE, not just to the readout: the label
+  // editor gates a typed value on it (a length must be positive, a signed
+  // distance may be either way round), so without this flag the badge shows
+  // "-30" and then rejects "-30" when the user types it back.
+  it("marks the badge SIGNED, so the editor accepts the value it shows", () => {
+    const dims = constraintDims(ents, [{ type: "p2pDistanceX", e1: "b", p1: 0, e2: "a", p2: 0, value: -30 }]);
+    expect(dims[0]!.signed).toBe(true);
+    const y = constraintDims(ents, [{ type: "p2pDistanceY", e1: "b", p1: 0, e2: "a", p2: 0, value: -20 }]);
+    expect(y[0]!.signed).toBe(true);
+  });
+
+  it("an ALIGNED distance is a magnitude and is not signed", () => {
+    const dims = constraintDims(ents, [{ type: "p2pDistance", e1: "a", p1: 0, e2: "b", p2: 0, value: 36 }]);
+    expect(dims[0]!.signed).toBeFalsy();
+  });
+
+  it("is placeable and draggable like every other placed dim", () => {    const dims = constraintDims(ents, [
       { type: "p2pDistanceY", e1: "a", p1: 0, e2: "b", p2: 0, value: 20, place: { ox: 8, oy: 0 } },
     ]);
     expect(dims[0]!.place).toBeTruthy();

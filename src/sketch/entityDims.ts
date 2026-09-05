@@ -526,6 +526,10 @@ export interface ConstraintDim {
    *  the basis a label drag adds its delta to (see EntityDim.place). Absent =
    *  this dim's constraint has no `place` slot, so its label can't be dragged. */
   place?: V;
+  /** This dim's value carries a SIGN that means something (which side), so the
+   *  badge shows it and the editor must accept it back — see units.dimValueOk.
+   *  Only the X/Y distances: every other dim here is a magnitude. */
+  signed?: boolean;
 }
 
 /** annotation + label geometry for the distance constraints (the driving dims
@@ -591,7 +595,9 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
     let value = 0;
     /** The measured value for a SIGNED dim, when the plain a→b distance the
      *  shared tail computes would throw the sign away. Only the X/Y distances
-     *  need it (see types.ts: the operand order IS the sign). */
+     *  need it (see types.ts: the operand order IS the sign). Setting it is
+     *  also what marks the badge `signed`, so the readout and the editor's
+     *  idea of an acceptable value cannot drift apart. */
     let measured: number | null = null;
     // the direction a rim dim samples when the geometry gives none (concentric)
     const placeDir = place ? v(place.ox, place.oy) : v(1, 0);
@@ -682,7 +688,7 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
     // = how far off the geometry, sign = which side
     const off = place ? place.ox * nrm.x + place.oy * nrm.y : undefined;
     const lin = linear(a, b, nrm, meas, off);
-    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: driven ? measured ?? meas : value, lines: lin.lines, driven, place: lin.place });
+    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: driven ? measured ?? meas : value, lines: lin.lines, driven, place: lin.place, ...(measured !== null ? { signed: true } : {}) });
   });
   return out;
 }
