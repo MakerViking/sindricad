@@ -244,7 +244,33 @@ const DOC = {
     }
     if (!best) return null;
     best.el.dataset.e2e = "watched";
-    return { text: best.text, mid };
+    // Zoom toward a point on the far side of the view from the badge: the point
+    // under the cursor stays put while everything else moves away from it, so
+    // the badge leaves the canvas fastest. The point MUST be bare canvas: a
+    // wheel over a badge, a glyph or the sketch palette never reaches the
+    // viewport's wheel handler, and that is exactly how the CI runner spent 40
+    // notches at the centre without zooming once (a badge sat under the
+    // centre there, not here). Walk from the mirrored point back toward the
+    // centre until elementFromPoint is the canvas.
+    const br = best.el.getBoundingClientRect();
+    const bc = { x: (br.left + br.right) / 2, y: (br.top + br.bottom) / 2 };
+    const canvas = document.querySelector("#viewport canvas");
+    const onCanvas = (x, y) => document.elementFromPoint(x, y) === canvas;
+    let away = null;
+    for (let t = 1; t >= 0 && !away; t -= 0.1) {
+      const cand = { x: mid.x - (bc.x - mid.x) * t * 0.6, y: mid.y - (bc.y - mid.y) * t * 0.6 };
+      if (onCanvas(cand.x, cand.y)) away = cand;
+    }
+    if (!away) {
+      // last resort: scan a coarse grid of the viewport for any bare canvas
+      for (let gy = 0.2; gy <= 0.8 && !away; gy += 0.15)
+        for (let gx = 0.2; gx <= 0.8 && !away; gx += 0.15) {
+          const cand = { x: vp.left + vp.width * gx, y: vp.top + vp.height * gy };
+          if (onCanvas(cand.x, cand.y)) away = cand;
+        }
+    }
+    if (!away) away = mid;
+    return { text: best.text, mid, away, start: { x: Math.round(bc.x), y: Math.round(bc.y) } };
   });
   check(!!tagged, "found a dimension badge to watch");
 
@@ -278,13 +304,15 @@ const DOC = {
     // further from the edge than this box does, and 10 was not enough there.
     let notches = 0;
     for (let i = 1; i <= 40; i++) {
-      await zoomAt(tagged.mid);
+      await zoomAt(tagged.away);
       notches = i;
       if ((await watched())?.hidden) break;
     }
-    const culled = (await watched())?.hidden === true;
+    const last = await watched();
+    const culled = last?.hidden === true;
     check(culled, "with no editor open, that badge is culled once its anchor leaves the canvas",
-      `after ${notches} notch(es) on "${tagged.text}"`);
+      `after ${notches} notch(es) on "${tagged.text}", started at ${JSON.stringify(tagged.start)}, `
+      + `zoomed at ${JSON.stringify(tagged.away)}, now ${JSON.stringify(last && last.rect)} in ${JSON.stringify(last && last.vp)}`);
 
     // (2) Same view, same zoom — this time with its value editor open.
     if (culled) {
@@ -302,7 +330,7 @@ const DOC = {
       check(!!opened2 && opened2.hasInput && opened2.focused,
         "double-clicking it opened its value editor", `on "${tagged.text}"`);
 
-      for (let i = 0; i < notches; i++) await zoomAt(tagged.mid);
+      for (let i = 0; i < notches; i++) await zoomAt(tagged.away);
 
       const after = await watched();
       check(!!after && !after.hidden && after.hasInput && after.focused,
