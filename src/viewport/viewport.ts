@@ -1342,6 +1342,12 @@ export class Viewport {
     if (this.zebra) this.applyZebra();
     if (this.combs) this.applyCombs();
     if (fit) this.rig.fit(this.model.box, true);
+    // The new model is on screen only once a frame is drawn. applyAnalysis above
+    // happens to request one today, but that is its business, not this method's:
+    // under render-on-demand a commit that draws nothing leaves the previous
+    // frame up until the next pointermove. Ask explicitly (requestRender only
+    // sets a dirty flag, so the extra call costs nothing).
+    this.requestRender();
   }
 
   /** Wall-clock cost of the last hideFlushSeams() pass, ms — surfaced in
@@ -1522,6 +1528,32 @@ export class Viewport {
   }
 
   clearModel() {
+    // END THE STREAM FIRST, above the early return. A build whose mesh is empty
+    // (any document with a sketch but no solid yet) still arrives chunked, so it
+    // opens a stream, and main.ts answers it with clearModel instead of
+    // setModel — the other exit that clears the flag. With the flag left raised,
+    // pickSuppressed stays true and the viewport picks NOTHING: on a sketch-only
+    // document, clicking a profile area to pre-select it for Extrude did nothing
+    // at all (field report 91b20cce).
+    //
+    // Above the early return because dropping the model and ending the stream
+    // are separate duties and only one of them is conditional. Today a stream
+    // always leaves a (bodyless) ModelView behind, so the return is not reached
+    // with the flag still raised — but any caller that clears the model without
+    // one would strand it again, invisibly, for the rest of the session.
+    //
+    // finish() hands ownership of the stream's bodies to the model — including
+    // any it was HOLDING on screen from the previous model (progressive.ts
+    // `stale`), which it drops without removing. That is safe here only because
+    // the reply this path answers has an empty mesh and so names no bodies:
+    // begin() disposed every previous body and stale is provably empty. A reply
+    // that named bodies but carried no mesh would leave those held meshes drawn
+    // and leaked; abort() is not the fix (it would double-dispose against the
+    // disposeModel below), a narrower drop would be.
+    if (this.streaming) {
+      this.progressive.finish();
+      this.streaming = false;
+    }
     if (!this.model) return;
     for (const b of this.model.bodies) this.scene.modelGroup.remove(b.mesh);
     for (const d of edgeObjects(this.model)) this.scene.modelGroup.remove(d.object);
