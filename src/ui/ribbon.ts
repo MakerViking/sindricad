@@ -13,6 +13,9 @@ interface ToolItem {
   iconName: IconName;
   key?: string;
   kind?: "finish" | "toggle";
+  /** A second tooltip line, for the pairs where the label alone does not say
+   *  what makes this button different from the one beside it. */
+  hint?: string;
 }
 // Split button: the FULL dropdown list lives in `children` (children[0] is the
 // initial one-click primary; `label` names the family for the arrow tooltip).
@@ -91,8 +94,14 @@ export const MODEL: Group[] = [
   {
     label: "CONSTRUCT",
     items: [
-      { action: "offset-plane", label: "Offset Plane", iconName: "offsetPlane", key: "O" },
-      { action: "datum-plane", label: "Datum Plane", iconName: "datumPlane" },
+      // These two do the same pick and the same offset gizmo, and the labels do
+      // not say that only one of them drops you into a sketch. A reporter who
+      // wanted just the plane found Offset Plane, got a sketch he could not get
+      // out of, and never knew Datum Plane was the button he wanted (d911463c).
+      { action: "offset-plane", label: "Offset Plane", iconName: "offsetPlane", key: "O",
+        hint: "Creates the plane AND starts a sketch on it." },
+      { action: "datum-plane", label: "Datum Plane", iconName: "datumPlane",
+        hint: "Creates the plane only — no sketch." },
     ],
   },
   {
@@ -309,7 +318,18 @@ export class Ribbon {
       spacer.className = "ribbon-spacer";
       el.appendChild(spacer);
       add({ label: "PALETTE", items: [{ action: "palette", label: "Sketch Palette", iconName: "palette", kind: "toggle" }] });
-      add({ label: "FINISH", items: [{ action: "finish", label: "Finish Sketch", iconName: "check", kind: "finish" }] });
+      add({
+        label: "FINISH",
+        items: [
+          // A sketch had no exit that wasn't a commit: Escape only drops back to
+          // the select tool, and every 3D command finishes the sketch first. Two
+          // reporters entered a sketch by accident (Offset Plane opens one) and
+          // could only get out by committing it (d911463c, 40c85f97).
+          { action: "cancel-sketch", label: "Cancel Sketch", iconName: "close",
+            hint: "Leave the sketch and discard it. An offset plane you just made stays." },
+          { action: "finish", label: "Finish Sketch", iconName: "check", kind: "finish" },
+        ],
+      });
     }
     return { el, groups: metas, overflowBtn };
   }
@@ -342,7 +362,8 @@ export class Ribbon {
     btn.className = "ribbon-btn";
     if (it.kind === "finish") btn.classList.add("finish");
     btn.dataset.action = it.action;
-    btn.title = it.key ? `${it.label} (${it.key})` : it.label;
+    const base = it.key ? `${it.label} (${it.key})` : it.label;
+    btn.title = it.hint ? `${base}\n${it.hint}` : base;
     btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
     btn.addEventListener("click", () => this.onAction?.(it.action));
     return btn;
