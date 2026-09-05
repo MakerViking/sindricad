@@ -739,6 +739,13 @@ jobs:
         env:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/bug_dialog_backdrop_e2e.cjs
+      # Also no SC_TOKEN: it takes the GL context away with WEBGL_lose_context
+      # and asks what the user is left with. Needs a real compositor to read the
+      # colour back out of a screenshot, so it can only live here.
+      - name: WebGL context-loss recovery end-to-end
+        env:
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/webgl_context_loss_e2e.cjs
 
       - name: Sidecar log on failure
         if: failure()

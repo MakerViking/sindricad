@@ -4,6 +4,7 @@
 
 import * as THREE from "three";
 import { stickyFact } from "../diagnostics/breadcrumbs";
+import { toast } from "../ui/toast";
 import { niceStep } from "../ui/units";
 
 export interface SceneBundle {
@@ -199,10 +200,48 @@ function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
   }
 }
 
-export function createScene(canvas: HTMLCanvasElement): SceneBundle {
+/** The viewport background. Set once at startup AND again on every context
+ *  restore — see watchContextLoss. */
+const CLEAR_COLOR = 0x1a1d21;
+
+/** Survive the GPU taking the context away (a driver reset, a laptop switching
+ *  GPUs, or — the field report this exists for — an allocation failure on a
+ *  machine that is out of memory).
+ *
+ *  Three handles the GL side: it calls preventDefault() on the loss (which is
+ *  what asks the browser for a restore at all), stops rendering, and rebuilds
+ *  every GL object in initGLContext when the context comes back. Do NOT
+ *  re-handle any of that. What three does NOT do is the two things that leave
+ *  the user looking at a dead rectangle:
+ *
+ *  - nothing tells the user, and nothing lands in a bug report;
+ *  - initGLContext rebuilds three's background module, which drops the clear
+ *    colour set above, and it does not dirty our render-on-demand loop — so the
+ *    view stays blank until the user happens to move the camera, and then comes
+ *    back BLACK. Hence onRestored, which repaints with the colour re-applied. */
+function watchContextLoss(
+  canvas: HTMLCanvasElement,
+  renderer: THREE.WebGLRenderer,
+  onRestored?: () => void,
+) {
+  let losses = 0;
+  canvas.addEventListener("webglcontextlost", () => {
+    // one sticky fact, however many times this cycles: a machine losing the
+    // context in a loop must not fill the sticky buffer with the same line.
+    if (losses++ === 0) stickyFact("[gpu] the 3D context was lost at least once");
+    toast("The 3D view lost its graphics context and is trying to recover.", { kind: "warning" });
+  });
+  canvas.addEventListener("webglcontextrestored", () => {
+    renderer.setClearColor(CLEAR_COLOR, 1);
+    onRestored?.();
+  });
+}
+
+export function createScene(canvas: HTMLCanvasElement, onContextRestored?: () => void): SceneBundle {
   const renderer = createRenderer(canvas);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setClearColor(0x1a1d21, 1);
+  renderer.setClearColor(CLEAR_COLOR, 1);
+  watchContextLoss(canvas, renderer, onContextRestored);
   recordGpu(renderer);
 
   const scene = new THREE.Scene();
