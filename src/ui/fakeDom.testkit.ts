@@ -31,6 +31,11 @@ export class FakeEl {
   disabled = false;
   scrollLeft = 0;
   scrollWidth = 0;
+  /** Nothing here lays out, so these stay 0 unless a test sets them. A layer
+   *  that has to keep a badge fully inside a clip reads them to know how much
+   *  of the badge to inset. */
+  offsetWidth = 0;
+  offsetHeight = 0;
   readonly children: FakeEl[] = [];
   readonly style: Record<string, string> = {};
   readonly dataset: Record<string, string> = {};
@@ -103,16 +108,17 @@ export class FakeEl {
  *  `body` is a real FakeEl rather than a no-op: a component that mounts a
  *  floating layer (DimInput, SketchGlyphs) appends to it in its CONSTRUCTOR, so
  *  without one it cannot be constructed at all — and a test that cannot
- *  construct the thing falls back to asserting source text. */
-export function installFakeDocument(): void {
+ *  construct the thing falls back to asserting source text.
+ *
+ *  `ids` populates getElementById. Pass the ids a test actually cares about
+ *  (`{ "viewport-overlay": host }`) so the component takes its REAL mounting
+ *  path instead of the off-page fallback; anything else still resolves to null,
+ *  which every caller already handles (setPrompt bails on a missing #prompt). */
+export function installFakeDocument(ids: Record<string, FakeEl> = {}): void {
   (globalThis as unknown as { document: unknown }).document = {
     createElement: (tag: string) => new FakeEl(tag),
     body: new FakeEl("body"),
-    // Nothing here is mounted in a real page, so no id resolves. Returning null
-    // is the honest answer and every caller already handles it (setPrompt bails
-    // on a missing #prompt banner); the alternative is each test mocking a
-    // module it does not care about.
-    getElementById: () => null,
+    getElementById: (id: string) => ids[id] ?? null,
   };
 }
 

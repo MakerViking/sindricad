@@ -782,6 +782,14 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/region_preselect_e2e.cjs
+      # Report ab855a5b, and only a real browser can answer it: sketch labels
+      # painting and hit-testing over the panels is a question about stacking
+      # and clipping, which every unit around it passes while it is broken.
+      - name: Sketch label clipping end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_label_clip_e2e.cjs
 
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,

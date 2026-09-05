@@ -11,6 +11,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { camHash } from "../viewport/camHash";
+import { overlayHost, outsideRect, clampIntoRect } from "../viewport/overlayHost";
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, staggeredDefaults, type DimField } from "./entityDims";
@@ -139,7 +140,7 @@ export class SketchDimensions {
   ) {
     this.root = document.createElement("div");
     this.root.className = "sketch-dims";
-    document.body.appendChild(this.root);
+    overlayHost().appendChild(this.root);
   }
 
   show(entities: ResolvedEntity[], plane: SketchPlane, extras: ExtraDim[] = []) {
@@ -433,8 +434,28 @@ export class SketchDimensions {
     this.lastCamHash = hash;
     for (const l of this.labels) {
       this.plane.to3D(l.anchor.x, l.anchor.y, this.scratch);
-      const s = this.viewport.projectToScreen(this.scratch);
-      l.el.style.transform = `translate(${s.x}px, ${s.y}px) translate(-50%, -50%)`;
+      const p = this.viewport.projectToOverlay(this.scratch);
+      // An anchor that has left the canvas gets no DOM write at all. The layer
+      // is clipped, so the badge could only be drawn in half — and half a badge
+      // is still a click target sitting over the panel next door, which is how
+      // a click meant for the browser tree opened a dimension editor instead.
+      const off = outsideRect(p);
+      const editing = off ? l.el.querySelector("input") : null;
+      if (off && !editing) {
+        l.el.style.visibility = "hidden";
+        continue;
+      }
+      // The one exception is the badge being typed into. Hiding it would drop
+      // the caret mid-keystroke; leaving it at the projected point parks it
+      // outside the clip, where it still holds focus and still commits on
+      // Enter while being invisible. So it is pinned to the edge instead — the
+      // offset* read is a forced layout, but only for that one badge and only
+      // while its anchor is off the canvas.
+      const at = editing
+        ? clampIntoRect(p, { width: l.el.offsetWidth || 0, height: l.el.offsetHeight || 0 })
+        : p;
+      l.el.style.visibility = "";
+      l.el.style.transform = `translate(${at.x}px, ${at.y}px) translate(-50%, -50%)`;
     }
   };
 }
