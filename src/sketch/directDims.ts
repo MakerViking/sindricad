@@ -59,8 +59,8 @@ export function upsertDrivingDim(constraints: SketchConstraint[], c: SketchConst
     if (isDimConstraint(k) && k.id) replacedId = k.id;
     return false;
   });
-  if (isDimConstraint(c) && !c.id) c.id = replacedId ?? newConstraintId();
-  return [...kept, c];
+  const dim = isDimConstraint(c) && !c.id ? { ...c, id: replacedId ?? newConstraintId() } : c;
+  return [...kept, dim];
 }
 
 /** Apply what can be applied without solving. Mutates `entities` in place and

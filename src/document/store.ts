@@ -667,13 +667,42 @@ export class DocumentStore {
     f: Extract<Feature, { type: "sketch" }>,
     parameters: CadDocument["parameters"],
   ): Promise<Extract<Feature, { type: "sketch" }>["entities"] | null> {
-    if (!(f.constraints ?? []).length || !this.headlessSolve) return null;
-    const solved = await this.headlessSolve(f, parameters);
-    if (!solved) {
-      this.onParamSolveIssue?.(f.id);
-      return null;
+    const r = await this.solveSketchOutcome(f, parameters);
+    if (r.status === "failed" || r.status === "unavailable") this.onParamSolveIssue?.(f.id);
+    return r.status === "solved" ? r.entities : null;
+  }
+
+  /** The same solve, with its two failure modes kept apart — they need opposite
+   *  handling and a bare null cannot say which happened:
+   *
+   *  - `failed`: the solve RAN and could not satisfy the sketch. It says nothing
+   *    about where the geometry should go, so the coordinates stay put.
+   *  - `unavailable`: there is no solver on this machine (SolverUnavailable, or
+   *    none injected). Nothing will EVER drive a constraint here, so a typed
+   *    dimension has to be applied directly (directDims) or the user types a
+   *    number and watches nothing happen — the 0.1.100 WebView2 reports.
+   *
+   *  Doing the direct write on `failed` too would be the mirror bug: geometry
+   *  moved to a size the solver just said is inconsistent with everything else. */
+  private async solveSketchOutcome(
+    f: Extract<Feature, { type: "sketch" }>,
+    parameters: CadDocument["parameters"],
+  ): Promise<
+    | { status: "solved"; entities: Extract<Feature, { type: "sketch" }>["entities"] }
+    | { status: "nothing" | "failed" | "unavailable" }
+  > {
+    if (!(f.constraints ?? []).length) return { status: "nothing" };
+    if (!this.headlessSolve) return { status: "unavailable" };
+    try {
+      const solved = await this.headlessSolve(f, parameters);
+      return solved ? { status: "solved", entities: solved.entities } : { status: "failed" };
+    } catch (e) {
+      // solveSketchFeature only lets SolverUnavailable out; anything else is a
+      // bug on our side. Either way there is no solved geometry, and this must
+      // not become an app-level error — the param cascade calls it in a loop.
+      console.error("headless sketch solve unavailable:", e);
+      return { status: "unavailable" };
     }
-    return solved.entities;
   }
 
   // --- sketch dimensions edited from OUTSIDE the sketch editor (inspector) ---
@@ -740,15 +769,24 @@ export class DocumentStore {
       d.write(mm); // mutates the resolved copy
       next = { ...cur, entities: withEdited() };
     }
-    if (this.headlessSolve) {
-      const solved = await this.solveConstrainedSketch(next, this.doc.parameters);
-      if (solved) next = { ...next, entities: solved };
-    } else if (dim && applyDrivingDimsDirect([e], [dim])) {
+    const r = await this.solveSketchOutcome(next, this.doc.parameters);
+    if (r.status === "solved") next = { ...next, entities: r.entities };
+    else if (r.status === "failed") this.onParamSolveIssue?.(sketchId);
+    else if (r.status === "unavailable" && dim && applyDrivingDimsDirect([e], [dim])) {
       // No solver on this machine (see directDims): the typed value has to go
       // into the geometry here, or it is recorded and never seen. The constraint
-      // stays, so a working solver drives it properly later.
+      // stays, so a working solver drives it properly later. Only when the
+      // solver is ABSENT — after a solve that ran and failed, the same write
+      // would move geometry to a size that solve just called inconsistent.
       next = { ...next, entities: withEdited() };
     }
+    // The solve was awaited, so the document may have moved on: a plain mutate
+    // (entity delete, undo) is not serialized on paramChain, and SketchMode can
+    // have entered this very sketch. Same guard commitProjectionRefresh keeps —
+    // applying `next` now would resurrect the pre-edit entities, or write the
+    // document copy of a sketch that is open after all.
+    if (this.doc.features.find((x) => x.id === sketchId) !== cur) return;
+    if ((this.openSketchId?.() ?? null) === sketchId) return;
     this.mutate((d) => {
       const i = d.features.findIndex((x) => x.id === sketchId);
       // REPLACE the feature object — the delta wire protocol diffs by reference.
