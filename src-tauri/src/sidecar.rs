@@ -135,7 +135,7 @@ const EXIT_PORT_IN_USE: i32 = 3;
 /// the toast has to be triageable from.
 #[derive(Clone, serde::Serialize)]
 pub struct SidecarDeath {
-    /// "port_in_use" or "crash"
+    /// "port_in_use", "startup_failure" or "crash"
     pub kind: &'static str,
     pub cause: String,
 }
@@ -145,11 +145,34 @@ pub struct SidecarDeath {
 /// `fatal` is the last `FATAL:` line the sidecar wrote to stderr, if any. Using it
 /// verbatim keeps the real port in the message (it is env-overridable via
 /// `SINDRI_SIDECAR_PORT`) instead of hardcoding 8765 into Rust as a fourth copy.
-fn classify_exit(status: &std::process::ExitStatus, fatal: Option<String>) -> SidecarDeath {
+///
+/// `ready` says whether the sidecar ever printed `LISTENING`. A death BEFORE
+/// that is not a crash the user can save their work from — nothing ever worked,
+/// and telling them "the geometry engine crashed (exit code 1)" describes the
+/// wrong event. Windows reports 647aadcc / 91b20cce / a58966e5 (0.1.202) are
+/// that case: OpenBLAS could not get its buffers, Python exited 1 during import,
+/// and the app spent the session reconnecting to a socket that never existed.
+/// `last_err` is the sidecar's last stderr line, which for those reports is the
+/// entire diagnosis and does NOT carry a `FATAL:` prefix — a startup failure is
+/// usually the interpreter or a C library dying, not our own code reporting.
+fn classify_exit(
+    status: &std::process::ExitStatus,
+    fatal: Option<String>,
+    ready: bool,
+    last_err: Option<String>,
+) -> SidecarDeath {
     if status.code() == Some(EXIT_PORT_IN_USE) {
         return SidecarDeath {
             kind: "port_in_use",
             cause: fatal.unwrap_or_else(|| "the geometry engine could not open its port".into()),
+        };
+    }
+    if !ready {
+        return SidecarDeath {
+            kind: "startup_failure",
+            cause: fatal
+                .or(last_err)
+                .unwrap_or_else(|| describe_exit(status)),
         };
     }
     SidecarDeath { kind: "crash", cause: describe_exit(status) }
@@ -212,6 +235,8 @@ fn spawn_supervisor(
     child: Arc<Mutex<Option<Child>>>,
     log: Option<Arc<Mutex<std::fs::File>>>,
     fatal: Arc<Mutex<Option<String>>>,
+    ready: Arc<AtomicBool>,
+    last_err: Arc<Mutex<Option<String>>>,
 ) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
@@ -230,11 +255,16 @@ fn spawn_supervisor(
             Err(_) => break, // Mutex poisoned; nothing productive left to do
         };
         if let Some(status) = died {
-            let death = classify_exit(&status, fatal.lock().ok().and_then(|g| g.clone()));
-            let line = if death.kind == "port_in_use" {
-                format!("[sidecar] DID NOT START: {}", death.cause)
-            } else {
+            let death = classify_exit(
+                &status,
+                fatal.lock().ok().and_then(|g| g.clone()),
+                ready.load(Ordering::SeqCst),
+                last_err.lock().ok().and_then(|g| g.clone()),
+            );
+            let line = if death.kind == "crash" {
                 format!("[sidecar] CRASHED: exited unexpectedly ({})", death.cause)
+            } else {
+                format!("[sidecar] DID NOT START: {}", death.cause)
             };
             eprintln!("{line}");
             if let Some(l) = &log {
@@ -282,7 +312,31 @@ fn configure_env(cmd: &mut Command, rt: &Runtime, token: &str, blobs: Option<&st
         // resets the error handler back to strict, i.e. it would undo this.
         // Verified on this machine: PYTHONUTF8=1 => stdout utf-8/surrogateescape
         // and locale.getpreferredencoding(False) == utf-8.
-        .env("PYTHONUTF8", "1");
+        .env("PYTHONUTF8", "1")
+        // Keep numpy's BLAS single-threaded. OpenBLAS sizes its per-thread
+        // scratch buffers from the CPU count when the library initialises, and
+        // on a memory-starved box that allocation loop gives up — "OpenBLAS
+        // error: Memory allocation still failed after 10 retries, giving up."
+        // — and takes the interpreter down with exit code 1 BEFORE the socket
+        // binds. The engine then never starts, and all the user sees is the
+        // frontend's reconnect loop (Windows field reports 647aadcc / 91b20cce
+        // / a58966e5 on 0.1.202, whose sidecar.log is exactly those two lines
+        // followed by "no LISTENING after 20s").
+        //
+        // We lose nothing: the sidecar parallelises with a ProcessPoolExecutor,
+        // one OCCT rebuild per process, and no hot path is a large BLAS call —
+        // numpy is here to marshal mesh arrays. The children inherit this, so
+        // the pool workers stop paying for their own buffers too.
+        //
+        // All three names are set because which one a wheel's BLAS honours
+        // depends on how it was built (OpenBLAS reads its own first, then the
+        // OpenMP one; MKL is there for anyone whose numpy links it). The ones
+        // that do not apply are simply ignored, and nothing in sidecar/ ever
+        // writes these, so the value the process starts with is the one that
+        // holds.
+        .env("OPENBLAS_NUM_THREADS", "1")
+        .env("OMP_NUM_THREADS", "1")
+        .env("MKL_NUM_THREADS", "1");
     if let Some(pp) = &rt.pythonpath {
         cmd.env("PYTHONPATH", pp); // bundled site-packages (dir install, no venv)
     }
@@ -390,14 +444,28 @@ impl Sidecar {
         // Last `FATAL:` line the sidecar printed, so a death can be reported with the
         // sidecar's own words rather than a bare exit code.
         let fatal: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        // ...and the last stderr line of ANY kind, for the deaths our own code
+        // never gets to report: an interpreter or C-library failure during
+        // import prints its own message and exits, with no `FATAL:` prefix and
+        // nothing of ours running to add one. That is the whole content of the
+        // 647aadcc log ("OpenBLAS error: Memory allocation still failed after 10
+        // retries, giving up."), and without keeping it the user was told only
+        // "exit code 1".
+        let last_err: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         if let Some(err) = child.stderr.take() {
             let log = log.clone();
             let fatal = fatal.clone();
+            let last_err = last_err.clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(err).lines().map_while(Result::ok) {
                     if let Some(msg) = line.strip_prefix("FATAL: ") {
                         if let Ok(mut g) = fatal.lock() {
                             *g = Some(msg.to_string());
+                        }
+                    }
+                    if !line.trim().is_empty() {
+                        if let Ok(mut g) = last_err.lock() {
+                            *g = Some(line.trim().to_string());
                         }
                     }
                     eprintln!("[sidecar:err] {line}");
@@ -434,7 +502,7 @@ impl Sidecar {
 
         println!("[sidecar] spawned pid {}", child.id());
         let child = Arc::new(Mutex::new(Some(child)));
-        spawn_supervisor(app.clone(), child.clone(), log.clone(), fatal);
+        spawn_supervisor(app.clone(), child.clone(), log.clone(), fatal, ready, last_err);
         Ok(Sidecar {
             child,
             token,
@@ -663,24 +731,88 @@ mod tests {
 
         let port = std::process::ExitStatus::from_raw(EXIT_PORT_IN_USE << 8);
         assert_eq!(port.code(), Some(EXIT_PORT_IN_USE), "precondition");
-        let d = classify_exit(&port, Some("cannot open port 8765 on 127.0.0.1: …".into()));
+        let d = classify_exit(&port, Some("cannot open port 8765 on 127.0.0.1: …".into()), false, None);
         assert_eq!(d.kind, "port_in_use");
         assert!(d.cause.contains("8765"), "the port must survive into the message: {}", d.cause);
 
         // …and without a captured FATAL line it must still say something usable
-        let d = classify_exit(&port, None);
+        let d = classify_exit(&port, None, false, None);
         assert_eq!(d.kind, "port_in_use");
         assert!(!d.cause.is_empty());
 
-        // an ordinary crash is untouched
+        // an ordinary crash — i.e. one AFTER the engine came up — is untouched
         let segv = std::process::ExitStatus::from_raw(11);
-        let d = classify_exit(&segv, None);
+        let d = classify_exit(&segv, None, true, None);
         assert_eq!(d.kind, "crash");
         assert!(d.cause.contains("SIGSEGV"), "got {}", d.cause);
 
         // a plain non-zero exit is a crash too, not a port problem
         let two = std::process::ExitStatus::from_raw(2 << 8);
-        assert_eq!(classify_exit(&two, None).kind, "crash");
+        assert_eq!(classify_exit(&two, None, true, None).kind, "crash");
+    }
+
+    /// Field reports 647aadcc / 91b20cce / a58966e5 (Windows, 0.1.202): the
+    /// bundled numpy's OpenBLAS sizes its per-thread scratch buffers from the
+    /// CPU count at import, and on a memory-starved box that allocation loop
+    /// gives up ("Memory allocation still failed after 10 retries") and takes
+    /// the interpreter down with exit code 1 — before the socket ever binds.
+    /// The sidecar's parallelism is a process pool, not BLAS threads, so
+    /// pinning these to 1 costs nothing we use and removes the failure mode.
+    /// All three names are set because which one is honoured depends on how
+    /// the wheel's BLAS was built, and the loser is simply ignored.
+    #[test]
+    fn sidecar_env_pins_blas_to_one_thread() {
+        let rt = Runtime {
+            python: PathBuf::from("/opt/app/python3.12"),
+            script: PathBuf::from("server.py"),
+            cwd: PathBuf::from("/opt/app"),
+            pythonpath: None,
+        };
+        let mut cmd = Command::new(&rt.python);
+        configure_env(&mut cmd, &rt, "tok", None);
+        let envs: Vec<_> = cmd.get_envs().collect();
+        for key in ["OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"] {
+            let e = envs
+                .iter()
+                .find(|(n, _)| *n == std::ffi::OsStr::new(key))
+                .unwrap_or_else(|| panic!("{key} must be set"));
+            assert_eq!(e.1, Some(std::ffi::OsStr::new("1")), "{key}");
+        }
+    }
+
+    /// A crash BEFORE the socket ever bound is not "the geometry engine
+    /// crashed, save your work" — there is nothing to save from and nothing
+    /// worked. It has to classify apart so the frontend can say "could not
+    /// start", and it has to carry the sidecar's last stderr line, which for
+    /// 647aadcc is the whole diagnosis.
+    #[cfg(unix)]
+    #[test]
+    fn a_death_before_listening_is_a_startup_failure_and_quotes_stderr() {
+        use std::os::unix::process::ExitStatusExt;
+        let one = std::process::ExitStatus::from_raw(1 << 8);
+
+        let d = classify_exit(
+            &one,
+            None,
+            false, // never printed LISTENING
+            Some("OpenBLAS error: Memory allocation still failed after 10 retries, giving up.".into()),
+        );
+        assert_eq!(d.kind, "startup_failure");
+        assert!(d.cause.contains("OpenBLAS"), "the err: line must survive: {}", d.cause);
+
+        // with nothing on stderr it still has to say something concrete
+        let d = classify_exit(&one, None, false, None);
+        assert_eq!(d.kind, "startup_failure");
+        assert!(d.cause.contains("exit code 1"), "got {}", d.cause);
+
+        // once it HAS listened, the same exit is an ordinary crash again
+        let d = classify_exit(&one, None, true, Some("some late noise".into()));
+        assert_eq!(d.kind, "crash");
+
+        // and a taken port stays a taken port, which also happens before ready
+        let port = std::process::ExitStatus::from_raw(EXIT_PORT_IN_USE << 8);
+        let d = classify_exit(&port, Some("cannot open port 8765 on 127.0.0.1: …".into()), false, None);
+        assert_eq!(d.kind, "port_in_use");
     }
 
     /// Fresh, empty scratch dir under the OS temp dir, wiped on both entry and Drop
