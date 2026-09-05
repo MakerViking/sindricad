@@ -20,6 +20,141 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The geometry engine no longer fails to start on a machine that is short of
+  memory.** Reported three times from one Windows session: extrudes were
+  committed, showed up in the timeline, and then vanished from the model, with
+  "geometry engine connection lost" arriving every few seconds. The engine had
+  never started at all. numpy's BLAS sizes its scratch buffers from the CPU
+  count when it loads, ran out of memory doing it, and took the engine down
+  before it could open its socket. The engine now starts its maths library
+  single-threaded, which is all it ever needed: heavy work is split across
+  processes, not across BLAS threads.
+
+- **When the geometry engine cannot start, SindriCAD says so once, instead of
+  "connection lost" forever.** The old message described the symptom, repeated
+  it every twelve seconds, and never said the engine had failed to start, so a
+  session with a dead engine looked like a modelling bug. A failure before the
+  engine is up is now one message that names what happened, quotes the engine's
+  own last words so a screenshot is enough to diagnose it, points at the bug
+  button in the corner, and stops the reconnect attempts until you press Try
+  again.
+
+- **A fillet or chamfer the kernel refuses now says so.** Reported from the
+  in-app reporter: a chamfer came out the same size whatever number was typed,
+  the status bar said "Meshing" and never finished, and Ctrl+Z did nothing. On
+  that body OpenCASCADE declines a chamfer on most edges at any size, and a
+  failed feature is a recorded no-op whose error I was hiding for the whole
+  time a tool preview was live. The tool now shows the kernel's own reason
+  ("try a smaller length value(s)") in its prompt while it is open.
+
+- **The status bar no longer calls a slow feature "Meshing".** A feature was
+  announced only once it had finished, and a build that reuses the cached
+  history of everything before it announced nothing until the new feature was
+  done, so the whole wait wore the previous build's label. Every feature is now
+  announced before it runs, every job starts from a clean slate, and a phase
+  with nothing to count says "building".
+
+- **Ctrl+Z works while a fillet, chamfer or extrude is open.** The tool puts
+  the caret in its on-canvas dimension box and keeps it there, and every
+  keystroke aimed at a text field was handed to the WebView, whose own text undo
+  ate it. Undo and redo now reach the app whenever nothing has been typed into
+  the box since it took focus, and they close the open tool first.
+
+- **A fillet or chamfer size that is still being typed no longer rebuilds
+  every frame.** Typing "0" on the way to "0.5" left the model rebuilding
+  continuously with a build indicator that never cleared. The safety check that
+  protects against a blend the kernel can hang on also runs once per edge
+  selection now instead of once per size, so retyping a value is no longer
+  several seconds of waiting per number.
+
+- **A constraint could not be deleted when its symbol sat on the line it
+  holds.** Reported from the in-app reporter: "could not delete a parallel
+  constraint, tried double clicking it". A constraint symbol is drawn on the
+  geometry it constrains, so clicking it selected the line underneath and
+  redrew the symbols, and the click never reached the symbol. Nine of the
+  fourteen relationship types were affected, and right-click and Delete did
+  nothing either. A symbol now takes a right-click, which offers Delete
+  constraint, and a double-click. Clicking the line under a symbol still
+  selects the line.
+
+- **A line's length and a circle's diameter could not be deleted, only
+  replaced.** Reported from the in-app reporter: "trying to delete a dimension
+  in a sketch, nothing happens". Those two dimensions live on the shape's own
+  badge, which offered Delete dimension greyed out while the Delete key deleted
+  the shape instead. The badge now knows which dimension drives it: right-click
+  and Delete both remove it, and pressing Delete straight after clicking a badge
+  removes the dimension rather than clearing text you have not typed yet. A
+  badge that nothing drives is drawn with a dotted border, so a measured
+  diameter and one you set no longer look identical.
+
+- **A horizontal or vertical smart dimension drew nothing at all.** Placing one
+  by dragging the label sideways created the dimension and the sketch obeyed
+  it, but no badge appeared, so it could not be seen, edited, moved or deleted.
+  These now draw across the gap they measure and keep their sign, and can be
+  dragged and switched to a reference dimension like every other dimension.
+
+- **A Fix constraint now actually holds.** Reported from the in-app reporter:
+  a circle pinned with Fix moved anyway when grabbed by its rim. A rim click
+  sits a radius away from the centre, so it never became a point drag, the one
+  path that already refused a fixed point. It became a whole-entity drag that
+  never consulted the solver, and because a Fix stores no position, the solve
+  afterwards re-pinned the point wherever the drag had left it. The drag is now
+  refused before anything moves, and Move, Rotate and Scale refuse a pinned
+  selection too.
+
+- **Dragging a filleted side keeps its fillets tangent while you drag.**
+  Reported from the in-app reporter. Grabbing a side tore every joint open
+  until you let go: the drag moved the line and its neighbours' endpoints by
+  arithmetic and only asked the solver to sort it out on release. Every frame is
+  now solved with the side you are dragging held under the cursor, and a
+  release that lands while the last frame is still solving settles properly.
+
+- **A sketch fillet keeps the radius you typed.** The fillet tool drew the arc
+  and forgot the number: nothing was labelled or editable, and the next solve
+  was free to resize it. A fillet now records its two tangencies and its
+  radius, so the radius shows as an ordinary dimension you can edit. If those
+  constraints cannot coexist with the rest of the sketch, the fillet still lands
+  and I say what could not be applied. An arc's centre can also be grabbed and
+  dragged now, not only its endpoints.
+
+- **Editing a sketch dimension from the inspector now behaves like editing it
+  on the canvas.** Reported from the in-app reporter: outside the sketch the
+  number changed but attached circles and tangent lines stayed put, and inside
+  the sketch the edit was silently thrown away on Finish. The value now becomes
+  a real driving dimension and the sketch re-solves, so attached geometry
+  follows; while the sketch is open the edit goes into the live sketch instead
+  of a copy. Rectangle width and height, slots and polygons still edit their
+  coordinates directly.
+
+- **Sketch dimension labels and constraint icons stay inside the 3D view.**
+  Reported from the in-app reporter: with a sketch open, the badges and
+  constraint icons were drawn over the ribbon and the side panels, and clicking
+  a panel could open a dimension box instead. Both layers floated over the
+  whole window with nothing stopping them at the edge of the canvas. Labels are
+  now clipped to the 3D view, a label whose anchor leaves the view is not drawn,
+  and they sit below the sketch palette. The one label that stays is the one
+  you are typing in.
+
+- **A press/pull no longer comes untied from its up-to plane when the sketch
+  under it moves.** Reported from the in-app reporter: moving a circle in the
+  sketch made the column above it throw an ambiguous-reference warning and snap
+  back to its plain extrude height. A saved face pick is stored as a point, and
+  once the face slides sideways out from under it, the nearest point on that
+  face lands on the rim it shares with the wall beside it, so both report the
+  identical distance and the pick was refused. A face that has slid off its
+  point is now recognised by the surface it still sits in and the feature keeps
+  its up-to plane; the timeline flags it amber so you can see the reference
+  drifted and re-pick it. When a pick really is ambiguous the message now also
+  says where to repair it.
+
+- **Clicking a sketch profile area now works before there is a solid.** On a
+  document holding a sketch and nothing else, clicking a profile area to
+  pre-select it for Extrude did nothing at all. The viewport switches picking
+  off while a chunked reply is being drawn, and every reply is chunked,
+  including one whose mesh is empty, so a build with no geometry opened that
+  stream and nothing ever closed it. The stream now ends whenever the model is
+  dropped, not only when a model arrives.
+
 - **The camera no longer flips a quarter turn per step when you orbit or zoom
   from the Top or Bottom view.** Reported from the in-app reporter. Dragging or
   scrolling from those two views snapped the picture through about 90 degrees
