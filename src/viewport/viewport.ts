@@ -1424,6 +1424,15 @@ export class Viewport {
     // always leaves a (bodyless) ModelView behind, so the return is not reached
     // with the flag still raised — but any caller that clears the model without
     // one would strand it again, invisibly, for the rest of the session.
+    //
+    // finish() hands ownership of the stream's bodies to the model — including
+    // any it was HOLDING on screen from the previous model (progressive.ts
+    // `stale`), which it drops without removing. That is safe here only because
+    // the reply this path answers has an empty mesh and so names no bodies:
+    // begin() disposed every previous body and stale is provably empty. A reply
+    // that named bodies but carried no mesh would leave those held meshes drawn
+    // and leaked; abort() is not the fix (it would double-dispose against the
+    // disposeModel below), a narrower drop would be.
     if (this.streaming) {
       this.progressive.finish();
       this.streaming = false;

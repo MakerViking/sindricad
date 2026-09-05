@@ -60,25 +60,41 @@ const doc = (w, h) => ({
     await page.waitForTimeout(700);
   };
 
-  /** Load a sketch-only document and wait for its build to settle. */
+  /** Load a sketch-only document and wait for its build to settle. Returns
+   *  whether the geometry engine actually answered THIS build.
+   *
+   *  That return value is the whole guard rail. The regions, the ray hit and the
+   *  click all work client-side, so with no sidecar reply no stream ever opens,
+   *  the flag under test is never raised, and every assertion below passes on
+   *  the unfixed viewport — a green release gate over the exact dead gesture it
+   *  exists to catch. Measured: with viewport.ts reverted and the WS handshake
+   *  refused, this script printed 12/12 PASS. Never swallow the wait. */
   const loadSketchOnly = async (d) => {
     await page.evaluate((doc) => {
       const s = window.__sindri;
+      // The reply this document replaces. buildState.result is written only from
+      // a real reply (store.ts settledBuild), and a failed reply carries the
+      // PREVIOUS result forward — so "non-null" is not enough on the second
+      // load. Identity change is what proves a fresh round-trip.
+      window.__rpPrevResult = s.store.buildState.result;
       s.store.loadDocument(doc);
       s.store.setSketchVisibility("f1", true);
       s.overlay.update(s.store.document);
     }, d);
     // Wait on the CONDITION, not a stopwatch: a shared CI runner is far slower
     // than a dev box, and a fixed sleep here would make a release gate flaky.
-    await page.waitForFunction(
+    const built = await page.waitForFunction(
       () => {
         const s = window.__sindri;
-        return s.overlay.regions.length > 0 && !s.store.buildState.building && !!s.store.buildState.result;
+        const r = s.store.buildState.result;
+        return s.overlay.regions.length > 0 && !s.store.buildState.building
+          && !!r && r !== window.__rpPrevResult;
       },
       null,
       { timeout: 120000 },
-    ).catch(() => {});
+    ).then(() => true, () => false);
     await page.waitForTimeout(600); // let a build that started late settle too
+    return built;
   };
 
   /** Screen position of the first profile area's interior point. */
@@ -108,18 +124,22 @@ const doc = (w, h) => ({
   await esc();
   check("the welcome modal is closed", (await busy()).choice === false);
 
-  await loadSketchOnly(doc(80, 50));
+  const built = await loadSketchOnly(doc(80, 50));
 
   const setup = await page.evaluate(() => ({
     regions: window.__sindri.overlay.regions.length,
     edges: window.__sindri.viewport.visibleEdgeLines().length,
     status: document.getElementById("status")?.textContent ?? "",
   }));
-  check("the sketch built", !/fail|error/i.test(setup.status), setup.status);
+  // Two ways to say the same thing, because a green run here is worthless
+  // without a real reply: the fresh result, and the banner the user reads
+  // ("⚠ : geometry engine connection lost" when the handshake was refused).
+  check("the geometry engine answered the build", built === true);
+  check("the sketch built", setup.status.trim() === "ready", JSON.stringify(setup.status));
   check("a profile area is on screen", setup.regions >= 1, `${setup.regions} region(s)`);
   // The whole point of the case: no solid anywhere in the document.
   check("the document holds no solid", setup.edges === 0, `${setup.edges} edge line(s)`);
-  if (!setup.regions) {
+  if (!setup.regions || !built) {
     await page.screenshot({ path: `${OUT}/setup-failed.png` });
     await browser.close();
     process.exit(1);
@@ -146,7 +166,8 @@ const doc = (w, h) => ({
   // clearing it once is not enough: this is the check that a document you keep
   // editing before the first solid exists stays pickable.
   await esc(); // drop the selection
-  await loadSketchOnly(doc(60, 40));
+  const built2 = await loadSketchOnly(doc(60, 40));
+  check("the geometry engine answered the second build", built2 === true);
   const pt2 = await profilePoint();
   check("the second sketch has a profile area", pt2 != null, JSON.stringify(pt2));
   await clickAt(pt2);
@@ -161,4 +182,10 @@ const doc = (w, h) => ({
   await browser.close();
   console.log(failures ? `\n${failures} check(s) FAILED` : "\nall profile pre-selection checks passed");
   process.exit(failures ? 1 : 0);
-})();
+})().catch((e) => {
+  // A page/browser that dies mid-run must read as a failure, not as an uncaught
+  // rejection buried above the summary line.
+  console.log(`  FAIL  the run finished — ${(e && e.message) || e}`);
+  console.log("\n1 check(s) FAILED");
+  process.exit(1);
+});
