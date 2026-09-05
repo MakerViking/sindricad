@@ -238,6 +238,12 @@ const DOC = {
     for (const el of document.querySelectorAll(".sketch-dim")) {
       if (getComputedStyle(el).visibility === "hidden") continue;
       const r = el.getBoundingClientRect();
+      // Only a badge that sits WHOLLY inside the view with room to spare: on
+      // the CI runner the furthest badge straddled the left edge at the
+      // opening view, so after the reset it was rightly culled and every step
+      // below found nothing to watch.
+      const M = 24;
+      if (r.left < vp.left + M || r.right > vp.right - M || r.top < vp.top + M || r.bottom > vp.bottom - M) continue;
       const c = { cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2 };
       const d = (c.cx - mid.x) ** 2 + (c.cy - mid.y) ** 2;
       if (!best || d > best.d) best = { d, el, text: el.textContent };
