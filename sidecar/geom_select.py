@@ -143,6 +143,8 @@ except FileNotFoundError:
 REASON_TIE_CANONICAL = "Several saved references matched equally well — the first was used."
 REASON_TIE_NTH = "Several saved references matched equally well — the one this feature names was used."
 REASON_MARGINAL = "The saved reference is no longer a close match — the nearest candidate was used."
+REASON_SLID_OUT = ("This face moved out from under the saved pick point. The face still "
+                   "in line with it was used; re-pick the face if that is the wrong one.")
 
 
 def _v(seq):
@@ -624,8 +626,116 @@ def _push_diag(diag, feature_id, kind, resolved, confidence, lossy, reason, at=N
 # --- public API --------------------------------------------------------------
 
 
+# How far apart two tied faces' closest points may be and still count as THE
+# SAME point. Both come out of the same kernel on the same solid, so a genuine
+# shared-boundary hit agrees to arithmetic noise (measured 7.000000 vs 7.000000
+# on the report's geometry). This is slack for floating point, NOT a geometric
+# tolerance, and it must stay tight: too tight only means refusing, which is
+# exactly the behaviour it is narrowing.
+SHARED_POINT_TOL = 1e-6
+
+# How close to a face's UNTRIMMED surface the stored point must lie to count as
+# still being ON that surface. A pick point was authored by a raycast onto the
+# face, so while the face's TRIM can slide out from under it, the point stays in
+# the surface to arithmetic noise: measured 1e-6mm on report e4732316's disc and
+# 0 to 2.4e-8mm on every one of the 63 recoveries in the golden corpus. The
+# tightest separation to the RUNNER-UP surface across those same 63 is 0.05mm.
+# 1e-4 sits 100x above the worst noise and 500x below the tightest real
+# separation. Erring small only means refusing, which is the behaviour this is
+# narrowing.
+ON_SURFACE_TOL = 1e-4
+
+
+def _unbounded_surface_dist(f, point):
+    """Distance from `point` to the face's underlying surface, IGNORING its trim.
+
+    math.inf when the projection is degenerate — a point on a cylinder's axis
+    has no nearest surface point (GeomAPI returns none), and "no answer" must
+    never win a tie-break.
+    """
+    from OCP.BRep import BRep_Tool
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.gp import gp_Pnt
+
+    try:
+        proj = GeomAPI_ProjectPointOnSurf(
+            gp_Pnt(float(point.X), float(point.Y), float(point.Z)),
+            BRep_Tool.Surface_s(f.wrapped),
+        )
+        if proj.NbPoints() < 1:
+            return math.inf
+        return float(proj.LowerDistance())
+    except Exception:
+        return math.inf
+
+
+def _slid_out_winner(tied, point):
+    """The face a `nearest` tie belongs to when the point has slid OFF it.
+
+    Bounded point-to-face distance cannot separate two faces that meet at an
+    edge the point projects onto: the closest point on each is the SAME point of
+    that shared edge, so both report the byte-identical distance and _nearest_one
+    refuses at margin 0.0000. That is not exotic geometry, it is what a face does
+    when the sketch under it moves — report e4732316 moved a circle, the column's
+    top disc slid sideways out from under the press/pull's stored point, and the
+    feature silently became a no-op, so the column left its up-to plane.
+
+    The UNBOUNDED surfaces do separate them: the point is still dead in the
+    disc's plane (1e-6mm) while the barrel it ties with is 7.8mm off. Re-scoring
+    the tied set on that metric picks the face the point is still ON.
+
+    "Still ON" is the whole claim, and it is tested ABSOLUTELY, not as a margin.
+    A relative bar is not narrow enough, measured on 1.sindri: at its f73 the
+    point is 0.5mm off one surface and 0.6mm off the other — off BOTH, so which
+    one it "belongs" to is unknown — yet those clear a 2% margin comfortably. At
+    its f70 the two surfaces are 0.0mm and 2.4e-8mm away — the point is on BOTH,
+    and a relative margin reads 24 nanometres of float noise as a 96% win. Both
+    are guesses of exactly the kind the ambiguity gate exists to refuse. So the
+    tie-break fires only when EXACTLY ONE tied face still carries the point in
+    its surface:
+
+    STRICTLY narrower than the refusal it replaces, in four ways:
+      - only when EVERY tied face's closest point is the same point, i.e. the tie
+        really is caused by a boundary they share. (This alone is NOT a safety
+        property — 1.sindri's f70 and f73 pass it too. It only establishes what
+        kind of tie this is.)
+      - the winner's surface must contain the point (ON_SURFACE_TOL), so a point
+        adrift of everything cannot elect a nearest-of-the-wrong.
+      - every other tied face's surface must NOT contain it, so a genuine
+        coincidence of surfaces still refuses.
+      - the winner must clear NEAREST_TIE_BAND on the new metric too.
+      - faces only. An edge tie is a shared VERTEX, and an edge has no underlying
+        surface whose extension means "the point is still on this one".
+
+    Returns (face, margin), or (None, 0.0) when the tie must stand.
+    """
+    if len(tied) < 2:
+        return None, 0.0
+    try:
+        closest = [f.distance_to_with_closest_points(point)[1] for f in tied]
+    except Exception:
+        return None, 0.0  # a face we cannot measure must not change the outcome
+    first = closest[0]
+    if any((c - first).length > SHARED_POINT_TOL for c in closest[1:]):
+        return None, 0.0
+
+    scored = sorted(((_unbounded_surface_dist(f, point), f) for f in tied),
+                    key=lambda t: t[0])
+    best_d, best = scored[0]
+    runner = scored[1][0]
+    # Written as a positive test so inf and nan fail it rather than pass it.
+    if not (best_d <= ON_SURFACE_TOL):
+        return None, 0.0
+    if not (runner > ON_SURFACE_TOL):
+        return None, 0.0
+    margin = (runner - best_d) / (runner + 1e-9) if math.isfinite(runner) else 1.0
+    if margin < NEAREST_TIE_BAND:
+        return None, 0.0
+    return best, margin
+
+
 def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id,
-                 fp_of=None):
+                 fp_of=None, tie_breaker=None):
     """Resolve a `by:"nearest"` selector — or REFUSE, when the pick is ambiguous.
 
     A bare `min()` over the candidates cannot fail. It returns the closest entity
@@ -646,6 +756,10 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id,
     far is the point from the winner" would break ordinary parametric motion:
     raise a box's height and its top face moves far from the stored point, yet
     it is still the unique nearest by a wide margin and must keep resolving.
+
+    `tie_breaker` is the ONE second look at a tie (faces only — see
+    _slid_out_winner). It is handed the tied set and returns a winner or None;
+    None means refuse exactly as before.
     """
     cands = list(cands)
     if not cands:
@@ -670,12 +784,31 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id,
 
     tied = [c for d, c in scored if (d - best_d) / (runner + 1e-9) < NEAREST_TIE_BAND]
     tied.sort(key=key_fn)
+    pt = sel.get("point") or []
     nth = sel.get("nth")
     if isinstance(nth, int) and 0 <= nth < len(tied):
         _push_diag(diag, feature_id, kind, 1, margin, True, REASON_TIE_NTH)
         return tied[nth]
 
-    pt = sel.get("point") or []
+    if tie_breaker is not None:
+        won, won_margin = tie_breaker(tied)
+        if won is not None:
+            # NOT silent: the stored point no longer lands on the face, so the
+            # reference IS drifting even though we recovered it. lossy=True is
+            # what puts the amber chip on the timeline and this prose in its
+            # tooltip.
+            #
+            # `code` is what makes the offer in that prose real. repairableDiagFor
+            # (src/features/repickReference.ts) gates the timeline's "Re-pick
+            # face…" on the code, not on resolved==0, so a recovery WITHOUT one
+            # tells the user to re-pick the face while hiding the only gesture
+            # that does it. The reference was ambiguous by the bounded metric and
+            # a second look recovered it — that is the same repair, so it is the
+            # same code.
+            _push_diag(diag, feature_id, kind, 1, won_margin, True, REASON_SLID_OUT,
+                       at=pt, code=errors.AMBIGUOUS_REFERENCE)
+            return won
+
     where = ", ".join(f"{float(v):.2f}" for v in pt)
     described = [describe(c) for c in tied[:3]]
     # Structured twin of `described`, same tied[:3] bound. The cap is not
@@ -694,11 +827,17 @@ def _nearest_one(cands, dist_of, key_fn, describe, kind, sel, diag, feature_id,
     _push_diag(diag, feature_id, kind, 0, margin, True, "ambiguous nearest pick",
                at=pt, candidates=described, code=errors.AMBIGUOUS_REFERENCE,
                candidate_fps=fps)
+    # The tail names the GESTURE, not just the goal. "re-pick the face" was true
+    # but unactionable: the repair lives behind a right-click on the timeline
+    # chip, and the reporter of e4732316 never found it, so a recoverable edit
+    # read as the feature having come untied from its up-to plane.
+    where_to_fix = (' (right-click the feature in the timeline, "Re-pick face…")'
+                    if kind == "face" else "")
     raise errors.GeomError(
         f"ambiguous {kind} reference at ({where}): "
         + " and ".join(described)
-        + f" are equally close ({best_d:.3f}mm vs {runner:.3f}mm) — re-pick the {kind}, "
-        f"the saved reference no longer identifies one",
+        + f" are equally close ({best_d:.3f}mm vs {runner:.3f}mm), the saved "
+        f"reference no longer identifies one. Re-pick the {kind}{where_to_fix}",
         errors.AMBIGUOUS_REFERENCE,
     )
 
@@ -829,7 +968,8 @@ def resolve_faces(part, sel, diag=None, feature_id=None):
             dist_of = lambda f: _dist(f.center(), p)
         return [_nearest_one(faces, dist_of, _canonical_key_face, _describe_face,
                              "face", sel, diag, feature_id,
-                             fp_of=lambda f: face_fingerprint(f, part))]
+                             fp_of=lambda f: face_fingerprint(f, part),
+                             tie_breaker=lambda tied: _slid_out_winner(tied, p))]
     if by == "all":
         return list(part.faces())
     if by == "match":

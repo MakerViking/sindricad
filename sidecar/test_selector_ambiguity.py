@@ -11,10 +11,17 @@ The resolver now measures the margin to the runner-up (the same TIE_BAND the v2
 `match` path uses) and raises on a genuine tie unless `nth` says which one is
 meant.
 
+The one tie it does NOT refuse is the degenerate one (report e4732316): a face
+that slid out from under the stored point ties with its neighbour on the
+boundary they share, at every distance, so the refusal was unconditional and a
+press/pull silently became a no-op. That case is broken by the UNBOUNDED surface
+distance and reported as lossy. The tests below pin both halves — it recovers,
+and it still refuses everything that is genuinely undetermined.
+
 Run: uv run python test_selector_ambiguity.py
 """
 
-from build123d import Box, Pos
+from build123d import Box, Cylinder, Pos
 from geom_select import resolve_faces, resolve_edges
 
 PASS = "  ok"
@@ -230,11 +237,180 @@ def test_a_confident_pick_carries_no_candidate_fps():
     print(PASS, "a confident pick authors no candidate fingerprints")
 
 
+def _plate_and_column(offset_x):
+    """A 60x60x6 plate with a r5 column standing on it, the column shifted in X.
+
+    The shape of the bug report: the column's top disc is a face a press/pull
+    was picked on, and moving the sketch circle slides that disc sideways out
+    from under the pick point.
+    """
+    return Box(60, 60, 6) + (Pos(offset_x, 0, 3 + 15) * Cylinder(5, 30))
+
+
+def test_a_face_that_slid_out_from_under_the_point_still_resolves():
+    """THE BUG (report e4732316). Move the sketch circle and the top disc slides
+    sideways; the stored point stays in the disc's plane but outside its rim, so
+    the closest point on the disc is on its RIM — an edge it shares with the
+    barrel, which therefore reports the byte-identical distance. Margin 0.0000,
+    refusal, and the press/pull silently became a no-op.
+
+    Bounded distance cannot separate that pair, but the UNBOUNDED surfaces can:
+    the point is still dead in the disc's plane (0mm) and 7mm off the barrel."""
+    part = _plate_and_column(12.0)          # was at x=0 when the point was stored
+    diag = []
+    got = resolve_faces(part, face_sel([0.0, 0.0, 33.0]), diag=diag, feature_id="fS")
+    assert len(got) == 1, got
+    f = got[0]
+    c = f.center()
+    assert abs(c.Z - 33.0) < 1e-6, f"expected the top disc at z=33, got {c.Z}"
+    assert abs(c.X - 12.0) < 1e-6, f"expected the disc that MOVED (x=12), got {c.X}"
+    assert abs(f.area - 78.54) < 0.1, f"expected the r5 disc (78.5mm2), got {f.area}"
+    # it followed a drifting reference, so the user must be told: amber chip.
+    assert diag and diag[-1]["feature_id"] == "fS", diag
+    assert diag[-1]["lossy"] is True and diag[-1]["resolved"] == 1, diag
+    # ... and told with a code, not just prose. src/features/repickReference.ts
+    # gates the timeline's "Re-pick face…" on the code (or the legacy prose of
+    # the REFUSAL, which this is not), so a recovery without one advertises a
+    # gesture it hides. Keep this in REPAIRABLE_CODES over there.
+    assert diag[-1].get("code") == "ambiguousReference", diag[-1]
+    print(PASS, "a face that slid out from under the point resolves, lossily")
+
+
+def test_a_point_off_BOTH_tied_surfaces_still_refuses():
+    """1.sindri f73's shape, and the reviewer's regression. Two faces meeting at
+    an edge, the point beyond the corner: both closest points are that same
+    shared-edge point, so the coincidence check passes — but the point is 2mm off
+    the top plane and 5mm off the side plane. It is on NEITHER, so which face it
+    used to sit on is unknown and the tie must stand.
+
+    A relative margin does not catch this: 2 vs 5 reads as a 60% win. Only an
+    absolute "the point is still IN this surface" test does."""
+    diag = []
+    try:
+        got = resolve_faces(BOX, face_sel([15.0, 0.0, 12.0]), diag=diag, feature_id="fO")
+    except ValueError as ex:
+        assert "ambiguous face reference" in str(ex), str(ex)
+        print(PASS, "a point off both tied surfaces still refuses")
+        return
+    raise AssertionError(
+        f"guessed {got[0].center()} from a point that is on neither surface")
+
+
+def test_a_point_on_BOTH_tied_surfaces_still_refuses():
+    """1.sindri f70's shape. The point is 5e-5mm off the top plane and dead ON
+    the side plane — both well inside any sane "is it in this surface" tolerance,
+    which is what it means for two surfaces to genuinely coincide at the pick.
+
+    This is where a relative margin is worst: (5e-5 - 0) / 5e-5 reads as a 100%
+    win off a difference no modelling operation could mean."""
+    try:
+        got = resolve_faces(BOX, face_sel([10.0, 0.0, 10.00005]))
+    except ValueError as ex:
+        assert "ambiguous face reference" in str(ex), str(ex)
+        print(PASS, "a point on both tied surfaces still refuses")
+        return
+    raise AssertionError(
+        f"guessed {got[0].center()} off 5e-5mm of separation")
+
+
+def test_the_slid_face_tiebreak_does_not_resurrect_guessing():
+    """The tie-break must only fire when the tied faces are tied BECAUSE the
+    point sits on a boundary they share. Two faces that are merely equidistant
+    still have to refuse — that is the bug this whole gate exists for, and an
+    unbounded-surface rescore that ran unconditionally would answer it.
+
+    (15,15,0) is such a case: both closest points land on the same box corner
+    edge, but the two unbounded planes are 5mm away each — no winner either."""
+    for point in ([15.0, 15.0, 0.0], [10.0, 10.0, 0.0], [0.0, 0.0, 0.0]):
+        try:
+            resolve_faces(BOX, face_sel(point))
+        except ValueError as ex:
+            assert "ambiguous face reference" in str(ex), str(ex)
+            continue
+        raise AssertionError(f"the tie-break guessed at {point} instead of refusing")
+    print(PASS, "genuinely equidistant faces still refuse")
+
+
+def test_the_refusal_says_where_to_re_pick():
+    """The refusal used to say "re-pick the face" and stop. The only place to do
+    that is a right-click on the timeline chip, which the reporter never found —
+    so the message names the gesture."""
+    try:
+        resolve_faces(BOX, face_sel([15.0, 15.0, 0.0]))
+    except ValueError as ex:
+        msg = str(ex)
+        assert "timeline" in msg, msg
+        assert "Re-pick face" in msg, msg
+        print(PASS, "the refusal names the gesture that repairs it")
+        return
+    raise AssertionError("an ambiguous face pick did not raise")
+
+
+def test_a_press_pull_keeps_its_up_to_plane_when_the_sketch_moves():
+    """END TO END, the reporter's symptom: "the column was no longer tied to the
+    offset plane". A press/pull with upToPlane whose face reference refuses is
+    recorded as a NO-OP and the build continues, so the column silently reverts
+    to its plain extrude height instead of landing on the datum.
+
+    Mirrors bug-reports/docs/e4732316.json (not loadable here: bug-reports/ is
+    not in the repo), then moves the circle the way the reporter did."""
+    import builder
+
+    def doc(circle_x):
+        return {
+            "version": 5, "paramDefs": {}, "parameters": {},
+            "features": [
+                {"id": "f1", "type": "sketch", "plane": "XY", "entities": [
+                    {"id": "e0", "type": "rectangle", "x": 0, "y": 0,
+                     "width": 56.4, "height": 44.4},
+                    {"id": "e1", "type": "circle", "x": circle_x, "y": 0,
+                     "radius": 4.74},
+                ]},
+                {"id": "f2", "type": "extrude", "sketch": "f1", "distance": 30.588,
+                 "operation": "new", "regions": [[-25.0, -20.0, 0], [circle_x, 0, 0]],
+                 "regionEntities": [["e0"], ["e1"]],
+                 "regionHoleEntities": [[["e1"]], []]},
+                {"id": "f3", "type": "datumPlane", "plane": "XY", "offset": 61},
+                {"id": "f6", "type": "extrude", "sketch": "f1", "distance": 98.068,
+                 "operation": "join", "regions": [[circle_x, 0, 0]],
+                 "regionEntities": [["e1"]], "regionHoleEntities": [[]]},
+                # the pick point is where the disc was BEFORE the move
+                {"id": "f7", "type": "press-pull", "body": "body2", "distance": 20,
+                 "operation": "join", "upToPlane": "f3", "upToOffset": -10,
+                 "face": {"kind": "face", "by": "nearest",
+                          "point": [-0.47, -1.45, 98.068]}},
+            ],
+        }
+
+    _, errs, bodies = builder.rebuild(doc(0.0))
+    assert errs == [], f"the unmoved document must build clean: {errs}"
+    assert len(bodies) == 1, bodies
+    top = bodies[0]["shape"].bounding_box().max.Z
+    assert abs(top - 71.0) < 1e-3, f"baseline: expected the column at z=71, got {top}"
+
+    diag = []
+    _, errs, bodies = builder.rebuild(doc(12.0), diagnostics=diag)
+    assert errs == [], f"moving the sketch circle broke the press/pull: {errs}"
+    top = bodies[0]["shape"].bounding_box().max.Z
+    assert abs(top - 71.0) < 1e-3, (
+        f"the column left the offset plane: expected z=71, got {top} "
+        "(98.068 means f7 was recorded as a no-op)")
+    assert any(d.get("feature_id") == "f7" for d in diag), \
+        f"the drifted reference must still be reported: {diag}"
+    print(PASS, "a press/pull keeps its up-to plane when the sketch moves")
+
+
 def main():
     test_equidistant_faces_raise_instead_of_guessing()
     test_point_on_a_shared_edge_raises()
     test_clear_winner_still_resolves()
     test_moved_face_still_resolves_when_it_stays_nearest()
+    test_a_face_that_slid_out_from_under_the_point_still_resolves()
+    test_a_point_off_BOTH_tied_surfaces_still_refuses()
+    test_a_point_on_BOTH_tied_surfaces_still_refuses()
+    test_the_slid_face_tiebreak_does_not_resurrect_guessing()
+    test_the_refusal_says_where_to_re_pick()
+    test_a_press_pull_keeps_its_up_to_plane_when_the_sketch_moves()
     test_nth_disambiguates_a_deliberate_tie()
     test_equidistant_edges_raise()
     test_clear_edge_winner_still_resolves()
