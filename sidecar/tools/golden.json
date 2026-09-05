@@ -2,37 +2,29 @@
   "1.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000014
+        72.50000015000002,
+        19.000000100000054,
+        20.000000150000016
       ],
       "min": [
-        -72.5,
-        -6.100000000000006,
-        -24.000000000000007
+        -72.50000015000002,
+        -6.1000001500000165,
+        -24.000000150000016
       ]
     },
     "bodies": 2,
     "doc": "1.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f36"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f37"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f73"
       }
     ],
@@ -48,44 +40,36 @@
     ],
     "path": "../src-tauri/1.sindri",
     "volumes": {
-      "body1": 11544.41908968321,
-      "body2": 13269.768254946692
+      "body1": 8668.085439046925,
+      "body2": 17881.60746372133
     }
   },
   "2.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000014
+        72.50000015000002,
+        19.000000100000054,
+        20.000000150000016
       ],
       "min": [
-        -72.5,
-        -6.100000000000006,
-        -24.000000000000007
+        -72.50000015000002,
+        -6.1000001500000165,
+        -24.000000150000016
       ]
     },
     "bodies": 2,
     "doc": "2.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f36"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f37"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f73"
       }
     ],
@@ -101,44 +85,36 @@
     ],
     "path": "../src-tauri/2.sindri",
     "volumes": {
-      "body1": 11544.41908968321,
-      "body2": 13269.768254946692
+      "body1": 8668.085439046925,
+      "body2": 17881.60746372133
     }
   },
   "3.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000014
+        72.50000015000002,
+        19.000000100000054,
+        20.000000150000016
       ],
       "min": [
-        -72.5,
-        -6.100000000000006,
-        -24.000000000000007
+        -72.50000015000002,
+        -6.1000001500000165,
+        -24.000000150000016
       ]
     },
     "bodies": 2,
     "doc": "3.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f36"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f37"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f73"
       }
     ],
@@ -154,72 +130,72 @@
     ],
     "path": "../src-tauri/3.sindri",
     "volumes": {
-      "body1": 10907.400559965303,
-      "body2": 11882.564688942513
+      "body1": 8031.066909329155,
+      "body2": 16494.403897717097
     }
   },
   "4-clean.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000007
+        73.50000010000011,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -6.1,
-        -24.000000000000014
+        -72.50000010000011,
+        -6.1000001000001145,
+        -24.08261381312772
       ]
     },
     "bodies": 2,
     "doc": "4-clean.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       }
     ],
@@ -236,44 +212,36 @@
     ],
     "path": "../src-tauri/4-clean.sindri",
     "volumes": {
-      "body1": 9899.031008483114,
-      "body2": 13057.821658128561
+      "body1": 9899.323665233635,
+      "body2": 14145.014840893411
     }
   },
   "4.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000014
+        72.50000015000002,
+        19.000000100000054,
+        20.000000150000016
       ],
       "min": [
-        -72.5,
-        -6.100000000000006,
-        -24.000000000000007
+        -72.50000015000002,
+        -6.1000001500000165,
+        -24.000000150000016
       ]
     },
     "bodies": 2,
     "doc": "4.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f36"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f37"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f73"
       }
     ],
@@ -290,92 +258,92 @@
     ],
     "path": "../src-tauri/4.sindri",
     "volumes": {
-      "body1": 10907.400559965303,
-      "body2": 11870.52961419848
+      "body1": 8031.066909329155,
+      "body2": 16482.36882297308
     }
   },
   "5-clean.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000007
+        73.50000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -6.1,
-        -24.000000000000014
+        -72.50000014768372,
+        -6.100000147683715,
+        -24.08261381312772
       ]
     },
     "bodies": 2,
     "doc": "5-clean.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       }
     ],
@@ -393,92 +361,92 @@
     ],
     "path": "../src-tauri/5-clean.sindri",
     "volumes": {
-      "body1": 9899.031008483114,
-      "body2": 12953.49459796575
+      "body1": 9899.323665233635,
+      "body2": 14040.687780730528
     }
   },
   "5-cleanb.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000007
+        73.50000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -6.100000000000001,
-        -24.000000000000014
+        -72.50000014768372,
+        -6.1000001476837165,
+        -24.08261381312772
       ]
     },
     "bodies": 2,
     "doc": "5-cleanb.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       },
       {
@@ -486,48 +454,20 @@
         "feature_id": "f115"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f114"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f116"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f117"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f118"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f119"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f120"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f122"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f126"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f127"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f128"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f129"
       }
     ],
     "featureTypes": [
@@ -544,141 +484,109 @@
     ],
     "path": "../src-tauri/5-cleanb.sindri",
     "volumes": {
-      "body1": 9899.031008483122,
-      "body2": 13100.214687666275
+      "body1": 9899.323665233633,
+      "body2": 12283.579212411678
     }
   },
   "5-cleanc.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000004
+        89.00000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -7.100000000000001,
-        -24.000000000000014
+        -72.50000014768372,
+        -7.1000001476837165,
+        -24.08261381312772
       ]
     },
     "bodies": 6,
     "doc": "5-cleanc.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f114"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f116"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f117"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f118"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f119"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f120"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f122"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f126"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f127"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f128"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f129"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f132"
       }
     ],
     "featureTypes": [
@@ -695,145 +603,113 @@
     ],
     "path": "../src-tauri/5-cleanc.sindri",
     "volumes": {
-      "body1": 1357.9998214244831,
-      "body2": 15304.881810005863,
-      "body25": 1960.8514427123137,
-      "body26": 1399.999999999999,
-      "body27": 3.6842307225450495,
-      "body28": 5176.495513623758
+      "body1": 1400.0,
+      "body2": 19041.31066517357,
+      "body25": 1357.9998214244704,
+      "body26": 1960.8514427123166,
+      "body27": 3.852541775383642,
+      "body28": 5176.619859321552
     }
   },
   "5-cleand.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000004
+        89.00000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -7.100000000000001,
-        -24.000000000000014
+        -72.50000014768372,
+        -7.1000001476837165,
+        -24.08261381312772
       ]
     },
     "bodies": 6,
     "doc": "5-cleand.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f114"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f116"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f117"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f118"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f119"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f120"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f122"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f126"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f127"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f128"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f129"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f132"
       }
     ],
     "featureTypes": [
@@ -850,160 +726,132 @@
     ],
     "path": "../src-tauri/5-cleand.sindri",
     "volumes": {
-      "body1": 1357.9998214244831,
-      "body2": 15304.881810005863,
-      "body25": 1960.8514427123137,
-      "body26": 1399.999999999999,
-      "body27": 3.6842307225450495,
-      "body28": 5176.495513623758
+      "body1": 1400.0,
+      "body2": 19041.31066517357,
+      "body25": 1357.9998214244704,
+      "body26": 1960.8514427123166,
+      "body27": 3.852541775383642,
+      "body28": 5176.619859321552
     }
   },
   "5-cleane.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000004
+        89.00000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -7.100000000000001,
-        -24.000000000000014
+        -72.50000014768372,
+        -7.1000001476837165,
+        -24.082613813127715
       ]
     },
     "bodies": 4,
     "doc": "5-cleane.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f114"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f116"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f117"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f118"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f119"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f120"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f122"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f126"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f127"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f128"
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
+        "feature_id": "f139"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f129"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f132"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f141"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f145"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f150"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f151"
       }
     ],
@@ -1021,158 +869,130 @@
     ],
     "path": "../src-tauri/5-cleane.sindri",
     "volumes": {
-      "body1": 7414.495335048238,
-      "body2": 18316.347441759626,
-      "body25": 1960.8514427123137,
-      "body26": 1399.999999999999
+      "body1": 6576.61985932144,
+      "body2": 22988.29219638642,
+      "body25": 1357.9998214244704,
+      "body26": 1960.8514427123166
     }
   },
   "5-cleanf.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000004
+        89.00000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -7.100000000000001,
-        -24.000000000000014
+        -72.50000014768372,
+        -7.100000147683717,
+        -24.082613813127715
       ]
     },
     "bodies": 4,
     "doc": "5-cleanf.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f114"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f116"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f117"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f118"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f119"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f120"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f122"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f126"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f127"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f128"
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
+        "feature_id": "f139"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f129"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f132"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f141"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f145"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f150"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f151"
       },
       {
@@ -1180,11 +1000,11 @@
         "feature_id": "f161"
       },
       {
-        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
+        "error_class": "Press/Pull moved nothing \u2014 the 'up to' target is already level with the face you picked. Pick a different target, or set an offset.",
         "feature_id": "f163"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
         "feature_id": "f164"
       },
       {
@@ -1194,14 +1014,6 @@
       {
         "error_class": "Press/Pull: the face is parallel to the 'up to' surface \u2014 can't reach it",
         "feature_id": "f166"
-      },
-      {
-        "error_class": "can't press/pull this region \u2014 it's a single mesh facet, not a clean face (the imported body is faceted, not prismatic)",
-        "feature_id": "f169"
-      },
-      {
-        "error_class": "can't press/pull this region \u2014 it's a single mesh facet, not a clean face (the imported body is faceted, not prismatic)",
-        "feature_id": "f171"
       }
     ],
     "featureTypes": [
@@ -1218,158 +1030,130 @@
     ],
     "path": "../src-tauri/5-cleanf.sindri",
     "volumes": {
-      "body1": 7414.495335048238,
-      "body2": 18374.89378942256,
-      "body25": 1960.8514427123137,
-      "body26": 1399.999999999999
+      "body1": 6576.61985932144,
+      "body2": 22853.92013419075,
+      "body25": 1357.9998214244704,
+      "body26": 1960.8514427123166
     }
   },
   "5-cleang.sindri": {
     "bbox": {
       "max": [
-        72.5,
-        19.0,
-        20.000000000000004
+        89.00000014768372,
+        19.08261381312772,
+        20.08261381312772
       ],
       "min": [
-        -72.5,
-        -7.100000000000001,
-        -24.000000000000014
+        -72.50000014768372,
+        -7.100000147683717,
+        -24.082613813127715
       ]
     },
     "bodies": 4,
     "doc": "5-cleang.sindri",
     "featureErrors": [
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f25"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f26"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f27"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f28"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f31"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f32"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f35"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f36"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f37"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f70"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f71"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve. On a mesh body that is still entirely faceted, Clean Up can sometimes recognise the curve.",
         "feature_id": "f73"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f95"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f91"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f94"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f97"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f98"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f114"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f116"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f117"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f118"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f119"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f120"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f122"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f126"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f127"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f128"
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
+        "feature_id": "f139"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f129"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
-        "feature_id": "f132"
-      },
-      {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f141"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f145"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f150"
       },
       {
-        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm) \u2014 re-pick the face, the saved reference no longer identifies one",
+        "error_class": "ambiguous face reference at (#, #, #): a face at (#,#,#) area # and a face at (#,#,#) area # are equally close (#mm vs #mm), the saved reference no longer identifies one. Re-pick the face (right-click the feature in the timeline, \"Re-pick face\u2026\")",
         "feature_id": "f151"
       }
     ],
@@ -1387,10 +1171,10 @@
     ],
     "path": "../src-tauri/5-cleang.sindri",
     "volumes": {
-      "body1": 7414.495335048238,
-      "body2": 18207.13224128567,
-      "body25": 1960.8514427123137,
-      "body26": 1399.999999999999
+      "body1": 6576.61985932144,
+      "body2": 22860.710829690797,
+      "body25": 1357.9998214244704,
+      "body26": 1960.8514427123166
     }
   },
   "ddr_crash.sindri.sindri": {

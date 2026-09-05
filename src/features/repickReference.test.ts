@@ -127,6 +127,26 @@ describe("repairableDiagFor", () => {
     },
   );
 
+  it("offers the repair for a RECOVERED slid-out face, which built green", () => {
+    // The other half of the sidecar's slid-out tie-break (report e4732316): the
+    // reference resolved, so there is no featureError and no red chip — just an
+    // amber one whose prose says "re-pick the face if that is the wrong one".
+    // That sentence is a lie unless this returns the diagnostic, because the
+    // only re-pick gesture is the timeline right-click this gates. resolved=1
+    // must not disqualify it. Shape copied from geom_select._push_diag; the
+    // sidecar half is pinned in test_selector_ambiguity.py.
+    const recovered = [
+      {
+        feature_id: "f7",
+        kind: "face",
+        code: "ambiguousReference",
+        reason: "This face moved out from under the saved pick point. …",
+        at: [-0.47, -1.45, 98.068] as [number, number, number],
+      },
+    ];
+    expect(repairableDiagFor(recovered, "f7")?.at).toEqual([-0.47, -1.45, 98.068]);
+  });
+
   it("does not offer it for planeTilted, which a re-pick cannot clear", () => {
     // The sidecar filters candidate faces by the CACHED plane's normal and the
     // repair writes only the selector, so picking the tilted face reproduces the
