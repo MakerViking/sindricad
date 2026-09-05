@@ -3464,6 +3464,9 @@ def _group_sels_by_body(sel, ctx, label):
 # timeout is the only guard that works — same conclusion, same shape, as
 # _probe_tapers.
 _BLEND_PROBE_TIMEOUT = 25.0
+_BLEND_PROBE_TICK = 1.0  # how long the wait below goes between liveness ticks
+# (brep, edge indices, kind) -> [largest size that COMPLETED, {sizes that timed
+# out}]. Deliberately not keyed on the size — see _probe_blend.
 _BLEND_PROBE_CACHE = {}
 
 
@@ -3503,8 +3506,18 @@ def _probe_blend(body_shape, edges, kind, size):
 
     False means REFUSE it: either it raised there (the real build will raise the
     same way, with a better message) or it ran past the deadline. Cached on the
-    body's bytes plus the edge midpoints and size, so an unchanged document pays
-    one fork, not one per rebuild.
+    body's bytes and the edge indices, so an unchanged document pays one fork,
+    not one per rebuild.
+
+    The size is NOT part of the key. A PASS carries downwards — a blend that
+    completed at 2 mm completes at 0.5 mm, because shrinking it cannot invent a
+    hang — so one fork covers every smaller size on the same edge set. That is
+    the whole cost during a drag or a retype: keying on the size meant a fresh
+    ~1.7 s fork for every value the user passed through, and the viewport lagged
+    so far behind the number that typing looked like it changed nothing (field
+    report a0a76571). A TIMEOUT carries nowhere: a hang at 2 mm says nothing
+    about 0.5 mm, which is exactly the value the user is about to try next, so
+    refusals are remembered per size.
 
     Fails OPEN on any serialisation problem — an unserialisable body is not
     evidence of a hang, and refusing it would break working documents.
@@ -3526,34 +3539,74 @@ def _probe_blend(body_shape, edges, kind, size):
             idxs.append(hit)
     except Exception:
         return True  # cannot probe it; let the real build decide
-    key = (brep, tuple(idxs), kind, round(float(size), 6))
-    hit = _BLEND_PROBE_CACHE.get(key)
-    if hit is not None:
-        return hit
+    key = (brep, tuple(idxs), kind)
+    size_f = round(float(size), 6)
+    passed, refused = _BLEND_PROBE_CACHE.get(key, (None, ()))
+    if passed is not None and size_f <= passed:
+        return True
+    if size_f in refused:
+        return False
     import subprocess
-    recipe = {"brep": brep, "idxs": idxs, "kind": kind, "size": round(float(size), 6)}
+    import threading
+    recipe = json.dumps({"brep": brep, "idxs": idxs, "kind": kind, "size": size_f})
     # Default True: only a TIMEOUT refuses. If the child RAISED, the real call is
     # about to raise the same way, and OCCT's own message ("try a smaller length
     # value(s)") is far more actionable than anything this can say — so let it
     # through and report properly. The probe exists to catch the hang, not to
     # pre-empt an honest failure.
+    #
+    # Nothing is read back: a child that ran to completion — whether it succeeded
+    # or raised — is not a hang, and that is all this decides. So its output goes
+    # to /dev/null, and the recipe is fed from a writer thread, because the child
+    # imports build123d BEFORE it reads stdin and a BREP is routinely larger than
+    # a pipe buffer — writing it inline would block this thread for the whole of
+    # the child's cold start, which is most of what there is to tick through.
     ok = True
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-c", "import builder; builder._blend_probe_main()"],
-            input=json.dumps(recipe), capture_output=True, text=True,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            timeout=_BLEND_PROBE_TIMEOUT,
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            text=True, cwd=os.path.dirname(os.path.abspath(__file__)),
         )
-        # The child prints one JSON line. Kernel and font chatter share stdout,
-        # so scan for our record rather than parsing the whole stream.
-        # Nothing to read back: a child that ran to completion — whether it
-        # succeeded or raised — is not a hang, and that is all this decides.
-    except subprocess.TimeoutExpired:
-        ok = False  # the hang this exists for
     except Exception:
-        ok = True   # probe infrastructure failed; do not block a real build
-    _BLEND_PROBE_CACHE[key] = ok
+        return True  # probe infrastructure failed; do not block a real build
+
+    def _feed():
+        try:
+            proc.stdin.write(recipe)
+            proc.stdin.close()
+        except Exception:
+            pass  # the child died early; the wait below is what decides
+
+    threading.Thread(target=_feed, daemon=True).start()
+    deadline = time.monotonic() + _BLEND_PROBE_TIMEOUT
+    try:
+        while True:
+            try:
+                proc.wait(timeout=_BLEND_PROBE_TICK)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    ok = False  # the hang this exists for
+                    break
+                # Wait in SLICES and publish liveness between them. A single
+                # blocking wait said nothing for up to 25 s, and the supervisor
+                # reaps a worker whose heartbeat has not moved for 60 — so on a
+                # slow machine a probe could cost the user the whole worker and
+                # be reported as "one operation stalled over 60 seconds".
+                # keep_index=True: the feature that owns this probe has already
+                # announced itself and this must not overwrite its name.
+                progress_tick(keep_index=True)
+    except Exception:
+        ok = True  # probe infrastructure failed; do not block a real build
+    entry = _BLEND_PROBE_CACHE.setdefault(key, [None, set()])
+    if ok:
+        if entry[0] is None or size_f > entry[0]:
+            entry[0] = size_f
+    else:
+        entry[1].add(size_f)
     return ok
 
 
@@ -5191,6 +5244,22 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     for i in range(start, len(features)):
         f = features[i]
         t_feat = time.monotonic()
+        # Announce the feature BEFORE running it, not only after. The tick at the
+        # bottom of this loop fires once a feature has finished, so the one that
+        # is actually running is never the one being published — and when the
+        # prefix comes out of the cache (start == len(features) - 1, the shape
+        # every "add one feature to an existing model" edit takes) nothing ticks
+        # at all until the new feature completes. The status frame then carried
+        # the PREVIOUS job's leftover index for the whole wait, which the timeline
+        # rendered as "meshing…" at 0% while a slow chamfer was building: field
+        # report a0a76571, "the meshing never finishes". It also gives the stall
+        # watchdog the right name for a feature that wedges instead of the name
+        # of the one before it.
+        if on_feature_tick is not None:
+            try:
+                on_feature_tick(i)
+            except Exception:
+                pass
         # provenance: capture each body's shape identity + owner map before the
         # feature, so afterwards we can attribute newly-created faces to it.
         # sketch/datumPlane never touch bodies — skip capture AND attribution

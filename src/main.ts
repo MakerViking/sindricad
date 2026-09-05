@@ -482,8 +482,28 @@ const docnameEl = document.getElementById("docname")!;
 // which is why Ctrl+Z used to vaporise it. Hand the request to the sketch, which
 // swallows it whenever it is active (an empty sketch history says so rather than
 // falling through and eating the sketch).
-function doUndo() { if (!sketch.undoEdit()) store.undo(); }
-function doRedo() { if (!sketch.redoEdit()) store.redo(); }
+function doUndo() { cancelModelingTool(); if (!sketch.undoEdit()) store.undo(); }
+function doRedo() { cancelModelingTool(); if (!sketch.redoEdit()) store.redo(); }
+
+/** Close any modal 3D tool before an app-level undo/redo.
+ *
+ *  A live tool holds an UN-COMMITTED feature in the document (setPreview /
+ *  setEditPreview) and keeps pushing it every frame, so undoing underneath it
+ *  rewrites the history that preview sits on and the tool's next push simply
+ *  re-applies itself over the result. Cancelling first makes Ctrl+Z mean the
+ *  one thing it can safely mean while a tool is open. Sketch mode is NOT in
+ *  here: it owns its own undo stack and doUndo routes to it above. */
+function cancelModelingTool() {
+  if (extrude.active) extrude.cancel();
+  if (edgeFeature.active) edgeFeature.cancel();
+  if (pressPull.active) pressPull.cancel();
+  if (faceOffset.active) faceOffset.cancel();
+  if (loftTool.active) loftTool.cancel();
+  if (planeOffset.active) planeOffset.cancel();
+  if (moveTool.active) moveTool.cancel();
+  if (textureTool.active) textureTool.cancel();
+  if (textOnFaceTool.active) textOnFaceTool.cancel();
+}
 
 const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
 const redoBtn = document.getElementById("redo-btn") as HTMLButtonElement;

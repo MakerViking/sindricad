@@ -23,8 +23,18 @@ const CANCEL_DELAY_MS = 700;
  *  measured at 136 s on the reference assembly — so it used to render as a bar
  *  pinned at 0% under a static "meshing…". When the sidecar supplies the
  *  per-body counts, show the real fraction; fall back to the indeterminate
- *  label when it can't. */
-function buildProgress(
+ *  label when it can't.
+ *
+ *  That fallback says "building…", not "meshing…": feature = -1 with no body
+ *  counts is "the worker has not said what it is on", which is exactly the state
+ *  a slow FEATURE on a resumed prefix produces (nothing ticks until it finishes).
+ *  Claiming "meshing" there told a user waiting on a long chamfer that the
+ *  kernel was somewhere it had not reached — field report a0a76571.
+ *
+ *  Exported and pure for the same reason as featureTooltip: the chip is built
+ *  with innerHTML, which the element stub does not parse, so this is the only
+ *  place the label the user reads can be asserted. */
+export function buildProgress(
   progress: number | null,
   meshed: number | null,
   meshTotal: number | null,
@@ -33,7 +43,7 @@ function buildProgress(
   if (progress === null) return { label: "building…", pct: 0 };
   if (progress < 0) {
     if (meshed === null || meshTotal === null || meshTotal <= 0) {
-      return { label: "meshing…", pct: 0 };
+      return { label: "building…", pct: 0 };
     }
     const done = Math.min(meshed, meshTotal);
     return { label: `meshing ${done}/${meshTotal}`, pct: Math.round((done / meshTotal) * 100) };
