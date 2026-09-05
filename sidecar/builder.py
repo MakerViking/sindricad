@@ -10072,11 +10072,22 @@ def _subdivide_faces(edges, plane, by_ent=None):
         sp.Perform()
         res = sp.Shape()
 
-        # Which entity each surviving edge PIECE came from. `Modified` is the
+        # Which entities each surviving edge PIECE came from. `Modified` is the
         # splitter's own record of what it cut an input edge into; an edge it did
         # not touch reports nothing and survives as itself. Keyed on TShape because
         # that is what a located/oriented copy of the same edge shares — see the
         # `.Moved()` note in `_body_fingerprint`.
+        #
+        # The value is a SET because a piece can belong to more than one entity.
+        # Two shapes whose edges are COINCIDENT (lying on each other, not merely
+        # crossing — a square sitting flush in the corner of a rectangle) hand the
+        # splitter the same edge twice, and it fuses them into one piece that
+        # `Modified` reports for BOTH tools. Assigning here instead of adding let
+        # the last writer win, so one of the two entities silently vanished from
+        # every cell that piece bounds; the frontend tracer keeps a per-segment id
+        # and never lost it, so the two halves disagreed and the name tier in
+        # `_region_cells_by_entities` refused the cell the user actually picked
+        # (field report d7659f36).
         #
         # Isolated from the arrangement's own try/except ON PURPOSE. Attribution is
         # an ADDITION: without it region references fall back to the anchor and the
@@ -10093,10 +10104,10 @@ def _subdivide_faces(edges, plane, by_ent=None):
                         continue
                     pieces = 0
                     for piece in sp.Modified(wr):
-                        eid_of[piece.TShape()] = eid
+                        eid_of.setdefault(piece.TShape(), set()).add(eid)
                         pieces += 1
                     if not pieces:
-                        eid_of[wr.TShape()] = eid
+                        eid_of.setdefault(wr.TShape(), set()).add(eid)
         except Exception:
             eid_of = {}
 
@@ -10111,10 +10122,10 @@ def _subdivide_faces(edges, plane, by_ent=None):
                 return None
             for ed in boundary:
                 wr = _wrapped_or_none(ed)
-                eid = eid_of.get(wr.TShape()) if wr is not None else None
-                if eid is None:
+                eids = eid_of.get(wr.TShape()) if wr is not None else None
+                if not eids:
                     return None
-                got.add(eid)
+                got.update(eids)
             return frozenset(got)
 
         bx0, bx1 = cx - w / 2, cx + w / 2
