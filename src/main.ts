@@ -731,6 +731,10 @@ overlay.sketchVisible = isSketchVisible;
 // cached `plane` says (document/planeOf) — otherwise the curves sit at the old
 // height while the cut they drive lands at the new one.
 overlay.resolvedPlanes = () => store.buildState.result?.planes;
+// A region fill that changes colour has to be drawn: the viewport renders on
+// demand and most of these paths (area click, Esc, sketch mode, extrude) never
+// touch it otherwise, so the highlight used to wait for the next mouse move.
+overlay.onRepaintNeeded = () => viewport.requestRender();
 tree.isSketchVisible = isSketchVisible;
 tree.onToggleSketch = (id) => {
   store.setSketchVisibility(id, !isSketchVisible(id));

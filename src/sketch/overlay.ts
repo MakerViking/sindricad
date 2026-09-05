@@ -227,6 +227,15 @@ export class SketchOverlay {
    *  cached plane, which is what a document with no anchor wants anyway. */
   resolvedPlanes: () => Record<string, PlaneDef> | undefined = () => undefined;
 
+  /** Called whenever a region fill changes colour. The viewport draws ON DEMAND,
+   *  and the overlay holds no reference to it, so a selection made from a path
+   *  that doesn't otherwise touch the viewport (the model-view area click, Esc,
+   *  sketch mode's area click, the extrude tool's toggles) recoloured a mesh
+   *  nobody ever drew — the highlight only appeared on the next mouse move,
+   *  because pointermove requests a frame unconditionally. Injected the same way
+   *  as sketchVisible; the app points it at viewport.requestRender(). */
+  onRepaintNeeded: () => void = () => {};
+
   /** Rebuild committed sketch curves + region fills from the document. */
   update(doc: CadDocument, hiddenSketchId: string | null = null) {
     const resolved = this.resolvedPlanes();
@@ -549,6 +558,10 @@ export class SketchOverlay {
     for (const wr of [...this.regions, ...this.activeRegions]) {
       if (wr.fill) wr.fill.material = this.fillMaterial(wr);
     }
+    // Something on screen just changed colour. Safe to ask for a frame from
+    // here: recolorFills is never reached from inside the render loop (only
+    // onZoomScale is, and that path never lands here).
+    this.onRepaintNeeded();
   }
 
   /** The committed sketch curve nearest the cursor, within `maxPx` SCREEN pixels
