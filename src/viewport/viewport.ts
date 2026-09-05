@@ -30,6 +30,7 @@ import {
   type EdgeRef,
 } from "./render";
 import { FpsMeter } from "./fpsMeter";
+import { ndcToRect } from "./overlayHost";
 import { sceneStats } from "../diagnostics/sceneStats";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
 import { Picker, type Hit, type EdgeHit } from "./picking";
@@ -2153,14 +2154,28 @@ export class Viewport {
   }
 
   private projScratch = new THREE.Vector3();
+  /** the shared core: a world point in pixels measured from the canvas's own
+   *  top-left corner. Both public projections go through it so they can never
+   *  drift apart. */
+  private projectInRect(world: THREE.Vector3, rect: DOMRect): { x: number; y: number } {
+    return ndcToRect(this.projScratch.copy(world).project(this.rig.active), rect);
+  }
+
   /** project a world point to screen pixels (client coords) */
   projectToScreen(world: THREE.Vector3): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
-    const v = this.projScratch.copy(world).project(this.rig.active);
-    return {
-      x: (v.x * 0.5 + 0.5) * rect.width + rect.left,
-      y: (-v.y * 0.5 + 0.5) * rect.height + rect.top,
-    };
+    const p = this.projectInRect(world, rect);
+    return { x: p.x + rect.left, y: p.y + rect.top };
+  }
+
+  /** project a world point for an overlay mounted in #viewport-overlay: pixels
+   *  LOCAL to the canvas, plus the canvas size so the caller can tell whether
+   *  the point still falls on it. projectToScreen's client coords would place
+   *  such a child relative to the window, i.e. offset by the panel widths. */
+  projectToOverlay(world: THREE.Vector3): { x: number; y: number; width: number; height: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    const p = this.projectInRect(world, rect);
+    return { x: p.x, y: p.y, width: rect.width, height: rect.height };
   }
 
   /** unproject screen (client) coords onto a plane; null if no hit */

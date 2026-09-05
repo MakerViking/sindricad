@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { camHash } from "../viewport/camHash";
+import { overlayHost, outsideRect } from "../viewport/overlayHost";
 import type { SketchPlane } from "./plane";
 import { diagnosisOf, type ConstraintGlyph } from "./glyphs";
 
@@ -33,7 +34,7 @@ export class SketchGlyphs {
   constructor(private viewport: Viewport) {
     this.root = document.createElement("div");
     this.root.className = "sketch-glyphs";
-    document.body.appendChild(this.root);
+    overlayHost().appendChild(this.root);
   }
 
   show(glyphs: ConstraintGlyph[], plane: SketchPlane, conflicts: Set<number>, over: Set<number>) {
@@ -105,8 +106,16 @@ export class SketchGlyphs {
     this.lastCamHash = hash;
     for (const g of this.items) {
       this.plane.to3D(g.pos.x, g.pos.y, this.scratch);
-      const s = this.viewport.projectToScreen(this.scratch);
-      g.el.style.transform = `translate(${s.x}px, ${s.y}px) translate(-50%, -50%)`;
+      const p = this.viewport.projectToOverlay(this.scratch);
+      // Same rule as SketchDimensions: a glyph whose anchor has left the canvas
+      // is not drawn at all. Clipping alone would leave half a badge that still
+      // deletes a constraint when the click was aimed at the panel behind it.
+      if (outsideRect(p)) {
+        g.el.style.visibility = "hidden";
+        continue;
+      }
+      g.el.style.visibility = "";
+      g.el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -50%)`;
     }
   };
 }

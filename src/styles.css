@@ -870,6 +870,21 @@ body {
   height: 100%;
 }
 
+/* Clipping host for the projected overlays (sketch dimensions, constraint
+   glyphs). They are positioned from world points, so an anchor that leaves the
+   canvas used to paint them over the ribbon and the side panels — clickable,
+   which stole the click from the panel underneath. The clip lives on this
+   layer rather than on #viewport itself, because overflow there would also cut
+   off the sketch palette's shadow and anything else anchored to the viewport.
+   No z-index of its own on purpose: the layers inside keep stacking against
+   the rest of the viewport chrome (palette 20, viewcontrols 15). */
+#viewport-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 /* ---- floating view-control pill cluster (bottom-left of the viewport) ---- */
 #viewcontrols {
   position: absolute;
@@ -1850,11 +1865,14 @@ button.finish:hover {
 }
 
 /* ---- editable in-canvas sketch dimensions ---- */
+/* Mounted in #viewport-overlay, so `absolute` (a `fixed` child would escape
+   the clip) and a z-index BELOW the in-viewport chrome — at 150 the badges
+   also painted over the sketch palette. Above .sketch-glyphs (5). */
 .sketch-dims {
-  position: fixed;
+  position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 150;
+  z-index: 6;
 }
 .sketch-dim {
   position: absolute;

@@ -37,6 +37,10 @@
         <aside id="browser"></aside>
         <div id="viewport">
           <canvas id="canvas"></canvas>
+          <!-- Clipping host for overlays positioned by projecting world points
+               onto the canvas. Anything mounted here is cut off at the viewport
+               edge instead of floating over the panels next door. -->
+          <div id="viewport-overlay"></div>
           <aside id="palette" class="palette hidden"></aside>
           <div id="prompt" class="prompt hidden"></div>
           <div id="viewcontrols">
