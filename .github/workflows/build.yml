@@ -719,6 +719,17 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/sketch_on_face_e2e.cjs
 
+      # Field report 9ee3fb35. The unit test pins the selection function; this is
+      # the only oracle for the seam — that the repaint actually re-runs when the
+      # marker moves, and that its output reaches viewport.datumQuads, the array
+      # the pick raycasts. It asserts on the built model too, so a run where the
+      # rebuild did not follow the marker cannot pass by accident.
+      - name: Rollback hides the datum plane end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/rollback_datum_e2e.cjs
+
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,
       # which happens during module evaluation, long before geometry connects.

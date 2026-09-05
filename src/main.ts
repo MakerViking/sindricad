@@ -42,7 +42,6 @@ import { FEATURE_META } from "./ui/featureMeta";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
 import { setTextBackend } from "./sketch/textCache";
-import { SketchPlane } from "./sketch/plane";
 import { solveSketch, initSolver } from "./sketch/solver";
 import { ExtrudeTool } from "./features/extrudeTool";
 import { EdgeFeatureTool } from "./features/edgeFeatureTool";
@@ -57,7 +56,7 @@ import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
 import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStarters";
 import { repairableDiagFor } from "./features/repickReference";
-import { planeOf } from "./document/planeOf";
+import { planeOf, activeDatumPlanes, datumPlaneDef as datumPlaneDefOf } from "./document/planeOf";
 import { createContextMenus } from "./ui/contextMenus";
 import { createPanels } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
@@ -638,23 +637,10 @@ const starters = createFeatureStarters({
   setPlanePick: (v) => { planePick = v; },
 });
 
-/** A datum plane's world placement (source spec + offset along its normal) as a
- *  PlaneDef — lets "Sketch on plane" / "Offset plane" work straight off the quad. */
+/** A datum plane's world placement, against the LAST build's resolved planes.
+ *  The rule itself lives in document/planeOf so it is testable off main.ts. */
 function datumPlaneDef(f: Extract<Feature, { type: "datumPlane" }>): PlaneDef {
-  // A face-anchored datum (GH #52) is re-derived by the sidecar every rebuild
-  // and comes back in `planes` as its FINAL placement — source face plus the
-  // offset already applied — so use it verbatim; re-applying `offset` here would
-  // double it. Without this the quad, "Sketch on plane" and "Offset plane" all
-  // draw and bake the pre-edit position while the geometry sits at the new one.
-  const resolved = store.buildState.result?.planes?.[f.id];
-  if (resolved) return resolved;
-  const sp = new SketchPlane(f.plane);
-  const off = f.offset ?? 0;
-  return {
-    origin: [sp.origin.x + sp.n.x * off, sp.origin.y + sp.n.y * off, sp.origin.z + sp.n.z * off],
-    normal: [sp.n.x, sp.n.y, sp.n.z],
-    xdir: [sp.u.x, sp.u.y, sp.u.z],
-  };
+  return datumPlaneDefOf(f, store.buildState.result?.planes);
 }
 
 const menus = createContextMenus({
@@ -1013,16 +999,17 @@ store.onBuild((s) => {
 
 // reflect the document's datum/construction planes as selectable quads in 3D.
 // Resolved client-side (source plane + offset along its normal) so no rebuild is
-// needed just to move/show a plane.
+// needed just to move/show a plane — but only for the planes the model actually
+// HAS right now (timeline marker, suppression), which is what activeDatumPlanes
+// decides. Drawing them all leaves a plane the rebuild never made on screen and
+// in the pick set (report 9ee3fb35).
 function syncDatumPlanes() {
-  const planes = store.document.features
-    .filter((f): f is Extract<Feature, { type: "datumPlane" }> => f.type === "datumPlane")
-    .filter((f) => store.isPlaneVisible(f.id)) // hidden planes: not drawn, not pickable
-    .map((f) => {
-      const def = datumPlaneDef(f); // one formula for quad, sketch and offset targets
-      return { id: f.id, origin: def.origin, normal: def.normal };
-    });
-  viewport.setDatumPlanes(planes);
+  viewport.setDatumPlanes(activeDatumPlanes(store.document.features, {
+    rollbackIndex: store.rollbackIndex,
+    isSuppressed: (id) => store.isSuppressed(id),
+    isVisible: (id) => store.isPlaneVisible(id),
+    resolvedPlanes: store.buildState.result?.planes,
+  }));
   viewport.highlightDatum(selectedFeature);
 }
 
