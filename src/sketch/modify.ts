@@ -3,10 +3,13 @@
 
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
+import type { SketchConstraint } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
+import { dimRefPoints } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
+import { translated } from "./pattern";
 import { coincKey } from "./sketchSolve";
 import {
   segIntersect,
@@ -23,6 +26,180 @@ const v = (x: number, y: number) => new THREE.Vector2(x, y);
 /** The one guard toast for projected (linked, fixed) reference geometry — every
  *  modify/transform/constraint seam that refuses to touch it shows this. */
 export const PROJECTED_FIXED_MSG = "Projected geometry is fixed — Break Link to edit it";
+
+/** The one guard toast for a point a user `fix` constraint pins. Lives here, not
+ *  inlined at its call sites: the solver-drag path and the body-drag/transform
+ *  paths refuse the same thing and must say the same words. */
+export const FIXED_POINT_MSG = "That point is fixed — delete its Fix constraint to move it";
+
+/** The entities a `fix` constraint pins. A `fix` names an entity plus a point
+ *  index, and every point it can resolve to belongs to that entity, so matching
+ *  on the entity id is exact — no point math needed. */
+export const fixPinnedIds = (cons: readonly SketchConstraint[]): Set<string> =>
+  new Set(cons.flatMap((c) => (c.type === "fix" ? [c.e] : [])));
+
+/** WHERE each `fix` pins, as coincKey buckets — the same bucket the solver
+ *  merges positions into, so "is this endpoint the pinned one?" is asked in the
+ *  solver's own terms rather than with a private tolerance. */
+export function fixPinnedKeys(
+  ents: readonly ResolvedEntity[],
+  cons: readonly SketchConstraint[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const c of cons) {
+    if (c.type !== "fix") continue;
+    const e = ents.find((x) => x.id === c.e);
+    if (!e) continue;
+    // circles and sketch points expose their single point at ANY index, which is
+    // how sketchSolve's dimPoint resolves them; everything else is by index.
+    const pos = e.type === "circle" || e.type === "point"
+      ? v(e.x, e.y)
+      : dimRefPoints(e).find((r) => r.p === c.p)?.pos;
+    if (pos) out.add(coincKey(pos.x, pos.y));
+  }
+  return out;
+}
+
+/** The moved entity's attachment points: the positions where neighbours may
+ *  coincide, and — during a drag — the positions to hold still while the solver
+ *  re-satisfies everything around them. */
+export function attachmentPoints(e: ResolvedEntity): THREE.Vector2[] {
+  if (e.type === "line" || e.type === "arc") return [v(e.x1, e.y1), v(e.x2, e.y2)];
+  if (e.type === "rectangle") return rectCorners(e.x, e.y, e.width, e.height).map((q) => q.clone());
+  if (e.type === "spline") {
+    const a = e.points[0], b = e.points[e.points.length - 1];
+    return a && b ? [v(a.x, a.y), v(b.x, b.y)] : [];
+  }
+  if (e.type === "circle" || e.type === "point") return [v(e.x, e.y)];
+  return [];
+}
+
+/** Would a body drag of ents[idx] move a point a `fix` pins?
+ *
+ *  Two ways it can, and the second is why this is not just an id test: the
+ *  dragged entity itself is pinned, or it shares a corner with a neighbour whose
+ *  endpoint is pinned and which the drag would therefore carry along. Dropping
+ *  only that one neighbour mutator would silently TEAR the joint instead —
+ *  merged-by-position points have nothing pulling them back together — so the
+ *  whole gesture is refused. */
+export function bodyDragBlocked(
+  ents: readonly ResolvedEntity[],
+  idx: number,
+  cons: readonly SketchConstraint[],
+): boolean {
+  const ent = ents[idx];
+  if (!ent) return true;
+  const pinnedIds = fixPinnedIds(cons);
+  if (pinnedIds.size === 0) return false;
+  if (pinnedIds.has(ent.id)) return true;
+  const pinnedAt = fixPinnedKeys(ents, cons);
+  if (pinnedAt.size === 0) return false;
+  return attachmentPoints(ent).some((q) => pinnedAt.has(coincKey(q.x, q.y)));
+}
+
+/** ONE frame of the select tool's whole-entity body drag: the grabbed entity
+ *  translated by (dx,dy), plus every OTHER entity's endpoint that coincides with
+ *  one of its attachment points carried along with it. Returns null when the
+ *  gesture is refused (see bodyDragBlocked).
+ *
+ *  Neighbour attachment is decided with `coincKey`, the same position merge the
+ *  solver does, so "rides along during the drag" and "one merged solver point in
+ *  the solve" agree exactly. Rectangles and circles are never stretched (their
+ *  shape cannot follow a single corner); an arc's through-point is deliberately
+ *  left alone, as the per-frame solve is what re-forms the arc.
+ *
+ *  Pure, and returning a fresh list rather than mutating in place, because the
+ *  drag now hands the result to the solver every frame and the solver hands back
+ *  new objects — a set of closures captured once at press time would be writing
+ *  into entities the document no longer holds. */
+export function bodyDragFrame(
+  ents: readonly ResolvedEntity[],
+  idx: number,
+  dx: number,
+  dy: number,
+  cons: readonly SketchConstraint[],
+): ResolvedEntity[] | null {
+  const ent = ents[idx];
+  if (!ent || bodyDragBlocked(ents, idx, cons)) return null;
+  const keys = new Set(attachmentPoints(ent).map((q) => coincKey(q.x, q.y)));
+  const near = (x: number, y: number) => keys.has(coincKey(x, y));
+  return ents.map((e, i) => {
+    if (i === idx) return translated(e, dx, dy, e.id);
+    if (e.type === "line" || e.type === "arc") {
+      const s = near(e.x1, e.y1), t = near(e.x2, e.y2);
+      if (!s && !t) return e;
+      return {
+        ...e,
+        ...(s ? { x1: e.x1 + dx, y1: e.y1 + dy } : {}),
+        ...(t ? { x2: e.x2 + dx, y2: e.y2 + dy } : {}),
+      };
+    }
+    if (e.type === "spline") {
+      const last = e.points.length - 1;
+      const hit = [0, last].filter((k) => { const q = e.points[k]; return !!q && near(q.x, q.y); });
+      if (!hit.length) return e;
+      return { ...e, points: e.points.map((q, k) => (hit.includes(k) ? { x: q.x + dx, y: q.y + dy } : q)) };
+    }
+    if (e.type === "point" && near(e.x, e.y)) return { ...e, x: e.x + dx, y: e.y + dy };
+    return e;
+  });
+}
+
+/** The nearest solver-controlled point (line/arc endpoint, circle or arc centre,
+ *  rectangle corner, spline fit point) within `tol` of p — the select tool's
+ *  drag handles. Rigid shapes (polygon/slot) are intentionally excluded: they
+ *  don't expand to solver points.
+ *
+ *  The ORIGIN offers no handles. It is pinned, so a drag started on it is
+ *  refused and nothing happens — but starting one still consumes the click, so
+ *  the origin could not be SELECTED either ("it highlights but I can't select
+ *  it": the click was spent on a drag that could never move). */
+export function pickDragPoint(
+  ents: readonly ResolvedEntity[],
+  p: { x: number; y: number },
+  tol: number,
+): { x: number; y: number; idx: number } | null {
+  let best: { x: number; y: number; idx: number } | null = null;
+  let bestD = tol * tol;
+  let cur = -1;
+  const d2 = (x: number, y: number) => (x - p.x) * (x - p.x) + (y - p.y) * (y - p.y);
+  // ties go to the LAST candidate, which is the historical behaviour
+  const consider = (x: number, y: number) => {
+    const d = d2(x, y);
+    if (d <= bestD) { bestD = d; best = { x, y, idx: cur }; }
+  };
+  // ...except an arc's CENTRE, which must lose them: a small fillet's centre sits
+  // inside pick tolerance of its own tangent points, and stealing that click
+  // would make the endpoints of every fillet arc undraggable.
+  const considerStrict = (x: number, y: number) => {
+    const d = d2(x, y);
+    if (d < bestD) { bestD = d; best = { x, y, idx: cur }; }
+  };
+  ents.forEach((e, i) => {
+    cur = i;
+    if (isOriginGeometry(e.id)) return;
+    if (e.type === "line") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
+    else if (e.type === "circle") consider(e.x, e.y);
+    else if (e.type === "arc") {
+      consider(e.x1, e.y1);
+      consider(e.x2, e.y2);
+      // GH report 41dc3246: "I can't grab the arc's centre". The solver side was
+      // always there (the centre is a real, non-mergeable solver point and the
+      // drag pin accepts it) — only the handle was missing. dimRefPoints is THE
+      // enumeration of an entity's reference points, arc centre included at p:2.
+      const cc = dimRefPoints(e).find((r) => r.p === 2);
+      if (cc) considerStrict(cc.pos.x, cc.pos.y);
+    }
+    else if (e.type === "spline") for (const q of e.points) consider(q.x, q.y);
+    else if (e.type === "point") consider(e.x, e.y);
+    else if (e.type === "rectangle") {
+      const hw = e.width / 2, hh = e.height / 2;
+      consider(e.x - hw, e.y - hh); consider(e.x + hw, e.y - hh);
+      consider(e.x + hw, e.y + hh); consider(e.x - hw, e.y + hh);
+    }
+  });
+  return best;
+}
 
 /** Break Link (Fusion): convert the given projected entities to native
  *  geometry KEEPING their ids, so attached constraints/dims stay valid — and
@@ -292,13 +469,22 @@ export function trimEntity(
 /**
  * Fillet the corner where two line entities meet: shorten both to the tangent
  * points and insert a tangent arc of the given radius. Returns null if it can't.
+ *
+ * The `constraints` half is what makes the radius SURVIVE. An arc carries no
+ * automatic badge dimension (unlike a circle, which always shows a diameter), so
+ * a radius label renders only from an explicit `radius` constraint — without one
+ * the number the user typed existed nowhere afterwards: not on screen, not
+ * editable, and free for the next solve to change (GH report 41dc3246). The two
+ * tangencies go with it because they are what the fillet MEANS; with them the
+ * arc slides along the sides when one is dragged instead of being resized by it.
+ * The caller decides whether they land — see sketchMode's trial machinery.
  */
 export function filletCorner(
   ents: ResolvedEntity[],
   iA: number,
   iB: number,
   radius: number,
-): ResolvedEntity[] | null {
+): { entities: ResolvedEntity[]; constraints: SketchConstraint[] } | null {
   const A = ents[iA], B = ents[iB];
   if (A?.type !== "line" || B?.type !== "line") return null;
   const a1 = v(A.x1, A.y1), a2 = v(A.x2, A.y2);
@@ -332,7 +518,14 @@ export function filletCorner(
   const out = ents.map((o, i) => (i === iA ? newA : i === iB ? newB : o));
   out[iB] = newB;
   out.push(arc);
-  return out;
+  return {
+    entities: out,
+    constraints: [
+      { type: "tangent2", a: newA.id, b: arc.id },
+      { type: "tangent2", a: newB.id, b: arc.id },
+      { type: "radius", e: arc.id, value: radius },
+    ],
+  };
 }
 
 /** Signed offset of a cursor position from an entity, in exactly the terms

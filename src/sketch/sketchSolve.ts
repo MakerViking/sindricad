@@ -105,6 +105,7 @@ export async function compileAndSolve(
   constraints: SketchConstraint[],
   drag?: { fromX: number; fromY: number; toX: number; toY: number },
   bias?: { moves: string[] },
+  pins?: { x: number; y: number }[],
 ): Promise<SolvePass> {
   const points: SPoint[] = [];
   const pointByKey = new Map<string, string>();
@@ -808,6 +809,32 @@ export async function compileAndSolve(
   if (anchors.length > MAX_BIAS_ANCHORS) {
     anchors.length = 0;
     radiusAnchors.length = 0;
+  }
+  // --- caller-supplied position pins ----------------------------------------
+  // The BODY drag's device. It has no grabbed solver point to hand `drag`: it
+  // translates a whole entity (and the neighbour endpoints merged onto its
+  // corners) itself, then asks the solver to re-satisfy everything AROUND that
+  // — which without a pin it does by sliding the entity back off the cursor,
+  // because an under-constrained profile is free to move the dragged side
+  // instead of the fillets attached to it (measured: 3.6-4.0 mm of a 4.24 mm
+  // drag). Soft `anchors`, not `fixed`, so a real constraint that must move the
+  // corner still wins.
+  //
+  // Keyed by POSITION, in coincKey's bucket: a caller knows where it put
+  // geometry, not what the compiler called the point. Every point in that bucket
+  // is held, which is exactly what "this corner stays here" means when several
+  // primitives share it.
+  //
+  // Deliberately AFTER the bias budget above, so a pin can never be dropped by
+  // an anchor allowance it did not spend: a drag pins at most a rectangle's four
+  // corners, and nothing pairs a drag frame with a bias.
+  if (pins?.length) {
+    const wanted = new Set(pins.map((q) => key(q.x, q.y)));
+    const taken = new Set(anchors.map((a) => a.point));
+    for (const p of points) {
+      if (!wanted.has(key(p.x, p.y)) || fixedPts.has(p.id) || taken.has(p.id)) continue;
+      anchors.push({ point: p.id, x: p.x, y: p.y });
+    }
   }
   const biased = anchors.length > 0 || radiusAnchors.length > 0;
 

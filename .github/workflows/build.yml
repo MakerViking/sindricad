@@ -790,6 +790,14 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/sketch_label_clip_e2e.cjs
+      # The select tool's body drag, mid-gesture. Reports d0b008cb / c0bf7020 /
+      # 41dc3246 are all observable only with the button STILL DOWN: release has
+      # always re-solved, so every one of them looks fixed the instant you let go.
+      - name: Sketch body-drag end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_body_drag_e2e.cjs
 
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,
