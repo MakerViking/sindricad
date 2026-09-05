@@ -274,8 +274,10 @@ const DOC = {
 
     // (1) With no editor open, how far in does this badge's anchor leave the
     //     canvas? That the badge is CULLED is the proof that it did.
+    // Up to 40 notches: the CI runner's window and font metrics put the badge
+    // further from the edge than this box does, and 10 was not enough there.
     let notches = 0;
-    for (let i = 1; i <= 10; i++) {
+    for (let i = 1; i <= 40; i++) {
       await zoomAt(tagged.mid);
       notches = i;
       if ((await watched())?.hidden) break;

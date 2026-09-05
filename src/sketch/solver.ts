@@ -134,23 +134,44 @@ export interface SolveResult {
   partiallyRedundant: string[]; // constraints that partially duplicate others
 }
 
-let wrapperPromise: Promise<GcsWrapper> | null = null;
-function getWrapper(): Promise<GcsWrapper> {
-  if (!wrapperPromise) {
-    wrapperPromise = (async () => {
-      const mod = await init_planegcs_module({ locateFile: () => wasmUrl });
-      return new GcsWrapper(new mod.GcsSystem());
-    })().catch((err) => {
+type PlanegcsModule = Awaited<ReturnType<typeof init_planegcs_module>>;
+
+// The WASM module is instantiated once per app lifetime (that is the expensive
+// part). The GcsSystem inside it is NOT shared: every solve gets a fresh one
+// and deletes it afterwards. A shared system inherited state between solves
+// even across clear_data() — src/sketch/solveReproducibility.test.ts, now
+// deleted, pinned that an identical sketch solved twice in a row came back
+// with two different rectangles once an unrelated solve had run before it. The
+// retry pass in sketchSolve.ts made that bite on every call (three solves per
+// compileAndSolve), so a "cold" repeat was no longer cold, and the same test
+// then failed on the CI runner while passing here. A system per solve costs a
+// small embind allocation, nothing measurable next to the solve itself.
+let modulePromise: Promise<PlanegcsModule> | null = null;
+function getModule(): Promise<PlanegcsModule> {
+  if (!modulePromise) {
+    const pending: Promise<PlanegcsModule> = init_planegcs_module({ locateFile: () => wasmUrl }).catch((err: unknown) => {
       // Do NOT keep a rejected promise in the cache. It would poison every
       // later solve with the same stale failure and never retry — and a
       // failure here can be transient (a fetch that did not land, an
       // instantiate that raced startup), so a retry can legitimately succeed
       // without restarting the app.
-      wrapperPromise = null;
+      modulePromise = null;
       throw new SolverUnavailable(err);
     });
+    modulePromise = pending;
+    return pending;
   }
-  return wrapperPromise;
+  return modulePromise;
+}
+
+/** A fresh solver over the shared module. The caller MUST destroy it. */
+async function freshWrapper(): Promise<GcsWrapper> {
+  const mod = await getModule();
+  try {
+    return new GcsWrapper(new mod.GcsSystem());
+  } catch (err) {
+    throw new SolverUnavailable(err);
+  }
 }
 
 /** The constraint solver's WASM could not be instantiated.
@@ -195,7 +216,7 @@ export class SolverUnavailable extends Error {
  *  point of USE, where it can say what is actually unavailable. */
 export async function initSolver(): Promise<boolean> {
   try {
-    await getWrapper();
+    await getModule();
     return true;
   } catch {
     return false;
@@ -203,8 +224,15 @@ export async function initSolver(): Promise<boolean> {
 }
 
 export async function solveSketch(input: SolveInput): Promise<SolveResult> {
-  const w = await getWrapper();
-  w.clear_data();
+  const w = await freshWrapper();
+  try {
+    return solveWith(w, input);
+  } finally {
+    w.destroy_gcs_module();
+  }
+}
+
+function solveWith(w: GcsWrapper, input: SolveInput): SolveResult {
 
   const prims: any[] = [];
   for (const p of input.points)
