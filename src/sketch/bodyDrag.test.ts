@@ -200,6 +200,10 @@ describe("Fix pins geometry against the body drag (d0b008cb)", () => {
     const body = sketchModeSrc.slice(tf, tf + 1600);
     expect(body).toContain("fixPinnedIds(");
     expect(body).toContain("FIXED_POINT_MSG");
+    // the WHOLE gesture, not just the pinned entities: transforming the rest of
+    // the selection around a held entity tears every joint they share, which is
+    // what bodyDragBlocked refuses a whole gesture to avoid
+    expect(body).toContain("{ toast(FIXED_POINT_MSG); return; }");
   });
 });
 
@@ -254,8 +258,12 @@ describe("a body-drag frame is solved with the dragged entity pinned (c0bf7020)"
     expect(body).toContain("bodyDragFrame(");
     expect(body).toContain("this.queueBodyDrag(");
     // ...and the pump's drag branch must not bail on a body drag (dragFrom is
-    // null throughout one), or the solve is queued and never runs.
-    expect(sketchModeSrc).toContain("if (!this.active || (!this.dragFrom && !this.moveDrag)) break;");
+    // null throughout one), or the solve is queued and never runs. It must also
+    // CONTINUE rather than break when it does discard a result: endDrag's settle
+    // sets solveDirty while the last frame solve is in flight, and breaking out
+    // of the loop leaves that settle queued with nothing to consume it (the
+    // release-lands-mid-solve regression; e2e measures the effect).
+    expect(sketchModeSrc).toContain("if (!this.active || (forBody ? !this.moveDrag : !this.dragFrom)) continue;");
     // one undo step per gesture, not per frame: the per-frame solve must not go
     // through requestSolve (which banks)
     expect(body).not.toContain("this.requestSolve()");

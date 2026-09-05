@@ -3356,23 +3356,25 @@ export class SketchMode {
    *  the selection: it re-selects the transform's output, so a rotate that explodes
    *  a rectangle into fresh-id lines leaves those lines selected (not a stale id). */
   private transformSelection(map: (e: ResolvedEntity) => ResolvedEntity[]) {
+    // Anything a user `fix` pins refuses the WHOLE transform. Same hole as the
+    // body drag: these tools move geometry without consulting the solver, and
+    // `fix` is positionless, so the settle afterwards re-pins the point wherever
+    // the transform left it and reports success (report d0b008cb). Refused
+    // whole, not per-entity: moving the rest of the selection around a held
+    // entity tears every joint they share, which is the same reason
+    // bodyDragBlocked refuses a gesture rather than dropping one mutator.
+    const pinned = fixPinnedIds(this.constraints);
+    if (pinned.size && [...this.selected].some((id) => pinned.has(id))) { toast(FIXED_POINT_MSG); return; }
     const next: ResolvedEntity[] = [];
     const sel = new Set<string>();
     // fixed reference geometry: keep it (and its selection) untouched
     const projected = this.warnSelectedProjected();
-    // ...and so is anything a user `fix` pins. Same hole as the body drag: these
-    // tools move geometry without consulting the solver, and `fix` is
-    // positionless, so the settle afterwards re-pins the point wherever the
-    // transform left it and reports success (report d0b008cb).
-    const pinned = fixPinnedIds(this.constraints);
-    const held = new Set([...this.entities].filter((e) => this.selected.has(e.id) && pinned.has(e.id)).map((e) => e.id));
-    if (held.size) toast(FIXED_POINT_MSG);
     for (const e of this.entities) {
-      if (this.selected.has(e.id) && !projected.has(e.id) && !held.has(e.id)) {
+      if (this.selected.has(e.id) && !projected.has(e.id)) {
         for (const m of map(e)) { next.push(m); sel.add(m.id); }
       } else {
         next.push(e);
-        if (projected.has(e.id) || held.has(e.id)) sel.add(e.id);
+        if (projected.has(e.id)) sel.add(e.id);
       }
     }
     this.entities = next;
@@ -4007,15 +4009,26 @@ export class SketchMode {
           // agreement, with the entity itself held where the cursor put it. Its
           // pins are read HERE so they are the entity's current corners — more
           // pointermove frames may have landed while the previous solve ran.
+          const forBody = this.pendingPinIdx !== null;
           const pinEnt = this.pendingPinIdx === null ? undefined : this.entities[this.pendingPinIdx];
           this.pendingDrag = null;
           this.pendingPinIdx = null;
           const pins = pinEnt ? attachmentPoints(pinEnt).map((q) => ({ x: q.x, y: q.y })) : undefined;
           const r = await compileAndSolve(this.entities, this.constraints, d ?? undefined, undefined, pins);
-          // drag ended/cancelled mid-solve. BOTH kinds: `dragFrom` is null for
-          // the whole of a body drag, so testing it alone discarded every body
-          // frame's result.
-          if (!this.active || (!this.dragFrom && !this.moveDrag)) break;
+          // The gesture this result belongs to ended, was cancelled, or was
+          // replaced mid-solve: drop the result (and its toast) rather than
+          // apply it to a gesture that never asked for it. Asked per KIND —
+          // `dragFrom` is null for the whole of a body drag, so testing it alone
+          // discarded every body frame's result, and testing either alone lets a
+          // stale POINT-drag result land on a body drag that armed while it ran.
+          //
+          // `continue`, never `break`: endDrag's settle sets `solveDirty` while
+          // this solve is still in flight, and pump is only ever kicked from
+          // requestSolve/queueDrag/queueBodyDrag — so leaving the loop here left
+          // the settle queued with nothing to consume it and the sketch stayed
+          // torn AFTER the button came up (78.6 deg on the reporter's profile).
+          // The loop condition re-reads solveDirty and runs it.
+          if (!this.active || (forBody ? !this.moveDrag : !this.dragFrom)) continue;
           this.conflict = r.conflicts.length > 0;
           this.conflictIdx = parseConflictIdx(r.conflicts);
           this.overIdx = parseConflictIdx(r.overDefined);
@@ -4135,8 +4148,15 @@ export class SketchMode {
    *  with the dragged entity held where the translate just put it. Through the
    *  same in-flight lock as queueDrag, and deliberately NOT through
    *  requestSolve() — that banks an undo step, and a drag is ONE step (banked by
-   *  endDrag), not one per pointermove. */
+   *  endDrag), not one per pointermove.
+   *
+   *  A body with no attachment points (text, polygon, slot) is skipped: it owns
+   *  no solver point, so nothing rides along with it and nothing can be pinned —
+   *  the solve would re-satisfy constraints that never went out of agreement, at
+   *  the price of a full solve on every pointermove frame. */
   private queueBodyDrag(idx: number) {
+    const e = this.entities[idx];
+    if (!e || attachmentPoints(e).length === 0) return;
     this.pendingPinIdx = idx;
     void this.pump();
   }

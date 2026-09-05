@@ -17,6 +17,12 @@
 // because release has always re-solved; only a live pointer, held down, can tell
 // the two apart.
 //
+// One check goes the other way, and it exists because solving every frame is
+// what made it possible: the release itself must still settle when it lands
+// while a frame solve is in flight. That gesture is dispatched synchronously
+// inside the page, since playwright's mouse helpers leave a round trip between
+// the last move and the up and the solve lands in that gap.
+//
 // Every gesture asserts that it ARMED, and every press position is checked
 // against the element actually under it. Both exist because the failure mode of
 // a test like this is the vacuous pass: a press that lands on the inspector
@@ -198,6 +204,29 @@ const WORST_TANGENCY = `(() => {
     return { reachable, armed, out };
   };
 
+  /** The same gesture, dispatched SYNCHRONOUSLY inside the page: no await
+   *  anywhere between the last pointermove (which queues a frame solve) and the
+   *  pointerup, so the release is guaranteed to land while that solve is still
+   *  in flight. playwright's own mouse helpers cannot express this — each call
+   *  is a round trip, and the solve settles in the gap. Returns whether the
+   *  press armed, and whether a solve really was in flight at release (a false
+   *  there makes the check below vacuous). */
+  const syncDrag = (from, to) => page.evaluate(([a, b]) => {
+    const s = window.__sindri, sk = s.sketch;
+    const cv = s.viewport.domElement;
+    const ev = (type, p, buttons) => cv.dispatchEvent(new PointerEvent(type, {
+      pointerId: 1, pointerType: "mouse", bubbles: true, cancelable: true,
+      clientX: p.x, clientY: p.y, buttons, button: 0,
+    }));
+    ev("pointerdown", a, 1);
+    const armed = { body: !!sk.moveDrag, point: !!sk.dragFrom };
+    for (let i = 1; i <= 6; i++)
+      ev("pointermove", { x: a.x + ((b.x - a.x) * i) / 6, y: a.y + ((b.y - a.y) * i) / 6 }, 1);
+    const busyAtRelease = !!sk.solveBusy;
+    ev("pointerup", b, 0);
+    return { armed, busyAtRelease };
+  }, [from, to]);
+
   // ===== d0b008cb: a Fix survives a rim grab =============================
   console.log("\n=== a Fix constraint holds against a body drag (d0b008cb) ===");
   await openSketch(FIXED);
@@ -219,6 +248,44 @@ const WORST_TANGENCY = `(() => {
   check(c2 && Math.hypot(c2.x + 45, c2.y) > 5, "...and the UNpinned circle beside it still drags",
     `centre=(${c2 && c2.x.toFixed(3)}, ${c2 && c2.y.toFixed(3)})`);
 
+  // Move/Rotate/Scale have the same hole and get the same answer: the WHOLE
+  // gesture is refused. Both circles are selected and only one is pinned, so
+  // "transform the rest and hold the pinned one" would move c2 — and a
+  // partly-moved selection tears whatever the two shared.
+  console.log("\n--- ...and Move refuses a selection containing a pinned entity ---");
+  await openSketch(FIXED);
+  const sel = await page.evaluate(([a, b]) => {
+    const s = window.__sindri, sk = s.sketch, cv = s.viewport.domElement;
+    const click = (p, shift) => {
+      for (const type of ["pointerdown", "pointerup"])
+        cv.dispatchEvent(new PointerEvent(type, {
+          pointerId: 1, pointerType: "mouse", bubbles: true, cancelable: true,
+          clientX: p.x, clientY: p.y, buttons: type === "pointerdown" ? 1 : 0, button: 0, shiftKey: !!shift,
+        }));
+    };
+    click(a, false);
+    click(b, true); // shift: add to the selection (playwright's own modifiers never reach pointerdown)
+    return [...sk.selected];
+  }, [await screenOf(R, R), await screenOf(-45 + r2, r2)]);
+  check(sel.length === 2 && sel.includes("c1") && sel.includes("c2"),
+    "both circles are selected, one of them pinned", JSON.stringify(sel));
+  await page.evaluate(([a, b]) => {
+    const s = window.__sindri, sk = s.sketch, cv = s.viewport.domElement;
+    sk.setTool("move");
+    for (const p of [a, b]) // Move takes two clicks: base point, then destination
+      cv.dispatchEvent(new PointerEvent("pointerdown", {
+        pointerId: 1, pointerType: "mouse", bubbles: true, cancelable: true,
+        clientX: p.x, clientY: p.y, buttons: 1, button: 0,
+      }));
+  }, [await screenOf(0, -30), await screenOf(30, -30)]);
+  await page.waitForTimeout(800);
+  const [m1, m2] = [await ent("c1"), await ent("c2")];
+  check(m1 && Math.hypot(m1.x, m1.y) < 0.01, "Move left the pinned circle where it was",
+    `centre=(${m1 && m1.x.toFixed(4)}, ${m1 && m1.y.toFixed(4)})`);
+  check(m2 && Math.hypot(m2.x + 45, m2.y) < 0.01, "...and did not move the free one either",
+    `centre=(${m2 && m2.x.toFixed(4)}, ${m2 && m2.y.toFixed(4)})`);
+  await page.evaluate(() => window.__sindri.sketch.setTool("select"));
+
   // ===== c0bf7020: the joints hold DURING the drag ======================
   console.log("\n=== dragging a side keeps its fillets tangent, mid-gesture (c0bf7020) ===");
   await openSketch(PROFILE);
@@ -238,8 +305,39 @@ const WORST_TANGENCY = `(() => {
   const moved = Math.hypot(after.x1 - before.x1, after.y1 - before.y1);
   check(moved > 0.5, "...and the side actually followed the cursor", `moved=${moved.toFixed(3)} mm`);
 
+  // ===== the release must settle even when it lands mid-solve ============
+  // Solving every frame put a solve in flight for the whole gesture, which the
+  // release then has to get past: endDrag's requestSolve only marks the sketch
+  // dirty when one is running, so the in-flight frame's own completion is what
+  // must carry the settle. Discarding that frame's result WITHOUT looping left
+  // the settle queued and never run — the sketch stayed torn after the button
+  // came up, which is the reported symptom moved past the release.
+  console.log("\n=== releasing mid-solve still settles the sketch ===");
+  await openSketch(PROFILE);
+  const rested = await page.evaluate(WORST_TANGENCY);
+  check(rested < 0.1, "the profile starts tangent again", `worst=${rested.toFixed(4)} deg`);
+
+  const e6 = await ent("e6");
+  const mx = (e6.x1 + e6.x2) / 2, my = (e6.y1 + e6.y2) / 2;
+  const fromP = await screenOf(mx, my), toP = await screenOf(mx + 4, my + 4);
+  const reachable = (await onCanvas(fromP)) && (await onCanvas(toP));
+  check(reachable, "the press positions are on the canvas");
+  const sync = await syncDrag(fromP, toP);
+  check(sync.armed.body, "the synchronous gesture armed a body drag", JSON.stringify(sync.armed));
+  check(sync.busyAtRelease, "...and a frame solve really was in flight at the release");
+  await page.waitForTimeout(3000);
+  const settled = await page.evaluate(WORST_TANGENCY);
+  check(settled < 1, "tangent again 3 s AFTER the button came up", `worst=${settled.toFixed(4)} deg`);
+  const pumpState = await page.evaluate(() => {
+    const sk = window.__sindri.sketch;
+    return { solveDirty: !!sk.solveDirty, solveBusy: !!sk.solveBusy };
+  });
+  check(!pumpState.solveDirty && !pumpState.solveBusy, "...with no solve left stuck in the pump",
+    JSON.stringify(pumpState));
+
   // ===== 41dc3246: an arc's centre is grabbable =========================
   console.log("\n=== an arc's centre is a drag handle (41dc3246) ===");
+  await openSketch(PROFILE); // from rest: a torn profile above would move the centre out from under the press
   const arc = await ent("e9");
   const cc = await page.evaluate((a) => {
     const d = 2 * (a.x1 * (a.y2 - a.my) + a.x2 * (a.my - a.y1) + a.mx * (a.y1 - a.y2));
