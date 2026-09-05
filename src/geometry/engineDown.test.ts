@@ -12,6 +12,13 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { Geometry } from "./client";
 import { ENGINE_DOWN, sidecarDeathMessage } from "./sidecarDeath";
 import { EMPTY_DOCUMENT } from "../document/store";
+import { installFakeDocument, byClass, type FakeEl } from "../ui/fakeDom.testkit";
+import { createBugReporter } from "../ui/bugReporter";
+import type { DocumentStore } from "../document/store";
+import type { GeometryBackend } from "./client";
+// The stylesheet is what makes "bottom-right corner" true. Read as text: there
+// is no jsdom here and no layout engine (see chromeLegibility.test.ts:17).
+import css from "../styles.css?raw";
 
 /** A WebSocket that connects to nothing and records every construction, which
  *  is the thing under test: a retry is a NEW socket. */
@@ -141,6 +148,42 @@ describe("sidecarDeathMessage", () => {
     // of the toast is often the only thing a report carries
     expect(m).toContain("OpenBLAS");
     expect(m).toContain("restart SindriCAD");
+    // the sidecar's line ends in a full stop and so does the sentence around it
+    expect(m, "the cause's own full stop doubled up").not.toContain(".).");
+  });
+
+  it("sends the user to a bug button that exists, not to a Help menu item that does not", () => {
+    // THIS is the deliverable: a field report of a dead engine arrives as a
+    // screenshot of this toast, so the one action the sentence names has to be
+    // findable. It named "Help", and the Help menu (src/main.ts) has no
+    // bug-report item — reporting is the floating button below, which
+    // ui/bugReporter.ts is explicitly built to work with the sidecar dead.
+    const m = sidecarDeathMessage({ kind: "startup_failure", cause: "OpenBLAS error: giving up" });
+    expect(m, "the Help menu has no bug-report item").not.toMatch(/\bHelp\b/);
+
+    // The control the sentence names, mounted for real and read back.
+    installFakeDocument();
+    const doc = globalThis as unknown as { document: { body: FakeEl } };
+    // Neither dep is touched until the dialog opens; mounting the button is all
+    // this asks of the reporter.
+    createBugReporter({ store: {} as DocumentStore, geometry: {} as GeometryBackend });
+    const btn = byClass(doc.document.body, "bug-report-btn")[0];
+    expect(btn, "createBugReporter no longer mounts .bug-report-btn").toBeTruthy();
+
+    // It is an icon-only circle, so the word the sentence uses has to match what
+    // the button calls itself in its tooltip and to a screen reader.
+    const name = (btn!.getAttribute("aria-label") ?? btn!.title).toLowerCase();
+    expect(name).toContain("bug");
+    expect(m.toLowerCase()).toContain("bug button");
+
+    // ...and the corner the sentence sends them to is the corner the stylesheet
+    // pins it in. A rule change here silently turns the directions into a lie.
+    const rule = css.slice(css.indexOf(".bug-report-btn {"));
+    const block = rule.slice(0, rule.indexOf("}"));
+    expect(block, ".bug-report-btn is no longer pinned to a corner").toMatch(/position:\s*fixed/);
+    expect(block).toMatch(/bottom:/);
+    expect(block).toMatch(/right:/);
+    expect(m.toLowerCase()).toContain("bottom-right");
   });
 
   it("still says something usable when the cause is empty", () => {

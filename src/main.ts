@@ -140,8 +140,13 @@ if ("__TAURI_INTERNALS__" in window) {
       timeout: 0, // sticky: this ends the session's modelling, it must not scroll away
       action: {
         label: "Try again",
+        // `engineDown` is NOT cleared here. Nothing respawns the sidecar, so
+        // "Try again" is a re-dial that will usually fail, and clearing the flag
+        // put the status line back to "connecting to sidecar…" for the rest of
+        // the session — the exact lie this change removes, and unrecoverable
+        // because the supervisor emits `sidecar:died` only once. It is cleared
+        // below, by an actual connection.
         onClick: () => {
-          engineDown = false;
           if (geometry instanceof Geometry) geometry.resumeReconnect();
         },
       },
@@ -1052,7 +1057,13 @@ geometry.onStatus((connected) => {
   // status line that keeps promising a connection is the same lie the endless
   // reconnect toast was.
   if (!connected) setStatus(engineDown ? ENGINE_DOWN : "connecting to sidecar…", "error");
-  else void store.rebuildNow();
+  else {
+    // A socket that actually opened is the only thing that can retire the
+    // report of a dead engine: after "Try again" the flag stays set until one
+    // does, so the status line is never optimistic on the strength of a click.
+    engineDown = false;
+    void store.rebuildNow();
+  }
 });
 
 const SKETCH_PROMPTS: Record<string, string> = {
