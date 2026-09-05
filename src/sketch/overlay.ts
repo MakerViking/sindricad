@@ -744,9 +744,13 @@ export function curveObjects(
         : color;
     // The origin AXES are reference geometry, not the user's construction lines,
     // and they must not read as something you drew and forgot. Same colour as
-    // the origin point, so the three together read as one datum.
-    const curve = isOriginGeometry(e.id) && !highlight
-      ? polyline(pts, ORIGIN_COLOR)
+    // the origin point, so the three together read as one datum. On an emphasis
+    // pass they draw SOLID in the pass colour: an axis IS selectable (that is
+    // what "make this line collinear with the X axis" needs), and falling
+    // through to constructionLine() made a deliberate selection look like the
+    // axis had gone dotted by itself.
+    const curve = isOriginGeometry(e.id)
+      ? polyline(pts, highlight ? drawColor : ORIGIN_COLOR)
       : !projected && e.construction
         ? constructionLine(pts)
         : polyline(pts, drawColor);

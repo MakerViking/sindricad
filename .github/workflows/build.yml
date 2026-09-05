@@ -719,6 +719,17 @@ jobs:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/sketch_on_face_e2e.cjs
 
+      # Field report d1515ecd, and the only place its seam is real: a dimension
+      # badge on a shape centred on the origin. Chromium fires no `dblclick`
+      # once a pointerdown handler detaches the pressed element, and
+      # `PointerEvent.detail` is 0 on pointerdown — both are browser facts a
+      # unit test cannot show, and both are what made the badge uneditable.
+      - name: Centred-rectangle dimension badge end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/centre_rect_dim_e2e.cjs
+
       # No SC_TOKEN: this one never reaches the sidecar. It breaks getContext
       # before the page loads and asserts on what the user is left looking at,
       # which happens during module evaluation, long before geometry connects.

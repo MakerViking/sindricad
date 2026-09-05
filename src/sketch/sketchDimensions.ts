@@ -15,6 +15,7 @@ import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, staggeredDefaults, type DimField } from "./entityDims";
 import { isOriginGeometry } from "./origin";
+import { stepDoublePress, type PressRecord } from "../input/doublePress";
 import { fmtLength, parseField, displayValue, isPlainNumber } from "../ui/units";
 
 /** format a dim value for display: length in the display unit, angle in degrees;
@@ -113,6 +114,19 @@ export class SketchDimensions {
    *  fires `click` after `pointerup`). Cleared on the next pointerdown, so a
    *  normal click on any label right after a drag still edits. */
   private suppressClick = false;
+  /** The second press of a double-press edits the value, whoever won the first.
+   *  The escape hatch below cannot rely on the browser's own `dblclick` for the
+   *  badges that need it most: a badge whose click geometry claims is rebuilt by
+   *  the host from inside its own pointerdown, and Chromium fires neither
+   *  `click` nor `dblclick` once the pressed element is detached. This lives on
+   *  the instance, not on a label, precisely because the label object does not
+   *  survive that rebuild. See src/input/doublePress.ts. */
+  private lastPress: PressRecord = null;
+  private isDoublePress(e: PointerEvent): boolean {
+    const { next, double } = stepDoublePress(this.lastPress, e);
+    this.lastPress = next;
+    return double;
+  }
 
   constructor(
     private viewport: Viewport,
@@ -211,6 +225,17 @@ export class SketchDimensions {
       // element alive for the contextmenu below; middle-drag stays camera pan.
       if (e.button !== 0) return;
       this.suppressClick = false;
+      // The escape hatch, made real: the SECOND press of a double-press edits,
+      // whoever won the first. Without it a badge that sits on its own geometry
+      // — or, as reported, on an origin axis — loses every single click to the
+      // pick underneath and there is no way back to its value. A reference dim
+      // is read-only, so it gets the placement drag below and no editor.
+      if (this.isDoublePress(e) && !label.driven) {
+        label.suppressEdit = false;
+        this.selectLabel(label);
+        this.beginEdit(label);
+        return;
+      }
       label.suppressEdit = this.onOverlapPick?.(e) ?? false;
       // onOverlapPick rebuilds every label when geometry claims the pick, so
       // `el` may already be detached — never start a drag on top of that.
