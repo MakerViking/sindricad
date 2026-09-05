@@ -187,6 +187,9 @@ store.onParamsApplied = () => sketch.syncParamValues();
 // projection refresh entries for the OPEN sketch bypass the doc (the session
 // owns it) and patch the live entities instead
 store.onProjectionsApplied = (updates) => sketch.syncProjectedCurves(updates);
+// a dimension of the OPEN sketch edited in the inspector goes to the live
+// session too — the doc copy is the one finish() overwrites
+store.onSketchDimEdit = (_sketchId, entityId, field, mm) => sketch.applyDimensionEdit(entityId, field, mm);
 store.onParamSolveIssue = (id) =>
   toast(`Sketch ${id}: dimensions could not be satisfied after the parameter change — geometry left unchanged`);
 // Sidecar owns fonts: glyph outlines arrive async via tessellateText; repaint the

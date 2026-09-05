@@ -33,7 +33,7 @@ import { circumcenter } from "./arc";
 import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
-import { applyDrivingDimsDirect } from "./directDims";
+import { applyDrivingDimsDirect, drivingDimFor } from "./directDims";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
@@ -794,16 +794,26 @@ export class SketchMode {
   private editDimension(index: number, field: DimField, mm: number) {
     const e = this.entities[index];
     if (!e) return;
-    if (e.type === "line" && field === "length") {
-      this.setDrivingDimension({ type: "distance", line: e.id, value: mm });
-      return;
-    }
-    if (e.type === "circle" && field === "diameter") {
-      this.setDrivingDimension({ type: "diameter", circle: e.id, value: mm });
+    const dim = drivingDimFor(e, field, mm);
+    if (dim) {
+      this.setDrivingDimension(dim);
       return;
     }
     entityDims(e).find((d) => d.field === field)?.write(mm);
     this.refreshActive();
+  }
+
+  /** The same edit arriving from the INSPECTOR while this sketch is open
+   *  (injected via store.onSketchDimEdit — the mirror of syncParamValues). The
+   *  session owns an open sketch's entities, so the panel's number has to come
+   *  here instead of to the document copy, which finish() would overwrite.
+   *  Addressed by entity ID: this array can have moved on since enter(). */
+  applyDimensionEdit(entityId: string, field: DimField, mm: number) {
+    if (!this.active) return;
+    const i = this.entities.findIndex((e) => e.id === entityId);
+    if (i < 0) return;
+    this.editDimension(i, field, mm);
+    this.onState?.();
   }
 
   /** Write the driving length/⌀ dimensions straight into the geometry, for when
