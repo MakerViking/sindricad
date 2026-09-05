@@ -196,7 +196,7 @@ export class Viewport {
   private pressPos = { x: 0, y: 0 };
 
   constructor(private canvas: HTMLCanvasElement) {
-    this.scene = createScene(canvas);
+    this.scene = createScene(canvas, () => this.onContextRestored());
     this.progressive = new ProgressiveModel(this.scene.modelGroup, disposeBody);
     this.scene.scene.add(this.datumGroup);
     const rect = canvas.getBoundingClientRect();
@@ -293,6 +293,18 @@ export class Viewport {
       false,
     )[0];
     return hit ? hit.point.clone() : null;
+  }
+
+  /** The GPU handed the context back (scene.ts re-applied the clear colour).
+   *  Nothing else would draw: the loop is render-on-demand and three's
+   *  re-initialisation does not dirty it, so an idle user is left with a blank
+   *  viewport until they think to orbit. resize() re-derives the drawing-buffer
+   *  size and the fat-line resolutions, all of which the new context lost, and
+   *  requestRender() puts a frame on screen without waiting for input. (resize()
+   *  ends in requestRender() today; do not lean on that from here.) */
+  private onContextRestored() {
+    this.resize();
+    this.requestRender();
   }
 
   /** Mark the next few frames dirty so the render loop actually draws them.
