@@ -20,6 +20,7 @@ import {
   ORIGIN_ID, ORIGIN_X_ID, ORIGIN_Y_ID,
   isOriginId, isOriginGeometry, originEntity, originAxisEntities, originGeometry,
 } from "./origin";
+import { pickDragPoint } from "./modify";
 import sketchModeSrc from "./sketchMode.ts?raw";
 import sketchSolveSrc from "./sketchSolve.ts?raw";
 import modifySrc from "./modify.ts?raw";
@@ -207,10 +208,11 @@ describe("the origin is visible reference, not clutter or a dead click", () => {
     // It is pinned, so a drag started on it is refused and nothing moves — but
     // starting one still consumes the click, so it could not be selected either.
     // Reported as "it highlights but I can't select it".
-    const at = sketchModeSrc.indexOf("private pickPoint(");
-    expect(at).toBeGreaterThan(-1);
-    const body = sketchModeSrc.slice(at, at + 900);
-    expect(body).toMatch(/if \(isOriginGeometry\(e\.id\)\) return;/);
+    //
+    // An EFFECT assertion since the handle enumeration became a pure function:
+    // a cursor sitting exactly on the origin, with a generous tolerance that
+    // also reaches both axis endpoints, finds nothing to grab.
+    expect(pickDragPoint(originGeometry(), { x: 0, y: 0 }, 50)).toBeNull();
   });
 
   it("lets an emphasis pass override the datum colour", () => {

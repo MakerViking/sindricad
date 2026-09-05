@@ -23,14 +23,14 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
+import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { circumcenter } from "./arc";
-import { compileAndSolve, coincKey, constraintIndexOf } from "./sketchSolve";
+import { compileAndSolve, constraintIndexOf } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect } from "./directDims";
@@ -38,7 +38,7 @@ import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
-import { detectRegions, rectCorners } from "./region";
+import { detectRegions } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
@@ -204,8 +204,14 @@ export class SketchMode {
   private filletFirst: number | null = null; // first line picked for a sketch fillet
   /** world position of the endpoint a constraint flow is holding, if any */
   private pendingConstraintPoint: THREE.Vector3 | null = null;
-  /** the constraint just added by a tool, on trial until its solve comes back */
-  private trialConstraint: SketchConstraint | null = null;
+  /** What a withdrawn trial says when the tool has nothing more specific. */
+  private static readonly CONSTRAINT_CONFLICT_MSG =
+    "That constraint conflicts with the ones already on this sketch, so it was not applied.";
+  /** The constraints just added by a tool, on trial until their solve comes
+   *  back: withdrawn together if it conflicts, with `msg` said once. A LIST
+   *  because the fillet adds three (two tangencies and a radius) that only mean
+   *  anything as a set — half a fillet's definition is worse than none. */
+  private trial: { cons: SketchConstraint[]; msg: string } | null = null;
   /** The entities the NEXT non-drag solve is allowed to move — "what you picked
    *  first is what moves" (bug #86, see sketchSolve's `bias`). Armed by the tool
    *  that knows the pick order and consumed by exactly one solve in pump().
@@ -241,18 +247,21 @@ export class SketchMode {
   private history = new SketchHistory();
   private dragRefusedToast = false; // one refusal toast per drag gesture (fixed point, or refused geometry)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
+  /** A BODY drag has a solve waiting for this entity index. Its pins are read
+   *  from the entity in pump(), not stored here: several pointermove frames can
+   *  land while one solve is in flight, and a position captured at queue time
+   *  would anchor the entity where the cursor USED to be. */
+  private pendingPinIdx: number | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
-  // armed cheaply on pointerdown over an entity body; the snapshot and the
-  // neighbor-stretch closures are built only when the move actually starts
-  // (past a small screen-space threshold) — a plain click stays free and
-  // falls through to selection on up.
+  // armed cheaply on pointerdown over an entity body; the revert snapshot is
+  // built only when the move actually starts (past a small screen-space
+  // threshold) — a plain click stays free and falls through to selection on up.
   private moveDrag: {
     idx: number;
     startClient: { x: number; y: number };
     last: THREE.Vector2;
     started: boolean;
     shift: boolean;
-    stretch: ((dx: number, dy: number) => void)[]; // filled when the move starts
   } | null = null;
   private solveBusy = false; // a solve is in flight (drag or constraint)
   // the solver WASM failed to come up: stop pumping and say so ONCE, rather
@@ -392,7 +401,7 @@ export class SketchMode {
       requestSolve: () => this.requestSolve(),
       addConstraint: (c, moves) => {
         this.constraints.push(c);
-        this.trialConstraint = c; // withdrawn again if this solve conflicts
+        this.trial = { cons: [c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
         if (moves) this.pendingBias = { moves: [moves] }; // before requestSolve — pump reads it synchronously
         this.requestSolve();
       },
@@ -589,6 +598,7 @@ export class SketchMode {
     this.dragFrom = null;
     this.dragSnapshot = null;
     this.pendingDrag = null;
+    this.pendingPinIdx = null;
     this.moveDrag = null;
     this.dim.hide();
     this.dims.hide();
@@ -646,6 +656,7 @@ export class SketchMode {
     this.filletFirst = null;
     this.dragFrom = null;
     this.pendingDrag = null;
+    this.pendingPinIdx = null;
     this.moveDrag = null;
     this.resetDimPicks();
     this.moveBase = null;
@@ -1382,8 +1393,8 @@ export class SketchMode {
           last: raw.clone(),
           started: false,
           shift: e.shiftKey,
-          stretch: [],
         };
+        this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
       }
@@ -1398,8 +1409,8 @@ export class SketchMode {
           last: raw.clone(),
           started: false,
           shift: e.shiftKey,
-          stretch: [],
         };
+        this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
         return;
       }
@@ -2530,18 +2541,35 @@ export class SketchMode {
             this.moveDrag = null;
             return;
           }
+          // A `fix` constraint pins this entity, or a neighbour corner the drag
+          // would carry along. The SOLVER's own refusal (compileAndSolve's
+          // dragRefused) never runs here: the body drag doesn't ask the solver
+          // whether it may move, it moves and then asks it to settle — and
+          // `fix` is positionless, so the settle re-pins the point at wherever
+          // the drag left it and reports success (report d0b008cb). Refuse in
+          // the arming branch, before anything has moved.
+          if (bodyDragBlocked(this.entities, md.idx, this.constraints)) {
+            this.moveDrag = null;
+            if (!this.dragRefusedToast) {
+              this.dragRefusedToast = true;
+              toast(FIXED_POINT_MSG);
+            }
+            return;
+          }
           md.started = true;
-          // nothing has moved yet, so build the revert snapshot and the
-          // neighbor-stretch set from the still-pristine positions
+          // nothing has moved yet — snapshot the pristine positions for Esc-revert
           this.dragSnapshot = JSON.parse(JSON.stringify(this.entities));
-          const ent = this.entities[md.idx];
-          if (ent) md.stretch = this.stretchTargets(md.idx, this.attachmentPoints(ent));
         }
         const dx = raw.x - md.last.x, dy = raw.y - md.last.y;
         md.last.copy(raw);
-        const ent = this.entities[md.idx];
-        if (ent) this.entities[md.idx] = translated(ent, dx, dy, ent.id);
-        for (const s of md.stretch) s(dx, dy);
+        const next = bodyDragFrame(this.entities, md.idx, dx, dy, this.constraints);
+        if (!next) { this.moveDrag = null; return; } // constraints changed mid-gesture
+        this.entities = next;
+        // ...and re-satisfy the constraints AROUND it on this frame, not on
+        // release. Grabbing a filleted side used to tear every joint open until
+        // the button came up (report c0bf7020): the frame moved the line and its
+        // neighbours' endpoints arithmetically and the first solve was endDrag's.
+        this.queueBodyDrag(md.idx);
         this.refreshDragGeometry(); // curves only; dims/regions/candidates rebuilt on endDrag
         return;
       }
@@ -2695,6 +2723,7 @@ export class SketchMode {
         this.dragFrom = null;
         this.moveDrag = null;
         this.pendingDrag = null;
+        this.pendingPinIdx = null;
         this.conflict = false;
         this.refreshActive();
         this.onState?.();
@@ -3064,7 +3093,7 @@ export class SketchMode {
     const moves = a.id;
     const push = (c: SketchConstraint) => {
       this.constraints.push(c);
-      this.trialConstraint = c; // withdrawn again if this solve conflicts
+      this.trial = { cons: [c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
       this.pendingBias = { moves: [moves] };
       this.requestSolve();
       this.onState?.();
@@ -3235,12 +3264,28 @@ export class SketchMode {
       this.applyFillet(first, second),
     );
   }
+  /** Apply the fillet AND record what it means: two tangencies and the radius
+   *  that was typed. Without them the number lived nowhere — an arc carries no
+   *  automatic badge dimension, so nothing was drawn, nothing was editable, and
+   *  the next solve was free to resize the arc (report 41dc3246).
+   *
+   *  On trial, as a set: the fillet's geometry is correct whether or not the
+   *  constraints can coexist with what the sketch already carries, so a conflict
+   *  withdraws the three constraints and says so — it must not withdraw, or
+   *  refuse, the fillet. */
   private applyFillet(iA: number, iB: number) {
     const r = this.dim.getValue("radius") ?? 2;
     const res = filletCorner(this.entities, iA, iB, r);
-    if (res) this.entities = res;
     this.filletFirst = null;
     this.dim.hide();
+    if (res) {
+      this.entities = res.entities;
+      this.constraints.push(...res.constraints);
+      this.trial = {
+        cons: res.constraints,
+        msg: "The fillet was created, but its radius could not be constrained without conflicting with this sketch's existing constraints.",
+      };
+    }
     this.afterModify();
   }
   private chamferClick(p: THREE.Vector2) {
@@ -3315,12 +3360,19 @@ export class SketchMode {
     const sel = new Set<string>();
     // fixed reference geometry: keep it (and its selection) untouched
     const projected = this.warnSelectedProjected();
+    // ...and so is anything a user `fix` pins. Same hole as the body drag: these
+    // tools move geometry without consulting the solver, and `fix` is
+    // positionless, so the settle afterwards re-pins the point wherever the
+    // transform left it and reports success (report d0b008cb).
+    const pinned = fixPinnedIds(this.constraints);
+    const held = new Set([...this.entities].filter((e) => this.selected.has(e.id) && pinned.has(e.id)).map((e) => e.id));
+    if (held.size) toast(FIXED_POINT_MSG);
     for (const e of this.entities) {
-      if (this.selected.has(e.id) && !projected.has(e.id)) {
+      if (this.selected.has(e.id) && !projected.has(e.id) && !held.has(e.id)) {
         for (const m of map(e)) { next.push(m); sel.add(m.id); }
       } else {
         next.push(e);
-        if (projected.has(e.id)) sel.add(e.id);
+        if (projected.has(e.id) || held.has(e.id)) sel.add(e.id);
       }
     }
     this.entities = next;
@@ -3945,14 +3997,25 @@ export class SketchMode {
     if (this.solveBusy || this.solverDead) return;
     this.solveBusy = true;
     try {
-      while (this.active && (this.pendingDrag || this.solveDirty)) {
-        if (this.pendingDrag) {
+      while (this.active && (this.pendingDrag || this.pendingPinIdx !== null || this.solveDirty)) {
+        if (this.pendingDrag || this.pendingPinIdx !== null) {
           // no entityVersion guard here: a drag never adds/removes entities, so
           // the entity list can't change underneath this solve (unlike a draw).
           const d = this.pendingDrag;
+          // A BODY drag has already moved its entity; what it needs from the
+          // solver is everything AROUND that entity brought back into
+          // agreement, with the entity itself held where the cursor put it. Its
+          // pins are read HERE so they are the entity's current corners — more
+          // pointermove frames may have landed while the previous solve ran.
+          const pinEnt = this.pendingPinIdx === null ? undefined : this.entities[this.pendingPinIdx];
           this.pendingDrag = null;
-          const r = await compileAndSolve(this.entities, this.constraints, d);
-          if (!this.active || !this.dragFrom) break; // drag ended/cancelled mid-solve
+          this.pendingPinIdx = null;
+          const pins = pinEnt ? attachmentPoints(pinEnt).map((q) => ({ x: q.x, y: q.y })) : undefined;
+          const r = await compileAndSolve(this.entities, this.constraints, d ?? undefined, undefined, pins);
+          // drag ended/cancelled mid-solve. BOTH kinds: `dragFrom` is null for
+          // the whole of a body drag, so testing it alone discarded every body
+          // frame's result.
+          if (!this.active || (!this.dragFrom && !this.moveDrag)) break;
           this.conflict = r.conflicts.length > 0;
           this.conflictIdx = parseConflictIdx(r.conflicts);
           this.overIdx = parseConflictIdx(r.overDefined);
@@ -3972,9 +4035,9 @@ export class SketchMode {
               this.dragRefusedToast = true;
               toast(r.dragRefused === "projected" ? PROJECTED_FIXED_MSG
                 : r.dragRefused === "geometry" ? "That move would flatten or flip constrained geometry, so it was not applied"
-                : "That point is fixed — delete its Fix constraint to move it");
+                : FIXED_POINT_MSG);
             }
-          } else if (this.dragFrom) {
+          } else if (d && this.dragFrom) {
             this.dragFrom.set(d.toX, d.toY); // track grabbed pt
           }
           this.refreshDragGeometry(); // curves only; dims/candidates rebuilt on endDrag
@@ -4000,15 +4063,18 @@ export class SketchMode {
           // A constraint that cannot be satisfied must not stay in the sketch.
           // Keeping it leaves the whole system unsolvable, so every LATER
           // constraint silently does nothing and the tools look broken.
-          if (this.trialConstraint && (this.conflict || !r.ok)) {
-            const i = this.constraints.lastIndexOf(this.trialConstraint);
-            if (i >= 0) this.constraints.splice(i, 1);
-            this.trialConstraint = null;
-            toast("That constraint conflicts with the ones already on this sketch, so it was not applied.");
-            this.solveDirty = true; // re-solve without it, back to the last good state
+          if (this.trial && (this.conflict || !r.ok)) {
+            for (const c of this.trial.cons) {
+              const i = this.constraints.lastIndexOf(c);
+              if (i >= 0) this.constraints.splice(i, 1);
+            }
+            const msg = this.trial.msg;
+            this.trial = null;
+            toast(msg);
+            this.solveDirty = true; // re-solve without them, back to the last good state
             continue;
           }
-          this.trialConstraint = null;
+          this.trial = null;
           this.conflictIdx = parseConflictIdx(r.conflicts);
           this.overIdx = parseConflictIdx(r.overDefined);
           if (!this.conflict) this.entities = r.entities; // keep last good on conflict
@@ -4050,88 +4116,28 @@ export class SketchMode {
   }
 
   // --- interactive drag: grab a point, geometry follows, constraints hold ---
-  /** the moved entity's attachment points: positions where neighbors may coincide */
-  private attachmentPoints(e: ResolvedEntity): THREE.Vector2[] {
-    if (e.type === "line" || e.type === "arc") {
-      return [new THREE.Vector2(e.x1, e.y1), new THREE.Vector2(e.x2, e.y2)];
-    }
-    if (e.type === "rectangle") return rectCorners(e.x, e.y, e.width, e.height).map((q) => q.clone());
-    if (e.type === "spline") {
-      const last = e.points.length - 1;
-      const a = e.points[0], b = e.points[last];
-      return a && b ? [new THREE.Vector2(a.x, a.y), new THREE.Vector2(b.x, b.y)] : [];
-    }
-    if (e.type === "circle" || e.type === "point") return [new THREE.Vector2(e.x, e.y)];
-    return [];
-  }
-
-  /** mutators for OTHER entities' endpoints that coincide with `pts` — the same
-   *  position-based merge the solver does (shared coincKey, so "rides along
-   *  during drag" and "merged solver point on release" agree exactly).
-   *  Rectangles/circles are skipped (their shape can't follow a single corner);
-   *  arcs re-solve their through-point after. */
-  private stretchTargets(movedIdx: number, pts: THREE.Vector2[]): ((dx: number, dy: number) => void)[] {
-    const keys = new Set(pts.map((q) => coincKey(q.x, q.y)));
-    const near = (x: number, y: number) => keys.has(coincKey(x, y));
-    const out: ((dx: number, dy: number) => void)[] = [];
-    this.entities.forEach((e, i) => {
-      if (i === movedIdx) return;
-      if (e.type === "line" || e.type === "arc") {
-        if (near(e.x1, e.y1)) out.push((dx, dy) => { e.x1 += dx; e.y1 += dy; });
-        if (near(e.x2, e.y2)) out.push((dx, dy) => { e.x2 += dx; e.y2 += dy; });
-      } else if (e.type === "spline") {
-        const last = e.points.length - 1;
-        for (const k of [0, last]) {
-          const q = e.points[k];
-          if (q && near(q.x, q.y)) out.push((dx, dy) => { q.x += dx; q.y += dy; });
-        }
-      } else if (e.type === "point") {
-        if (near(e.x, e.y)) out.push((dx, dy) => { e.x += dx; e.y += dy; });
-      }
-    });
-    return out;
-  }
-
-  /** Find the nearest solver-controlled point (line endpoint or circle centre)
-   *  within pick tolerance of p. Rigid shapes (polygon/slot) are intentionally
-   *  excluded — they don't expand to solver points. */
+  /** Find the nearest drag handle within pick tolerance of p. The enumeration
+   *  itself is pure and lives in modify.ts, so it can be tested without a
+   *  viewport. */
   private pickPoint(p: THREE.Vector2): { p: THREE.Vector2; idx: number } | null {
-    const tol = this.pickTol();
-    let best: THREE.Vector2 | null = null;
-    let bestIdx = -1;
-    let bestD = tol * tol;
-    let cur = -1;
-    const consider = (x: number, y: number) => {
-      const dx = x - p.x, dy = y - p.y;
-      const d = dx * dx + dy * dy;
-      if (d <= bestD) { bestD = d; best = new THREE.Vector2(x, y); bestIdx = cur; }
-    };
-    this.entities.forEach((e, i) => {
-      cur = i;
-      // The origin offers NO drag handles. It is pinned, so a drag started on it
-      // is refused by the solver and nothing happens — but starting one still
-      // consumes the click, so the origin could not be SELECTED either. Reported
-      // as "it highlights but I can't select it": the click was being spent on a
-      // drag that could never move.
-      if (isOriginGeometry(e.id)) return;
-      if (e.type === "line") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
-      else if (e.type === "circle") consider(e.x, e.y);
-      else if (e.type === "arc") { consider(e.x1, e.y1); consider(e.x2, e.y2); }
-      else if (e.type === "spline") for (const q of e.points) consider(q.x, q.y);
-      else if (e.type === "point") consider(e.x, e.y);
-      else if (e.type === "rectangle") {
-        const hw = e.width / 2, hh = e.height / 2;
-        consider(e.x - hw, e.y - hh); consider(e.x + hw, e.y - hh);
-        consider(e.x + hw, e.y + hh); consider(e.x - hw, e.y + hh);
-      }
-    });
-    return best ? { p: best, idx: bestIdx } : null;
+    const g = pickDragPoint(this.entities, p, this.pickTol());
+    return g ? { p: new THREE.Vector2(g.x, g.y), idx: g.idx } : null;
   }
 
   /** Queue a drag target; pump serializes solves (latest target wins). */
   private queueDrag(to: THREE.Vector2) {
     if (!this.dragFrom) return;
     this.pendingDrag = { fromX: this.dragFrom.x, fromY: this.dragFrom.y, toX: to.x, toY: to.y };
+    void this.pump();
+  }
+
+  /** Queue the BODY drag's settle for this frame: re-satisfy the constraints
+   *  with the dragged entity held where the translate just put it. Through the
+   *  same in-flight lock as queueDrag, and deliberately NOT through
+   *  requestSolve() — that banks an undo step, and a drag is ONE step (banked by
+   *  endDrag), not one per pointermove. */
+  private queueBodyDrag(idx: number) {
+    this.pendingPinIdx = idx;
     void this.pump();
   }
 
@@ -4212,6 +4218,7 @@ export class SketchMode {
     if (this.moveDrag) {
       const md = this.moveDrag;
       this.moveDrag = null;
+      this.pendingPinIdx = null; // the release solve below supersedes any queued frame
       if (pointerId != null) {
         try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
       }
@@ -4238,6 +4245,7 @@ export class SketchMode {
     if (!this.dragFrom) return;
     this.dragFrom = null;
     this.pendingDrag = null;
+    this.pendingPinIdx = null;
     if (pointerId != null) {
       try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
     }
