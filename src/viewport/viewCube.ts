@@ -422,6 +422,16 @@ export class ViewCube {
       menu.appendChild(btn);
     }
     document.body.appendChild(menu);
+    // Keep it in the window. This popup is `position: fixed` at the raw
+    // right-click coordinate and the cube lives in the TOP-RIGHT corner, so
+    // nothing else bounds its right edge — with the viewport running to the
+    // window edge it hung ~116px outside, unreachable. Flip it to the left of
+    // the click instead, the same nudge contextMenu() does. offsetWidth, not
+    // getBoundingClientRect: the pop-in keyframe starts at scale(.98), and a
+    // rect read mid-animation measures 2% small.
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    if (clientX + mw > window.innerWidth) menu.style.left = `${Math.max(4, clientX - mw)}px`;
+    if (clientY + mh > window.innerHeight) menu.style.top = `${Math.max(4, clientY - mh)}px`;
     this.menu = menu;
     // dismiss on the next outside pointerdown / Escape
     const onDown = (e: PointerEvent) => {
