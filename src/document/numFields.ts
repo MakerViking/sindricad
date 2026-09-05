@@ -224,7 +224,17 @@ export function coerceForField(field: string, value: number): number {
 
 /** Write an evaluated parameter value into its target field. Returns the
  *  affected sketch id (for the re-solve cascade) or null when the target is
- *  gone or the value didn't change. Non-finite values are never written. */
+ *  gone or the value didn't change. Non-finite values are never written.
+ *
+ *  A value-changing write REPLACES the owning feature in `doc.features` with a
+ *  shallow copy. The wire delta (geometry/client.ts) ships a feature only when
+ *  its object reference differs from the one last sent, so a number poked into
+ *  the existing object rebuilt against a document the encoder saw as
+ *  unchanged: the sidecar kept the old value until a timeline scrub or Compute
+ *  All forced a full send (field reports c2cac5f3, f39f6e08, ed1d4d98,
+ *  8d09f11b). Every writer of a numeric field goes through here, the inspector
+ *  and the parameter recompute alike, so this is the one place the contract
+ *  has to hold. */
 export function writeTarget(doc: CadDocument, target: ParamTarget, value: number): { sketch?: string } | null {
   if (!Number.isFinite(value)) return null;
   const rt = resolveTarget(doc, target);
@@ -232,5 +242,8 @@ export function writeTarget(doc: CadDocument, target: ParamTarget, value: number
   const v = coerceForField(rt.field, value);
   if (rt.holder[rt.field] === v) return null;
   rt.holder[rt.field] = v;
+  const ownerId = target.kind === "feature" ? target.feature : target.sketch;
+  const i = doc.features.findIndex((f) => f.id === ownerId);
+  if (i >= 0) doc.features[i] = { ...doc.features[i] } as Feature;
   return rt.sketch !== undefined ? { sketch: rt.sketch } : {};
 }

@@ -20,6 +20,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A number typed into the inspector now rebuilds the model.** Reported four
+  times from the in-app reporter: a target offset on a press/pull, a sphere's
+  radius, a sketch dimension. The value took, the panel showed it, and the
+  model did not move until the timeline marker was dragged back and forth or
+  Compute All was pressed. The edit wrote the new number into the feature in
+  place, and the rebuild that followed only sends the sidecar the features
+  whose object changed, so it sent nothing. Every numeric edit now replaces the
+  feature it lands on, and the rebuild carries it.
+
 - **A sketch drawn on a body's face now follows that face.** Reported in
   [#52](https://github.com/MakerViking/sindricad/issues/52). Sketching on the top
   of a 10 mm box and cutting a pocket, then changing the box to 20 mm, left the
