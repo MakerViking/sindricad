@@ -209,6 +209,7 @@ export function createCameraRig(
   function tumbleBy(az: number, pol: number) {
     const target = controls.getTarget(new THREE.Vector3());
     const offset = controls.getPosition(new THREE.Vector3()).sub(target);
+    reseatDegenerateUp(target, offset);
     active.updateMatrixWorld();
     // visual axes from the rendered orientation (roll bank included)
     const right = new THREE.Vector3().setFromMatrixColumn(active.matrixWorld, 0);
@@ -230,6 +231,36 @@ export function createCameraRig(
       target.z,
       false,
     );
+  }
+
+  /** An orbit up-vector lying ON the view axis is a degenerate basis, and this
+   *  gesture cannot dig itself out of one: the camera's right/up axes come out of
+   *  a cross product of magnitude ~1e-16, so they are float noise, and because
+   *  offset and up rotate by the SAME quaternion the angle between them is an
+   *  invariant of the gesture — once parallel, parallel forever, with every frame
+   *  re-deriving a different random basis. That is field report ada02e3d, "every
+   *  rotation increment adjusts the view angle by 90 degrees". Fall back to a
+   *  world axis that is not the view axis so the basis stays well-conditioned,
+   *  the same rule restoreUp() applies on leaving a sketch.
+   *
+   *  The test is EXACT parallelism, not "near the pole": a view a hair off the
+   *  axis (|up·fwd| = 0.999999999999995) orbits perfectly, and re-seating that
+   *  one would be a visible roll snap on a view that works today. */
+  function reseatDegenerateUp(target: THREE.Vector3, offset: THREE.Vector3) {
+    const fwd = offset.clone().normalize();
+    if (new THREE.Vector3().crossVectors(persp.up, fwd).length() > 1e-7) return;
+    // Z-up is the model default; only when Z IS the view axis does it have to go.
+    const up = Math.abs(fwd.z) > Math.abs(fwd.y)
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(0, 0, 1);
+    persp.up.copy(up);
+    ortho.up.copy(up);
+    controls.updateCameraUp();
+    // camera-controls only writes the camera on update(), and the caller reads
+    // the RENDERED basis a line from now — square the camera itself too, or this
+    // first drag step still turns on the noise we just removed.
+    active.position.copy(target).add(offset);
+    active.lookAt(target);
   }
 
   // Drive MOUSE orbit through tumbleBy as well, instead of camera-controls'
@@ -669,11 +700,6 @@ export function createCameraRig(
     setStandardView(view: StandardView) {
       clearOrbitPivot();
       rollAngle = 0;
-      // a free tumble may have left the orbit up-vector anywhere; a standard
-      // view means "square me to the world" — restore Z-up first
-      persp.up.set(0, 0, 1);
-      ortho.up.set(0, 0, 1);
-      controls.updateCameraUp();
       const d = Math.max(controls.distance, 50);
       const dirs: Record<StandardView, [number, number, number]> = {
         front: [0, -1, 0],
@@ -684,6 +710,27 @@ export function createCameraRig(
         bottom: [0, 0, -1],
         iso: [1, -1, 0.8],
       };
+      // A free tumble may have left the orbit up-vector anywhere; a standard view
+      // means "square me to the world" — with an up that is not the view axis.
+      // Z-up on Top or Bottom would lay the orbit pole exactly along the line of
+      // sight, leaving no well-defined "up" to turn around, and the picture then
+      // snapped a quarter turn on every mouse move and every wheel notch (field
+      // report ada02e3d). These two values are the ViewCube's own: FACE_VIEWS.top
+      // and .bottom in viewCube.ts have always declared them, and the face-click
+      // path threw them away by routing here.
+      const ups: Record<StandardView, [number, number, number]> = {
+        front: [0, 0, 1],
+        back: [0, 0, 1],
+        left: [0, 0, 1],
+        right: [0, 0, 1],
+        top: [0, 1, 0],
+        bottom: [0, -1, 0],
+        iso: [0, 0, 1],
+      };
+      const [ux, uy, uz] = ups[view];
+      persp.up.set(ux, uy, uz);
+      ortho.up.set(ux, uy, uz);
+      controls.updateCameraUp();
       const [x, y, z] = dirs[view];
       const t = controls.getTarget(new THREE.Vector3());
       const n = new THREE.Vector3(x, y, z).normalize().multiplyScalar(d);
