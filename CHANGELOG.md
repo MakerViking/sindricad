@@ -20,6 +20,25 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Extruding an area whose boundary is shared by two sketch shapes built a
+  different area instead.** Reported from the in-app reporter: a square sitting
+  flush in the corner of a rectangle, pick the corner area, and the extrude
+  skipped it while a later cut landed somewhere else in the sketch. Where two
+  shapes draw the same edge, the geometry engine recorded that edge as belonging
+  to only one of them, so the area no longer matched the name the app had stored
+  for it and the pick drifted onto a neighbour. That edge now counts as belonging
+  to both, and an area is recognised by name again. A file affected by this
+  rebuilds with the areas you actually picked.
+
+- **Clicking a sketch profile area now highlights it right away.** Clicking an
+  area in the model view selected it, and the status bar said so, but the fill
+  stayed the pale hover colour until the mouse moved, so it looked like the click
+  had missed. The viewport only draws a frame when something asks for one, and
+  the area-click path never did. The repaint request now lives in the one place
+  a region's fill changes colour, so the click paints immediately, and so do the
+  Escape clear, sketch mode's area picks and the extrude tool's area toggles,
+  which had the same gap.
+
 - **A number typed into the inspector now rebuilds the model.** Reported four
   times from the in-app reporter: a target offset on a press/pull, a sphere's
   radius, a sketch dimension. The value took, the panel showed it, and the

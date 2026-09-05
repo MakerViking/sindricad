@@ -176,6 +176,10 @@ jobs:
           # already valid, watertight, one solid and within 0.02% on volume, so
           # every other suite in this list stays green when fitting breaks.
           uv run python test_surface_fit.py
+          # Two sketch shapes drawing the SAME edge (a square flush in a
+          # rectangle's corner) must both own it, or the corner area loses its
+          # name and the extrude drifts onto a neighbour (field report d7659f36).
+          uv run python test_region_coincident_entities.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script
