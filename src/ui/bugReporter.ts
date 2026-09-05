@@ -21,6 +21,14 @@ import type { Feature } from "../types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
+/** What the user has typed and not yet sent. `openDialog()` rebuilds the
+ *  markup from scratch every time, so before this existed the text died with
+ *  the card: an Escape, a Cancel or (0.1.193, Windows) letting go of the
+ *  resize grip outside the dialog threw the whole report away with nothing to
+ *  recover it from. Module scope so it outlives the dialog; cleared only once
+ *  a report has actually been sent. */
+let draft = "";
+
 export function createBugReporter(deps: {
   store: DocumentStore;
   geometry: GeometryBackend;
@@ -102,6 +110,10 @@ export function createBugReporter(deps: {
     const desc = card.querySelector(".bug-desc") as HTMLTextAreaElement;
     const logCb = card.querySelector(".bug-log") as HTMLInputElement;
     const docCb = card.querySelector(".bug-doc") as HTMLInputElement;
+    desc.value = draft;
+    desc.addEventListener("input", () => {
+      draft = desc.value;
+    });
     desc.focus();
 
     const close = () => {
@@ -118,8 +130,26 @@ export function createBugReporter(deps: {
     };
     window.addEventListener("keydown", onKey, true);
     (card.querySelector(".bug-cancel") as HTMLButtonElement).addEventListener("click", close);
+    // Close on a click that is a click on the BACKDROP, not merely one the DOM
+    // reported there. `click` is dispatched at the nearest common ancestor of
+    // the press and the release, so a drag that starts in the card and ends
+    // outside it — stretching the textarea by its resize grip is the easy way
+    // to do that, since the card is flex-centred and its bottom edge only
+    // moves half as fast as the cursor — arrives here with target === backdrop
+    // and used to close the dialog mid-gesture. Requiring both ends of the
+    // gesture to be on the backdrop leaves an honest click closing it and
+    // nothing else. Still on `click`, not `pointerup`: closing on release
+    // would let the trailing click land on whatever the removed backdrop was
+    // covering.
+    let pressedOnBackdrop = false;
+    backdrop.addEventListener("pointerdown", (e) => {
+      pressedOnBackdrop = e.target === backdrop;
+    });
+    backdrop.addEventListener("pointerup", (e) => {
+      pressedOnBackdrop = pressedOnBackdrop && e.target === backdrop;
+    });
     backdrop.addEventListener("click", (e) => {
-      if (e.target === backdrop) close();
+      if (e.target === backdrop && pressedOnBackdrop) close();
     });
 
     (card.querySelector(".bug-send") as HTMLButtonElement).addEventListener("click", async () => {
@@ -149,6 +179,7 @@ export function createBugReporter(deps: {
       }
       try {
         const res = await taBugReport(payload);
+        draft = ""; // sent, so there is nothing left to restore
         close();
         toast(
           res.deduplicated
