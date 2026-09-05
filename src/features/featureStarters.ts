@@ -252,7 +252,26 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     window.addEventListener("keydown", onEsc, true);
   }
 
+  /** Sketch. A face the user has ALREADY selected IS the pick — the same rule
+   *  startPressPull follows above, and the reason the two felt inconsistent:
+   *  selecting a face and pressing Sketch used to throw the selection away and
+   *  ask for the same face again.
+   *
+   *  Only when the selection names one plane unambiguously; anything else (no
+   *  selection, several faces, a curved face, an unknown body — see
+   *  viewport.selectedFaceSketchPlane) falls through to the interactive pick,
+   *  which prompts for what it wants. */
   function startSketch(tool?: SketchTool) {
+    if (busy()) return;
+    const pre = viewport.selectedFaceSketchPlane();
+    if (pre) {
+      // the face has been consumed; leaving it painted would also leave it
+      // armed for whichever tool is pressed after the sketch is closed.
+      viewport.clearSelection();
+      sketch.enter(pre.plane, store, undefined, undefined, pre.face);
+      if (tool) sketch.setTool(tool);
+      return;
+    }
     pickPlaneInteractive("Select a plane or a planar face of a body to sketch on", (spec, face) => {
       sketch.enter(spec, store, undefined, undefined, face);
       if (tool) sketch.setTool(tool);
