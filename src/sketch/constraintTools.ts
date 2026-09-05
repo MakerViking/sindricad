@@ -8,9 +8,8 @@
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
-import { projEndSamples } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
-import { curveKind, dimRefPoints, lineOperandAt } from "./entityDims";
+import { curveKind, dimRefPoints, lineOperandAt, refPoint } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
 
 export const CONSTRAINT_TOOLS = new Set<SketchTool>([
@@ -104,9 +103,9 @@ const WANTS: Partial<Record<SketchTool, string>> = {
   equal: "two lines, or two circles/arcs",
   tangent: "a circle or arc, then the line or curve it should touch",
   concentric: "two circles or arcs",
-  coincident: "two endpoints or rectangle corners",
-  midpoint: "an endpoint, then the line to centre it on",
-  symmetric: "two endpoints, then the axis line",
+  coincident: "two endpoints, rectangle corners or circle/arc centres",
+  midpoint: "a point, an endpoint or a centre, then the line to centre it on",
+  symmetric: "two points, endpoints or centres, then the axis line",
   fix: "a point, an endpoint or a centre",
 };
 
@@ -116,8 +115,9 @@ const pts = (...ps: ({ x: number; y: number } | null)[]): { x: number; y: number
   ps.filter((q): q is { x: number; y: number } => q !== null);
 
 const COINCIDENT_MISS =
-  "Coincident joins two ENDPOINTS — click the ends of the lines, or a rectangle's corners, "
-  + "not their middles. To make two lines lie along each other, use Collinear.";
+  "Coincident joins two POINTS — click the ends of the lines, a rectangle's corners "
+  + "or a circle's centre, not their middles. To make two lines lie along each other, "
+  + "use Collinear.";
 
 
 export class ConstraintTools {
@@ -236,51 +236,36 @@ export class ConstraintTools {
     return [first, op];
   }
 
-  /** nearest addressable endpoint (line/arc/spline end, a point entity, or a
-   *  RECTANGLE CORNER) to p.
+  /** nearest addressable POINT to p — a line/arc/spline end, a point entity, a
+   *  RECTANGLE CORNER, or a circle/arc CENTRE.
    *
-   *  Rectangle corners are addressed the way the document already addresses
-   *  them everywhere else — the rectangle's own id with `idx` = the corner index
-   *  0..3 from dimRefPoints (entityDims), which is what `fix` and every
-   *  dimension emit. Not the edge form `R~k` p0/p1: that reaches the same solver
-   *  point, but nothing that renders a point operand (glyphs.refPos) can decode
-   *  it, so such a constraint would be invisible and undeletable. */
+   *  It enumerates `dimRefPoints`, which is the document's one answer to "which
+   *  points does this entity expose, and under which index". Borrowing it rather
+   *  than keeping a second list here is the whole point: this used to have an
+   *  arm per entity type and no arm for `circle`, so a circle's centre was
+   *  addressable by every dimension and by `fix` and reachable by no constraint
+   *  at all. Coincident aimed at one armed nothing and said "click the ends of
+   *  the lines", which reads as a dead tool (reported 2026-09-01). An arc's
+   *  centre was in the same position, one index further along.
+   *
+   *  Rectangle corners keep the spelling the document already uses everywhere —
+   *  the rectangle's own id with `idx` = the corner index 0..3 — and not the
+   *  edge form `R~k` p0/p1: that reaches the same solver point, but nothing that
+   *  renders a point operand (glyphs.refPos) can decode it, so such a constraint
+   *  would be invisible and undeletable. */
   private pickEndpoint(p: THREE.Vector2): { id: string; idx: number } | null {
     const tol = this.host.pickTol();
     let best: { id: string; idx: number } | null = null;
     let bestD = tol * tol;
-    const consider = (id: string, idx: number, x: number, y: number) => {
-      const dx = x - p.x, dy = y - p.y, d = dx * dx + dy * dy;
-      if (d <= bestD) { bestD = d; best = { id, idx }; }
-    };
     for (const e of this.host.entities()) {
-      if (e.type === "line") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
-      else if (e.type === "arc") { consider(e.id, 0, e.x1, e.y1); consider(e.id, 1, e.x2, e.y2); }
-      else if (e.type === "point") consider(e.id, 0, e.x, e.y);
-      else if (e.type === "rectangle") {
-        for (const r of dimRefPoints(e)) consider(e.id, r.p, r.pos.x, r.pos.y);
-      } else if (e.type === "spline") {
-        const first = e.points[0], last = e.points[e.points.length - 1];
-        if (first) consider(e.id, 0, first.x, first.y);
-        if (last) consider(e.id, 1, last.x, last.y);
-      } else if (e.type === "projected") {
-        // projected endpoints are addressable anchors (coincident-to-reference
-        // is the sticks-to-projection behavior); poly exposes first/last samples
-        const cv = e.curve;
-        if (cv.kind === "line" || cv.kind === "arc") {
-          consider(e.id, 0, cv.x1, cv.y1);
-          consider(e.id, 1, cv.x2, cv.y2);
-        } else if (cv.kind === "poly") {
-          projEndSamples(cv).forEach(([x, y], k) => consider(e.id, k, x, y));
-        }
+      for (const r of dimRefPoints(e)) {
+        const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
+        if (d <= bestD) { bestD = d; best = { id: e.id, idx: r.p }; }
       }
     }
     return best;
   }
 
-  /** Plane coordinates of an endpoint reference, so the host can mark it on
-   *  screen. Mirrors pickEndpoint's own idea of which points are addressable —
-   *  if a point can be picked it can be shown, and vice versa. */
   /** Plane coords of the addressable point under `p`, or null. For the hover
    *  highlight, and deliberately routed through the SAME pickEndpoint the click
    *  flows use: if these two ever disagree the highlight becomes a lie, which is
@@ -292,33 +277,14 @@ export class ConstraintTools {
     return ep ? this.endpointXY(ep) : null;
   }
 
+  /** Where a picked point reference IS, so the host can mark it on screen —
+   *  resolved through `refPoint`, which is the same list pickEndpoint picked it
+   *  out of. One list, so a point that can be picked is always one that can be
+   *  shown, and the two cannot drift apart. */
   private endpointXY(ep: { id: string; idx: number }): { x: number; y: number } | null {
     const e = this.host.entities().find((x) => x.id === ep.id);
-    if (!e) return null;
-    if (e.type === "point") return { x: e.x, y: e.y };
-    if (e.type === "line" || e.type === "arc") {
-      return ep.idx === 0 ? { x: e.x1, y: e.y1 } : { x: e.x2, y: e.y2 };
-    }
-    // rectangle: the same dimRefPoints list pickEndpoint picked from, so a
-    // corner that can be picked is always one that can be shown
-    if (e.type === "rectangle") {
-      const q = dimRefPoints(e).find((r) => r.p === ep.idx);
-      return q ? { x: q.pos.x, y: q.pos.y } : null;
-    }
-    if (e.type === "spline") {
-      const pt = ep.idx === 0 ? e.points[0] : e.points[e.points.length - 1];
-      return pt ? { x: pt.x, y: pt.y } : null;
-    }
-    if (e.type === "projected") {
-      const cv = (e as any).curve;
-      if (!cv) return null;
-      if (cv.kind === "line" || cv.kind === "arc") {
-        return ep.idx === 0 ? { x: cv.x1, y: cv.y1 } : { x: cv.x2, y: cv.y2 };
-      }
-      const s = projEndSamples(cv)[ep.idx];
-      return s ? { x: s[0], y: s[1] } : null;
-    }
-    return null;
+    const q = e ? refPoint(e, ep.idx) : null;
+    return q ? { x: q.x, y: q.y } : null;
   }
 
   private pointConstraintClick(p: THREE.Vector2) {

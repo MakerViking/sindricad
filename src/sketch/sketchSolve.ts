@@ -16,7 +16,7 @@
 // under dragging while remaining a single atomic entity in the document.
 
 import type { ResolvedEntity } from "./snap";
-import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc, type SolveResult } from "./solver";
+import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc, type SolveInput, type SolveResult } from "./solver";
 import { circumcenter } from "./arc";
 import { rectCorners } from "./region";
 import { asRound, lineOperand, refPoint, rimNesting, type Round } from "./entityDims";
@@ -279,13 +279,22 @@ export async function compileAndSolve(
   // and having two resolvers disagree about it is what silently dropped every
   // coincident/midpoint/symmetric aimed at a corner while `fix` and the
   // dimensions took the identical operand and worked.
+  //
+  // The CENTRES are here for exactly that reason, one report later: a circle
+  // centre (index 0) and an arc centre (index 2) are addressable by every
+  // dimension and by `fix`, and a coincident naming one used to compile to
+  // nothing at all — dof unchanged, circle unmoved, no warning anywhere
+  // (reported 2026-09-01). This resolver and dimPoint now answer the same
+  // question the same way, which is the invariant that keeps being broken here.
   const endpointPoint = (entId: string, idx: number): string | undefined => {
     const rc = rectMap.get(entId);
     if (rc) return rc[idx];
     const ln = ends.get(entId);
     if (ln) return idx === 0 ? ln[0] : ln[1];
     const ar = arcMap.get(entId);
-    if (ar) return idx === 0 ? ar.ourS : ar.ourE;
+    if (ar) return idx === 2 ? ar.center : idx === 0 ? ar.ourS : ar.ourE;
+    const ct = centers.get(entId);
+    if (ct) return ct;
     const pt = pointMap.get(entId);
     if (pt) return pt;
     const sp = splineMap.get(entId);
@@ -295,19 +304,14 @@ export async function compileAndSolve(
   // resolve a circle/arc center to its solver point id
   const centerPoint = (entId: string): string | undefined =>
     centers.get(entId) ?? arcMap.get(entId)?.center;
-  // resolve a dimension pick: rectangle corners by index, circle centers
-  // regardless of index, arc center at index 2, else entity endpoints.
-  //
-  // The rectangle line is redundant with endpointPoint's own arm and stays
-  // anyway: it has to be resolved BEFORE the `idx === 2` arc-centre arm below,
-  // which would otherwise swallow rectangle corner 2 and return undefined.
-  const dimPoint = (entId: string, idx: number): string | undefined => {
-    const rc = rectMap.get(entId);
-    if (rc) return rc[idx];
-    if (centers.has(entId)) return centers.get(entId);
-    if (idx === 2) return arcMap.get(entId)?.center;
-    return endpointPoint(entId, idx);
-  };
+  // A dimension's pick and a constraint's pick are THE SAME LOOKUP now, and this
+  // alias is all that is left of the second one. There were two resolvers for
+  // years and they disagreed twice: about rectangle corners (fixed 2026-08-17,
+  // after every rect-corner constraint had silently compiled to nothing) and
+  // about circle and arc centres (fixed 2026-09-05, same symptom, same shape of
+  // report). `p` means one thing in the document whatever constraint carries it,
+  // so it gets one resolver.
+  const dimPoint = endpointPoint;
   const isCircle = (id: string) => centers.has(id);
   // a circle OR arc primitive — planegcs's Arc derives from Circle, so the rim
   // (edge-to-edge) constraints accept either
@@ -1207,7 +1211,133 @@ export async function compileAndSolve(
     return { ...finish(await solveSketch(model)), ...(bias ? { biasAnchors: anchors.length } : {}) };
   }
   if (biased && !(pass.ok && pass.conflicts.length === 0)) pass = finish(await solveSketch(model));
+
+  // Last resort for a pass that came back dirty: solve it AGAIN from a
+  // shape-preserving start, and keep that only if it is clean.
+  //
+  // The failure it exists for: planegcs starts from the geometry as drawn and
+  // walks downhill, and for the angular constraints (parallel / perpendicular /
+  // collinear) and for a rectangle corner, the nearest way down is very often to
+  // destroy an operand rather than to move it. A line that has shrunk to zero
+  // length has no DIRECTION, so `parallel` against it is vacuously true; a
+  // rectangle whose width has gone through zero satisfies a point constraint on
+  // one corner by walking that corner past its neighbour. Both are local minima
+  // of the residual, not disagreements between the constraints — the sketch had
+  // a perfectly good answer a rotation or a translation away.
+  //
+  // So the SEED pass re-solves with every line's current length pinned, which
+  // closes the degenerate route and leaves rotating and translating as the only
+  // ways down. Its geometry is then the starting point for one ordinary free
+  // solve, so what this returns is always a real solve of the user's own model
+  // with nothing extra in it: the seed cannot invent a solution, it can only
+  // start the search somewhere the collapse is not the nearest exit. Judged
+  // through `finish`, so the geometry guard gets the last word here exactly as
+  // it does on every other pass, and kept only if it comes back clean — a
+  // genuinely contradictory constraint still conflicts and is still withdrawn.
+  //
+  // Measured over a 36-angle sweep of a free line against a 40x20 rectangle
+  // (the app's own emission shapes and its own mover bias). Before: midpoint on
+  // a rect corner failed at 32/36 angles for corner 0, 18/36 for corner 1, 32/36
+  // for corner 3 and 0/36 for corner 2 — whichever corner already lies toward
+  // the line is the one that survives, which is what made it look like the
+  // corner INDEX mattered; symmetric on two corners 19-33/36 depending on the
+  // pair; collinear on a rect edge 11/36 and on a plain free line 6/36 (so the
+  // collapse was never a rectangle-only fault — the rectangle's four implicit
+  // h/v pins only widen a local minimum two ordinary lines already have);
+  // parallel 1/36 and perpendicular 1/36, at the angle needing an exact quarter
+  // turn. After: 0/36 for every one of them. All of those reached the user as
+  // "that constraint conflicts with the ones already on this sketch", with the
+  // constraint thrown away and the geometry left untouched.
+  //
+  // Not for a DRAG frame: a refused drag is already a deliberate, explained
+  // outcome ("that move would flatten or flip constrained geometry"), the frame
+  // is on a 60 Hz path that must not pay two extra solves, and rescuing it would
+  // hand the cursor a jump rather than the move it asked for.
+  if (!drag && !(pass.ok && pass.conflicts.length === 0)) {
+    const seeded = await reseed(model);
+    if (seeded) {
+      const alt = finish(await solveSketch(seeded));
+      if (alt.ok && alt.conflicts.length === 0) pass = alt;
+    }
+  }
   return bias ? { ...pass, biasAnchors: anchors.length } : pass;
+}
+
+/** Every line in the model held at the length it currently has — the pins the
+ *  seed pass is built from. Degenerate lines are skipped: a line that is already
+ *  zero-length is not one this can protect, and pinning it AT zero would be
+ *  asking for the collapse.
+ *
+ *  The `__len` ids cannot decode to a user constraint (constraintIndexOf), so a
+ *  pin can never be blamed for anything — and it never reaches a returned pass
+ *  anyway, since the seed pass's own diagnostics are thrown away. */
+function lengthPins(model: SolveInput): SConstraint[] {
+  const pos = new Map(model.points.map((p) => [p.id, p]));
+  const out: SConstraint[] = [];
+  model.lines.forEach((l, i) => {
+    const a = pos.get(l.p1), b = pos.get(l.p2);
+    if (!a || !b) return;
+    const value = Math.hypot(b.x - a.x, b.y - a.y);
+    if (value > LINE_COLLAPSE_EPS) out.push({ id: `__len${i}`, type: "distance", a: l.p1, b: l.p2, value });
+  });
+  return out;
+}
+
+/** Run the length-pinned seed pass and hand back the SAME model started at the
+ *  geometry it found — points at their solved positions, circles and arcs at
+ *  their solved radii, arc sweeps recomputed from the seeded points so
+ *  `arc_rules` starts describing the seeded arc and not the old one.
+ *
+ *  The seed pass starts from a nudged copy of the sketch, and that nudge is
+ *  load-bearing rather than superstition: a free line that has to rotate an
+ *  EXACT quarter turn (Perpendicular to an axis-aligned rect edge, Collinear
+ *  with a vertical one) starts at a saddle where the residual pushes equally
+ *  both ways and planegcs does not move at all. Measured: without the nudge
+ *  parallel and perpendicular still failed at exactly one sweep angle each and
+ *  collinear at 90 degrees; with it, at none. A micron is far below the
+ *  sidecar's own 1e-6 mm curve rounding, it is applied only to points the solve
+ *  is free to move anyway, and it can only ever appear in an answer that would
+ *  otherwise have been refused outright.
+ *
+ *  Null when there is nothing to hold (a sketch with no lines), and on a throw:
+ *  the pins cost wasm heap the way the bias anchors do, and a lost retry is not
+ *  worth losing the solver over (see the bias's own note above). */
+async function reseed(model: SolveInput): Promise<SolveInput | null> {
+  const pins = lengthPins(model);
+  if (!pins.length) return null;
+  const NUDGE = 1e-6; // mm
+  let held: SolveResult;
+  try {
+    held = await solveSketch({
+      ...model,
+      points: model.points.map((p, i) => p.fixed
+        ? p // a fixed point is somebody's anchor: nudging it would MOVE it
+        : { ...p, x: p.x + NUDGE * ((i % 5) + 1), y: p.y - NUDGE * ((i % 3) + 1) }),
+      constraints: [...model.constraints, ...pins],
+    });
+  } catch {
+    return null;
+  }
+  const at = (id: string) => held.points[id];
+  return {
+    ...model,
+    points: model.points.map((p) => {
+      const q = at(p.id);
+      return q && Number.isFinite(q.x) && Number.isFinite(q.y) ? { ...p, x: q.x, y: q.y } : p;
+    }),
+    circles: model.circles.map((c) => {
+      const r = held.circles[c.id];
+      return r !== undefined && r > 0 ? { ...c, radius: r } : c;
+    }),
+    arcs: (model.arcs ?? []).map((a) => {
+      const c = at(a.center), s = at(a.start), e = at(a.end);
+      const r = held.arcs[a.id]?.radius;
+      if (!c || !s || !e || r === undefined || !(r > 0)) return a;
+      const startAngle = Math.atan2(s.y - c.y, s.x - c.x);
+      const endAngle = Math.atan2(e.y - c.y, e.x - c.x);
+      return { ...a, radius: r, startAngle, endAngle: startAngle + ccwDelta(startAngle, endAngle) };
+    }),
+  };
 }
 
 /** the round (circle/arc) entity ids a compiled constraint names — the blame

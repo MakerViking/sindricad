@@ -221,7 +221,9 @@ describe("coincident: the silent-miss fixes", () => {
     const ct = new ConstraintTools(h);
     ct.click(v(50, 50)); // empty space
     expect(h._cons).toEqual([]);
-    expect(h.warnings.join(" ")).toMatch(/ENDPOINTS/);
+    expect(h.warnings.join(" ")).toMatch(/POINTS/);
+    expect(h.warnings.join(" "), "and it names every kind of point that works")
+      .toMatch(/centre/);
     expect(h.warnings.join(" ")).toMatch(/Collinear/);
   });
 
@@ -359,5 +361,91 @@ describe("which entity the pick order nominates as the mover (bug #86)", () => {
     new ConstraintTools(h).click(v(5, 0.5));
     expect(h._cons).toEqual([{ type: "horizontal", line: "l1" }]);
     expect(h.moves[0]).toBeUndefined();
+  });
+});
+
+describe("a circle or arc CENTRE is a point the constraint tools can pick", () => {
+  // Reported 2026-09-01, with the document: Coincident aimed at a circle's
+  // centre did nothing at all. The centre is addressable by every dimension and
+  // by `fix` (both resolve through dimRefPoints), and the constraint picker kept
+  // a SECOND list of point providers with no circle in it — so the click armed
+  // nothing, fell through to the entity pick, missed there too (a circle is
+  // measured by its RIM, so its centre is not on it), and answered with a
+  // message about endpoints. A dead tool, on a target the app draws a snap dot
+  // on.
+  const circleAndRect = (): ResolvedEntity[] => [
+    { type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 },
+    { type: "circle", id: "K", x: 60, y: 30, radius: 12 },
+  ];
+
+  it("arms the centre on the first click, and marks it", () => {
+    const h = new MockHost();
+    h._ents = circleAndRect();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(60, 30)); // dead on the circle's centre — nowhere near its rim
+    expect(h.warnings, "a click on a real target must not report a miss").toEqual([]);
+    expect(h.pending, "the held point is the centre").toEqual({ x: 60, y: 30 });
+  });
+
+  it("joins a rectangle corner to a circle centre", () => {
+    const h = new MockHost();
+    h._ents = circleAndRect();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(20, 10)); // rect corner 2 (tr)
+    ct.click(v(60, 30)); // circle centre
+    expect(h._cons).toEqual([{ type: "coincident", e1: "R", p1: 2, e2: "K", p2: 0 }]);
+    expect(h.moves[0], "the first pick is the mover").toBe("R");
+  });
+
+  it("takes an ARC centre at index 2, the index every dimension uses for it", () => {
+    const h = new MockHost();
+    // quarter arc about (0,0), r 20: ends at (20,0) and (0,20)
+    h._ents = [
+      { type: "arc", id: "A", x1: 20, y1: 0, x2: 0, y2: 20, mx: Math.SQRT1_2 * 20, my: Math.SQRT1_2 * 20 },
+      { type: "point", id: "T", x: 50, y: 50 },
+    ];
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, 0));   // the arc's CENTRE — neither of its ends is here
+    ct.click(v(50, 50)); // the sketch point
+    expect(h._cons).toEqual([{ type: "coincident", e1: "A", p1: 2, e2: "T", p2: 0 }]);
+  });
+
+  it("hovers what it picks: the highlight sits on the centre", () => {
+    // The invariant this picker exists to keep — a point you can hit is one you
+    // can see, and the reverse. hoverPoint and the click flows both resolve
+    // through pickEndpoint, so this goes red the moment they are given separate
+    // lists again.
+    const h = new MockHost();
+    h._ents = circleAndRect();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    expect(ct.hoverPoint(v(60.4, 30.3))).toEqual({ x: 60, y: 30 });
+  });
+
+  it("midpoint and symmetric take a centre too", () => {
+    const h = new MockHost();
+    h._ents = [
+      { type: "circle", id: "K", x: 60, y: 30, radius: 12 },
+      { type: "line", id: "l1", x1: 0, y1: 0, x2: 40, y2: 0 },
+      { type: "point", id: "T", x: 5, y: 40 },
+    ];
+    h._tool = "midpoint";
+    const ct = new ConstraintTools(h);
+    ct.click(v(60, 30)); // the centre
+    ct.click(v(20, 0));  // the line to centre it on
+    expect(h._cons).toEqual([{ type: "midpoint", e: "K", p: 0, line: "l1" }]);
+
+    h._cons = [];
+    h._tool = "symmetric";
+    const st = new ConstraintTools(h);
+    st.click(v(60, 30)); // the centre
+    st.click(v(5, 40));  // the sketch point
+    st.click(v(20, 0));  // the axis
+    expect(h._cons).toEqual([
+      { type: "symmetric", e1: "K", p1: 0, e2: "T", p2: 0, line: "l1" },
+    ]);
   });
 });

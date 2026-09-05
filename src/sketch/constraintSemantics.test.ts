@@ -1141,24 +1141,71 @@ describe("a rectangle corner constraint can destroy the rectangle", () => {
     { type: "coincident", e1: "A", p1: 0, e2: "R~0", p2: 0 } as SketchConstraint,
   ];
 
-  it("solve 1: a constraint that can only be met by mirroring is refused", async () => {
-    const r = await compileAndSolve(start(), pullCornerAcross);
+  /** What must hold whichever way this lands, and the reason these rows stopped
+   *  asserting a bare refusal on 2026-09-05.
+   *
+   *  The mirror is still refused — nothing below relaxes the guard. What changed
+   *  is that a refused pass is now re-solved once from a shape-preserving seed
+   *  (sketchSolve's retry), and for several of these fixtures that seed finds the
+   *  answer the mirror was a shortcut to: translate the rectangle so the named
+   *  corner reaches its target, corner labels intact. That is strictly the better
+   *  outcome — the user's constraint is applied instead of thrown away with a
+   *  "conflicts" toast — so the assertion is the INVARIANT rather than the
+   *  refusal: either nothing was written, or the constraint was met and document
+   *  corner 0 is still the corner the constraint named.
+   *
+   *  Which of the two comes back is not stable across runs, and that is not this
+   *  change's doing: the same sketch already solved two different ways depending
+   *  on what ran before it (solveReproducibility.test.ts). */
+  const expectNoRelabel = async (
+    start: ResolvedEntity[],
+    cons: SketchConstraint[],
+    where: string,
+    /** where document corner 0 must end up when the solve is accepted */
+    target: (ents: ResolvedEntity[]) => { at: V2; within: number },
+  ) => {
+    const r = await compileAndSolve(start, cons);
+    if (!r.ok) {
+      expect(r.entities, `${where}: a refused solve hands back the pre-solve geometry`).toEqual(start);
+      return r;
+    }
+    expect(r.conflicts, `${where}: an accepted solve blames nobody`).toEqual([]);
+    expectStillRectangular(r.entities, "R", where, start);
+    const t = target(r.entities);
+    expect(dist(pt(r.entities, "R", 0), t.at),
+      `${where}: document corner 0 is not the corner the constraint named — the solve relabelled it`)
+      .toBeLessThanOrEqual(t.within);
+    return r;
+  };
+
+  it("solve 1: a mirroring solve never reaches the document", async () => {
     // Measured on the unfixed tree: ok:true, conflicts:[], a 10x20 rectangle
     // whose document corner 0 was 22.36 mm from the point it was made coincident
     // with — the solver's corner 0 had been relabelled as document corner 2.
-    expect(r.ok, "a solve that would relabel the rectangle's corners must be refused").toBe(false);
-    expect(r.entities, "and the pre-solve geometry is handed back").toEqual(start());
+    await expectNoRelabel(start(), pullCornerAcross, "corner 0 pulled across the rectangle",
+      (ents) => ({ at: pt(ents, "A", 0), within: TOL }));
   });
 
-  it("solve 2: nothing was written, so re-solving is a fixed point", async () => {
+  it("solve 2: the next pump does not eat the rectangle", async () => {
     // SketchMode pumps a solve on every constraint change and every drag frame,
     // so "the second solve" is not a contrived scenario — it is the next frame.
     // That is what turned the relabel into an annihilation: solve 2 used to put
     // all four corners at (27.171572875253805, 30).
+    //
+    // What it does NOT assert, deliberately: that the two pumps are byte-equal.
+    // They were, back when both were refusals handing back the same untouched
+    // input. Now that a pump can legitimately land the constraint, this sketch
+    // still has free degrees of freedom and the solver is bistable across
+    // process state (solveReproducibility.test.ts), so two pumps can settle on
+    // two valid shapes. A rectangle with area, corners still labelled the way
+    // the constraint named them, is what has to hold on both.
     const once = await compileAndSolve(start(), pullCornerAcross);
     const twice = await compileAndSolve(once.entities, pullCornerAcross);
-    expect(twice.entities, "a refused solve must not drift on the next pump").toEqual(once.entities);
     expectStillRectangular(twice.entities, "R", "after two solves", start());
+    if (twice.ok) {
+      expect(dist(pt(twice.entities, "R", 0), pt(twice.entities, "A", 0)),
+        "the second pump relabelled the corners").toBeLessThanOrEqual(TOL);
+    }
   });
 
   it("CONTROL: a pull that does NOT mirror still solves, and corner 0 lands on it", async () => {
@@ -1232,17 +1279,18 @@ describe("a rectangle corner constraint can destroy the rectangle", () => {
     // (measured — that is why these rows exist).
     ["x only", L("A", 60, -10, 80, -10), { w: -40, h: 20 }],
     ["y only", L("A", -20, 40, 0, 40), { w: 40, h: -30 }],
-  ])("ONE SIGN (%s): a mirror on a single axis is refused as well", async (_label, a) => {
+  ])("ONE SIGN (%s): a mirror on a single axis never reaches the document", async (_label, a) => {
     // Corner 0 pulled straight past the corner that shares its edge, so exactly
     // one of the two extents comes back negative and NEITHER is anywhere near
     // zero — the collapse arm cannot be what refuses these. The solver's signed
     // extents are in the third column, read off the guard while writing this.
     const start = [RECT("R", 0, 0, 40, 20), a];
-    const r = await compileAndSolve(start, [
-      { type: "coincident", e1: "A", p1: 0, e2: "R~0", p2: 0 } as SketchConstraint,
-    ]);
-    expect(r.ok, "a single-axis mirror relabels corners just as thoroughly").toBe(false);
-    expect(r.entities, "and the pre-solve geometry is handed back").toEqual(start);
+    await expectNoRelabel(
+      start,
+      [{ type: "coincident", e1: "A", p1: 0, e2: "R~0", p2: 0 } as SketchConstraint],
+      "a single-axis mirror",
+      (ents) => ({ at: pt(ents, "A", 0), within: TOL }),
+    );
   });
 
   it("the BARE rectangle id + corner index scopes the guard, not just `R~k`", async () => {
@@ -1254,12 +1302,16 @@ describe("a rectangle corner constraint can destroy the rectangle", () => {
     // disabled: ok:true, conflicts:[], R = 9.266 x 19.320 with corner 0
     // relabelled — the headline bug, on a path a user can reach today.
     const start = [RECT("R", 0, 0, 40, 20), { type: "point", id: "A", x: 30, y: 30 } as unknown as ResolvedEntity];
-    const r = await compileAndSolve(start, [
-      { type: "fix", e: "A", p: 0 } as SketchConstraint,
-      { type: "p2pDistance", e1: "A", p1: 0, e2: "R", p2: 0, value: 1 } as SketchConstraint,
-    ]);
-    expect(r.ok, "a corner addressed by bare id must scope the guard too").toBe(false);
-    expect(r.entities, "and the pre-solve geometry is handed back").toEqual(start);
+    await expectNoRelabel(
+      start,
+      [
+        { type: "fix", e: "A", p: 0 } as SketchConstraint,
+        { type: "p2pDistance", e1: "A", p1: 0, e2: "R", p2: 0, value: 1 } as SketchConstraint,
+      ],
+      "a corner addressed by bare id",
+      // the dim says 1 mm from the pinned point, so that is where corner 0 goes
+      () => ({ at: { x: 30, y: 30 }, within: 1 + TOL }),
+    );
   });
 
   it("a FIX on a corner refuses the mirror, because the pin would change corners", async () => {
@@ -1318,13 +1370,15 @@ describe("a rectangle corner constraint can destroy the rectangle", () => {
     // back as 9.266 x 19.320 with corner 0 relabelled — bug A again, reached
     // without a single non-rectangle entity in the sketch.
     const start = [RECT("R", 0, 0, 40, 20), RECT("C", 35, 35, 10, 10)];
-    const cons = [
-      { type: "fix", e: "C", p: 0 } as SketchConstraint, // C's corner 0 sits at (30,30)
-      { type: "p2pDistance", e1: "C", p1: 0, e2: "R", p2: 0, value: 1 } as SketchConstraint,
-    ];
-    const r = await compileAndSolve(start, cons);
-    expect(r.ok, "a mirror observable through the OTHER rectangle must be refused").toBe(false);
-    expect(r.entities, "and the pre-solve geometry is handed back").toEqual(start);
+    await expectNoRelabel(
+      start,
+      [
+        { type: "fix", e: "C", p: 0 } as SketchConstraint, // C's corner 0 sits at (30,30)
+        { type: "p2pDistance", e1: "C", p1: 0, e2: "R", p2: 0, value: 1 } as SketchConstraint,
+      ],
+      "a mirror observable through the OTHER rectangle",
+      (ents) => ({ at: pt(ents, "C", 0), within: 1 + TOL }),
+    );
   });
 
   it("an OFFSET tying two rectangles refuses a mirroring drag", async () => {
@@ -1528,41 +1582,47 @@ describe("a rectangle solved out of existence is refused, not written", () => {
       .toThrow(/collapsed/);
   });
 
-  it("parallel between a rect edge and a skew line is refused, not flattened", async () => {
-    // Unfixed: ok:true, conflicts:[], height 8.881784197001252e-16.
+  it("parallel between a rect edge and a skew line is achieved, not flattened", async () => {
+    // Unfixed: ok:true, conflicts:[], height 8.881784197001252e-16 — the
+    // rectangle flattened, because a zero-length edge has no direction and
+    // `parallel` against it is vacuous. The guard caught that and refused the
+    // whole thing, which was right but left the user with a working constraint
+    // withdrawn as a "conflict"; since 2026-09-05 the retry re-solves it from a
+    // shape-preserving seed and the line rotates instead.
     const start = [RECT("R", 0, 0, 40, 20), L("A", 40, 0, 70, 12)];
     const r = await compileAndSolve(start, [{ type: "parallel", l1: "R~1", l2: "A" } as SketchConstraint]);
-    expect(r.ok, "the collapse must be refused").toBe(false);
-    expect(r.entities, "and the pre-solve geometry handed back").toEqual(start);
+    expect(r.ok, "the constraint is satisfiable, so it must be applied").toBe(true);
+    expect(r.conflicts).toEqual([]);
+    expectStillRectangular(r.entities, "R", "parallel to a skew line", start);
+    expect(Math.abs(cross(dir(seg(r.entities, "R~1")), dir(seg(r.entities, "A")))),
+      "and the two are actually parallel").toBeLessThanOrEqual(TOL);
   });
 
-  it("perpendicular is achieved or refused depending on the OTHER line's start angle", async () => {
-    // Why the matrix's `perpendicular` row passing is not reassurance. Same
-    // constraint, same rectangle, same first click — only the free line's
-    // starting direction differs, and that decides whether the solver rotates
-    // the line (correct) or flattens the rectangle. A user cannot see which side
-    // of that they are on before clicking.
+  it("perpendicular no longer depends on the OTHER line's start angle", async () => {
+    // What this row used to say, and why it existed: same constraint, same
+    // rectangle, same first click — only the free line's starting direction
+    // differed, and that decided whether the solver rotated the line (correct)
+    // or flattened the rectangle (refused, and reported to the user as a
+    // conflict). A user cannot see which side of that they are on before
+    // clicking, which is precisely the complaint in the 2026-09-01 report.
     //
-    // What the guard changes: the flattening branch is REFUSED rather than
-    // silently applied, so the two are no longer indistinguishable from the
-    // outside. The coin flip itself remains — that is a solver property, not
-    // something a post-solve guard can remove.
+    // Both branches now land the constraint. The shallow one is the one that
+    // used to fail; it is kept as a row of its own so a regression names itself.
     const run = async (x2: number, y2: number) => {
+      const start = [RECT("R", 0, 0, 40, 20), L("A", 60, 0, x2, y2)];
       const r = await compileAndSolve(
-        [RECT("R", 0, 0, 40, 20), L("A", 60, 0, x2, y2)],
+        start,
         [{ type: "perpendicular", l1: "R~0", l2: "A" } as SketchConstraint],
       );
-      const R = byId(r.entities).get("R") as { width: number } | undefined;
-      return { ok: r.ok, conflicts: r.conflicts, width: R?.width ?? NaN };
+      return { r, start };
     };
-    const steep = await run(69, 40);   // A starts near vertical
-    const shallow = await run(100, 9); // A starts near horizontal
-
-    expect(steep.ok, "a steep starting line: the constraint is achieved").toBe(true);
-    expect(steep.width, "and the rectangle survives").toBeGreaterThan(MIN_VIOLATION);
-    // unfixed: ok true, width 0 — the flattening was indistinguishable from the steep case
-    expect(shallow.ok, "a shallow starting line: the flattening solve is refused").toBe(false);
-    expect(shallow.width, "and the rectangle comes back exactly as it went in").toBeCloseTo(40, 9);
+    for (const [label, x2, y2] of [["steep", 69, 40], ["shallow", 100, 9]] as const) {
+      const { r, start } = await run(x2, y2);
+      expect(r.ok, `a ${label} starting line: the constraint is achieved`).toBe(true);
+      expectStillRectangular(r.entities, "R", `${label} start`, start);
+      expect(Math.abs(dot(dir(seg(r.entities, "R~0")), dir(seg(r.entities, "A")))),
+        `${label}: the two are actually perpendicular`).toBeLessThanOrEqual(TOL);
+    }
   });
 
   it("symmetric about a rect-edge axis: a zero-width answer never reaches the document", async () => {
@@ -1666,6 +1726,114 @@ describe("a rectangle solved out of existence is refused, not written", () => {
       expect(constraintIndexOf(id), `blamed an implicit id: ${id}`).not.toBeNull();
       expect(constraintIndexOf(id)!).toBeLessThan(cons.length);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5c. A CONSTRAINT THAT NEEDS A ROTATION IS SOLVED, NOT WITHDRAWN
+// ---------------------------------------------------------------------------
+
+describe("a constraint whose answer is a rotation away is not reported as a conflict", () => {
+  // The 2026-09-01 report, measured. Every case here is SATISFIABLE — the sketch
+  // has an answer, and the answer is a rotation or a translation away — but the
+  // solver's nearest way downhill was to eat an operand instead: a line at zero
+  // length has no direction, so `parallel` against it goes vacuously true, and a
+  // rectangle whose width crosses zero satisfies a corner constraint by walking
+  // that corner past its neighbour. The geometry guard caught the wreckage and
+  // sketchMode withdrew the user's constraint with "that constraint conflicts
+  // with the ones already on this sketch" — so seven tools read as broken on a
+  // rectangle, and the reporter concluded a rectangle was not an assembly of
+  // lines at all.
+  //
+  // A SWEEP, not one fixture, because that is exactly how this shipped: the
+  // matrix rows above pass on a line that starts at 2.9 degrees, and the same
+  // constraint on the same rectangle fails at other starting angles. One angle
+  // proves nothing here.
+  //
+  // Measured on the unfixed tree, 36 angles each, with the app's own mover bias:
+  // midpoint on corner 0 failed 32 times, corner 1 18, corner 3 32, corner 2
+  // never (whichever corner already lies toward the line is the one that
+  // survives — which is what made it look as though the corner INDEX mattered);
+  // symmetric on two corners 19-33; collinear on a rect edge 11 and on a PLAIN
+  // free line 6. That last number is why the fix is not rectangle-shaped: two
+  // ordinary lines fall into the same hole, and the rectangle's four implicit
+  // horizontal/vertical pins only widen it.
+  const ANGLES = Array.from({ length: 36 }, (_, i) => i * 5);
+  /** a free 40 mm line from (60,0) at `deg` — the second operand for every row */
+  const lineAt = (deg: number) => {
+    const a = (deg * Math.PI) / 180;
+    return L("A", 60, 0, 60 + 40 * Math.cos(a), 40 * Math.sin(a));
+  };
+  /** the app's own emission: the first-picked operand is the mover (bug #86) */
+  const sweep = async (
+    ents: (deg: number) => ResolvedEntity[],
+    cons: SketchConstraint[],
+    moves: string,
+  ) => {
+    const failed: number[] = [];
+    for (const deg of ANGLES) {
+      const r = await compileAndSolve(ents(deg), cons, undefined, { moves: [moves] });
+      if (!r.ok || r.conflicts.length) failed.push(deg);
+    }
+    return failed;
+  };
+
+  it.each([0, 1, 2, 3])("midpoint on rectangle corner %i solves at every angle", async (corner) => {
+    const failed = await sweep(
+      (deg) => [RECT("R", 0, 0, 40, 20), lineAt(deg)],
+      [{ type: "midpoint", e: "R", p: corner, line: "A" } as SketchConstraint],
+      "R",
+    );
+    expect(failed, `corner ${corner} was withdrawn at these starting angles`).toEqual([]);
+  });
+
+  it.each([[0, 1], [0, 2], [1, 2], [0, 3]])(
+    "symmetric on rectangle corners %i and %i solves at every angle",
+    async (p1, p2) => {
+      const failed = await sweep(
+        (deg) => [RECT("R", 0, 0, 40, 20), lineAt(deg)],
+        [{ type: "symmetric", e1: "R", p1, e2: "R", p2, line: "A" } as SketchConstraint],
+        "R",
+      );
+      expect(failed, `corners ${p1}/${p2} were withdrawn at these starting angles`).toEqual([]);
+    },
+  );
+
+  it.each(["collinear", "parallel", "perpendicular"] as const)(
+    "%s between a rect edge and a free line solves at every angle",
+    async (type) => {
+      const failed = await sweep(
+        (deg) => [RECT("R", 0, 0, 40, 20), lineAt(deg)],
+        [{ type, l1: "R~0", l2: "A" } as SketchConstraint],
+        "R",
+      );
+      expect(failed, `${type} was withdrawn at these starting angles`).toEqual([]);
+    },
+  );
+
+  it("THE CONTROL: two plain lines fall into the same hole, and come out of it", async () => {
+    // Not a rectangle in sight. The mover is an ordinary free line sitting where
+    // the rectangle's bottom edge was; on the unfixed tree collinear collapsed it
+    // to a POINT at 6 of the 36 angles (90 through 115), returning a zero-length
+    // line with `parallel` gone vacuous. If a future change makes the rows above
+    // pass by special-casing rectangles, this is the row that stays red.
+    const failed = await sweep(
+      (deg) => [L("B", -20, -10, 20, -10), lineAt(deg)],
+      [{ type: "collinear", l1: "B", l2: "A" } as SketchConstraint],
+      "B",
+    );
+    expect(failed, "a plain free line was withdrawn at these starting angles").toEqual([]);
+  });
+
+  it("TEETH: a real contradiction is still refused, and the rectangle survives", async () => {
+    // The retry keeps a pass only if it comes back clean, so this must not have
+    // become a way to launder an impossible constraint into a silent success.
+    // `vertical` on an edge the rectangle itself pins horizontal has no answer
+    // except a zero-width rectangle.
+    const start = [RECT("R", 0, 0, 40, 20)];
+    const r = await compileAndSolve(start, [{ type: "vertical", line: "R~0" } as SketchConstraint]);
+    expect(r.ok, "an unsatisfiable constraint must still fail").toBe(false);
+    expect(r.entities, "and the pre-solve geometry is handed back").toEqual(start);
   });
 });
 
@@ -1832,6 +2000,13 @@ describe("coincident / midpoint / symmetric reach every kind of point", () => {
     { kind: "sketch point", ents: () => [PT("P", 12, 7)], ref: ["P", 0], at: { x: 12, y: 7 } },
     { kind: "spline end", ents: () => [SPL("P", [[0, 0], [10, 6], [24, 4]])], ref: ["P", 1], at: { x: 24, y: 4 } },
     { kind: "rectangle corner", ents: () => [RECT("P", 0, 0, 40, 20)], ref: ["P", 2], at: { x: 20, y: 10 } },
+    // The two arms added on 2026-09-05, and the second report of this exact
+    // shape: a circle's centre (index 0) and an arc's centre (index 2) are
+    // addressable by every dimension and by `fix`, and every one of these three
+    // tools resolved them to NOTHING — no constraint, no movement, no warning.
+    // "Coincident on a circle's centre does nothing", reported with the document.
+    { kind: "circle centre", ents: () => [C("P", 6, -9, 12)], ref: ["P", 0], at: { x: 6, y: -9 } },
+    { kind: "arc centre", ents: () => [ARC("P", 0, 0, 20, 0, Math.PI / 2)], ref: ["P", 2], at: { x: 0, y: 0 } },
   ];
 
   it.each(PROVIDERS)("coincident takes a $kind", async ({ kind, ents, ref, at }) => {
