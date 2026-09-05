@@ -1,6 +1,8 @@
 // On-canvas constraint glyphs: small DOM badges projected onto the sketch,
 // mirroring SketchDimensions. Each shows a constraint's type; clicking one (in
-// the select tool) deletes that constraint. Conflicting constraints render red.
+// the select tool) deletes that constraint, and a double- or right-click deletes
+// it even when the badge sits on the geometry it constrains, which claims plain
+// clicks. Conflicting constraints render red.
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
@@ -28,8 +30,40 @@ export class SketchGlyphs {
    *  click that names an operand. Return true = "the click belonged to the tool
    *  underneath" and the glyph skips its delete for that click. */
   onOverlapPick: ((e: PointerEvent) => boolean) | null = null;
+  /** Right-click on a badge. The owner renders the menu (this class owns no menu
+   *  UI) and decides what it offers; `cIndex` is the constraint the badge names.
+   *  This is the delete route geometry cannot steal — the glyph for
+   *  horizontal/vertical/parallel/perpendicular/equal/midpoint/symmetric sits at
+   *  the line MIDPOINT and the one for coincident/fix on an ENDPOINT, i.e. by
+   *  construction exactly ON the operand, so onOverlapPick claims every left
+   *  click and rebuilds the badge away mid-gesture. Reported 2026-08-31
+   *  (59c5a7d7): "could not delete a parallel constraint". */
+  onMenu: ((e: MouseEvent, cIndex: number) => void) | null = null;
   /** set by the pointerdown hook above; consumed by the click that follows */
   private suppressDelete = false;
+  /** The previous left press on a badge, for our OWN double-click detection.
+   *  The browser's `dblclick` is useless here: the first press runs
+   *  onOverlapPick, which rebuilds the whole layer, so the two clicks land on
+   *  different elements and the retargeted dblclick never reaches a badge
+   *  (measured in Chromium — a dblclick on an overlapping glyph deleted
+   *  nothing). This state lives on the instance, which outlives the elements. */
+  private lastPress = { t: 0, x: 0, y: 0, cIndex: -1 };
+  private static readonly DBL_MS = 500;
+  private static readonly DBL_PX = 5;
+
+  /** is this press the second half of a double-click on the same badge? */
+  private isDoublePress(cIndex: number, e: PointerEvent): boolean {
+    const p = this.lastPress;
+    const hit =
+      p.cIndex === cIndex &&
+      Date.now() - p.t <= SketchGlyphs.DBL_MS &&
+      Math.abs(e.clientX - p.x) <= SketchGlyphs.DBL_PX &&
+      Math.abs(e.clientY - p.y) <= SketchGlyphs.DBL_PX;
+    this.lastPress = hit
+      ? { t: 0, x: 0, y: 0, cIndex: -1 } // consumed: a triple-click isn't two deletes
+      : { t: Date.now(), x: e.clientX, y: e.clientY, cIndex };
+    return hit;
+  }
 
   constructor(private viewport: Viewport) {
     this.root = document.createElement("div");
@@ -58,9 +92,27 @@ export class SketchGlyphs {
       el.textContent = g.label;
       el.title = st === "conflict" ? "Conflicting constraint — click to delete"
         : st === "over" ? "Redundant (over-defined) constraint — click to delete"
-        : "Click to delete this constraint";
+        : "Click to delete this constraint (double- or right-click if it sits on geometry)";
       el.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
+        // Primary button only, the same guard the dimension badges carry: a
+        // secondary press must leave this element alive (and the selection
+        // alone) for the contextmenu handler below, and onOverlapPick rebuilds
+        // the whole layer when geometry claims the pick.
+        if (e.button !== 0) return;
+        // Escape hatch, and literally what the 59c5a7d7 reporter tried: a badge
+        // sitting on its own operand loses every SINGLE click to the geometry
+        // underneath, so a double-click deletes regardless of who won the
+        // singles. It acts on the second PRESS, not on a `click`/`dblclick`,
+        // because the rebuild this press would otherwise trigger detaches the
+        // element those later events need. `suppressDelete` swallows the click
+        // that follows this press (every pointerdown rewrites it, so it can
+        // never go stale).
+        if (this.isDoublePress(g.cIndex, e)) {
+          this.suppressDelete = true;
+          this.onDelete?.(g.cIndex);
+          return;
+        }
         this.suppressDelete = this.onOverlapPick?.(e) ?? false;
       });
       el.addEventListener("click", (e) => {
@@ -70,6 +122,11 @@ export class SketchGlyphs {
           return;
         }
         this.onDelete?.(g.cIndex);
+      });
+      el.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onMenu?.(e, g.cIndex);
       });
       this.root.appendChild(el);
       this.items.push({ el, pos: g.pos });

@@ -7,6 +7,7 @@ import {
 } from "./entityDims";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
+import { isPlacedDim } from "../types";
 
 describe("entityDims", () => {
   it("gives width + height for a rectangle, writable in place", () => {
@@ -104,6 +105,74 @@ describe("constraintDims (radius + angle driving dims)", () => {
     const dims = constraintDims([c], [{ type: "radius", e: "c", value: 99, driven: true }]);
     expect(dims[0]!.driven).toBe(true);
     expect(dims[0]!.valueMm).toBeCloseTo(5);
+  });
+});
+
+// The smart-dimension horizontal/vertical distances (GH #17) are created by the
+// dimension tool and solved, but constraintDims had no branch for them: they
+// fell through its final `else return`, so a DX/DY dimension rendered NO badge
+// at all — invisible, uneditable and undeletable from the moment it was placed.
+describe("constraintDims: the horizontal/vertical (DX/DY) distances", () => {
+  const a: ResolvedEntity = { type: "line", id: "a", x1: 0, y1: 0, x2: 0, y2: 0 };
+  const b: ResolvedEntity = { type: "line", id: "b", x1: 30, y1: 20, x2: 30, y2: 20 };
+  const ents = [a, b];
+
+  it("renders a badge for p2pDistanceX, anchored on the X gap not the diagonal", () => {
+    const dims = constraintDims(ents, [{ type: "p2pDistanceX", e1: "a", p1: 0, e2: "b", p2: 0, value: 30 }]);
+    expect(dims).toHaveLength(1);
+    expect(dims[0]!.cIndex).toBe(0);
+    expect(dims[0]!.valueMm).toBe(30);
+    // the dimension line spans the X gap at one Y — a diagonal one would be the
+    // p2pDistance layout, showing a slanted annotation labelled with a
+    // horizontal number
+    const dimLine = dims[0]!.lines[2]!;
+    expect(dimLine[0].y).toBeCloseTo(dimLine[1].y, 6);
+    expect(Math.abs(dimLine[1].x - dimLine[0].x)).toBeCloseTo(30, 6);
+    expect(dims[0]!.labelPos.x).toBeCloseTo(15, 6);
+  });
+
+  it("renders a badge for p2pDistanceY, anchored on the Y gap", () => {
+    const dims = constraintDims(ents, [{ type: "p2pDistanceY", e1: "a", p1: 0, e2: "b", p2: 0, value: 20 }]);
+    expect(dims).toHaveLength(1);
+    expect(dims[0]!.valueMm).toBe(20);
+    const dimLine = dims[0]!.lines[2]!;
+    expect(dimLine[0].x).toBeCloseTo(dimLine[1].x, 6);
+    expect(Math.abs(dimLine[1].y - dimLine[0].y)).toBeCloseTo(20, 6);
+    expect(dims[0]!.labelPos.y).toBeCloseTo(10, 6);
+  });
+
+  it("keeps the SIGN — a leftward DX reads negative, never absolutised", () => {
+    const driving = constraintDims(ents, [{ type: "p2pDistanceX", e1: "b", p1: 0, e2: "a", p2: 0, value: -30 }]);
+    expect(driving[0]!.valueMm).toBe(-30);
+    const driven = constraintDims(ents, [
+      { type: "p2pDistanceX", e1: "b", p1: 0, e2: "a", p2: 0, value: 999, driven: true },
+    ]);
+    expect(driven[0]!.driven).toBe(true);
+    expect(driven[0]!.valueMm).toBeCloseTo(-30, 6); // measured e2 - e1 along X
+  });
+
+  // The sign has to travel to the BADGE, not just to the readout: the label
+  // editor gates a typed value on it (a length must be positive, a signed
+  // distance may be either way round), so without this flag the badge shows
+  // "-30" and then rejects "-30" when the user types it back.
+  it("marks the badge SIGNED, so the editor accepts the value it shows", () => {
+    const dims = constraintDims(ents, [{ type: "p2pDistanceX", e1: "b", p1: 0, e2: "a", p2: 0, value: -30 }]);
+    expect(dims[0]!.signed).toBe(true);
+    const y = constraintDims(ents, [{ type: "p2pDistanceY", e1: "b", p1: 0, e2: "a", p2: 0, value: -20 }]);
+    expect(y[0]!.signed).toBe(true);
+  });
+
+  it("an ALIGNED distance is a magnitude and is not signed", () => {
+    const dims = constraintDims(ents, [{ type: "p2pDistance", e1: "a", p1: 0, e2: "b", p2: 0, value: 36 }]);
+    expect(dims[0]!.signed).toBeFalsy();
+  });
+
+  it("is placeable and draggable like every other placed dim", () => {    const dims = constraintDims(ents, [
+      { type: "p2pDistanceY", e1: "a", p1: 0, e2: "b", p2: 0, value: 20, place: { ox: 8, oy: 0 } },
+    ]);
+    expect(dims[0]!.place).toBeTruthy();
+    expect(isPlacedDim({ type: "p2pDistanceX", e1: "a", p1: 0, e2: "b", p2: 0, value: 30 })).toBe(true);
+    expect(isPlacedDim({ type: "p2pDistanceY", e1: "a", p1: 0, e2: "b", p2: 0, value: 20 })).toBe(true);
   });
 });
 

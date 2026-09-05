@@ -14,10 +14,10 @@ import { camHash } from "../viewport/camHash";
 import { overlayHost, outsideRect, clampIntoRect } from "../viewport/overlayHost";
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
-import { entityDims, staggeredDefaults, type DimField } from "./entityDims";
+import { entityDims, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
-import { fmtLength, parseField, displayValue, isPlainNumber } from "../ui/units";
+import { fmtLength, parseField, displayValue, isPlainNumber, dimValueOk } from "../ui/units";
 
 /** format a dim value for display: length in the display unit, angle in degrees;
  *  driven (reference) dims are wrapped in brackets, param-driven get fx:. */
@@ -55,15 +55,40 @@ interface DimLabel {
    *  never jumps on release. */
   placeCommit?: (ox: number, oy: number, done: boolean) => THREE.Vector2 | null;
   /** Remove the constraint this label drives. Present ONLY on constraint-backed
-   *  dims: an entity dim (a circle's diameter, a rectangle's width) is an
-   *  intrinsic property of the entity with no constraint to delete, so its
-   *  label offers the action disabled rather than not at all. */
+   *  dims: an entity dim (a rectangle's width) is an intrinsic property of the
+   *  entity with no constraint to delete, so its label offers the action
+   *  disabled rather than not at all. */
   onDelete?: () => void;
+  /** This badge's value COULD be governed by a driving constraint and isn't —
+   *  it is a live measurement of the geometry. Renders muted so a measured ⌀
+   *  and a driving ⌀ stop being pixel-identical (report fd7dcc5f). Still
+   *  editable: typing a value is what creates the driving constraint. */
+  measured?: boolean;
+  /** This dim's value is SIGNED (the smart tool's DX/DY: the sign says which
+   *  side), so the editor must take a negative back — see units.dimValueOk.
+   *  Absent on every other dim, which are magnitudes. */
+  signed?: boolean;
 }
 
 /** an extra, non-entity label (e.g. a distance constraint's value); valueMm
  *  is degrees when kind === "angle" */
 export type ExtraDim = Omit<DimLabel, "el" | "suppressEdit">;
+
+/** What a rendered constraint dim hands its badge, straight from constraintDims'
+ *  output. One function rather than a spread at the call site so a field that
+ *  changes how the badge BEHAVES reaches it by being added to ConstraintDim: the
+ *  `signed` flag arrived that way, and a DX badge that displays "-30 mm" while
+ *  its editor still refuses "-30" is exactly the failure a forgotten forward
+ *  looks like. The caller adds the behaviour (commit, delete, drag). */
+export function dimBadgeFields(d: ConstraintDim): Pick<ExtraDim, "anchor" | "valueMm" | "kind" | "driven" | "signed"> {
+  return {
+    anchor: d.labelPos,
+    valueMm: d.valueMm,
+    ...(d.kind ? { kind: d.kind } : {}),
+    ...(d.driven ? { driven: true } : {}),
+    ...(d.signed ? { signed: true } : {}),
+  };
+}
 
 export class SketchDimensions {
   private root: HTMLDivElement;
@@ -95,6 +120,18 @@ export class SketchDimensions {
    *  UI); `del` is the label's delete action, or null when the label is an entity
    *  dim and there is nothing to delete. */
   onLabelMenu: ((e: MouseEvent, del: (() => void) | null) => void) | null = null;
+  /** The driving constraint behind an ENTITY dim, resolved by the owner against
+   *  the live constraint list. Three answers, because the badge has three
+   *  states:
+   *    a function → a driving constraint governs this field; the badge deletes
+   *                 it (report ad6f8d54: a line's length and a circle's
+   *                 diameter render through the entity badge, which offered no
+   *                 delete at all, so those two dims were unremovable)
+   *    "free"     → the field CAN be governed and nothing governs it: the badge
+   *                 is a measurement, and renders as one
+   *    null       → the field is intrinsic (a rectangle's width): no constraint
+   *                 exists for it either way. */
+  onEntityConstraint: ((index: number, field: DimField) => (() => void) | "free" | null) | null = null;
 
   /** The label the Delete key acts on. Set by a click or a right-click, dropped
    *  on the next rebuild — a selection whose element no longer exists must not
@@ -160,6 +197,7 @@ export class SketchDimensions {
       for (const d of entityDims(e, defaults.get(e.id))) {
         const expr = this.entityExprOf?.(i, d.field);
         const field = d.field;
+        const backing = this.onEntityConstraint?.(i, field) ?? null;
         this.addLabel({
           anchor: d.labelPos,
           valueMm: d.valueMm,
@@ -168,6 +206,8 @@ export class SketchDimensions {
           placeCommit: (ox, oy, done) => this.onEntityPlace?.(i, field, ox, oy, done) ?? null,
           ...(this.onEditExpr ? { commitExpr: (raw: string) => this.onEditExpr!(i, field, raw) } : {}),
           ...(expr ? { expr } : {}),
+          ...(typeof backing === "function" ? { onDelete: backing } : {}),
+          ...(backing === "free" ? { measured: true } : {}),
         });
       }
     });
@@ -208,6 +248,7 @@ export class SketchDimensions {
     const fx = !!d.expr && !isPlainNumber(d.expr);
     const cls = ["sketch-dim"];
     if (d.driven) cls.push("sketch-dim-driven");
+    if (d.measured) cls.push("sketch-dim-measured");
     if (fx) cls.push("sketch-dim-fx");
     if (d.conflict) cls.push("conflict");
     else if (d.over) cls.push("over");
@@ -258,7 +299,9 @@ export class SketchDimensions {
     if (d.driven) {
       el.title = "Reference dimension (measured, not driving)";
     } else {
-      el.title = fx ? `= ${d.expr} · click to edit` : "Click to edit, drag to move";
+      el.title = fx ? `= ${d.expr} · click to edit`
+        : d.measured ? "Measured — click to set a driving dimension, drag to move"
+        : "Click to edit, drag to move";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         if (label.suppressEdit || this.suppressClick) {
@@ -395,9 +438,32 @@ export class SketchDimensions {
     input.focus();
     input.select();
     const revert = () => { label.el.textContent = fmtDim(label.valueMm, label.kind, label.driven, fx); };
-    input.addEventListener("input", () => input.classList.remove("input-error"));
+    // Nothing typed since focus AND the whole value still selected the way
+    // select() left it, so a Delete would wipe the text anyway — which is what
+    // makes it free to mean "delete this dimension" instead. Report ad6f8d54:
+    // "trying to delete a dimension... nothing happens" — a left-click opens
+    // this editor and focuses it, so the Delete that follows lands on an
+    // editable target, SketchMode.onKey bails, and all the key did was clear
+    // the (fully selected) input text.
+    //
+    // The selection half is not decoration: a user who clicks a caret into the
+    // open editor fires no `input` event, and Backspace there means the
+    // character before the caret. Deleting their dimension instead destroys
+    // work they never put at risk.
+    let pristine = true;
+    const untouched = () =>
+      pristine && input.selectionStart === 0 && input.selectionEnd === input.value.length;
+    input.addEventListener("input", () => {
+      pristine = false;
+      input.classList.remove("input-error");
+    });
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      if (untouched() && (e.key === "Delete" || e.key === "Backspace") && label.onDelete) {
+        e.preventDefault();
+        label.onDelete();
+        return;
+      }
       if (e.key === "Enter") {
         const raw = input.value.trim();
         if (label.commitExpr && (!isPlainNumber(raw) || label.expr !== undefined)) {
@@ -411,9 +477,9 @@ export class SketchDimensions {
           return; // success: refreshActive() rebuilds the labels
         }
         const val = parseField(raw, label.kind ?? "length");
-        // lengths must be positive; angles may be any finite (signed) value
-        const ok = val != null && (label.kind === "angle" ? Number.isFinite(val) : val > 0);
-        if (ok) label.commit(val);
+        // lengths are magnitudes and must be positive; angles may be any finite
+        // (signed) value; a signed distance may be either way round but not zero
+        if (dimValueOk(val, label.kind ?? "length", label.signed)) label.commit(val);
         else revert();
       } else if (e.key === "Escape") revert();
     });

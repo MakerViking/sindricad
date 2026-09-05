@@ -99,6 +99,27 @@ export function parseField(raw: string, kind: FieldKind = "length"): number | nu
   return kind === "length" ? fromDisplay(v) : v; // angle/count: raw number
 }
 
+/** Is a typed dimension value one this dim can hold? A length is a magnitude
+ *  and must be positive; an angle may be any finite value.
+ *
+ *  `signed` is the third case, and the reason this lives in one place rather
+ *  than at each input: the smart tool's horizontal/vertical distances store the
+ *  SIGN of the gap (types.ts — the operand order IS the sign), so their badge
+ *  really reads "-30 mm" and the user must be able to type that back, and to
+ *  type "30" to move the point to the other side (dimensionTool.p2pPlan). Zero
+ *  is still refused, for these harder than for a plain length: constraintDims
+ *  drops a dim whose two anchors coincide, so a committed 0 leaves a dimension
+ *  with no badge — invisible, and back to being undeletable.
+ *
+ *  Both edit paths ask this — the plain-number one in the label editor and the
+ *  expression one in SketchMode — because a dim that accepts "-30" typed and
+ *  rejects the parameter that evaluates to it is worse than either rule alone. */
+export function dimValueOk(v: number | null | undefined, kind: FieldKind, signed = false): v is number {
+  if (v == null || !Number.isFinite(v)) return false;
+  if (kind === "angle") return true;
+  return signed ? v !== 0 : v > 0;
+}
+
 /** A plain numeric literal (display-unit semantics at input surfaces) as
  *  opposed to an expression (canonical-unit semantics via the params engine).
  *  "5.0" and "-2e3" are plain; "5 mm", "width/2", "5+3" are expressions. */

@@ -551,6 +551,10 @@ export interface ConstraintDim {
    *  the basis a label drag adds its delta to (see EntityDim.place). Absent =
    *  this dim's constraint has no `place` slot, so its label can't be dragged. */
   place?: V;
+  /** This dim's value carries a SIGN that means something (which side), so the
+   *  badge shows it and the editor must accept it back — see units.dimValueOk.
+   *  Only the X/Y distances: every other dim here is a magnitude. */
+  signed?: boolean;
 }
 
 /** annotation + label geometry for the distance constraints (the driving dims
@@ -614,6 +618,12 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
     let a: V | null = null;
     let b: V | null = null;
     let value = 0;
+    /** The measured value for a SIGNED dim, when the plain a→b distance the
+     *  shared tail computes would throw the sign away. Only the X/Y distances
+     *  need it (see types.ts: the operand order IS the sign). Setting it is
+     *  also what marks the badge `signed`, so the readout and the editor's
+     *  idea of an acceptable value cannot drift apart. */
+    let measured: number | null = null;
     // the direction a rim dim samples when the geometry gives none (concentric)
     const placeDir = place ? v(place.ox, place.oy) : v(1, 0);
     const round = (id: string): Round | null => {
@@ -624,6 +634,20 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
       const e1 = byId.get(c.e1), e2 = byId.get(c.e2);
       a = e1 ? refPoint(e1, c.p1) : null;
       b = e2 ? refPoint(e2, c.p2) : null;
+      value = c.value;
+    } else if (c.type === "p2pDistanceX" || c.type === "p2pDistanceY") {
+      // Smart dimensioning's horizontal/vertical distances. The witness line
+      // spans ONE axis at the first point's other coordinate — the same anchors
+      // dimensionTool.p2pPlan draws while you place it, so the badge and the
+      // preview agree instead of the badge showing a diagonal.
+      const e1 = byId.get(c.e1), e2 = byId.get(c.e2);
+      const p = e1 ? refPoint(e1, c.p1) : null;
+      const q = e2 ? refPoint(e2, c.p2) : null;
+      if (p && q) {
+        a = p;
+        b = c.type === "p2pDistanceX" ? v(q.x, p.y) : v(p.x, q.y);
+        measured = c.type === "p2pDistanceX" ? q.x - p.x : q.y - p.y;
+      }
       value = c.value;
     } else if (c.type === "p2lDistance") {
       const pe = byId.get(c.e);
@@ -689,7 +713,7 @@ export function constraintDims(ents: ResolvedEntity[], constraints: SketchConstr
     // = how far off the geometry, sign = which side
     const off = place ? place.ox * nrm.x + place.oy * nrm.y : undefined;
     const lin = linear(a, b, nrm, meas, off);
-    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: driven ? meas : value, lines: lin.lines, driven, place: lin.place });
+    out.push({ cIndex: i, labelPos: lin.labelPos, valueMm: driven ? measured ?? meas : value, lines: lin.lines, driven, place: lin.place, ...(measured !== null ? { signed: true } : {}) });
   });
   return out;
 }

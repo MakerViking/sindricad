@@ -14,7 +14,7 @@ import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
-import { SketchDimensions, type ExtraDim } from "./sketchDimensions";
+import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
 import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
@@ -26,7 +26,7 @@ import {
 import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField } from "../ui/units";
+import { isPlainNumber, parseField, dimValueOk } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { circumcenter } from "./arc";
@@ -375,6 +375,7 @@ export class SketchMode {
     this.dims.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.dims.onPlanePoint = (cx, cy) => this.planePointAt(cx, cy);
     this.dims.onEntityPlace = (i, f, ox, oy, done) => this.commitEntityPlace(i, f, ox, oy, done);
+    this.dims.onEntityConstraint = (i, f) => this.entityDimConstraint(i, f);
     this.dims.onLabelMenu = (e, del) => {
       // Disabled rather than absent on an entity dim: a circle's diameter is a
       // property of the circle, so there is no constraint to remove, and saying
@@ -386,6 +387,11 @@ export class SketchMode {
     this.glyphs = new SketchGlyphs(viewport);
     this.glyphs.onDelete = (i) => this.deleteConstraint(i);
     this.glyphs.onOverlapPick = (e) => this.labelOverlapSelect(e);
+    this.glyphs.onMenu = (e, i) => {
+      contextMenu(e.clientX, e.clientY, [
+        { label: "Delete constraint", danger: true, onClick: () => this.deleteConstraint(i) },
+      ]);
+    };
     this.boundDown = (e) => this.onPointerDown(e);
     this.boundMove = (e) => this.onPointerMove(e);
     this.boundUp = (e) => this.endDrag(e.pointerId);
@@ -933,6 +939,30 @@ export class SketchMode {
     });
   }
 
+  /** The driving constraint behind an ENTITY dim badge, in the three answers
+   *  SketchDimensions.onEntityConstraint asks for. Only a line's LENGTH and a
+   *  circle's DIAMETER can be governed — exactly the two editDimension turns
+   *  into a driving constraint — so everything else is intrinsic and reports
+   *  null. Resolved against the live constraints with the same matcher
+   *  setDrivingDimension.sameTarget uses, so a badge and a re-dimension can
+   *  never disagree about which constraint is "the" one for this field. */
+  private entityDimConstraint(index: number, field: DimField): (() => void) | "free" | null {
+    const e = this.entities[index];
+    if (!e) return null;
+    const governs =
+      e.type === "line" && field === "length"
+        ? (c: SketchConstraint) => c.type === "distance" && c.line === e.id
+        : e.type === "circle" && field === "diameter"
+          ? (c: SketchConstraint) => c.type === "diameter" && c.circle === e.id
+          : null;
+    if (!governs) return null;
+    const at = this.constraints.findIndex(governs);
+    // A measurement, honestly labelled: the badge shows what the geometry
+    // currently IS, and nothing holds it there (report fd7dcc5f).
+    if (at < 0) return "free";
+    return () => this.deleteConstraint(at);
+  }
+
   /** Persist a dragged CONSTRAINT dim placement (the placed dims — see
    *  isPlacedDim, which is exactly the set that carries `place`). */
   private commitConstraintPlace(cIndex: number, ox: number, oy: number, done: boolean): THREE.Vector2 | null {
@@ -951,10 +981,7 @@ export class SketchMode {
       const key = con && isDimConstraint(con) && con.id ? `c:${con.id}` : null;
       const expr = key ? this.exprFor(key) : undefined;
       return {
-        anchor: d.labelPos,
-        valueMm: d.valueMm,
-        ...(d.kind ? { kind: d.kind } : {}),
-        ...(d.driven ? { driven: true } : {}),
+        ...dimBadgeFields(d),
         ...(st === "conflict" ? { conflict: true } : st === "over" ? { over: true } : {}),
         ...(expr ? { expr } : {}),
         // draggable only when this dim's constraint has a `place` slot to write
@@ -977,7 +1004,7 @@ export class SketchMode {
           if (!c.id) c.id = newConstraintId();
           return this.commitExprInput(`c:${c.id}`, d.kind === "angle" ? "angle" : "length", raw, (v) => {
             this.writeDimValue(c, v);
-          });
+          }, d.signed);
         },
       };
     });
@@ -990,7 +1017,13 @@ export class SketchMode {
    *  stored value is SIGNED, the sign being which side the copy sits on. Typing
    *  "3" into an inward offset must keep it inward — a bare `c.value = val`
    *  would silently flip it outward. Same abs-display trap as the drag path;
-   *  centralising the write is what stops the two sites drifting apart. */
+   *  centralising the write is what stops the two sites drifting apart.
+   *
+   *  The X/Y distances are signed too and deliberately get NO carve-out here:
+   *  unlike offset they DISPLAY their sign, so the user can type it, and
+   *  forcing the old sign back would make "put this point on the other side"
+   *  unsayable. The editor gate (units.dimValueOk) is what lets the negative
+   *  through to this line. */
   private writeDimValue(c: SketchConstraint & { value: number }, val: number) {
     c.value = c.type === "offset" && c.value < 0 ? -Math.abs(val) : val;
     this.requestSolve();
@@ -1124,14 +1157,15 @@ export class SketchMode {
   /** Evaluate raw dim input for the binding slot `key`: a plain number in
    *  display units, or an expression in canonical units — including the
    *  `name=expr` form (names the dim's model parameter). The number/formula
-   *  fork and the positivity rule for sketch dims live here (the label
-   *  editor's plain-number path on UNBOUND dims re-checks positivity in
-   *  sketchDimensions.beginEdit). `expr` is null for plain numbers; `name` is
-   *  set only when the input renames the binding. */
-  private evalDimInput(raw: string, kind: FieldKind, key: string | null): { value: number; expr: string | null; name?: string } | { error: string } {
+   *  fork lives here; what counts as an acceptable VALUE is units.dimValueOk,
+   *  shared with the label editor's plain-number path on unbound dims
+   *  (sketchDimensions.beginEdit) so a formula and a typed literal can't
+   *  disagree about whether "-30" is a legal DX. `expr` is null for plain
+   *  numbers; `name` is set only when the input renames the binding. */
+  private evalDimInput(raw: string, kind: FieldKind, key: string | null, signed = false): { value: number; expr: string | null; name?: string } | { error: string } {
     if (isPlainNumber(raw)) {
       const value = parseField(raw, kind);
-      if (value == null || (kind !== "angle" && !(value > 0))) return { error: "invalid value" };
+      if (!dimValueOk(value, kind, signed)) return { error: "invalid value" };
       return { value, expr: null };
     }
     if (!this.store) return { error: "no document" };
@@ -1139,7 +1173,9 @@ export class SketchMode {
     const pending = key ? (this.pendingBindings.get(key)?.name ?? null) : null;
     const c = this.store.classifyTargetExpr(bound, pending, raw, kind);
     if (!c.ok) return { error: c.error };
-    if (kind !== "angle" && !(c.value > 0)) return { error: "must evaluate to a positive value" };
+    if (!dimValueOk(c.value, kind, signed)) {
+      return { error: signed ? "must evaluate to a non-zero value" : "must evaluate to a positive value" };
+    }
     return { value: c.value, expr: c.expr, ...(c.name ? { name: c.name } : {}) };
   }
 
@@ -1157,9 +1193,11 @@ export class SketchMode {
     else if (prior || this.docBinding(key)) this.pendingBindings.set(key, { expr: String(r.value), kind, ...keepName });
   }
 
-  /** Shared raw-input commit for a bindable dim slot with a known key. */
-  private commitExprInput(key: string, kind: FieldKind, raw: string, apply: (value: number) => void): string | null {
-    const r = this.evalDimInput(raw, kind, key);
+  /** Shared raw-input commit for a bindable dim slot with a known key.
+   *  `signed` passes the dim's own rule about acceptable values down to
+   *  evalDimInput — see units.dimValueOk. */
+  private commitExprInput(key: string, kind: FieldKind, raw: string, apply: (value: number) => void, signed = false): string | null {
+    const r = this.evalDimInput(raw, kind, key, signed);
     if ("error" in r) return r.error;
     this.recordBinding(key, r, kind);
     apply(r.value);
