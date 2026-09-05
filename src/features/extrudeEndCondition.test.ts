@@ -42,17 +42,29 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
     setHoverRegion: () => {},
     regions: [],
   };
+  /** What is currently LIT on screen, as the real hover calls would leave it. */
+  const lit: { face: number | null; datum: string | null } = { face: null, datum: null };
   const viewport = {
     suspendPicking: false,
     domElement: {
-      style: {},
+      style: {} as { cursor?: string },
       addEventListener() {},
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     },
     pickFaceForPressPull: () => (opts.face ? { selector: opts.face, faceId: 7, bodyId: "b1" } : null),
     pickDatumAt: () => opts.datum ?? null,
     projectToScreen: () => ({ x: 0, y: 0 }),
-    clearHover() {},
+    // raycasts the same body meshes pickFaceForPressPull does, hence one `face`
+    hoverFaceAt() {
+      lit.face = opts.face ? 7 : null;
+      return lit.face;
+    },
+    clearHover() {
+      lit.face = null;
+    },
+    hoverDatum(id: string | null) {
+      lit.datum = id;
+    },
     requestRender() {},
   };
   const store = {};
@@ -68,6 +80,7 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
     upToPlane: string | null;
     pickingTarget: boolean;
     dim: unknown;
+    onMove: (e: PointerEvent) => void;
     onDown: (e: PointerEvent) => void;
     onKey: (e: KeyboardEvent) => void;
     beginDrag: () => void;
@@ -85,7 +98,7 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
   t.active = true;
   t.phase = "drag";
 
-  return { t, commit };
+  return { t, commit, lit, viewport };
 }
 
 const click = () =>
@@ -263,5 +276,61 @@ describe("ExtrudeTool up-to target", () => {
     t.onKey(key("t"));
 
     expect(t.pickingTarget).toBe(false);
+  });
+});
+
+// The same gap press/pull was reported for (field report c0cfee48), verbatim in
+// this tool: T armed the target pick and then nothing under the cursor lit up,
+// so the mode was invisible until the click had already committed.
+describe("ExtrudeTool up-to target hover", () => {
+  const move = () => ({ clientX: 10, clientY: 10 }) as PointerEvent;
+
+  it("moving over a datum plane in T mode brightens it", () => {
+    const h = harness({ face: null, datum: "d1" });
+    h.t.onKey(key("t"));
+
+    h.t.onMove(move());
+
+    expect(h.lit.datum, "the plane the click would bind was not lit").toBe("d1");
+    expect(h.viewport.domElement.style.cursor).toBe("pointer");
+  });
+
+  it("moving over a target face highlights the face", () => {
+    const h = harness({ face: FACE });
+    h.t.onKey(key("t"));
+
+    h.t.onMove(move());
+
+    expect(h.lit.face).toBe(7);
+  });
+
+  it("a body in front of a plane lights the face and NOT the plane", () => {
+    const h = harness({ face: FACE, datum: "d1" });
+    h.t.onKey(key("t"));
+
+    h.t.onMove(move());
+
+    expect(h.lit.face).toBe(7);
+    expect(h.lit.datum).toBeNull();
+  });
+
+  it("Escaping out of T mode puts the highlights out", () => {
+    const h = harness({ face: null, datum: "d1" });
+    h.t.onKey(key("t"));
+    h.t.onMove(move());
+    expect(h.lit.datum).toBe("d1");
+
+    h.t.onKey(key("Escape"));
+
+    expect(h.lit.datum, "the plane stayed lit after T mode ended").toBeNull();
+    expect(h.lit.face).toBeNull();
+  });
+
+  it("outside T mode a move over a plane lights nothing", () => {
+    const h = harness({ face: null, datum: "d1" });
+
+    h.t.onMove(move());
+
+    expect(h.lit.datum).toBeNull();
   });
 });

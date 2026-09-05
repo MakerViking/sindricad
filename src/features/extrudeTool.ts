@@ -399,6 +399,18 @@ export class ExtrudeTool {
       this.viewport.domElement.style.cursor = r ? "pointer" : "default";
       return;
     }
+    // T mode ("extrude up to"): show what the click would bind, with the same
+    // BODY-FIRST precedence the T-mode click uses below. Without it the mode is
+    // invisible — the cursor sweeps a face or an offset plane and nothing on
+    // screen says it is aimed at anything (field report c0cfee48, reported
+    // against press/pull; this tool had the gap verbatim).
+    if (this.pickingTarget) {
+      const faceId = this.viewport.hoverFaceAt(e.clientX, e.clientY);
+      const datumId = faceId == null ? this.viewport.pickDatumAt(e.clientX, e.clientY) : null;
+      this.viewport.hoverDatum(datumId);
+      this.viewport.domElement.style.cursor = faceId != null || datumId ? "pointer" : "default";
+      return;
+    }
     if (!this.selected.length) return;
     const first = this.selected[0];
     if (!first) return;
@@ -737,6 +749,10 @@ export class ExtrudeTool {
       // cancelling the whole extrude — the same two-level Escape press/pull has.
       if (this.pickingTarget) {
         this.pickingTarget = false;
+        // leaving T mode takes its highlights with it, or the last face and
+        // plane the cursor passed stay lit over a tool that no longer aims there
+        this.viewport.clearHover();
+        this.viewport.hoverDatum(null);
         // restore the field T-mode hid: leaving it hidden would strand the user
         // with no way to type a depth, and leaving it ACTIVE during the pick let
         // Enter commit a plain distance mid-target-pick.
@@ -1133,6 +1149,8 @@ export class ExtrudeTool {
       this.arrow = null;
     }
     this.overlay.setHoverRegion(null);
+    this.viewport.clearHover();
+    this.viewport.hoverDatum(null);
     this.viewport.suspendPicking = false;
     this.active = false;
     this.selected = [];

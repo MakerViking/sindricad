@@ -221,6 +221,9 @@ function harness(
     // BOTH a top-down and a side view, so a stub that silently swallowed it
     // would hide the guard that keeps an already-angled view alone.
     tiltOffAxis: (n: THREE.Vector3) => { tilts.push(n.clone()); return true; },
+    // teardown puts out whatever the up-to target pick lit
+    clearHover() {},
+    hoverDatum() {},
     camera: {
       getWorldDirection: (v: THREE.Vector3) => (opts.topDown ? v.set(0, 0, -1) : v.set(-1, 0, 0)),
     },

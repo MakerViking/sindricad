@@ -67,13 +67,16 @@ function harness(world: World, opts: { realDrag?: boolean } = {}) {
   const dragged: FaceHit[] = [];
   const added: Record<string, unknown>[] = [];
   const onDone = vi.fn();
+  /** What is currently LIT on screen — the state the real hover calls leave
+   *  behind, not the fact that they were called. */
+  const lit: { face: number | null; datum: string | null } = { face: null, datum: null };
 
   const overlay = {
     committedRegionAtRay: () => world.region ?? null,
   };
   const viewport = {
     suspendPicking: false,
-    domElement: { style: {}, addEventListener() {}, removeEventListener() {} },
+    domElement: { style: {} as { cursor?: string }, addEventListener() {}, removeEventListener() {} },
     pickEntity: () => world.entity ?? null,
     // `.ray` feeds the region pick; `.intersectObjects` feeds the gizmo hit-test
     rayFrom: () => ({ ray: {}, intersectObjects: () => [] }),
@@ -85,7 +88,19 @@ function harness(world: World, opts: { realDrag?: boolean } = {}) {
     removeFromScene() {},
     setPressPullGhost() {},
     clearPressPullGhost() {},
-    clearHover() {},
+    // the real one clears the previous highlight, then lights the face it hit —
+    // it raycasts the same body meshes pickFaceForPressPull does, hence the
+    // shared `world.face`
+    hoverFaceAt() {
+      lit.face = world.face?.faceId ?? null;
+      return lit.face;
+    },
+    clearHover() {
+      lit.face = null;
+    },
+    hoverDatum(id: string | null) {
+      lit.datum = id;
+    },
   };
   const store = {
     nextId: () => `f${added.length + 1}`,
@@ -97,6 +112,7 @@ function harness(world: World, opts: { realDrag?: boolean } = {}) {
     active: boolean;
     phase: "pick" | "drag";
     value: number;
+    onMove: (e: PointerEvent) => void;
     onDown: (e: PointerEvent) => void;
     onUp: (e: PointerEvent) => void;
     onKey: (e: KeyboardEvent) => void;
@@ -111,7 +127,7 @@ function harness(world: World, opts: { realDrag?: boolean } = {}) {
       dragged.push({ selector: sel, faceId: (ids as number[])[0]!, anchor, normal, bodyId } as FaceHit);
   }
 
-  return { tool, t, handoffs, dragged, added, onDone, viewport };
+  return { tool, t, handoffs, dragged, added, onDone, viewport, lit };
 }
 
 /** A left click that records whether the tool consumed it. */
@@ -310,5 +326,92 @@ describe("PressPullTool up-to a datum plane", () => {
     expect(h.added).toHaveLength(2);
     expect(h.added[1]!.upToPlane).toBeUndefined();
     expect(h.added[1]!.distance).toBe(4);
+  });
+});
+
+// Field report c0cfee48: "I pressed T and moved over the offset plane and
+// nothing lit up, so I could not tell what it was aimed at" — the click DID
+// bind the plane. T mode used to hit-test only the tool's own arrow, so a target
+// under the cursor, face or plane, was invisible until it was already committed.
+//
+// The highlight has to agree with onDown, which is what the last two cases pin:
+// a plane the click would ignore, lit, is worse than no highlight at all.
+describe("PressPullTool up-to target hover", () => {
+  function armT(h: ReturnType<typeof harness>) {
+    // the face-picked, arrow-showing state, then T for "extrude up to"
+    h.t.beginDrag([{ kind: "face" }], [3], { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, "b1");
+    h.t.onKey({ key: "t" } as KeyboardEvent);
+  }
+  const move = () => ({ clientX: 10, clientY: 10 }) as PointerEvent;
+  const TARGET_FACE: FaceHit = { selector: { kind: "face" }, faceId: 7, anchor: {}, normal: {}, bodyId: "b2" };
+  /** one of the operation's OWN faces — beginDrag above is holding faceId 3 */
+  const OWN_FACE: FaceHit = { selector: { kind: "face" }, faceId: 3, anchor: {}, normal: {}, bodyId: "b1" };
+
+  it("moving over a datum plane brightens it", () => {
+    const h = harness({ face: null, datum: "dp" }, { realDrag: true });
+    armT(h);
+
+    h.t.onMove(move());
+
+    expect(h.lit.datum, "the plane the click would bind was not lit").toBe("dp");
+    expect(h.viewport.domElement.style.cursor).toBe("pointer");
+  });
+
+  it("moving over a target face highlights the face", () => {
+    const h = harness({ face: TARGET_FACE, datum: null }, { realDrag: true });
+    armT(h);
+
+    h.t.onMove(move());
+
+    expect(h.lit.face).toBe(7);
+    expect(h.viewport.domElement.style.cursor).toBe("pointer");
+  });
+
+  it("a body in front of a plane lights the face and NOT the plane", () => {
+    // BODY-FIRST, mirroring the click: an 80x80 quad behind the solid is not
+    // what a click here would bind, so it must not look like it is.
+    const h = harness({ face: TARGET_FACE, datum: "dp" }, { realDrag: true });
+    armT(h);
+
+    h.t.onMove(move());
+
+    expect(h.lit.face).toBe(7);
+    expect(h.lit.datum).toBeNull();
+  });
+
+  it("one of the operation's own faces lights nothing", () => {
+    // onDown binds neither a face it is already extruding nor — because the
+    // body was hit — the plane behind it. Nothing is targetable here.
+    const h = harness({ face: OWN_FACE, datum: "dp" }, { realDrag: true });
+    armT(h);
+
+    h.t.onMove(move());
+
+    expect(h.lit.face, "the operation's own face was lit as a target").toBeNull();
+    expect(h.lit.datum).toBeNull();
+    expect(h.viewport.domElement.style.cursor).toBe("default");
+  });
+
+  it("Escaping out of T mode puts the highlights out", () => {
+    const h = harness({ face: null, datum: "dp" }, { realDrag: true });
+    armT(h);
+    h.t.onMove(move());
+    expect(h.lit.datum).toBe("dp");
+
+    h.t.onKey({ key: "Escape" } as KeyboardEvent);
+
+    expect(h.lit.datum, "the plane stayed lit after T mode ended").toBeNull();
+    expect(h.lit.face).toBeNull();
+  });
+
+  it("outside T mode a move over a plane lights nothing", () => {
+    const h = harness({ face: null, datum: "dp" }, { realDrag: true });
+    h.t.beginDrag([{ kind: "face" }], [3], { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, "b1");
+
+    h.t.onMove(move());
+
+    // the plain drag phase is not aiming at anything — a lit plane there would
+    // promise an up-to the click does not make
+    expect(h.lit.datum).toBeNull();
   });
 });
