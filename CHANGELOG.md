@@ -20,6 +20,150 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **The camera no longer flips a quarter turn per step when you orbit or zoom
+  from the Top or Bottom view.** Reported from the in-app reporter. Dragging or
+  scrolling from those two views snapped the picture through about 90 degrees
+  on every mouse move and every wheel notch instead of orbiting. Top and Bottom
+  left the orbit up-vector lying exactly along the line you were looking down,
+  so there was no well-defined "up" left to turn around and the view was rebuilt
+  from floating-point noise each frame. Top and Bottom now use the same
+  up-vector the navigation cube already showed for them, and orbit refuses to
+  sit on a degenerate axis at all.
+
+- **Coincident, Midpoint and Symmetric can now grab a circle's or an arc's
+  centre.** Reported from the in-app reporter: clicking a circle's centre with
+  Coincident did nothing, and the message that came back talked about
+  endpoints. A centre was always a valid target for a dimension and for Fix, but
+  the constraint tools kept their own list of pickable points with no circle in
+  it, the solver would not have resolved such a constraint anyway, and the next
+  edit would have deleted it. All three now read the one list the rest of the
+  app uses, so a centre is a point like any other.
+
+- **A constraint tool now highlights the one side of a rectangle you are
+  pointing at.** Hovering a rectangle side with Collinear or Parallel lit all
+  four sides red while the distance tool lit just the one, so a rectangle looked
+  like a single indivisible thing. The click was always per side; only the
+  highlight was not. Trim, Fillet and Move still highlight the whole shape,
+  because that is what they act on.
+
+- **Constraints on a rectangle's sides and corners are no longer refused as
+  conflicts.** Midpoint, Symmetric and Collinear on a rectangle mostly came back
+  with "that constraint conflicts with the ones already on this sketch" and
+  changed nothing, and whether they worked depended on which corner you picked.
+  Nothing was in conflict: the solver takes the shortest path downhill from the
+  shape as drawn, and that path is often to squash the rectangle to nothing or
+  shrink a line to zero length, which the app then refuses. A refused solve is
+  now retried once from a start that holds every line at the length it already
+  has, leaving rotating and moving as the only ways to satisfy the constraint.
+  Measured across 36 starting angles per tool, every one of those cases now
+  applies; a constraint that genuinely cannot be satisfied is still refused.
+
+- **Tangent now moves the circle you picked instead of growing it.** Reported
+  from the in-app reporter: arming Tangent, clicking a circle and then the edge
+  it should touch made the circle bigger rather than sliding it over, while the
+  same gesture after typing a diameter moved it correctly. While a constraint is
+  applied the picked entity's size was held only for edge-to-edge distance
+  dimensions; a tangent was not on that list, so the circle paid for the
+  correction half in position and half in radius. Tangency now counts as a
+  positioning gesture like those dimensions, so the circle keeps its size and
+  moves, with or without a dimension on it. A picked arc no longer grows either.
+
+- **A dimension on a shape centred on the origin can be clicked again.**
+  Reported from the in-app reporter: on a rectangle drawn around the origin,
+  clicking the vertical dimension did nothing except turn the horizontal origin
+  axis dotted. A badge asks whether geometry under the cursor wants the click
+  first, and the origin axes were answering yes: a centred rectangle puts its
+  height badge exactly on the X axis and its width badge on the Y axis. The
+  origin axes no longer take a click that landed on a badge, and a selected axis
+  draws solid in the selection colour instead of going dotted.
+
+- **Double-clicking a dimension badge, a patterned copy or a piece of text
+  works again.** All three waited on the browser's own double-click, which
+  never arrived: in the Chromium webview a second press on an element the first
+  press rebuilt produces no click event at all. I now recognise the second press
+  myself.
+
+- **The Sketch button now uses the face you already selected.** Reported from
+  the in-app reporter: you had to click Sketch first and then the face, while
+  Press/Pull two buttons away already worked off a selected face. Selecting one
+  planar face and pressing Sketch, a sketch tool, or S now enters the sketch on
+  that face straight away, on the same plane and grid a click gives, and the
+  sketch follows the face on later edits. Selecting nothing, several faces, or a
+  curved face still asks you to pick.
+
+- **Finishing a sketch you never drew in no longer leaves an empty sketch
+  behind.** Creating an offset plane opens a sketch on it, and if you only
+  wanted the plane, Finish Sketch used to add an empty sketch to the Browser
+  that you then had to find and delete. The guard against that had been dead
+  since sketches gained a fixed origin: entering a sketch adds the origin point
+  and axes, so "nothing has been drawn" never fired. The check now runs at
+  commit time, where it can tell real geometry from the origin.
+
+- **Rolling the timeline marker back before an offset plane now hides that
+  plane.** Reported from the in-app reporter. It stayed drawn after the marker
+  moved past it and was still a live pick target: you could select it, sketch
+  on it, or press/pull up to a plane the model had not built yet. The rebuild
+  was always right; only the on-screen overlay read the whole document instead
+  of the part up to the marker. A suppressed plane is hidden now too.
+
+- **Construction planes no longer draw a line across your part.** Reported
+  from Linux. If a part was wider than 80 mm the translucent plane square
+  stopped short of its edges, and because the plane floats above the face, that
+  boundary slid across the surface as you orbited and read as a stray line
+  hanging in space. The square was a fixed 80 x 80 mm. It is now sized from the
+  model and re-sized whenever the model changes. Bug reports also record the
+  depth-buffer precision the machine granted, the one GPU fact Linux webviews
+  do not fake.
+
+- **"Extrude up to" now shows you what you are aiming at.** Reported from the
+  in-app reporter. Pressing T in Press/Pull or Extrude armed the target pick and
+  then nothing lit up: sweeping across a face or an offset plane looked like
+  sweeping across empty space. Both tools now highlight the face or plane under
+  the cursor while T mode is armed, in the same body-first order the click
+  uses. Esc or finishing the operation puts the highlight out.
+
+- **Menus now size themselves to their contents.** Reported twice from Windows
+  11: every dropdown had a wide empty margin down its right-hand side, and
+  longer entries broke across two lines. The popup was sized to its widest
+  single word and then padded to a fixed 220 px, so how it looked came down to
+  whichever font the operating system substituted. Each menu is now exactly as
+  wide as its longest line, on any font. The view cube's right-click menu also
+  no longer hangs off the edge of the window.
+
+- **The window no longer flashes white when you drag it bigger on Windows.**
+  Reported from a machine that was low on memory. The window is drawn without
+  system decorations, so the whole client area belongs to the WebView, and the
+  WebView had no background colour of its own: the area a native resize exposed
+  showed white until it got around to painting. The window now declares the
+  app's own background colour.
+
+- **The 3D view comes back by itself when the graphics driver takes its
+  context away.** A lost context happened in silence, the view stayed blank
+  until you happened to orbit, and then came back black because rebuilding the
+  context threw away the background colour. Losing the context now tells you
+  what happened and leaves a note for the bug reporter, and getting it back
+  repaints the view immediately, in the right colour.
+
+- **Stretching the bug report box and letting go outside it threw the report
+  away.** Reported from the in-app reporter. Dragging the box's resize grip far
+  enough down and releasing over the dimmed background closed the dialog with
+  everything typed. The browser reports a drag that ends outside the dialog as
+  a click on the background. The dialog now closes only when the press and the
+  release both land on the background, and what you typed is kept and put back
+  if the dialog closes before you send it.
+
+### Added
+
+- **Cancel Sketch, next to Finish Sketch.** There was no way out of a sketch
+  that was not a commit: Escape only returns you to the select tool, and any 3D
+  command finishes the sketch first. Cancel leaves the sketch without saving it,
+  and an offset plane you just created stays. It asks first only if you drew
+  something. Offset Plane and Datum Plane also say which is which on hover:
+  the first creates the plane and starts a sketch on it, the second creates the
+  plane only.
+
+### Fixed
+
 - **Extruding an area whose boundary is shared by two sketch shapes built a
   different area instead.** Reported from the in-app reporter: a square sitting
   flush in the corner of a rectangle, pick the corner area, and the extrude
