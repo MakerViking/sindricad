@@ -553,6 +553,7 @@ export class Viewport {
       // clear once so a stale highlight doesn't ride along through the orbit;
       // hoverFace(null) early-returns after the first call, so this is free.
       this.highlighter?.clearHover();
+      this.hoverDatum(null); // same, for a lit construction plane
       return;
     }
     this.hoverPending = e;
@@ -580,9 +581,23 @@ export class Viewport {
     // silently, with the only clue being a small "Faces/Bodies" chip in a row of
     // camera buttons. Reported as "I can only select the sketch in sketch mode",
     // after switching to Bodies to assign filament slots and never switching back.
-    if (this.regionHoverAt?.(e.clientX, e.clientY)) return;
-    if (this.selectionMode === "bodies") return; // no face hover while picking bodies
-    if (!this.model || !this.highlighter) return;
+    if (this.regionHoverAt?.(e.clientX, e.clientY)) { this.hoverDatum(null); return; }
+    // A construction plane is CLICKABLE here (see handleClick's datum fallback,
+    // and the right-click plane menu) in either selection mode and whether or
+    // not the document has a solid — so it has to light up here too. Report
+    // 50b719a3: the quad sat at its idle opacity wherever the cursor went,
+    // because the hoveredDatum channel 0.1.211 added was driven only by
+    // press/pull's and extrude's "up to" target pick. The plane was a large,
+    // clickable, completely mute target.
+    //
+    // Both returns below have to be cleared first: `bodies` mode picks no faces
+    // but still selects planes, and a sketch-only document has NO model at all
+    // (main.ts calls viewport.clearModel() whenever a build's mesh carries no
+    // positions), which is exactly the reporter's document.
+    if (this.selectionMode === "bodies" || !this.model || !this.highlighter) {
+      this.hoverDatum(this.datumUnderCursor(e.clientX, e.clientY));
+      return;
+    }
     const rect = this.canvas.getBoundingClientRect();
     const hit = this.picker.pick(
       e.clientX,
@@ -591,6 +606,12 @@ export class Viewport {
       this.rig.active,
       this.model,
     );
+    // The solid wins, exactly as it does on click: a plane's quad floating in
+    // front of a face must never look like the thing a click would take. `hit`
+    // has already answered "is the solid under the cursor", so this costs one
+    // raycast against the quads, only on frames that hit nothing solid, and
+    // pickDatumAt returns immediately when the document has no planes.
+    this.hoverDatum(hit ? null : this.pickDatumAt(e.clientX, e.clientY));
     this.highlighter.clearHover();
     this.requestRender();
     if (hit?.kind === "edge") { this.highlighter.hoverEdge(hit.edge); this.regionHoverAt?.(-1, -1); return; }
@@ -619,8 +640,17 @@ export class Viewport {
       if (bodyId) {
         if (add) this.highlighter.toggleSelectBody(bodyId);
         else this.highlighter.selectOnlyBody(bodyId);
-      } else if (!add) {
-        this.highlighter.clearBodySelection();
+      } else {
+        // Nothing solid under the cursor: a construction plane still selects,
+        // the way it does in Faces mode and the way the right-click plane menu
+        // already does in BOTH modes. Without this the hover highlight added
+        // for report 50b719a3 would light a plane that a click then ignored.
+        const datumId = this.pickDatumAt(e.clientX, e.clientY);
+        if (datumId) {
+          this.onPickDatum?.(datumId);
+          return;
+        }
+        if (!add) this.highlighter.clearBodySelection();
       }
       this.onBodySelectionChange?.();
       this.requestRender();
@@ -924,6 +954,17 @@ export class Viewport {
     if (!this.datumQuads.length) return null;
     const dh = this.rayFrom(clientX, clientY).intersectObjects(this.datumQuads, false)[0];
     return dh ? (dh.object.userData.datumId as string) : null;
+  }
+
+  /** pickDatumAt, but only when the solid isn't in the way — the hover-side
+   *  answer to handleClick's "try the body first" rule. The quad raycast comes
+   *  FIRST because it is the cheap one (it returns immediately when the
+   *  document has no planes, which is most documents); the body raycast only
+   *  runs on the rare frame where the cursor really is over a plane. */
+  private datumUnderCursor(clientX: number, clientY: number): string | null {
+    const id = this.pickDatumAt(clientX, clientY);
+    if (!id) return null;
+    return this.bodyIdAt(clientX, clientY) ? null : id;
   }
 
   /** centroid (world) of the given bodies' vertices — the Move gizmo anchor. */
