@@ -854,6 +854,16 @@ jobs:
         env:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/menu_layout_e2e.cjs
+      # Report e50b83c7: a ribbon dropdown drawn on top of the Sketch Palette.
+      # No SC_TOKEN — this one never reaches the sidecar either. It is a
+      # stacking-and-hit-testing question ("what is drawn at this pixel, and what
+      # would a click there hit"), so only a real layout engine can answer it;
+      # every unit around it passes while all nine palette controls are
+      # unreachable.
+      - name: Ribbon dropdown vs Sketch Palette end-to-end
+        env:
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/palette_overflow_e2e.cjs
 
       - name: Sidecar log on failure
         if: failure()
