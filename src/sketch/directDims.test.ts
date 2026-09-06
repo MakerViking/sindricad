@@ -91,6 +91,42 @@ describe("applyDrivingDimsDirect", () => {
     expect(ents[0]).toMatchObject({ width: 30, height: 15 });
   });
 
+  // The shape the DIMENSION TOOL writes for a rectangle: a p2pDistance between
+  // two of its corners, both operands the rectangle itself. It governs the same
+  // extent a rect-edge `distance` does, so with no solver it has to reach the
+  // geometry the same way — otherwise retyping the one dimension the tool
+  // actually creates is the case that silently does nothing.
+  it("resizes a rectangle from the corner-to-corner dim the tool creates", () => {
+    const ents: ResolvedEntity[] = [rect("R", 100, 50)];
+    expect(applyDrivingDimsDirect(ents, [
+      { type: "p2pDistance", e1: "R", p1: 0, e2: "R", p2: 1, value: 60 },
+    ])).toBe(true);
+    expect(ents[0]).toMatchObject({ width: 60, height: 50 });
+    // the opposite edge of the pair means the same extent
+    expect(applyDrivingDimsDirect(ents, [
+      { type: "p2pDistance", e1: "R", p1: 2, e2: "R", p2: 3, value: 30 },
+    ])).toBe(true);
+    expect(ents[0]).toMatchObject({ width: 30, height: 50 });
+    // X/Y are SIGNED by operand order; the extent is the magnitude
+    expect(applyDrivingDimsDirect(ents, [
+      { type: "p2pDistanceY", e1: "R", p1: 3, e2: "R", p2: 0, value: -20 },
+    ])).toBe(true);
+    expect(ents[0]).toMatchObject({ width: 30, height: 20 });
+  });
+
+  it("leaves a diagonal, a driven dim, a crosswise axis and a two-entity p2p alone", () => {
+    const ents: ResolvedEntity[] = [rect("R", 100, 50), circle("c1", 5)];
+    const cons: SketchConstraint[] = [
+      { type: "p2pDistance", e1: "R", p1: 0, e2: "R", p2: 2, value: 60 }, // diagonal
+      { type: "p2pDistance", e1: "R", p1: 0, e2: "R", p2: 1, value: 60, driven: true },
+      { type: "p2pDistanceY", e1: "R", p1: 0, e2: "R", p2: 1, value: 60 }, // vertical across a horizontal edge
+      { type: "p2pDistance", e1: "R", p1: 0, e2: "c1", p2: 0, value: 60 }, // two entities
+      { type: "p2pDistance", e1: "c1", p1: 0, e2: "c1", p2: 1, value: 60 }, // not a rectangle
+    ];
+    expect(applyDrivingDimsDirect(ents, cons)).toBe(false);
+    expect(ents[0]).toMatchObject({ width: 100, height: 50 });
+  });
+
   it("ignores a rect-edge distance that names nothing, or names a non-rectangle", () => {
     const ents: ResolvedEntity[] = [rect("R", 100, 50), line("l1", 10, 0)];
     const cons: SketchConstraint[] = [

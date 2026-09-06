@@ -116,7 +116,7 @@ describe("locking a rectangle's width", () => {
 describe("editing a badge that is already locked", () => {
   it("retypes the constraint rather than writing a width the next solve undoes", () => {
     const cons: SketchConstraint[] = [{ type: "distance", line: "e11~0", value: 100 }];
-    expect(planDimEdit(cons, rect(100, 50), "width", 60)).toEqual({ kind: "retype", at: 0 });
+    expect(planDimEdit(cons, rect(100, 50), "width", 60)).toEqual({ kind: "retype", at: 0, value: 60 });
   });
 
   it("an unlocked rectangle badge still writes straight into the geometry", () => {
@@ -130,6 +130,91 @@ describe("editing a badge that is already locked", () => {
       c: { type: "diameter", circle: "e8", value: 30 },
       moves: "e8",
     });
+  });
+});
+
+// The shape "Lock dimension" writes is NOT the shape the dimension TOOL writes.
+// Picking a rectangle's edge makes a p2pDistance between its two corners
+// (dimensionTool.resolveSingle -> p2pPlan), which is what the reporter's own
+// document carries: {p2pDistance, e1:"e11", e2:"e11", p1:0, p2:1, value:100}.
+// Matching only the rect-edge `distance` left every rectangle dimensioned the
+// normal way reading "free" — a dotted "nothing holds this value" badge over a
+// value a driving constraint does hold, an enabled Lock that over-constrains
+// the sketch, and a typed number the next solve puts back.
+describe("the dimension the tool actually creates for a rectangle", () => {
+  const p2p = (p1: number, p2: number, value: number, extra: Record<string, unknown> = {}): SketchConstraint =>
+    ({ type: "p2pDistance", e1: "e11", p1, e2: "e11", p2, value, ...extra }) as SketchConstraint;
+
+  it("governs the badge whose extent it spans, on either edge of the pair", () => {
+    expect(governingDimAt([p2p(0, 1, 100)], rect(100, 50), "width")).toBe(0);
+    expect(governingDimAt([p2p(2, 3, 100)], rect(100, 50), "width")).toBe(0);
+    expect(governingDimAt([p2p(1, 2, 50)], rect(100, 50), "height")).toBe(0);
+    expect(governingDimAt([p2p(3, 0, 50)], rect(100, 50), "height")).toBe(0);
+    // and only that badge: the width dim vouches for nothing about the height
+    expect(governingDimAt([p2p(0, 1, 100)], rect(100, 50), "height")).toBe("free");
+  });
+
+  it("counts an X dim for the width and a Y dim for the height, never crosswise", () => {
+    const x = { type: "p2pDistanceX", e1: "e11", p1: 0, e2: "e11", p2: 1, value: 100 } as SketchConstraint;
+    const y = { type: "p2pDistanceY", e1: "e11", p1: 3, e2: "e11", p2: 0, value: -50 } as SketchConstraint;
+    expect(governingDimAt([x], rect(100, 50), "width")).toBe(0);
+    expect(governingDimAt([y], rect(100, 50), "height")).toBe(0);
+    // a VERTICAL measure across the bottom edge is the rectangle's own implied
+    // zero, not its width
+    const flat = { type: "p2pDistanceY", e1: "e11", p1: 0, e2: "e11", p2: 1, value: 0 } as SketchConstraint;
+    expect(governingDimAt([flat], rect(100, 50), "width")).toBe("free");
+  });
+
+  it("ignores a diagonal, another entity's dim, and a driven one", () => {
+    expect(governingDimAt([p2p(0, 2, 111.8)], rect(100, 50), "width")).toBe("free");
+    expect(governingDimAt([p2p(1, 3, 111.8)], rect(100, 50), "height")).toBe("free");
+    const across = { type: "p2pDistance", e1: "e11", p1: 0, e2: "e99", p2: 1, value: 100 } as SketchConstraint;
+    expect(governingDimAt([across], rect(100, 50), "width")).toBe("free");
+    // the reporter's file exactly: both dims stamped `driven` (Reference Dim was
+    // on), which the solver drops before compiling — nothing holds the width,
+    // and this is the case where "free" is the truth
+    expect(governingDimAt([p2p(0, 1, 100, { driven: true })], rect(100, 50), "width")).toBe("free");
+  });
+
+  it("is not offered a Lock that would over-constrain the sketch", async () => {
+    // Lock is only offered on a badge that reads "free". Adding the lock on top
+    // of the tool's own dimension is the pair the review measured: it solves,
+    // and reports an amber over-constrained chip the user never asked for.
+    const both = await compileAndSolve([rect(100, 50)], [
+      p2p(0, 1, 100),
+      lockDimFor(rect(100, 50), "width", 100)!,
+    ]);
+    expect(both.ok).toBe(true);
+    expect(both.overDefined.length).toBeGreaterThan(0);
+    expect(governingDimAt([p2p(0, 1, 100)], rect(100, 50), "width")).not.toBe("free");
+  }, 30000);
+
+  it("retypes that dimension instead of writing a width the solve undoes", async () => {
+    const cons = [p2p(0, 1, 100), p2p(3, 0, 50)];
+    expect(planDimEdit(cons, rect(100, 50), "width", 60)).toEqual({ kind: "retype", at: 0, value: 60 });
+
+    // what a `direct` plan produced: the width written onto the entity, and the
+    // next solve putting the constraint's 100 straight back
+    const undone = await compileAndSolve([rect(60, 50)], cons);
+    expect(undone.ok).toBe(true);
+    expect(asRect(undone.entities[0]).width).toBeCloseTo(100, 4);
+
+    // retyped, the typed 60 survives the solve
+    const retyped = cons.map((c, i) => (i === 0 ? { ...c, value: 60 } : c)) as SketchConstraint[];
+    const r = await compileAndSolve([rect(100, 50)], retyped, undefined, { moves: ["e11"] });
+    expect(r.ok).toBe(true);
+    expect(asRect(r.entities[0]).width).toBeCloseTo(60, 4);
+    expect(asRect(r.entities[0]).height).toBeCloseTo(50, 4);
+  }, 30000);
+
+  it("keeps a signed X/Y dimension's sign when it retypes it", () => {
+    // p2pDistanceX is signed by operand order (types.ts), so a width held
+    // top-right -> top-left reads -100. Typing 60 into the W badge means "make
+    // it 60 wide", not "turn the rectangle inside out".
+    const cons = [{ type: "p2pDistanceX", e1: "e11", p1: 2, e2: "e11", p2: 3, value: -100 } as SketchConstraint];
+    expect(planDimEdit(cons, rect(100, 50), "width", 60)).toEqual({ kind: "retype", at: 0, value: -60 });
+    const fwd = [{ type: "p2pDistanceX", e1: "e11", p1: 0, e2: "e11", p2: 1, value: 100 } as SketchConstraint];
+    expect(planDimEdit(fwd, rect(100, 50), "width", 60)).toEqual({ kind: "retype", at: 0, value: 60 });
   });
 });
 

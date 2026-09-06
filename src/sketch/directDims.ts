@@ -61,6 +61,50 @@ function rectEdgesFor(id: string, field: DimField): [string, string] | null {
   return null;
 }
 
+/** The same fact from the other end: which CORNER PAIRS span an extent. Corner
+ *  order is rectCorners bl/br/tr/tl (region.ts), so edge k runs corner k to
+ *  corner k+1 — {0,1} and {2,3} span the width, {1,2} and {3,0} the height. The
+ *  diagonals ({0,2}, {1,3}) span neither on their own. */
+const RECT_CORNER_PAIRS: Record<"width" | "height", [number, number][]> = {
+  width: [[0, 1], [2, 3]],
+  height: [[1, 2], [3, 0]],
+};
+
+/** The rectangle extent a point-to-point dimension spans, if it spans one.
+ *
+ *  This — not the rect-edge `distance` that Lock creates — is the shape the
+ *  DIMENSION TOOL writes for a rectangle: picking a rectangle's edge resolves
+ *  to a p2pDistance between that edge's two corners (dimensionTool.resolveSingle
+ *  -> p2pPlan), both operands the rectangle itself. Report dff87040's own file
+ *  carries exactly that. So a rectangle dimensioned the normal way is governed
+ *  by this and by nothing else, and missing it means the badge claims nothing
+ *  holds a value a driving constraint does hold.
+ *
+ *  A driven (reference) dim is excluded: the solver drops it before compiling,
+ *  so it genuinely holds nothing — that is the case where "free" is the truth.
+ *
+ *  X/Y are the horizontal and vertical measures, so an X dim can only hold a
+ *  width and a Y dim only a height; a Y dim across the bottom edge is the
+ *  rectangle's own implied zero, not its width.
+ *
+ *  `mm` is the extent itself — the MAGNITUDE, because the X/Y forms are signed
+ *  by operand order while an extent never is. */
+function rectExtentSpanned(
+  c: SketchConstraint,
+): { id: string; field: "width" | "height"; mm: number } | null {
+  if (c.type !== "p2pDistance" && c.type !== "p2pDistanceX" && c.type !== "p2pDistanceY") return null;
+  if (c.driven || c.e1 !== c.e2) return null;
+  for (const field of ["width", "height"] as const) {
+    if (c.type === "p2pDistanceX" && field !== "width") continue;
+    if (c.type === "p2pDistanceY" && field !== "height") continue;
+    const spans = RECT_CORNER_PAIRS[field].some(
+      ([a, b]) => (c.p1 === a && c.p2 === b) || (c.p1 === b && c.p2 === a),
+    );
+    if (spans) return { id: c.e1, field, mm: Math.abs(c.value) };
+  }
+  return null;
+}
+
 /** The constraint a "Lock dimension" on this badge should create — the driving
  *  form of what the badge currently measures.
  *
@@ -111,7 +155,16 @@ export function governingDimAt(
     governs = (c) => c.type === "diameter" && c.circle === e.id;
   } else if (e.type === "rectangle") {
     const edges = rectEdgesFor(e.id, field);
-    if (edges) governs = (c) => c.type === "distance" && (c.line === edges[0] || c.line === edges[1]);
+    // Two shapes, because a rectangle's extent is spelled two ways: the
+    // rect-edge `distance` Lock writes, and the corner-to-corner p2p dim the
+    // dimension tool writes (see rectExtentSpanned — the reporter's own file).
+    if (edges) {
+      governs = (c) => {
+        if (c.type === "distance") return c.line === edges[0] || c.line === edges[1];
+        const span = rectExtentSpanned(c);
+        return span?.id === e.id && span.field === field;
+      };
+    }
   }
   if (!governs) return null;
   const at = constraints.findIndex(governs);
@@ -123,11 +176,26 @@ export function governingDimAt(
  *  constraint governs looks like it worked and is undone by the next solve.
  *
  *  `moves` names the entity the solve should move to satisfy the new value —
- *  see sketchSolve's bias ("what you picked is what moves"). */
+ *  see sketchSolve's bias ("what you picked is what moves").
+ *
+ *  `value` is what to WRITE on the retyped constraint, which is not always the
+ *  number typed: see retypeValue. */
 export type DimEdit =
   | { kind: "upsert"; c: SketchConstraint; moves: string }
-  | { kind: "retype"; at: number }
+  | { kind: "retype"; at: number; value: number }
   | { kind: "direct" };
+
+/** The number to write onto a governing constraint for a typed EXTENT.
+ *
+ *  p2pDistanceX/Y are signed, and the sign is the operand order (types.ts): a
+ *  width held top-right -> top-left reads -100. Typing 60 into the W badge means
+ *  "make it 60 wide", not "turn the rectangle inside out", so the constraint
+ *  keeps the sign it already had. The badge never shows that sign — it shows the
+ *  entity's own width — so there is nothing here for the user to have typed. */
+function retypeValue(c: SketchConstraint, mm: number): number {
+  const signed = c.type === "p2pDistanceX" || c.type === "p2pDistanceY";
+  return signed && c.value < 0 ? -Math.abs(mm) : mm;
+}
 
 export function planDimEdit(
   constraints: SketchConstraint[],
@@ -138,7 +206,7 @@ export function planDimEdit(
   const dim = drivingDimFor(e, field, mm);
   if (dim) return { kind: "upsert", c: dim, moves: e.id };
   const at = governingDimAt(constraints, e, field);
-  if (typeof at === "number") return { kind: "retype", at };
+  if (typeof at === "number") return { kind: "retype", at, value: retypeValue(constraints[at]!, mm) };
   return { kind: "direct" };
 }
 
@@ -163,16 +231,30 @@ export function upsertDrivingDim(constraints: SketchConstraint[], c: SketchConst
 /** Apply what can be applied without solving. Mutates `entities` in place and
  *  returns true if anything actually moved.
  *
- *  Only single-entity dimensions are handled. Anything relating two entities
- *  (point-to-point, radial gap, angle between lines) needs a solve to decide
- *  WHICH end moves, and guessing would put geometry somewhere the user never
- *  asked for. Those stay unapplied rather than applied wrongly. */
+ *  Only dimensions that name ONE entity are handled. Anything relating two
+ *  entities (point-to-point across a pair, radial gap, angle between lines)
+ *  needs a solve to decide WHICH end moves, and guessing would put geometry
+ *  somewhere the user never asked for. Those stay unapplied rather than applied
+ *  wrongly. A rectangle's corner-to-corner extent dim is a p2p dim whose two
+ *  operands are the same rectangle, so it is not one of those. */
 export function applyDrivingDimsDirect(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
 ): boolean {
   let changed = false;
   for (const c of constraints) {
+    const span = rectExtentSpanned(c);
+    if (span) {
+      // The dimension the tool writes for a rectangle. Without this, retyping
+      // the ONE dimension a rectangle normally has does nothing at all on a
+      // machine with no solver.
+      const r = entities.find((x) => x.id === span.id);
+      if (r?.type !== "rectangle" || !(span.mm > 0)) continue;
+      if (Math.abs(r[span.field] - span.mm) <= EPS) continue;
+      r[span.field] = span.mm;
+      changed = true;
+      continue;
+    }
     if (c.type === "diameter") {
       const e = entities.find((x) => x.id === c.circle);
       if (e?.type !== "circle" || !(c.value > 0)) continue;

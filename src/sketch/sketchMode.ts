@@ -859,7 +859,8 @@ export class SketchMode {
     }
     if (plan.kind === "retype") {
       const c = this.constraints[plan.at];
-      if (c && isDimConstraint(c)) this.writeDimValue(c, mm);
+      // plan.value, not mm: a signed X/Y dim keeps the sign it already had
+      if (c && isDimConstraint(c)) this.writeDimValue(c, plan.value);
       return;
     }
     entityDims(e).find((d) => d.field === field)?.write(mm);

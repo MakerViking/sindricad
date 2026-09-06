@@ -64,6 +64,22 @@ const PLAIN_RECT = {
   }],
 };
 
+// The same rectangle as the DIMENSION TOOL leaves it. Picking a rectangle's
+// edge resolves to a p2pDistance between that edge's two corners — both
+// operands the rectangle itself — which is the shape dff87040's own document
+// carries. Reference Dim OFF, so it drives: the width really is held at 100,
+// and a badge that calls it a free measurement is lying in the other direction.
+const TOOL_DIMMED_RECT = {
+  version: 5, parameters: {},
+  features: [{
+    id: "f1", type: "sketch", plane: "XY",
+    entities: [{ x: 0, y: 0, id: "e0", type: "rectangle", width: 100, height: 50 }],
+    constraints: [
+      { id: "c1", type: "p2pDistance", e1: "e0", p1: 0, e2: "e0", p2: 1, value: 100, place: { ox: 0, oy: -25 } },
+    ],
+  }],
+};
+
 (async () => {
   const executablePath = process.env.SC_CHROME || "/usr/bin/chromium";
   const port = process.env.SC_PORT || "5173";
@@ -104,9 +120,14 @@ const PLAIN_RECT = {
   /** the badge whose text starts with `t`: where it is, how it is drawn, and
    *  whether its centre is over the CANVAS — fitView frames the geometry, but a
    *  badge offset outward can still land over a side panel, where a click at
-   *  that point would go to the panel instead. */
-  const badge = (t) => page.evaluate((text) => {
-    const el = [...document.querySelectorAll(".sketch-dim")].find((x) => x.textContent.startsWith(text));
+   *  that point would go to the panel instead.
+   *
+   *  `nth` picks among badges reading the same number, which is normal once a
+   *  dimension holds an extent: the entity's own badge and the placed
+   *  dimension's badge both show it. Entity badges are rendered first
+   *  (SketchDimensions.show does entities, then the constraint extras). */
+  const badge = (t, nth = 0) => page.evaluate(([text, i]) => {
+    const el = [...document.querySelectorAll(".sketch-dim")].filter((x) => x.textContent.startsWith(text))[i];
     if (!el || getComputedStyle(el).visibility === "hidden") return null;
     const b = el.getBoundingClientRect();
     const x = Math.round(b.x + b.width / 2), y = Math.round(b.y + b.height / 2);
@@ -115,7 +136,14 @@ const PLAIN_RECT = {
       x, y, className: el.className, borderStyle: getComputedStyle(el).borderStyle,
       inView: x >= vp.left && x <= vp.right && y >= vp.top && y <= vp.bottom,
     };
-  }, t);
+  }, [t, nth]);
+
+  /** every rendered dim badge, as text + how it is drawn */
+  const allBadges = () => page.evaluate(() => [...document.querySelectorAll(".sketch-dim")].map((el) => ({
+    text: el.textContent,
+    measured: el.className.includes("sketch-dim-measured"),
+    borderStyle: getComputedStyle(el).borderStyle,
+  })));
 
   /** the sketch as it would be committed */
   const snapshot = () => page.evaluate(() => window.__sindri.sketch.snapshotFeature());
@@ -213,6 +241,58 @@ const PLAIN_RECT = {
     const h = await badge("50");
     check(!!h && h.className.includes("sketch-dim-measured"),
       "the height badge is still a measurement", h && h.className);
+  }
+
+  // ===== dff87040: the dimension the TOOL creates, not the one Lock does ===
+  // A rectangle dimensioned the normal way is held by a corner-to-corner
+  // p2pDistance, not by the rect-edge `distance` Lock writes. Reading only the
+  // latter made the W badge claim nothing held it, offered a Lock that
+  // over-constrains the sketch, and turned a typed value into a direct width
+  // write the next solve undid.
+  console.log("\n=== a rectangle the tool dimensioned reads as DRIVING ===");
+  await openSketch(TOOL_DIMMED_RECT, 3);
+  const drawn = await allBadges();
+  const hundreds = drawn.filter((b) => b.text.startsWith("100"));
+  check(hundreds.length === 2, "both badges for the held width are drawn", JSON.stringify(drawn));
+  check(hundreds.every((b) => !b.measured && b.borderStyle === "solid"),
+    "neither of them calls the width a free measurement", JSON.stringify(hundreds));
+  check(drawn.some((b) => b.text.startsWith("50") && b.measured),
+    "and the undimensioned height still reads as a measurement", JSON.stringify(drawn));
+
+  const wt = await badge("100", 0); // the entity's own W badge, rendered first
+  check(!!wt && wt.inView, "the width badge is on screen", JSON.stringify(wt));
+  if (wt && wt.inView) {
+    await page.mouse.click(wt.x, wt.y, { button: "right" });
+    await page.waitForSelector(".context-menu", { timeout: 3000 });
+    const items = await menuItems();
+    check(!!(items[0] && items[0].disabled),
+      "Lock is disabled — locking on top of it would over-constrain the sketch", JSON.stringify(items));
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+
+    await page.mouse.move(wt.x, wt.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelectorAll(".sketch-dim input").length === 1,
+      null, { timeout: 3000 }).catch(() => {});
+    await page.keyboard.press("ControlOrMeta+a");
+    await page.keyboard.type("60");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(1200); // the solve is async (pump + wasm)
+    // Provoke one more solve. The silent undo is not what the edit does, it is
+    // what the NEXT solve does: a direct width write leaves the constraint
+    // saying 100, and the moment anything re-solves, 100 is what wins.
+    await page.evaluate(() => window.__sindri.sketch.requestSolve());
+    await page.waitForTimeout(1200);
+    const snap = await snapshot();
+    check(near(entityOf(snap, "e0").width, 60, 1e-4),
+      "typing 60 survives the next solve — the constraint was retyped, not written around",
+      `${entityOf(snap, "e0").width} x ${entityOf(snap, "e0").height}`);
+    check(near(entityOf(snap, "e0").height, 50, 1e-4),
+      "and the height it did not dimension stayed put", `${entityOf(snap, "e0").height}`);
+    const dim = (snap.constraints || []).find((c) => c.type === "p2pDistance");
+    check(!!dim && near(dim.value, 60, 1e-9),
+      "the dimension itself now reads 60", JSON.stringify(dim));
   }
 
   console.log(fails === 0 ? "\nALL PASS" : `\n${fails} FAILED`);

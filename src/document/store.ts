@@ -769,14 +769,20 @@ export class DocumentStore {
     // parameter references (resolve would have baked them out to numbers).
     const withEdited = () => cur.entities.map((ent, j) => (j === entityIndex ? toSketchEntity(e) : ent));
     let next: Extract<Feature, { type: "sketch" }>;
+    // The constraint the no-solver fallback below has to write into the
+    // geometry: the new one on an upsert, the RETYPED one on a retype. A retype
+    // is the only way a rectangle's extent ever reaches a constraint, so gating
+    // this on `dim` alone left the locked rectangle — the case the rect decode
+    // in applyDrivingDimsDirect exists for — silently doing nothing here.
+    let direct: SketchConstraint | null = dim;
     if (dim) {
       next = { ...cur, constraints: upsertDrivingDim(cur.constraints ?? [], dim) };
     } else if (plan?.kind === "retype") {
-      next = {
-        ...cur,
-        constraints: (cur.constraints ?? []).map((c, i) =>
-          i === plan.at && isDimConstraint(c) ? ({ ...c, value: mm } as SketchConstraint) : c),
-      };
+      // plan.value, not mm: a signed X/Y dim keeps the sign it already had
+      const constraints = (cur.constraints ?? []).map((c, i) =>
+        i === plan.at && isDimConstraint(c) ? ({ ...c, value: plan.value } as SketchConstraint) : c);
+      direct = constraints[plan.at] ?? null;
+      next = { ...cur, constraints };
     } else {
       const d = entityDims(e).find((x) => x.field === field);
       if (!d) return;
@@ -786,7 +792,7 @@ export class DocumentStore {
     const r = await this.solveSketchOutcome(next, this.doc.parameters);
     if (r.status === "solved") next = { ...next, entities: r.entities };
     else if (r.status === "failed") this.onParamSolveIssue?.(sketchId);
-    else if (r.status === "unavailable" && dim && applyDrivingDimsDirect([e], [dim])) {
+    else if (r.status === "unavailable" && direct && applyDrivingDimsDirect([e], [direct])) {
       // No solver on this machine (see directDims): the typed value has to go
       // into the geometry here, or it is recorded and never seen. The constraint
       // stays, so a working solver drives it properly later. Only when the
