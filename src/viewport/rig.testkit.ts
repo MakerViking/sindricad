@@ -30,12 +30,23 @@ export class FakePointerEvent {
   clientX: number;
   clientY: number;
   button: number;
-  constructor(init: { pointerId?: number; clientX?: number; clientY?: number; button?: number } = {}) {
+  /** the held-buttons bitmask camera-controls reads (1 left, 2 right, 4
+   *  middle); derived from `button` so a stub press looks like a real one to
+   *  the library as well as to the rig's own capture listeners. */
+  buttons: number;
+  movementX: number;
+  movementY: number;
+  pointerType = "mouse";
+  constructor(init: { pointerId?: number; clientX?: number; clientY?: number; button?: number; buttons?: number; movementX?: number; movementY?: number } = {}) {
     this.pointerId = init.pointerId ?? 1;
     this.clientX = init.clientX ?? 0;
     this.clientY = init.clientY ?? 0;
     this.button = init.button ?? 0;
+    this.buttons = init.buttons ?? (this.button === 0 ? 1 : this.button === 1 ? 4 : this.button === 2 ? 2 : 0);
+    this.movementX = init.movementX ?? 0;
+    this.movementY = init.movementY ?? 0;
   }
+  preventDefault() {}
 }
 if (typeof (globalThis as { PointerEvent?: unknown }).PointerEvent === "undefined") {
   (globalThis as { PointerEvent?: unknown }).PointerEvent = FakePointerEvent;
@@ -83,12 +94,31 @@ export function harness(): RigHarness {
   const rig = createCameraRig(el as unknown as HTMLElement, W / H);
   const fire = (bag: Record<string, ((e: unknown) => void)[]>, type: string, e: unknown) =>
     (bag[type] ?? []).forEach((f) => f(e));
+  // camera-controls re-reads the held buttons from every pointermove and takes
+  // its drag deltas from movementX/Y, so a stub move has to carry both or the
+  // library sees a drag with no buttons and no motion (our own capture
+  // handlers only read clientX/Y). Track the press so move() can supply them.
+  let held = { button: -1, buttons: 0, x: 0, y: 0 };
   return {
     rig,
-    down: (button, x = 0, y = 0) => fire(domL, "pointerdown", new PE({ button, clientX: x, clientY: y })),
-    move: (x, y) => fire(docL, "pointermove", new PE({ clientX: x, clientY: y })),
-    up: () => fire(docL, "pointerup", new PE()),
-    cancel: () => fire(docL, "pointercancel", new PE()),
+    down: (button, x = 0, y = 0) => {
+      const e = new PE({ button, clientX: x, clientY: y });
+      held = { button, buttons: e.buttons, x, y };
+      fire(domL, "pointerdown", e);
+    },
+    move: (x, y) => {
+      const e = new PE({ button: held.button < 0 ? 0 : held.button, buttons: held.buttons, clientX: x, clientY: y, movementX: x - held.x, movementY: y - held.y });
+      held = { ...held, x, y };
+      fire(docL, "pointermove", e);
+    },
+    up: () => {
+      held = { button: -1, buttons: 0, x: held.x, y: held.y };
+      fire(docL, "pointerup", new PE({ buttons: 0 }));
+    },
+    cancel: () => {
+      held = { button: -1, buttons: 0, x: held.x, y: held.y };
+      fire(docL, "pointercancel", new PE({ buttons: 0 }));
+    },
   };
 }
 

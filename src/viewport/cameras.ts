@@ -145,6 +145,19 @@ export function createCameraRig(
   // camera-controls assumes Y-up by default; tell it we orbit around +Z so the
   // ViewCube, standard views, and orbit all behave in CAD (Z-up) space.
   controls.updateCameraUp();
+  // A drag follows the pointer, it does not trail it. camera-controls smooths a
+  // drag toward its target with draggingSmoothTime = 0.125 s by default, which
+  // puts the view about seven frames behind the mouse: a right-drag pan still
+  // arriving a tenth of a second after the hand stopped. Reported from Linux as
+  // "a perceptible delay between moving the mouse and the corresponding
+  // movement on the screen" (field report dd5ade19). Mouse orbit and wheel zoom
+  // never had it, because they go through setLookAt/dollyTo with the transition
+  // off; pan (TRUCK) and every touch gesture still did. One frame of damping
+  // puts nine tenths of a move on screen within two frames and all of it
+  // within four, nothing a hand can feel, while still rounding off the
+  // per-event jitter a raw mouse delivers. smoothTime, which paces the animated
+  // standard-view and fit transitions, is untouched.
+  controls.draggingSmoothTime = 1 / 60;
 
   // mainstream MCAD mouse map. Wheel is handled explicitly by the viewport (rig.zoomBy)
   // rather than camera-controls' built-in action: its perspective DOLLY wheel was

@@ -20,6 +20,13 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Panning follows the mouse instead of trailing it.** Reported from Linux as
+  a perceptible delay between moving the mouse and the movement on screen. A
+  right-drag pan was smoothed toward its target over an eighth of a second,
+  about seven frames behind the hand; orbiting and wheel zoom never had that
+  lag, which is why it only showed on some gestures. The smoothing is now a
+  single frame, so nine tenths of a move is on screen within two frames.
+
 - **The geometry engine no longer fails to start on a machine that is short of
   memory.** Reported three times from one Windows session: extrudes were
   committed, showed up in the timeline, and then vanished from the model, with

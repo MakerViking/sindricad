@@ -167,11 +167,14 @@ describe("the button map survives every way a drag can end", () => {
     const before = h.rig.controls.getPosition(new THREE.Vector3()).clone();
     h.down(1, 400, 300);
     expect(h.rig.controls.mouseButtons.middle, "the locked middle button was taken for an orbit").toBe(A.TRUCK);
+    const dirBefore = before.clone().sub(h.rig.controls.getTarget(new THREE.Vector3())).normalize();
     h.move(500, 300);
     h.rig.update(0.016);
-    expect(
-      h.rig.controls.getPosition(new THREE.Vector3()).distanceTo(before),
-      "the view orbited off the sketch plane while locked to it",
-    ).toBeLessThan(1e-6);
+    // A locked middle-drag PANS (TRUCK): the camera and its target move together
+    // and the view direction does not change. The old assertion wanted the
+    // camera position itself unmoved, which only held while the stub events
+    // never reached camera-controls' own truck at all.
+    const dirAfter = h.rig.controls.getPosition(new THREE.Vector3()).sub(h.rig.controls.getTarget(new THREE.Vector3())).normalize();
+    expect(dirAfter.dot(dirBefore), "the view orbited off the sketch plane while locked to it").toBeGreaterThan(1 - 1e-9);
   });
 });
