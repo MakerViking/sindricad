@@ -16,6 +16,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { PressPullTool, type PressPullHandoff } from "./pressPullTool";
+import { DimInput } from "../sketch/dimInput";
 
 // DimInput's constructor and setPrompt are the only DOM these paths touch.
 // Stubbed rather than pulling in jsdom, matching extrudeTool.test.ts. `window`
@@ -47,6 +48,17 @@ import { PressPullTool, type PressPullHandoff } from "./pressPullTool";
 // never fire the callback: tick() is a render loop, and nothing here tests it
 (globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame ??= () => 0;
 (globalThis as unknown as { cancelAnimationFrame: unknown }).cancelAnimationFrame ??= () => {};
+// The drag-phase tests below press T while the REAL DimInput box is open, and
+// DimInput has to decide whether that letter is a hotkey or text — which starts
+// with an `instanceof HTMLInputElement` node does not have. `getAttribute`
+// returns what DimInput writes on a field whose text is unchanged since focus.
+class FakeField {
+  constructor(private touched = false) {}
+  getAttribute(name: string): string | null {
+    return name === "data-undo-passthrough" ? (this.touched ? "0" : "1") : null;
+  }
+}
+(globalThis as unknown as { HTMLInputElement: unknown }).HTMLInputElement ??= FakeField;
 
 type Entity = { kind: "edge"; edge: { id: string } } | { kind: "face"; faceId: number };
 type Region = { sketchId: string; interior3D: { x: number; y: number } };
@@ -117,6 +129,7 @@ function harness(world: World, opts: { realDrag?: boolean } = {}) {
     onUp: (e: PointerEvent) => void;
     onKey: (e: KeyboardEvent) => void;
     beginDrag: (...args: unknown[]) => void;
+    dim: unknown;
   };
 
   tool.start(onDone, (h) => handoffs.push(h));
@@ -413,5 +426,78 @@ describe("PressPullTool up-to target hover", () => {
     // the plain drag phase is not aiming at anything — a lit plane there would
     // promise an up-to the click does not make
     expect(h.lit.datum).toBeNull();
+  });
+});
+
+// The Extrude half of field report 88c9bdf0 (T typed into the depth box instead
+// of arming the target pick) did not bite here — press/pull's onKey has no input
+// guard, so T always reached the tool. What DID leak is the letter: nothing on
+// the path called preventDefault, so the "t" was typed into the box as well, and
+// press/pull only got away with it because dim.hide() tears the box down a line
+// later. These pin the arbitration now that it is explicit, and pin the other
+// half of the rule: a letter aimed at a box the user is typing in is text.
+describe("PressPullTool T while the depth box has focus", () => {
+  /** A keystroke delivered to the open depth field. */
+  function fieldKey(k: string, opts: { touched?: boolean } = {}) {
+    const prevented = { count: 0 };
+    const e = {
+      key: k,
+      target: new FakeField(!!opts.touched),
+      preventDefault() {
+        prevented.count++;
+      },
+    } as unknown as KeyboardEvent;
+    return { e, prevented };
+  }
+
+  /** Report the box as open and focused, with DimInput's REAL arbitration —
+   *  only "is this my own box" is faked. */
+  function focusBox(h: ReturnType<typeof harness>) {
+    const box = { hidden: false };
+    const owner = { active: true, ownsTarget: () => true };
+    h.t.dim = {
+      isActive: true,
+      show() {},
+      seed() {},
+      updateFromCursor() {},
+      position() {},
+      hide() {
+        box.hidden = true;
+      },
+      claimToolHotkey: (e: KeyboardEvent) => DimInput.prototype.claimToolHotkey.call(owner, e),
+    };
+    return box;
+  }
+
+  const startDrag = (h: ReturnType<typeof harness>) =>
+    h.t.beginDrag([{ kind: "face" }], [3], { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, "b1");
+  const move = () => ({ clientX: 10, clientY: 10 }) as PointerEvent;
+
+  it("T arms the target pick and does not reach the field", () => {
+    const h = harness({ face: null, datum: "dp" }, { realDrag: true });
+    startDrag(h);
+    const box = focusBox(h);
+    const { e, prevented } = fieldKey("t");
+
+    h.t.onKey(e);
+
+    // only T mode hit-tests a datum plane, so a lit plane IS the armed pick
+    h.t.onMove(move());
+    expect(h.lit.datum, "T did not arm the target pick").toBe("dp");
+    expect(box.hidden, "the depth box survived, so Enter could still commit a distance").toBe(true);
+    expect(prevented.count, "the letter was left to be typed into the box as well").toBe(1);
+  });
+
+  it("once a depth has been typed, T stays TEXT", () => {
+    const h = harness({ face: null, datum: "dp" }, { realDrag: true });
+    startDrag(h);
+    focusBox(h);
+    const { e, prevented } = fieldKey("t", { touched: true });
+
+    h.t.onKey(e);
+
+    h.t.onMove(move());
+    expect(h.lit.datum, "T was stolen from a field the user was typing in").toBeNull();
+    expect(prevented.count, "the keystroke was swallowed, so the letter never arrived").toBe(0);
   });
 });

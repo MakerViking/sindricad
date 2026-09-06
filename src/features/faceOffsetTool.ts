@@ -173,6 +173,9 @@ export class FaceOffsetTool {
     if (e.key === "Escape") { this.cancel(); return; }
     // Thicken's one option worth a key: grow the wall both ways about the surface
     if ((e.key === "s" || e.key === "S") && this.mode === "thicken" && this.phase === "drag") {
+      // The distance box has focus, and unlike press/pull it STAYS up — so an
+      // unswallowed "s" would sit in the field as an unparseable value (88c9bdf0).
+      if (!this.dim.claimToolHotkey(e)) return;
       this.symmetric = !this.symmetric;
       this.pushPreview();
       this.prompt();
