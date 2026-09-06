@@ -754,6 +754,18 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/datum_plane_quad_e2e.cjs
+      # Field report 50b719a3: a construction plane that gives no hover feedback
+      # in the normal viewport, though a click there selects it. The unit test
+      # drives handleHover with a stubbed picker; the path a user travels is
+      # pointermove -> rAF -> handleHover on a document whose model is NULL
+      # (a sketch and a plane, no solid). Neither the rAF hop nor the null model
+      # exists in a unit test. Carries its own controls: the same read off the
+      # quad, and over a solid that has to win.
+      - name: Datum-plane hover highlight end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/datum_hover_highlight_e2e.cjs
       # Getting OUT of a sketch: Finish on one nobody drew in must add nothing,
       # and Cancel Sketch must leave without committing. The store side is unit
       # tested, but the row in the Browser — the thing the two reporters had to
