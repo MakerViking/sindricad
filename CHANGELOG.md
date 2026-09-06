@@ -20,6 +20,42 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A sweep now follows the whole path.** Reported from Linux: "I expected
+  Sketch 3 to follow around the contour of Sketch 2". A path sketch built from
+  projected geometry was being cut into pieces by a rounding gap of a millionth
+  of a millimetre, and the sweep silently followed only the longest piece, in
+  the wrong place. Sweeps along a closed path also came out with no volume; they
+  are solid now. If a path really is in disconnected pieces, or the sweep cannot
+  build a solid at all, I say so instead of quietly adding a wrong or empty
+  body.
+
+- **A tangent circle no longer jumps to the far side of the line it was
+  touching.** Reported from the in-app reporter: a 30 mm circle held in the
+  corner of a fixed box by two tangents flipped outside the box when a
+  concentric constraint was applied with the other circle picked first, and
+  ended up touching one edge's extension rather than the edge. Tangency was only
+  enforced against the infinite line the edge lies on, so a mirrored answer
+  scored as satisfied. A tangent now means tangent to the line you drew: a
+  solve that pushes the touch point off the end of the segment, or onto the
+  other side of it, is re-solved from the side it started on, and refused with
+  a reason if no answer on that side exists.
+
+- **Pressing T in Extrude or Press/Pull while the depth box has focus arms the
+  up-to target pick instead of typing a letter into the box.** Reported from
+  the in-app reporter. The same goes for S in Thicken and F in Section. Once you
+  have typed a value, letters stay in the box as before.
+
+- **Construction and offset planes brighten under the cursor anywhere in the
+  model view**, not only while an extrude is picking an "up to" target, so it is
+  obvious when a plane is there to be clicked. Reported from the in-app
+  reporter. A body face under the cursor still wins over a plane behind it, and
+  in Bodies selection mode a click on a plane now selects it instead of doing
+  nothing.
+
+- **The ribbon's More-tools and split-button dropdowns no longer cover the
+  Sketch Palette.** Reported from the in-app reporter. The palette steps aside
+  while a dropdown is open and comes back when it closes.
+
 - **Panning follows the mouse instead of trailing it.** Reported from Linux as
   a perceptible delay between moving the mouse and the movement on screen. A
   right-drag pan was smoothed toward its target over an eighth of a second,
