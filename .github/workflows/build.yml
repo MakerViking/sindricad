@@ -180,6 +180,12 @@ jobs:
           # rectangle's corner) must both own it, or the corner area loses its
           # name and the extrude drifts onto a neighbour (field report d7659f36).
           uv run python test_region_coincident_entities.py
+          # Field report 780bdbd0: both sweep-path defects were SILENT — a path
+          # split by a 1e-6 rounding gap, and a closed path swept to zero volume
+          # — so test_smoke's `part.volume > 100` on a smooth arc pipe stayed
+          # green through both. Its oracle is the swept volume against the
+          # analytic profile-area x path-length, which nothing else here checks.
+          uv run python test_sweep_path.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script

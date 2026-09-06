@@ -70,6 +70,7 @@ from build123d import (
     GeomType,
     Keep,
     Kind,
+    Transition,
     extrude,
     fillet,
     chamfer,
@@ -4015,14 +4016,67 @@ def _handle_loft(f, ctx):
                          ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
 
 
+# Which BRepOffsetAPI_MakePipeShell transition mode to sweep with, in the order
+# they are tried. build123d defaults to TRANSFORMED, and TRANSFORMED is wrong at
+# every path corner MEASURED here: an exactly closed 100x50 rectangle path with an
+# r2 circle profile swept to volume 0.000 (analytic 3769.911) and reported no
+# error, and an L-shaped open path with a 20x20 profile swept to 24000 against an
+# analytic 48000, is_valid False. RIGHT gives 3769.911 and 48000, both valid; a
+# smooth path is untouched (the arc pipe in test_smoke.test_sweep is bit-identical
+# at 351.079 mm3 / 3 faces either way). TRANSFORMED stays as the fallback because
+# RIGHT is the stricter of the two: with the profile plane containing the path
+# tangent, RIGHT raises StdFail_NotDone where TRANSFORMED still returns something.
+_SWEEP_TRANSITIONS = (Transition.RIGHT, Transition.TRANSFORMED)
+
+
+def _sweep_solid(prof, path):
+    """Sweep `prof` along `path`, preferring `Transition.RIGHT` (see
+    `_SWEEP_TRANSITIONS`) and falling back when the kernel refuses it.
+
+    Returns the first solid with positive volume that OCCT calls valid. Raises
+    ValueError naming what came back if none of the modes produce one: a sweep
+    that yields a zero-volume or self-intersecting body used to be committed as a
+    body anyway, with `errors` empty, so the only symptom was an invisible or
+    inside-out part."""
+    outcomes = []
+    for transition in _SWEEP_TRANSITIONS:
+        try:
+            solid = sweep(sections=prof, path=path, transition=transition)
+        except Exception as ex:
+            outcomes.append(f"{transition} was refused ({type(ex).__name__})")
+            continue
+        if solid is not None and solid.volume > 0 and solid.is_valid:
+            return solid
+        vol = "nothing" if solid is None else f"volume {solid.volume:.3f}"
+        outcomes.append(f"{transition} produced {vol}")
+    raise ValueError(
+        "Sweep could not build a solid along this path — the profile may be too "
+        "large for the path's corners, or it may cross itself as it travels. "
+        f"({'; '.join(outcomes)})"
+    )
+
+
 def _handle_sweep(f, ctx):
     prof = _require_sketch(ctx, f.get("profile"), "sweep")["sketch"]
     if prof is None:
         raise ValueError("sweep profile has no closed section")
-    path = _require_sketch(ctx, f.get("path"), "sweep").get("wire")
+    path_sketch = _require_sketch(ctx, f.get("path"), "sweep")
+    path = path_sketch.get("wire")
     if path is None:
         raise ValueError("sweep path sketch has no curve to follow")
-    solid = sweep(sections=prof, path=path)
+    # The path sketch may form several disconnected wires; only the longest is
+    # followed. Say so — a path in pieces was silently indistinguishable from a
+    # whole one, which is exactly how field report 780bdbd0 reached the user as a
+    # lip hugging 54% of a contour with no error anywhere.
+    dropped = path_sketch.get("wireDropped") or []
+    if dropped:
+        whole = path.length + sum(dropped)
+        _skip_feature(
+            ctx.diagnostics, f, "sweep",
+            f"the path sketch is in {len(dropped) + 1} disconnected pieces; the "
+            f"sweep followed the longest ({path.length:.3f} mm of {whole:.3f} mm)",
+        )
+    solid = _sweep_solid(prof, path)
     # Same New/Join/Cut boolean path as extrude/revolve/loft: booleans against
     # every visible overlapping body, with the loud no-op guards. (Sweep used to
     # inline `act["shape"] + solid` / `- solid` against only the active body —
@@ -9382,6 +9436,22 @@ _COINCIDENT = 1e-7
 # this guard exists to remove, so it must not be the one value it misses.
 _SPLINE_MIN_GAP = 1e-6
 
+# How far apart two sketch-curve ends may sit and still be joined into one sweep
+# path wire (`_path_wire`). build123d's Wire.combine defaults to tol=1e-9, which
+# is far tighter than the grid the document itself is stored on: `_r6` rounds
+# every projected curve to 6 decimals so the persisted file is byte-stable, so
+# two ends that the kernel put at the same point can land up to 1e-6 apart per
+# axis (~1.41e-6 in plane) purely from that rounding.
+#
+# MEASURED on field report 780bdbd0 (a projected silhouette contour, 68 edges):
+# at 1e-9, 1e-7 and 1e-6 the closed 550.259 mm loop combines into TWO open wires
+# of 252.879 and 297.380 mm — `_path_wire` then returned the longer one and the
+# sweep silently followed 54% of the path, in the wrong place. From 2e-6 up it is
+# one closed 550.259 mm wire. So the tolerance must strictly EXCEED the rounding
+# gap; 1e-5 mm clears it with room to spare while staying an order of magnitude
+# below _SPLINE_MIN_GAP and several below any gap a person could draw.
+_PATH_JOIN_TOL = 1e-5
+
 # What to tell the user when OCCT itself refuses to build a curve. Keyed by
 # entity type; every one of these failures is "the points are too close together
 # or too straight", the kernel just says so in a different class each time. Each
@@ -9635,8 +9705,9 @@ def _build_sketch(f, val, datums=None):
         faces.extend(_faces_from_edges(edges))
     faces.extend(text_local)  # glyph faces union into the whole-sketch profile (extrude)
 
-    # the located open/closed path wire from the free edges (for sweep paths)
-    path_wire = _path_wire(edges, plane)
+    # the located open/closed path wire from the free edges (for sweep paths),
+    # plus the lengths of any pieces it could NOT join (see _path_wire)
+    path_wire, path_dropped = _path_wire(edges, plane)
 
     # Region-pick faces = the planar ARRANGEMENT of every sketch edge: a line
     # crossing a profile carves it into separately-selectable sub-areas (mainstream MCAD
@@ -9684,26 +9755,36 @@ def _build_sketch(f, val, datums=None):
             sk = Compound(list(sk))
     else:
         return {"sketch": None, "faces": [], "wire": path_wire,
+                "wireDropped": path_dropped,
                 "edgesByEntity": by_ent, "plane": plane, "cellEntities": []}
 
     return {"sketch": sk, "faces": located_faces, "wire": path_wire,
+            "wireDropped": path_dropped,
             "edgesByEntity": by_ent, "plane": plane, "cellEntities": cell_eids}
 
 
 def _path_wire(edges, plane):
     """Combine a sketch's free line/arc/spline edges into ONE located wire (open or
-    closed) for use as a sweep path. Picks the longest wire if the edges form
-    several; returns None when there are no free edges."""
+    closed) for use as a sweep path, at `_PATH_JOIN_TOL` so the document's own 6
+    decimal rounding does not split a closed contour.
+
+    Returns `(wire, dropped)`: the LONGEST wire the edges form, and the lengths of
+    the wires that were left behind. `dropped` is what makes the truncation
+    visible — a path in genuinely disconnected pieces used to be indistinguishable
+    from a whole one, because this picked the longest and said nothing. `(None,
+    [])` when there are no free edges.
+    """
     if not edges:
-        return None
+        return None, []
     try:
-        wires = Wire.combine(edges)
+        wires = Wire.combine(edges, tol=_PATH_JOIN_TOL)
     except Exception:
-        return None
+        return None, []
     if not wires:
-        return None
+        return None, []
     longest = max(wires, key=lambda w: w.length)
-    return plane * longest
+    dropped = [w.length for w in wires if w is not longest]
+    return plane * longest, dropped
 
 
 # How far a rebuilt region's area may sit from the arrangement cell its anchor
