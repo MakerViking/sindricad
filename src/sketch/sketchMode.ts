@@ -4204,7 +4204,11 @@ export class SketchMode {
               const i = this.constraints.lastIndexOf(c);
               if (i >= 0) this.constraints.splice(i, 1);
             }
-            const msg = this.trial.msg;
+            // The solve's own reason wins over the tool's when it has one: a
+            // tangency with no answer left on the segment it was created
+            // against does not CONFLICT with anything, and saying it does sends
+            // the user looking for a contradiction that is not there.
+            const msg = r.reason ?? this.trial.msg;
             this.trial = null;
             toast(msg);
             this.solveDirty = true; // re-solve without them, back to the last good state
