@@ -110,6 +110,31 @@ const TOOL_DIMMED_RECT = {
     await page.waitForFunction((n) => document.querySelectorAll(".sketch-dim").length >= n,
       badgeCount, { timeout: 20000 });
     await page.evaluate(() => window.__sindri.viewport.fitView());
+    await page.waitForTimeout(900); // rig.fit() transitions
+    // fitView frames the GEOMETRY tightly, and a badge sits outside the shape
+    // it labels (a height badge to the left of the rectangle, a diameter badge
+    // above the circle), so after the fit those anchors can land just past the
+    // viewport edge and be culled. Zoom out a notch at a time over bare canvas
+    // until every badge is drawn. A wheel over a badge or the palette never
+    // reaches the viewport, hence the elementFromPoint check.
+    const allDrawn = (n) => page.evaluate((m) => {
+      const dims = [...document.querySelectorAll(".sketch-dim")];
+      return dims.length >= m && dims.every((el) => getComputedStyle(el).visibility !== "hidden");
+    }, n);
+    for (let i = 0; i < 8 && !(await allDrawn(badgeCount)); i++) {
+      const spot = await page.evaluate(() => {
+        const vp = document.getElementById("viewport").getBoundingClientRect();
+        const canvas = document.querySelector("#viewport canvas");
+        for (const [fx, fy] of [[0.5, 0.5], [0.4, 0.6], [0.6, 0.4], [0.35, 0.35], [0.65, 0.65]]) {
+          const x = vp.left + vp.width * fx, y = vp.top + vp.height * fy;
+          if (document.elementFromPoint(x, y) === canvas) return { x, y };
+        }
+        return { x: vp.left + vp.width / 2, y: vp.top + vp.height / 2 };
+      });
+      await page.mouse.move(spot.x, spot.y);
+      await page.mouse.wheel(0, 240);
+      await page.waitForTimeout(350);
+    }
     await page.waitForFunction((n) => {
       const dims = [...document.querySelectorAll(".sketch-dim")];
       return dims.length >= n && dims.every((el) => getComputedStyle(el).visibility !== "hidden");
