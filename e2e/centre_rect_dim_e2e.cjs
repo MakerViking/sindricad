@@ -85,13 +85,29 @@ const OVER_OWN_LINE = {
     await page.evaluate(() => window.__sindri.sketch.enter("XY", window.__sindri.store, "f1"));
     await page.waitForFunction(() => document.querySelectorAll(".sketch-dim").length >= 2,
       null, { timeout: 20000 });
+    // Frame the sketch before touching anything. On the CI runner the sketch
+    // opened at whatever zoom the camera happened to be at, the height badge's
+    // anchor fell outside the view and the badge was culled: its empty box sat
+    // at the viewport's corner, "on screen" by coordinates and unclickable in
+    // fact. fitView() frames the model; then wait until every badge is drawn
+    // inside the view (rig.fit() transitions, so poll rather than sleep).
+    await page.evaluate(() => window.__sindri.viewport.fitView());
+    await page.waitForFunction(() => {
+      const vp = document.getElementById("viewport").getBoundingClientRect();
+      const dims = [...document.querySelectorAll(".sketch-dim")];
+      return dims.length >= 2 && dims.every((el) => {
+        if (getComputedStyle(el).visibility === "hidden") return false;
+        const r = el.getBoundingClientRect();
+        return r.left >= vp.left && r.right <= vp.right && r.top >= vp.top && r.bottom <= vp.bottom;
+      });
+    }, null, { timeout: 5000 });
     await page.waitForTimeout(300);
   };
 
   /** the badge showing `text`, at the centre of where it is drawn */
   const badgeAt = (text) => page.evaluate((t) => {
     const el = [...document.querySelectorAll(".sketch-dim")].find((x) => x.textContent.startsWith(t));
-    if (!el) return null;
+    if (!el || getComputedStyle(el).visibility === "hidden") return null; // culled = not on screen
     const b = el.getBoundingClientRect();
     return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
   }, text);
