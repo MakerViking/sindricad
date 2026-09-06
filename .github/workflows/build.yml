@@ -743,6 +743,16 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/centre_rect_dim_e2e.cjs
+      # Field report 886da4e5: editing the diameter of a circle whose size the
+      # sketch cannot change turned every curve red and said nothing. The wording
+      # and the withdraw rule are unit tested; the two things the reporter
+      # actually saw — the colour on the curves and the absence of a toast — only
+      # exist in a running app, and this file reads both off the live scene.
+      - name: Refused sketch dimension end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/sketch_dim_conflict_e2e.cjs
       # Field report f45fe95c: a construction plane drawn as a hardcoded 80x80
       # quad ends mid-body on any part wider than that, and its boundary slides
       # across the face while orbiting — "lines overlaying the surface of the
