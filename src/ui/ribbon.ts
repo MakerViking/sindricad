@@ -257,12 +257,20 @@ interface Ctx {
 
 export class Ribbon {
   onAction: ((action: string) => void) | null = null;
+  /** Fired when a ribbon popup (the ⋯ overflow list or a split button's ▾)
+   *  opens or closes. Both are `position: fixed` on document.body at z-index
+   *  3000, directly under the ribbon and right-anchored — which is exactly
+   *  where the Sketch Palette is docked, so on a narrower window the popup
+   *  paints over the palette AND takes its clicks (report e50b83c7). The
+   *  ribbon does not know the palette exists; the host decides what to do. */
+  onPopupToggle: ((open: boolean) => void) | null = null;
   private model: Ctx;
   private sketch: Ctx;
   private current: Ctx;
   private collapsed: GroupMeta[] = [];
   private overflowPopup: HTMLDivElement | null = null; // the ONE open popup (overflow or split ▾)
   private popupAnchor: HTMLElement | null = null; // which button owns it (for toggle)
+  private popupOpen = false; // last state reported through onPopupToggle
 
   constructor(container: HTMLElement) {
     this.model = this.buildContext(MODEL, false);
@@ -510,6 +518,7 @@ export class Ribbon {
     this.overflowPopup = pop;
     this.popupAnchor = this.current.overflowBtn;
     this.installDismiss(pop, this.current.overflowBtn);
+    this.setPopupOpen(true);
   }
 
   /** A split button's ▾ dropdown — the overflow popup's look and dismissal,
@@ -527,6 +536,23 @@ export class Ribbon {
     this.overflowPopup = pop;
     this.popupAnchor = anchor;
     this.installDismiss(pop, anchor);
+    this.setPopupOpen(true);
+  }
+
+  /** Report an open/close through `onPopupToggle`, but only on a real change,
+   *  so what the host gets is a STATE and not an event stream: never two opens
+   *  in a row, never a close for a popup that was not open. Worth the three
+   *  lines because the close path is diffuse — a popup also closes on an
+   *  outside click, on Escape, on leaving the sketch and on a reflow, and
+   *  `buildOverflowPopup()`/`openDropdown()` each begin by closing whatever was
+   *  there. (It does NOT collapse the close+reopen `reflow()` does while
+   *  resizing with the overflow popup open: that pair is a genuine change each
+   *  way. It is invisible because both happen synchronously in one
+   *  ResizeObserver callback, with no paint in between.) */
+  private setPopupOpen(open: boolean) {
+    if (this.popupOpen === open) return;
+    this.popupOpen = open;
+    this.onPopupToggle?.(open);
   }
 
   /** dismiss-on-outside-pointerdown, shared by the overflow + split dropdowns.
@@ -558,5 +584,6 @@ export class Ribbon {
       this.popupAnchor.setAttribute("aria-expanded", "false");
     }
     this.popupAnchor = null;
+    this.setPopupOpen(false);
   }
 }

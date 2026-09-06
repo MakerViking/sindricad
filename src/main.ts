@@ -1168,6 +1168,20 @@ palette.onToggle = (key, value) => {
 };
 palette.onLookAt = () => sketch.lookAt();
 
+// The ribbon's ⋯ overflow list and its split-button ▾ dropdowns drop into the
+// band the Sketch Palette is docked in, at z-index 3000 against the palette's
+// 20. On a 1280-wide window the popup covered 76% of the palette and took the
+// clicks for all nine of its controls — pressing "Look At" armed Trim (report
+// e50b83c7). The palette steps aside while a dropdown is open rather than
+// moving: a palette that jumps sideways is a second surprise, and moving it
+// would only shift which widths collide.
+//
+// `sketch.active` is the same term as the setVisible call in sketch.onState
+// above, deliberately: leaving a sketch with a popup open runs setContext ->
+// closePopup -> here, and a bare `!open` would resurrect the palette outside a
+// sketch.
+ribbon.onPopupToggle = (open) => palette.setVisible(!open && sketch.active);
+
 // --- view controls (all routed through handleAction so the command palette,
 // keymap and buttons share one dispatch) ---
 document.querySelectorAll<HTMLButtonElement>("[data-view]").forEach((btn) => {
