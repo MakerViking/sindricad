@@ -140,7 +140,7 @@ describe("an entity badge backed by a driving constraint", () => {
     const { cons, menu } = mount(true);
     badgeOf().dispatch("contextmenu", { preventDefault: () => {}, stopPropagation: () => {} });
     expect(menu).toHaveBeenCalledTimes(1);
-    const del = menu.mock.calls[0]![1] as (() => void) | null;
+    const del = (menu.mock.calls[0]![1] as { del: (() => void) | null }).del;
     expect(del).toBeTruthy();
     del!();
     expect(cons).toHaveLength(0);
@@ -181,7 +181,7 @@ describe("an entity badge backed by a driving constraint", () => {
     const badge = badgeOf();
     expect(badge.className).toContain("sketch-dim-measured");
     badge.dispatch("contextmenu", { preventDefault: () => {}, stopPropagation: () => {} });
-    expect(menu.mock.calls[0]![1]).toBeNull();
+    expect((menu.mock.calls[0]![1] as { del: unknown }).del).toBeNull();
   });
 
   it("a governed badge keeps the plain driving-dimension styling", () => {
@@ -217,6 +217,108 @@ describe("an entity badge backed by a driving constraint", () => {
     input.selectionEnd = 0;
     input.dispatch("keydown", { key: "Delete", stopPropagation: () => {}, preventDefault: () => {} });
     expect(cons).toHaveLength(1);
+  });
+});
+
+// Report dff87040: "I don't have any obvious way to constrain a dimension."
+// A measured badge now offers Lock on its right-click menu, and a driving one
+// offers the inverse. These observe the CONSTRAINT LIST afterwards, not that a
+// callback fired.
+describe("locking and unlocking a dimension from the badge menu", () => {
+  const rect = { type: "rectangle", id: "R", x: 0, y: 0, width: 100, height: 50 } as unknown as Parameters<
+    SketchDimensions["show"]
+  >[0][number];
+
+  const rightClick = (el: FakeEl) =>
+    el.dispatch("contextmenu", { preventDefault: () => {}, stopPropagation: () => {} });
+  const actionsFrom = (menu: ReturnType<typeof vi.fn>) =>
+    menu.mock.calls[0]![1] as { del: (() => void) | null; lock: (() => void) | null; unlock: (() => void) | null };
+  /** every rendered badge, in order — byClass matches the class list EXACTLY,
+   *  and a measured/driven badge carries a second class */
+  const badges = () => body().children[0]!.children;
+
+  /** a rectangle whose width badge nothing governs — the reporter's case */
+  function mountRect(governed: boolean) {
+    body().innerHTML = "";
+    const cons: { type: string; line?: string; value?: number }[] = governed
+      ? [{ type: "distance", line: "R~0", value: 100 }]
+      : [];
+    const dims = new SketchDimensions(viewport, () => {});
+    const menu = vi.fn();
+    dims.onLabelMenu = menu;
+    dims.onEntityConstraint = (_i, f) =>
+      f === "width" && cons.length ? () => { cons.length = 0; } : "free";
+    dims.onEntityLock = (_i, f) =>
+      f === "width" && !cons.length ? () => { cons.push({ type: "distance", line: "R~0", value: 100 }); } : null;
+    dims.show([rect], plane, []);
+    return { cons, menu, badge: badges()[0]! }; // width comes first
+  }
+
+  it("a rectangle's width badge no longer claims to be a driving dimension", () => {
+    const { badge } = mountRect(false);
+    expect(badge.className).toContain("sketch-dim-measured");
+  });
+
+  it("Lock on that badge creates the constraint that holds the width", () => {
+    const { cons, menu, badge } = mountRect(false);
+    rightClick(badge);
+    const a = actionsFrom(menu);
+    expect(a.del).toBeNull(); // nothing to delete yet
+    expect(a.lock).toBeTruthy();
+    a.lock!();
+    expect(cons).toEqual([{ type: "distance", line: "R~0", value: 100 }]);
+  });
+
+  it("once locked, the badge reads as driving and offers Delete instead of Lock", () => {
+    const { cons, menu, badge } = mountRect(true);
+    expect(badge.className).toBe("sketch-dim");
+    rightClick(badge);
+    const a = actionsFrom(menu);
+    expect(a.lock).toBeNull();
+    expect(a.del).toBeTruthy();
+    a.del!();
+    expect(cons).toHaveLength(0);
+  });
+
+  /** a placed (constraint-backed) dim, driven or driving */
+  function mountPlaced(driven: boolean) {
+    body().innerHTML = "";
+    const state = { driven };
+    const dims = new SketchDimensions(viewport, () => {});
+    const menu = vi.fn();
+    dims.onLabelMenu = menu;
+    dims.show([], plane, [
+      {
+        anchor: new THREE.Vector2(0, 0),
+        valueMm: 100,
+        commit: () => {},
+        ...(driven ? { driven: true } : {}),
+        onDelete: () => {},
+        ...(driven
+          ? { onLock: () => { state.driven = false; } }
+          : { onUnlock: () => { state.driven = true; } }),
+      },
+    ]);
+    return { state, menu, badge: badges()[0]! };
+  }
+
+  it("a reference dim offers Lock, and locking makes it drive", () => {
+    const { state, menu, badge } = mountPlaced(true);
+    expect(badge.className).toContain("sketch-dim-driven");
+    rightClick(badge);
+    const a = actionsFrom(menu);
+    expect(a.unlock).toBeNull();
+    a.lock!();
+    expect(state.driven).toBe(false);
+  });
+
+  it("a driving placed dim offers Unlock, which makes it a reference again", () => {
+    const { state, menu, badge } = mountPlaced(false);
+    rightClick(badge);
+    const a = actionsFrom(menu);
+    expect(a.lock).toBeNull();
+    a.unlock!();
+    expect(state.driven).toBe(true);
   });
 });
 

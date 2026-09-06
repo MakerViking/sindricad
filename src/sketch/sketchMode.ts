@@ -6,7 +6,7 @@ import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
 import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchPattern } from "../types";
-import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isPlacedDim } from "../types";
+import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isDriven, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
 import { DimInput } from "./dimInput";
@@ -30,10 +30,10 @@ import { isPlainNumber, parseField, dimValueOk } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { circumcenter } from "./arc";
-import { compileAndSolve, constraintIndexOf } from "./sketchSolve";
+import { compileAndSolve, constraintIndexOf, soleDimEntity } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
-import { applyDrivingDimsDirect, drivingDimFor } from "./directDims";
+import { applyDrivingDimsDirect, governingDimAt, lockDimFor, planDimEdit } from "./directDims";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
@@ -385,12 +385,17 @@ export class SketchMode {
     this.dims.onPlanePoint = (cx, cy) => this.planePointAt(cx, cy);
     this.dims.onEntityPlace = (i, f, ox, oy, done) => this.commitEntityPlace(i, f, ox, oy, done);
     this.dims.onEntityConstraint = (i, f) => this.entityDimConstraint(i, f);
-    this.dims.onLabelMenu = (e, del) => {
-      // Disabled rather than absent on an entity dim: a circle's diameter is a
-      // property of the circle, so there is no constraint to remove, and saying
-      // so beats a right-click that appears to do nothing.
+    this.dims.onEntityLock = (i, f) => this.entityDimLock(i, f);
+    this.dims.onLabelMenu = (e, a) => {
+      // Disabled rather than absent, so the menu reads the same on every badge:
+      // a circle's diameter is a property of the circle, so there is nothing to
+      // delete until a dimension governs it, and saying so beats a right-click
+      // that appears to do nothing. Lock is the discoverable way to turn a
+      // measurement into a dimension that HOLDS (report dff87040).
       contextMenu(e.clientX, e.clientY, [
-        { label: "Delete dimension", danger: true, disabled: !del, shortcut: "Del", onClick: () => del?.() },
+        { label: "Lock dimension", disabled: !a.lock, onClick: () => a.lock?.() },
+        { label: "Unlock (reference)", disabled: !a.unlock, onClick: () => a.unlock?.() },
+        { label: "Delete dimension", danger: true, disabled: !a.del, shortcut: "Del", onClick: () => a.del?.() },
       ]);
     };
     this.glyphs = new SketchGlyphs(viewport);
@@ -840,13 +845,22 @@ export class SketchMode {
 
   /** Apply an edited dimension value (mm) to an entity. Line length and circle
    *  diameter become driving solver constraints (so other constraints are kept);
-   *  everything else (rectangle W/H, line angle) edits coordinates directly. */
+   *  a field a LOCK already governs retypes that constraint; everything else
+   *  (an unlocked rectangle W/H, line angle) edits coordinates directly.
+   *  planDimEdit owns that fork — a direct write to a governed field looks like
+   *  it worked and is undone by the next solve. */
   private editDimension(index: number, field: DimField, mm: number) {
     const e = this.entities[index];
     if (!e) return;
-    const dim = drivingDimFor(e, field, mm);
-    if (dim) {
-      this.setDrivingDimension(dim);
+    const plan = planDimEdit(this.constraints, e, field, mm);
+    if (plan.kind === "upsert") {
+      this.setDrivingDimension(plan.c, plan.moves);
+      return;
+    }
+    if (plan.kind === "retype") {
+      const c = this.constraints[plan.at];
+      // plan.value, not mm: a signed X/Y dim keeps the sign it already had
+      if (c && isDimConstraint(c)) this.writeDimValue(c, plan.value);
       return;
     }
     entityDims(e).find((d) => d.field === field)?.write(mm);
@@ -951,27 +965,66 @@ export class SketchMode {
   }
 
   /** The driving constraint behind an ENTITY dim badge, in the three answers
-   *  SketchDimensions.onEntityConstraint asks for. Only a line's LENGTH and a
-   *  circle's DIAMETER can be governed — exactly the two editDimension turns
-   *  into a driving constraint — so everything else is intrinsic and reports
-   *  null. Resolved against the live constraints with the same matcher
-   *  setDrivingDimension.sameTarget uses, so a badge and a re-dimension can
-   *  never disagree about which constraint is "the" one for this field. */
+   *  SketchDimensions.onEntityConstraint asks for. The rule itself lives in
+   *  directDims.governingDimAt, shared with the edit path so a badge and a
+   *  re-dimension can never disagree about which constraint is "the" one for
+   *  this field. */
   private entityDimConstraint(index: number, field: DimField): (() => void) | "free" | null {
     const e = this.entities[index];
     if (!e) return null;
-    const governs =
-      e.type === "line" && field === "length"
-        ? (c: SketchConstraint) => c.type === "distance" && c.line === e.id
-        : e.type === "circle" && field === "diameter"
-          ? (c: SketchConstraint) => c.type === "diameter" && c.circle === e.id
-          : null;
-    if (!governs) return null;
-    const at = this.constraints.findIndex(governs);
+    const at = governingDimAt(this.constraints, e, field);
     // A measurement, honestly labelled: the badge shows what the geometry
-    // currently IS, and nothing holds it there (report fd7dcc5f).
-    if (at < 0) return "free";
+    // currently IS, and nothing holds it there (reports fd7dcc5f, dff87040).
+    if (at === null || at === "free") return at;
     return () => this.deleteConstraint(at);
+  }
+
+  /** "Lock dimension" on a MEASURED entity badge: create the driving constraint
+   *  that holds what the badge already reads. No value is retyped, so nothing
+   *  should move — which is also why no mover bias is armed. */
+  private entityDimLock(index: number, field: DimField): (() => void) | null {
+    const e = this.entities[index];
+    if (!e) return null;
+    const dim = entityDims(e).find((d) => d.field === field);
+    if (!dim || !lockDimFor(e, field, dim.valueMm)) return null;
+    return () => {
+      const cur = this.entities[index];
+      const now = cur && entityDims(cur).find((d) => d.field === field);
+      const c = cur && now ? lockDimFor(cur, field, now.valueMm) : null;
+      if (!c) return;
+      this.setDrivingDimension(c);
+      this.refreshActive();
+      this.onState?.();
+    };
+  }
+
+  /** "Lock dimension" on a reference (driven) dim: keep the same dimension, at
+   *  the value it currently MEASURES, and let it drive. setDrivingDimension's
+   *  dedup removes the driven original and hands its id over, so a parameter
+   *  binding survives the lock. */
+  private lockPlacedDim(cIndex: number, valueMm: number) {
+    const c = this.constraints[cIndex];
+    if (!c || !isPlacedDim(c) || !isDriven(c)) return;
+    const { driven: _driven, ...rest } = c as SketchConstraint & { driven?: boolean };
+    this.setDrivingDimension({ ...rest, value: valueMm } as SketchConstraint);
+    this.conflictIdx.clear(); // indices shifted; the next solve repopulates
+    this.overIdx.clear();
+    this.refreshActive();
+    this.onState?.();
+  }
+
+  /** The inverse: keep the dimension but stop it driving. The geometry does not
+   *  move — a dimension that was satisfied still is — but the sketch gains back
+   *  the freedom it was holding, and the badge goes bracketed. */
+  private unlockPlacedDim(cIndex: number) {
+    const c = this.constraints[cIndex];
+    if (!c || !isPlacedDim(c) || isDriven(c)) return;
+    this.constraints[cIndex] = { ...c, driven: true } as SketchConstraint;
+    this.conflictIdx.clear();
+    this.overIdx.clear();
+    this.requestSolve();
+    this.refreshActive();
+    this.onState?.();
   }
 
   /** Persist a dragged CONSTRAINT dim placement (the placed dims — see
@@ -1009,6 +1062,12 @@ export class SketchMode {
           if (c && isPlacedDim(c)) this.writeDimValue(c, val);
         },
         onDelete: () => this.deleteConstraint(d.cIndex),
+        // Lock/Unlock, the two directions of "does this dimension hold?".
+        // d.valueMm on a driven dim is the LIVE measurement, which is exactly
+        // the value locking it should freeze.
+        ...(d.driven
+          ? { onLock: () => this.lockPlacedDim(d.cIndex, d.valueMm) }
+          : con && isPlacedDim(con) ? { onUnlock: () => this.unlockPlacedDim(d.cIndex) } : {}),
         commitExpr: (raw: string) => {
           const c = this.constraints[d.cIndex];
           if (!c || !isDimConstraint(c)) return "not editable";
@@ -1037,7 +1096,17 @@ export class SketchMode {
    *  through to this line. */
   private writeDimValue(c: SketchConstraint & { value: number }, val: number) {
     c.value = c.type === "offset" && c.value < 0 ? -Math.abs(val) : val;
+    // A single-entity dimension moves that entity. Without this the solve runs
+    // free and planegcs splits the correction across everything the dimension
+    // can reach: report d8c5265e retyped a circle's diameter and the rectangle
+    // it sits tangent inside grew with it. See sketchSolve.soleDimEntity for why
+    // a genuine two-entity dim deliberately gets no bias.
+    const mover = soleDimEntity(c);
+    if (mover) this.pendingBias = { moves: [mover] }; // BEFORE requestSolve: the pump reads it synchronously
     this.requestSolve();
+    // no solver on this machine: the value has to reach the geometry here, the
+    // same way setDrivingDimension does it (see applyDrivingDimsDirectly)
+    if (this.solverDead) this.applyDrivingDimsDirectly();
     this.onState?.();
   }
 
@@ -1245,7 +1314,9 @@ export class SketchMode {
     const r = this.evalDimInput(raw, "length", prior?.id ? `c:${prior.id}` : null);
     if ("error" in r) return r.error;
     const c = { ...base, value: r.value };
-    this.setDrivingDimension(c); // stamps a fresh id or inherits the replaced dim's
+    // the entity being dimensioned is the one that moves — same rule as
+    // editDimension's numeric path (report d8c5265e)
+    this.setDrivingDimension(c, soleDimEntity(c) ?? undefined); // stamps a fresh id or inherits the replaced dim's
     this.recordBinding(`c:${(c as { id?: string }).id!}`, r, "length");
     this.onState?.();
     return null;
@@ -2327,10 +2398,21 @@ export class SketchMode {
       this.refreshDimPlan();
     } else {
       this.dimPlan = r;
-      setPrompt(r.hint);
+      setPrompt(this.dimHint(r));
     }
     this.dimPlace = null; // a new pick invalidates any earlier placement
     this.syncDimBox(ev);
+  }
+
+  /** The plan's own prompt, plus the state of the Reference toggle. The palette
+   *  checkbox is the only thing that says Reference Dim is on, and a dimension
+   *  placed with it on measures rather than drives — a difference the user only
+   *  discovers later, when nothing holds (report dff87040). The plan already
+   *  appends its own note when the GEOMETRY forces a driven dim. */
+  private dimHint(plan: DimPlan): string {
+    return this.referenceMode && plan.forceDriven !== true
+      ? `${plan.hint} · Reference Dim is ON — this dimension will measure, not drive`
+      : plan.hint;
   }
 
   /** Freeze the label position (`place`) at the cursor. Does NOT commit —
@@ -2431,10 +2513,26 @@ export class SketchMode {
     // holding anything still — same gate the two implied constraints above use.
     const moves = this.referenceMode || forceDriven ? undefined : plan.moves;
     const placed = this.placeDim(c, forceDriven, moves);
-    // bind exactly as the label editor does: a formula binds, and a plain number
-    // over a dim that WAS bound (the id carries over on replace) rewrites that
-    // binding to the literal instead of leaving a stale expression behind
-    if (typed && isDimConstraint(placed) && placed.id) this.recordBinding(`c:${placed.id}`, typed, kind);
+    // A driven dim measures; it neither holds the typed value nor binds a
+    // parameter to it. Say so — silence here is what let report dff87040 type
+    // 50 and 100 into a rectangle, see nothing move, and be left with two
+    // dimensions that could not stop an Equal constraint resizing it.
+    if (isDriven(placed)) {
+      if (raw !== "") {
+        toast(
+          this.referenceMode
+            ? "Reference Dim is on, so this dimension only measures — the value you typed was not applied. Turn Reference Dim off, or right-click the badge and choose Lock dimension."
+            : "Both ends are fixed reference geometry, so this dimension can only measure — the value you typed was not applied.",
+          { timeout: 8000 },
+        );
+      }
+    } else if (typed && isDimConstraint(placed) && placed.id) {
+      // bind exactly as the label editor does: a formula binds, and a plain
+      // number over a dim that WAS bound (the id carries over on replace)
+      // rewrites that binding to the literal instead of leaving a stale
+      // expression behind
+      this.recordBinding(`c:${placed.id}`, typed, kind);
+    }
     this.onState?.();
   }
 

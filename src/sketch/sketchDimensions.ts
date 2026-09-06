@@ -55,14 +55,25 @@ interface DimLabel {
    *  never jumps on release. */
   placeCommit?: (ox: number, oy: number, done: boolean) => THREE.Vector2 | null;
   /** Remove the constraint this label drives. Present ONLY on constraint-backed
-   *  dims: an entity dim (a rectangle's width) is an intrinsic property of the
-   *  entity with no constraint to delete, so its label offers the action
-   *  disabled rather than not at all. */
+   *  dims: an UNLOCKED entity dim (a polygon's radius, a rectangle's width
+   *  before it is locked) has no constraint to delete, so its label offers the
+   *  action disabled rather than not at all. */
   onDelete?: () => void;
+  /** Turn what this badge MEASURES into a driving dimension at its current
+   *  value — the discoverable half of "constrain a dimension" (report dff87040:
+   *  "I don't have any obvious way to constrain a dimension"). Present on a
+   *  measured badge and on a reference dim; absent once something drives it. */
+  onLock?: () => void;
+  /** The inverse: keep the dimension as a live measurement instead of a driver.
+   *  Only the placed dims have a driven form, so this is absent on an entity
+   *  badge — there, deleting the constraint is what unlocks it. */
+  onUnlock?: () => void;
   /** This badge's value COULD be governed by a driving constraint and isn't —
    *  it is a live measurement of the geometry. Renders muted so a measured ⌀
    *  and a driving ⌀ stop being pixel-identical (report fd7dcc5f). Still
-   *  editable: typing a value is what creates the driving constraint. */
+   *  editable; `onLock` is what turns it into a driving dimension (on a line or
+   *  a circle, typing a value does that too — on a rectangle's width it does
+   *  not, which is report dff87040). */
   measured?: boolean;
   /** This dim's value is SIGNED (the smart tool's DX/DY: the sign says which
    *  side), so the editor must take a negative back — see units.dimValueOk.
@@ -117,9 +128,12 @@ export class SketchDimensions {
     | ((index: number, field: DimField, ox: number, oy: number, done: boolean) => THREE.Vector2 | null)
     | null = null;
   /** Right-click on a label. The owner renders the menu (this class owns no menu
-   *  UI); `del` is the label's delete action, or null when the label is an entity
-   *  dim and there is nothing to delete. */
-  onLabelMenu: ((e: MouseEvent, del: (() => void) | null) => void) | null = null;
+   *  UI); each action is the label's own, or null when it does not apply to this
+   *  badge — the owner shows those disabled rather than absent, so the menu
+   *  reads the same on every dimension. */
+  onLabelMenu:
+    | ((e: MouseEvent, actions: { del: (() => void) | null; lock: (() => void) | null; unlock: (() => void) | null }) => void)
+    | null = null;
   /** The driving constraint behind an ENTITY dim, resolved by the owner against
    *  the live constraint list. Three answers, because the badge has three
    *  states:
@@ -129,9 +143,14 @@ export class SketchDimensions {
    *                 delete at all, so those two dims were unremovable)
    *    "free"     → the field CAN be governed and nothing governs it: the badge
    *                 is a measurement, and renders as one
-   *    null       → the field is intrinsic (a rectangle's width): no constraint
-   *                 exists for it either way. */
+   *    null       → the field is intrinsic (a polygon's radius, a slot's width):
+   *                 the solver never moves it, so no constraint exists for it
+   *                 either way and there is nothing to lock. */
   onEntityConstraint: ((index: number, field: DimField) => (() => void) | "free" | null) | null = null;
+  /** Turn a MEASURED entity badge into a driving dimension at its current value
+   *  ("Lock dimension"). Asked only when onEntityConstraint said "free"; null
+   *  back means this badge has no lockable form. */
+  onEntityLock: ((index: number, field: DimField) => (() => void) | null) | null = null;
 
   /** The label the Delete key acts on. Set by a click or a right-click, dropped
    *  on the next rebuild — a selection whose element no longer exists must not
@@ -198,6 +217,7 @@ export class SketchDimensions {
         const expr = this.entityExprOf?.(i, d.field);
         const field = d.field;
         const backing = this.onEntityConstraint?.(i, field) ?? null;
+        const lock = backing === "free" ? (this.onEntityLock?.(i, field) ?? null) : null;
         this.addLabel({
           anchor: d.labelPos,
           valueMm: d.valueMm,
@@ -208,6 +228,7 @@ export class SketchDimensions {
           ...(expr ? { expr } : {}),
           ...(typeof backing === "function" ? { onDelete: backing } : {}),
           ...(backing === "free" ? { measured: true } : {}),
+          ...(lock ? { onLock: lock } : {}),
         });
       }
     });
@@ -294,13 +315,19 @@ export class SketchDimensions {
       e.preventDefault();
       e.stopPropagation();
       this.selectLabel(label);
-      this.onLabelMenu?.(e, label.onDelete ? () => label.onDelete!() : null);
+      this.onLabelMenu?.(e, {
+        del: label.onDelete ? () => label.onDelete!() : null,
+        lock: label.onLock ? () => label.onLock!() : null,
+        unlock: label.onUnlock ? () => label.onUnlock!() : null,
+      });
     });
     if (d.driven) {
-      el.title = "Reference dimension (measured, not driving)";
+      el.title = d.onLock
+        ? "Reference dimension (measured, not driving) — right-click to lock it"
+        : "Reference dimension (measured, not driving)";
     } else {
       el.title = fx ? `= ${d.expr} · click to edit`
-        : d.measured ? "Measured — click to set a driving dimension, drag to move"
+        : d.measured ? "Measured — nothing holds this value. Click to edit, right-click to lock, drag to move"
         : "Click to edit, drag to move";
       el.addEventListener("click", (e) => {
         e.stopPropagation();
