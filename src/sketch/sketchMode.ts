@@ -34,6 +34,7 @@ import { compileAndSolve, constraintIndexOf, soleDimEntity } from "./sketchSolve
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect, governingDimAt, lockDimFor, planDimEdit } from "./directDims";
+import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
@@ -219,8 +220,10 @@ export class SketchMode {
   /** The constraints just added by a tool, on trial until their solve comes
    *  back: withdrawn together if it conflicts, with `msg` said once. A LIST
    *  because the fillet adds three (two tangencies and a radius) that only mean
-   *  anything as a set — half a fillet's definition is worse than none. */
-  private trial: { cons: SketchConstraint[]; msg: string } | null = null;
+   *  anything as a set — half a fillet's definition is worse than none.
+   *  See dimConflict.SketchTrial for `restore` and the callable `msg`, which a
+   *  DIMENSION edit needs and a constraint tool does not. */
+  private trial: SketchTrial | null = null;
   /** The entities the NEXT non-drag solve is allowed to move — "what you picked
    *  first is what moves" (bug #86, see sketchSolve's `bias`). Armed by the tool
    *  that knows the pick order and consumed by exactly one solve in pump().
@@ -1116,8 +1119,17 @@ export class SketchMode {
    *
    *  `moves` names the entity this dimension should move (the first-picked
    *  operand — see DimPlan.moves). It biases exactly ONE solve and is never
-   *  stored, so only the callers that still know the pick order pass it. */
+   *  stored, so only the callers that still know the pick order pass it.
+   *
+   *  The new dimension goes ON TRIAL like any constraint a tool adds (886da4e5):
+   *  a value the sketch cannot satisfy used to be committed anyway, and the only
+   *  feedback was every curve painted CONFLICT red. */
   private setDrivingDimension(c: SketchConstraint, moves?: string) {
+    // Snapshot BEFORE the sameTarget filter: a withdrawn dimension edit has to
+    // restore the WHOLE pre-edit list, not just splice the new dim out. The
+    // dimension it replaces has already been dropped by then, so splicing would
+    // leave the entity with no dimension at all — a second, silent loss.
+    const before = this.constraints;
     // the unordered pair of rounds a rim-gap dim spans. radialGap and
     // c2cDistance are the SAME user intent ("the gap between these two rims") in
     // two solver formulations — treating them as one target is what stops a
@@ -1175,13 +1187,20 @@ export class SketchMode {
       return false;
     };
     let replacedId: string | undefined;
+    let replacedValue: number | undefined;
     this.constraints = this.constraints.filter((k) => {
       if (!sameTarget(k)) return true;
       if (isDimConstraint(k) && k.id) replacedId = k.id;
+      if (isDimConstraint(k)) replacedValue = k.value;
       return false;
     });
     if (isDimConstraint(c) && !c.id) c.id = replacedId ?? newConstraintId();
     this.constraints.push(c);
+    this.trial = {
+      cons: [c],
+      restore: before,
+      msg: (blamed, cons) => dimConflictMsg(c, blamed, cons, replacedValue),
+    };
     if (moves) this.pendingBias = { moves: [moves] }; // BEFORE requestSolve: pump reads it synchronously
     this.requestSolve();
     // requestSolve is a no-op once the solver is known dead, so on those
@@ -4298,17 +4317,16 @@ export class SketchMode {
           // Keeping it leaves the whole system unsolvable, so every LATER
           // constraint silently does nothing and the tools look broken.
           if (this.trial && (this.conflict || !r.ok)) {
-            for (const c of this.trial.cons) {
-              const i = this.constraints.lastIndexOf(c);
-              if (i >= 0) this.constraints.splice(i, 1);
-            }
+            const trial = this.trial;
+            this.trial = null;
+            const w = withdrawTrial(this.constraints, trial, parseConflictIdx(r.conflicts));
+            this.constraints = w.constraints;
             // The solve's own reason wins over the tool's when it has one: a
             // tangency with no answer left on the segment it was created
             // against does not CONFLICT with anything, and saying it does sends
             // the user looking for a contradiction that is not there.
-            const msg = r.reason ?? this.trial.msg;
-            this.trial = null;
-            toast(msg);
+            toast(r.reason ?? w.msg);
+            this.conflict = false; // the restored list is the last GOOD state
             this.solveDirty = true; // re-solve without them, back to the last good state
             continue;
           }
