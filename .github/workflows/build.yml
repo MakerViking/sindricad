@@ -743,6 +743,16 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/centre_rect_dim_e2e.cjs
+      # Field reports dff87040 and d8c5265e, one design gap: a badge's border is
+      # the only signal of whether it drives anything. The pure decisions and the
+      # solver behaviour are unit tested; what only exists in a running app is
+      # the chain between them — a real contextmenu on a real badge, the menu
+      # SketchMode builds from it, and the solve a real value edit kicks off.
+      - name: Lock a dimension / who moves on a value edit, end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/lock_dimension_e2e.cjs
       # Field report f45fe95c: a construction plane drawn as a hardcoded 80x80
       # quad ends mid-body on any part wider than that, and its boundary slides
       # across the face while orbiting — "lines overlaying the surface of the

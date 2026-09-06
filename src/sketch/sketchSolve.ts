@@ -100,6 +100,32 @@ export function constraintIndexOf(id: string): number | null {
   return m && m[1] !== undefined ? Number(m[1]) : null;
 }
 
+/** The one entity a dimension is ABOUT, when it is about exactly one — the
+ *  entity to name as the mover (see the bias below) when its value is edited.
+ *
+ *  Editing a value has no pick order to fall back on, so this is the only thing
+ *  that can say which geometry should pay: report d8c5265e typed a new diameter
+ *  into a circle held inside a free rectangle by two tangents, and the unbiased
+ *  solve split the correction between the circle's centre and the rectangle's
+ *  corners — "there is no obvious reason for the box dimensions to change".
+ *
+ *  null for a genuine TWO-entity dimension, and deliberately: the tool does not
+ *  store which operand was picked first (see dimensionTool), so there is no
+ *  edited entity to prefer and the free solve stays correct.
+ *
+ *  A `distance` may name a rectangle EDGE (`R~0` — a locked rectangle width),
+ *  which the bias normalises to the rectangle itself. */
+export function soleDimEntity(c: SketchConstraint): string | null {
+  switch (c.type) {
+    case "distance": return c.line;
+    case "diameter": return c.circle;
+    case "radius": return c.e;
+    case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY":
+      return c.e1 === c.e2 ? c.e1 : null;
+    default: return null;
+  }
+}
+
 export async function compileAndSolve(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
@@ -611,7 +637,9 @@ export async function compileAndSolve(
     // anchored including the ones it meant to free, and the gesture silently
     // degrades to "moves nothing" — bug #86's exact symptom with no signal.
     // No caller spells it that way today; both dimensionTool and constraintTools
-    // stamp `ent.id`. This is here so the next one cannot be caught by it.
+    // stamp `ent.id`. This is here so the next one cannot be caught by it — and
+    // one now is: a locked rectangle width is a `distance` on `R~0`, and
+    // soleDimEntity hands that edge straight through as the mover.
     const movers = new Set(bias.moves.map((id) => rectOf(id) ?? id));
     const owners = new Map<string, Set<string>>(); // solver point -> entities that own it
     const own = (entId: string, ...pids: (string | undefined)[]) => {

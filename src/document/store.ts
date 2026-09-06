@@ -3,13 +3,14 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, DimField, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
 import { applyProjectionUpdate } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
-import { applyDrivingDimsDirect, drivingDimFor, upsertDrivingDim } from "../sketch/directDims";
+import { applyDrivingDimsDirect, planDimEdit, upsertDrivingDim } from "../sketch/directDims";
 import { entityDims } from "../sketch/entityDims";
+import { isDimConstraint } from "../sketch/id";
 import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
@@ -717,13 +718,15 @@ export class DocumentStore {
 
   /** Edit one sketch entity's dimension (the inspector's sketch rows), with the
    *  same semantics as editing that dimension's label on the canvas: a line's
-   *  length and a circle's diameter become DRIVING constraints (drivingDimFor)
+   *  length and a circle's diameter become DRIVING constraints (planDimEdit)
    *  and the sketch re-solves, so tangent/attached geometry follows. Writing the
    *  coordinates instead is not equivalent — a radius is a free variable to the
    *  solver, so the next solve takes the typed value straight back out.
    *
-   *  Every other dimension (rectangle W/H, slot width, polygon radius) has no
-   *  constraint form and stays a coordinate write, exactly as on the canvas.
+   *  Every other dimension (an UNLOCKED rectangle W/H, slot width, polygon
+   *  radius) has no constraint form and stays a coordinate write, exactly as on
+   *  the canvas — but a rectangle whose width has been locked is governed by a
+   *  `distance` on its edge, and that constraint is what gets retyped.
    *
    *  `entityIndex` indexes the sketch's own `entities` (which resolveRealEntities
    *  maps 1:1). Serialized on paramChain, and constraint + solved coordinates
@@ -756,13 +759,24 @@ export class DocumentStore {
     // A constraint names its entity by id, so an entity that has never been
     // given one (a pre-id saved file) keeps the coordinate write.
     const docId = cur.entities[entityIndex]?.id;
-    const dim = docId ? drivingDimFor({ type: e.type, id: docId }, field, mm) : null;
+    // The same fork the in-canvas editor takes (see directDims.planDimEdit): a
+    // field a driving constraint already governs must RETYPE that constraint —
+    // writing the coordinate instead looks like it worked and is undone by the
+    // next solve, which is report dff87040 one layer up.
+    const plan = docId ? planDimEdit(cur.constraints ?? [], { type: e.type, id: docId }, field, mm) : null;
+    const dim = plan?.kind === "upsert" ? plan.c : null;
     // Only the edited entity is ever re-serialized: the others keep their
     // parameter references (resolve would have baked them out to numbers).
     const withEdited = () => cur.entities.map((ent, j) => (j === entityIndex ? toSketchEntity(e) : ent));
     let next: Extract<Feature, { type: "sketch" }>;
     if (dim) {
       next = { ...cur, constraints: upsertDrivingDim(cur.constraints ?? [], dim) };
+    } else if (plan?.kind === "retype") {
+      next = {
+        ...cur,
+        constraints: (cur.constraints ?? []).map((c, i) =>
+          i === plan.at && isDimConstraint(c) ? ({ ...c, value: mm } as SketchConstraint) : c),
+      };
     } else {
       const d = entityDims(e).find((x) => x.field === field);
       if (!d) return;
