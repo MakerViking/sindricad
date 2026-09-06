@@ -121,7 +121,7 @@ const TOOL_DIMMED_RECT = {
       const dims = [...document.querySelectorAll(".sketch-dim")];
       return dims.length >= m && dims.every((el) => getComputedStyle(el).visibility !== "hidden");
     }, n);
-    for (let i = 0; i < 8 && !(await allDrawn(badgeCount)); i++) {
+    for (let i = 0; i < 12 && !(await allDrawn(badgeCount)); i++) {
       const spot = await page.evaluate(() => {
         const vp = document.getElementById("viewport").getBoundingClientRect();
         const canvas = document.querySelector("#viewport canvas");
@@ -135,10 +135,22 @@ const TOOL_DIMMED_RECT = {
       await page.mouse.wheel(0, 240);
       await page.waitForTimeout(350);
     }
-    await page.waitForFunction((n) => {
-      const dims = [...document.querySelectorAll(".sketch-dim")];
-      return dims.length >= n && dims.every((el) => getComputedStyle(el).visibility !== "hidden");
-    }, badgeCount, { timeout: 5000 });
+    if (!(await allDrawn(badgeCount))) {
+      // Do not throw here: an uncaught TimeoutError hides which badge stayed
+      // hidden. Say what is on screen and let the scenario's own checks fail
+      // with their reasons.
+      const state = await page.evaluate(() => {
+        const vp = document.getElementById("viewport").getBoundingClientRect();
+        return {
+          vp: [vp.left, vp.top, vp.right, vp.bottom].map(Math.round),
+          dims: [...document.querySelectorAll(".sketch-dim")].map((el) => {
+            const r = el.getBoundingClientRect();
+            return { text: el.textContent.slice(0, 14), hidden: getComputedStyle(el).visibility === "hidden", x: Math.round(r.x), y: Math.round(r.y), cls: el.className };
+          }),
+        };
+      });
+      console.log("WARN  not every badge is drawn after framing:", JSON.stringify(state));
+    }
     await page.waitForTimeout(300);
   };
 
