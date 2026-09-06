@@ -18,7 +18,41 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Added
+
+- **Sketch dimensions can be locked.** Right-click any dimension badge and
+  choose Lock dimension: it becomes a driving dimension at the value it already
+  shows, and the geometry stops drifting out from under it. This works on a
+  rectangle's width and height too, which previously could not be constrained
+  at all. Unlock turns a driving dimension back into a measurement; Delete
+  removes it. Asked for from the in-app reporter, who had no way to hold a
+  value the sketch was already showing.
+
 ### Fixed
+
+- **A dimension badge now tells you whether it holds anything.** A solid
+  border drives the geometry, a dotted one only measures it, and a dashed one
+  is a reference dimension. A rectangle's width and height were drawn as
+  though they were driving when nothing held them, which is why an Equal
+  constraint could turn a 50 x 100 rectangle into a square with two dimensions
+  apparently in place. A rectangle dimensioned with the dimension tool now
+  reads as driving, and typing a new width retypes the dimension that holds it.
+
+- **Changing a dimension's value now moves the thing you dimensioned.**
+  Reported from the in-app reporter: retyping a circle's diameter let the
+  solver split the correction across whatever the circle touched, so a
+  rectangle the circle sat tangent inside changed size for no visible reason.
+  Placing a dimension with Reference Dim switched on also says so now, in the
+  prompt and in a message if the value you typed was discarded.
+
+- **Editing a dimension the sketch cannot satisfy is refused and explained
+  instead of turning every line red.** Reported from the in-app reporter: a
+  circle held by two tangents to a fixed rectangle, with its centre fixed as
+  well, cannot change size, and typing a new diameter left the whole sketch red
+  with the impossible value in place. The edit is now put on trial the way a
+  constraint is: the sketch goes straight back to how it was, the dimension
+  keeps its old value, and the message names what is holding it. An angle in
+  that message reads in degrees, not millimetres.
 
 - **A sweep now follows the whole path.** Reported from Linux: "I expected
   Sketch 3 to follow around the contour of Sketch 2". A path sketch built from
