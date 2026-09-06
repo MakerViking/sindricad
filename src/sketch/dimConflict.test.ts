@@ -7,6 +7,7 @@
 // dimEditConflict.test.ts, against the real solver.
 import { describe, it, expect } from "vitest";
 import { CONSTRAINT_NAMES, dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
+import { getUnit, setUnit } from "../ui/units";
 import type { SketchConstraint } from "../types";
 
 /** The reporter's constraint list as the solver saw it: the rectangle's three
@@ -99,6 +100,39 @@ describe("dimConflictMsg", () => {
     ] as SketchConstraint[];
     expect(dimConflictMsg(cons[1]!, new Set([0]), cons)).toContain("I could not add this distance");
     expect(dimConflictMsg(cons[1]!, new Set([0]), cons, 25)).toContain("I could not change this distance");
+  });
+
+  it("leaves an ANGLE at degrees, not millimetres", () => {
+    // types.ts: an angle constraint stores DEGREES, every other dimension mm.
+    // Re-dimensioning a pair that already carries an angle dim populates the
+    // previous value from that degrees field (sketchMode's sameTarget has an
+    // explicit angle branch), so a length format here reports 30° as "30 mm".
+    const cons: SketchConstraint[] = [
+      { type: "perpendicular", l1: "L1", l2: "L2" },
+      { type: "angle", l1: "L1", l2: "L2", value: 45 },
+    ] as SketchConstraint[];
+    const msg = dimConflictMsg(cons[1]!, new Set([0]), cons, 30);
+    expect(msg).toContain("The dimension was left at 30°.");
+    expect(msg).not.toContain("mm");
+  });
+
+  it("does not convert an angle's previous value when the display unit is inches", () => {
+    const cons: SketchConstraint[] = [
+      { type: "perpendicular", l1: "L1", l2: "L2" },
+      { type: "angle", l1: "L1", l2: "L2", value: 45 },
+    ] as SketchConstraint[];
+    const before = getUnit();
+    try {
+      setUnit("in");
+      // a length dim DOES convert: that is the control for the angle assertion
+      expect(dimConflictMsg({ type: "distance", line: "L1", value: 40 } as SketchConstraint, new Set(), [], 25.4))
+        .toContain("left at 1 in.");
+      const msg = dimConflictMsg(cons[1]!, new Set([0]), cons, 30);
+      expect(msg).toContain("The dimension was left at 30°.");
+      expect(msg).not.toContain(" in.");
+    } finally {
+      setUnit(before);
+    }
   });
 
   // COVERAGE RATCHET: the Record<> typing already fails the build if a constraint

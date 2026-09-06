@@ -16,7 +16,7 @@
 // and the WITHDRAW decision, both pure.
 
 import type { SketchConstraint } from "../types";
-import { fmtLength } from "../ui/units";
+import { fmtLength, round } from "../ui/units";
 
 /** Human name per constraint TYPE. Typed as a total Record so a constraint type
  *  added to the union without a name here fails the build rather than showing
@@ -101,7 +101,11 @@ export function dimConflictMsg(
   // seam places NEW dimensions as well as retyping existing ones, and "I could
   // not change this diameter" is a lie about the first of those.
   const verb = prevValue == null ? "add" : "change";
-  const left = prevValue == null ? "" : ` The dimension was left at ${fmtLength(prevValue)}.`;
+  // An `angle` stores DEGREES and every other dimension millimetres (types.ts),
+  // so a length format here would report 30° as "30 mm" — or "1.181 in" with the
+  // display unit set to inches. Same split the inspector makes for a field.
+  const fmtPrev = (v: number) => (edited.type === "angle" ? `${round(v)}°` : fmtLength(v));
+  const left = prevValue == null ? "" : ` The dimension was left at ${fmtPrev(prevValue)}.`;
 
   const reasons: string[] = [];
   const targets = new Set(operandsOf(edited));
