@@ -121,19 +121,14 @@ const TOOL_DIMMED_RECT = {
       const dims = [...document.querySelectorAll(".sketch-dim")];
       return dims.length >= m && dims.every((el) => getComputedStyle(el).visibility !== "hidden");
     }, n);
+    // Zoom out programmatically rather than with wheel events: on the CI runner
+    // twelve wheel notches over what should have been bare canvas left the
+    // left-hand badges culled at the viewport corner, and a synthetic wheel
+    // that lands on the wrong element is silently swallowed. rig.zoomBy(f > 1)
+    // dollies away from the orbit target with no hit-testing involved.
     for (let i = 0; i < 12 && !(await allDrawn(badgeCount)); i++) {
-      const spot = await page.evaluate(() => {
-        const vp = document.getElementById("viewport").getBoundingClientRect();
-        const canvas = document.querySelector("#viewport canvas");
-        for (const [fx, fy] of [[0.5, 0.5], [0.4, 0.6], [0.6, 0.4], [0.35, 0.35], [0.65, 0.65]]) {
-          const x = vp.left + vp.width * fx, y = vp.top + vp.height * fy;
-          if (document.elementFromPoint(x, y) === canvas) return { x, y };
-        }
-        return { x: vp.left + vp.width / 2, y: vp.top + vp.height / 2 };
-      });
-      await page.mouse.move(spot.x, spot.y);
-      await page.mouse.wheel(0, 240);
-      await page.waitForTimeout(350);
+      await page.evaluate(() => { window.__sindri.viewport.rig.zoomBy(1.35); window.__sindri.viewport.requestRender(); });
+      await page.waitForTimeout(250);
     }
     if (!(await allDrawn(badgeCount))) {
       // Do not throw here: an uncaught TimeoutError hides which badge stayed
