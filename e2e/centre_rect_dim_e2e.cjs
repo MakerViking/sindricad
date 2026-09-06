@@ -117,7 +117,10 @@ const OVER_OWN_LINE = {
     check(!!p, `the ${what} badge is on screen`, JSON.stringify(p));
     if (!p) continue;
     await pressAt(p);
-    await page.waitForTimeout(250);
+    // Poll rather than sleep a fixed 250 ms: on the CI runner the first badge's
+    // editor took longer than that to appear (the width badge right after it
+    // passed), and a fixed wait turns runner load into a red run.
+    await page.waitForFunction(() => document.querySelectorAll(".sketch-dim input").length === 1, null, { timeout: 2000 }).catch(() => {});
     const s = await state();
     check(s.editing === 1, `a click on the ${what} badge opens its value editor`,
       `inputs=${s.editing}`);
@@ -133,8 +136,26 @@ const OVER_OWN_LINE = {
   const hp = await badgeAt("50");
   check(!!hp, "the height badge is on screen", JSON.stringify(hp));
   if (hp) {
+    // Tag the badge before pressing it: the press selects the line underneath
+    // and REBUILDS every badge, so the second press below must land on the new
+    // element, not on the old one mid-removal. Waiting for the untagged
+    // replacement is the exact settle the old fixed 250 ms sleep stood in for,
+    // and it stays short enough to keep the second press inside the
+    // double-press window measured from this first press.
+    await page.evaluate(() => {
+      for (const el of document.querySelectorAll(".sketch-dim")) if (el.textContent.includes("50")) el.dataset.e2eFirst = "1";
+    });
     await pressAt(hp);
-    await page.waitForTimeout(250);
+    // ...and wait until that replacement has been LAID OUT where the old badge
+    // was: the double-press rule is 4 px, and a badge pressed before its
+    // transform settles sits a few pixels off and reads as a fresh single press.
+    await page.waitForFunction(
+      (p) => [...document.querySelectorAll(".sketch-dim")].some((el) => {
+        if (!el.textContent.includes("50") || el.dataset.e2eFirst) return false;
+        const b = el.getBoundingClientRect();
+        return Math.abs(b.x + b.width / 2 - p.x) <= 1.5 && Math.abs(b.y + b.height / 2 - p.y) <= 1.5;
+      }),
+      hp, { timeout: 300 }).catch(() => {});
     let s = await state();
     check(s.selected.includes("e1"), "the line underneath took the single click",
       `selected=${JSON.stringify(s.selected)}`);
@@ -148,7 +169,7 @@ const OVER_OWN_LINE = {
     check(!!again, "the badge came back after the rebuild", JSON.stringify(again));
     if (again) {
       await pressAt(again);
-      await page.waitForTimeout(250);
+      await page.waitForFunction(() => document.querySelectorAll(".sketch-dim input").length === 1, null, { timeout: 2000 }).catch(() => {});
       s = await state();
       check(s.editing === 1, "the second press opened the value editor", `inputs=${s.editing}`);
     }
