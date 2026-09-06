@@ -139,6 +139,9 @@ export class SectionTool {
   private onKey(e: KeyboardEvent) {
     if (e.key === "Escape") this.stop();
     else if (e.key === "f" || e.key === "F") {
+      // Same as extrude's T: the offset box holds focus, so an unswallowed "f"
+      // would also be typed into a field that stays on screen (88c9bdf0).
+      if (!this.dim.claimToolHotkey(e)) return;
       this.side *= -1;
       this.updatePlane();
     }

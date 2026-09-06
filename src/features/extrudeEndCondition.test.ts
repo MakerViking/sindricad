@@ -17,6 +17,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { ExtrudeTool } from "./extrudeTool";
+import { DimInput } from "../sketch/dimInput";
 import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
 
 (globalThis as unknown as { document: unknown }).document ??= {
@@ -31,6 +32,11 @@ import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
   }),
   body: { appendChild() {} },
   getElementById: () => null,
+};
+// cancel() tears the tool's listeners down; node has no window
+(globalThis as unknown as { window: unknown }).window ??= {
+  addEventListener() {},
+  removeEventListener() {},
 };
 
 type Sel = { kind: string; by: string; point: [number, number, number] };
@@ -49,6 +55,7 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
     domElement: {
       style: {} as { cursor?: string },
       addEventListener() {},
+      removeEventListener() {},
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     },
     pickFaceForPressPull: () => (opts.face ? { selector: opts.face, faceId: 7, bodyId: "b1" } : null),
@@ -113,6 +120,59 @@ const click = () =>
 const key = (k: string) => ({ key: k, target: null }) as unknown as KeyboardEvent;
 /** Shift held: what the keyboard actually delivers for Shift-T is key "T". */
 const shiftKey = (k: string) => ({ key: k, target: null, shiftKey: true }) as unknown as KeyboardEvent;
+
+// --- the same keys, aimed at the DEPTH BOX (field report 88c9bdf0) ---------
+//
+// Everything above presses keys with `target: null`, i.e. at the canvas — which
+// is a state the tool is almost never in: beginDrag opens the dim box and
+// focuses it (and re-asserts focus next frame), so from the moment the arrow
+// appears the caret is in the D field and every keystroke is aimed there. The
+// helpers below reproduce THAT, and the guard at the top of onKey is finally
+// entered. No jsdom in this repo, so HTMLInputElement is stood up by hand.
+class FakeField {
+  constructor(private touched: boolean) {}
+  getAttribute(name: string): string | null {
+    // exactly what DimInput writes: "1" while the text is unchanged since focus
+    return name === "data-undo-passthrough" ? (this.touched ? "0" : "1") : null;
+  }
+}
+(globalThis as unknown as { HTMLInputElement: unknown }).HTMLInputElement ??= FakeField;
+
+/** A keystroke delivered to the depth field. `touched` = the user has already
+ *  typed a value into it, so letters are text rather than hotkeys. */
+function fieldKey(k: string, opts: { touched?: boolean; shift?: boolean } = {}) {
+  const prevented = { count: 0 };
+  const e = {
+    key: k,
+    shiftKey: !!opts.shift,
+    target: new FakeField(!!opts.touched),
+    preventDefault() {
+      prevented.count++;
+    },
+  } as unknown as KeyboardEvent;
+  return { e, prevented };
+}
+
+/** Swap in a dim stub that reports the box as OPEN AND FOCUSED. The
+ *  arbitration itself is DimInput's real `claimToolHotkey` — only "is this my
+ *  own box" is faked — so these cases pin the shipped rule, not a restatement
+ *  of it. Returns what the tool did to the box. */
+function focusBox(t: { dim: unknown }) {
+  const box = { hidden: false };
+  const owner = { active: true, ownsTarget: () => true };
+  t.dim = {
+    isActive: true,
+    show() {},
+    seed() {},
+    updateFromCursor() {},
+    position() {},
+    hide() {
+      box.hidden = true;
+    },
+    claimToolHotkey: (e: KeyboardEvent) => DimInput.prototype.claimToolHotkey.call(owner, e),
+  };
+  return box;
+}
 
 const FACE: Sel = { kind: "face", by: "nearest", point: [0, 0, 10] };
 
@@ -276,6 +336,83 @@ describe("ExtrudeTool up-to target", () => {
     t.onKey(key("t"));
 
     expect(t.pickingTarget).toBe(false);
+  });
+});
+
+// Field report 88c9bdf0: "pressing T types a T into the dimension box instead of
+// arming the target pick". onKey opened with a blanket bail-out for any key
+// aimed at an input while the box was up — Escape was the only key let through —
+// and the box owns focus for the whole drag phase, so T and Shift-T were dead
+// keys in practice. The reporter's document is the failure frozen: an offset
+// datum plane built to extrude up to, and an extrude carrying a blind 18.037 mm
+// distance and no target at all.
+//
+// The nine T cases above could not see any of it: they press with `target: null`
+// and a dim stub reporting isActive false, so the guard is never entered.
+describe("ExtrudeTool hotkeys while the depth box has focus", () => {
+  it("T arms the target pick and does not reach the field", () => {
+    const { t } = harness();
+    const box = focusBox(t);
+    const { e, prevented } = fieldKey("t");
+
+    t.onKey(e);
+
+    expect(t.pickingTarget, "T went to the text field instead of the tool").toBe(true);
+    expect(box.hidden, "the depth box survived, so Enter could still commit a distance").toBe(true);
+    expect(prevented.count, "the letter was left to be typed into the box as well").toBe(1);
+  });
+
+  it("Shift-T clears the target from inside the box too", () => {
+    const { t } = harness();
+    t.setUpTo(FACE);
+    focusBox(t);
+    const { e, prevented } = fieldKey("T", { shift: true });
+
+    t.onKey(e);
+
+    expect(t.upTo, "the face target survived Shift-T").toBeNull();
+    expect(t.upToPlane).toBeNull();
+    expect(t.pickingTarget, "Shift-T armed a re-pick instead of clearing").toBe(false);
+    expect(prevented.count).toBe(1);
+  });
+
+  it("once a depth has been typed, T stays TEXT", () => {
+    // The other half of the rule: a user part-way through "25" who reaches for
+    // "t" is typing, not aiming. Letters are rejected by the numeric parse
+    // anyway, so the cost of being wrong here is only a stray character.
+    const { t } = harness();
+    focusBox(t);
+    const { e, prevented } = fieldKey("t", { touched: true });
+
+    t.onKey(e);
+
+    expect(t.pickingTarget, "T was stolen from a field the user was typing in").toBe(false);
+    expect(prevented.count, "the keystroke was swallowed, so the letter never arrived").toBe(0);
+  });
+
+  it("Enter still belongs to the field, not to the tool", () => {
+    // Only the tool's own letter is arbitrated. Enter commits the box and Tab
+    // locks and advances; if onKey started competing for them, typing a depth
+    // and pressing Enter would run the tool's pick-phase branch instead.
+    const { t } = harness();
+    t.phase = "pick";
+    t.selected = [{}];
+    focusBox(t);
+    const { e } = fieldKey("Enter");
+
+    t.onKey(e);
+
+    expect(t.phase, "Enter in the box started the drag behind DimInput's back").toBe("pick");
+  });
+
+  it("Escape in the box still cancels the whole extrude", () => {
+    const { t } = harness();
+    focusBox(t);
+    const { e } = fieldKey("Escape");
+
+    t.onKey(e);
+
+    expect(t.active).toBe(false);
   });
 });
 

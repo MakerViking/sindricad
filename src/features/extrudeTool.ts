@@ -741,8 +741,14 @@ export class ExtrudeTool {
 
   private onKey(e: KeyboardEvent) {
     if (this.dim.isActive && e.target instanceof HTMLInputElement) {
-      if (e.key === "Escape") this.cancel();
-      return;
+      if (e.key === "Escape") { this.cancel(); return; }
+      // Everything else aimed at the depth box is the FIELD's — Enter commits,
+      // Tab locks and advances — except this tool's own letter hotkey on a box
+      // nobody has typed into yet. Without that exception T and Shift-T below
+      // were unreachable for the whole time the tool was open, because
+      // beginDrag focuses the box: pressing T to aim the extrude at a plane
+      // typed a "t" over the seeded depth (field report 88c9bdf0).
+      if (e.key.toLowerCase() !== "t" || !this.dim.claimToolHotkey(e)) return;
     }
     if (e.key === "Escape") {
       // Esc out of target-picking goes back to the depth gesture rather than

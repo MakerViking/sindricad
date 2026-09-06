@@ -47,6 +47,29 @@ export class DimInput {
     return el instanceof Node && this.root.contains(el);
   }
 
+  /** Arbitrates a single-letter TOOL hotkey pressed while this box is up, and
+   *  answers: should the tool act on it? A modal 3D tool focuses this box (and
+   *  re-asserts focus next frame) so typing a depth works, which used to mean
+   *  its own hotkeys were unreachable for as long as it was open — pressing T
+   *  in Extrude to aim at a plane typed a "t" over the seeded depth instead
+   *  (field report 88c9bdf0).
+   *
+   *  The rule is the one keymap.ts already applies to Ctrl+Z: while the text is
+   *  UNCHANGED since it took focus there is nothing being typed for the letter
+   *  to interrupt, so it belongs to the tool — and the keystroke is swallowed
+   *  here so the letter does not ALSO land in the field. Once the user has
+   *  typed a value, letters stay text (the numeric parse rejects them anyway).
+   *  A key aimed anywhere else — another editor, the canvas — is not mine to
+   *  arbitrate and passes straight through. `ownsTarget` is what keeps this
+   *  from claiming e.g. a dimension label's inline value input. */
+  claimToolHotkey(e: KeyboardEvent): boolean {
+    const el = e.target;
+    if (!this.active || !(el instanceof HTMLInputElement) || !this.ownsTarget(el)) return true;
+    if (el.getAttribute("data-undo-passthrough") !== "1") return false; // the user is typing
+    e.preventDefault();
+    return true;
+  }
+
   /** While a tool is still deciding WHERE to drop something, the box is a
    *  heads-up readout sitting over the canvas, not a widget — a click aimed at
    *  the canvas underneath must reach it instead of hitting ✓. Typing is

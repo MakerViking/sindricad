@@ -773,6 +773,18 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/chamfer_feedback_e2e.cjs
+      # Field report 88c9bdf0: pressing T in Extrude typed a "t" into the depth
+      # box instead of arming the up-to target pick. The unit tests press with
+      # target: null against a stubbed box, so they cannot see the guard that
+      # swallowed it — and only a real WebView shows the other half, that an
+      # unswallowed letter is inserted into the field by the browser's own
+      # default action. Measured against the unfixed code, this file reports the
+      # depth box reading "t": the reporter's symptom, exactly.
+      - name: Extrude up-to hotkey end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/extrude_target_hotkey_e2e.cjs
       # Picking on a document with NO solid in it. The suppress-while-streaming
       # flag is only reachable through a real chunked reply, and the case that
       # broke it is a build whose mesh is EMPTY — neither is reproducible in a

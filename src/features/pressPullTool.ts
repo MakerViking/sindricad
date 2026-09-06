@@ -297,6 +297,10 @@ export class PressPullTool {
       return;
     }
     if ((e.key === "t" || e.key === "T") && this.phase === "drag" && !this.pickingTarget) {
+      // The depth box has focus while the arrow is up, so without this the "t"
+      // was ALSO typed into it before dim.hide() below tore it down — and once
+      // the user has typed a value the letter is text, not a hotkey (88c9bdf0).
+      if (!this.dim.claimToolHotkey(e)) return;
       this.pickingTarget = true;
       this.dim.hide(); // Enter must not commit a plain distance while picking
       this.viewport.clearPressPullGhost();
