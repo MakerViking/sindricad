@@ -41,6 +41,22 @@ const LINE_COLLAPSE_EPS = 1e-7;
 // the solver reports.
 const RECT_COLLAPSE_MIN = 1e-3;
 
+/** How far off exact a tangency may sit before this file stops calling it one,
+ *  and how far past a segment's end a touch point may land before it counts as
+ *  off the end (as a fraction of that segment's length). A document-scale
+ *  number in mm, not an epsilon, for the same reason RECT_COLLAPSE_MIN is one:
+ *  a converged solve leaves residuals near 1e-9 and a saved document is rounded
+ *  to 1e-6, so the slack costs nothing and a tangency landing exactly on a
+ *  rectangle's corner is not condemned by float noise. */
+const TANGENT_TOL = 1e-3;
+
+/** What a solve says when it could not keep a tangency on the edge it was
+ *  created against. Deliberately NOT the generic "that conflicts with the ones
+ *  already on this sketch": nothing conflicts, there is simply no solution left
+ *  that touches the segment the user drew. */
+export const TANGENT_SPAN_MSG =
+  "I could not keep that circle touching the edge it is tangent to, so this constraint was not applied. The only solutions I found move the touch point off that edge.";
+
 export interface SolvePass {
   entities: ResolvedEntity[];
   dof: number;
@@ -54,6 +70,12 @@ export interface SolvePass {
    *  re-runs the unbounded nearest-point search from the cursor and captures an
    *  unrelated free point mid-gesture. */
   dragRefused?: "projected" | "fix" | "geometry";
+  /** Why this pass came back dirty, when the generic "that constraint conflicts
+   *  with the ones already on this sketch" would be a lie. Set by a guard that
+   *  refused a solve nothing actually conflicted in — today only the tangent-span
+   *  invariant. Callers that withdraw a trial constraint should prefer it over
+   *  their own message. */
+  reason?: string;
   /** How many anchors a requested mover bias actually handed to the solver.
    *  0 means the bias was dropped before it was attempted. Absent when no bias
    *  was requested at all.
@@ -839,6 +861,10 @@ export async function compileAndSolve(
   const biased = anchors.length > 0 || radiusAnchors.length > 0;
 
   const model = { points, lines, circles, arcs, constraints: cons, ...(dragInput ? { drag: dragInput } : {}) };
+  /** The ROUND entities whose tangency the LAST `finish()` found on the wrong
+   *  root — the seed pass's pin list. Rewritten by every finish(), so a caller
+   *  that means to act on it must read it before running another one. */
+  const tangentFlipped = new Set<string>();
   // EVERYTHING between the raw solve and the answer, as a function of that raw
   // solve. It is a closure and not a top-level helper only because it reads two
   // dozen compile-time locals; what matters is that it can be run TWICE.
@@ -852,6 +878,7 @@ export async function compileAndSolve(
   // the ones already on this sketch" toast. Reproduced on a 40x20 rectangle and
   // a line, Perpendicular with the rect edge picked first.
   const finish = (r: SolveResult): SolvePass => {
+    tangentFlipped.clear(); // this pass's verdict, not the previous pass's
     // planegcs never sees a constraint whose operands are ALL fixed — fixed
     // params aren't solver variables, so such a constraint is silently accepted
     // even when violated (e.g. a driving dim between two projected points).
@@ -1146,7 +1173,8 @@ export async function compileAndSolve(
     }
     // branch invariants: a rim dim must still describe the SAME configuration it
     // was created in (see entityDims.rimGap for why the branches can't be trusted)
-    if (constraints.some(isRimDim)) {
+    const hasTangentLine = cons.some((c) => c.type === "tangentLC" || c.type === "tangentLA");
+    if (constraints.some(isRimDim) || hasTangentLine) {
       const beforeById = new Map(entities.map((e) => [e.id, e]));
       const afterById = new Map(out.map((e) => [e.id, e]));
       constraints.forEach((c, i) => {
@@ -1154,6 +1182,44 @@ export async function compileAndSolve(
         const cls = rimBranch(c, beforeById);
         if (cls !== null && cls !== rimBranch(c, afterById)) guardIds.add(constraintKey(i));
       });
+      // ...and the same thing for a tangency, which had no invariant at all.
+      //
+      // planegcs's `tangent_lc` / `tangent_la` constrain the round to the
+      // INFINITE line its operand lies on, and nothing downstream looked at
+      // WHERE on that line the touch point landed. So the MIRRORED root — the
+      // circle on the far side of the edge, touching the edge's extension past
+      // its end — has residual exactly 0 and is reported ok:true, conflicts:[].
+      //
+      // Field report 043773a0: a 30 mm circle held in the corner of a rigid
+      // 60x50 box by two tangents jumped 30 mm straight down the moment a
+      // `concentric` was applied with the OTHER circle picked first. It stayed
+      // tangent to the bottom edge (mirrored across it) and "tangent" to the
+      // left edge 15 mm below that edge's lower end. Both halves are checked
+      // here, because each catches one of those two edges and only their union
+      // catches the jump: a circle mirrored across a single long edge stays
+      // perfectly in span.
+      //
+      // Both fire only on a change FOR THE WORSE, the way the rect-mirror guard
+      // is judged only against a rectangle that had size:
+      //   span  in-span -> out-of-span. A tangency the user created against an
+      //         extension is legal and stays legal; so does a solve that leaves
+      //         one out of span where it already was.
+      //   side  only once the tangency ALREADY HOLDS. On the solve that creates
+      //         a tangent the circle is not yet touching anything, so it has
+      //         chosen no side and moving it to the near one is the whole point
+      //         of the gesture.
+      for (const c of cons) {
+        if (c.type !== "tangentLC" && c.type !== "tangentLA") continue;
+        if (constraintIndexOf(c.id) === null) continue; // no implicit tangencies today
+        const roundId = c.type === "tangentLC" ? c.circle : c.arc;
+        const b = tangentTouch(beforeById, c.line, roundId);
+        const a = tangentTouch(afterById, c.line, roundId);
+        if (!b || !a) continue;
+        if ((b.inSpan && !a.inSpan) || (b.tangent && b.side !== a.side)) {
+          guardIds.add(c.id);
+          tangentFlipped.add(roundId);
+        }
+      }
     }
     if (guardIds.size || badGeom.size) {
       for (const id of guardIds) if (!conflicts.includes(id)) conflicts.push(id);
@@ -1171,6 +1237,7 @@ export async function compileAndSolve(
         entities, dof: r.dof, ok: false, conflicts,
         overDefined: [...redundant, ...r.partiallyRedundant],
         ...(refused ? { dragRefused: refused } : {}),
+        ...(tangentFlipped.size ? { reason: TANGENT_SPAN_MSG } : {}),
       };
     }
 
@@ -1238,6 +1305,39 @@ export async function compileAndSolve(
     return { ...finish(await solveSketch(model)), ...(bias ? { biasAnchors: anchors.length } : {}) };
   }
   if (biased && !(pass.ok && pass.conflicts.length === 0)) pass = finish(await solveSketch(model));
+
+  if (!drag && !(pass.ok && pass.conflicts.length === 0)) {
+    // The TANGENT-ROOT seed. Same contract as the length-pinned seed below (and
+    // the same exclusion of drag frames, for the same reasons): one pass with
+    // something held still, whose GEOMETRY is then the starting point of one
+    // ordinary free solve, kept only if that comes back clean.
+    //
+    // What it holds is the flipped round's own CENTRE, because the seed below
+    // cannot rescue this failure at all: a mirrored circle breaks no line's
+    // length, so a length-pinned pass reproduces the flip and hands back the
+    // same wrong root — measured, and so does a bare nudge with nothing pinned.
+    // Pinning the centre reaches the good root: on the reporter's sketch that
+    // pass converges to the circle unmoved with the 50 mm circle brought onto
+    // it, clean, and the free solve started from there stays.
+    //
+    // Read the offenders out FIRST: every finish() below rewrites them.
+    //
+    // `fixed: true` on the model point rather than a `fix` CONSTRAINT: a pin
+    // with an id could be blamed by planegcs's own diagnosis, and the hard pin
+    // that sketchSolve is elsewhere warned off (solver.ts's anchors note —
+    // fabricated dof and redundants) is harmless here precisely because this
+    // pass's diagnostics are thrown away and only its geometry is kept.
+    const flipped = [...tangentFlipped]
+      .map((id) => centerPoint(id))
+      .filter((p): p is string => p !== undefined);
+    if (flipped.length) {
+      const seeded = await pinnedSeed(model, flipped);
+      if (seeded) {
+        const alt = finish(await solveSketch(seeded));
+        if (alt.ok && alt.conflicts.length === 0) pass = alt;
+      }
+    }
+  }
 
   // Last resort for a pass that came back dirty: solve it AGAIN from a
   // shape-preserving start, and keep that only if it is clean.
@@ -1345,6 +1445,40 @@ async function reseed(model: SolveInput): Promise<SolveInput | null> {
   } catch {
     return null;
   }
+  return startedAt(model, held);
+}
+
+/** Hold `centres` — solver point ids — absolutely still for one pass, and hand
+ *  the model back started at the geometry that pass found. The TANGENT-ROOT
+ *  seed: a tangency the solve mirrored onto the far side of its line, or past
+ *  the end of it, is a wrong ROOT rather than a contradiction, and pinning the
+ *  round's own centre for one pass is what makes the root it was already on the
+ *  nearest exit. Like reseed, it cannot invent a solution — its answer is only
+ *  the starting point of one ordinary free solve of the user's own model.
+ *
+ *  Null when nothing is left to pin (every named centre is already fixed) and
+ *  on a throw, for reseed's reason: a lost retry is not worth losing the solver. */
+async function pinnedSeed(model: SolveInput, centres: string[]): Promise<SolveInput | null> {
+  const pin = new Set(centres);
+  if (!model.points.some((p) => pin.has(p.id) && !p.fixed)) return null;
+  let held: SolveResult;
+  try {
+    held = await solveSketch({
+      ...model,
+      points: model.points.map((p) => (pin.has(p.id) ? { ...p, fixed: true } : p)),
+    });
+  } catch {
+    return null;
+  }
+  return startedAt(model, held);
+}
+
+/** The SAME model, started at the geometry a seed pass found: points at their
+ *  solved positions, circles and arcs at their solved radii, arc sweeps
+ *  recomputed from the seeded points so `arc_rules` starts describing the
+ *  seeded arc and not the old one. Anything the seed pass did not answer for
+ *  keeps its original value. */
+function startedAt(model: SolveInput, held: SolveResult): SolveInput {
   const at = (id: string) => held.points[id];
   return {
     ...model,
@@ -1403,6 +1537,42 @@ function entityRefs(c: SConstraint): string[] {
   return out;
 }
 
+
+/** Where a line-to-round tangency touches, for the geometry in `byId` — null
+ *  when either operand is gone or the line has collapsed, where there is
+ *  nothing to compare.
+ *
+ *  `inSpan` is the foot-of-perpendicular of the round's centre falling ON the
+ *  SEGMENT rather than on its extension; `side` is which side of the line the
+ *  centre sits on; `tangent` is whether the tangency actually holds right now
+ *  (a solve is judged against the configuration it started in, and before the
+ *  constraint is first satisfied there is no side to preserve).
+ *
+ *  Deliberately the segment `lineOperand` decodes, rectangle edges included:
+ *  that is the line the USER drew and picked, and the whole bug is that
+ *  planegcs only ever knew the infinite one. */
+function tangentTouch(
+  byId: Map<string, ResolvedEntity>,
+  lineId: string,
+  roundId: string,
+): { inSpan: boolean; side: number; tangent: boolean } | null {
+  const seg = lineOperand(byId, lineId);
+  const e = byId.get(roundId);
+  const cc = e ? asRound(e) : null;
+  if (!seg || !cc) return null;
+  const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+  const len2 = dx * dx + dy * dy;
+  if (!(len2 > LINE_COLLAPSE_EPS)) return null; // no direction, no tangency to judge
+  const len = Math.sqrt(len2);
+  const t = ((cc.x - seg.x1) * dx + (cc.y - seg.y1) * dy) / len2;
+  const cross = (cc.x - seg.x1) * dy - (cc.y - seg.y1) * dx;
+  const slack = TANGENT_TOL / len; // in parameter units: a touch AT a corner is in span
+  return {
+    inSpan: t >= -slack && t <= 1 + slack,
+    side: Math.sign(cross),
+    tangent: Math.abs(Math.abs(cross) / len - cc.r) <= TANGENT_TOL,
+  };
+}
 
 /** the rim dims whose configuration `rimBranch` classifies. `radialGap` is
  *  deliberately absent: `difference` is signed, so it cannot invert an annulus
