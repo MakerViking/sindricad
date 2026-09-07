@@ -16,7 +16,9 @@ they check that the failure paths REFUSE rather than return something plausible.
 """
 
 import math
+import time
 
+import builder
 from builder import rebuild
 
 
@@ -46,6 +48,43 @@ def _frustum(a_side, depth, angle_deg):
     b_side = a_side - 2 * inset
     a1, a2 = a_side * a_side, b_side * b_side
     return depth / 3.0 * (a1 + a2 + math.sqrt(a1 * a2))
+
+
+def _tapered_box(width, height, depth, angle_deg):
+    """Analytic volume of a tapered RECTANGULAR prism, by the prismatoid rule.
+
+    `_frustum` above must not be used for this. h/3*(A1+A2+sqrt(A1*A2)) is only
+    valid for SIMILAR cross-sections, and a non-square rectangle stops being
+    similar to itself the moment it insets: on the 53.897 x 39.020 profile below
+    it is 2.7% off the true volume, which is enough to hide a real regression.
+
+    The section at height t is (w - 2t*tan0) x (h - 2t*tan0) — a QUADRATIC in t
+    — so Simpson over the depth is exact, not approximate."""
+    tan = math.tan(math.radians(angle_deg))
+
+    def area(t):
+        return (width - 2 * t * tan) * (height - 2 * t * tan)
+
+    return depth / 6.0 * (area(0.0) + 4 * area(depth / 2.0) + area(depth))
+
+
+def _reporter_profile(taper):
+    """The document from field report afd4e10c, feature for feature: an
+    off-centre 53.897 x 39.020 rectangle, extruded 30 mm from a 5 mm start
+    offset with a 30 degree taper. Four straight edges, one wire — the simplest
+    thing a taper can be asked for."""
+    return [
+        {"id": "f1", "type": "sketch", "plane": "XY", "entities": [
+            {"id": "e0", "type": "rectangle", "x": -4.8997177791013655,
+             "y": -3.786145556578333, "width": 53.89689557011506,
+             "height": 39.01957067720727},
+        ]},
+        {"id": "f2", "type": "datumPlane", "plane": "XY", "offset": 43.5},
+        {"id": "f3", "type": "extrude", "sketch": "f1", "operation": "new",
+         "distance": 30, "taper": taper, "startOffset": 5, "separateBodies": True,
+         "regions": [[-4.8997177791013655, -3.786145556578333, 0]],
+         "regionEntities": [["e0"]], "regionHoleEntities": [[]]},
+    ]
 
 
 def test_positive_taper_narrows_by_the_right_amount():
@@ -178,6 +217,108 @@ def test_up_to_ignores_taper_rather_than_fighting_it():
     )
 
 
+def test_a_plain_rectangle_tapers_at_the_speed_of_an_untapered_extrude():
+    """FIELD REPORT afd4e10c: 16.5 SECONDS to rebuild a three-feature document,
+    and the taper angle appearing in the viewport 20 seconds after being typed.
+
+    None of that was geometry. `_probe_tapers` forks a throwaway interpreter to
+    catch the kernel HANG, and that child re-imports build123d, OCP, sklearn and
+    IPython from cold — 1.6 s on this machine, ~16 s on the reporter's Windows
+    laptop. The probe is cached per (profile, depth, angle), so every new value
+    typed or dragged paid it again. The taper itself is about 6 ms.
+
+    The assertion is deliberately RELATIVE, not a stopwatch constant: the same
+    document with taper=0 is the yardstick, so a slow or loaded CI runner scales
+    both sides. The gap it is looking for is three orders of magnitude — 0.003 s
+    against 1.65 s here — so the 20x bound is nowhere near either number.
+
+    It also pins the VOLUME, because the cheap way to pass a timing test is to
+    stop doing the work."""
+    plain = _reporter_profile(0)
+    t0 = time.perf_counter()
+    flat, errors, _ = _build(plain)
+    untapered = time.perf_counter() - t0
+    assert not errors, f"the untapered yardstick must build: {errors}"
+
+    # A FRESH cache is the point: this is the state the reporter reached on every
+    # keystroke, not a warm second rebuild.
+    builder._TAPER_PROBE_CACHE.clear()
+    t0 = time.perf_counter()
+    part, errors, _ = _build(_reporter_profile(30))
+    tapered = time.perf_counter() - t0
+    assert not errors, f"unexpected errors: {errors}"
+
+    want = _tapered_box(53.89689557011506, 39.01957067720727, 30.0, 30.0)
+    assert abs(part.volume - want) < 0.01, f"got {part.volume}, want {want}"
+    assert part.volume < flat.volume, "a positive taper must remove material"
+
+    budget = max(0.5, untapered * 20.0)
+    assert tapered < budget, (
+        f"a 4-edge rectangle took {tapered:.3f}s to taper against {untapered:.3f}s "
+        f"untapered (budget {budget:.3f}s) — something is forking a cold "
+        f"interpreter again"
+    )
+
+
+def test_the_hang_probe_still_fires_on_the_profiles_it_was_built_for():
+    """The speed above comes from SKIPPING the fork, so the skip must be narrow.
+
+    `_probe_tapers` exists because glyph outlines were measured hanging OCCT for
+    600 s while holding the GIL, which in a max_workers=1 pool costs the whole
+    session. Those are spline-heavy, many-edged profiles. `_taper_needs_probing`
+    has to keep saying yes to them while saying no to a rectangle."""
+    from build123d import Circle, Rectangle, RegularPolygon
+    from build123d import BuildLine, BuildSketch, Line, Spline, make_face
+
+    rect = Rectangle(20, 12).faces()
+    assert not builder._taper_needs_probing(rect), "4 straight edges need no fork"
+
+    ring = (Circle(20) - Circle(8)).faces()
+    assert not builder._taper_needs_probing(ring), "arcs need no fork either"
+
+    with BuildSketch() as sk:
+        with BuildLine():
+            Spline((0, 0), (10, 6), (20, -4), (30, 2))
+            Line((30, 2), (0, 0))
+        make_face()
+    assert builder._taper_needs_probing(sk.sketch.faces()), (
+        "a spline outline is the measured hang class and must still be probed"
+    )
+
+    many = RegularPolygon(20, 40).faces()
+    assert builder._taper_needs_probing(many), (
+        "a 40-edge profile is complex enough to be worth a fork"
+    )
+
+
+def test_the_probe_subprocess_answers_both_ways():
+    """The gate above means nothing in this file forks any more, so the probe
+    itself needs its own cover — the ONE test here that pays a cold interpreter.
+
+    It is not decoration. `_probe_tapers` reads its verdicts back over a pipe
+    while waiting in slices and publishing liveness between them (a single
+    blocking wait said nothing for up to 30 s against a 60 s stall reaper), and
+    a plumbing mistake there is invisible: an empty read looks exactly like "no
+    face cleared", which refuses every taper on a spline profile."""
+    from build123d import Rectangle
+
+    face = Rectangle(20, 20).faces()
+
+    builder._TAPER_PROBE_CACHE.clear()
+    assert builder._probe_tapers(face, 10, 10) == {0: True}, (
+        "a 10 degree taper on a square builds; the child must say so and be heard"
+    )
+
+    builder._TAPER_PROBE_CACHE.clear()
+    assert builder._probe_tapers(face, 10, 60) == {0: False}, (
+        "60 degrees is past the apex on this profile — the child must refuse it"
+    )
+    # and the refusal is remembered, without a second interpreter
+    t0 = time.perf_counter()
+    assert builder._probe_tapers(face, 10, 60) == {0: False}
+    assert time.perf_counter() - t0 < 0.25, "the second call must come from the cache"
+
+
 if __name__ == "__main__":
     test_positive_taper_narrows_by_the_right_amount()
     test_negative_taper_widens_by_the_right_amount()
@@ -188,4 +329,7 @@ if __name__ == "__main__":
     test_taper_composes_with_start_offset()
     test_taper_on_a_holed_profile_keeps_the_hole()
     test_up_to_ignores_taper_rather_than_fighting_it()
+    test_a_plain_rectangle_tapers_at_the_speed_of_an_untapered_extrude()
+    test_the_hang_probe_still_fires_on_the_profiles_it_was_built_for()
+    test_the_probe_subprocess_answers_both_ways()
     print("ALL PASS")

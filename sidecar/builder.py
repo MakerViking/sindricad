@@ -3228,8 +3228,9 @@ def _extrude_maybe_tapered(f, ctx, target, prof_faces, amount):
 
     A `taper` of 0 or absent takes the ORIGINAL path untouched, `target` and
     all: no probe, no fork, no per-face rebuild, so nothing about an ordinary
-    extrude changes. The taper path is deliberately more expensive, because it
-    is the one that can hang the kernel.
+    extrude changes. A taper on an analytic profile costs one extra in-process
+    build per region and nothing else. A taper on the profiles that can hang the
+    kernel — see `_taper_needs_probing` — additionally pays a subprocess.
     """
     taper = ctx.val(f.get("taper") or 0)
     if not taper:
@@ -3243,37 +3244,54 @@ def _extrude_maybe_tapered(f, ctx, target, prof_faces, amount):
         raise ValueError(
             "Extrude: a taper needs a closed profile to slope — this sketch built no area."
         )
-    # PROBE FIRST, on a process we can afford to lose. See _probe_tapers: this
+    # PROBE FIRST, on a process we can afford to lose — but only for the
+    # profiles the hang was measured on. See _taper_needs_probing: the fork is a
+    # cold interpreter, which is 1.6 s here and ~16 s on the reporter's Windows
+    # laptop, against ~6 ms of actual geometry. A plain rectangle does not buy
+    # anything with it. See _probe_tapers for what the fork does catch: this
     # path does not only fail, it HANGS, and a hang in the geometry worker costs
     # the whole session rather than this feature.
-    cleared = _probe_tapers(prof_faces, amount, taper)
-    bad = [i for i in range(len(prof_faces)) if not cleared.get(i, False)]
-    if bad:
-        n = len(prof_faces)
-        raise ValueError(
-            f"Extrude: a {taper:g}° taper doesn't work on "
-            f"{'this profile' if n == 1 else f'{len(bad)} of the {n} profiles'}"
-            " — the sloped walls run into themselves. Try a smaller angle, a "
-            "shorter distance, or a profile without such tight corners."
-        )
+    probed = _taper_needs_probing(prof_faces)
+    if probed:
+        cleared = _probe_tapers(prof_faces, amount, taper)
+        bad = [i for i in range(len(prof_faces)) if not cleared.get(i, False)]
+        if bad:
+            raise ValueError(_taper_refusal(taper, len(bad), len(prof_faces)))
     solids = []
     for fc in prof_faces:
         # Built AGAIN here rather than carried over from the probe: the probe ran
         # in another process and only ever returned a verdict, never geometry.
         out = _taper_solid(fc, amount, taper)
         if out is None:
-            # The probe cleared it and the real build did not. Possible — the
-            # probe is a different process with its own kernel state — and it
-            # must still refuse rather than return a corrupt solid.
-            raise ValueError(
-                f"Extrude: the {taper:g}° taper failed on one of the profiles. "
-                "Try a smaller angle."
-            )
+            if probed:
+                # The probe cleared it and the real build did not. Possible — the
+                # probe is a different process with its own kernel state — and it
+                # must still refuse rather than return a corrupt solid.
+                raise ValueError(
+                    f"Extrude: the {taper:g}° taper failed on one of the profiles. "
+                    "Try a smaller angle."
+                )
+            # Unprobed, so THIS is the refusal the user sees. _taper_solid does
+            # the same checks the probe's child did — height against the apex,
+            # the signed volume bound, BRepCheck — so the advice is the same.
+            raise ValueError(_taper_refusal(taper, 1, len(prof_faces)))
         solids.append(out)
     out = solids[0]
     for s in solids[1:]:
         out = out + s
     return out
+
+
+def _taper_refusal(taper, n_bad, n_total):
+    """One wording for "this taper does not build", whether the verdict came
+    from the probe subprocess or from `_taper_solid` in this worker. The user
+    cannot tell those apart and should not have to."""
+    return (
+        f"Extrude: a {taper:g}° taper doesn't work on "
+        f"{'this profile' if n_total == 1 else f'{n_bad} of the {n_total} profiles'}"
+        " — the sloped walls run into themselves. Try a smaller angle, a "
+        "shorter distance, or a profile without such tight corners."
+    )
 
 
 def _report_edge_failures(f, ctx, edges, try_one):
@@ -8926,6 +8944,7 @@ def _taper_angle(bevel, depth):
 # refuses the same value for the same reason.
 _MAX_TAPER_DEG = 89.0
 _TAPER_PROBE_TIMEOUT = 30.0
+_TAPER_PROBE_TICK = 1.0  # how long the wait below goes between liveness ticks
 _TAPER_PROBE_CACHE = {}
 
 
@@ -8986,6 +9005,54 @@ def _taper_solid(face, depth, angle_deg):
         return None
 
 
+_TAPER_PROBE_MAX_EDGES = 32
+
+
+def _taper_needs_probing(faces):
+    """Is this profile in the class that can hang the kernel?
+
+    The probe below costs a COLD INTERPRETER — the child re-imports build123d,
+    OCP, sklearn and IPython before it touches geometry, which is 1.6 s on a
+    fast Linux box and was measured at ~16 s on a Windows laptop (field report
+    afd4e10c: "a tapered extrude takes 16.5 seconds to rebuild"). The taper
+    itself is about 6 ms. Because the verdict is cached per (profile, depth,
+    angle), every new value typed or dragged paid that startup again, and the
+    viewport lagged so far behind the number that the angle appeared twenty
+    seconds after it was entered.
+
+    That is the same defect, with the same shape, as the one `_probe_blend` and
+    `_blend_needs_probing` already record for fillets (field report a0a76571).
+    Same answer: only fork for the profiles the hang was actually measured on.
+
+    Two signals, either of which is enough to probe:
+      - a profile edge that is not a plain LINE or CIRCLE. Every observed hang
+        was a glyph outline, which is BSPLINE-heavy.
+      - a profile carrying more than `_TAPER_PROBE_MAX_EDGES` edges in total.
+        Complexity alone is reason enough, and glyph strings are also far past
+        this.
+
+    This is a HEURISTIC, and the residual risk is stated rather than hidden: an
+    analytic profile that hangs would go unprobed and behave exactly as it did
+    before the probe existed. Nothing measured has done that. What does NOT
+    change is `_taper_solid`'s in-process validation — the height-vs-apex check,
+    the signed volume bound and BRepCheck — which runs on every path and is what
+    catches the silently-corrupt results. The fork only ever caught hangs.
+    """
+    try:
+        total = 0
+        for fc in faces:
+            edges = fc.edges()
+            total += len(edges)
+            if total > _TAPER_PROBE_MAX_EDGES:
+                return True
+            for e in edges:
+                if str(e.geom_type) not in ("GeomType.LINE", "GeomType.CIRCLE"):
+                    return True
+        return False
+    except Exception:
+        return True  # cannot tell => probe, the safe direction
+
+
 def _probe_tapers(faces, depth, angle_deg):
     """Clear every profile face through a THROWAWAY PROCESS before the real
     worker touches it. Returns {index: bool}; anything unreported is False.
@@ -8999,7 +9066,8 @@ def _probe_tapers(faces, depth, angle_deg):
     A subprocess with a timeout is the only guard that works.
 
     Cached on the profile's own bytes, so an unchanged document does not pay a
-    fork per rebuild.
+    fork per rebuild. Gated by `_taper_needs_probing`, because that cache misses
+    on every new angle and the fork is dominated by the child's cold import.
     """
     breps = []
     for fc in faces:
@@ -9013,24 +9081,65 @@ def _probe_tapers(faces, depth, angle_deg):
     if key in _TAPER_PROBE_CACHE:
         return _TAPER_PROBE_CACHE[key]
     import subprocess
+    import threading
 
     verdicts = {}
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, "-c", "import builder; builder._taper_probe_main()"],
-            input=json.dumps(recipe), capture_output=True, text=True,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            timeout=_TAPER_PROBE_TIMEOUT,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, cwd=os.path.dirname(os.path.abspath(__file__)),
         )
-        for line in proc.stdout.splitlines():
+    except Exception:
+        return {}  # probe infrastructure failed; nothing cleared
+
+    # Feed and drain from THREADS, then wait in slices. `subprocess.run` blocked
+    # this thread for up to the full 30 s timeout without publishing anything,
+    # and the supervisor reaps a worker whose heartbeat has not moved for 60 —
+    # so a slow probe could be reported to the user as a stall. `_probe_blend`
+    # already ticks for exactly this reason. keep_index=True: the feature that
+    # owns this probe has already announced itself and must keep its name.
+    lines = []
+
+    def _feed():
+        try:
+            proc.stdin.write(json.dumps(recipe))
+            proc.stdin.close()
+        except Exception:
+            pass  # the child died early; the wait below is what decides
+
+    def _drain():
+        try:
+            for line in proc.stdout:
+                lines.append(line)
+        except Exception:
+            pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + _TAPER_PROBE_TIMEOUT
+    try:
+        while True:
             try:
-                rec = json.loads(line)
-            except Exception:
-                continue  # kernel/font chatter on stdout, not our protocol
-            if "done" in rec:
-                verdicts[rec["done"]] = bool(rec["ok"])
-    except subprocess.TimeoutExpired:
-        pass  # everything unreported stays unusable, which is the right default
+                proc.wait(timeout=_TAPER_PROBE_TICK)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    break  # unreported faces stay unusable, the right default
+                progress_tick(keep_index=True)
+    except Exception:
+        pass
+    reader.join(timeout=1.0)
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue  # kernel/font chatter on stdout, not our protocol
+        if "done" in rec:
+            verdicts[rec["done"]] = bool(rec["ok"])
     _TAPER_PROBE_CACHE[key] = verdicts
     return verdicts
 
