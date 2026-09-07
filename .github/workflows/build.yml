@@ -186,6 +186,13 @@ jobs:
           # green through both. Its oracle is the swept volume against the
           # analytic profile-area x path-length, which nothing else here checks.
           uv run python test_sweep_path.py
+          # The taper path is the one place measured to return CORRUPT geometry
+          # without raising (a valid solid stopped at the pyramid apex, shorter
+          # than asked for) AND to hang OCCT for 600 s. It was also never listed
+          # here. Its oracles are analytic volumes the kernel cannot accidentally
+          # agree with, plus a relative timing bound guarding field report
+          # afd4e10c: a rectangle must not fork a cold interpreter to taper.
+          uv run python test_extrude_taper.py
 
       # Geometry eval harnesses (fillet corpus, selector survival, real-server op
       # coverage). They are measurement oracles that always exit 0, so the script
