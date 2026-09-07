@@ -3,7 +3,7 @@
 // of the app uses: setModel(), fit(), pick callbacks, projection/view toggles.
 
 import * as THREE from "three";
-import { createScene, type SceneBundle } from "./scene";
+import { createScene, groundGridZ, type SceneBundle } from "./scene";
 import {
   createCameraRig,
   type CameraRig,
@@ -1210,7 +1210,7 @@ export class Viewport {
       epoch, manifest, result, box, this.model, new Set(hiddenBodies),
     );
     this.adoptProgressiveView(view);
-    this.targetGridZ = box.min.z;
+    this.targetGridZ = groundGridZ(box.min.z);
     if (fit) this.rig.fit(box, true);
     this.requestRender();
   }
@@ -1375,7 +1375,9 @@ export class Viewport {
     for (const d of edgeObjects(this.model)) d.flush();
     this.picker.invalidate(); // edge geometry just changed — drop cached targets
     this.highlighter = new Highlighter(this.model);
-    this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
+    // A floor UNDER the model, never a lid over the origin: groundGridZ clamps
+    // at 0 so a body lifted off the origin leaves the grid on the XY plane.
+    this.targetGridZ = groundGridZ(this.model.box.min.z);
     // The datum quads are sized from the model's bounding box, so a build that
     // changes the box has to re-lay them — otherwise a plane keeps the previous
     // model's size and its boundary can end mid-body again (report f45fe95c).

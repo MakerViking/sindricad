@@ -890,6 +890,18 @@ jobs:
         env:
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/palette_overflow_e2e.cjs
+      # Field report 04191fb5: an extrude with a Start offset took the ground
+      # grid up with the body and "the origin is left hanging in space". The
+      # number comes off a rebuilt model's bounding box, travels through the
+      # render loop and lands on a three group's position — a unit test can
+      # check the clamp but not that the clamp is what the viewport renders with
+      # this document. Carries its own controls: the offset must really be in
+      # the model, and a body BELOW the origin must still pull the grid down.
+      - name: Ground grid vs extrude Start offset end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/grid_start_offset_e2e.cjs
 
       - name: Sidecar log on failure
         if: failure()
