@@ -1376,6 +1376,7 @@ export class Viewport {
     this.picker.invalidate(); // edge geometry just changed — drop cached targets
     this.highlighter = new Highlighter(this.model);
     this.targetGridZ = this.model.box.min.z; // drop the grid to the model's floor
+    this.rig.setContentBounds(this.model.box); // a zoom may not walk the orbit target away from this
     // The datum quads are sized from the model's bounding box, so a build that
     // changes the box has to re-lay them — otherwise a plane keeps the previous
     // model's size and its boundary can end mid-body again (report f45fe95c).
@@ -1602,6 +1603,7 @@ export class Viewport {
     disposeModel(this.model);
     this.model = null;
     this.highlighter = null;
+    this.rig.setContentBounds(null); // nothing to keep the orbit target near
     this.targetGridZ = 0; // no model → grid back on the world XY plane
     this.savedMats.clear(); // materials died with the model
     if (this.combsObj) {

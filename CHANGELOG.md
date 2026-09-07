@@ -18,6 +18,19 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Fixed
+
+- **Orbit no longer swings around a point far from the model after zooming
+  out.** Reported on a long imported laptop stand: after a few wheel notches
+  the view orbited around empty space instead of the part. Zooming toward the
+  cursor pins the point under it by scaling the camera and the orbit centre
+  about that point; over empty space that point is invented at orbit distance,
+  so every zoom-out notch with the cursor off the model carried the orbit centre
+  further away, and nothing ever brought it back. The orbit centre now stays
+  within a ball around the model; when a zoom would push it out, it is pulled
+  back and the camera moves with it, so the zoom and view direction you asked
+  for are unchanged. Panning still moves the centre freely, and Fit resets it.
+
 ### Added
 
 - **Sketch dimensions can be locked.** Right-click any dimension badge and

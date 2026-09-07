@@ -35,6 +35,9 @@ export interface CameraRig {
    *  (a world point, usually under the cursor) is given, zooms TOWARD it
    *  (MCAD-style dolly-to-cursor) instead of toward the orbit target. */
   zoomBy(factor: number, pivot?: THREE.Vector3): void;
+  /** Where the content is, so a zoom cannot walk the orbit target away from
+   *  it. `null` when there is no model: zoom then behaves as before. */
+  setContentBounds(box: THREE.Box3 | null): void;
   /** Half the visible view height at the orbit target, in world units — the
    *  natural scale for making input steps (SpaceMouse pan) zoom-proportional
    *  in BOTH projections, like wheel zoom already is. */
@@ -417,6 +420,46 @@ export function createCameraRig(
     return true;
   }
 
+  // ---- keeping the orbit target near the model --------------------------------
+  //
+  // Dolly-to-cursor is a similarity about the point under the cursor: camera
+  // AND orbit target are scaled about it, which is what pins that point to its
+  // pixel. Zooming OUT scales them away from it, and over empty space the
+  // "point under the cursor" is invented at orbit distance (cursorWorldPoint),
+  // so every zoom-out notch with the cursor off the model walks the orbit
+  // target further from anything on screen. Nothing ever pulled it back: after
+  // a few notches the default "View" pivot mode was orbiting a point hundreds
+  // of millimetres from the part, and the model swung around a centre the user
+  // could not see. Reported as "orbits around the wrong point" on a 270 mm
+  // laptop stand, 2026-09-07; the same drift was measured on a BrokkrSculpt
+  // file saved with its target 435 mm from a 133 mm model.
+  //
+  // The invariant: after a zoom, the orbit target lies inside a ball around the
+  // model's bounding box, CONTENT_RADIUS_FACTOR times its half-diagonal. When
+  // the similarity puts it outside, the target is pulled back to the ball
+  // along the same line and the camera is moved by the SAME vector, so the view
+  // direction and the zoom are exactly what the gesture asked for and only the
+  // point under the cursor slides by the clamp. Making zoom-out asymmetric
+  // (dollying axially) would stop the drift too, but it makes zoom-in-then-out
+  // non-reversible; the clamp keeps every notch reversible until the ball is
+  // reached. Pan (TRUCK) is deliberately not clamped: moving the target off the
+  // model is what a pan is for, and Fit brings it back.
+  const CONTENT_RADIUS_FACTOR = 1.5;
+  const CONTENT_RADIUS_MIN_MM = 25;
+  let contentCentre: THREE.Vector3 | null = null;
+  let contentRadius = CONTENT_RADIUS_MIN_MM;
+  /** Pull `target` into the content ball, moving `cam` by the same vector. */
+  function containTarget(cam: THREE.Vector3, target: THREE.Vector3) {
+    if (!contentCentre) return;
+    const limit = contentRadius * CONTENT_RADIUS_FACTOR;
+    const away = target.clone().sub(contentCentre);
+    const d = away.length();
+    if (d <= limit) return;
+    const shift = away.multiplyScalar(limit / d - 1); // toward the centre, by the overshoot
+    target.add(shift);
+    cam.add(shift);
+  }
+
   // ---- orbit pivot ---------------------------------------------------------
   //
   // Orbiting about a point that is NOT the view centre is expressed as
@@ -565,6 +608,14 @@ export function createCameraRig(
       }
       return controls.distance * Math.tan((FOV * Math.PI) / 360);
     },
+    setContentBounds(box: THREE.Box3 | null) {
+      if (!box || box.isEmpty()) {
+        contentCentre = null;
+        return;
+      }
+      contentCentre = box.getCenter(new THREE.Vector3());
+      contentRadius = Math.max(CONTENT_RADIUS_MIN_MM, box.getSize(new THREE.Vector3()).length() / 2);
+    },
     zoomBy(factor: number, pivot?: THREE.Vector3) {
       // Everything below treats getPosition() as the rendered camera, which an
       // orbit pivot's screen-space offset falsifies — a wheel notch during the
@@ -588,18 +639,10 @@ export function createCameraRig(
           const target = controls.getTarget(new THREE.Vector3());
           const pos = controls.getPosition(new THREE.Vector3());
           const k = 1 - curZoom / newZoom;
-          const dx = (pivot.x - target.x) * k;
-          const dy = (pivot.y - target.y) * k;
-          const dz = (pivot.z - target.z) * k;
-          controls.setLookAt(
-            pos.x + dx,
-            pos.y + dy,
-            pos.z + dz,
-            target.x + dx,
-            target.y + dy,
-            target.z + dz,
-            false,
-          );
+          const nc = new THREE.Vector3(pos.x + (pivot.x - target.x) * k, pos.y + (pivot.y - target.y) * k, pos.z + (pivot.z - target.z) * k);
+          const nt = new THREE.Vector3(target.x + (pivot.x - target.x) * k, target.y + (pivot.y - target.y) * k, target.z + (pivot.z - target.z) * k);
+          containTarget(nc, nt);
+          controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
         }
         controls.zoomTo(newZoom, false);
       } else if (pivot) {
@@ -647,6 +690,7 @@ export function createCameraRig(
         }
         const nc = anchor.clone().add(cam.clone().sub(anchor).multiplyScalar(ff));
         const nt = anchor.clone().add(target.clone().sub(anchor).multiplyScalar(ff));
+        containTarget(nc, nt);
         controls.setLookAt(nc.x, nc.y, nc.z, nt.x, nt.y, nt.z, false);
       } else {
         // no pivot (programmatic): plain dolly toward the orbit target
