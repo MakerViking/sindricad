@@ -20,6 +20,20 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A tapered extrude no longer takes fifteen seconds to rebuild.** Reported
+  from Windows: the taper appeared about twenty seconds after typing the angle.
+  Every change to the taper angle or the distance was starting a fresh Python
+  process just to safety-check the shape against a kernel hang, and that
+  process start-up was the entire wait; the taper itself takes about six
+  milliseconds. The check now runs only on the profiles it was built for
+  (curved or many-edged ones), and the geometry is unchanged.
+
+- **The grid no longer floats up with an extrude's start offset.** Reported
+  from Windows: with a start offset the grid plane moved up by the offset,
+  leaving the origin hanging in space, and showing the sketch moved it back.
+  The grid stays on the XY plane where the origin is, and only drops below it
+  to stay under a model that sits under the origin.
+
 - **Orbit no longer swings around a point far from the model after zooming
   out.** Reported on a long imported laptop stand: after a few wheel notches
   the view orbited around empty space instead of the part. Zooming toward the
