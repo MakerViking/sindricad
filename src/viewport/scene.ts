@@ -15,6 +15,22 @@ export interface SceneBundle {
   grid: AdaptiveGrid;
 }
 
+/** Where the ground grid sits, given the model's lowest Z.
+ *
+ *  The grid is the world XY plane — the plane the origin marker sits on and the
+ *  plane Fit aims at. It may DROP below that to stay under a model that hangs
+ *  under the origin, but it never rises above it: a body lifted off the origin
+ *  (an extrude with a Start offset, report 04191fb5) took the grid up with it and
+ *  left the origin marker floating in empty space with no plane under it.
+ *
+ *  Price of the clamp, stated out loud: a part authored far ABOVE the origin
+ *  (a STEP assembly at z=+500) gets the grid at z=0, well below it, rather than
+ *  tucked under the part. Keeping the grid and the origin together wins. */
+export function groundGridZ(modelMinZ: number): number {
+  if (!Number.isFinite(modelMinZ)) return 0; // empty Box3 min is +Infinity
+  return Math.min(0, modelMinZ);
+}
+
 /** A ground grid (XY plane) whose spacing snaps to nice 1/2/5×10ⁿ mm values and
  *  rescales with zoom, recentred on the camera target so it always fills the view
  *  with round-number lines. Two layers: dim minor + brighter major (every 5th). */
@@ -30,7 +46,8 @@ export class AdaptiveGrid {
   }
 
   /** worldPerPixel = world mm covered by one screen pixel at the target.
-   *  gridZ = the height the grid sits at (the model's floor, or 0 when empty). */
+   *  gridZ = the height the grid sits at — see groundGridZ: the world XY plane,
+   *  or lower when the model hangs below it. */
   update(targetX: number, targetY: number, worldPerPixel: number, gridZ = 0) {
     this.group.position.z = gridZ; // track the model floor every frame, even if x/y/cell are cached
     const cell = niceStep(worldPerPixel * 64); // ~64px minor cells
