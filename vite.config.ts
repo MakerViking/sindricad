@@ -31,6 +31,14 @@ export default defineConfig({
   server: {
     port: PORT,
     strictPort: true,
+    // Agent worktrees live under .claude/worktrees INSIDE the repo, and an
+    // `npm run build` in one of them writes a dist/ that vite's watcher sees
+    // as a change to THIS app: the running Tauri window took a full page
+    // reload from ".claude/worktrees/<name>/dist/index.html" and lost its
+    // document, 2026-09-07. Nothing under .claude is ever part of this build.
+    watch: {
+      ignored: ["**/.claude/**", "**/target/**", "**/sidecar/.venv/**"],
+    },
   },
   // Tauri builds for a specific target; keep the chunk modern.
   build: {
