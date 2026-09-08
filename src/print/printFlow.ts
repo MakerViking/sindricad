@@ -45,7 +45,11 @@ export async function openInOrca(store: DocumentStore, geometry: GeometryBackend
       filamentCount: store.colorPalette.length,
     });
   } catch (e) {
+    // Loud, not console-only: the fallback is exactly the state where Orca
+    // invents a throwaway printer named after the file, and a user who cannot
+    // see why will hunt through Orca's preset menus for the cause.
     console.warn("slicer_project_settings failed — falling back to minimal settings:", e);
+    toast(`Couldn't read your OrcaSlicer printer preset (${String(e)}) — Orca will not preselect the U1.`, { kind: "warning" });
   }
   const written = await exportPrintProject(store, geometry, { path: stagingPath, ...(settings !== undefined ? { settings } : {}) });
   if (!written) return; // exportPrintProject already surfaced any error

@@ -20,6 +20,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **"Open in OrcaSlicer" lands on your U1 preset again.** If your active
+  Orca printer preset was made from scratch rather than copied from the
+  Snapmaker one, the handoff silently gave up and Orca opened the file on a
+  throwaway printer named after it, with a blank process and zero line widths.
+  Such a preset now flattens like any other, its process and filament are
+  matched by what the printer is rather than what the preset is called, and if
+  Orca's active printer is itself one of those throwaways the handoff picks
+  your newest U1 preset instead. When the preset cannot be read at all,
+  SindriCAD now says so in a warning instead of only in the console.
 - **Body colours now survive opening a 3MF project in PrusaSlicer.** A body
   assigned to a palette slot other than the first came into PrusaSlicer on
   extruder 1, while painted faces on it kept their colour. PrusaSlicer ignores

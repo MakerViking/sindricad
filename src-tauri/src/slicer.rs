@@ -291,7 +291,15 @@ fn resolve_chain(
             &std::fs::read_to_string(path).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        cur = v.get("inherits").and_then(|i| i.as_str()).map(str::to_string);
+        // A preset detached in Orca's UI ("Tuned" made from scratch) carries
+        // `"inherits": ""`. That is a root, not a parent named "" — treating it
+        // as one failed the whole flatten with "preset not found: " and the
+        // handoff silently fell back to the stub config (2026-09-08).
+        cur = v
+            .get("inherits")
+            .and_then(|i| i.as_str())
+            .filter(|i| !i.is_empty())
+            .map(str::to_string);
         chain.push(v);
     }
     let mut out = serde_json::Map::new();
@@ -317,6 +325,63 @@ fn is_compatible(idx: &HashMap<String, PathBuf>, name: &str, chain: &HashSet<Str
         .and_then(|(cfg, _)| cfg.get("compatible_printers").and_then(|c| c.as_array()).cloned())
         .map(|cp| cp.iter().filter_map(|x| x.as_str()).any(|s| chain.contains(s)))
         .unwrap_or(false)
+}
+
+/// Every machine preset name that is the same printer as `cfg` (same
+/// `printer_model` and `printer_variant`), plus the chain itself.
+///
+/// Process and filament presets declare `compatible_printers` by machine NAME,
+/// and those names are the vendor's system presets. A user preset that inherits
+/// one is covered by its chain; a DETACHED user preset (empty `inherits`) is
+/// not, so nothing was compatible with it and Orca invented a blank process with
+/// zero line widths. The family closes that gap the way Orca's own
+/// `compatible_printers_condition` does: by what the printer is, not what it
+/// is called.
+fn machine_family(
+    m_idx: &HashMap<String, PathBuf>,
+    cfg: &serde_json::Map<String, serde_json::Value>,
+    chain: &HashSet<String>,
+) -> HashSet<String> {
+    let mut family = chain.clone();
+    let key = |c: &serde_json::Map<String, serde_json::Value>| {
+        (
+            c.get("printer_model").and_then(|v| v.as_str()).map(str::to_string),
+            c.get("printer_variant").and_then(|v| v.as_str()).map(str::to_string),
+        )
+    };
+    let mine = key(cfg);
+    if mine.0.is_none() {
+        return family;
+    }
+    for name in m_idx.keys() {
+        if let Ok((other, _)) = resolve_chain(m_idx, name) {
+            if key(&other) == mine {
+                family.insert(name.clone());
+            }
+        }
+    }
+    family
+}
+
+/// The user's most recently saved machine preset for the U1 (any user machine
+/// preset if none is a U1). None when the user has no machine presets at all.
+fn fallback_machine(m_idx: &HashMap<String, PathBuf>) -> Option<String> {
+    let mut best: Option<(bool, std::time::SystemTime, String)> = None;
+    for (name, path) in m_idx {
+        if !is_user_preset(path) {
+            continue;
+        }
+        let is_u1 = resolve_chain(m_idx, name)
+            .ok()
+            .and_then(|(c, _)| c.get("printer_model").and_then(|v| v.as_str()).map(|m| m == "Snapmaker U1"))
+            .unwrap_or(false);
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+        let cand = (is_u1, mtime, name.clone());
+        if best.as_ref().map(|b| (cand.0, cand.1) > (b.0, b.1)).unwrap_or(true) {
+            best = Some(cand);
+        }
+    }
+    best.map(|b| b.2)
 }
 
 /// True when a preset file sits under the datadir's `user/` tree.
@@ -378,7 +443,17 @@ pub fn slicer_project_settings(app: AppHandle, filament_count: usize) -> Result<
         .to_string();
 
     let m_idx = index_presets(&datadir, "machine");
+    let machine = if m_idx.contains_key(&machine) {
+        machine
+    } else {
+        // Orca makes the active machine "(file.3mf)" after opening any project
+        // whose config it could not bind to a real preset, and keeps it until
+        // the user picks another. That name exists nowhere on disk, so bind
+        // the user's newest U1 preset instead of failing the whole handoff.
+        fallback_machine(&m_idx).ok_or(format!("active machine preset not found: {machine}"))?
+    };
     let (mut cfg, chain) = resolve_chain(&m_idx, &machine)?;
+    let chain = machine_family(&m_idx, &cfg, &chain);
 
     // process (prefer a 0.2mm profile) — merged over machine keys, brings real
     // line widths/speeds so Orca doesn't show a blank project process.
@@ -603,7 +678,15 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(dd.join("OrcaSlicer.conf")).unwrap()).unwrap();
         let machine = conf["presets"]["machine"].as_str().unwrap().to_string();
         let m_idx = index_presets(&dd, "machine");
+        let machine = if m_idx.contains_key(&machine) {
+            machine
+        } else {
+            // Orca's active machine is a project-embedded "(file.3mf)" preset —
+            // the command falls back to the user's newest U1 preset; do the same.
+            fallback_machine(&m_idx).expect("a user machine preset")
+        };
         let (cfg, chain) = resolve_chain(&m_idx, &machine).unwrap();
+        let chain = machine_family(&m_idx, &cfg, &chain);
         assert_eq!(cfg.get("printer_model").and_then(|v| v.as_str()), Some("Snapmaker U1"));
         assert!(cfg.get("print_host").and_then(|v| v.as_str()).is_some(), "print_host must survive the flatten");
         assert!(!cfg.contains_key("inherits"), "meta keys must be stripped");
@@ -620,6 +703,86 @@ mod tests {
         );
         let fil = pick_preset(&index_presets(&dd, "filament"), &chain, &["PLA"]).expect("a filament");
         eprintln!("picked process={proc:?} filament={fil:?}");
+    }
+
+    /// A datadir with one system machine, a DETACHED user copy of it
+    /// (`"inherits": ""`, as Orca writes for a preset made from scratch), and a
+    /// system process compatible with the system machine by name only.
+    fn detached_fixture(tag: &str) -> PathBuf {
+        let dd = std::env::temp_dir().join(format!("sindricad-slicer-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dd);
+        let w = |rel: &str, json: &str| {
+            let p = dd.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, json).unwrap();
+        };
+        w(
+            "system/Snapmaker/machine/u1.json",
+            r#"{"name":"Snapmaker U1 (0.4 nozzle)","printer_model":"Snapmaker U1","printer_variant":"0.4","nozzle_diameter":["0.4"]}"#,
+        );
+        w(
+            "user/default/machine/tuned.json",
+            r#"{"name":"Snapmaker U1 (0.4 nozzle) - Tuned","inherits":"","printer_model":"Snapmaker U1","printer_variant":"0.4","print_host":"192.0.2.1"}"#,
+        );
+        w(
+            "system/Snapmaker/machine/other.json",
+            r#"{"name":"Snapmaker U1 (0.6 nozzle)","printer_model":"Snapmaker U1","printer_variant":"0.6"}"#,
+        );
+        w(
+            "system/Snapmaker/process/q.json",
+            r#"{"name":"0.20 Quality @Snapmaker U1 (0.4 nozzle)","compatible_printers":["Snapmaker U1 (0.4 nozzle)"],"line_width":"0.42"}"#,
+        );
+        w(
+            "system/Snapmaker/process/wrong.json",
+            r#"{"name":"0.20 Quality @Snapmaker U1 (0.6 nozzle)","compatible_printers":["Snapmaker U1 (0.6 nozzle)"],"line_width":"0.62"}"#,
+        );
+        dd
+    }
+
+    /// `"inherits": ""` used to be looked up as a parent named "" and fail the
+    /// whole flatten, so the handoff fell back to the stub config.
+    #[test]
+    fn a_detached_preset_flattens_as_a_root() {
+        let dd = detached_fixture("root");
+        let m_idx = index_presets(&dd, "machine");
+        let (cfg, chain) = resolve_chain(&m_idx, "Snapmaker U1 (0.4 nozzle) - Tuned").expect("flatten");
+        assert_eq!(cfg.get("print_host").and_then(|v| v.as_str()), Some("192.0.2.1"));
+        assert!(!cfg.contains_key("inherits"));
+        assert_eq!(chain.len(), 1);
+    }
+
+    /// A detached preset shares no NAME with the vendor presets that processes
+    /// declare compatibility with, so by chain alone nothing matched and Orca
+    /// showed a blank process. The family matches by printer_model + variant,
+    /// and must not pull in the 0.6 nozzle's process.
+    #[test]
+    fn a_detached_preset_still_gets_its_familys_process() {
+        let dd = detached_fixture("family");
+        let m_idx = index_presets(&dd, "machine");
+        let (cfg, chain) = resolve_chain(&m_idx, "Snapmaker U1 (0.4 nozzle) - Tuned").unwrap();
+        let p_idx = index_presets(&dd, "process");
+        assert_eq!(pick_preset(&p_idx, &chain, &["0.20"]), None, "by chain alone nothing is compatible");
+        let family = machine_family(&m_idx, &cfg, &chain);
+        assert_eq!(
+            pick_preset(&p_idx, &family, &["0.20"]).as_deref(),
+            Some("0.20 Quality @Snapmaker U1 (0.4 nozzle)"),
+        );
+    }
+
+    /// The active machine Orca reports after opening an unbound project is
+    /// "(file.3mf)", which exists nowhere; the fallback must pick the user's
+    /// U1 preset, not a system one and not a non-U1 user preset.
+    #[test]
+    fn a_project_embedded_active_machine_falls_back_to_the_users_u1() {
+        let dd = detached_fixture("fallback");
+        std::fs::write(
+            dd.join("user/default/machine/qidi.json"),
+            r#"{"name":"Qidi X-Plus 4 - Mine","inherits":"","printer_model":"Qidi X-Plus 4","printer_variant":"0.4"}"#,
+        )
+        .unwrap();
+        let m_idx = index_presets(&dd, "machine");
+        assert!(!m_idx.contains_key("(Untitled.3mf)"));
+        assert_eq!(fallback_machine(&m_idx).as_deref(), Some("Snapmaker U1 (0.4 nozzle) - Tuned"));
     }
 
     fn dirs_home() -> Option<PathBuf> {
