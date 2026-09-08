@@ -3220,6 +3220,39 @@ def test_export_project_3mf_paints_textured_faces():
     return True
 
 
+def test_export_project_3mf_paints_whole_body_off_slot_zero():
+    """A body on any slot but 0 must carry `paint_color` on EVERY triangle.
+
+    Verified against PrusaSlicer 2.9.6 on 2026-09-08: it ignores Bambu's
+    per-object `extruder` in model_settings.config (a slot-1 body came back on
+    extruder 1) but honours per-triangle paint exactly as Orca does. Painting
+    the base slot onto every triangle is the one encoding both slicers read.
+    A face explicitly on slot 0 of such a body must say "4" outright, or
+    PrusaSlicer would paint it the body's colour."""
+    import re
+    from project3mf import _mesh_xml
+
+    # Two triangles on face 0, one on face 1, one on face 2.
+    pos = [0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]
+    idx = [0, 1, 2, 1, 3, 2, 0, 2, 3, 0, 3, 1]
+    face_ids = [0, 0, 1, 2]
+
+    def paints(xml):
+        return [re.search(r'paint_color="([^"]*)"', t) and
+                re.search(r'paint_color="([^"]*)"', t).group(1)
+                for t in re.findall(r"<triangle [^>]*/>", xml)]
+
+    # Slot-0 body: only the off-base face is painted (unchanged behaviour).
+    assert paints(_mesh_xml(pos, idx, face_ids, [None, 2, None], base_slot=0)) == [None, None, "0C", None]
+    # Slot-1 body, no face paint: every triangle says slot 1.
+    assert paints(_mesh_xml(pos, idx, None, None, base_slot=1)) == ["8"] * 4
+    # Slot-1 body with faces on slot 2 and slot 0: base fills the gaps, and the
+    # slot-0 face is written out explicitly.
+    assert paints(_mesh_xml(pos, idx, face_ids, [None, 2, 0], base_slot=1)) == ["8", "8", "0C", "4"]
+    print("  whole-body paint off slot 0 OK")
+    return True
+
+
 def test_export_project_3mf():
     """Orca-project 3MF export job: zip layout, per-object extruder metadata
     (1-based = slot+1, unassigned → 1), palette → filament_colour, shared
@@ -3370,6 +3403,7 @@ if __name__ == "__main__":
     test_presspull_offset_needs_a_target()
     test_presspull_upto_exact()
     test_export_despite_errors()
+    test_export_project_3mf_paints_whole_body_off_slot_zero()
     test_export_project_3mf()
     test_export_project_3mf_paints_textured_faces()
     test_text_on_face_colours_only_its_glyphs()

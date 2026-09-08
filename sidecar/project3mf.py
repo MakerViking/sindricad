@@ -149,9 +149,14 @@ def _mesh_chunks(positions, indices, face_ids=None, face_slots=None, base_slot=0
 
     `face_ids` is tessellate()'s third return, one B-rep face id PER TRIANGLE, and
     `face_slots` a dense per-face palette slot (None where unpainted). Together
-    they paint whole faces without touching a vertex. A face whose slot equals
-    `base_slot` emits no attribute: the object already carries that extruder, so
-    writing it again would be noise on every triangle of the common case.
+    they paint whole faces without touching a vertex.
+
+    A body on slot 0 emits paint only on faces that differ from it; a body on
+    any other slot paints EVERY triangle, its base slot where a face has none.
+    That redundancy is deliberate (verified against PrusaSlicer 2.9.6 on
+    2026-09-08): PrusaSlicer ignores Bambu's per-object `extruder` in
+    model_settings.config and would print the whole body on extruder 1, but it
+    honours per-triangle paint exactly as Orca does, so one file serves both.
     """
     yield "<mesh><vertices>"
     buf = []
@@ -167,23 +172,23 @@ def _mesh_chunks(positions, indices, face_ids=None, face_slots=None, base_slot=0
         yield "".join(buf)
     yield "</vertices><triangles>"
     # Precompute slot -> attribute once; per-triangle f-strings are the hot loop
-    # on a multi-million-triangle assembly.
+    # on a multi-million-triangle assembly. Slot 0 on a slot-0 body is the one
+    # silent case; everything else is written out.
+    base_paint = f' paint_color="{_paint_attr(base_slot)}"' if base_slot != 0 else ""
     attrs = {}
     if face_ids is not None and face_slots:
         for s in set(s for s in face_slots if s is not None):
-            if s != base_slot:
-                v = _paint_attr(s)
-                if v:
-                    attrs[s] = f' paint_color="{v}"'
+            if s != 0 or base_slot != 0:
+                attrs[s] = f' paint_color="{_paint_attr(s)}"'
     buf = []
     for i in range(0, len(indices) - 2, 3):
-        paint = ""
+        paint = base_paint
         if attrs:
             t = i // 3
             if t < len(face_ids):
                 fid = face_ids[t]
-                if 0 <= fid < len(face_slots):
-                    paint = attrs.get(face_slots[fid], "")
+                if 0 <= fid < len(face_slots) and face_slots[fid] is not None:
+                    paint = attrs.get(face_slots[fid], base_paint)
         buf.append(
             f'<triangle v1="{indices[i]}" v2="{indices[i + 1]}" v3="{indices[i + 2]}"{paint}/>'
         )

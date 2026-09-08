@@ -20,6 +20,13 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Body colours now survive opening a 3MF project in PrusaSlicer.** A body
+  assigned to a palette slot other than the first came into PrusaSlicer on
+  extruder 1, while painted faces on it kept their colour. PrusaSlicer ignores
+  the per-object extruder that Orca and Bambu Studio read, but it honours
+  per-triangle paint just like they do, so a body on any other slot now carries
+  its slot on every triangle. Verified on PrusaSlicer 2.9.6; Orca reads the
+  file the same as before.
 - **A tapered extrude no longer takes fifteen seconds to rebuild.** Reported
   from Windows: the taper appeared about twenty seconds after typing the angle.
   Every change to the taper angle or the distance was starting a fresh Python
