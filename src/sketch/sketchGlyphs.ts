@@ -4,6 +4,7 @@
 // it even when the badge sits on the geometry it constrains, which claims plain
 // clicks. Conflicting constraints render red.
 
+import { setTitle } from "../i18n";
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { camHash } from "../viewport/camHash";
@@ -82,7 +83,7 @@ export class SketchGlyphs {
         // for something that does not exist is worse than no affordance at all.
         el.className = "sketch-glyph pending";
         el.textContent = g.label;
-        el.title = "Will be applied when you click";
+        setTitle(el, "sketch.constraint.glyphPending");
         this.root.appendChild(el);
         this.items.push({ el, pos: g.pos });
         continue;
@@ -90,9 +91,9 @@ export class SketchGlyphs {
       const st = diagnosisOf(g.cIndex, conflicts, over);
       el.className = st ? `sketch-glyph ${st}` : "sketch-glyph";
       el.textContent = g.label;
-      el.title = st === "conflict" ? "Conflicting constraint — click to delete"
-        : st === "over" ? "Redundant (over-defined) constraint — click to delete"
-        : "Click to delete this constraint (double- or right-click if it sits on geometry)";
+      setTitle(el, st === "conflict" ? "sketch.constraint.glyphConflict"
+        : st === "over" ? "sketch.constraint.glyphOver"
+        : "sketch.constraint.glyphDelete");
       el.addEventListener("pointerdown", (e) => {
         e.stopPropagation();
         // Primary button only, the same guard the dimension badges carry: a

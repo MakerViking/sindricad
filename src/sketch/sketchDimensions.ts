@@ -8,6 +8,7 @@
 // value) comes from entityDims() so there's one source of truth shared with the
 // inspector and SketchMode.editDimension.
 
+import { setTitle, t } from "../i18n";
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { camHash } from "../viewport/camHash";
@@ -23,7 +24,7 @@ import { fmtLength, parseField, displayValue, isPlainNumber, dimValueOk } from "
  *  driven (reference) dims are wrapped in brackets, param-driven get fx:. */
 const fmtDim = (mm: number, kind?: "length" | "angle", driven?: boolean, fx?: boolean) => {
   const s = kind === "angle" ? `${displayValue(mm, "angle")}°` : fmtLength(mm);
-  return driven ? `(${s})` : fx ? `fx: ${s}` : s;
+  return driven ? t("sketch.dimension.drivenValue", { value: s }) : fx ? t("sketch.dimension.boundValue", { value: s }) : s;
 };
 
 interface DimLabel {
@@ -322,13 +323,10 @@ export class SketchDimensions {
       });
     });
     if (d.driven) {
-      el.title = d.onLock
-        ? "Reference dimension (measured, not driving) — right-click to lock it"
-        : "Reference dimension (measured, not driving)";
+      setTitle(el, d.onLock ? "sketch.dimension.title.referenceLock" : "sketch.dimension.title.reference");
     } else {
-      el.title = fx ? `= ${d.expr} · click to edit`
-        : d.measured ? "Measured — nothing holds this value. Click to edit, right-click to lock, drag to move"
-        : "Click to edit, drag to move";
+      if (fx) setTitle(el, "sketch.dimension.title.bound", { expr: d.expr ?? "" });
+      else setTitle(el, d.measured ? "sketch.dimension.title.measured" : "sketch.dimension.title.editable");
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         if (label.suppressEdit || this.suppressClick) {

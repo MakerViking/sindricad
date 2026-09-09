@@ -651,7 +651,12 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 5px;
-  width: 60px;
+  /* A minimum, not a fixed width: a translated label ("Press/Pull" is
+     プレスプル, "Chamfer" in German is "Fase" but "Extrude" is "Extrudieren")
+     widens its button instead of being cut to an ellipsis. The ribbon already
+     overflows surplus groups into a popup, so wider buttons cost no clipping. */
+  min-width: 60px;
+  max-width: 96px;
   padding: 7px 4px 6px;
   background: transparent;
   border: 1px solid transparent;
@@ -670,10 +675,15 @@ body {
   transition: color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
 }
 .ribbon-btn span {
-  white-space: nowrap;
+  /* Wrap to a second line before truncating: an ellipsis on a tool name is
+     the one thing a translation must never produce. */
+  white-space: normal;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 56px;
+  text-align: center;
+  line-height: 1.15;
+  max-height: calc(2 * 1.15em);
+  max-width: 88px;
 }
 .ribbon-btn:hover {
   background: var(--raised);
@@ -3353,4 +3363,58 @@ button.finish:hover {
 .tool-cursor svg {
   width: 15px;
   height: 15px;
+}
+
+/* --- Settings dialog (language) ----------------------------------------- */
+.settings-card {
+  min-width: 360px;
+  max-width: calc(100vw - 32px);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin: var(--s-3) 0;
+  font-size: 12px;
+}
+.settings-row select {
+  min-width: 180px;
+  background: var(--panel);
+  color: inherit;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  font: inherit;
+}
+.settings-note {
+  min-height: 1.4em;
+  margin: var(--s-2) 0 var(--s-4);
+  font-size: 11.5px;
+  color: var(--text-mute);
+  line-height: 1.4;
+}
+/* Bug reporter: category picker and the string-key row it reveals */
+.bug-report-card .bug-category,
+.bug-report-card .bug-key {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin: 4px 0;
+  font-size: 12px;
+}
+.bug-report-card .bug-category select,
+.bug-report-card .bug-key input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: inherit;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  font: inherit;
+}
+.bug-report-card .bug-key[hidden] {
+  display: none;
 }

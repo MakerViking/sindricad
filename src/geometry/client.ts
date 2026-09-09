@@ -4,6 +4,7 @@
 
 import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, GeomErrorCode, ImportFormat, ImportReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
 import { RebuildAssembly, manifestFromBodies } from "./assembly";
+import { t } from "../i18n";
 import type {
   WireBody, WireBodyFull, WireEdgeList, WireManifestEntry, WireRebuildResult,
 } from "./assembly";
@@ -351,12 +352,8 @@ export const MAX_MESSAGE_BYTES = 128 * 1024 * 1024;
  *  copying a 100+ MiB string on every single call. */
 export function tooLargeToSend(len: number): string | null {
   if (len <= MAX_MESSAGE_BYTES) return null;
-  const mib = (n: number) => `${Math.round(n / (1024 * 1024))} MiB`;
-  return (
-    `This model is too large for the geometry engine: ${mib(len)}, ` +
-    `and the limit is ${mib(MAX_MESSAGE_BYTES)}. ` +
-    `Remove or simplify the imported body, then try again.`
-  );
+  const mib = (n: number) => Math.round(n / (1024 * 1024));
+  return t("engine.error.tooLarge", { size: mib(len), limit: mib(MAX_MESSAGE_BYTES) });
 }
 
 export class Geometry implements GeometryBackend {
@@ -542,10 +539,7 @@ export class Geometry implements GeometryBackend {
       // means the two limits have drifted apart — say so rather than blaming the
       // connection, which is what sent GH #4's reporter looking in the wrong place.
       const tooBig = ev.code === 1009;
-      const message = tooBig
-        ? "That model is too large for the geometry engine to accept. "
-          + "Remove or simplify the imported body, then try again."
-        : "geometry engine connection lost";
+      const message = tooBig ? t("engine.error.tooLargeRefused") : t("engine.error.connectionLost");
       // Settle every in-flight call with a synthetic error reply shaped like a
       // real sidecar error, matching the `msg.ok === false` contract every
       // caller already checks (rebuild/export/etc). Without this, a call made
@@ -652,7 +646,7 @@ export class Geometry implements GeometryBackend {
       // and every later rebuild silently no-ops (see the onclose comment).
       console.error("[geometry] bad binary frame from sidecar:", err);
       const id = header?.id;
-      if (id !== undefined) this.abortStream(id, "the geometry engine sent an unreadable reply");
+      if (id !== undefined) this.abortStream(id, t("engine.wire.unreadable"));
     }
   }
 
@@ -706,11 +700,11 @@ export class Geometry implements GeometryBackend {
       const s = this.streams.get(id);
       if (!s) return; // a late chunk of a stream we already abandoned
       if (st.sid !== s.sid) {
-        this.abortStream(id, "the geometry engine restarted its reply mid-send");
+        this.abortStream(id, t("engine.wire.restarted"));
         return;
       }
       if (st.seq !== s.nextSeq) {
-        this.abortStream(id, "the geometry engine's reply arrived out of order");
+        this.abortStream(id, t("engine.wire.outOfOrder"));
         return;
       }
       s.nextSeq++;
@@ -722,7 +716,7 @@ export class Geometry implements GeometryBackend {
           // The payload disagrees with what the manifest promised. Writing it
           // would run past this body's slice and corrupt the NEXT body's
           // triangles, producing a wrong-but-believable model.
-          this.abortStream(id, "the geometry engine sent a body that did not match its manifest");
+          this.abortStream(id, t("engine.wire.manifestMismatch"));
           return;
         }
         arrived.push(b.id);
@@ -752,7 +746,7 @@ export class Geometry implements GeometryBackend {
       // only fire on a sidecar bug — but without it that bug wedges the UI
       // permanently, since nothing else will ever settle the pending call.
       s.timer = setTimeout(
-        () => this.abortStream(id, "the geometry engine stopped part-way through its reply"),
+        () => this.abortStream(id, t("engine.wire.stalledMidReply")),
         STREAM_IDLE_MS,
       );
       return;
@@ -767,7 +761,7 @@ export class Geometry implements GeometryBackend {
     // zero-filled slice.
     const out = this.finishAssembly(s.assembly, s.manifest.map((m) => m.id));
     if (out === null) {
-      this.abortStream(id, "the geometry engine's reply was incomplete");
+      this.abortStream(id, t("engine.wire.incomplete"));
       return;
     }
     this.settleStream(id, {
@@ -912,7 +906,7 @@ export class Geometry implements GeometryBackend {
     if (msg.ok) {
       const legacy = this.legacyResult(msg.result);
       if (legacy) return { ok: true, result: legacy };
-      return { ok: false, error: { message: "geometry engine returned no mesh" } };
+      return { ok: false, error: { message: t("engine.error.noMesh") } };
     }
     return { ok: false, error: msg.error };
   }
@@ -930,7 +924,7 @@ export class Geometry implements GeometryBackend {
     if (msg.ok) {
       const legacy = this.legacyResult(msg.result);
       if (legacy) return { ok: true, result: legacy };
-      return { ok: false, error: { message: "geometry engine returned no mesh" } };
+      return { ok: false, error: { message: t("engine.error.noMesh") } };
     }
     return { ok: false, error: msg.error };
   }
@@ -1028,7 +1022,7 @@ export class Geometry implements GeometryBackend {
         ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
       };
     }
-    if (msg.cancelled) return { ok: false, cancelled: true, message: "export cancelled" };
+    if (msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.exportCancelled") };
     return { ok: false, message: msg.error?.message };
   }
 
@@ -1059,7 +1053,7 @@ export class Geometry implements GeometryBackend {
         ...(r.warnings !== undefined ? { warnings: r.warnings } : {}),
       };
     }
-    if (msg.cancelled) return { ok: false, cancelled: true, message: "export cancelled" };
+    if (msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.exportCancelled") };
     return { ok: false, message: msg.error?.message };
   }
 
@@ -1084,8 +1078,8 @@ export class Geometry implements GeometryBackend {
         ...(r.fitSkipped !== undefined ? { fitSkipped: r.fitSkipped } : {}),
       };
     }
-    if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: "import cancelled" };
-    return { ok: false, message: msg.error?.message ?? "import failed" };
+    if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.importCancelled") };
+    return { ok: false, message: msg.error?.message ?? t("engine.error.importFailed") };
   }
 
   /** Stop the geometry op in flight. Answered on the sidecar's READ path, so it

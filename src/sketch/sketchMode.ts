@@ -43,6 +43,7 @@ import { detectRegions } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
 import { setPrompt } from "../ui/prompt";
+import { t } from "../i18n";
 import { toast } from "../ui/toast";
 import { contextMenu, dismissContextMenu, type CtxItem } from "../ui/menu";
 import { niceStep } from "../ui/units";
@@ -215,8 +216,7 @@ export class SketchMode {
   /** world position of the endpoint a constraint flow is holding, if any */
   private pendingConstraintPoint: THREE.Vector3 | null = null;
   /** What a withdrawn trial says when the tool has nothing more specific. */
-  private static readonly CONSTRAINT_CONFLICT_MSG =
-    "That constraint conflicts with the ones already on this sketch, so it was not applied.";
+  private static readonly CONSTRAINT_CONFLICT_MSG = t("sketch.constraint.conflict");
   /** The constraints just added by a tool, on trial until their solve comes
    *  back: withdrawn together if it conflicts, with `msg` said once. A LIST
    *  because the fillet adds three (two tangencies and a radius) that only mean
@@ -396,9 +396,9 @@ export class SketchMode {
       // that appears to do nothing. Lock is the discoverable way to turn a
       // measurement into a dimension that HOLDS (report dff87040).
       contextMenu(e.clientX, e.clientY, [
-        { label: "Lock dimension", disabled: !a.lock, onClick: () => a.lock?.() },
-        { label: "Unlock (reference)", disabled: !a.unlock, onClick: () => a.unlock?.() },
-        { label: "Delete dimension", danger: true, disabled: !a.del, shortcut: "Del", onClick: () => a.del?.() },
+        { label: t("sketch.dimension.lock"), disabled: !a.lock, onClick: () => a.lock?.() },
+        { label: t("sketch.dimension.unlock"), disabled: !a.unlock, onClick: () => a.unlock?.() },
+        { label: t("sketch.dimension.delete"), danger: true, disabled: !a.del, shortcut: "Del", onClick: () => a.del?.() },
       ]);
     };
     this.glyphs = new SketchGlyphs(viewport);
@@ -406,7 +406,7 @@ export class SketchMode {
     this.glyphs.onOverlapPick = (e) => this.labelOverlapSelect(e);
     this.glyphs.onMenu = (e, i) => {
       contextMenu(e.clientX, e.clientY, [
-        { label: "Delete constraint", danger: true, onClick: () => this.deleteConstraint(i) },
+        { label: t("sketch.constraint.deleteConstraint"), danger: true, onClick: () => this.deleteConstraint(i) },
       ]);
     };
     this.boundDown = (e) => this.onPointerDown(e);
@@ -809,7 +809,7 @@ export class SketchMode {
     const drivenable = isPlacedDim(c);
     const driven = drivenable && (this.referenceMode || forceDriven);
     if (this.referenceMode && !drivenable) {
-      toast("A line length / circle diameter can't be a reference dimension yet — created as driving.");
+      toast(t("sketch.dimension.referenceNotSupported"));
     }
     const out = driven ? ({ ...c, driven: true } as SketchConstraint) : c;
     this.setDrivingDimension(out, moves);
@@ -908,7 +908,7 @@ export class SketchMode {
     if (!this.directDimToast) {
       this.directDimToast = true;
       toast(
-        "Without the constraint solver, a length or diameter is applied to the shape directly and is not kept as a live dimension. It will drive the geometry properly once the solver runs.",
+        t("sketch.dimension.appliedDirectly"),
         { timeout: 12000 },
       );
     }
@@ -1073,7 +1073,7 @@ export class SketchMode {
           : con && isPlacedDim(con) ? { onUnlock: () => this.unlockPlacedDim(d.cIndex) } : {}),
         commitExpr: (raw: string) => {
           const c = this.constraints[d.cIndex];
-          if (!c || !isDimConstraint(c)) return "not editable";
+          if (!c || !isDimConstraint(c)) return t("sketch.dimension.error.notEditable");
           if (!c.id) c.id = newConstraintId();
           return this.commitExprInput(`c:${c.id}`, d.kind === "angle" ? "angle" : "length", raw, (v) => {
             this.writeDimValue(c, v);
@@ -1264,16 +1264,16 @@ export class SketchMode {
   private evalDimInput(raw: string, kind: FieldKind, key: string | null, signed = false): { value: number; expr: string | null; name?: string } | { error: string } {
     if (isPlainNumber(raw)) {
       const value = parseField(raw, kind);
-      if (!dimValueOk(value, kind, signed)) return { error: "invalid value" };
+      if (!dimValueOk(value, kind, signed)) return { error: t("sketch.dimension.error.invalidValue") };
       return { value, expr: null };
     }
-    if (!this.store) return { error: "no document" };
+    if (!this.store) return { error: t("sketch.dimension.error.noDocument") };
     const bound = key ? (this.docBinding(key)?.name ?? null) : null;
     const pending = key ? (this.pendingBindings.get(key)?.name ?? null) : null;
     const c = this.store.classifyTargetExpr(bound, pending, raw, kind);
     if (!c.ok) return { error: c.error };
     if (!dimValueOk(c.value, kind, signed)) {
-      return { error: signed ? "must evaluate to a non-zero value" : "must evaluate to a positive value" };
+      return { error: t(signed ? "sketch.dimension.error.mustBeNonZero" : "sketch.dimension.error.mustBePositive") };
     }
     return { value: c.value, expr: c.expr, ...(c.name ? { name: c.name } : {}) };
   }
@@ -1311,11 +1311,11 @@ export class SketchMode {
    *  an auto-constraint conversion; revisit when a user asks for it. */
   private commitEntityDimExpr(index: number, field: DimField, raw: string): string | null {
     const e = this.entities[index];
-    if (!e) return "no entity";
+    if (!e) return t("sketch.dimension.error.noEntity");
     if (e.type === "line" && field === "length") return this.commitConvertedDim({ type: "distance", line: e.id, value: 0 }, raw);
     if (e.type === "circle" && field === "diameter") return this.commitConvertedDim({ type: "diameter", circle: e.id, value: 0 }, raw);
     const bindable = RIGID_ENTITY_NUM_FIELDS[e.type]?.some(([f]) => f === field);
-    if (!bindable) return "this dimension can't hold an expression yet";
+    if (!bindable) return t("sketch.dimension.error.noExpression");
     return this.commitExprInput(`e:${e.id}:${field}`, "length", raw, (v) => {
       entityDims(e).find((d) => d.field === field)?.write(coerceForField(field, v));
       this.refreshActive();
@@ -1812,18 +1812,18 @@ export class SketchMode {
 
   /** dim fields per multi-click tool (and phase, for slot); Enter commits at the cursor */
   private showMultiDimFields() {
-    const t = this.tool;
+    const tool = this.tool;
     const defs =
-      t === "circle2"
+      tool === "circle2"
         ? [{ name: "diameter", label: "⌀" }]
-        : t === "polygon"
-          ? [{ name: "radius", label: "R" }, { name: "sides", label: "N", kind: "count" as const }]
-          : t === "centerRectangle"
-            ? [{ name: "width", label: "W" }, { name: "height", label: "H" }]
-            : t === "slot"
+        : tool === "polygon"
+          ? [{ name: "radius", label: t("sketch.dimension.label.radius") }, { name: "sides", label: t("sketch.dimension.label.count"), kind: "count" as const }]
+          : tool === "centerRectangle"
+            ? [{ name: "width", label: t("sketch.dimension.label.width") }, { name: "height", label: t("sketch.dimension.label.height") }]
+            : tool === "slot"
               ? this.clickPts.length === 1
-                ? [{ name: "length", label: "L" }]
-                : [{ name: "width", label: "W" }]
+                ? [{ name: "length", label: t("sketch.dimension.label.length") }]
+                : [{ name: "width", label: t("sketch.dimension.label.width") }]
               : null;
     if (!defs) return;
     this.dim.show(defs, () => this.multiClickAt(this.lastCursor.clone()));
@@ -2369,7 +2369,7 @@ export class SketchMode {
     const r = resolveDim(this.dimPicks, this.dimOptions());
     this.dimPlan = isDimError(r) ? null : r;
     if (this.dimPicks.map(targetKey).join("+") !== before) {
-      toast("The geometry this dimension referenced is gone — dimension cancelled");
+      toast(t("sketch.dimension.geometryGone"));
       this.cancelDim();
       return;
     }
@@ -2430,7 +2430,7 @@ export class SketchMode {
    *  appends its own note when the GEOMETRY forces a driven dim. */
   private dimHint(plan: DimPlan): string {
     return this.referenceMode && plan.forceDriven !== true
-      ? `${plan.hint} · Reference Dim is ON — this dimension will measure, not drive`
+      ? t("sketch.dimension.hint.referenceOn", { hint: plan.hint })
       : plan.hint;
   }
 
@@ -2478,7 +2478,7 @@ export class SketchMode {
       this.dimFieldKey = plan.fieldKey;
       this.dimPlanKey = key;
       this.dim.show(plan.fields, () => this.commitDim(), () => this.cancelDim());
-      if (discarded) toast("This is a different dimension now — retype the value");
+      if (discarded) toast(t("sketch.dimension.retype"));
     }
     this.dim.updateFromCursor({ [plan.field]: plan.measure() });
     this.positionDimBox(ev);
@@ -2504,7 +2504,7 @@ export class SketchMode {
     if (raw !== "") {
       const r = this.evalDimInput(raw, kind, null);
       if ("error" in r) {
-        toast(`Dimension not created — ${r.error}`);
+        toast(t("sketch.dimension.notCreated", { error: r.error }));
         this.dim.focus(); // leave the box open on the bad value
         return;
       }
@@ -2540,8 +2540,8 @@ export class SketchMode {
       if (raw !== "") {
         toast(
           this.referenceMode
-            ? "Reference Dim is on, so this dimension only measures — the value you typed was not applied. Turn Reference Dim off, or right-click the badge and choose Lock dimension."
-            : "Both ends are fixed reference geometry, so this dimension can only measure — the value you typed was not applied.",
+            ? t("sketch.dimension.referenceOnNotApplied")
+            : t("sketch.dimension.fixedEndsNotApplied"),
           { timeout: 8000 },
         );
       }
@@ -3114,11 +3114,11 @@ export class SketchMode {
   private showDimFields() {
     const defs =
       this.tool === "rectangle"
-        ? [{ name: "width", label: "W" }, { name: "height", label: "H" }]
+        ? [{ name: "width", label: t("sketch.dimension.label.width") }, { name: "height", label: t("sketch.dimension.label.height") }]
         : this.tool === "circle"
           ? [{ name: "diameter", label: "⌀" }]
           : [
-              { name: "length", label: "L" },
+              { name: "length", label: t("sketch.dimension.label.length") },
               { name: "angle", label: "∠", kind: "angle" as const },
             ];
     this.dim.show(defs, () => this.commitFromCursor(this.lastCursor));
@@ -3391,15 +3391,15 @@ export class SketchMode {
     const selEnts = this.entities.filter((e) => this.selected.has(e.id));
     const cons = applicableConstraints(selEnts);
     const items: CtxItem[] = [
-      ...cons.map((t) => ({
-        label: constraintLabel(t),
-        onClick: () => this.applyConstraintToSelection(t, selEnts),
+      ...cons.map((tool) => ({
+        label: constraintLabel(tool),
+        onClick: () => this.applyConstraintToSelection(tool, selEnts),
       })),
       ...(cons.length ? [{ separator: true, label: "" } as CtxItem] : []),
       ...(linked
-        ? [{ label: linked > 1 ? `Break Link (${linked})` : "Break Link", onClick: () => this.breakSelectedLinks() }]
+        ? [{ label: linked > 1 ? t("sketch.menu.breakLinkCount", { count: linked }) : t("sketch.menu.breakLink"), onClick: () => this.breakSelectedLinks() }]
         : []),
-      { label: n > 1 ? `Delete ${n} entities` : "Delete", danger: true, onClick: () => this.deleteSelected() },
+      { label: t("sketch.menu.deleteEntities", { count: n }), danger: true, onClick: () => this.deleteSelected() },
     ];
     contextMenu(e.clientX, e.clientY, items);
   }
@@ -3417,31 +3417,31 @@ export class SketchMode {
     const isDia = plan?.kind === "diameter";
     const items: CtxItem[] = [
       {
-        label: check(this.dimTangentArmed, "Pick Circle/Arc Tangent"),
+        label: check(this.dimTangentArmed, t("sketch.dimension.tangentPick")),
         onClick: () => {
           this.dimTangentArmed = !this.dimTangentArmed;
           setPrompt(this.dimTangentArmed
-            ? "Tangent pick armed — click a circle or arc to measure to its EDGE"
-            : "Tangent pick cleared");
+            ? t("sketch.dimension.tangentArmed")
+            : t("sketch.dimension.tangentCleared"));
         },
       },
       { separator: true, label: "" },
       {
-        label: check(lone && !isDia, "Radius"), disabled: !lone,
+        label: check(lone && !isDia, t("common.radius")), disabled: !lone,
         onClick: () => this.setDimRoundPref("radius"),
       },
       {
-        label: check(lone && isDia, "Diameter"), disabled: !lone,
+        label: check(lone && isDia, t("common.diameter")), disabled: !lone,
         onClick: () => this.setDimRoundPref("diameter"),
       },
       { separator: true, label: "" },
       {
-        label: check(this.referenceMode, "Driven (reference)"),
+        label: check(this.referenceMode, t("sketch.dimension.drivenReference")),
         onClick: () => { this.setReferenceDim(!this.referenceMode); this.onState?.(); },
       },
       { separator: true, label: "" },
-      { label: "OK", disabled: !plan, onClick: () => { if (this.dimPlan) this.commitDim(); } },
-      { label: "Cancel", onClick: () => this.cancelDim() },
+      { label: t("common.ok"), disabled: !plan, onClick: () => { if (this.dimPlan) this.commitDim(); } },
+      { label: t("common.cancel"), onClick: () => this.cancelDim() },
     ];
     contextMenu(e.clientX, e.clientY, items);
   }
@@ -3454,21 +3454,21 @@ export class SketchMode {
     const pick = this.offsetPick;
     contextMenu(e.clientX, e.clientY, [
       {
-        label: `${this.offsetChainMode ? "✓ " : "    "}Chain Selection`,
+        label: `${this.offsetChainMode ? "✓ " : "    "}${t("sketch.offset.chainSelection")}`,
         onClick: () => {
           this.offsetChainMode = !this.offsetChainMode;
           setPrompt(this.offsetChainMode
-            ? "Chain Selection on — the whole connected profile offsets as a unit"
-            : "Chain Selection off — only the clicked curve offsets");
+            ? t("sketch.offset.chainOn")
+            : t("sketch.offset.chainOff"));
         },
       },
       {
-        label: "Flip", disabled: !pick,
+        label: t("common.flip"), disabled: !pick,
         onClick: () => { if (pick) pick.side = -pick.side; },
       },
       { separator: true, label: "" },
-      { label: "OK", disabled: !pick, onClick: () => { if (pick) this.commitOffset(); } },
-      { label: "Cancel", disabled: !pick, onClick: () => this.cancelOffset() },
+      { label: t("common.ok"), disabled: !pick, onClick: () => { if (pick) this.commitOffset(); } },
+      { label: t("common.cancel"), disabled: !pick, onClick: () => this.cancelOffset() },
     ]);
   }
 
@@ -3507,7 +3507,7 @@ export class SketchMode {
     if (idx === this.filletFirst) return;
     const second = idx;
     const first = this.filletFirst;
-    this.dim.show([{ name: "radius", label: "R", kind: "length" }], () =>
+    this.dim.show([{ name: "radius", label: t("sketch.dimension.label.radius"), kind: "length" }], () =>
       this.applyFillet(first, second),
     );
   }
@@ -3530,7 +3530,7 @@ export class SketchMode {
       this.constraints.push(...res.constraints);
       this.trial = {
         cons: res.constraints,
-        msg: "The fillet was created, but its radius could not be constrained without conflicting with this sketch's existing constraints.",
+        msg: t("sketch.constraint.filletRadiusConflict"),
       };
     }
     this.afterModify();
@@ -3546,7 +3546,7 @@ export class SketchMode {
     if (idx === this.filletFirst) return;
     const second = idx;
     const first = this.filletFirst;
-    this.dim.show([{ name: "distance", label: "D", kind: "length" }], () =>
+    this.dim.show([{ name: "distance", label: t("sketch.dimension.label.distance"), kind: "length" }], () =>
       this.applyChamfer(first, second),
     );
   }
@@ -3574,7 +3574,7 @@ export class SketchMode {
    *  axis for the rest of the session. */
   private guardProjected(e: ResolvedEntity | undefined): boolean {
     if (isOriginGeometry(e?.id)) {
-      toast("The sketch origin is fixed reference geometry — snap and constrain to it, but it can't be edited");
+      toast(t("sketch.guard.originFixed"));
       return true;
     }
     if (e?.type !== "projected") return false;
@@ -3638,8 +3638,8 @@ export class SketchMode {
   /** Move/Copy: click a base point, then a destination — translate the whole
    *  selection. Move mutates in place; Copy leaves the originals and selects the copies. */
   private moveClick(p: THREE.Vector2) {
-    if (!this.selected.size) { toast("Select entities first, then Move/Copy"); return; }
-    if (!this.moveBase) { this.moveBase = p.clone(); toast("Click the destination point"); return; }
+    if (!this.selected.size) { toast(t("sketch.transform.selectFirstMove")); return; }
+    if (!this.moveBase) { this.moveBase = p.clone(); toast(t("sketch.transform.clickDestination")); return; }
     const dx = p.x - this.moveBase.x, dy = p.y - this.moveBase.y;
     this.moveBase = null;
     if (this.tool === "copy") {
@@ -3662,26 +3662,26 @@ export class SketchMode {
 
   /** Rotate the selection about a clicked center by a typed angle (degrees). */
   private rotateClick(p: THREE.Vector2) {
-    if (!this.selected.size) { toast("Select entities first, then Rotate"); return; }
+    if (!this.selected.size) { toast(t("sketch.transform.selectFirstRotate")); return; }
     const cx = p.x, cy = p.y;
     this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
       const ang = ((this.dim.getValue("angle") ?? 0) * Math.PI) / 180;
       this.dim.hide();
       this.transformSelection((e) => this.reid(rotated(e, cx, cy, ang, e.id)));
     });
-    toast("Rotate: type an angle in degrees");
+    toast(t("sketch.transform.rotatePrompt"));
   }
 
   /** Scale the selection about a clicked base point by a typed factor. */
   private scaleClick(p: THREE.Vector2) {
-    if (!this.selected.size) { toast("Select entities first, then Scale"); return; }
+    if (!this.selected.size) { toast(t("sketch.transform.selectFirstScale")); return; }
     const cx = p.x, cy = p.y;
     this.dim.show([{ name: "factor", label: "×", kind: "count" }], () => {
       const f = this.dim.getValue("factor") ?? 1;
       this.dim.hide();
       if (f > 0) this.transformSelection((e) => [scaled(e, cx, cy, f, e.id)]);
     });
-    toast("Scale: type a factor (e.g. 2 or 0.5)");
+    toast(t("sketch.transform.scalePrompt"));
   }
   /** Offset (Fusion parity), two-phase: click a curve, then move the cursor to
    *  choose the SIDE and distance — or type one — and click again (or Enter) to
@@ -3701,15 +3701,15 @@ export class SketchMode {
     if (!e || this.guardProjected(e)) return;
     // Nothing may end in silence here: the user is mid-gesture, and a tool that
     // does nothing without saying why reads as broken.
-    if (e.type === "text") { toast("Offset doesn't apply to sketch text"); return; }
-    if (e.type === "point") { toast("Offset needs a curve, not a point"); return; }
+    if (e.type === "text") { toast(t("sketch.offset.noText")); return; }
+    if (e.type === "point") { toast(t("sketch.offset.noPoint")); return; }
     this.offsetPick = { idx, side: 1, mag: 0 };
     this.dim.show(
-      [{ name: "offset", label: "Offset", kind: "length" }],
+      [{ name: "offset", label: t("tool.offset"), kind: "length" }],
       () => this.commitOffset(),
       () => this.cancelOffset(),
     );
-    setPrompt("Offset: move to pick the side, or type a distance · click / Enter to apply · Esc to cancel");
+    setPrompt(t("sketch.offset.prompt"));
   }
 
   /** The offset result for the current pick, honouring Chain Selection. Chain
@@ -3757,17 +3757,17 @@ export class SketchMode {
     // an untouched field silently produced a 1 mm offset nobody asked for.
     if (this.dim.isUserDriven("offset")) {
       const typed = this.dim.getValue("offset");
-      if (typed === null) { toast("Offset: type a distance, or Esc to cancel"); return; }
+      if (typed === null) { toast(t("sketch.offset.typeDistance")); return; }
       // same rule as the live preview: a typed sign is the side (see offsetMove)
       pick.mag = Math.abs(typed);
       if (typed !== 0) pick.side = typed < 0 ? -1 : 1;
     }
-    if (pick.mag < 1e-6) { toast("Offset: type a distance, or Esc to cancel"); return; }
+    if (pick.mag < 1e-6) { toast(t("sketch.offset.typeDistance")); return; }
     const res = this.offsetResultFor(pick.idx, pick.side * pick.mag);
     this.offsetPick = null;
     this.dim.hide();
     if (!res) {
-      toast("Offset: that distance collapses the geometry");
+      toast(t("sketch.offset.collapses"));
       this.overlay.setPreview([]);
       return;
     }
@@ -3776,7 +3776,7 @@ export class SketchMode {
       // the associative link + its single editable dimension
       this.setDrivingDimension({ type: "offset", pairs: res.pairs, value: pick.side * pick.mag });
     } else if (!res.linked) {
-      toast("Offset copy created — not linked to the source (this shape type is rigid)");
+      toast(t("sketch.offset.rigidCopy"));
     }
     this.afterModify();
   }
@@ -3785,7 +3785,7 @@ export class SketchMode {
     this.offsetPick = null;
     this.dim.hide();
     this.overlay.setPreview([]);
-    setPrompt("Offset: click a curve to offset");
+    setPrompt(t("sketch.offset.clickCurve"));
   }
   private extendClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
@@ -3876,11 +3876,11 @@ export class SketchMode {
         // are never valid sources (checked second: a projection usually lies
         // screen-coincident with its source, and the source must stay pickable)
         const p = this.planePoint(e);
-        if (p && pickEntity(this.entities, p, this.pickTol()) >= 0) toast("Can't project the active sketch's own curves");
+        if (p && pickEntity(this.entities, p, this.pickTol()) >= 0) toast(t("sketch.project.ownCurves"));
         return;
       }
       if (!this.committedSource(hit.sketchId, hit.entityId)) {
-        toast("Pattern copies can't be projected — pick the pattern's source curve");
+        toast(t("sketch.project.patternCopy"));
         return;
       }
       const dup = this.entities.some(
@@ -3891,7 +3891,7 @@ export class SketchMode {
           x.source.entity === hit.entityId,
       );
       if (dup) {
-        toast("That curve is already projected into this sketch");
+        toast(t("sketch.project.curveDup"));
         return;
       }
       source = { kind: "sketchCurve", sketch: hit.sketchId, entity: hit.entityId };
@@ -3909,7 +3909,7 @@ export class SketchMode {
           (x) => x.type === "projected" && x.source.kind === "silhouette" && x.source.body === body,
         );
         if (dup) {
-          toast("That body's silhouette is already projected into this sketch");
+          toast(t("sketch.project.silhouetteDup"));
           return;
         }
         source = { kind: "silhouette", body };
@@ -3953,18 +3953,18 @@ export class SketchMode {
     if (!this.active || this.tool !== "project" || this.entities !== session) return; // finished/switched/re-entered mid-flight
     const r = results[0];
     if (!r) {
-      toast("geometry engine unavailable");
+      toast(t("sketch.project.engineUnavailable"));
       return;
     }
     if (!r.ok) {
-      toast(r.error ?? "projection failed"); // sidecar message verbatim ("created after this sketch"…)
+      toast(r.error ?? t("sketch.project.failed")); // sidecar message verbatim ("created after this sketch"…)
       return;
     }
     // body-edge duplicates are detected against the returned fingerprints (the
     // sketch-curve case was pre-checked above — its ids are stable)
     const fresh = r.curves.filter(({ fp }) => !(fp && this.hasProjectedFp(fp)));
     const skipped = r.curves.length - fresh.length;
-    if (skipped) toast(skipped === r.curves.length ? "That edge is already projected into this sketch" : `${skipped} already-projected edge${skipped > 1 ? "s" : ""} skipped`);
+    if (skipped) toast(skipped === r.curves.length ? t("sketch.project.edgeDup") : t("sketch.project.edgesSkipped", { count: skipped }));
     if (!fresh.length) return;
     // multi-curve picks (a face boundary, a projected rectangle) emit sibling
     // entities sharing source.group = the FIRST sibling's entity id (stable:
@@ -4099,11 +4099,7 @@ export class SketchMode {
       return true;
     });
     if (droppedCount > 0) {
-      setPrompt(
-        droppedCount === 1
-          ? "A pattern was removed: its source entity no longer exists"
-          : `${droppedCount} patterns were removed: their source entities no longer exist`,
-      );
+      setPrompt(t("sketch.pattern.removed", { count: droppedCount }));
     }
   }
 
@@ -4191,7 +4187,7 @@ export class SketchMode {
   undoEdit(): boolean {
     if (!this.active) return false;
     const prev = this.history.undo(this.snapshot());
-    if (!prev) { setPrompt("Nothing left to undo in this sketch"); return true; }
+    if (!prev) { setPrompt(t("sketch.history.nothingToUndo")); return true; }
     this.applyHistory(prev);
     return true;
   }
@@ -4199,7 +4195,7 @@ export class SketchMode {
   redoEdit(): boolean {
     if (!this.active) return false;
     const next = this.history.redo(this.snapshot());
-    if (!next) { setPrompt("Nothing to redo in this sketch"); return true; }
+    if (!next) { setPrompt(t("sketch.history.nothingToRedo")); return true; }
     this.applyHistory(next);
     return true;
   }
@@ -4287,7 +4283,7 @@ export class SketchMode {
             if (!this.dragRefusedToast) {
               this.dragRefusedToast = true;
               toast(r.dragRefused === "projected" ? PROJECTED_FIXED_MSG
-                : r.dragRefused === "geometry" ? "That move would flatten or flip constrained geometry, so it was not applied"
+                : r.dragRefused === "geometry" ? t("sketch.guard.dragFlattens")
                 : FIXED_POINT_MSG);
             }
           } else if (d && this.dragFrom) {
@@ -4353,7 +4349,7 @@ export class SketchMode {
         toast(
           err instanceof SolverUnavailable
             ? err.message
-            : "The 2D constraint solver stopped responding — sketching continues without constraints",
+            : t("sketch.solver.stopped"),
           { kind: "error", timeout: 12000 },
         );
       }

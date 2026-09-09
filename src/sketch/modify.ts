@@ -1,6 +1,7 @@
 // Sketch modify operations on resolved entities: pick, trim, fillet-corner.
 // These mutate the entity list (returning a new one); the sketcher rebuilds.
 
+import { t } from "../i18n";
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
@@ -25,12 +26,12 @@ const v = (x: number, y: number) => new THREE.Vector2(x, y);
 
 /** The one guard toast for projected (linked, fixed) reference geometry — every
  *  modify/transform/constraint seam that refuses to touch it shows this. */
-export const PROJECTED_FIXED_MSG = "Projected geometry is fixed — Break Link to edit it";
+export const PROJECTED_FIXED_MSG = t("sketch.guard.projectedFixed");
 
 /** The one guard toast for a point a user `fix` constraint pins. Lives here, not
  *  inlined at its call sites: the solver-drag path and the body-drag/transform
  *  paths refuse the same thing and must say the same words. */
-export const FIXED_POINT_MSG = "That point is fixed — delete its Fix constraint to move it";
+export const FIXED_POINT_MSG = t("sketch.guard.pointFixed");
 
 /** The entities a `fix` constraint pins. A `fix` names an entity plus a point
  *  index, and every point it can resolve to belongs to that entity, so matching

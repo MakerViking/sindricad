@@ -16,43 +16,65 @@
 // and the WITHDRAW decision, both pure.
 
 import type { SketchConstraint } from "../types";
+import { localeTag, t } from "../i18n";
 import { fmtLength, round } from "../ui/units";
 
-/** Human name per constraint TYPE. Typed as a total Record so a constraint type
- *  added to the union without a name here fails the build rather than showing
- *  up in a user-facing sentence as `undefined`.
+/** Locale key per constraint TYPE (resolve with `t()`). Typed as a total Record
+ *  so a constraint type added to the union without a name here fails the build
+ *  rather than showing up in a user-facing sentence as `undefined`.
  *
  *  `constraintMenu`'s label table cannot be reused: it is keyed by the ribbon
  *  ACTION ("tangent") rather than by the stored constraint type ("tangent2"),
  *  and several actions share one type. */
-export const CONSTRAINT_NAMES: Record<SketchConstraint["type"], string> = {
-  horizontal: "Horizontal",
-  vertical: "Vertical",
-  parallel: "Parallel",
-  perpendicular: "Perpendicular",
-  equal: "Equal",
-  distance: "Length",
-  diameter: "Diameter",
-  p2pDistance: "Distance",
-  p2pDistanceX: "Horizontal distance",
-  p2pDistanceY: "Vertical distance",
-  p2lDistance: "Distance to line",
-  radialGap: "Radial gap",
-  c2cDistance: "Rim-to-rim distance",
-  c2lDistance: "Rim-to-line distance",
-  p2cDistance: "Point-to-rim distance",
-  tangent: "Tangent",
-  tangent2: "Tangent",
-  coincident: "Coincident",
-  concentric: "Concentric",
-  midpoint: "Midpoint",
-  symmetric: "Symmetric",
-  angle: "Angle",
-  radius: "Radius",
-  fix: "Fix",
-  collinear: "Collinear",
-  equalRadius: "Equal radius",
-  offset: "Offset",
+export const CONSTRAINT_NAME_KEYS: Record<SketchConstraint["type"], string> = {
+  horizontal: "sketch.constraint.horizontal",
+  vertical: "sketch.constraint.vertical",
+  parallel: "sketch.constraint.parallel",
+  perpendicular: "sketch.constraint.perpendicular",
+  equal: "sketch.constraint.equal",
+  distance: "sketch.constraint.distance",
+  diameter: "sketch.constraint.diameter",
+  p2pDistance: "sketch.constraint.p2pDistance",
+  p2pDistanceX: "sketch.constraint.p2pDistanceX",
+  p2pDistanceY: "sketch.constraint.p2pDistanceY",
+  p2lDistance: "sketch.constraint.p2lDistance",
+  radialGap: "sketch.constraint.radialGap",
+  c2cDistance: "sketch.constraint.c2cDistance",
+  c2lDistance: "sketch.constraint.c2lDistance",
+  p2cDistance: "sketch.constraint.p2cDistance",
+  tangent: "sketch.constraint.tangent",
+  tangent2: "sketch.constraint.tangent",
+  coincident: "sketch.constraint.coincident",
+  concentric: "sketch.constraint.concentric",
+  midpoint: "sketch.constraint.midpoint",
+  symmetric: "sketch.constraint.symmetric",
+  angle: "sketch.constraint.angle",
+  radius: "sketch.constraint.radius",
+  fix: "sketch.constraint.fix",
+  collinear: "sketch.constraint.collinear",
+  equalRadius: "sketch.constraint.equalRadius",
+  offset: "sketch.constraint.offset",
+};
+
+/** The translated human name of a constraint TYPE. */
+export const constraintName = (type: SketchConstraint["type"]): string => t(CONSTRAINT_NAME_KEYS[type]);
+
+/** The dimension types that carry a value, as the lower-case noun a refusal
+ *  sentence names ("this diameter"); anything else reads as "dimension". */
+const DIM_KIND_KEYS: Partial<Record<SketchConstraint["type"], string>> = {
+  distance: "sketch.dimConflict.kind.distance",
+  diameter: "sketch.dimConflict.kind.diameter",
+  p2pDistance: "sketch.dimConflict.kind.p2pDistance",
+  p2pDistanceX: "sketch.dimConflict.kind.p2pDistanceX",
+  p2pDistanceY: "sketch.dimConflict.kind.p2pDistanceY",
+  p2lDistance: "sketch.dimConflict.kind.p2lDistance",
+  radialGap: "sketch.dimConflict.kind.radialGap",
+  c2cDistance: "sketch.dimConflict.kind.c2cDistance",
+  c2lDistance: "sketch.dimConflict.kind.c2lDistance",
+  p2cDistance: "sketch.dimConflict.kind.p2cDistance",
+  angle: "sketch.dimConflict.kind.angle",
+  radius: "sketch.dimConflict.kind.radius",
+  offset: "sketch.dimConflict.kind.offset",
 };
 
 /** Every field on a constraint that names an entity. Read by field name rather
@@ -73,11 +95,8 @@ function operandsOf(c: SketchConstraint): string[] {
   return out;
 }
 
-/** "a and b", "a, b and c" — never an Oxford comma, matching the app's copy. */
-function listPhrase(parts: string[]): string {
-  if (parts.length <= 1) return parts[0] ?? "";
-  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-}
+/** "a and b", "a, b, and c" — the active locale's own list grammar. */
+const listPhrase = (parts: string[]): string => new Intl.ListFormat(localeTag()).format(parts);
 
 /** What to say when a dimension edit came back unsatisfiable.
  *
@@ -96,24 +115,25 @@ export function dimConflictMsg(
   constraints: SketchConstraint[],
   prevValue?: number,
 ): string {
-  const what = (CONSTRAINT_NAMES[edited.type] ?? "dimension").toLowerCase();
+  const what = t(DIM_KIND_KEYS[edited.type] ?? "sketch.dimConflict.kind.dimension");
   // No previous value means there was no dimension there to replace: the same
   // seam places NEW dimensions as well as retyping existing ones, and "I could
   // not change this diameter" is a lie about the first of those.
-  const verb = prevValue == null ? "add" : "change";
+  const adding = prevValue == null;
   // An `angle` stores DEGREES and every other dimension millimetres (types.ts),
   // so a length format here would report 30° as "30 mm" — or "1.181 in" with the
   // display unit set to inches. Same split the inspector makes for a field.
   const fmtPrev = (v: number) => (edited.type === "angle" ? `${round(v)}°` : fmtLength(v));
-  const left = prevValue == null ? "" : ` The dimension was left at ${fmtPrev(prevValue)}.`;
+  const left = prevValue == null ? "" : t("sketch.dimConflict.leftAt", { value: fmtPrev(prevValue) });
+  const withLeft = (main: string) => (left ? `${main} ${left}` : main);
 
   const reasons: string[] = [];
   const targets = new Set(operandsOf(edited));
   if (constraints.some((k) => k.type === "fix" && targets.has(k.e))) {
     reasons.push(
       edited.type === "diameter" || edited.type === "radius"
-        ? "its centre is fixed"
-        : "one of its points is fixed",
+        ? t("sketch.dimConflict.centreFixed")
+        : t("sketch.dimConflict.pointFixed"),
     );
   }
 
@@ -123,16 +143,16 @@ export function dimConflictMsg(
   for (const i of [...blamed].sort((a, b) => a - b)) {
     const k = constraints[i];
     if (!k || k === edited) continue;
-    const name = CONSTRAINT_NAMES[k.type];
+    const name = constraintName(k.type);
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
-  const held = [...counts].map(([n, n2]) => (n2 === 1 ? `a ${n} constraint` : `${n2} ${n} constraints`));
-  if (held.length) reasons.push(`it is held by ${listPhrase(held)}`);
+  const held = [...counts].map(([name, count]) => t("sketch.dimConflict.heldItem", { name, count }));
+  if (held.length) reasons.push(t("sketch.dimConflict.heldBy", { list: listPhrase(held) }));
 
   if (reasons.length === 0) {
-    return `I could not ${verb} this ${what}: the new value conflicts with the constraints already on this sketch.${left}`;
+    return withLeft(t(adding ? "sketch.dimConflict.addConflicts" : "sketch.dimConflict.changeConflicts", { what }));
   }
-  return `I could not ${verb} this ${what}: ${listPhrase(reasons)}, so it cannot take the new value.${left}`;
+  return withLeft(t(adding ? "sketch.dimConflict.addHeld" : "sketch.dimConflict.changeHeld", { what, reasons: listPhrase(reasons) }));
 }
 
 /** The constraints a tool has just added, on trial until their solve comes back.

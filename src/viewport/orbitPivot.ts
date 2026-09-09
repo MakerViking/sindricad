@@ -7,6 +7,7 @@
 // cannot live inside one.
 
 import * as THREE from "three";
+import { t, setText, setTitle } from "../i18n";
 
 /** Closest a pivot may sit to the camera, in mm. Same figure as cameras.ts's
  *  MIN_PERSP_DIST but a different claim — that is a near-plane guard for the
@@ -22,10 +23,10 @@ export type PivotMode = "view" | "model" | "origin" | "cursor";
 export const PIVOT_MODES = ["view", "model", "origin", "cursor"] as const;
 
 export const PIVOT_LABEL: Record<PivotMode, string> = {
-  view: "View",
-  model: "Model",
-  origin: "Origin",
-  cursor: "Cursor",
+  view: t("viewport.pivot.mode.view"),
+  model: t("viewport.pivot.mode.model"),
+  origin: t("viewport.pivot.mode.origin"),
+  cursor: t("viewport.pivot.mode.cursor"),
 };
 
 export const PIVOT_HINT: Record<PivotMode, string> = {
@@ -34,10 +35,10 @@ export const PIVOT_HINT: Record<PivotMode, string> = {
   // at the model centre only until you pan or zoom toward the cursor, both of
   // which move the orbit target. Calling it "Model" would be a promise the mode
   // does not keep; "Model" below is the mode that actually keeps it.
-  view: "the centre of the view (default)",
-  model: "the centre of the whole model",
-  origin: "the world origin (0, 0, 0)",
-  cursor: "the point under the cursor when the drag starts",
+  view: t("viewport.pivot.hint.view"),
+  model: t("viewport.pivot.hint.model"),
+  origin: t("viewport.pivot.hint.origin"),
+  cursor: t("viewport.pivot.hint.cursor"),
 };
 
 const KEY = "sindricad.orbitPivot";
@@ -144,8 +145,8 @@ export function mountPivotButton(
   btn.id = "orbitpivot";
   const paint = () => {
     const mode = get();
-    btn.textContent = `Pivot: ${PIVOT_LABEL[mode]}`;
-    btn.title = `Orbit around ${PIVOT_HINT[mode]} — click to cycle`;
+    setText(btn, "viewport.pivot.label", { mode: PIVOT_LABEL[mode] });
+    setTitle(btn, "viewport.pivot.title", { where: PIVOT_HINT[mode] });
   };
   btn.addEventListener("click", () => {
     set(nextPivotMode(get()));

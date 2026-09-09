@@ -16,6 +16,7 @@ import { FEATURE_META } from "./featureMeta";
 import { keyHint } from "../input/shortcuts";
 import { TOOL_BUSY_MESSAGE, CURVED_FACE_NOTE, CURVED_FACE_NOTE_PLANE } from "../features/featureStarters";
 import { toast } from "./toast";
+import { t } from "../i18n";
 import type { Feature, PlaneDef, Selector } from "../types";
 import type { EdgeHit, FaceHit } from "../viewport/picking";
 
@@ -83,24 +84,24 @@ export function createContextMenus(deps: ContextMenusDeps) {
     );
     selectFeature(datumId); // same as clicking it — the menu acts on a visible selection
     contextMenu(x, y, [
-      { label: "Cut all bodies", onClick: unlessBusy(() => void startCutByPlane(datumId)) },
+      { label: t("context.cutAllBodies"), onClick: unlessBusy(() => void startCutByPlane(datumId)) },
       // enter BY ID: the def is only the cached placement, so passing the datum
       // id too is what makes the sketch follow later edits to its offset
-      { label: "Sketch on plane", disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store, undefined, f.id); }) },
-      { label: "Offset plane", disabled: !f, onClick: unlessBusy(() => { if (f) offsetPlaneFromFace(datumPlaneDef(f)); }) },
+      { label: t("context.sketchOnPlane"), disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store, undefined, f.id); }) },
+      { label: t("context.offsetPlane"), disabled: !f, onClick: unlessBusy(() => { if (f) offsetPlaneFromFace(datumPlaneDef(f)); }) },
       { separator: true, label: "" },
-      { label: "Hide plane", onClick: () => { store.setPlaneVisibility(datumId, false); syncDatumPlanes(); tree.refresh(); } },
-      { label: "Delete plane", danger: true, onClick: unlessBusy(() => { store.removeFeature(datumId); selectFeature(null); }) },
+      { label: t("context.hidePlane"), onClick: () => { store.setPlaneVisibility(datumId, false); syncDatumPlanes(); tree.refresh(); } },
+      { label: t("context.deletePlane"), danger: true, onClick: unlessBusy(() => { store.removeFeature(datumId); selectFeature(null); }) },
     ]);
   }
 
   function openEdgeMenu(x: number, y: number, hit: EdgeHit) {
     contextMenu(x, y, [
       // routed through handleAction so "Repeat <command>" records them
-      { label: "Fillet", shortcut: keyHint("fillet"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("fillet"); }) },
-      { label: "Chamfer", shortcut: keyHint("chamfer"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("chamfer"); }) },
+      { label: t("tool.fillet"), shortcut: keyHint("fillet"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("fillet"); }) },
+      { label: t("tool.chamfer"), shortcut: keyHint("chamfer"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("chamfer"); }) },
       { separator: true, label: "" },
-      { label: "Measure from here", shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
+      { label: t("context.measureFromHere"), shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
     ]);
   }
 
@@ -117,30 +118,30 @@ export function createContextMenus(deps: ContextMenusDeps) {
     const owner = ownerId ? store.document.features.find((f) => f.id === ownerId) : undefined;
     const ownerLabel = owner ? (FEATURE_META[owner.type as keyof typeof FEATURE_META]?.label ?? owner.type) : "";
     const items: CtxItem[] = [
-      { label: "Press/Pull face", shortcut: keyHint("presspull"), onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); handleAction("presspull"); }) },
-      { label: "Sketch on this face", shortcut: keyHint("sketch"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE); sketch.enter(plane, store, undefined, undefined, anchor ?? undefined); } }) },
-      { label: "Measure from here", shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
+      { label: t("context.pressPullFace"), shortcut: keyHint("presspull"), onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); handleAction("presspull"); }) },
+      { label: t("context.sketchOnFace"), shortcut: keyHint("sketch"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE); sketch.enter(plane, store, undefined, undefined, anchor ?? undefined); } }) },
+      { label: t("context.measureFromHere"), shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
       { separator: true, label: "" },
       {
-        label: "Select coplanar faces",
+        label: t("context.selectCoplanar"),
         onClick: unlessBusy(() => {
           const n = viewport.selectCoplanarFaces(hit.faceId);
-          setStatus(`Selected ${n} coplanar face${n === 1 ? "" : "s"}`, "");
+          setStatus(t("context.selectedCoplanar", { count: n }), "");
         }),
       },
-      { label: "Offset plane from face", shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE_PLANE); offsetPlaneFromFace(plane, anchor ?? undefined); } }) },
+      { label: t("context.offsetPlaneFromFace"), shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE_PLANE); offsetPlaneFromFace(plane, anchor ?? undefined); } }) },
       { separator: true, label: "" },
       ...(owner
-        ? [{ label: `${isInspectorEditable(owner.type) ? "Edit" : "Select"} ${ownerLabel}`, onClick: unlessBusy(() => editFeature(owner.id)) }]
+        ? [{ label: t(isInspectorEditable(owner.type) ? "context.editFeature" : "context.selectFeature", { name: ownerLabel }), onClick: unlessBusy(() => editFeature(owner.id)) }]
         : []),
       ...(bodyId
         ? [
-            { label: "Hide body", onClick: () => hideBody(bodyId) },
-            { label: "Isolate body", onClick: () => isolateBody(bodyId) },
+            { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },
+            { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
           ]
         : []),
       { separator: true, label: "" },
-      { label: "Delete face (heal)", danger: true, onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); deleteSelectedFace(); }) },
+      { label: t("context.deleteFaceHeal"), danger: true, onClick: unlessBusy(() => { viewport.selectOnlyFace(hit.faceId); deleteSelectedFace(); }) },
     ];
     contextMenu(x, y, items);
   }
@@ -149,18 +150,18 @@ export function createContextMenus(deps: ContextMenusDeps) {
     if (!viewport.getSelectedBodies().includes(bodyId)) viewport.setSelectedBodies([bodyId]);
     contextMenu(x, y, [
       // routed through handleAction so "Repeat <command>" records them
-      { label: "Move", shortcut: keyHint("move"), onClick: unlessBusy(() => handleAction("move")) },
-      { label: "Combine with…", shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
-      { label: "Properties", onClick: unlessBusy(() => handleAction("properties")) },
+      { label: t("tool.move"), shortcut: keyHint("move"), onClick: unlessBusy(() => handleAction("move")) },
+      { label: t("context.combineWith"), shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
+      { label: t("context.properties"), onClick: unlessBusy(() => handleAction("properties")) },
       { separator: true, label: "" },
-      { label: "Hide body", onClick: () => hideBody(bodyId) },
-      { label: "Isolate body", onClick: () => isolateBody(bodyId) },
-      { label: "Show all bodies", shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
+      { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },
+      { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
+      { label: t("context.showAllBodies"), shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
       { separator: true, label: "" },
-      { label: "Rename…", onClick: () => tree.beginRename(bodyId) },
-      { label: "Color", children: bodyColorMenuItems(store, bodyId) },
+      { label: t("context.renameEllipsis"), onClick: () => tree.beginRename(bodyId) },
+      { label: t("context.color"), children: bodyColorMenuItems(store, bodyId) },
       { separator: true, label: "" },
-      { label: "Remove body", danger: true, onClick: unlessBusy(() => store.removeBody(bodyId)) },
+      { label: t("context.removeBody"), danger: true, onClick: unlessBusy(() => store.removeBody(bodyId)) },
     ]);
   }
 
@@ -175,25 +176,25 @@ export function createContextMenus(deps: ContextMenusDeps) {
     const lastAction = getLastAction();
     contextMenu(x, y, [
       {
-        label: lastAction ? `Repeat ${actionLabel(lastAction)}` : "Repeat last command",
+        label: lastAction ? t("context.repeat", { command: actionLabel(lastAction) }) : t("context.repeatLast"),
         disabled: !lastAction,
         onClick: () => { if (lastAction) handleAction(lastAction); },
       },
       { separator: true, label: "" },
-      { label: "Fit view", shortcut: keyHint("fit"), onClick: () => handleAction("fit") },
+      { label: t("context.fitView"), shortcut: keyHint("fit"), onClick: () => handleAction("fit") },
       {
-        label: "Look",
+        label: t("context.look"),
         children: [
-          { label: "Isometric", onClick: () => handleAction("iso") },
-          { label: "Top", onClick: () => handleAction("top") },
-          { label: "Front", onClick: () => handleAction("front") },
-          { label: "Right", onClick: () => handleAction("right") },
+          { label: t("context.view.isometric"), onClick: () => handleAction("iso") },
+          { label: t("context.view.top"), onClick: () => handleAction("top") },
+          { label: t("context.view.front"), onClick: () => handleAction("front") },
+          { label: t("context.view.right"), onClick: () => handleAction("right") },
         ],
       },
-      { label: "Show all bodies", shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
+      { label: t("context.showAllBodies"), shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
       { separator: true, label: "" },
-      { label: "Undo", shortcut: "Ctrl+Z", disabled: !store.canUndo, onClick: () => store.undo() },
-      { label: "Redo", shortcut: "Ctrl+Y", disabled: !store.canRedo, onClick: () => store.redo() },
+      { label: t("common.undo"), shortcut: "Ctrl+Z", disabled: !store.canUndo, onClick: () => store.undo() },
+      { label: t("common.redo"), shortcut: "Ctrl+Y", disabled: !store.canRedo, onClick: () => store.redo() },
     ]);
   }
 

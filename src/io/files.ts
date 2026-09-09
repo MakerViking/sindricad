@@ -9,9 +9,12 @@ import type { GeometryBackend } from "../geometry/client";
 import type { CadDocument, ExportFormat, Feature, ImportFormat } from "../types";
 import { clearRecovery } from "./recovery";
 import { noteRecent } from "./recentFiles";
+import { localeTag, t } from "../i18n";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+const formatCount = (n: number) => new Intl.NumberFormat(localeTag()).format(n);
 
 /** Every geometry hash the document references, and the mesh keys worth
  *  carrying. Rust turns these into container entries; the frontend collects them
@@ -51,7 +54,7 @@ export async function saveDocument(store: DocumentStore) {
   if (isTauri() && store.filePath) {
     const err = await writeContainer(store, store.filePath);
     if (err) {
-      await reportError(`Couldn't save ${store.filePath}: ${err}`);
+      await reportError(t("file.error.save", { path: store.filePath, reason: err }));
       return;
     }
     store.markSaved(store.filePath);
@@ -67,13 +70,13 @@ export async function saveDocumentAs(store: DocumentStore) {
   if (isTauri()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const path = await save({
-      filters: [{ name: "SindriCAD Document", extensions: ["sindri"] }],
+      filters: [{ name: t("file.filter.document"), extensions: ["sindri"] }],
       defaultPath: store.filePath ?? `${store.fileName}.sindri`,
     });
     if (path) {
       const err = await writeContainer(store, path);
       if (err) {
-        await reportError(`Couldn't save ${path}: ${err}`);
+        await reportError(t("file.error.save", { path, reason: err }));
         return;
       }
       store.markSaved(path);
@@ -96,9 +99,9 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
       // MCAD-style: Open takes our document AND mesh/CAD files (imported as a
       // body), routed by extension below — so users can just "open" an STL.
       filters: [
-        { name: "All supported", extensions: ["sindri", "json", "stl", "3mf", "step", "stp", "obj", "glb"] },
-        { name: "SindriCAD Document", extensions: ["sindri", "json"] },
-        { name: "Mesh / CAD", extensions: ["stl", "3mf", "step", "stp", "obj", "glb"] },
+        { name: t("file.filter.allSupported"), extensions: ["sindri", "json", "stl", "3mf", "step", "stp", "obj", "glb"] },
+        { name: t("file.filter.document"), extensions: ["sindri", "json"] },
+        { name: t("file.filter.meshCad"), extensions: ["stl", "3mf", "step", "stp", "obj", "glb"] },
       ],
     });
     if (typeof path !== "string") return;
@@ -114,7 +117,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
       try {
         store.load(text);
       } catch (e) {
-        await reportError(`Couldn't open document: ${errMsg(e)}`);
+        await reportError(t("file.error.openDocument", { reason: errMsg(e) }));
       }
     }
   }
@@ -194,7 +197,7 @@ export async function openDocumentAtPath(
   path: string,
   geometry?: GeometryBackend,
 ): Promise<OpenOutcome> {
-  const base = path.split(/[\\/]/).pop();
+  const base = baseName(path);
   const { invoke } = await import("@tauri-apps/api/core");
   let text: string;
   let wasContainer = false;
@@ -207,7 +210,7 @@ export async function openDocumentAtPath(
     // Rust's container errors are already user-facing sentences (a newer
     // container format, a damaged archive, geometry that does not match its
     // manifest), so pass them through rather than wrapping them in ours.
-    await reportError(`Couldn't open ${base}: ${errMsg(e)}`);
+    await reportError(t("file.error.open", { name: base, reason: errMsg(e) }));
     return "unreadable";
   }
   // One-way v4 -> v5, done on the PARSED text before `load()` rather than by
@@ -223,13 +226,10 @@ export async function openDocumentAtPath(
     store.load(text);
   } catch (e) {
     if (looksLikeContainer(text)) {
-      await reportError(
-        `${base} was saved by a newer version of SindriCAD, which stores geometry in a ` +
-          `packaged document this build can't read. Update SindriCAD to open it.`,
-      );
+      await reportError(t("file.error.newerFormat", { name: base }));
       return "newerFormat";
     }
-    await reportError(`Couldn't open ${base}: ${errMsg(e)}`);
+    await reportError(t("file.error.open", { name: base, reason: errMsg(e) }));
     return "unreadable";
   }
   store.markSaved(path); // freshly opened == clean, with a known path
@@ -248,17 +248,17 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
   const opts: { body?: string; separate?: boolean } = {};
   if (bodies.length > 1) {
     const { choose } = await import("../ui/choice");
-    const scope = await choose<"all" | "separate" | "one">("Export — which bodies?", [
-      { value: "all", label: "All in one file", hint: `${bodies.length} bodies merged` },
-      { value: "separate", label: "Each body separately", hint: `${bodies.length} files` },
-      { value: "one", label: "A specific body", hint: "pick one" },
+    const scope = await choose<"all" | "separate" | "one">(t("file.export.whichBodies"), [
+      { value: "all", label: t("file.export.allInOne"), hint: t("file.export.bodiesMerged", { count: bodies.length }) },
+      { value: "separate", label: t("file.export.eachSeparately"), hint: t("file.export.fileCount", { count: bodies.length }) },
+      { value: "one", label: t("file.export.specificBody"), hint: t("file.export.pickOne") },
     ]);
     if (!scope) return;
     if (scope === "separate") {
       opts.separate = true;
     } else if (scope === "one") {
       const picked = await choose<string>(
-        "Which body to export?",
+        t("file.export.whichBody"),
         bodies.map((b) => ({ value: b.id, label: store.bodyName(b.id) ?? b.name })),
       );
       if (!picked) return;
@@ -288,7 +288,7 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
   // targets THIS export — the document stays editable meanwhile, so any rebuild
   // the user triggers would otherwise be the "most recent" op.
   const res = await store.runBusy(
-    `Exporting ${path.split(/[\\/]/).pop() ?? "file"}`,
+    t("file.export.busy", { name: baseName(path) }),
     (onStarted) => geometry.export(store.document, fmt, path, {
       ...opts,
       palette: store.colorPalette,
@@ -299,7 +299,7 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
     // The user stopped it: they know, so say nothing. Reporting their own
     // action back as "Export failed: cancelled" is the bug this avoids.
     if (res.cancelled) return;
-    await reportError(`Export failed: ${res.message ?? "unknown error"}`);
+    await reportError(t("file.error.export", { reason: res.message ?? t("common.unknownError") }));
     return;
   }
   // Confirm what was written — list every file for "separate", the single path
@@ -308,15 +308,20 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
   const written = res.paths?.length ? res.paths : res.path ? [res.path] : [];
   const lines = [...written];
   for (const w of res.warnings ?? []) {
-    lines.push(`⚠ ${w.feature_id ?? "feature"} failed — its result is NOT in the export: ${w.message}`);
+    lines.push(featureMissingLine(w));
   }
   if (lines.length) {
     const { listModal } = await import("../ui/choice");
     const title = res.warnings?.length
-      ? `Exported ${written.length} file${written.length === 1 ? "" : "s"} — with warnings`
-      : `Exported ${written.length} file${written.length === 1 ? "" : "s"}`;
+      ? t("file.export.doneTitleWarnings", { count: written.length })
+      : t("file.export.doneTitle", { count: written.length });
     await listModal(title, lines);
   }
+}
+
+/** One line of the post-export list naming a feature whose geometry is missing. */
+function featureMissingLine(w: { feature_id?: string; message: string }): string {
+  return t("file.export.featureMissing", { feature: w.feature_id ?? t("file.export.unnamedFeature"), reason: w.message });
 }
 
 export function extToFormat(path: string): ExportFormat {
@@ -355,12 +360,12 @@ export async function exportPrintProject(
     return null;
   }
   if (!geometry.exportProject) {
-    await reportError("Colored 3MF export needs the Python sidecar backend (run without VITE_GEOM=rust).");
+    await reportError(t("file.export.needsSidecar"));
     return null;
   }
   const bodies = store.buildState.result?.bodies ?? [];
   if (!bodies.length) {
-    await reportError("Nothing to export yet — build a body first.");
+    await reportError(t("file.export.nothing"));
     return null;
   }
 
@@ -369,7 +374,7 @@ export async function exportPrintProject(
     const { save } = await import("@tauri-apps/plugin-dialog");
     const base = store.fileName.replace(/\.sindri$/i, "") || "part";
     const picked = await save({
-      filters: [{ name: "3MF project", extensions: ["3mf"] }],
+      filters: [{ name: t("file.filter.project3mf"), extensions: ["3mf"] }],
       defaultPath: `${base}.3mf`,
     });
     if (!picked) return null;
@@ -382,7 +387,7 @@ export async function exportPrintProject(
   // tessellates every body at export grade before writing the project, so it is
   // every bit as long-running as a plain export on a large document.
   const res = await store.runBusy(
-    `Exporting ${path.split(/[\\/]/).pop() ?? "project"}`,
+    t("file.export.busy", { name: baseName(path) }),
     (onStarted) => geometry.exportProject!(store.document, path, {
       palette: store.colorPalette,
       bodyColors: store.bodyColorsMap(),
@@ -392,18 +397,16 @@ export async function exportPrintProject(
   );
   if (!res.ok) {
     if (res.cancelled) return null;  // the user stopped it — not an error
-    await reportError(`Print export failed: ${res.message ?? "unknown error"}`);
+    await reportError(t("file.error.printExport", { reason: res.message ?? t("common.unknownError") }));
     return null;
   }
   void warnPrintAssignments(store, bodies.map((b) => b.id));
   // Only surface a modal when there are warnings (features that didn't build) —
   // the silent-staging path (Stage D) shouldn't pop a dialog on the happy path.
   if (res.warnings?.length) {
-    const lines = res.warnings.map(
-      (w) => `⚠ ${w.feature_id ?? "feature"} failed — its result is NOT in the export: ${w.message}`,
-    );
+    const lines = res.warnings.map(featureMissingLine);
     const { listModal } = await import("../ui/choice");
-    await listModal("Exported project — with warnings", [res.path ?? path, ...lines]);
+    await listModal(t("file.export.projectDoneWarnings"), [res.path ?? path, ...lines]);
   }
   return res.path ?? path;
 }
@@ -423,11 +426,12 @@ export async function exportPrintProject(
 async function confirmUnassignedPalette(store: DocumentStore, bodyIds: string[]): Promise<boolean> {
   if (!needsUnassignedConfirm(store, bodyIds)) return true;
   const { ask } = await import("@tauri-apps/plugin-dialog");
-  return ask(
-    "No body is assigned to a palette slot, so this will print in a single color.\n\n" +
-      "Assign colors by right-clicking a body — in the Browser list or in the viewport — and picking a slot.",
-    { title: "Export without colors?", kind: "warning", okLabel: "Export anyway", cancelLabel: "Cancel" },
-  );
+  return ask(t("file.export.unassignedBody"), {
+    title: t("file.export.unassignedTitle"),
+    kind: "warning",
+    okLabel: t("file.export.anyway"),
+    cancelLabel: t("common.cancel"),
+  });
 }
 
 /** Does any built face carry a palette slot of its own? Today that means a
@@ -507,11 +511,13 @@ export async function warnPrintAssignments(store: DocumentStore, bodyIds: string
   if (!empty.length && !unassigned) return;
   const parts: string[] = [];
   if (empty.length) {
-    parts.push(`slot${empty.length > 1 ? "s" : ""} ${empty.map((s) => s + 1).join(", ")} ha${empty.length > 1 ? "ve" : "s"} no filament loaded on the printer`);
+    const slots = new Intl.ListFormat(localeTag()).format(empty.map((s) => String(s + 1)));
+    parts.push(t("file.export.emptySlots", { count: empty.length, slots }));
   }
-  if (unassigned) parts.push(`${unassigned} bod${unassigned > 1 ? "ies are" : "y is"} unassigned (defaulting to slot 1)`);
+  if (unassigned) parts.push(t("file.export.unassignedBodies", { count: unassigned }));
   const { toast } = await import("../ui/toast");
-  toast(`Exported, but ${parts.join("; ")}.`, { kind: "warning" });
+  const details = new Intl.ListFormat(localeTag()).format(parts);
+  toast(t("file.export.warnSummary", { details }), { kind: "warning" });
 }
 
 
@@ -527,7 +533,7 @@ export async function importModel(store: DocumentStore, geometry: GeometryBacken
   const path = await open({
     multiple: false,
     filters: [
-      { name: "All supported", extensions: ["stl", "3mf", "step", "stp", "obj", "glb"] },
+      { name: t("file.filter.allSupported"), extensions: ["stl", "3mf", "step", "stp", "obj", "glb"] },
       { name: "STL", extensions: ["stl"] },
       { name: "3MF", extensions: ["3mf"] },
       { name: "STEP", extensions: ["step", "stp"] },
@@ -599,11 +605,11 @@ const SLOW_BODY_LIMIT = 3000;
  *  is letting the user discover it as a freeze and conclude the app is broken. */
 export function describeImportCapability(bodies: number): string | null {
   if (!Number.isFinite(bodies) || bodies <= SMOOTH_BODY_LIMIT) return null;
-  const n = bodies.toLocaleString();
-  if (bodies <= SLOW_BODY_LIMIT) {
-    return `Imported ${n} bodies. The 3D view is smooth to about ${SMOOTH_BODY_LIMIT.toLocaleString()} bodies, so orbiting may lag a little. Everything still works.`;
-  }
-  return `Imported ${n} bodies. Expect the 3D view to be slow: measured 27-37 fps at ${SLOW_BODY_LIMIT.toLocaleString()} bodies against 60 at ${SMOOTH_BODY_LIMIT.toLocaleString()}. Modelling, export and printing are unaffected.`;
+  // `count` drives the plural form; `n` is the same number with the locale's
+  // thousands separator, which interpolation would otherwise strip.
+  const params = { count: bodies, n: formatCount(bodies), smooth: formatCount(SMOOTH_BODY_LIMIT), slow: formatCount(SLOW_BODY_LIMIT) };
+  if (bodies <= SLOW_BODY_LIMIT) return t("file.import.manyBodies", params);
+  return t("file.import.tooManyBodies", params);
 }
 
 /** Bodies an import feature will produce: one per assembly leaf, or a single
@@ -612,9 +618,9 @@ export function importedBodyCount(res: { parts?: { node: number; faces: number }
   return res.parts?.length ?? 1;
 }
 
-// Why the sidecar did not fit curved surfaces, in the user's words. Kept as a
-// map so an unknown reason (a sidecar newer than this build) stays SILENT rather
-// than surfacing as a half-sentence about a reason this build cannot name.
+// Why the sidecar did not fit curved surfaces, as locale keys. Kept as a map so
+// an unknown reason (a sidecar newer than this build) stays SILENT rather than
+// surfacing as a half-sentence about a reason this build cannot name.
 //
 // ONLY "checks" IS REACHABLE TODAY. The sidecar's `_fit_surfaces` writes that
 // one reason and no other: a fit that simply found nothing curved returns the
@@ -626,10 +632,10 @@ export function importedBodyCount(res: { parts?: { node: number; faces: number }
 // before shipping it.
 const FIT_SKIP_REASONS: Record<string, string> = {
   // forward compatibility only, see above
-  dense: "This mesh is too dense for me to look for curved surfaces, so every face stayed faceted.",
-  coarse: "This mesh is too coarse to tell a curve from a corner, so every face stayed faceted.",
+  dense: "file.import.fitSkipped.dense",
+  coarse: "file.import.fitSkipped.coarse",
   // the fit built, then failed a geometry gate (volume, watertightness, validity)
-  checks: "I found curved surfaces here, but the rebuilt body did not pass its checks, so I kept the faceted import.",
+  checks: "file.import.fitSkipped.checks",
 };
 
 function isCount(n: number | undefined): n is number {
@@ -656,17 +662,17 @@ function isCount(n: number | undefined): n is number {
  *  and preempting it would replace a true sentence with a false one. */
 export function describeSurfaceFit(res: { fitted?: number; faceted?: number; fitSkipped?: string }): string | null {
   if (isCount(res.fitted) && res.fitted > 0) {
-    const n = res.fitted.toLocaleString();
-    const found = res.fitted === 1 ? `Recognised 1 curved surface.` : `Recognised ${n} curved surfaces.`;
+    const found = t("file.import.recognised", { count: res.fitted, n: formatCount(res.fitted) });
     // A leftover count the sidecar did not send (or sent as nonsense) is not
     // worth guessing at: say what was recognised and stop.
     if (!isCount(res.faceted)) return found;
-    if (res.faceted === 0) return `${found} No faces stayed faceted.`;
-    const m = res.faceted.toLocaleString();
-    const rest = res.faceted === 1 ? `1 face stayed faceted.` : `${m} faces stayed faceted.`;
-    return `${found} ${rest}`;
+    const rest = res.faceted === 0
+      ? t("file.import.noneFaceted")
+      : t("file.import.stayedFaceted", { count: res.faceted, n: formatCount(res.faceted) });
+    return t("file.import.fitSummary", { recognised: found, faceted: rest });
   }
-  return res.fitSkipped ? FIT_SKIP_REASONS[res.fitSkipped] ?? null : null;
+  const key = res.fitSkipped ? FIT_SKIP_REASONS[res.fitSkipped] : undefined;
+  return key ? t(key) : null;
 }
 
 
@@ -677,7 +683,7 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
   // nothing for a Cancel button to attach to. onStarted hands back the request
   // id so a cancel targets this import specifically.
   const res = await store.runBusy(
-    `Importing ${path.split(/[\\/]/).pop() ?? "file"}`,
+    t("file.import.busy", { name: baseName(path) }),
     (onStarted) => geometry.importGeometry(path, fmt, onStarted),
   );
   if (!res.ok) {
@@ -689,7 +695,7 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
       lastCancelledImport = path;
       return;
     }
-    await reportError(`Couldn't import ${path.split(/[\\/]/).pop()}: ${res.message ?? "unreadable file"}`);
+    await reportError(t("file.error.import", { name: baseName(path), reason: res.message ?? t("file.error.unreadableFile") }));
     return;
   }
   lastCancelledImport = null;

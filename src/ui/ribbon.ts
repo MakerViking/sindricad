@@ -4,6 +4,7 @@
 
 import { icon, type IconName } from "./icons";
 import { esc } from "./escape";
+import { t, localeTag } from "../i18n";
 
 export type RibbonContext = "model" | "sketch";
 
@@ -27,6 +28,9 @@ interface SplitItem {
 }
 type Item = ToolItem | SplitItem;
 interface Group {
+  /** Stable identity (collapse priority, pinning, tests key on it); the label
+   *  is translated and must never be used as one. */
+  id: string;
   label: string;
   items: Item[];
 }
@@ -40,103 +44,103 @@ export function leavesOf(it: Item): ToolItem[] {
 
 export const MODEL: Group[] = [
   {
-    label: "CREATE",
+    id: "CREATE", label: t("ribbon.group.create"),
     items: [
-      { action: "sketch", label: "Sketch", iconName: "sketch", key: "S" },
-      { action: "extrude", label: "Extrude", iconName: "extrude", key: "E" },
-      { action: "primitive", label: "Primitive", iconName: "primitive" },
+      { action: "sketch", label: t("tool.sketch"), iconName: "sketch", key: "S" },
+      { action: "extrude", label: t("tool.extrude"), iconName: "extrude", key: "E" },
+      { action: "primitive", label: t("tool.primitive"), iconName: "primitive" },
       {
-        label: "Revolve",
+        label: t("tool.revolve"),
         children: [
-          { action: "revolve", label: "Revolve", iconName: "revolve" },
-          { action: "loft", label: "Loft", iconName: "loft" },
-          { action: "sweep", label: "Sweep", iconName: "sweep" },
+          { action: "revolve", label: t("tool.revolve"), iconName: "revolve" },
+          { action: "loft", label: t("tool.loft"), iconName: "loft" },
+          { action: "sweep", label: t("tool.sweep"), iconName: "sweep" },
         ],
       },
     ],
   },
   {
-    label: "MODIFY",
+    id: "MODIFY", label: t("ribbon.group.modify"),
     items: [
-      { action: "presspull", label: "Press/Pull", iconName: "presspull", key: "Q" },
-      { action: "fillet", label: "Fillet", iconName: "fillet", key: "F" },
-      { action: "chamfer", label: "Chamfer", iconName: "chamfer", key: "B" },
+      { action: "presspull", label: t("tool.presspull"), iconName: "presspull", key: "Q" },
+      { action: "fillet", label: t("tool.fillet"), iconName: "fillet", key: "F" },
+      { action: "chamfer", label: t("tool.chamfer"), iconName: "chamfer", key: "B" },
       {
-        label: "Move",
+        label: t("tool.move"),
         children: [
-          { action: "move", label: "Move", iconName: "move", key: "M" },
-          { action: "scale", label: "Scale", iconName: "scale" },
-          { action: "mirror", label: "Mirror", iconName: "mirror" },
-          { action: "pattern", label: "Pattern", iconName: "pattern" },
+          { action: "move", label: t("tool.move"), iconName: "move", key: "M" },
+          { action: "scale", label: t("tool.scale"), iconName: "scale" },
+          { action: "mirror", label: t("tool.mirror"), iconName: "mirror" },
+          { action: "pattern", label: t("tool.pattern"), iconName: "pattern" },
         ],
       },
       {
-        label: "Combine",
+        label: t("tool.combine"),
         children: [
-          { action: "combine", label: "Combine", iconName: "combine", key: "J" },
-          { action: "split", label: "Split Body", iconName: "split", key: "K" },
+          { action: "combine", label: t("tool.combine"), iconName: "combine", key: "J" },
+          { action: "split", label: t("tool.split"), iconName: "split", key: "K" },
         ],
       },
       {
-        label: "Shell",
+        label: t("tool.shell"),
         children: [
-          { action: "shell", label: "Shell", iconName: "shell" },
-          { action: "draft", label: "Draft", iconName: "draft" },
-          { action: "offset-face", label: "Offset Face", iconName: "offsetFace" },
-          { action: "thicken", label: "Thicken", iconName: "thicken" },
+          { action: "shell", label: t("tool.shell"), iconName: "shell" },
+          { action: "draft", label: t("tool.draft"), iconName: "draft" },
+          { action: "offset-face", label: t("tool.offsetFace"), iconName: "offsetFace" },
+          { action: "thicken", label: t("tool.thicken"), iconName: "thicken" },
         ],
       },
-      { action: "texture", label: "Texture", iconName: "texture" },
-      { action: "text-on-face", label: "Text", iconName: "text" },
-      { action: "change-parameters", label: "Parameters", iconName: "parameters" },
+      { action: "texture", label: t("tool.texture"), iconName: "texture" },
+      { action: "text-on-face", label: t("tool.text"), iconName: "text" },
+      { action: "change-parameters", label: t("tool.parameters"), iconName: "parameters" },
     ],
   },
   {
-    label: "CONSTRUCT",
+    id: "CONSTRUCT", label: t("ribbon.group.construct"),
     items: [
       // These two do the same pick and the same offset gizmo, and the labels do
       // not say that only one of them drops you into a sketch. A reporter who
       // wanted just the plane found Offset Plane, got a sketch he could not get
       // out of, and never knew Datum Plane was the button he wanted (d911463c).
-      { action: "offset-plane", label: "Offset Plane", iconName: "offsetPlane", key: "O",
-        hint: "Creates the plane AND starts a sketch on it." },
-      { action: "datum-plane", label: "Datum Plane", iconName: "datumPlane",
-        hint: "Creates the plane only — no sketch." },
+      { action: "offset-plane", label: t("tool.offsetPlane"), iconName: "offsetPlane", key: "O",
+        hint: t("ribbon.hint.offsetPlane") },
+      { action: "datum-plane", label: t("tool.datumPlane"), iconName: "datumPlane",
+        hint: t("ribbon.hint.datumPlane") },
     ],
   },
   {
-    label: "INSPECT",
+    id: "INSPECT", label: t("ribbon.group.inspect"),
     items: [
-      { action: "measure", label: "Measure", iconName: "measure", key: "I" },
-      { action: "section", label: "Section", iconName: "section" },
+      { action: "measure", label: t("tool.measure"), iconName: "measure", key: "I" },
+      { action: "section", label: t("tool.section"), iconName: "section" },
       {
-        label: "Analyze",
+        label: t("tool.analyze"),
         children: [
-          { action: "properties", label: "Properties", iconName: "properties" },
-          { action: "interference", label: "Interference", iconName: "interference" },
-          { action: "draft-analysis", label: "Overhang", iconName: "draftAnalysis" },
-          { action: "zebra", label: "Zebra", iconName: "zebra" },
-          { action: "curvature", label: "Curvature", iconName: "curvature" },
-          { action: "component-colors", label: "Body Colors", iconName: "componentColors" },
+          { action: "properties", label: t("tool.properties"), iconName: "properties" },
+          { action: "interference", label: t("tool.interference"), iconName: "interference" },
+          { action: "draft-analysis", label: t("tool.overhang"), iconName: "draftAnalysis" },
+          { action: "zebra", label: t("tool.zebra"), iconName: "zebra" },
+          { action: "curvature", label: t("tool.curvature"), iconName: "curvature" },
+          { action: "component-colors", label: t("tool.bodyColors"), iconName: "componentColors" },
         ],
       },
     ],
   },
   {
-    label: "INSERT",
+    id: "INSERT", label: t("ribbon.group.insert"),
     items: [
-      { action: "import", label: "Import Mesh", iconName: "import" },
-      { action: "simplify-mesh", label: "Simplify Mesh", iconName: "simplifyMesh" },
-      { action: "clean-up", label: "Clean Up", iconName: "cleanUp", key: "U" },
-      { action: "compute-all", label: "Compute All", iconName: "computeAll" },
+      { action: "import", label: t("tool.importMesh"), iconName: "import" },
+      { action: "simplify-mesh", label: t("tool.simplifyMesh"), iconName: "simplifyMesh" },
+      { action: "clean-up", label: t("tool.cleanUp"), iconName: "cleanUp", key: "U" },
+      { action: "compute-all", label: t("tool.computeAll"), iconName: "computeAll" },
     ],
   },
   {
-    label: "PRINT",
+    id: "PRINT", label: t("ribbon.group.print"),
     items: [
-      { action: "print-export", label: "Print Project", iconName: "print" },
-      { action: "print-orca", label: "Open in OrcaSlicer", iconName: "slicer" },
-      { action: "print-send", label: "Send to Printer", iconName: "printerSend" },
+      { action: "print-export", label: t("tool.printProject"), iconName: "print" },
+      { action: "print-orca", label: t("tool.openInOrca"), iconName: "slicer" },
+      { action: "print-send", label: t("tool.sendToPrinter"), iconName: "printerSend" },
     ],
   },
 ];
@@ -148,77 +152,77 @@ export const SKETCH: Group[] = [
     // way to select elements in sketch mode" — was reported against a ribbon
     // where the only route back was Escape, and Escape is the third branch of
     // that key's chain, so it can take two presses to reach the tool.
-    label: "SELECT",
-    items: [{ action: "select", label: "Select", iconName: "select", key: "S" }],
+    id: "SELECT", label: t("ribbon.group.select"),
+    items: [{ action: "select", label: t("tool.select"), iconName: "select", key: "S" }],
   },
   {
-    label: "CREATE",
+    id: "CREATE", label: t("ribbon.group.create"),
     items: [
-      { action: "line", label: "Line", iconName: "line", key: "L" },
-      { action: "rectangle", label: "Rectangle", iconName: "rectangle", key: "R" },
-      { action: "centerRectangle", label: "Center Rect", iconName: "centerRectangle" },
-      { action: "circle", label: "Circle", iconName: "circle", key: "C" },
-      { action: "circle2", label: "Circle 2-Pt", iconName: "circle2" },
-      { action: "circle3", label: "Circle 3-Pt", iconName: "circle3" },
-      { action: "arc", label: "Arc", iconName: "arc", key: "A" },
-      { action: "polygon", label: "Polygon", iconName: "polygon" },
-      { action: "slot", label: "Slot", iconName: "slot" },
-      { action: "spline", label: "Spline", iconName: "spline" },
-      { action: "point", label: "Point", iconName: "point" },
-      { action: "text", label: "Text", iconName: "text", key: "T" },
-      { action: "project", label: "Project", iconName: "project", key: "P" },
+      { action: "line", label: t("tool.line"), iconName: "line", key: "L" },
+      { action: "rectangle", label: t("tool.rectangle"), iconName: "rectangle", key: "R" },
+      { action: "centerRectangle", label: t("tool.centerRectangle"), iconName: "centerRectangle" },
+      { action: "circle", label: t("tool.circle"), iconName: "circle", key: "C" },
+      { action: "circle2", label: t("tool.circle2"), iconName: "circle2" },
+      { action: "circle3", label: t("tool.circle3"), iconName: "circle3" },
+      { action: "arc", label: t("tool.arc"), iconName: "arc", key: "A" },
+      { action: "polygon", label: t("tool.polygon"), iconName: "polygon" },
+      { action: "slot", label: t("tool.slot"), iconName: "slot" },
+      { action: "spline", label: t("tool.spline"), iconName: "spline" },
+      { action: "point", label: t("tool.point"), iconName: "point" },
+      { action: "text", label: t("tool.text"), iconName: "text", key: "T" },
+      { action: "project", label: t("tool.project"), iconName: "project", key: "P" },
     ],
   },
   {
-    label: "MODIFY",
+    id: "MODIFY", label: t("ribbon.group.modify"),
     items: [
-      { action: "fillet-sketch", label: "Fillet", iconName: "fillet", key: "F" },
-      { action: "chamfer-sketch", label: "Chamfer", iconName: "chamfer" },
-      { action: "trim", label: "Trim", iconName: "trim", key: "T" },
-      { action: "extend", label: "Extend", iconName: "extend" },
-      { action: "offset", label: "Offset", iconName: "offset", key: "O" },
-      { action: "break", label: "Break", iconName: "break" },
-      { action: "mirror-sketch", label: "Mirror", iconName: "mirror" },
-      { action: "move-sketch", label: "Move", iconName: "move" },
-      { action: "copy-sketch", label: "Copy", iconName: "copy" },
-      { action: "rotate-sketch", label: "Rotate", iconName: "rotate" },
-      { action: "scale-sketch", label: "Scale", iconName: "scale" },
-      { action: "dimension", label: "Dimension", iconName: "dimension", key: "D" },
+      { action: "fillet-sketch", label: t("tool.fillet"), iconName: "fillet", key: "F" },
+      { action: "chamfer-sketch", label: t("tool.chamfer"), iconName: "chamfer" },
+      { action: "trim", label: t("tool.trim"), iconName: "trim", key: "T" },
+      { action: "extend", label: t("tool.extend"), iconName: "extend" },
+      { action: "offset", label: t("tool.offset"), iconName: "offset", key: "O" },
+      { action: "break", label: t("tool.break"), iconName: "break" },
+      { action: "mirror-sketch", label: t("tool.mirror"), iconName: "mirror" },
+      { action: "move-sketch", label: t("tool.move"), iconName: "move" },
+      { action: "copy-sketch", label: t("tool.copy"), iconName: "copy" },
+      { action: "rotate-sketch", label: t("tool.rotate"), iconName: "rotate" },
+      { action: "scale-sketch", label: t("tool.scale"), iconName: "scale" },
+      { action: "dimension", label: t("tool.dimension"), iconName: "dimension", key: "D" },
     ],
   },
   {
-    label: "PATTERN",
+    id: "PATTERN", label: t("ribbon.group.pattern"),
     items: [
-      { action: "patternRect", label: "Rect Pattern", iconName: "patternRect" },
-      { action: "patternCircular", label: "Circular Pat.", iconName: "patternCircular" },
-      { action: "boltCircle", label: "Bolt Circle", iconName: "boltCircle" },
-      { action: "hexHoles", label: "Hex Holes", iconName: "hexHoles" },
-      { action: "honeycomb", label: "Honeycomb", iconName: "honeycomb" },
-      { action: "gridHoles", label: "Grid Holes", iconName: "gridHoles" },
+      { action: "patternRect", label: t("tool.patternRect"), iconName: "patternRect" },
+      { action: "patternCircular", label: t("ribbon.abbrev.patternCircular"), iconName: "patternCircular" },
+      { action: "boltCircle", label: t("tool.boltCircle"), iconName: "boltCircle" },
+      { action: "hexHoles", label: t("tool.hexHoles"), iconName: "hexHoles" },
+      { action: "honeycomb", label: t("tool.honeycomb"), iconName: "honeycomb" },
+      { action: "gridHoles", label: t("tool.gridHoles"), iconName: "gridHoles" },
     ],
   },
   {
-    label: "CONSTRAINTS",
+    id: "CONSTRAINTS", label: t("ribbon.group.constraints"),
     items: [
       // TOP LEVEL, not inside the split. A tester asked where Sweep and Loft
       // were while both sat behind a caret; a tool whose whole job is to tell
       // you what is wrong with your profile cannot be the one that hides.
-      { action: "check-sketch", label: "Check", iconName: "properties" },
+      { action: "check-sketch", label: t("tool.checkSketch"), iconName: "properties" },
       {
-        label: "Constrain",
+        label: t("tool.constrain"),
         children: [
-          { action: "horizontal", label: "Horizontal", iconName: "horizontal" },
-          { action: "vertical", label: "Vertical", iconName: "vertical" },
-          { action: "parallel", label: "Parallel", iconName: "parallel" },
-          { action: "perpendicular", label: "Perpendic.", iconName: "perpendicular" },
-          { action: "equal", label: "Equal", iconName: "equal" },
-          { action: "tangent", label: "Tangent", iconName: "tangent" },
-          { action: "coincident", label: "Coincident", iconName: "coincident" },
-          { action: "concentric", label: "Concentric", iconName: "concentric" },
-          { action: "midpoint", label: "Midpoint", iconName: "midpoint" },
-          { action: "collinear", label: "Collinear", iconName: "collinear" },
-          { action: "symmetric", label: "Symmetric", iconName: "symmetric" },
-          { action: "fix", label: "Fix", iconName: "fix" },
+          { action: "horizontal", label: t("tool.horizontal"), iconName: "horizontal" },
+          { action: "vertical", label: t("tool.vertical"), iconName: "vertical" },
+          { action: "parallel", label: t("tool.parallel"), iconName: "parallel" },
+          { action: "perpendicular", label: t("ribbon.abbrev.perpendicular"), iconName: "perpendicular" },
+          { action: "equal", label: t("tool.equal"), iconName: "equal" },
+          { action: "tangent", label: t("tool.tangent"), iconName: "tangent" },
+          { action: "coincident", label: t("tool.coincident"), iconName: "coincident" },
+          { action: "concentric", label: t("tool.concentric"), iconName: "concentric" },
+          { action: "midpoint", label: t("tool.midpoint"), iconName: "midpoint" },
+          { action: "collinear", label: t("tool.collinear"), iconName: "collinear" },
+          { action: "symmetric", label: t("tool.symmetric"), iconName: "symmetric" },
+          { action: "fix", label: t("tool.fix"), iconName: "fix" },
         ],
       },
     ],
@@ -241,6 +245,7 @@ export const PINNED = new Set(["SELECT", "PALETTE", "FINISH"]);
 
 interface GroupMeta {
   el: HTMLElement;
+  id: string;
   label: string;
   items: Item[];
   priority: number;
@@ -312,8 +317,8 @@ export class Ribbon {
 
     const overflowBtn = document.createElement("button");
     overflowBtn.className = "ribbon-overflow hidden";
-    overflowBtn.title = "More tools";
-    overflowBtn.setAttribute("aria-label", "More tools");
+    overflowBtn.title = t("ribbon.moreTools");
+    overflowBtn.setAttribute("aria-label", t("ribbon.moreTools"));
     overflowBtn.innerHTML = icon("overflow");
     overflowBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -325,17 +330,17 @@ export class Ribbon {
       const spacer = document.createElement("div");
       spacer.className = "ribbon-spacer";
       el.appendChild(spacer);
-      add({ label: "PALETTE", items: [{ action: "palette", label: "Sketch Palette", iconName: "palette", kind: "toggle" }] });
+      add({ id: "PALETTE", label: t("ribbon.group.palette"), items: [{ action: "palette", label: t("tool.sketchPalette"), iconName: "palette", kind: "toggle" }] });
       add({
-        label: "FINISH",
+        id: "FINISH", label: t("ribbon.group.finish"),
         items: [
           // A sketch had no exit that wasn't a commit: Escape only drops back to
           // the select tool, and every 3D command finishes the sketch first. Two
           // reporters entered a sketch by accident (Offset Plane opens one) and
           // could only get out by committing it (d911463c, 40c85f97).
-          { action: "cancel-sketch", label: "Cancel Sketch", iconName: "close",
-            hint: "Leave the sketch and discard it. An offset plane you just made stays." },
-          { action: "finish", label: "Finish Sketch", iconName: "check", kind: "finish" },
+          { action: "cancel-sketch", label: t("tool.cancelSketch"), iconName: "close",
+            hint: t("ribbon.hint.cancelSketch") },
+          { action: "finish", label: t("tool.finishSketch"), iconName: "check", kind: "finish" },
         ],
       });
     }
@@ -357,10 +362,11 @@ export class Ribbon {
     group.append(tools, label);
     return {
       el: group,
+      id: g.id,
       label: g.label,
       items: g.items,
-      priority: PINNED.has(g.label) ? Infinity : (PRIORITY[g.label] ?? 50),
-      pinned: PINNED.has(g.label),
+      priority: PINNED.has(g.id) ? Infinity : (PRIORITY[g.id] ?? 50),
+      pinned: PINNED.has(g.id),
       splitSync,
     };
   }
@@ -370,7 +376,7 @@ export class Ribbon {
     btn.className = "ribbon-btn";
     if (it.kind === "finish") btn.classList.add("finish");
     btn.dataset.action = it.action;
-    const base = it.key ? `${it.label} (${it.key})` : it.label;
+    const base = it.key ? t("ribbon.toolWithKey", { label: it.label, key: it.key }) : it.label;
     btn.title = it.hint ? `${base}\n${it.hint}` : base;
     btn.innerHTML = `${icon(it.iconName)}<span>${esc(it.label)}</span>`;
     btn.addEventListener("click", () => this.onAction?.(it.action));
@@ -397,11 +403,12 @@ export class Ribbon {
     const others = () => children.filter((c) => c !== primary).map((c) => c.label);
     const apply = () => {
       btn.dataset.action = primary.action;
-      const base = primary.key ? `${primary.label} (${primary.key})` : primary.label;
+      const base = primary.key ? t("ribbon.toolWithKey", { label: primary.label, key: primary.key }) : primary.label;
       const rest = others();
-      btn.title = rest.length ? `${base}\nAlso here: ${rest.join(", ")}` : base;
+      const alsoHere = rest.length ? t("ribbon.alsoHere", { tools: new Intl.ListFormat(localeTag(), { type: "unit", style: "short" }).format(rest) }) : "";
+      btn.title = alsoHere ? `${base}\n${alsoHere}` : base;
       btn.innerHTML = `${icon(primary.iconName)}<span>${esc(primary.label)}</span>`;
-      const label = rest.length ? `Also here: ${rest.join(", ")}` : `More ${it.label} tools`;
+      const label = alsoHere || t("ribbon.moreFamilyTools", { name: it.label });
       arrow.title = label;
       arrow.setAttribute("aria-label", label);
     };

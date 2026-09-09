@@ -6,7 +6,7 @@
 // end-to-end effect (the sketch actually solving clean again afterwards) is in
 // dimEditConflict.test.ts, against the real solver.
 import { describe, it, expect } from "vitest";
-import { CONSTRAINT_NAMES, dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
+import { CONSTRAINT_NAME_KEYS, constraintName, dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { getUnit, setUnit } from "../ui/units";
 import type { SketchConstraint } from "../types";
 
@@ -139,7 +139,8 @@ describe("dimConflictMsg", () => {
   // type joins the union without a name, so this only guards against a name that
   // is present but useless.
   it("has a usable human name for every constraint type", () => {
-    for (const [type, name] of Object.entries(CONSTRAINT_NAMES)) {
+    for (const type of Object.keys(CONSTRAINT_NAME_KEYS) as (keyof typeof CONSTRAINT_NAME_KEYS)[]) {
+      const name = constraintName(type);
       expect(name.length, `${type} has no name`).toBeGreaterThan(0);
       expect(name, `${type}'s name is still the raw type`).not.toBe(type);
       expect(name[0], `${type}'s name should read as a label`).toBe(name[0]!.toUpperCase());

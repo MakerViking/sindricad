@@ -21,6 +21,7 @@ import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT } from "../viewport/colors3d";
+import { t } from "../i18n";
 
 type Phase = "pick" | "drag";
 type Kind = "fillet" | "chamfer";
@@ -106,8 +107,8 @@ export class EdgeFeatureTool {
 
   private get field() {
     return this.kind === "fillet"
-      ? { name: "radius", label: "R" }
-      : { name: "distance", label: "D" };
+      ? { name: "radius", label: t("feature.dim.radius") }
+      : { name: "distance", label: t("feature.dim.distance") };
   }
 
   /** Show the tool's instruction line, remembering it: a kernel refusal is
@@ -133,7 +134,7 @@ export class EdgeFeatureTool {
     const text = err ? featureErrorText(err, result.bodies) : null;
     if (text === this.failureText) return;
     this.failureText = text;
-    setPrompt(text ? `⚠ ${this.kind} failed: ${text}` : this.basePrompt);
+    setPrompt(text ? t(`feature.edge.previewFailed.${this.kind}`, { text }) : this.basePrompt);
   }
 
   start(kind: Kind, onDone: (id: string | null) => void) {
@@ -163,7 +164,7 @@ export class EdgeFeatureTool {
     if (pre.length) {
       this.beginDrag(pre, this.anchorFromSelectors(pre), null);
     } else {
-      this.prompt(`Select an edge to ${kind} (Ctrl-click first to pre-select several)`);
+      this.prompt(t(`feature.edge.pick.${kind}`));
     }
   }
 
@@ -203,7 +204,7 @@ export class EdgeFeatureTool {
     el.addEventListener("pointerdown", this.boundDown, true);
     el.addEventListener("pointerup", this.boundUp);
     window.addEventListener("keydown", this.boundKey, true);
-    this.prompt("Rolling back to edit… (later features are hidden while editing)");
+    this.prompt(t("feature.rollingBack"));
 
     // Roll the model to just before the feature; the NEXT completed build shows
     // the sharp member edges, which we snapshot as ghosts before pushing the
@@ -379,10 +380,7 @@ export class EdgeFeatureTool {
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
-    this.prompt(
-      `Editing ${this.kind}: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · ` +
-        `Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)`,
-    );
+    this.prompt(t(`feature.edge.editPrompt.${this.kind}`));
     if (!this.raf) this.raf = requestAnimationFrame(this.boundTick);
   }
 
@@ -558,10 +556,7 @@ export class EdgeFeatureTool {
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ [this.field.name]: this.value });
-    this.prompt(
-      `Drag the arrow to set ${this.field.name} (hold Ctrl for fine steps) · type a value + Enter · ` +
-        `click edges to add/remove them · click empty space to commit · Esc to cancel`,
-    );
+    this.prompt(t(`feature.edge.dragPrompt.${this.field.name}`));
     this.pushPreview();
     this.raf = requestAnimationFrame(this.boundTick);
   }
@@ -637,20 +632,17 @@ export class EdgeFeatureTool {
    *  no edges would just error every rebuild). */
   private afterMembershipChange() {
     const sels = this.currentSelectors();
-    const verb = this.editId ? "Editing" : "Creating";
+    const mode = this.editId ? "editing" : "creating";
     if (sels.length) {
       this.anchor.copy(this.anchorFromSelectors(sels));
       this.axis.copy(this.computeAxis());
       this.quat.setFromUnitVectors(Y_AXIS, this.axis);
       this.pushPreview();
-      this.prompt(
-        `${verb} ${this.kind}: ${sels.length} edge${sels.length === 1 ? "" : "s"} · click edges to add/remove · ` +
-          `Enter/click empty space to ${this.editId ? "apply" : "commit"} · Esc to cancel`,
-      );
+      this.prompt(t(`feature.edge.members.${mode}.${this.kind}`, { count: sels.length }));
     } else {
       if (this.editId) this.store.setEditPreview(null);
       else this.store.setPreview(null);
-      this.prompt(`No edges selected — click an edge to add one · Esc to cancel`);
+      this.prompt(t("feature.edge.noEdges"));
     }
   }
 
@@ -669,7 +661,7 @@ export class EdgeFeatureTool {
     if (v != null) this.value = v;
     if (this.value < 1e-3) return this.cancel(); // ignore zero
     if (this.currentSelectors().length === 0) {
-      this.prompt("No edges selected — click an edge to add one · Esc to cancel");
+      this.prompt(t("feature.edge.noEdges"));
       return; // deleting is an explicit timeline action, not an implicit empty commit
     }
     const feature = this.buildFeature();

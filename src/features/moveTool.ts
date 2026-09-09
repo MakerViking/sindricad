@@ -14,6 +14,7 @@ import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_HOT as HOT } from "../viewport/colors3d";
+import { t } from "../i18n";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const AXES = [
@@ -77,13 +78,11 @@ export class MoveTool {
     window.addEventListener("keydown", this.boundKey, true);
 
     this.buildGizmo();
-    this.dim.show([{ name: "move", label: "Move", kind: "length" }], () => this.commit(), () => this.cancel());
+    this.dim.show([{ name: "move", label: t("tool.move"), kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ move: 0 });
-    setPrompt(
-      "Drag an axis arrow to move the selected bodies · type a value · Enter to commit · Esc to cancel",
-    );
+    setPrompt(t("feature.move.prompt"));
     this.raf = requestAnimationFrame(this.boundTick);
   }
 

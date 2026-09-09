@@ -63,6 +63,16 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **SindriCAD can now be translated.** Every label, menu, tooltip, dialog and
+  message goes through a locale catalogue (`locales/en.json`), with English as
+  the fallback for anything a translation lacks. Edit → Settings… picks the
+  language; the app follows the system language on first run. A pseudo-locale
+  is included for finding hardcoded or clipped text. Errors from the geometry
+  engine and the shell that carry a stable code are translated by code; the
+  rest stay in English. Bug reports now record the language they were filed
+  from, and the reporter has a "translation" category that captures the string
+  you were pointing at. How to add a language: `locales/README.md`.
+
 - **Sketch dimensions can be locked.** Right-click any dimension badge and
   choose Lock dimension: it becomes a driving dimension at the value it already
   shows, and the geometry stops drifting out from under it. This works on a

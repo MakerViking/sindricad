@@ -13,6 +13,7 @@
 
 import { listen } from "@tauri-apps/api/event";
 import type { Viewport } from "../viewport/viewport";
+import { t } from "../i18n";
 
 export interface Motion { tx: number; ty: number; tz: number; rx: number; ry: number; rz: number }
 const ZERO: Motion = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
@@ -20,13 +21,18 @@ const ZERO: Motion = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0 };
 export type AxisName = "tx" | "ty" | "tz" | "rx" | "ry" | "rz";
 export const AXIS_NAMES: AxisName[] = ["tx", "ty", "tz", "rx", "ry", "rz"];
 export const AXIS_LABELS: Record<AxisName, string> = {
-  tx: "Slide ←→ (Tx)", ty: "Push/pull (Ty)", tz: "Lift ↑↓ (Tz)",
-  rx: "Tilt/pitch (Rx)", ry: "Tilt sideways/roll (Ry)", rz: "Twist (Rz)",
+  tx: t("settings.spaceMouse.axis.tx"), ty: t("settings.spaceMouse.axis.ty"), tz: t("settings.spaceMouse.axis.tz"),
+  rx: t("settings.spaceMouse.axis.rx"), ry: t("settings.spaceMouse.axis.ry"), rz: t("settings.spaceMouse.axis.rz"),
 };
 
 export type ActionName = "panX" | "panY" | "zoom" | "orbitAz" | "orbitPolar" | "roll";
 export const ACTION_LABELS: Record<ActionName, string> = {
-  panX: "Pan ←→", panY: "Pan ↑↓", zoom: "Zoom", orbitAz: "Rotate ←→", orbitPolar: "Rotate ↑↓", roll: "Roll ↻",
+  panX: t("settings.spaceMouse.action.panX"),
+  panY: t("settings.spaceMouse.action.panY"),
+  zoom: t("settings.spaceMouse.action.zoom"),
+  orbitAz: t("settings.spaceMouse.action.orbitAz"),
+  orbitPolar: t("settings.spaceMouse.action.orbitPolar"),
+  roll: t("settings.spaceMouse.action.roll"),
 };
 
 export interface AxisBinding { src: AxisName; invert: boolean }

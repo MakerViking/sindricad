@@ -9,6 +9,7 @@ import type { Plane3 } from "../types";
 import { contextMenu, type CtxItem } from "./menu";
 import { icon, type IconName } from "./icons";
 import { esc } from "./escape";
+import { t, localeTag } from "../i18n";
 
 /** Palette → menu items for assigning a body's color slot. Shared by the
  *  browser-tree row menu and the viewport's right-click body menu so the two
@@ -22,7 +23,7 @@ export function bodyColorMenuItems(store: DocumentStore, bodyId: string): CtxIte
       disabled: slot === i,
       onClick: () => store.setBodyColorSlot(bodyId, i),
     })),
-    { label: "None", disabled: slot == null, onClick: () => store.setBodyColorSlot(bodyId, null) },
+    { label: t("common.none"), disabled: slot == null, onClick: () => store.setBodyColorSlot(bodyId, null) },
   ];
 }
 
@@ -91,7 +92,7 @@ export function buildAssemblyGroups(
       const key = `n:${featureId}/${index}`;
       let next = byKey.get(key);
       if (!next) {
-        next = { key, label: nodes[index]!.name || "Part", children: [], bodies: [], total: 0 };
+        next = { key, label: nodes[index]!.name || t("browser.unnamedPart"), children: [], bodies: [], total: 0 };
         byKey.set(key, next);
         siblings.push(next);
       }
@@ -261,16 +262,16 @@ export class BrowserTree {
     // position away — so every eye toggle used to jump the panel back to the top
     // (main.ts calls refresh() on each one, bypassing the signature guard).
     const scroll = this.el.scrollTop;
-    this.el.innerHTML = `<div class="panel-title">Browser</div>`;
+    this.el.innerHTML = `<div class="panel-title" data-i18n="browser.title">${esc(t("browser.title"))}</div>`;
 
     // --- Origin ---
-    this.folder("Origin", "origin", [
+    this.folder("Origin", t("browser.folder.origin"), "origin", [
       ...(["XY", "XZ", "YZ"] as Plane3[]).map((p) => ({
-        label: `${p} plane`,
+        label: t("browser.originPlane", { plane: p }),
         icon: "plane" as const,
         dim: true,
         onClick: () => this.onSketchOnPlane?.(p),
-        title: `Start a sketch on the ${p} plane`,
+        title: t("browser.originPlaneTitle", { plane: p }),
       })),
     ]);
 
@@ -278,6 +279,7 @@ export class BrowserTree {
     if (datums.length) {
       this.folder(
         "Planes",
+        t("browser.folder.planes"),
         "plane",
         datums.map((f, i) => ({
           label: planeLabel(f as { name?: string }, i),
@@ -287,11 +289,12 @@ export class BrowserTree {
           visible: this.isPlaneVisible?.(f.id) ?? true,
           onClick: () => this.onSelect?.(f.id),
           onToggleVis: this.onTogglePlane ? () => this.onTogglePlane!(f.id) : undefined,
-          extraMenu: [{ label: "Cut all bodies", onClick: () => this.onCutPlane?.(f.id) }],
+          extraMenu: [{ label: t("context.cutAllBodies"), onClick: () => this.onCutPlane?.(f.id) }],
           rename: this.onRenamePlane ? (name: string) => this.onRenamePlane!(f.id, name) : undefined,
           onDelete: this.onDeletePlane ? () => this.onDeletePlane!(f.id) : undefined,
-          title: "Construction plane — select then Split Body cuts by it · right-click for Cut / Rename / Delete · eye to show/hide",
+          title: t("browser.planeTitle"),
         })),
+        t("browser.empty.planes"),
       );
     }
 
@@ -309,18 +312,18 @@ export class BrowserTree {
         visible: this.isBodyVisible?.(b.id) ?? true,
         onClick: (e: MouseEvent) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
         onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
-        extraMenu: [{ label: "Color", children: bodyColorMenuItems(this.store, b.id) }],
+        extraMenu: [{ label: t("context.color"), children: bodyColorMenuItems(this.store, b.id) }],
         rename: this.onRenameBody ? (name: string) => this.onRenameBody!(b.id, name) : undefined,
         onDelete: this.onDeleteBody ? () => this.onDeleteBody!(b.id) : undefined,
-        title: "Click to select (Ctrl+click adds) · double-click to rename · right-click for Color / Rename / Delete · eye to show/hide",
+        title: t("browser.bodyTitle"),
       };
     };
     this.bodyAncestors.clear();
     const groups = this.assemblyGroups(bodies, doc);
     if (!groups) {
       // no imported assembly tree in this document — exactly the flat list as before
-      this.folder("Bodies", "body", bodies.map(bodyItem));
-    } else if (!this.renderHead("f:Bodies", "Bodies", "body", bodies.length, 0)) {
+      this.folder("Bodies", t("browser.folder.bodies"), "body", bodies.map(bodyItem), t("browser.empty.bodies"));
+    } else if (!this.renderHead("f:Bodies", t("browser.folder.bodies"), "body", bodies.length, 0)) {
       for (const b of groups.loose) this.renderRow(bodyItem(b), 0);
       for (const n of groups.roots) this.renderAssemblyNode(n, 0, bodyItem);
     }
@@ -328,6 +331,7 @@ export class BrowserTree {
     // --- Sketches ---
     this.folder(
       "Sketches",
+      t("browser.folder.sketches"),
       "sketch",
       sketches.map((f, i) => ({
         label: sketchLabel(f as { name?: string }, i),
@@ -340,8 +344,9 @@ export class BrowserTree {
         onToggleVis: this.onToggleSketch ? () => this.onToggleSketch!(f.id) : undefined,
         rename: this.onRenameSketch ? (name: string) => this.onRenameSketch!(f.id, name) : undefined,
         onDelete: this.onDeleteSketch ? () => this.onDeleteSketch!(f.id) : undefined,
-        title: "Double-click to edit · right-click for Edit / Rename / Delete · eye to show/hide",
+        title: t("browser.sketchTitle"),
       })),
+      t("browser.empty.sketches"),
     );
 
     if (scroll) this.el.scrollTop = scroll;
@@ -368,14 +373,15 @@ export class BrowserTree {
         : stale
           ? "var(--warn)"
           : "var(--ok)";
+    const staleList = new Intl.ListFormat(localeTag(), { type: "unit", style: "narrow" }).format([...this.staleSlots].map((i) => String(i + 1)));
     const dotTitle = stale
-      ? `Printer filaments changed since sync (slot${this.staleSlots.size > 1 ? "s" : ""} ${[...this.staleSlots].map((i) => i + 1).join(", ")}) — click the sync button to re-sync`
-      : "Printer connection";
+      ? t("browser.palette.stale", { count: this.staleSlots.size, slots: staleList })
+      : t("browser.palette.printerConnection");
     head.innerHTML =
-      `<span class="tree-caret">${icon(collapsed ? "caretRight" : "caretDown")}</span><span class="feature-icon">${icon("palette")}</span><span>Palette</span>` +
+      `<span class="tree-caret">${icon(collapsed ? "caretRight" : "caretDown")}</span><span class="feature-icon">${icon("palette")}</span><span data-i18n="browser.folder.palette">${esc(t("browser.folder.palette"))}</span>` +
       `<span style="flex:1"></span>` +
       `<span class="pal-dot" title="${esc(dotTitle)}" style="width:8px;height:8px;border-radius:50%;background:${dotColor};display:inline-block;margin-right:6px"></span>` +
-      `<button class="pal-sync" title="Sync filaments from printer">${icon("printerSync")}</button>` +
+      `<button class="pal-sync" title="${esc(t("browser.palette.sync"))}" data-i18n-title="browser.palette.sync">${icon("printerSync")}</button>` +
       `<span class="tree-count">${pal.length}</span>`;
     head.addEventListener("click", (e) => {
       // the sync button lives in the header but must not also toggle the folder
@@ -391,7 +397,9 @@ export class BrowserTree {
     pal.forEach((slot, i) => {
       const row = document.createElement("div");
       row.className = "feature-row tree-child";
-      row.title = `Filament slot ${i + 1} → toolhead ${i + 1}${slot.material ? ` (${slot.material})` : ""}`;
+      row.title = slot.material
+        ? t("browser.palette.slotTitleMaterial", { n: i + 1, material: slot.material })
+        : t("browser.palette.slotTitle", { n: i + 1 });
       row.innerHTML =
         `<input type="color" value="${esc(slot.color)}" class="pal-swatch" style="width:18px;height:18px;border:none;background:none;padding:0;cursor:pointer;vertical-align:middle">` +
         `<span class="tree-label" style="margin-left:7px">${esc(slot.name)}</span>` +
@@ -472,7 +480,7 @@ export class BrowserTree {
       this.printerOnline = false;
       this.render();
       const pe = asPrinterError(e);
-      toast(pe ? `Can't reach the printer: ${pe.message}` : `Printer error: ${String(e)}`, { kind: "error" });
+      toast(pe ? t("browser.palette.cantReach", { message: pe.message }) : t("browser.palette.printerError", { error: String(e) }), { kind: "error" });
       return;
     }
     this.printerOnline = true;
@@ -485,7 +493,7 @@ export class BrowserTree {
     );
     if (!proposed.some(Boolean)) {
       this.render();
-      toast("No filament loaded on the printer.", { kind: "info" });
+      toast(t("browser.palette.noFilament"), { kind: "info" });
       return;
     }
 
@@ -493,13 +501,13 @@ export class BrowserTree {
       const { choose } = await import("./choice");
       const cur = this.store.colorPalette;
       const diff = proposed
-        .map((p, i) => (p && (cur[i]?.name !== p.name || cur[i]?.color !== p.color) ? `Slot ${i + 1}: ${cur[i]?.name ?? "—"} → ${p.name}` : null))
+        .map((p, i) => (p && (cur[i]?.name !== p.name || cur[i]?.color !== p.color) ? t("browser.palette.diffLine", { n: i + 1, from: cur[i]?.name ?? "—", to: p.name }) : null))
         .filter(Boolean) as string[];
       const go = await choose<"apply" | "cancel">(
-        diff.length ? `Overwrite palette from printer?\n${diff.join("\n")}` : "Sync palette from printer?",
+        diff.length ? [t("browser.palette.overwriteQuestion"), ...diff].join("\n") : t("browser.palette.syncQuestion"),
         [
-          { value: "apply", label: "Overwrite", hint: `${diff.length} slot${diff.length === 1 ? "" : "s"}` },
-          { value: "cancel", label: "Cancel" },
+          { value: "apply", label: t("browser.palette.overwrite"), hint: t("browser.palette.slotCount", { count: diff.length }) },
+          { value: "cancel", label: t("common.cancel") },
         ],
       );
       if (go !== "apply") {
@@ -511,11 +519,15 @@ export class BrowserTree {
     this.store.applyFilamentSync(proposed);
     this.staleSlots.clear(); // palette now matches the printer by construction
     this.render();
-    toast("Palette synced from printer.", { kind: "info" });
+    toast(t("browser.palette.synced"), { kind: "info" });
   }
 
+  /** `name` is the collapse-state key (stable, English); `label` is what the
+   *  head shows; `emptyText` is the row painted when the folder has no items
+   *  (omit for a folder that is never empty). */
   private folder(
     name: string,
+    label: string,
     folderIcon: IconName,
     items: {
       id?: string; // stable id — registers a programmatic-rename hook (beginRename)
@@ -534,13 +546,14 @@ export class BrowserTree {
       onDelete?: (() => void) | undefined; // "Delete" action
       extraMenu?: CtxItem[]; // prepended menu items (e.g. Cut all bodies, Color ▸)
     }[],
+    emptyText?: string,
   ) {
     const key = `f:${name}`;
-    if (this.renderHead(key, name, folderIcon, items.length, 0)) return;
+    if (this.renderHead(key, label, folderIcon, items.length, 0)) return;
     if (items.length === 0) {
       const empty = document.createElement("div");
       empty.className = "empty-state tree-child";
-      empty.textContent = name === "Bodies" ? "No bodies yet" : `No ${name.toLowerCase()} yet`;
+      empty.textContent = emptyText ?? "";
       this.el.appendChild(empty);
       return;
     }
@@ -644,7 +657,7 @@ export class BrowserTree {
       `<span style="flex:1"></span>` +
       `<span class="tree-count">${count || ""}</span>` +
       (onToggleVis
-        ? `<span class="tree-eye" role="button" aria-label="${visible === false ? "Show" : "Hide"}" aria-pressed="${visible === false}" title="Show/hide">${icon(visible === false ? "eyeClosed" : "eyeOpen")}</span>`
+        ? `<span class="tree-eye" role="button" aria-label="${esc(visible === false ? t("common.show") : t("common.hide"))}" aria-pressed="${visible === false}" title="${esc(t("common.showHide"))}">${icon(visible === false ? "eyeClosed" : "eyeOpen")}</span>`
         : "");
     head.addEventListener("click", () => this.toggle(key));
     if (onToggleVis) {
@@ -700,7 +713,7 @@ export class BrowserTree {
         swatch +
         `<span class="tree-label"${hidden ? ' style="opacity:.45"' : ""}>${esc(it.label)}</span>` +
         `<span style="flex:1"></span>` +
-        (it.onToggleVis ? `<span class="tree-eye" role="button" aria-label="${it.visible === false ? "Show" : "Hide"} ${esc(it.label)}" aria-pressed="${it.visible === false}" title="Show/hide">${icon(it.visible === false ? "eyeClosed" : "eyeOpen")}</span>` : "");
+        (it.onToggleVis ? `<span class="tree-eye" role="button" aria-label="${esc(t(it.visible === false ? "browser.showNamed" : "browser.hideNamed", { name: it.label }))}" aria-pressed="${it.visible === false}" title="${esc(t("common.showHide"))}">${icon(it.visible === false ? "eyeClosed" : "eyeOpen")}</span>` : "");
 
       // inline rename bound to THIS row's label element
       const labelEl = row.querySelector(".tree-label") as HTMLElement;
@@ -712,9 +725,9 @@ export class BrowserTree {
       // structured right-click menu: [extra…] · Edit · Rename · Delete
       const menu: CtxItem[] = [];
       if (it.extraMenu) menu.push(...it.extraMenu);
-      if (it.onEdit) menu.push({ label: "Edit", onClick: it.onEdit });
-      if (startRename) menu.push({ label: "Rename", onClick: startRename });
-      if (it.onDelete) menu.push({ label: "Delete", onClick: it.onDelete });
+      if (it.onEdit) menu.push({ label: t("common.edit"), onClick: it.onEdit });
+      if (startRename) menu.push({ label: t("common.rename"), onClick: startRename });
+      if (it.onDelete) menu.push({ label: t("common.delete"), onClick: it.onDelete });
 
       if (it.onClick) row.addEventListener("click", (e) => it.onClick!(e));
       // double-click: Edit if available, else Rename

@@ -15,6 +15,7 @@
 // horizontal/vertical rules, so a rectangle (drawn or loaded) stays rectangular
 // under dragging while remaining a single atomic entity in the document.
 
+import { t } from "../i18n";
 import type { ResolvedEntity } from "./snap";
 import { solveSketch, type SConstraint, type SPoint, type SLine, type SCircle, type SArc, type SolveInput, type SolveResult } from "./solver";
 import { circumcenter } from "./arc";
@@ -54,8 +55,7 @@ const TANGENT_TOL = 1e-3;
  *  created against. Deliberately NOT the generic "that conflicts with the ones
  *  already on this sketch": nothing conflicts, there is simply no solution left
  *  that touches the segment the user drew. */
-export const TANGENT_SPAN_MSG =
-  "I could not keep that circle touching the edge it is tangent to, so this constraint was not applied. The only solutions I found move the touch point off that edge.";
+export const TANGENT_SPAN_MSG = t("sketch.constraint.tangentSpan");
 
 export interface SolvePass {
   entities: ResolvedEntity[];

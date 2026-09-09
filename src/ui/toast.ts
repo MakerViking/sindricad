@@ -13,6 +13,7 @@ export interface ToastOptions {
 
 import { crumb } from "../diagnostics/breadcrumbs";
 import { icon } from "./icons";
+import { sourceOf } from "../i18n";
 
 let stack: HTMLDivElement | null = null;
 
@@ -28,7 +29,11 @@ function ensureStack(): HTMLDivElement {
 export function toast(message: string, opts: ToastOptions = {}) {
   const host = ensureStack();
   const kind = opts.kind ?? "info";
-  crumb(`[${kind}] ${message}`); // toasts double as bug-report breadcrumbs
+  // Toasts double as bug-report breadcrumbs. The crumb is the ENGLISH text plus
+  // the key, never the translation, so support can grep a report from any
+  // locale; text that did not come through t() is logged as shown.
+  const src = sourceOf(message);
+  crumb(src ? `[${kind}] ${src.english} <${src.key}>` : `[${kind}] ${message}`);
   // keep the stack short — oldest goes first
   while (host.children.length >= 3) host.firstElementChild?.remove();
 

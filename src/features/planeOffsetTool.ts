@@ -15,6 +15,7 @@ import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT } from "../viewport/colors3d";
+import { t } from "../i18n";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 
@@ -81,7 +82,7 @@ export class PlaneOffsetTool {
 
     this.buildGizmo();
     this.buildGhost();
-    this.dim.show([{ name: "offset", label: "Offset", kind: "length" }], () => this.commit(), () => this.cancel());
+    this.dim.show([{ name: "offset", label: t("tool.offset"), kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.raf = requestAnimationFrame(this.boundTick);
@@ -93,9 +94,7 @@ export class PlaneOffsetTool {
     this.onDone = onDone;
     this.begin(src, 0);
     this.dim.updateFromCursor({ offset: 0 });
-    setPrompt(
-      "Drag the arrow to set the offset · type a value · Enter to sketch on the plane · Esc to cancel",
-    );
+    setPrompt(t("feature.planeOffset.dragPrompt"));
   }
 
   /** Re-open a committed offset plane so it can be MOVED.
@@ -150,9 +149,7 @@ export class PlaneOffsetTool {
     // deliberately drags the handle or retypes, or the first pointer move would
     // wipe the value they came here to adjust.
     this.dim.seed("offset", offset);
-    setPrompt(
-      "Drag the arrow to move this plane · type a value · Enter to apply · Esc to cancel",
-    );
+    setPrompt(t("feature.planeOffset.editPrompt"));
     return true;
   }
 

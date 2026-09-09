@@ -21,14 +21,13 @@ import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT as HANDLE_IN } from "../viewport/colors3d";
+import { t } from "../i18n";
 
 export type FaceOffsetMode = "offsetFace" | "thicken";
 
 type Phase = "pick" | "drag";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-
-const LABEL: Record<FaceOffsetMode, string> = { offsetFace: "Offset Face", thicken: "Thicken" };
 
 export class FaceOffsetTool {
   active = false;
@@ -90,7 +89,7 @@ export class FaceOffsetTool {
 
     const pre = this.viewport.selectedFacesForPressPull();
     if (pre) this.beginDrag(pre.selectors, pre.faceIds, pre.anchor, pre.normal, pre.bodyId);
-    else setPrompt(`Select a face to ${LABEL[mode]} (Ctrl+click adds more)`);
+    else setPrompt(t(`feature.faceOffset.pick.${mode}`));
   }
 
   private onMove(e: PointerEvent) {
@@ -183,9 +182,13 @@ export class FaceOffsetTool {
   }
 
   private prompt() {
-    const n = this.faces.length > 1 ? `${this.faces.length} faces — ` : "";
-    const sym = this.mode === "thicken" ? ` · S = symmetric${this.symmetric ? " (on)" : ""}` : "";
-    setPrompt(`${n}drag the arrow or type a distance${sym} · click empty space to commit · Esc to cancel`);
+    // One whole line per mode (and per symmetric state), pluralised on the face
+    // count: the singular form carries no count prefix, the plural names it.
+    const key =
+      this.mode === "thicken"
+        ? this.symmetric ? "feature.faceOffset.drag.thickenSymmetric" : "feature.faceOffset.drag.thicken"
+        : "feature.faceOffset.drag.offsetFace";
+    setPrompt(t(key, { count: this.faces.length }));
   }
 
   private beginDrag(
@@ -202,7 +205,7 @@ export class FaceOffsetTool {
     this.previewId = this.store.nextId();
     this.viewport.clearHover();
     this.buildGizmo();
-    this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
+    this.dim.show([{ name: "distance", label: t("feature.dim.distance"), kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ distance: 0 });
@@ -290,13 +293,13 @@ export class FaceOffsetTool {
     if (this.phase !== "drag") return this.cancel();
     const v = this.dim.getValue("distance");
     if (v == null && this.dim.isUserDriven("distance")) {
-      setPrompt("Can't read that number — fix the value, or Esc to cancel");
+      setPrompt(t("feature.badNumber"));
       return;
     }
     if (v != null && this.dim.isUserDriven("distance")) this.value = v;
     if (Math.abs(this.value) < 1e-3) {
       // keep the tool alive: silently cancelling reads as "nothing happened"
-      setPrompt("Nothing to commit — drag the arrow or type a distance first");
+      setPrompt(t("feature.nothingToCommit"));
       return;
     }
     const feature = this.buildFeature();

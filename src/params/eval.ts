@@ -7,6 +7,7 @@
 
 import { CONSTANTS, ExprError, FUNCTIONS, RESERVED_FUNCTIONS, parseExpr } from "./parse";
 import type { ExprNode } from "./parse";
+import { t } from "../i18n";
 
 export function evalNode(n: ExprNode, values: Record<string, number>): number {
   switch (n.t) {
@@ -15,18 +16,24 @@ export function evalNode(n: ExprNode, values: Record<string, number>): number {
     case "ref": {
       if (n.name in values) return values[n.name]!;
       if (n.name in CONSTANTS) return CONSTANTS[n.name]!;
-      throw new ExprError(`unknown parameter "${n.name}"`);
+      throw new ExprError(t("params.error.unknownParameter", { name: n.name }));
     }
     case "call": {
       const fn = FUNCTIONS[n.name];
       if (!fn) {
         throw new ExprError(
-          RESERVED_FUNCTIONS.has(n.name) ? `${n.name}() is not supported yet` : `unknown function "${n.name}"`,
+          RESERVED_FUNCTIONS.has(n.name) ? t("params.error.notSupportedYet", { name: n.name }) : t("params.error.unknownFunction", { name: n.name }),
         );
       }
       const [lo, hi] = fn.arity;
       if (n.args.length < lo || n.args.length > hi) {
-        throw new ExprError(`${n.name}() takes ${hi === Infinity ? `at least ${lo}` : lo === hi ? lo : `${lo}–${hi}`} argument${lo === 1 && hi === 1 ? "" : "s"}`);
+        throw new ExprError(
+          hi === Infinity
+            ? t("params.error.arityAtLeast", { name: n.name, count: lo })
+            : lo === hi
+              ? t("params.error.arityExact", { name: n.name, count: lo })
+              : t("params.error.arityRange", { name: n.name, lo, hi }),
+        );
       }
       return fn.apply(n.args.map((a) => evalNode(a, values)));
     }

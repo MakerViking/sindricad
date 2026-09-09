@@ -7,6 +7,7 @@
 
 import type { DocumentStore } from "../document/store";
 import { toast } from "../ui/toast";
+import { t } from "../i18n";
 
 const IDLE_MS = 30_000; // quiet period after the last edit
 const MAX_MS = 120_000; // never lag a busy session by more than this
@@ -63,7 +64,7 @@ export function installAutosave(store: DocumentStore) {
       failCount++;
       if (failCount >= 3 && !warned) {
         warned = true;
-        toast("Autosave keeps failing — your unsaved work may not be recoverable if the app crashes", {
+        toast(t("recovery.autosaveFailing"), {
           kind: "error",
           timeout: 8000,
         });
@@ -114,18 +115,18 @@ export async function checkRecovery(store: DocumentStore) {
     if (!raw) return;
     const env = JSON.parse(raw) as Envelope;
     const age = Math.max(1, Math.round((Date.now() - (env.savedAt || mtime)) / 60000));
-    const from = env.source ? env.source.split(/[\\/]/).pop() : "an unsaved document";
+    const from = env.source ? env.source.split(/[\\/]/).pop() ?? env.source : t("recovery.unsavedDocument");
     const { choose } = await import("../ui/choice");
     const pick = await choose<"recover" | "discard">(
-      `Recover unsaved work? (${from}, ~${age} min old)`,
+      t("recovery.prompt", { from, age }),
       [
-        { value: "recover", label: "Recover", hint: "restore the snapshot" },
-        { value: "discard", label: "Discard", hint: "delete it" },
+        { value: "recover", label: t("recovery.recover"), hint: t("recovery.recoverHint") },
+        { value: "discard", label: t("common.discard"), hint: t("recovery.discardHint") },
       ],
     );
     if (pick === "recover") {
       store.load(JSON.stringify(env.doc));
-      toast("Recovered unsaved work — use Save As to store it where you want", { kind: "info", timeout: 8000 });
+      toast(t("recovery.recovered"), { kind: "info", timeout: 8000 });
     } else if (pick === "discard") {
       await invoke("recovery_clear", { slot });
     }

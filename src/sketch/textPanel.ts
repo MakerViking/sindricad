@@ -3,6 +3,7 @@
 // from the sidecar's listFonts op), size, bold/italic, alignment and rotation. On
 // every edit it fires onChange for a live preview; Add/Enter commits, Cancel/Esc dismisses.
 
+import { t } from "../i18n";
 import { icon, type IconName } from "../ui/icons";
 
 export interface TextValues {
@@ -74,14 +75,14 @@ export class TextPanel {
     const ta = document.createElement("textarea");
     ta.value = initial.text ?? "";
     ta.rows = 2;
-    ta.placeholder = "Text…";
+    ta.placeholder = t("sketch.text.placeholder");
     Object.assign(ta.style, { width: "100%", resize: "vertical" });
     this.root.appendChild(ta);
     this.root.appendChild(Object.assign(document.createElement("div"), { style: "height:6px" }));
 
     const font = document.createElement("select");
     Object.assign(font.style, { flex: "1", minWidth: "0", maxWidth: "100%" });
-    const def = new Option("Default font", "");
+    const def = new Option(t("sketch.text.defaultFont"), "");
     font.appendChild(def);
     for (const f of fonts) font.appendChild(new Option(f, f));
     font.value = initial.font ?? "";
@@ -96,23 +97,23 @@ export class TextPanel {
     angle.type = "number";
     angle.value = String(initial.angle ?? 0);
     Object.assign(angle.style, { width: "56px" });
-    row(label("Size"), size, label("Angle°"), angle);
+    row(label(t("common.size")), size, label(t("sketch.text.angleDeg")), angle);
 
     const bold = checkbox(String(initial.style ?? "regular").includes("bold"));
     const italic = checkbox(String(initial.style ?? "regular").includes("italic"));
     const align = document.createElement("select");
-    for (const a of ["left", "center", "right"]) align.appendChild(new Option(a, a));
+    for (const a of ["left", "center", "right"] as const) align.appendChild(new Option(t(`sketch.text.align.${a}`), a));
     align.value = initial.align ?? "left";
-    row(label("B", bold), bold, label("I", italic), italic, align);
+    row(label(t("sketch.text.bold"), bold), bold, label(t("sketch.text.italic"), italic), italic, align);
 
     const boxW = document.createElement("input");
     boxW.type = "number";
     boxW.min = "0";
     boxW.step = "0.5";
     boxW.value = initial.boxWidth ? String(initial.boxWidth) : "";
-    boxW.placeholder = "0 = no box";
+    boxW.placeholder = t("sketch.text.noBox");
     Object.assign(boxW.style, { flex: "1", minWidth: "0" });
-    row(label("Box width (mm)"), boxW);
+    row(label(t("sketch.text.boxWidth")), boxW);
 
     this.read = (): TextValues => ({
       text: ta.value,
@@ -130,9 +131,9 @@ export class TextPanel {
       el.addEventListener("change", emit);
     }
 
-    const ok = button("Add", "confirm", "check");
+    const ok = button(t("common.add"), "confirm", "check");
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });
-    const no = button("Cancel", "cancel", "close");
+    const no = button(t("common.cancel"), "cancel", "close");
     no.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.cancel(); });
     const btns = row(ok, no);
     btns.style.marginBottom = "0";

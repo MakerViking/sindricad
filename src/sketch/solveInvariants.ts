@@ -43,21 +43,21 @@ export function expectSaneGeometry(
   for (const e of after as any[]) {
     switch (e.type) {
       case "line": {
-        expect(isFinitePt(e.x1, e.y1, e.x2, e.y2), `${where}: line ${e.id} has a non-finite endpoint`).toBe(true);
+        expect(isFinitePt(e.x1, e.y1, e.x2, e.y2), `${where}: line ${e.id} has a non-finite endpoint`).toBe(true); // i18n-ignore developer diagnostic, never shown
         const prev = beforeById.get(e.id);
         if (!before || (prev && prev.type === "line" && lenOf(prev) > MIN_LEN)) {
-          expect(lenOf(e), `${where}: line ${e.id} collapsed to zero length`).toBeGreaterThan(MIN_LEN);
+          expect(lenOf(e), `${where}: line ${e.id} collapsed to zero length`).toBeGreaterThan(MIN_LEN); // i18n-ignore developer diagnostic, never shown
         }
         break;
       }
       case "circle":
-        expect(isFinitePt(e.x, e.y, e.radius), `${where}: circle ${e.id} has a non-finite field`).toBe(true);
-        expect(e.radius, `${where}: circle ${e.id} has a non-positive radius`).toBeGreaterThan(0);
+        expect(isFinitePt(e.x, e.y, e.radius), `${where}: circle ${e.id} has a non-finite field`).toBe(true); // i18n-ignore developer diagnostic, never shown
+        expect(e.radius, `${where}: circle ${e.id} has a non-positive radius`).toBeGreaterThan(0); // i18n-ignore developer diagnostic, never shown
         break;
       case "arc":
-        expect(isFinitePt(e.x1, e.y1, e.x2, e.y2), `${where}: arc ${e.id} has a non-finite endpoint`).toBe(true);
+        expect(isFinitePt(e.x1, e.y1, e.x2, e.y2), `${where}: arc ${e.id} has a non-finite endpoint`).toBe(true); // i18n-ignore developer diagnostic, never shown
         if (typeof e.radius === "number") {
-          expect(e.radius, `${where}: arc ${e.id} has a non-positive radius`).toBeGreaterThan(0);
+          expect(e.radius, `${where}: arc ${e.id} has a non-positive radius`).toBeGreaterThan(0); // i18n-ignore developer diagnostic, never shown
         }
         break;
       case "rectangle": {
@@ -65,18 +65,18 @@ export function expectSaneGeometry(
         // one where a collapse is invisible: its four edges are implicit
         // `<id>~k` solver lines, never `line` entities, so a rectangle solved to
         // zero width satisfied every other post-condition in this file.
-        expect(isFinitePt(e.x, e.y, e.width, e.height), `${where}: rectangle ${e.id} has a non-finite field`).toBe(true);
+        expect(isFinitePt(e.x, e.y, e.width, e.height), `${where}: rectangle ${e.id} has a non-finite field`).toBe(true); // i18n-ignore developer diagnostic, never shown
         const prev = beforeById.get(e.id);
         const hadArea = prev && prev.type === "rectangle"
           && Math.abs(prev.width) > MIN_RECT && Math.abs(prev.height) > MIN_RECT;
         if (!before || hadArea) {
-          expect(Math.abs(e.width), `${where}: rectangle ${e.id} collapsed to zero width`).toBeGreaterThan(MIN_RECT);
-          expect(Math.abs(e.height), `${where}: rectangle ${e.id} collapsed to zero height`).toBeGreaterThan(MIN_RECT);
+          expect(Math.abs(e.width), `${where}: rectangle ${e.id} collapsed to zero width`).toBeGreaterThan(MIN_RECT); // i18n-ignore developer diagnostic, never shown
+          expect(Math.abs(e.height), `${where}: rectangle ${e.id} collapsed to zero height`).toBeGreaterThan(MIN_RECT); // i18n-ignore developer diagnostic, never shown
         }
         break;
       }
       case "point":
-        expect(isFinitePt(e.x, e.y), `${where}: point ${e.id} is non-finite`).toBe(true);
+        expect(isFinitePt(e.x, e.y), `${where}: point ${e.id} is non-finite`).toBe(true); // i18n-ignore developer diagnostic, never shown
         break;
       default:
         break; // text/projected carry their own shape; nothing universal to assert
@@ -108,6 +108,6 @@ export function expectUnchangedOnFailure(
     : e.type === "circle" ? `${e.id}:${e.x},${e.y},${e.radius}`
     : e.type === "rectangle" ? `${e.id}:${e.x},${e.y},${e.width},${e.height}`
     : `${e.id}`;
-  expect(after.map(key).join("|"), `${where}: a failed solve still changed the geometry`)
+  expect(after.map(key).join("|"), `${where}: a failed solve still changed the geometry`) // i18n-ignore developer diagnostic, never shown
     .toBe(before.map(key).join("|"));
 }

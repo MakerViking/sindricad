@@ -15,6 +15,7 @@ import type { DocumentStore } from "../document/store";
 import type { Feature } from "../types";
 import { pointInRegion } from "../sketch/region";
 import { setPrompt } from "../ui/prompt";
+import { t } from "../i18n";
 
 interface Profile {
   sketch: string;
@@ -94,14 +95,10 @@ export class LoftTool {
     const n = this.profiles.length;
     if (n >= 2) {
       this.store.setPreview(this.buildFeature());
-      setPrompt(`Loft: ${n} profiles · click more, or a picked one to drop it · Enter to finish · Esc to cancel`);
+      setPrompt(t("feature.loft.profiles", { count: n }));
     } else {
       this.store.setPreview(null);
-      setPrompt(
-        n === 1
-          ? "Loft: click a second profile · Esc to cancel"
-          : "Loft: click the first profile · Esc to cancel",
-      );
+      setPrompt(t(n === 1 ? "feature.loft.second" : "feature.loft.first"));
     }
   }
 
@@ -116,7 +113,7 @@ export class LoftTool {
 
   private commit() {
     if (this.profiles.length < 2) {
-      setPrompt("Loft needs at least two profiles · click another · Esc to cancel");
+      setPrompt(t("feature.loft.needsTwo"));
       return;
     }
     this.store.setPreview(null);

@@ -11,6 +11,7 @@ import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_HOT as HOT } from "../viewport/colors3d";
+import { t } from "../i18n";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const AXES: Record<string, THREE.Vector3> = {
@@ -72,16 +73,14 @@ export class SectionTool {
     window.addEventListener("keydown", this.boundKey, true);
     this.buildGizmo();
     this.dim.show(
-      [{ name: "offset", label: "Offset", kind: "length" }],
+      [{ name: "offset", label: t("tool.offset"), kind: "length" }],
       () => this.applyTypedOffset(),
       () => this.stop(),
     );
     const s = this.viewport.projectToScreen(this.center());
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ offset: Math.abs(this.offset) });
-    setPrompt(
-      "Section: drag the arrow to move the cut · type a value + Enter · F flips the kept side · Esc to close",
-    );
+    setPrompt(t("feature.section.prompt"));
     this.raf = requestAnimationFrame(this.boundTick);
   }
 

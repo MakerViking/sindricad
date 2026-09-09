@@ -18,6 +18,7 @@
 
 import { choose } from "./choice";
 import { toast } from "./toast";
+import { t } from "../i18n";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -59,7 +60,7 @@ export async function appVersion(): Promise<string> {
 /** Help → About: the one place to read off which version is running. */
 export async function showAbout(): Promise<void> {
   const { listModal } = await import("./choice");
-  await listModal("About SindriCAD", [`Version ${await appVersion()}`]);
+  await listModal(t("about.title"), [t("about.version", { version: await appVersion() })]);
 }
 
 /** Check the beta feed and prompt to install when an update exists. An available
@@ -67,7 +68,7 @@ export async function showAbout(): Promise<void> {
  *  "not applicable here", and failures (the quiet startup check stays silent). */
 export async function checkForUpdates(interactive: boolean): Promise<void> {
   if (!isTauri()) {
-    if (interactive) toast("Update checks need the packaged app");
+    if (interactive) toast(t("update.needsPackaged"));
     return;
   }
   if (!(await updatesSupported())) {
@@ -77,20 +78,20 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
       // extracted AppDir. Naming a package format there would be a fresh
       // falsehood of the same shape as the package-manager line being removed.
       // Longer than the 3500ms default: two lines to read and a button to reach.
-      toast("This install can't update itself. Download the current build, or switch to the AppImage, which does.", {
+      toast(t("update.cannotSelfUpdate"), {
         timeout: 10000,
         // Imported here rather than at the top so this module keeps loading in
         // plain node (welcome.ts pulls in the TinkerAtlas client and an SVG at
         // module scope); that is what lets updates.test.ts import RELEASES_URL.
         action: {
-          label: "Open downloads",
+          label: t("update.openDownloads"),
           onClick: () => {
             // toast.ts dismisses on click, so an unhandled rejection here (a
             // refused opener scope, no xdg-open, a failed chunk load) looks
             // exactly like success — the dead end this whole change is about.
             void import("./welcome")
               .then((m) => m.openExternal(RELEASES_URL))
-              .catch(() => toast(`Couldn't open a browser. The page is ${RELEASES_URL}`, { kind: "error", timeout: 15000 }));
+              .catch(() => toast(t("update.noBrowser", { url: RELEASES_URL }), { kind: "error", timeout: 15000 }));
           },
         },
       });
@@ -101,15 +102,15 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
     const { check } = await import("@tauri-apps/plugin-updater");
     const update = await check();
     if (!update) {
-      if (interactive) toast(`SindriCAD ${await appVersion()} is up to date.`);
+      if (interactive) toast(t("update.upToDate", { version: await appVersion() }));
       return;
     }
-    const pick = await choose(`Update ${update.version} is available`, [
-      { value: "install", label: "Restart & update" },
-      { value: "later", label: "Later" },
+    const pick = await choose(t("update.available", { version: update.version }), [
+      { value: "install", label: t("update.install") },
+      { value: "later", label: t("common.later") },
     ]);
     if (pick !== "install") return;
-    toast("Downloading the update…");
+    toast(t("update.downloading"));
     await update.downloadAndInstall();
     // NOT the process plugin's relaunch(): it restarts without releasing the
     // single-instance lock, and the replacement process can start while this one
@@ -120,7 +121,7 @@ export async function checkForUpdates(interactive: boolean): Promise<void> {
   } catch (err) {
     console.error("[updates] check/install failed:", err);
     if (interactive) {
-      toast(`Update check failed: ${err instanceof Error ? err.message : String(err)}`, { kind: "error" });
+      toast(t("update.checkFailed", { reason: err instanceof Error ? err.message : String(err) }), { kind: "error" });
     }
   }
 }

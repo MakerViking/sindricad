@@ -22,6 +22,7 @@ import { toast } from "../ui/toast";
 import { DimInput } from "../sketch/dimInput";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
 import { findSelectorAt, replaceSelectorAt } from "./repickReference";
+import { t } from "../i18n";
 
 /** Said out loud whenever a plane is picked off a curved face. The plane itself
  *  is real and usable (pickFacePlane returns the tangent), but nothing anchors
@@ -34,17 +35,15 @@ import { findSelectorAt, replaceSelectorAt } from "./repickReference";
  *  being created. Split Body passes NEITHER — it bakes an absolute plane and has
  *  no `face` field at all (types.ts), so no follow was ever on offer there and
  *  the whole warning would be about nothing. */
-export const CURVED_FACE_NOTE =
-  "Curved face — this sketch sits on a tangent plane and will not follow later edits.";
-export const CURVED_FACE_NOTE_PLANE =
-  "Curved face — this plane sits on a tangent and will not follow later edits.";
+export const CURVED_FACE_NOTE = t("feature.starters.curvedFaceSketch");
+export const CURVED_FACE_NOTE_PLANE = t("feature.starters.curvedFacePlane");
 
 /** The one wording for "another tool owns the app right now", shared by every
  *  surface that can refuse for that reason — the starters below, the ribbon
  *  paths that live in main.ts, and contextMenus' unlessBusy. There used to be
  *  two: right-clicking an edge and picking Fillet said one thing, clicking the
  *  Fillet button beside it said another, for the identical state. */
-export const TOOL_BUSY_MESSAGE = "Finish or cancel the current tool first (Esc)";
+export const TOOL_BUSY_MESSAGE = t("feature.starters.toolBusy");
 
 export interface FeatureStartersDeps {
   store: DocumentStore;
@@ -110,9 +109,11 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
    *  or create", and one with no tool name at all). Same reasoning as
    *  TOOL_BUSY_MESSAGE: a refusal the user reads should not depend on which
    *  button they happened to press. */
+  /** `tool` is the DISPLAYED tool name, already translated (a `tool.*` key
+   *  rendered by the caller), so the sentence never glues two languages. */
   const needsBody = (tool: string) => {
     if (hasBody()) return false;
-    setStatus(`${tool}: create or import a body first`, "");
+    setStatus(t("feature.starters.needsBody", { tool }), "");
     return true;
   };
 
@@ -272,7 +273,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       if (tool) sketch.setTool(tool);
       return;
     }
-    pickPlaneInteractive("Select a plane or a planar face of a body to sketch on", (spec, face) => {
+    pickPlaneInteractive(t("feature.starters.pickSketchPlane"), (spec, face) => {
       sketch.enter(spec, store, undefined, undefined, face);
       if (tool) sketch.setTool(tool);
     });
@@ -289,7 +290,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // editable scalar offset), and enters the sketch BY ID, so changing the offset
   // in the inspector moves the sketch with it.
   function offsetPlane() {
-    pickPlaneInteractive("Select a plane or face to offset from", (spec, face) => {
+    pickPlaneInteractive(t("feature.starters.pickOffsetSource"), (spec, face) => {
       const src = new SketchPlane(spec);
       planeOffset.start(src, (def) => {
         if (!def) return;
@@ -307,7 +308,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // reused as a sketch / split reference. We store the SOURCE plane + a scalar
   // offset (not a baked plane) so the offset stays editable in the inspector.
   function createDatumPlane() {
-    pickPlaneInteractive("Select a plane or face for the datum plane", (spec, face) => {
+    pickPlaneInteractive(t("feature.starters.pickDatumSource"), (spec, face) => {
       const src = new SketchPlane(spec);
       planeOffset.start(src, (def) => {
         if (!def) return;
@@ -346,27 +347,23 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Reuses the plane picker + offset gizmo so the cut lands exactly where you want.
   async function startSplit() {
     if (busy()) return;
-    if (needsBody("Split")) return;
+    if (needsBody(t("tool.split"))) return;
     // "select that plane and cut": a selected construction plane cuts ALL visible
     // bodies by id (startCutByPlane handles the keep-side prompt).
     const selId = getSelectedFeature();
     const sel = selId ? store.document.features.find((f) => f.id === selId) : null;
     if (sel?.type === "datumPlane") return void startCutByPlane(sel.id);
 
-    const keep = await choose<"both" | "top" | "bottom">("Split Body — keep which side?", [
-      { value: "both", label: "Both", hint: "two bodies" },
-      { value: "top", label: "Top", hint: "+normal side" },
-      { value: "bottom", label: "Bottom", hint: "−normal side" },
-    ]);
+    const keep = await choose<"both" | "top" | "bottom">(t("feature.starters.split.title"), keepSideOptions());
     if (!keep) return;
     const bodies = store.buildState.result?.bodies ?? [];
     let body: string | undefined;
     if (bodies.length > 1) {
-      const picked = await chooseBody("Which body to split?", bodies);
+      const picked = await chooseBody(t("feature.starters.split.whichBody"), bodies);
       if (!picked) return;
       body = picked;
     }
-    pickPlaneInteractive("Select a plane or face to cut by", (spec) => {
+    pickPlaneInteractive(t("feature.starters.split.pickPlane"), (spec) => {
       planeOffset.start(new SketchPlane(spec), (def) => {
         if (def) store.addFeature({ id: store.nextId(), type: "split", plane: def, keep, body, groupSides: true } as Feature);
       });
@@ -380,17 +377,22 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // of currently-visible body ids.
   async function startCutByPlane(planeId: string) {
     if (busy()) return;
-    if (needsBody("Cut")) return;
-    const keep = await choose<"both" | "top" | "bottom">("Cut — keep which side?", [
-      { value: "both", label: "Both", hint: "two bodies" },
-      { value: "top", label: "Top", hint: "+normal side" },
-      { value: "bottom", label: "Bottom", hint: "−normal side" },
-    ]);
+    if (needsBody(t("feature.starters.cutByPlane.name"))) return;
+    const keep = await choose<"both" | "top" | "bottom">(t("feature.starters.cutByPlane.title"), keepSideOptions());
     if (!keep) return;
     const ids = (store.buildState.result?.bodies ?? [])
       .filter((b) => store.isBodyVisible(b.id))
       .map((b) => b.id);
     store.addFeature({ id: store.nextId(), type: "split", planeId, keep, bodies: ids, groupSides: true } as Feature);
+  }
+
+  /** The keep-which-side choices Split Body and Cut share. */
+  function keepSideOptions() {
+    return [
+      { value: "both" as const, label: t("feature.starters.keep.both"), hint: t("feature.starters.keep.bothHint") },
+      { value: "top" as const, label: t("feature.starters.keep.top"), hint: t("feature.starters.keep.topHint") },
+      { value: "bottom" as const, label: t("feature.starters.keep.bottom"), hint: t("feature.starters.keep.bottomHint") },
+    ];
   }
 
   // Combine: boolean-join/cut/intersect bodies. With exactly two bodies the first
@@ -400,13 +402,13 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     if (busy()) return;
     const bodies = store.buildState.result?.bodies ?? [];
     if (bodies.length < 2) {
-      setStatus("Combine: needs at least two bodies — model or import another", "");
+      setStatus(t("feature.starters.combine.needsTwo"), "");
       return;
     }
-    const op = await choose<"join" | "cut" | "intersect">("Combine bodies", [
-      { value: "join", label: "Join", hint: "union" },
-      { value: "cut", label: "Cut", hint: "subtract" },
-      { value: "intersect", label: "Intersect", hint: "overlap" },
+    const op = await choose<"join" | "cut" | "intersect">(t("feature.starters.combine.title"), [
+      { value: "join", label: t("feature.op.join"), hint: t("feature.starters.combine.joinHint") },
+      { value: "cut", label: t("feature.op.cut"), hint: t("feature.starters.combine.cutHint") },
+      { value: "intersect", label: t("feature.op.intersect"), hint: t("feature.starters.combine.intersectHint") },
     ]);
     if (!op) return;
 
@@ -429,17 +431,17 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       if (t0 === undefined) return;
       target = t0;
       if (!pre.length && bodies.length > 2) {
-        const t = await chooseBody("Target body (kept)", bodies);
-        if (!t) return;
-        target = t;
+        const picked = await chooseBody(t("feature.starters.combine.target"), bodies);
+        if (!picked) return;
+        target = picked;
       }
       const candidates = bodies.filter((b) => b.id !== target);
       if (candidates.length > 1) {
         const { chooseMulti } = await import("../ui/choice");
         const picked = await chooseMulti<string>(
-          "Tool bodies (combined into the target)",
+          t("feature.starters.combine.tools"),
           candidates.map((b) => ({ value: b.id, label: store.bodyName(b.id) ?? b.name })),
-          { min: 1, confirmLabel: "Combine" },
+          { min: 1, confirmLabel: t("tool.combine") },
         );
         if (!picked) return;
         tools = picked;
@@ -463,7 +465,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // fewer faces, but coarsens curved regions).
   function startSimplifyMesh() {
     if (busy()) return;
-    if (needsBody("Simplify Mesh")) return;
+    if (needsBody(t("tool.simplifyMesh"))) return;
     store.addFeature({ id: store.nextId(), type: "simplifyMesh", tolerance: 1 } as Feature);
   }
 
@@ -475,16 +477,16 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // can't confidently clean passes through unchanged.
   function startCleanUp() {
     if (busy()) return;
-    if (needsBody("Clean Up")) return;
+    if (needsBody(t("tool.cleanUp"))) return;
     store.addFeature({ id: store.nextId(), type: "cleanUp" } as Feature);
-    setStatus("Clean Up added — bodies unified + debris collapsed from here on", "");
+    setStatus(t("feature.starters.cleanUpAdded"), "");
   }
 
   // Scale: resize the active body about the origin (handy for fixing the units of
   // an import). Default factor 1 — set it in the inspector.
   function startScale() {
     if (busy()) return;
-    if (needsBody("Scale")) return;
+    if (needsBody(t("tool.scale"))) return;
     store.addFeature({ id: store.nextId(), type: "scale", factor: 1 } as Feature);
   }
 
@@ -492,7 +494,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // and angles in the inspector.
   function startMove() {
     if (busy()) return;
-    if (needsBody("Move")) return;
+    if (needsBody(t("tool.move"))) return;
     const bodies = store.buildState.result?.bodies ?? [];
     let ids = viewport.getSelectedBodies();
     // A datum plane is a FEATURE, never a body, so it can never be in
@@ -506,7 +508,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       const sel = getSelectedFeature();
       const f = sel ? store.document.features.find((x) => x.id === sel) : null;
       if (f?.type === "datumPlane") {
-        setStatus("Move works on bodies. To move this plane, edit its Offset in the inspector.", "");
+        setStatus(t("feature.starters.move.datumPlane"), "");
         return;
       }
     }
@@ -515,7 +517,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       if (lastBody) ids = [lastBody.id]; // none selected → active body
     }
     if (!ids.length) {
-      setStatus("Move: select a body first (Select: Bodies)", "");
+      setStatus(t("feature.starters.move.selectBody"), "");
       return;
     }
     moveTool.start(ids, (id) => { noteCommitted(id); if (id) selectFeature(id); });
@@ -527,10 +529,11 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     if (busy()) return;
     const hasSolid = hasBody();
     if (!hasSolid) {
-      setStatus("Mirror: create a body first", "");
+      setStatus(t("feature.starters.mirror.needsBody"), "");
       return;
     }
-    const plane = await choose<"XY" | "XZ" | "YZ">("Mirror across plane", [
+    // XY / XZ / YZ are plane names, not prose — they stay as written.
+    const plane = await choose<"XY" | "XZ" | "YZ">(t("feature.starters.mirror.title"), [
       { value: "XY", label: "XY" },
       { value: "XZ", label: "XZ" },
       { value: "YZ", label: "YZ" },
@@ -544,9 +547,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // upfront, same as the extrude op modal, just without the no-op-guess sorting.
   async function chooseSolidOperation(title: string): Promise<"new" | "join" | "cut" | null> {
     return choose<"new" | "join" | "cut">(title, [
-      { value: "new", label: "New Body", hint: "separate" },
-      { value: "join", label: "Join", hint: "merge" },
-      { value: "cut", label: "Cut", hint: "remove" },
+      { value: "new", label: t("feature.op.newBody"), hint: t("feature.starters.solidOp.newHint") },
+      { value: "join", label: t("feature.op.join"), hint: t("feature.starters.solidOp.joinHint") },
+      { value: "cut", label: t("feature.op.cut"), hint: t("feature.starters.solidOp.cutHint") },
     ]);
   }
 
@@ -558,16 +561,16 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     const regions = overlay.selectedRegions();
     const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
     if (!wr) {
-      setStatus("Revolve: select a sketch profile to revolve first", "");
+      setStatus(t("feature.starters.revolve.needsProfile"), "");
       return;
     }
-    const axis = await choose<"X" | "Y" | "Z">("Revolve around axis", [
-      { value: "X", label: "X axis" },
-      { value: "Y", label: "Y axis" },
-      { value: "Z", label: "Z axis" },
+    const axis = await choose<"X" | "Y" | "Z">(t("feature.starters.revolve.axisTitle"), [
+      { value: "X", label: t("feature.starters.axis.x") },
+      { value: "Y", label: t("feature.starters.axis.y") },
+      { value: "Z", label: t("feature.starters.axis.z") },
     ]);
     if (!axis) return;
-    const operation = await chooseSolidOperation("Revolve — operation");
+    const operation = await chooseSolidOperation(t("feature.starters.revolve.opTitle"));
     if (!operation) return;
     store.addFeature({ id: store.nextId(), type: "revolve", sketch: wr.sketchId, axis, angle: 360, operation } as Feature);
   }
@@ -587,21 +590,21 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     const regions = overlay.selectedRegions();
     const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
     if (!wr) {
-      setStatus("Sweep: select a profile sketch region first", "");
+      setStatus(t("feature.starters.sweep.needsProfile"), "");
       return;
     }
     const all = store.document.features.filter((f) => f.type === "sketch");
     const candidates = all.filter((f) => f.id !== wr.sketchId);
     if (candidates.length === 0) {
-      setStatus("Sweep: add a second sketch with an open curve for the path", "");
+      setStatus(t("feature.starters.sweep.needsPath"), "");
       return;
     }
-    const label = (id: string) => `Sketch ${all.findIndex((f) => f.id === id) + 1}`;
+    const label = (id: string) => t("feature.starters.sweep.sketchLabel", { n: all.findIndex((f) => f.id === id) + 1 });
     const c0 = candidates[0];
     if (!c0) return;
     let pathId = c0.id;
     if (candidates.length > 1) {
-      const picked = await choose<string>("Pick the path sketch", candidates.map((f) => ({ value: f.id, label: label(f.id) })));
+      const picked = await choose<string>(t("feature.starters.sweep.pickPath"), candidates.map((f) => ({ value: f.id, label: label(f.id) })));
       if (!picked) return;
       pathId = picked;
     }
@@ -612,10 +615,10 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // the inspector). Useful as a starting block or as a boolean tool body.
   async function startPrimitive() {
     if (busy()) return;
-    const shape = await choose<"box" | "cylinder" | "sphere">("Create primitive", [
-      { value: "box", label: "Box", hint: "l×w×h" },
-      { value: "cylinder", label: "Cylinder", hint: "r, h" },
-      { value: "sphere", label: "Sphere", hint: "r" },
+    const shape = await choose<"box" | "cylinder" | "sphere">(t("feature.starters.primitive.title"), [
+      { value: "box", label: t("tool.box"), hint: t("feature.starters.primitive.boxHint") },
+      { value: "cylinder", label: t("tool.cylinder"), hint: t("feature.starters.primitive.cylinderHint") },
+      { value: "sphere", label: t("tool.sphere"), hint: t("feature.starters.primitive.sphereHint") },
     ]);
     if (!shape) return;
     const id = store.nextId();
@@ -633,7 +636,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     onPick: (sel: Selector, at: { x: number; y: number }) => void,
   ) {
     if (busy()) return;
-    if (needsBody("Shell")) return;
+    if (needsBody(t("tool.shell"))) return;
     setPlanePick(true);
     viewport.suspendPicking = true;
     setPrompt(promptText);
@@ -685,22 +688,22 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       // toast was still up). Same situation as the missing-site branch below and
       // it must answer the same way — this used to be a bare `return`, so the
       // toast's own button did nothing at all.
-      setStatus("That feature is gone — nothing to re-pick", "");
+      setStatus(t("feature.starters.repick.featureGone"), "");
       return;
     }
     const site = findSelectorAt(feature, at);
     if (!site) {
-      setStatus("That reference has already changed — nothing to re-pick", "");
+      setStatus(t("feature.starters.repick.referenceChanged"), "");
       return;
     }
-    pickFaceInteractive("Pick the face this feature should use · Esc to cancel", (sel) => {
+    pickFaceInteractive(t("feature.starters.repick.pickFace"), (sel) => {
       // Re-read the feature: the pick is async, and the doc may have moved under
       // us (undo, another edit). Re-locating also re-validates the site.
       const cur = store.document.features.find((f) => f.id === featureId);
       if (!cur) return;
       const site2 = findSelectorAt(cur, at);
       if (!site2) {
-        setStatus("That reference has already changed — nothing to re-pick", "");
+        setStatus(t("feature.starters.repick.referenceChanged"), "");
         return;
       }
       store.updateFeature(featureId, replaceSelectorAt(cur, site2, sel));
@@ -720,7 +723,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   let shellDim: DimInput | null = null;
 
   function startShell() {
-    pickFaceInteractive("Select a face to open for the shell · Esc to cancel", (faces, at) => {
+    pickFaceInteractive(t("feature.starters.shell.pickFace"), (faces, at) => {
       askShellThickness(faces, at);
     });
   }
@@ -732,7 +735,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     // clear it: a planePick left set disables the whole toolbar silently, which
     // has already been shipped once.
     setPlanePick(true);
-    setPrompt("Wall thickness · Enter to apply · Esc to cancel");
+    setPrompt(t("feature.starters.shell.thicknessPrompt"));
 
     const close = () => {
       setPlanePick(false);
@@ -753,15 +756,15 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     window.addEventListener("keydown", onEsc, true);
 
     dim.show(
-      [{ name: "thickness", label: "T", kind: "length" }],
+      [{ name: "thickness", label: t("feature.dim.thickness"), kind: "length" }],
       () => {
-        const t = dim.getValue("thickness");
+        const thickness = dim.getValue("thickness");
         close();
-        if (t === null || !(t > 0)) {
-          setStatus("Wall thickness must be more than zero", "");
+        if (thickness === null || !(thickness > 0)) {
+          setStatus(t("feature.starters.shell.thicknessZero"), "");
           return;
         }
-        store.addFeature({ id: store.nextId(), type: "shell", thickness: t, faces } as Feature);
+        store.addFeature({ id: store.nextId(), type: "shell", thickness, faces } as Feature);
       },
       close,
     );
@@ -775,7 +778,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // Draft: pick a face to taper by 5° about the body's base (pull +Z; edit the
   // angle in the inspector).
   function startDraft() {
-    pickFaceInteractive("Select a face to draft · Esc to cancel", (faces) => {
+    pickFaceInteractive(t("feature.starters.draft.pickFace"), (faces) => {
       store.addFeature({ id: store.nextId(), type: "draft", faces, angle: 5, axis: "Z" } as Feature);
     });
   }
@@ -787,7 +790,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // hands off to the tool directly.
   function startTexture() {
     if (busy()) return;
-    if (needsBody("Texture")) return;
+    if (needsBody(t("tool.texture"))) return;
     texture.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
@@ -797,7 +800,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // glyphs land.
   function startTextOnFace() {
     if (busy()) return;
-    if (needsBody("Text on Face")) return;
+    if (needsBody(t("tool.textOnFace"))) return;
     textOnFace.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
   }
 
@@ -805,10 +808,10 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // counts / spacing / angle in the inspector.
   async function startPattern() {
     if (busy()) return;
-    if (needsBody("Pattern")) return;
-    const kind = await choose<"rect" | "circular">("Pattern type", [
-      { value: "rect", label: "Rectangular", hint: "grid" },
-      { value: "circular", label: "Circular", hint: "around axis" },
+    if (needsBody(t("tool.pattern"))) return;
+    const kind = await choose<"rect" | "circular">(t("feature.starters.pattern.title"), [
+      { value: "rect", label: t("feature.starters.pattern.rect"), hint: t("feature.starters.pattern.rectHint") },
+      { value: "circular", label: t("feature.starters.pattern.circular"), hint: t("feature.starters.pattern.circularHint") },
     ]);
     if (!kind) return;
     addBodyPattern(kind);
@@ -819,7 +822,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
    *  would be a dialog with one sensible answer. Speaks if there is no body. */
   function startBodyPattern(kind: "rect" | "circular") {
     if (busy()) return;
-    if (needsBody(kind === "rect" ? "Rect Pattern" : "Circular Pattern")) return;
+    if (needsBody(t(kind === "rect" ? "tool.patternRect" : "tool.patternCircular"))) return;
     addBodyPattern(kind);
   }
 
@@ -856,7 +859,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       }
     }
     if (overlay.regions.length === 0) {
-      setStatus("Extrude: select a face, or create a sketch with a closed profile first", "");
+      setStatus(t("feature.extrude.needsProfile"), "");
       return;
     }
     extrude.start((id) => { noteCommitted(id); if (id) selectFeature(id); });

@@ -85,6 +85,11 @@ jobs:
       - name: Frontend unit tests (vitest)
         run: npx vitest run
 
+      # Locale catalogue: an extra key in a translation fails, a missing one only
+      # warns (English fallback). Then the hardcoded-string check (docs/I18N.md).
+      - name: Localisation checks
+        run: npm run i18n:check && npm run i18n:lint
+
       - name: Install Python 3.12 + sync sidecar deps (locked)
         run: |
           uv python install 3.12

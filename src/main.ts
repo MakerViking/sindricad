@@ -1,4 +1,6 @@
 import "./styles.css";
+import { applyDocumentLang, onLocaleChange, trackHoveredKey, setText, t } from "./i18n";
+import { openLanguageSettings } from "./ui/languageSettings";
 import { Viewport } from "./viewport/viewport";
 import type { StandardView } from "./viewport/cameras";
 import { Geometry } from "./geometry/client";
@@ -85,13 +87,13 @@ window.addEventListener("unhandledrejection", (e) => {
   if (gpuFatalShown()) return;
   if (isBenignBrowserNoise(reason instanceof Error ? reason.message : reason)) return;
   console.error("Unhandled rejection:", reason);
-  toast("Something went wrong — check the console for details", { kind: "error" });
+  toast(t("common.somethingWentWrong"), { kind: "error" });
 });
 window.onerror = (message, source, lineno, colno, error) => {
   if (gpuFatalShown()) return;
   if (isBenignBrowserNoise(message)) return;
   console.error("Uncaught error:", error ?? message, source, lineno, colno);
-  toast("Something went wrong — check the console for details", { kind: "error" });
+  toast(t("common.somethingWentWrong"), { kind: "error" });
 };
 
 // --- core singletons ---
@@ -138,7 +140,7 @@ if ("__TAURI_INTERNALS__" in window) {
       kind: "error",
       timeout: 0, // sticky: this ends the session's modelling, it must not scroll away
       action: {
-        label: "Try again",
+        label: t("common.tryAgain"),
         // `engineDown` is NOT cleared here. Nothing respawns the sidecar, so
         // "Try again" is a re-dial that will usually fail, and clearing the flag
         // put the status line back to "connecting to sidecar…" for the rest of
@@ -217,7 +219,7 @@ store.onSketchDimEdit = (_sketchId, entityId, field, mm) => sketch.applyDimensio
 // Fires from three paths now — a parameter change, a projection refresh, and a
 // dimension typed in the inspector — so it must not name any one of them.
 store.onParamSolveIssue = (id) =>
-  toast(`Sketch ${id}: dimensions could not be satisfied — geometry left unchanged`);
+  toast(t("status.sketchUnsatisfied", { id }));
 // Sidecar owns fonts: glyph outlines arrive async via tessellateText; repaint the
 // right surface (active sketch or committed overlay) when they land.
 setTextBackend(geometry, () => {
@@ -286,7 +288,7 @@ if ("__TAURI_INTERNALS__" in window) {
   void listen<{ name: string; detail: string }>("spacemouse:blocked", (e) => {
     console.warn("SpaceMouse blocked:", e.payload.detail);
     toast(
-      `Found "${e.payload.name}" but can't read it — see the SpaceMouse section of the README (Linux needs a one-time udev rule; a running spacenavd/3Dconnexion driver also holds the device)`,
+      t("status.spaceMouseBlocked", { name: e.payload.name }),
       { kind: "error", timeout: 15000 },
     );
   });
@@ -388,8 +390,8 @@ async function newDocument() {
   // window.confirm is a no-op in Tauri's WebKitGTK webview — use the native dialog.
   if (store.dirty) {
     const { ask } = await import("@tauri-apps/plugin-dialog");
-    const ok = await ask("Discard unsaved changes and start a new document?", {
-      title: "New Document",
+    const ok = await ask(t("file.discardConfirm"), {
+      title: t("file.newDocument"),
       kind: "warning",
     });
     if (!ok) return;
@@ -415,34 +417,39 @@ const welcome = new WelcomeScreen({
   onSignIn: () => void openSignInDialog(),
   onSignOut: () => void signOutFlow(),
 });
+// Locale plumbing: <html lang> for CSS :lang() and font fallback, and the
+// pointer tracker the bug reporter's "translation issue" category reads.
+applyDocumentLang();
+onLocaleChange(() => applyDocumentLang());
+trackHoveredKey();
 new Menubar(document.getElementById("menubar")!, [
   {
-    label: "File",
+    label: t("menu.file.title"),
     items: [
-      { label: "New", shortcut: "Ctrl+N", onClick: () => void newDocument() },
-      { label: "Open…", shortcut: "Ctrl+O", onClick: () => void openDoc() },
+      { label: t("menu.file.new"), shortcut: "Ctrl+N", onClick: () => void newDocument() },
+      { label: t("menu.file.open"), shortcut: "Ctrl+O", onClick: () => void openDoc() },
       { separator: true, label: "" },
-      { label: "Import Mesh…", onClick: () => void importModel(store, geometry) },
+      { label: t("menu.file.importMesh"), onClick: () => void importModel(store, geometry) },
       { separator: true, label: "" },
-      { label: "Save", shortcut: "Ctrl+S", onClick: () => void saveDocument(store) },
-      { label: "Save As…", shortcut: "Ctrl+Shift+S", onClick: () => void saveDocumentAs(store) },
+      { label: t("menu.file.save"), shortcut: "Ctrl+S", onClick: () => void saveDocument(store) },
+      { label: t("menu.file.saveAs"), shortcut: "Ctrl+Shift+S", onClick: () => void saveDocumentAs(store) },
       { separator: true, label: "" },
-      { label: "Export…", shortcut: "Ctrl+E", onClick: () => void exportModel(store, geometry) },
-      { label: "Export for Print (3MF)…", onClick: () => void exportPrintProject(store, geometry) },
+      { label: t("menu.file.export"), shortcut: "Ctrl+E", onClick: () => void exportModel(store, geometry) },
+      { label: t("menu.file.exportPrint"), onClick: () => void exportPrintProject(store, geometry) },
       { separator: true, label: "" },
-      { label: "Open in OrcaSlicer…", onClick: () => void openInOrca(store, geometry) },
-      { label: "Send to Printer…", onClick: () => void sendToPrinter(store, geometry) },
-      { label: "Camera…", onClick: () => void panels.showCameraPanel(activePrinterId()) },
+      { label: t("menu.file.openInOrca"), onClick: () => void openInOrca(store, geometry) },
+      { label: t("menu.file.sendToPrinter"), onClick: () => void sendToPrinter(store, geometry) },
+      { label: t("menu.file.camera"), onClick: () => void panels.showCameraPanel(activePrinterId()) },
     ],
   },
   {
-    label: "Edit",
+    label: t("menu.edit.title"),
     items: [
-      { label: "Undo", shortcut: "Ctrl+Z", disabled: () => !(sketch.active ? sketch.canUndoSketch : store.canUndo), onClick: () => doUndo() },
-      { label: "Redo", shortcut: "Ctrl+Y", disabled: () => !(sketch.active ? sketch.canRedoSketch : store.canRedo), onClick: () => doRedo() },
+      { label: t("menu.edit.undo"), shortcut: "Ctrl+Z", disabled: () => !(sketch.active ? sketch.canUndoSketch : store.canUndo), onClick: () => doUndo() },
+      { label: t("menu.edit.redo"), shortcut: "Ctrl+Y", disabled: () => !(sketch.active ? sketch.canRedoSketch : store.canRedo), onClick: () => doRedo() },
       { separator: true, label: "" },
       {
-        label: "Delete",
+        label: t("common.delete"),
         shortcut: "Del",
         disabled: () => !selectedFeature,
         onClick: () => {
@@ -454,46 +461,48 @@ new Menubar(document.getElementById("menubar")!, [
         },
       },
       {
-        label: "Suppress / Unsuppress",
+        label: t("menu.edit.suppress"),
         disabled: () => !selectedFeature,
         onClick: () => selectedFeature && store.toggleSuppress(selectedFeature),
       },
+      { separator: true, label: "" },
+      { label: t("settings.menuItem"), onClick: () => openLanguageSettings({ isDirty: () => store.dirty }) },
     ],
   },
   {
-    label: "View",
+    label: t("menu.view.title"),
     items: [
-      { label: "SpaceMouse: Move Object", checked: () => getSpaceMouseMode() === "object", onClick: () => setSpaceMouseMode("object") },
-      { label: "SpaceMouse: Move Camera", checked: () => getSpaceMouseMode() === "camera", onClick: () => setSpaceMouseMode("camera") },
+      { label: t("menu.view.spaceMouseObject"), checked: () => getSpaceMouseMode() === "object", onClick: () => setSpaceMouseMode("object") },
+      { label: t("menu.view.spaceMouseCamera"), checked: () => getSpaceMouseMode() === "camera", onClick: () => setSpaceMouseMode("camera") },
       { separator: true, label: "" },
-      { label: "3D Mouse Settings…", onClick: () => spaceMouseSettings.open() },
+      { label: t("menu.view.spaceMouseSettings"), onClick: () => spaceMouseSettings.open() },
     ],
   },
   {
-    label: "TinkerAtlas",
+    label: t("menu.tinkeratlas.title"),
     items: [
-      { label: "Welcome Screen", onClick: () => welcome.open() },
+      { label: t("menu.tinkeratlas.welcome"), onClick: () => welcome.open() },
       { separator: true, label: "" },
-      { label: "Publish to TinkerAtlas…", onClick: () => void publishToTinkerAtlas(store, geometry, viewport) },
+      { label: t("menu.tinkeratlas.publish"), onClick: () => void publishToTinkerAtlas(store, geometry, viewport) },
       { separator: true, label: "" },
-      { label: "Sign in…", disabled: () => !!currentAccount(), onClick: () => void openSignInDialog() },
-      { label: "Sign out", disabled: () => !currentAccount(), onClick: () => void signOutFlow() },
+      { label: t("menu.tinkeratlas.signIn"), disabled: () => !!currentAccount(), onClick: () => void openSignInDialog() },
+      { label: t("menu.tinkeratlas.signOut"), disabled: () => !currentAccount(), onClick: () => void signOutFlow() },
     ],
   },
   {
-    label: "Help",
+    label: t("menu.help.title"),
     items: [
-      { label: "Keyboard Shortcuts", shortcut: "?", onClick: () => toggleShortcutHUD() },
-      { label: "Customize Shortcuts…", onClick: () => openShortcutSettings() },
+      { label: t("menu.help.shortcuts"), shortcut: "?", onClick: () => toggleShortcutHUD() },
+      { label: t("menu.help.customizeShortcuts"), onClick: () => openShortcutSettings() },
       { separator: true, label: "" },
       // A tester asked for "a reference manual or other description of each
       // operation". Eight tutorial videos and a README already existed and
       // nothing in the app linked to either, so Help offered no help at all.
-      { label: "Tutorial Videos (8)", onClick: () => void openHelp(TUTORIALS_URL) },
-      { label: "Guide on GitHub", onClick: () => void openHelp(GUIDE_URL) },
+      { label: t("menu.help.tutorials", { count: 8 }), onClick: () => void openHelp(TUTORIALS_URL) },
+      { label: t("menu.help.guide"), onClick: () => void openHelp(GUIDE_URL) },
       { separator: true, label: "" },
-      { label: "Check for Updates…", onClick: () => void checkForUpdates(true) },
-      { label: "About SindriCAD", onClick: () => void showAbout() },
+      { label: t("menu.help.checkUpdates"), onClick: () => void checkForUpdates(true) },
+      { label: t("menu.help.about"), onClick: () => void showAbout() },
     ],
   },
 ]);
@@ -600,7 +609,7 @@ viewport.onHit = (hit) => {
   if (hit?.kind === "face") {
     const owner = featureForFace(hit.faceId);
     if (owner) selectFeature(owner); // show which feature this face came from
-    setPrompt("Del to delete this face (removes it + heals) · Extrude to push/cut it");
+    setPrompt(t("status.faceHit"));
   }
 };
 
@@ -616,7 +625,7 @@ function deleteSelectedFace(): boolean {
     ...(fsel.bodyId ? { body: fsel.bodyId } : {}),
   } as Feature);
   viewport.clearSelection();
-  setStatus("Deleting face…", ""); // real outcome (healed, or an error) comes from the rebuild
+  setStatus(t("status.deletingFace"), ""); // real outcome (healed, or an error) comes from the rebuild
   setPrompt(null);
   return true;
 }
@@ -630,7 +639,7 @@ function startFaceOffset(mode: "offsetFace" | "thicken") {
   // here is the same dead click the toolBusy() outage produced everywhere else.
   if (toolBusy()) { setStatus(TOOL_BUSY_MESSAGE, ""); return; }
   if (!hasBody()) {
-    setStatus("Create or import a body first", "");
+    setStatus(t("status.needBody.generic"), "");
     return;
   }
   faceOffset.start(mode, (id) => { if (id) selectFeature(id); });
@@ -794,7 +803,7 @@ viewport.regionPickAt = (x, y, additive) => {
   if (!wr) return false;
   overlay.toggleRegionSelection(wr, additive);
   const n = overlay.selectedRegions().length;
-  setPrompt(n ? `${n} profile area${n > 1 ? "s" : ""} selected — Extrude (E) · Ctrl-click adds · Esc clears` : null);
+  setPrompt(n ? t("status.regionsSelected", { count: n }) : null);
   return true;
 };
 // Esc clears a pre-selected profile-area selection (when not in a tool/sketch)
@@ -859,7 +868,7 @@ viewport.onBodySelectionChange = () => {
     // the selected row, which is what the user clicked.
     if (maker) inspector.select(maker);
   }
-  setPrompt(sel.length ? `${sel.length} bod${sel.length > 1 ? "ies" : "y"} selected — Move (M) to drag · Esc to clear` : null);
+  setPrompt(sel.length ? t("status.bodiesSelected", { count: sel.length }) : null);
 };
 // Esc clears the ambient selection the prompt just promised it would.
 // NOT gated on `viewport.selecting` any more: clicking a body in the browser
@@ -890,7 +899,7 @@ store.onDocChange(() => {
 viewport.onSelectionChange = () => {
   if (toolBusy()) return;
   const n = viewport.selectedEdgeSelectors().length;
-  setPrompt(n ? `${n} edge${n > 1 ? "s" : ""} selected — Fillet or Chamfer to apply · Esc to clear` : null);
+  setPrompt(n ? t("status.edgesSelected", { count: n }) : null);
 };
 
 // --- rebuild pipeline -> viewport ---
@@ -1028,9 +1037,9 @@ store.onBuild((s) => {
         // end.
         const repairable = repairableDiagFor(s.result?.diagnostics, id);
         const action = repairable?.at
-          ? { label: "Re-pick face", onClick: () => starters.repickReference(id, repairable.at!) }
-          : { label: "Show", onClick: () => selectFeature(id) };
-        toast(`⚠ ${label} failed: ${featureErrorText(e, s.result.bodies)}`, { kind: "error", action });
+          ? { label: t("feature.repickFace"), onClick: () => starters.repickReference(id, repairable.at!) }
+          : { label: t("common.show"), onClick: () => selectFeature(id) };
+        toast(t("feature.failed", { name: label, reason: featureErrorText(e, s.result.bodies) }), { kind: "error", action });
         if (id === lastCommittedId) selectFeature(id);
       }
       prevErrorIds = ids;
@@ -1045,9 +1054,9 @@ store.onBuild((s) => {
   // would stay one edit behind the cut it drives until something else changed.
   if (s.result && !s.building && !sketch.active) overlay.update(store.document);
   if (s.errorMessage) {
-    setStatus(`⚠ ${s.errorFeatureId ?? ""}: ${s.errorMessage}`, "error");
+    setStatus(t("status.buildError", { id: s.errorFeatureId ?? "", message: s.errorMessage }), "error");
   } else if (!s.building) {
-    setStatus("ready", "connected");
+    setStatus(t("status.ready"), "connected");
   }
 });
 
@@ -1072,7 +1081,7 @@ geometry.onStatus((connected) => {
   // Once the shell has reported the engine gone the client has stopped, and a
   // status line that keeps promising a connection is the same lie the endless
   // reconnect toast was.
-  if (!connected) setStatus(engineDown ? ENGINE_DOWN : "connecting to sidecar…", "error");
+  if (!connected) setStatus(engineDown ? ENGINE_DOWN : t("status.connecting"), "error");
   else {
     // A socket that actually opened is the only thing that can retire the
     // report of a dead engine: after "Try again" the flag stays set until one
@@ -1082,47 +1091,49 @@ geometry.onStatus((connected) => {
   }
 });
 
+// The prompt for each sketch tool, as a locale key (sketch.prompt.<tool>); the
+// text itself lives in locales/en.json.
 const SKETCH_PROMPTS: Record<string, string> = {
   // Re-editing a sketch now lands here (sketchMode.enter), so this line is the
   // first thing a user sees over their existing geometry. It used to read only
   // "Pick a tool: …", which never mentioned that clicking the geometry does
   // anything — the same blind spot as field report c9db7ec2.
-  select: "Select: click geometry to pick it · drag to move · Delete to remove · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
-  line: "Line: click points · type length + Tab + angle · Enter to commit · click the start to close · Esc",
-  rectangle: "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
-  circle: "Circle: click center, then radius · type ⌀ · Enter · Esc",
-  arc: "Arc: click start, click end, then click a point it passes through · Esc",
-  spline: "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
-  point: "Point: click to place a reference point (snaps + constrains) · Esc",
-  polygon: "Polygon: click the center, then a vertex (6-sided, inscribed) · Esc",
-  slot: "Slot: click the two arc centers, then a point for the width · Esc",
-  circle2: "Circle (2-point): click two points on the diameter · Esc",
-  circle3: "Circle (3-point): click three points the circle passes through · Esc",
-  centerRectangle: "Center Rectangle: click the center, then a corner · Esc",
-  mirror: "Mirror: with entities selected, click a line to mirror across · Esc",
-  dimension: "Dimension: click a line (length) or circle (⌀), type a value + Enter · Esc",
-  trim: "Trim: click a curve (line/arc/circle) to remove it up to the nearest crossings · Esc",
-  fillet: "Fillet: click two lines, then type a radius + Enter · Esc",
-  chamfer: "Chamfer: click two lines, then type a setback distance + Enter · Esc",
-  offset: "Offset: click a curve, then type an offset distance + Enter · Esc",
-  extend: "Extend: click a line or arc near an end to lengthen it to the nearest crossing · Esc",
-  break: "Break: click a line or arc to split it (a circle opens into an arc) · Esc",
-  move: "Move: select entities first, then click a base point and a destination · Esc",
-  copy: "Copy: select entities, then click a base point and a destination (originals kept) · Esc",
-  rotate: "Rotate: select entities, click a center, then type an angle + Enter · Esc",
-  scale: "Scale: select entities, click a base point, then type a factor + Enter · Esc",
-  horizontal: "Horizontal: click a line to make it horizontal · Esc",
-  vertical: "Vertical: click a line to make it vertical · Esc",
-  parallel: "Parallel: click two lines to make the 2nd parallel to the 1st · Esc",
-  perpendicular: "Perpendicular: click two lines · Esc",
-  equal: "Equal: click two lines (equal length) or two circles/arcs (equal radius) · Esc",
-  tangent: "Tangent: click two curves (line, circle or arc) to make them tangent · Esc",
-  coincident: "Coincident: click two endpoints to make them coincide · Esc",
-  concentric: "Concentric: click two circles/arcs to share a center · Esc",
-  midpoint: "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
-  collinear: "Collinear: click two lines to put them on the same axis · Esc",
-  symmetric: "Symmetric: click two endpoints, then the symmetry axis line · Esc",
-  fix: "Fix: click a point, endpoint or circle/arc center to lock it in place · Esc",
+  select: "sketch.prompt.select",
+  line: "sketch.prompt.line",
+  rectangle: "sketch.prompt.rectangle",
+  circle: "sketch.prompt.circle",
+  arc: "sketch.prompt.arc",
+  spline: "sketch.prompt.spline",
+  point: "sketch.prompt.point",
+  polygon: "sketch.prompt.polygon",
+  slot: "sketch.prompt.slot",
+  circle2: "sketch.prompt.circle2",
+  circle3: "sketch.prompt.circle3",
+  centerRectangle: "sketch.prompt.centerRectangle",
+  mirror: "sketch.prompt.mirror",
+  dimension: "sketch.prompt.dimension",
+  trim: "sketch.prompt.trim",
+  fillet: "sketch.prompt.fillet",
+  chamfer: "sketch.prompt.chamfer",
+  offset: "sketch.prompt.offset",
+  extend: "sketch.prompt.extend",
+  break: "sketch.prompt.break",
+  move: "sketch.prompt.move",
+  copy: "sketch.prompt.copy",
+  rotate: "sketch.prompt.rotate",
+  scale: "sketch.prompt.scale",
+  horizontal: "sketch.prompt.horizontal",
+  vertical: "sketch.prompt.vertical",
+  parallel: "sketch.prompt.parallel",
+  perpendicular: "sketch.prompt.perpendicular",
+  equal: "sketch.prompt.equal",
+  tangent: "sketch.prompt.tangent",
+  coincident: "sketch.prompt.coincident",
+  concentric: "sketch.prompt.concentric",
+  midpoint: "sketch.prompt.midpoint",
+  collinear: "sketch.prompt.collinear",
+  symmetric: "sketch.prompt.symmetric",
+  fix: "sketch.prompt.fix",
 };
 
 // --- sketch mode state -> UI (ribbon context, palette, prompt) ---
@@ -1144,10 +1155,11 @@ sketch.onState = () => {
   // this can honestly report.
   toolCursor.setTool(sketch.active ? sketch.tool : null);
   palette.setVisible(sketch.active);
-  contextTab.textContent = sketch.active ? "SKETCH" : "SOLID";
+  setText(contextTab, sketch.active ? "ribbon.context.sketch" : "ribbon.context.solid");
   contextTab.classList.toggle("sketch", sketch.active);
   if (sketch.active) {
-    setPrompt(SKETCH_PROMPTS[sketch.tool] ?? null);
+    const promptKey = SKETCH_PROMPTS[sketch.tool];
+    setPrompt(promptKey ? t(promptKey) : null);
   } else {
     setPrompt(null);
   }
@@ -1217,12 +1229,12 @@ function editFeature(id: string) {
   const f = store.document.features.find((x) => x.id === id);
   if (!f) return;
   if (store.isSuppressed(id)) {
-    setStatus("Unsuppress the feature to edit it", "");
+    setStatus(t("status.unsuppressToEdit"), "");
     return;
   }
   const idx = store.document.features.findIndex((x) => x.id === id);
   if (idx >= store.rollbackIndex) {
-    setStatus("Roll the timeline forward to edit this feature", "");
+    setStatus(t("status.rollForwardToEdit"), "");
     return;
   }
   const done = (cid: string | null) => {
@@ -1328,16 +1340,16 @@ async function cancelSketch() {
   if (!sketch.active) return;
   if (sketch.hasDrawnGeometry()) {
     const { ask } = await import("@tauri-apps/plugin-dialog");
-    const ok = await ask("Leave this sketch and throw away what you drew in it?", {
-      title: "Cancel Sketch",
+    const ok = await ask(t("sketch.cancel.confirm"), {
+      title: t("sketch.cancel.title"),
       kind: "warning",
-      okLabel: "Discard sketch",
-      cancelLabel: "Keep editing",
+      okLabel: t("sketch.cancel.discard"),
+      cancelLabel: t("sketch.cancel.keep"),
     });
     if (!ok) return;
   }
   sketch.cancel();
-  setStatus("Sketch cancelled", "");
+  setStatus(t("status.sketchCancelled"), "");
 }
 
 function handleAction(action: string) {
@@ -1349,7 +1361,7 @@ function handleAction(action: string) {
   // an unrouted action would leave the new button silently doing nothing.
   if (action === "select") {
     if (sketch.active) sketch.setTool("select");
-    else setStatus("Enter a sketch to select sketch geometry", "");
+    else setStatus(t("status.enterSketchToSelect"), "");
     return;
   }
   // "Rect Pattern" / "Circular Pat." sit in the SKETCH ribbon's PATTERN group and
@@ -1374,7 +1386,7 @@ function handleAction(action: string) {
   if (action in SKETCH_MODIFY) {
     const tool = SKETCH_MODIFY[action];
     if (sketch.active) { if (tool) sketch.setTool(tool); }
-    else setStatus("Enter a sketch to use modify tools", "");
+    else setStatus(t("status.enterSketchToModify"), "");
     return;
   }
   if (action === "finish") return void sketch.finish(true);
@@ -1383,7 +1395,7 @@ function handleAction(action: string) {
   // every single sketch takes, and a checker's first job is to be trusted.
   if (action === "check-sketch") {
     if (sketch.active) sketch.runCheck();
-    else setStatus("Enter a sketch to check it", "");
+    else setStatus(t("status.enterSketchToCheck"), "");
     return;
   }
   if (action === "palette") return void palette.setVisible(true);
@@ -1501,7 +1513,7 @@ function handleAction(action: string) {
       break;
     case "measure":
       if (!hasBody()) {
-        setStatus("Measure: create or import a body first", "");
+        setStatus(t("status.needBody.measure"), "");
         break;
       }
       measure.start();
@@ -1518,12 +1530,12 @@ function handleAction(action: string) {
         break;
       }
       if (!hasBody()) {
-        setStatus("Section: create or import a body first", "");
+        setStatus(t("status.needBody.section"), "");
         break;
       }
       void (async () => {
-        const ax = await choose<"X" | "Y" | "Z">("Section — cut along which axis?", [
-          { value: "Z", label: "Z", hint: "horizontal cut" },
+        const ax = await choose<"X" | "Y" | "Z">(t("feature.section.axisTitle"), [
+          { value: "Z", label: "Z", hint: t("feature.section.horizontalHint") },
           { value: "X", label: "X" },
           { value: "Y", label: "Y" },
         ]);
@@ -1532,43 +1544,43 @@ function handleAction(action: string) {
       break;
     case "component-colors":
       if (!hasBody()) {
-        setStatus("Component colors: create or import a body first", "");
+        setStatus(t("status.needBody.componentColors"), "");
         break;
       }
       viewport.setAnalysis(viewport.analysis === "component" ? "none" : "component");
       panels.closeOverhangSettings(); // leaving draft mode
-      setStatus(viewport.analysis === "component" ? "Component colors on" : "Component colors off", "");
+      setStatus(viewport.analysis === "component" ? t("status.componentColorsOn") : t("status.componentColorsOff"), "");
       break;
     case "draft-analysis":
       if (!hasBody()) {
-        setStatus("Draft analysis: create or import a body first", "");
+        setStatus(t("status.needBody.draftAnalysis"), "");
         break;
       }
       viewport.setAnalysis(viewport.analysis === "draft" ? "none" : "draft");
       if (viewport.analysis === "draft") {
         const { dir, threshold } = viewport.draftConfig;
-        setStatus(`Overhang: red = unsupported below ${threshold}° from horizontal (build ${dir})`, "");
+        setStatus(t("status.overhang", { threshold, dir }), "");
         panels.showOverhangSettings();
       } else {
         panels.closeOverhangSettings();
-        setStatus("Draft analysis off", "");
+        setStatus(t("status.draftAnalysisOff"), "");
       }
       break;
     case "zebra":
       if (!hasBody()) {
-        setStatus("Zebra: create or import a body first", "");
+        setStatus(t("status.needBody.zebra"), "");
         break;
       }
       viewport.setZebra(!viewport.zebraOn);
-      setStatus(viewport.zebraOn ? "Zebra stripes on (surface continuity)" : "Zebra off", "");
+      setStatus(viewport.zebraOn ? t("status.zebraOn") : t("status.zebraOff"), "");
       break;
     case "curvature":
       if (!hasBody()) {
-        setStatus("Curvature combs: create or import a body first", "");
+        setStatus(t("status.needBody.curvature"), "");
         break;
       }
       viewport.setCurvatureCombs(!viewport.combsOn);
-      setStatus(viewport.combsOn ? "Curvature combs on (edge bend visualization)" : "Curvature combs off", "");
+      setStatus(viewport.combsOn ? t("status.curvatureOn") : t("status.curvatureOff"), "");
       break;
     case "interference":
       void panels.showInterference();
@@ -1591,14 +1603,13 @@ function handleAction(action: string) {
       break;
     case "persp": {
       const mode = viewport.cycleProjection();
-      projBtn.textContent =
-        mode === "auto" ? "Auto" : mode === "ortho" ? "Ortho" : "Persp";
+      setText(projBtn, mode === "auto" ? "menu.view.projection.auto" : mode === "ortho" ? "menu.view.projection.ortho" : "menu.view.projection.persp");
       break;
     }
     case "selmode": {
       const next = viewport.selecting === "faces" ? "bodies" : "faces";
       viewport.setSelectionMode(next);
-      selBtn.textContent = next === "bodies" ? "Bodies" : "Faces";
+      setText(selBtn, next === "bodies" ? "menu.view.select.bodies" : "menu.view.select.faces");
       selBtn.classList.toggle("active", next === "bodies");
       break;
     }
@@ -1606,14 +1617,14 @@ function handleAction(action: string) {
     case "selmode-bodies": {
       const mode = action === "selmode-bodies" ? "bodies" : "faces";
       viewport.setSelectionMode(mode);
-      selBtn.textContent = mode === "bodies" ? "Bodies" : "Faces";
+      setText(selBtn, mode === "bodies" ? "menu.view.select.bodies" : "menu.view.select.faces");
       selBtn.classList.toggle("active", mode === "bodies");
       break;
     }
     case "hide-selected": {
       const ids = viewport.getSelectedBodies();
       if (!ids.length) {
-        setStatus("Hide: select bodies first (press 2 for body select)", "");
+        setStatus(t("status.hideSelectFirst"), "");
         break;
       }
       store.setBodiesVisibility(new Map(ids.map((id) => [id, false])));
@@ -1628,7 +1639,7 @@ function handleAction(action: string) {
       toggleShortcutHUD();
       break;
     case "compute-all":
-      setStatus("Compute All — rebuilding everything from scratch…", "");
+      setStatus(t("status.computeAll"), "");
       void store.computeAllNow();
       break;
   }

@@ -20,6 +20,7 @@ import * as THREE from "three";
 import type { StandardView } from "./cameras";
 import type { ViewCubeSide, ViewOverride } from "../types";
 import * as C from "./colors3d";
+import { t } from "../i18n";
 
 const SIZE = 120; // corner viewport, CSS px
 const MARGIN = 14; // gap from the top-right edge
@@ -33,12 +34,12 @@ export const FACE_VIEWS: Record<
   ViewCubeSide,
   { view: StandardView; normal: THREE.Vector3; up: THREE.Vector3; label: string }
 > = {
-  front: { view: "front", normal: new THREE.Vector3(0, -1, 0), up: new THREE.Vector3(0, 0, 1), label: "FRONT" },
-  back: { view: "back", normal: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1), label: "BACK" },
-  right: { view: "right", normal: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 0, 1), label: "RIGHT" },
-  left: { view: "left", normal: new THREE.Vector3(-1, 0, 0), up: new THREE.Vector3(0, 0, 1), label: "LEFT" },
-  top: { view: "top", normal: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0), label: "TOP" },
-  bottom: { view: "bottom", normal: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, -1, 0), label: "BOTTOM" },
+  front: { view: "front", normal: new THREE.Vector3(0, -1, 0), up: new THREE.Vector3(0, 0, 1), label: t("viewport.cube.front") },
+  back: { view: "back", normal: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1), label: t("viewport.cube.back") },
+  right: { view: "right", normal: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 0, 1), label: t("viewport.cube.right") },
+  left: { view: "left", normal: new THREE.Vector3(-1, 0, 0), up: new THREE.Vector3(0, 0, 1), label: t("viewport.cube.left") },
+  top: { view: "top", normal: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0), label: t("viewport.cube.top") },
+  bottom: { view: "bottom", normal: new THREE.Vector3(0, 0, -1), up: new THREE.Vector3(0, -1, 0), label: t("viewport.cube.bottom") },
 };
 
 // The cube's own surfaces are local; the two HOVER colours are the shared
@@ -395,11 +396,11 @@ export class ViewCube {
     const has = !!this.hooks.getOverrides()[side];
     const items: Array<{ label: string; onClick: () => void; disabled?: boolean }> = [
       {
-        label: `Set "${FACE_VIEWS[side].label}" from face…`,
+        label: t("viewport.cube.setFromFace", { side: FACE_VIEWS[side].label }),
         onClick: () => this.hooks.beginSetOverride(side),
       },
       {
-        label: "Reset to default",
+        label: t("viewport.cube.resetDefault"),
         disabled: !has,
         onClick: () => {
           this.hooks.resetOverride(side);

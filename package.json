@@ -14,7 +14,9 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "prepare": "git config core.hooksPath .githooks || true",
-    "postinstall": "node scripts/vendor-planegcs.mjs"
+    "postinstall": "node scripts/vendor-planegcs.mjs",
+    "i18n:check": "node scripts/i18n-check.mjs",
+    "i18n:lint": "node scripts/i18n-lint.mjs"
   },
   "dependencies": {
     "@salusoft89/planegcs": "^1.1.7",

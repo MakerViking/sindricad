@@ -38,6 +38,7 @@ export function sceneStats(s: SceneStatsSource): string[] {
 
   const w = s.canvas.clientWidth, h = s.canvas.clientHeight;
   const mp = ((w * h * s.pixelRatio * s.pixelRatio) / 1e6).toFixed(1);
+  // i18n-ignore scene stats are breadcrumbs, English on purpose
   out.push(`[view] ${w}x${h} css @ dpr ${s.pixelRatio} = ${mp}M fragments`);
 
   if (s.model) {
@@ -58,9 +59,11 @@ export function sceneStats(s: SceneStatsSource): string[] {
     out.push("[mesh] no model built");
   }
 
+  // i18n-ignore frame stats are breadcrumbs, English on purpose
   out.push(s.frameMs != null
     ? `[frame] ${s.frameMs.toFixed(1)}ms (${Math.round(1000 / s.frameMs)} fps) at report time`
     : "[frame] viewport idle at report time");
+  // i18n-ignore draw stats are breadcrumbs, English on purpose
   if (s.render) out.push(`[draw] ${s.render.calls} calls · ${s.render.triangles} tris last frame`);
   if (s.seam) {
     out.push(s.seam.skipped

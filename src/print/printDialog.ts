@@ -8,6 +8,7 @@
 
 import { esc } from "../ui/escape";
 import { icon } from "../ui/icons";
+import { t } from "../i18n";
 import type { StartOpts, ToolheadFilament } from "./printerClient";
 
 export interface LogicalSlot {
@@ -60,12 +61,13 @@ export function filamentMappingDialog(
     backdrop.className = "choice-backdrop";
     const card = document.createElement("div");
     card.className = "choice-card print-map-card";
-    card.innerHTML = `<div class="choice-title">Send to printer — filament mapping</div>`;
+    card.innerHTML = `<div class="choice-title" data-i18n="print.mapping.title">${esc(t("print.mapping.title"))}</div>`;
 
     const swatch = (c: string) => `<span class="print-swatch" style="background:${esc(c)}"></span>`;
-    const thLabel = (t: ToolheadFilament) => {
-      const name = `${t.vendor} ${t.material}`.trim() || `Toolhead ${t.index + 1}`;
-      return `${t.index + 1}: ${name}${t.present ? "" : " (empty)"}`;
+    const thLabel = (th: ToolheadFilament) => {
+      const name = `${th.vendor} ${th.material}`.trim() || t("print.mapping.toolheadN", { n: th.index + 1 });
+      const params = { n: th.index + 1, name };
+      return th.present ? t("print.mapping.toolheadLabel", params) : t("print.mapping.toolheadLabelEmpty", params);
     };
 
     const table = document.createElement("div");
@@ -79,7 +81,7 @@ export function filamentMappingDialog(
         .map((t) => `<option value="${t.index}"${t.index === def ? " selected" : ""}>${esc(thLabel(t))}</option>`)
         .join("");
       row.innerHTML =
-        `<span class="print-map-slot">${swatch(slot.color)}<span>${esc(slot.name || `Filament ${slot.index + 1}`)}</span></span>` +
+        `<span class="print-map-slot">${swatch(slot.color)}<span>${esc(slot.name || t("print.filamentN", { n: slot.index + 1 }))}</span></span>` +
         `<span class="print-map-arrow">${icon("arrowRight")}</span>` +
         `<select class="print-map-select" data-logical="${slot.index}">${optionsHtml}</select>`;
       const sel = row.querySelector("select")!;
@@ -94,19 +96,19 @@ export function filamentMappingDialog(
     const optRow = (id: string, label: string, checked = false) =>
       `<label class="choice-check"><input type="checkbox" data-opt="${id}"${checked ? " checked" : ""}><span>${esc(label)}</span></label>`;
     optWrap.innerHTML =
-      optRow("bedLevel", "Auto bed leveling") +
-      optRow("flowCalibrate", "Flow calibrate") +
-      optRow("timeLapseCamera", "Timelapse");
+      optRow("bedLevel", t("print.mapping.bedLevel")) +
+      optRow("flowCalibrate", t("print.mapping.flowCalibrate")) +
+      optRow("timeLapseCamera", t("print.mapping.timelapse"));
     card.appendChild(optWrap);
 
     const rowBtns = document.createElement("div");
     rowBtns.className = "choice-row";
     const cancel = document.createElement("button");
     cancel.className = "choice-btn";
-    cancel.innerHTML = "<span>Cancel</span>";
+    cancel.innerHTML = `<span data-i18n="common.cancel">${esc(t("common.cancel"))}</span>`;
     const ok = document.createElement("button");
     ok.className = "choice-btn choice-primary";
-    ok.innerHTML = "<span>Upload &amp; Print</span>";
+    ok.innerHTML = `<span data-i18n="print.mapping.uploadAndPrint">${esc(t("print.mapping.uploadAndPrint"))}</span>`;
     rowBtns.append(cancel, ok);
     card.appendChild(rowBtns);
     backdrop.appendChild(card);

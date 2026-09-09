@@ -1,0 +1,1784 @@
+{
+  "about": {
+    "title": "About SindriCAD",
+    "translations": "Translations",
+    "version": "Version {version}"
+  },
+  "browser": {
+    "bodyTitle": "Click to select (Ctrl+click adds) · double-click to rename · right-click for Color / Rename / Delete · eye to show/hide",
+    "empty": {
+      "bodies": "No bodies yet",
+      "planes": "No planes yet",
+      "sketches": "No sketches yet"
+    },
+    "folder": {
+      "bodies": "Bodies",
+      "origin": "Origin",
+      "palette": "Palette",
+      "planes": "Planes",
+      "sketches": "Sketches"
+    },
+    "hideNamed": "Hide {name}",
+    "originPlane": "{plane} plane",
+    "originPlaneTitle": "Start a sketch on the {plane} plane",
+    "palette": {
+      "cantReach": "Can't reach the printer: {message}",
+      "diffLine": "Slot {n}: {from} → {to}",
+      "noFilament": "No filament loaded on the printer.",
+      "overwrite": "Overwrite",
+      "overwriteQuestion": "Overwrite palette from printer?",
+      "printerConnection": "Printer connection",
+      "printerError": "Printer error: {error}",
+      "slotCount": {
+        "one": "{count} slot",
+        "other": "{count} slots"
+      },
+      "slotTitle": "Filament slot {n} → toolhead {n}",
+      "slotTitleMaterial": "Filament slot {n} → toolhead {n} ({material})",
+      "stale": {
+        "one": "Printer filaments changed since sync (slot {slots}) — click the sync button to re-sync",
+        "other": "Printer filaments changed since sync (slots {slots}) — click the sync button to re-sync"
+      },
+      "sync": "Sync filaments from printer",
+      "syncQuestion": "Sync palette from printer?",
+      "synced": "Palette synced from printer."
+    },
+    "planeTitle": "Construction plane — select then Split Body cuts by it · right-click for Cut / Rename / Delete · eye to show/hide",
+    "showNamed": "Show {name}",
+    "sketchTitle": "Double-click to edit · right-click for Edit / Rename / Delete · eye to show/hide",
+    "title": "Browser",
+    "unnamedPart": "Part"
+  },
+  "bug": {
+    "button": "Report a bug",
+    "category": {
+      "label": "What kind of report is this?",
+      "bug": "Something is broken",
+      "translation": "A translation is wrong or missing",
+      "other": "Something else"
+    },
+    "copied": " A copy is on your clipboard — paste it in the SindriCAD Discord.",
+    "failed": "Couldn't send the report{reason}.",
+    "includeDoc": "Include current document (contains your design)",
+    "includeLog": "Include geometry-engine log (recommended — usernames are removed)",
+    "localeLine": "language: {locale}",
+    "placeholder": "What happened? What did you expect?",
+    "preview": "What will be sent",
+    "send": "Send report",
+    "sent": "Bug report sent. Thank you!",
+    "sentDuplicate": "Thanks — this matches a known report; the existing one was updated.",
+    "stringKey": "String (from the element you last pointed at)",
+    "stringLine": "string: {key}",
+    "title": "Report a bug",
+    "translationPlaceholder": "What does it say, and what should it say?"
+  },
+  "chrome": {
+    "context": {
+      "sketch": "SKETCH",
+      "solid": "SOLID"
+    },
+    "fit": "Fit",
+    "fitTitle": "Fit to view",
+    "fps": {
+      "idle": "idle"
+    },
+    "proj": {
+      "auto": "Auto",
+      "ortho": "Ortho",
+      "persp": "Persp",
+      "title": "Projection: Persp / Ortho / Auto (ortho when viewing straight-on)"
+    },
+    "redo": "Redo",
+    "redoTitle": "Redo (Ctrl+Y)",
+    "selmode": {
+      "bodies": "Bodies",
+      "faces": "Faces",
+      "title": "Toggle selecting Faces / whole Bodies"
+    },
+    "status": {
+      "connecting": "connecting…"
+    },
+    "undo": "Undo",
+    "undoTitle": "Undo (Ctrl+Z)",
+    "units": {
+      "label": "Units",
+      "title": "Display units (geometry is stored in mm)"
+    },
+    "view": {
+      "front": "Front",
+      "frontTitle": "Front",
+      "iso": "ISO",
+      "isoTitle": "Isometric",
+      "right": "Right",
+      "rightTitle": "Right",
+      "top": "Top",
+      "topTitle": "Top"
+    }
+  },
+  "common": {
+    "add": "Add",
+    "angle": "Angle",
+    "apply": "Apply",
+    "bodies": {
+      "one": "{count} body",
+      "other": "{count} bodies"
+    },
+    "body": "Body",
+    "cancel": "Cancel",
+    "close": "Close",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "diameter": "Diameter",
+    "discard": "Discard",
+    "done": "Done",
+    "edges": {
+      "one": "{count} edge",
+      "other": "{count} edges"
+    },
+    "edit": "Edit",
+    "error": "error",
+    "escToClose": "Esc to close",
+    "faces": {
+      "one": "{count} face",
+      "other": "{count} faces"
+    },
+    "features": {
+      "one": "{count} feature",
+      "other": "{count} features"
+    },
+    "flip": "Flip",
+    "height": "Height",
+    "hide": "Hide",
+    "later": "Later",
+    "length": "Length",
+    "maximize": "Maximize",
+    "minimize": "Minimize",
+    "no": "No",
+    "none": "None",
+    "off": "Off",
+    "ok": "OK",
+    "on": "On",
+    "paletteSlot": "{name} (slot {n})",
+    "planeName": "Plane{n}",
+    "radius": "Radius",
+    "redo": "Redo",
+    "rename": "Rename",
+    "restore": "Restore",
+    "retry": "Retry",
+    "select": "Select",
+    "show": "Show",
+    "showHide": "Show/hide",
+    "size": "Size",
+    "somethingWentWrong": "Something went wrong — check the console for details",
+    "thisBody": "this body",
+    "tryAgain": "Try again",
+    "undo": "Undo",
+    "unknownError": "unknown error",
+    "untitled": "Untitled",
+    "width": "Width",
+    "yes": "Yes"
+  },
+  "context": {
+    "color": "Color",
+    "combineWith": "Combine with…",
+    "cutAllBodies": "Cut all bodies",
+    "deleteFaceHeal": "Delete face (heal)",
+    "deletePlane": "Delete plane",
+    "editFeature": "Edit {name}",
+    "fitView": "Fit view",
+    "hideBody": "Hide body",
+    "hidePlane": "Hide plane",
+    "isolateBody": "Isolate body",
+    "look": "Look",
+    "measureFromHere": "Measure from here",
+    "offsetPlane": "Offset plane",
+    "offsetPlaneFromFace": "Offset plane from face",
+    "pressPullFace": "Press/Pull face",
+    "properties": "Properties",
+    "removeBody": "Remove body",
+    "renameEllipsis": "Rename…",
+    "repeat": "Repeat {command}",
+    "repeatLast": "Repeat last command",
+    "selectCoplanar": "Select coplanar faces",
+    "selectFeature": "Select {name}",
+    "selectedCoplanar": {
+      "one": "Selected {count} coplanar face",
+      "other": "Selected {count} coplanar faces"
+    },
+    "showAllBodies": "Show all bodies",
+    "sketchOnFace": "Sketch on this face",
+    "sketchOnPlane": "Sketch on plane",
+    "view": {
+      "front": "Front",
+      "isometric": "Isometric",
+      "right": "Right",
+      "top": "Top"
+    }
+  },
+  "engine": {
+    "death": {
+      "crash": "The geometry engine crashed{detail}. Save your work, then restart SindriCAD.",
+      "portInUse": "SindriCAD could not start its geometry engine: {cause}. Another copy of SindriCAD may still be running. Close it and open SindriCAD again.",
+      "portInUseDefault": "its port is already in use",
+      "startupFailure": "The geometry engine could not start{detail}. Modelling is unavailable until you restart SindriCAD. If it happens again, {reportHere}."
+    },
+    "down": "the geometry engine is not running; restart SindriCAD",
+    "error": {
+      "badRequest": "the geometry engine rejected this request (update SindriCAD)",
+      "bodyTooLarge": "this body is too large to process",
+      "budgetExhausted": "this operation ran out of its time budget",
+      "cancelled": "cancelled",
+      "connectionLost": "geometry engine connection lost",
+      "engineUnavailable": "the geometry engine is not running; restart SindriCAD",
+      "exportCancelled": "export cancelled",
+      "importCancelled": "import cancelled",
+      "importFailed": "import failed",
+      "kernelCrashed": "the geometry kernel crashed on this operation",
+      "noMesh": "geometry engine returned no mesh",
+      "replyTooLarge": "the result is too large to display",
+      "rustImportUnsupported": "geometry import isn't supported by the Rust backend yet — run without VITE_GEOM=rust",
+      "rustInterferenceUnsupported": "interference check isn't supported by the Rust backend yet — run without VITE_GEOM=rust",
+      "stalled": "the geometry engine stopped responding",
+      "timedOut": "operation timed out — geometry too complex or degenerate",
+      "tooLarge": "This model is too large for the geometry engine: {size} MiB, and the limit is {limit} MiB. Remove or simplify the imported body, then try again.",
+      "tooLargeRefused": "That model is too large for the geometry engine to accept. Remove or simplify the imported body, then try again.",
+      "unknownOp": "the geometry engine does not know this operation (update SindriCAD)"
+    },
+    "reportHere": "click the bug button in the bottom-right corner so I get the log",
+    "wire": {
+      "incomplete": "the geometry engine's reply was incomplete",
+      "manifestMismatch": "the geometry engine sent a body that did not match its manifest",
+      "outOfOrder": "the geometry engine's reply arrived out of order",
+      "restarted": "the geometry engine restarted its reply mid-send",
+      "stalledMidReply": "the geometry engine stopped part-way through its reply",
+      "unreadable": "the geometry engine sent an unreadable reply"
+    }
+  },
+  "feature": {
+    "badNumber": "Can't read that number — fix the value, or Esc to cancel",
+    "dim": {
+      "distance": "D",
+      "radius": "R",
+      "thickness": "T"
+    },
+    "edge": {
+      "dragPrompt": {
+        "distance": "Drag the arrow to set distance (hold Ctrl for fine steps) · type a value + Enter · click edges to add/remove them · click empty space to commit · Esc to cancel",
+        "radius": "Drag the arrow to set radius (hold Ctrl for fine steps) · type a value + Enter · click edges to add/remove them · click empty space to commit · Esc to cancel"
+      },
+      "editPrompt": {
+        "chamfer": "Editing chamfer: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)",
+        "fillet": "Editing fillet: click an edge to add or remove it · drag the arrow (Ctrl = fine) or type a value · Enter/click empty space to apply · Esc to cancel (later features are hidden while editing)"
+      },
+      "members": {
+        "creating": {
+          "chamfer": {
+            "one": "Creating chamfer: {count} edge · click edges to add/remove · Enter/click empty space to commit · Esc to cancel",
+            "other": "Creating chamfer: {count} edges · click edges to add/remove · Enter/click empty space to commit · Esc to cancel"
+          },
+          "fillet": {
+            "one": "Creating fillet: {count} edge · click edges to add/remove · Enter/click empty space to commit · Esc to cancel",
+            "other": "Creating fillet: {count} edges · click edges to add/remove · Enter/click empty space to commit · Esc to cancel"
+          }
+        },
+        "editing": {
+          "chamfer": {
+            "one": "Editing chamfer: {count} edge · click edges to add/remove · Enter/click empty space to apply · Esc to cancel",
+            "other": "Editing chamfer: {count} edges · click edges to add/remove · Enter/click empty space to apply · Esc to cancel"
+          },
+          "fillet": {
+            "one": "Editing fillet: {count} edge · click edges to add/remove · Enter/click empty space to apply · Esc to cancel",
+            "other": "Editing fillet: {count} edges · click edges to add/remove · Enter/click empty space to apply · Esc to cancel"
+          }
+        }
+      },
+      "noEdges": "No edges selected — click an edge to add one · Esc to cancel",
+      "pick": {
+        "chamfer": "Select an edge to chamfer (Ctrl-click first to pre-select several)",
+        "fillet": "Select an edge to fillet (Ctrl-click first to pre-select several)"
+      },
+      "previewFailed": {
+        "chamfer": "⚠ chamfer failed: {text}",
+        "fillet": "⚠ fillet failed: {text}"
+      }
+    },
+    "extrude": {
+      "dragPrompt": "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · negative = cut · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel",
+      "dragPromptAfterTarget": "Drag the arrow or type a value + Enter · T = extrude up to a face or plane · click to commit · Esc to cancel",
+      "edit": {
+        "cannotShow": {
+          "one": "Editing extrude: its area cannot be shown · it is kept as saved · what you pick replaces it · select a profile · Esc to cancel",
+          "other": "Editing extrude: its {count} areas cannot be shown · they are kept as saved · what you pick replaces them · select a profile · Esc to cancel"
+        },
+        "dragPrompt": "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to add/remove · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel (later features are hidden while editing)",
+        "droppedNewSet": {
+          "one": "Editing extrude: {count} area that could not be shown is no longer kept · what you pick is the new set",
+          "other": "Editing extrude: {count} areas that could not be shown are no longer kept · what you pick is the new set"
+        },
+        "droppedPickAgain": {
+          "one": "Editing extrude: {count} unmatched area is no longer kept, pick again if the feature still needs it · Ctrl-click areas to add/remove · drag the arrow or type a value + Enter · click to commit · Esc to cancel",
+          "other": "Editing extrude: {count} unmatched areas are no longer kept, pick again if the feature still needs them · Ctrl-click areas to add/remove · drag the arrow or type a value + Enter · click to commit · Esc to cancel"
+        },
+        "droppedThenPick": {
+          "one": "{count} unmatched area is no longer kept · Select a profile to extrude · Ctrl-click adds areas · Enter to confirm",
+          "other": "{count} unmatched areas are no longer kept · Select a profile to extrude · Ctrl-click adds areas · Enter to confirm"
+        },
+        "foreignRegion": "That area belongs to a different sketch · an extrude uses one sketch, so this edit can only use its own · Esc, then extrude the other sketch separately",
+        "notFound": {
+          "one": "Editing extrude: its area was not found (sketch changed?) · it is kept until you pick · what you pick replaces it · select a profile · Esc to cancel",
+          "other": "Editing extrude: its {count} areas were not found (sketch changed?) · they are kept until you pick · what you pick replaces them · select a profile · Esc to cancel"
+        },
+        "partlyUnmatched": {
+          "one": "Editing extrude: {count} of {total} areas no longer matches the sketch and is kept unchanged · changing the area set drops it · drag the arrow or type a value + Enter · click to commit · Esc to cancel",
+          "other": "Editing extrude: {count} of {total} areas no longer match the sketch and are kept unchanged · changing the area set drops them · drag the arrow or type a value + Enter · click to commit · Esc to cancel"
+        }
+      },
+      "needsProfile": "Extrude: select a face, or create a sketch with a closed profile first",
+      "notCommitted": "Extrude not committed — Enter/✓ to choose an operation · Esc to cancel",
+      "op": {
+        "cutHint": "remove",
+        "cutNothing": "⚠ nothing to cut here",
+        "intersectHint": "keep overlap",
+        "joinHint": "merge",
+        "joinNoEffect": "⚠ likely no effect (profile is inside)",
+        "newHint": "separate",
+        "newTextHint": "separate — assign its own print color",
+        "title": "Extrude — operation"
+      },
+      "pickPrompt": "Select a profile to extrude · Ctrl-click adds areas · Enter to confirm",
+      "targetCleared": "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · T = up to a face or plane · click to commit · Esc to cancel"
+    },
+    "faceOffset": {
+      "drag": {
+        "offsetFace": {
+          "one": "drag the arrow or type a distance · click empty space to commit · Esc to cancel",
+          "other": "{count} faces — drag the arrow or type a distance · click empty space to commit · Esc to cancel"
+        },
+        "thicken": {
+          "one": "drag the arrow or type a distance · S = symmetric · click empty space to commit · Esc to cancel",
+          "other": "{count} faces — drag the arrow or type a distance · S = symmetric · click empty space to commit · Esc to cancel"
+        },
+        "thickenSymmetric": {
+          "one": "drag the arrow or type a distance · S = symmetric (on) · click empty space to commit · Esc to cancel",
+          "other": "{count} faces — drag the arrow or type a distance · S = symmetric (on) · click empty space to commit · Esc to cancel"
+        }
+      },
+      "pick": {
+        "offsetFace": "Select a face to Offset Face (Ctrl+click adds more)",
+        "thicken": "Select a face to Thicken (Ctrl+click adds more)"
+      }
+    },
+    "failed": "⚠ {name} failed: {reason}",
+    "loft": {
+      "first": "Loft: click the first profile · Esc to cancel",
+      "needsTwo": "Loft needs at least two profiles · click another · Esc to cancel",
+      "profiles": {
+        "other": "Loft: {count} profiles · click more, or a picked one to drop it · Enter to finish · Esc to cancel"
+      },
+      "second": "Loft: click a second profile · Esc to cancel"
+    },
+    "measure": {
+      "angle": "Angle",
+      "area": "Area",
+      "at": "At",
+      "centers": "Centers",
+      "delta": "ΔX ΔY ΔZ",
+      "distance": "Distance",
+      "escToExit": "Esc to exit",
+      "length": "Length",
+      "pick": "Pick a face or edge",
+      "prompt": "Measure: click a face or edge · click a second to measure between them · Esc to exit",
+      "promptSecond": "Measure: click a second face or edge for the distance · Esc to exit"
+    },
+    "move": {
+      "prompt": "Drag an axis arrow to move the selected bodies · type a value · Enter to commit · Esc to cancel"
+    },
+    "nothingToCommit": "Nothing to commit — drag the arrow or type a distance first",
+    "op": {
+      "cut": "Cut",
+      "intersect": "Intersect",
+      "join": "Join",
+      "newBody": "New Body"
+    },
+    "planeOffset": {
+      "dragPrompt": "Drag the arrow to set the offset · type a value · Enter to sketch on the plane · Esc to cancel",
+      "editPrompt": "Drag the arrow to move this plane · type a value · Enter to apply · Esc to cancel"
+    },
+    "pressPull": {
+      "dragPrompt": "Drag the arrow · type a value (negative = cut) · click ANOTHER face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel",
+      "dragPromptAfterTarget": "Drag the arrow · type a value · click another face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel",
+      "facesAdded": {
+        "one": "{count} face — drag or type a distance · click to commit · Esc to cancel",
+        "other": "{count} faces — drag or type a distance · click to commit · Esc to cancel"
+      },
+      "pickPrompt": "Click a face to Press/Pull · a sketch profile to Extrude · an edge to Fillet"
+    },
+    "repickFace": "Re-pick face",
+    "rollingBack": "Rolling back to edit… (later features are hidden while editing)",
+    "section": {
+      "axisTitle": "Section — cut along which axis?",
+      "horizontalHint": "horizontal cut",
+      "prompt": "Section: drag the arrow to move the cut · type a value + Enter · F flips the kept side · Esc to close"
+    },
+    "starters": {
+      "axis": {
+        "x": "X axis",
+        "y": "Y axis",
+        "z": "Z axis"
+      },
+      "cleanUpAdded": "Clean Up added — bodies unified + debris collapsed from here on",
+      "combine": {
+        "cutHint": "subtract",
+        "intersectHint": "overlap",
+        "joinHint": "union",
+        "needsTwo": "Combine: needs at least two bodies — model or import another",
+        "target": "Target body (kept)",
+        "title": "Combine bodies",
+        "tools": "Tool bodies (combined into the target)"
+      },
+      "curvedFacePlane": "Curved face — this plane sits on a tangent and will not follow later edits.",
+      "curvedFaceSketch": "Curved face — this sketch sits on a tangent plane and will not follow later edits.",
+      "cutByPlane": {
+        "name": "Cut",
+        "title": "Cut — keep which side?"
+      },
+      "draft": {
+        "pickFace": "Select a face to draft · Esc to cancel"
+      },
+      "keep": {
+        "both": "Both",
+        "bothHint": "two bodies",
+        "bottom": "Bottom",
+        "bottomHint": "−normal side",
+        "top": "Top",
+        "topHint": "+normal side"
+      },
+      "mirror": {
+        "needsBody": "Mirror: create a body first",
+        "title": "Mirror across plane"
+      },
+      "move": {
+        "datumPlane": "Move works on bodies. To move this plane, edit its Offset in the inspector.",
+        "selectBody": "Move: select a body first (Select: Bodies)"
+      },
+      "needsBody": "{tool}: create or import a body first",
+      "pattern": {
+        "circular": "Circular",
+        "circularHint": "around axis",
+        "rect": "Rectangular",
+        "rectHint": "grid",
+        "title": "Pattern type"
+      },
+      "pickDatumSource": "Select a plane or face for the datum plane",
+      "pickOffsetSource": "Select a plane or face to offset from",
+      "pickSketchPlane": "Select a plane or a planar face of a body to sketch on",
+      "primitive": {
+        "boxHint": "l×w×h",
+        "cylinderHint": "r, h",
+        "sphereHint": "r",
+        "title": "Create primitive"
+      },
+      "repick": {
+        "featureGone": "That feature is gone — nothing to re-pick",
+        "pickFace": "Pick the face this feature should use · Esc to cancel",
+        "referenceChanged": "That reference has already changed — nothing to re-pick"
+      },
+      "revolve": {
+        "axisTitle": "Revolve around axis",
+        "needsProfile": "Revolve: select a sketch profile to revolve first",
+        "opTitle": "Revolve — operation"
+      },
+      "shell": {
+        "pickFace": "Select a face to open for the shell · Esc to cancel",
+        "thicknessPrompt": "Wall thickness · Enter to apply · Esc to cancel",
+        "thicknessZero": "Wall thickness must be more than zero"
+      },
+      "solidOp": {
+        "cutHint": "remove",
+        "joinHint": "merge",
+        "newHint": "separate"
+      },
+      "split": {
+        "pickPlane": "Select a plane or face to cut by",
+        "title": "Split Body — keep which side?",
+        "whichBody": "Which body to split?"
+      },
+      "sweep": {
+        "needsPath": "Sweep: add a second sketch with an open curve for the path",
+        "needsProfile": "Sweep: select a profile sketch region first",
+        "pickPath": "Pick the path sketch",
+        "sketchLabel": "Sketch {n}"
+      },
+      "toolBusy": "Finish or cancel the current tool first (Esc)"
+    },
+    "text": {
+      "across": "Across mm",
+      "align": {
+        "center": "center",
+        "left": "left",
+        "right": "right"
+      },
+      "angle": "Angle °",
+      "bevel": "Bevel mm",
+      "bevelStyle": {
+        "auto": "auto",
+        "chamfer": "chamfer",
+        "fillet": "round",
+        "taper": "sloped"
+      },
+      "bevelStyleTitle": "Which edges the bevel uses. 'auto' picks whichever one this font can actually manage on every letter — that differs by font, so it is usually the right choice.",
+      "bevelTitle": "0 = sharp edges. Measured in mm, not degrees.",
+      "boldItalic": "B / I",
+      "color": "Color",
+      "defaultFont": "Default font",
+      "depth": "Depth",
+      "editTitle": "Edit text on face",
+      "emboss": "Emboss (raised)",
+      "empty": "Type some text first · Esc to cancel",
+      "engrave": "Engrave (cut)",
+      "flat": "Flat (color only)",
+      "font": "Font",
+      "inheritColor": "Use the body's colour",
+      "pickPrompt": "Click the face to put text on · Esc to cancel",
+      "placeholder": "Type your text",
+      "size": "Size mm",
+      "style": "Style",
+      "title": "Text on face",
+      "typePrompt": "Type the text · Ctrl+Enter to apply · Esc to cancel",
+      "up": "Up",
+      "wrap": "Wrap",
+      "wrapTitle": "0 = no wrapping"
+    },
+    "texture": {
+      "advanced": "Advanced",
+      "angle": "Angle°",
+      "bodyColor": "Body color",
+      "browse": "Browse…",
+      "depth": "Depth",
+      "dirBoth": "Both",
+      "dirIn": "In (deboss)",
+      "dirOut": "Out (emboss)",
+      "direction": "Direction",
+      "edgeBlend": "Edge blend",
+      "edgeBlendTitle": "Edge blend: mm the pattern fades over at a face boundary. 0 = a clean machined cut-off.",
+      "faces": "Faces",
+      "imageFilter": "Images",
+      "invert": "Invert",
+      "kind": "Kind",
+      "land": "Land",
+      "landTitle": "Flat land on the crests: 0 = pure V-groove peaks, 1 = wide flat tops",
+      "noBody": "No body selected — click a body · Esc to cancel",
+      "noFaces": "No faces selected — click one or more faces · Esc to cancel",
+      "noFile": "No file chosen",
+      "note": "Preview is real geometry at display resolution — exports keep full detail.",
+      "pickPrompt": "Select faces (or switch to Whole Body) for the texture · Esc to cancel",
+      "printColor": "Print color",
+      "profile": "Profile",
+      "profileFacet": "Faceted (hard surface)",
+      "profileSmooth": "Smooth",
+      "randomize": "Randomize",
+      "scale": "Scale",
+      "seed": "Seed",
+      "sharp": "Sharp",
+      "sharpTitle": "Crispness of the smooth profile",
+      "summary": {
+        "body": "Whole body: {name}",
+        "bodyMany": "Whole body: {name} (using first of {count} selected)",
+        "bodyNone": "Whole body: nothing selected — click a body",
+        "faces": {
+          "one": "{count} face selected",
+          "other": "{count} faces selected"
+        },
+        "facesNone": "No faces selected — click one or more faces"
+      },
+      "wholeBody": "Whole Body"
+    },
+    "upTo": {
+      "clickPrompt": "Click the face or plane to extrude UP TO (any face, any body) · Esc to go back",
+      "pickPrompt": "Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back"
+    }
+  },
+  "file": {
+    "discardConfirm": "Discard unsaved changes and start a new document?",
+    "error": {
+      "couldNotRead": "could not read document: {reason}",
+      "export": "Export failed: {reason}",
+      "import": "Couldn't import {name}: {reason}",
+      "newerFormat": "{name} was saved by a newer version of SindriCAD, which stores geometry in a packaged document this build can't read. Update SindriCAD to open it.",
+      "open": "Couldn't open {name}: {reason}",
+      "openDocument": "Couldn't open document: {reason}",
+      "printExport": "Print export failed: {reason}",
+      "save": "Couldn't save {path}: {reason}",
+      "unreadableFile": "unreadable file"
+    },
+    "export": {
+      "allInOne": "All in one file",
+      "anyway": "Export anyway",
+      "bodiesMerged": {
+        "one": "{count} body merged",
+        "other": "{count} bodies merged"
+      },
+      "busy": "Exporting {name}",
+      "doneTitle": {
+        "one": "Exported {count} file",
+        "other": "Exported {count} files"
+      },
+      "doneTitleWarnings": {
+        "one": "Exported {count} file — with warnings",
+        "other": "Exported {count} files — with warnings"
+      },
+      "eachSeparately": "Each body separately",
+      "emptySlots": {
+        "one": "slot {slots} has no filament loaded on the printer",
+        "other": "slots {slots} have no filament loaded on the printer"
+      },
+      "featureMissing": "⚠ {feature} failed — its result is NOT in the export: {reason}",
+      "fileCount": {
+        "one": "{count} file",
+        "other": "{count} files"
+      },
+      "needsSidecar": "Colored 3MF export needs the Python sidecar backend (run without VITE_GEOM=rust).",
+      "nothing": "Nothing to export yet — build a body first.",
+      "pickOne": "pick one",
+      "projectDoneWarnings": "Exported project — with warnings",
+      "specificBody": "A specific body",
+      "unassignedBodies": {
+        "one": "{count} body is unassigned (defaulting to slot 1)",
+        "other": "{count} bodies are unassigned (defaulting to slot 1)"
+      },
+      "unassignedBody": "No body is assigned to a palette slot, so this will print in a single color.\n\nAssign colors by right-clicking a body — in the Browser list or in the viewport — and picking a slot.",
+      "unassignedTitle": "Export without colors?",
+      "unnamedFeature": "feature",
+      "warnSummary": "Exported, but {details}.",
+      "whichBodies": "Export — which bodies?",
+      "whichBody": "Which body to export?"
+    },
+    "filter": {
+      "allSupported": "All supported",
+      "document": "SindriCAD Document",
+      "meshCad": "Mesh / CAD",
+      "project3mf": "3MF project"
+    },
+    "import": {
+      "busy": "Importing {name}",
+      "fitSkipped": {
+        "checks": "I found curved surfaces here, but the rebuilt body did not pass its checks, so I kept the faceted import.",
+        "coarse": "This mesh is too coarse to tell a curve from a corner, so every face stayed faceted.",
+        "dense": "This mesh is too dense for me to look for curved surfaces, so every face stayed faceted."
+      },
+      "fitSummary": "{recognised} {faceted}",
+      "manyBodies": {
+        "one": "Imported {n} body. The 3D view is smooth to about {smooth} bodies, so orbiting may lag a little. Everything still works.",
+        "other": "Imported {n} bodies. The 3D view is smooth to about {smooth} bodies, so orbiting may lag a little. Everything still works."
+      },
+      "noneFaceted": "No faces stayed faceted.",
+      "recognised": {
+        "one": "Recognised {n} curved surface.",
+        "other": "Recognised {n} curved surfaces."
+      },
+      "stayedFaceted": {
+        "one": "{n} face stayed faceted.",
+        "other": "{n} faces stayed faceted."
+      },
+      "tooManyBodies": {
+        "one": "Imported {n} body. Expect the 3D view to be slow: measured 27-37 fps at {slow} bodies against 60 at {smooth}. Modelling, export and printing are unaffected.",
+        "other": "Imported {n} bodies. Expect the 3D view to be slow: measured 27-37 fps at {slow} bodies against 60 at {smooth}. Modelling, export and printing are unaffected."
+      }
+    },
+    "newDocument": "New Document",
+    "warning": {
+      "newerVersion": "This file was made by a newer version of SindriCAD — unknown data (e.g. parameter expressions) may be lost if you save it here."
+    }
+  },
+  "gpu": {
+    "copied": "Copied",
+    "copy": "Copy the details",
+    "copyFailed": "Could not copy",
+    "nothingReadable": "nothing readable",
+    "report": "Report this",
+    "reportsLabel": "What this machine reports",
+    "spoofedNote": "The renderer name above comes from the Linux webview, which reports the same fake value on every machine. Ignore it. The WebGL version line is real.",
+    "title": "The 3D view could not start",
+    "tryThese": "Two things are worth trying. Close SindriCAD, then start it again from a terminal with one of these in front of the usual command:",
+    "why": {
+      "noWebgl": "This computer could not create a 3D context of any kind. That usually means the graphics driver is missing or is being blocked, rather than anything wrong with SindriCAD itself.",
+      "renderer": "This computer reports WebGL 2, but the 3D view still could not be created. That is unusual, and I would like to see the report.",
+      "webgl1Only": "This computer's graphics driver offers OpenGL ES 2.0 only, and the 3D view needs WebGL 2. That is a limit of the driver, not a damaged install. On Linux it usually means an older NVIDIA card running on the open-source nouveau driver."
+    },
+    "workaroundNote": "The first draws in software on the CPU. It is slower on large models, but it works where the driver does not. The second turns off the webview's shared-buffer path, which some drivers do not implement correctly."
+  },
+  "help": {
+    "openFailed": "Couldn't open a browser. The page is {url}"
+  },
+  "inspector": {
+    "editHint": {
+      "editable": "Edit {label} values in the inspector (right panel)",
+      "none": "{label} has no editable values in the inspector"
+    },
+    "emptyHint": "Select a feature in the timeline or browser to edit its values.",
+    "exprInputHint": "number, parameter name, or expression (e.g. width/2 + 5)",
+    "featureTitle": "{label} · {id}",
+    "field": {
+      "across": "Across",
+      "angle": "Angle",
+      "angleTol": "Angle tol",
+      "bevel": "Bevel",
+      "boxWidth": "Box width",
+      "count": "Count",
+      "countX": "Count X",
+      "countY": "Count Y",
+      "depth": "Depth",
+      "distance": "Distance",
+      "edgeBlend": "Edge blend",
+      "factor": "Factor",
+      "height": "Height",
+      "length": "Length",
+      "moveX": "Move X",
+      "moveY": "Move Y",
+      "moveZ": "Move Z",
+      "offset": "Offset",
+      "radius": "Radius",
+      "rotateX": "Rotate X",
+      "rotateY": "Rotate Y",
+      "rotateZ": "Rotate Z",
+      "scale": "Scale",
+      "seed": "Seed",
+      "sharpness": "Sharpness",
+      "spacingX": "Spacing X",
+      "spacingY": "Spacing Y",
+      "startOffset": "Start offset",
+      "taper": "Taper",
+      "targetOffset": "Target offset",
+      "textSize": "Text size",
+      "thickness": "Thickness",
+      "tolerance": "Tolerance",
+      "up": "Up",
+      "width": "Width"
+    },
+    "noFields": "No editable values on this feature.",
+    "parametersTitle": "Parameters ({unit})",
+    "upTo": {
+      "clearAria": "Clear the up-to target",
+      "clearTitle": "Clear the up-to target and extrude by distance instead",
+      "label": "Up to",
+      "originPlane": "{id} plane",
+      "pickedFace": "Picked face"
+    }
+  },
+  "measure": {
+    "camera": {
+      "alt": "printer camera",
+      "hint": "~1 frame/s · Esc to close",
+      "title": "Camera — {printer}",
+      "unavailable": "camera unavailable"
+    },
+    "interference": {
+      "checking": "Checking interference…",
+      "clashTitle": {
+        "one": "Interference — {count} clash",
+        "other": "Interference — {count} clashes"
+      },
+      "clickHint": "Click a clash to highlight the bodies · Esc to close",
+      "failed": "Interference check failed: {message}",
+      "found": {
+        "one": "{count} interference found",
+        "other": "{count} interferences found"
+      },
+      "needBody": "Interference: create or import a body first",
+      "needTwo": "Interference: needs at least two bodies",
+      "noOverlap": "No overlapping bodies",
+      "none": "No interferences found",
+      "pair": "{a} ∩ {b}",
+      "title": "Interference"
+    },
+    "overhang": {
+      "buildDir": "Build dir",
+      "hint": "Faces past this angle from horizontal need support · toggle Draft to close",
+      "legend": "red = unsupported overhang",
+      "threshold": "Threshold",
+      "title": "Overhang analysis"
+    },
+    "properties": {
+      "allBodies": "All bodies",
+      "approxHint": "Approximate — from the display mesh · Esc to close",
+      "approxHintSelect": "Approximate — from the display mesh · select bodies for exact values · Esc to close",
+      "boundingBox": "Bounding box",
+      "centerOfMass": "Center of mass",
+      "exactHint": "Exact — from the geometry kernel · Esc to close",
+      "mass": "Mass (≈1 g/cm³)",
+      "needBody": "Properties: create or import a body first",
+      "surfaceArea": "Surface area",
+      "title": "Properties — {name}",
+      "volume": "Volume"
+    }
+  },
+  "menu": {
+    "edit": {
+      "redo": "Redo",
+      "suppress": "Suppress / Unsuppress",
+      "title": "Edit",
+      "undo": "Undo"
+    },
+    "file": {
+      "camera": "Camera…",
+      "export": "Export…",
+      "exportPrint": "Export for Print (3MF)…",
+      "importMesh": "Import Mesh…",
+      "new": "New",
+      "open": "Open…",
+      "openInOrca": "Open in OrcaSlicer…",
+      "save": "Save",
+      "saveAs": "Save As…",
+      "sendToPrinter": "Send to Printer…",
+      "title": "File"
+    },
+    "help": {
+      "about": "About SindriCAD",
+      "checkUpdates": "Check for Updates…",
+      "customizeShortcuts": "Customize Shortcuts…",
+      "guide": "Guide on GitHub",
+      "shortcuts": "Keyboard Shortcuts",
+      "title": "Help",
+      "tutorials": "Tutorial Videos ({count})"
+    },
+    "tinkeratlas": {
+      "publish": "Publish to TinkerAtlas…",
+      "signIn": "Sign in…",
+      "signOut": "Sign out",
+      "title": "TinkerAtlas",
+      "welcome": "Welcome Screen"
+    },
+    "view": {
+      "cycleProjection": "Cycle Projection (Persp / Ortho / Auto)",
+      "fit": "Fit View",
+      "front": "Front View",
+      "iso": "Isometric View",
+      "projection": {
+        "auto": "Auto",
+        "ortho": "Ortho",
+        "persp": "Persp"
+      },
+      "right": "Right View",
+      "select": {
+        "bodies": "Bodies",
+        "faces": "Faces"
+      },
+      "showAllBodies": "Show All Bodies",
+      "spaceMouseCamera": "SpaceMouse: Move Camera",
+      "spaceMouseObject": "SpaceMouse: Move Object",
+      "spaceMouseSettings": "3D Mouse Settings…",
+      "title": "View",
+      "toggleSelectMode": "Toggle Faces / Bodies selection",
+      "top": "Top View"
+    }
+  },
+  "palette": {
+    "lookAt": "Look At",
+    "lookAtTitle": "Square the view to the sketch plane",
+    "noMatch": "No matching command",
+    "options": "Options",
+    "searchPlaceholder": "Search commands…",
+    "shortcutHelp": "Keyboard Shortcuts…",
+    "sketchPalette": "Sketch Palette",
+    "title": "SKETCH PALETTE",
+    "toggle": {
+      "constraints": "Show Constraints",
+      "construction": "Construction",
+      "dimensions": "Show Dimensions",
+      "grid": "Sketch Grid",
+      "lockView": "Lock to Plane",
+      "profile": "Show Profile",
+      "reference": "Reference Dim",
+      "snap": "Snap"
+    }
+  },
+  "params": {
+    "add": "+ Add",
+    "applyFailed": "Parameter change failed to apply — see the console for details.",
+    "delete": {
+      "noParameter": "no parameter \"{name}\"",
+      "referencedBy": "\"{name}\" is referenced by: {refs}"
+    },
+    "deleteParam": "Delete {name}",
+    "error": {
+      "arityAtLeast": {
+        "one": "{name}() takes at least {count} argument",
+        "other": "{name}() takes at least {count} arguments"
+      },
+      "arityExact": {
+        "one": "{name}() takes {count} argument",
+        "other": "{name}() takes {count} arguments"
+      },
+      "arityRange": "{name}() takes {lo}–{hi} arguments",
+      "circularChain": "circular reference: {chain}",
+      "empty": "empty expression",
+      "invalidNumber": "invalid number \"{text}\"",
+      "missingParen": "missing \")\"",
+      "missingParenIn": "missing \")\" in {name}(…)",
+      "notFinite": "does not evaluate to a finite number",
+      "notSupportedYet": "{name}() is not supported yet",
+      "qualifiedNames": "qualified names ('.') are not supported",
+      "selfReference": "\"{name}\" cannot reference itself",
+      "unexpectedChar": "unexpected character \"{char}\"",
+      "unexpectedEnd": "unexpected end of expression",
+      "unexpectedToken": "unexpected \"{token}\"",
+      "unitless": "this field is unitless — write a plain number",
+      "unknownFunction": "unknown function \"{name}\"",
+      "unknownParameter": "unknown parameter \"{name}\""
+    },
+    "header": {
+      "comment": "Comment / drives",
+      "expression": "Expression",
+      "name": "Name",
+      "value": "Value"
+    },
+    "hint": "Expressions are in mm / degrees; suffixes mm cm in deg rad allowed · Esc to close",
+    "issue": {
+      "circular": "circular reference",
+      "invalid": "invalid expression",
+      "targetGone": "its dimension or feature no longer exists"
+    },
+    "modelSection": "Model Parameters",
+    "name": {
+      "dnReserved": "dN names are reserved for model parameters",
+      "exists": "\"{name}\" already exists",
+      "invalid": "names are letters, digits and _ (not starting with a digit)",
+      "reserved": "\"{name}\" is a reserved name"
+    },
+    "placeholder": {
+      "expression": "expression",
+      "name": "name"
+    },
+    "ref": {
+      "entity": "{type} in {sketch} · {field}",
+      "feature": "{type} {id} · {field}"
+    },
+    "target": {
+      "dimensionIn": "dimension in {feature}",
+      "entityField": "{field} in {feature}",
+      "featureField": "{feature} · {field}",
+      "featureName": "{label} {id}",
+      "patternField": "pattern {field} in {feature}"
+    },
+    "title": "Parameters",
+    "unitless": "unitless",
+    "userSection": "User Parameters"
+  },
+  "print": {
+    "complete": "Print complete: {name}",
+    "error": {
+      "busy": "Printer is busy — job not sent.",
+      "connectionLost": "Lost connection to the printer.",
+      "generic": "Printer error: {reason}",
+      "launch": "Couldn't launch OrcaSlicer: {reason}",
+      "nozzleMismatch": "Nozzle mismatch — {reason}",
+      "prepareExport": "Couldn't prepare export: {reason}",
+      "presetRead": "Couldn't read your OrcaSlicer printer preset ({reason}) — Orca will not preselect the U1.",
+      "rejected": "Print rejected: {reason}",
+      "sendFailed": "Send failed: {reason}",
+      "unreachable": "Printer not reachable — is it on?",
+      "unreachableReason": "Can't reach the printer: {reason}"
+    },
+    "errorOn": "Print error on {name}",
+    "filamentN": "Filament {n}",
+    "mapping": {
+      "bedLevel": "Auto bed leveling",
+      "flowCalibrate": "Flow calibrate",
+      "timelapse": "Timelapse",
+      "title": "Send to printer — filament mapping",
+      "toolheadLabel": "{n}: {name}",
+      "toolheadLabelEmpty": "{n}: {name} (empty)",
+      "toolheadN": "Toolhead {n}",
+      "uploadAndPrint": "Upload & Print"
+    },
+    "openedNoPreset": "Opened in OrcaSlicer — pick your U1 printer, slice, then Upload & Print.",
+    "openedWithPreset": "Opened in OrcaSlicer on your U1 preset — slice, then Upload & Print.",
+    "sent": "Sent {name} — printing",
+    "showCamera": "Show camera",
+    "status": {
+      "paused": "Paused {name} — {pct}%",
+      "printing": "Printing {name} — {pct}%"
+    }
+  },
+  "recovery": {
+    "autosaveFailing": "Autosave keeps failing — your unsaved work may not be recoverable if the app crashes",
+    "discardHint": "delete it",
+    "prompt": "Recover unsaved work? ({from}, ~{age} min old)",
+    "recover": "Recover",
+    "recoverHint": "restore the snapshot",
+    "recovered": "Recovered unsaved work — use Save As to store it where you want",
+    "unsavedDocument": "an unsaved document"
+  },
+  "ribbon": {
+    "abbrev": {
+      "patternCircular": "Circular Pat.",
+      "perpendicular": "Perpendic."
+    },
+    "alsoHere": "Also here: {tools}",
+    "context": {
+      "sketch": "SKETCH",
+      "solid": "SOLID"
+    },
+    "group": {
+      "constraints": "CONSTRAINTS",
+      "construct": "CONSTRUCT",
+      "create": "CREATE",
+      "finish": "FINISH",
+      "insert": "INSERT",
+      "inspect": "INSPECT",
+      "modify": "MODIFY",
+      "palette": "PALETTE",
+      "pattern": "PATTERN",
+      "print": "PRINT",
+      "select": "SELECT"
+    },
+    "hint": {
+      "cancelSketch": "Leave the sketch and discard it. An offset plane you just made stays.",
+      "datumPlane": "Creates the plane only — no sketch.",
+      "offsetPlane": "Creates the plane AND starts a sketch on it."
+    },
+    "moreFamilyTools": "More {name} tools",
+    "moreTools": "More tools",
+    "toolWithKey": "{label} ({key})"
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "pseudoHint": "The pseudo-locale is a layout test: every string is bracketed and lengthened.",
+      "restartNote": "SindriCAD needs a restart to change language.",
+      "restartNow": "Restart now",
+      "saveFirst": "Save your document first, then restart SindriCAD to apply the new language.",
+      "system": "System default ({name})"
+    },
+    "menuItem": "Settings…",
+    "spaceMouse": {
+      "action": {
+        "orbitAz": "Rotate ←→",
+        "orbitPolar": "Rotate ↑↓",
+        "panX": "Pan ←→",
+        "panY": "Pan ↑↓",
+        "roll": "Roll ↻",
+        "zoom": "Zoom"
+      },
+      "axis": {
+        "rx": "Tilt/pitch (Rx)",
+        "ry": "Tilt sideways/roll (Ry)",
+        "rz": "Twist (Rz)",
+        "tx": "Slide ←→ (Tx)",
+        "ty": "Push/pull (Ty)",
+        "tz": "Lift ↑↓ (Tz)"
+      },
+      "axisMapping": "Axis mapping",
+      "crossAxis": "Cross-axis filter",
+      "crossAxisHint": "Ignores a weak axis while another axis is much stronger, so a hard tilt doesn't also zoom.",
+      "deadzone": "Deadzone",
+      "flip": "flip",
+      "liveAxes": "Live axes — move the puck",
+      "liveHint": "Push/tilt/twist and watch which bar reacts, then map it below.",
+      "mode": "Mode",
+      "moveCamera": "Move camera",
+      "moveObject": "Move object",
+      "pan": "Pan",
+      "resetDefaults": "Reset to defaults",
+      "rotate": "Rotate",
+      "sensitivity": "Sensitivity",
+      "suppressed": "{axis}: suppressed by the cross-axis filter",
+      "test": "Test — rotate the cube",
+      "title": "3D Mouse Settings",
+      "zoom": "Zoom"
+    },
+    "title": "Settings"
+  },
+  "shortcut": {
+    "context": {
+      "global": "Global",
+      "model": "Model",
+      "sketch": "Sketch"
+    },
+    "g": {
+      "fit": "Fit view",
+      "fit2": "Fit view (alt)",
+      "help": "Shortcut help"
+    },
+    "hud": {
+      "always": "Always",
+      "cancelClear": "Cancel / clear selection",
+      "deleteFaceFeature": "Delete face (heal) / feature",
+      "foot": "Rebind any of these in Help ▸ Customize Shortcuts…",
+      "newOpenExport": "New / Open / Export",
+      "palette": "Command palette",
+      "saveSaveAs": "Save / Save As",
+      "title": "Keyboard shortcuts",
+      "undoRedo": "Undo / Redo"
+    },
+    "m": {
+      "arc": "Sketch: Arc",
+      "chamfer": "Chamfer (bevel)",
+      "circle": "Sketch: Circle",
+      "combine": "Combine (join)",
+      "hide": "Hide selected bodies",
+      "line": "Sketch: Line",
+      "project": "Sketch: Project",
+      "rectangle": "Sketch: Rectangle",
+      "selbodies": "Select bodies",
+      "selfaces": "Select faces",
+      "showall": "Show all bodies"
+    },
+    "s": {
+      "extrude": "Finish & Extrude",
+      "fillet": "Sketch Fillet",
+      "presspull": "Finish & Press/Pull"
+    },
+    "settings": {
+      "allRestored": "All shortcuts restored to defaults.",
+      "conflict": "{key} is already {label} ({context}). Clear that one first, then set this.",
+      "intro": "Click a key to record a new one. Model and Sketch keys are independent — the same key can mean different things in each — so only bindings that could fire together are refused as conflicts.",
+      "modifiersReserved": "Ctrl, Alt and Cmd combinations are reserved (undo, save, open, palette).",
+      "noKey": "unbound",
+      "pressAKey": "Press a key…",
+      "pressKey": "Press the key to bind. Esc cancels.",
+      "recordingCancelled": "Recording cancelled.",
+      "resetAll": "Reset all",
+      "revertAria": "Reset {label} to default",
+      "revertTitle": "Restore the default key",
+      "rowAria": "{label}: {key}. Click to record a new key.",
+      "title": "Keyboard Shortcuts",
+      "unbindAria": "Unbind {label}",
+      "unbindTitle": "Unbind (leaves this tool with no key)",
+      "unbound": "{label} has no key. Its ribbon and menu entries still work."
+    }
+  },
+  "sketch": {
+    "cancel": {
+      "confirm": "Leave this sketch and throw away what you drew in it?",
+      "discard": "Discard sketch",
+      "keep": "Keep editing",
+      "title": "Cancel Sketch"
+    },
+    "check": {
+      "clean": "No problems found",
+      "cleanSub": "Nothing open, overlapping, crossing itself or too small to build.",
+      "close": "Close sketch check",
+      "hintRows": "Click a row to select it · Esc to close",
+      "issue": {
+        "crossing": "These two curves cross here, so any area they bound is split into separate regions.",
+        "duplicate": "This curve is an exact duplicate of another one drawn on top of it.",
+        "more": {
+          "one": "{count} further finding is not listed. Fix these first, then run the check again.",
+          "other": "{count} further findings are not listed. Fix these first, then run the check again."
+        },
+        "openEnd": "This endpoint joins nothing, so the chain stays open.",
+        "openPair": "These two endpoints stop short of each other, so the profile never closes.",
+        "openSingle": "This endpoint stops short of the nearest one, so the profile never closes.",
+        "overlap": "These two curves run along each other here. The tracer keeps a single shared edge, so the areas on either side of it still close.",
+        "selfCross": "This curve crosses itself here, so it does not bound a single area.",
+        "tiny": "This segment is short enough that it may be dropped when the profile is traced."
+      },
+      "notes": {
+        "one": "{count} note",
+        "other": "{count} notes"
+      },
+      "problems": {
+        "one": "{count} problem",
+        "other": "{count} problems"
+      },
+      "results": "Sketch check results",
+      "title": "Sketch check"
+    },
+    "constraint": {
+      "alreadyPicked": "That is the point you already picked — choose the second one to mirror.",
+      "angle": "Angle",
+      "c2cDistance": "Rim-to-rim distance",
+      "c2lDistance": "Rim-to-line distance",
+      "coincident": "Coincident",
+      "coincidentMiss": "Coincident joins two POINTS — click the ends of the lines, a rectangle's corners or a circle's centre, not their middles. To make two lines lie along each other, use Collinear.",
+      "collinear": "Collinear",
+      "collinearApplied": "Two lines: applied Collinear (Coincident joins endpoints).",
+      "concentric": "Concentric",
+      "conflict": "That constraint conflicts with the ones already on this sketch, so it was not applied.",
+      "deleteConstraint": "Delete constraint",
+      "diameter": "Diameter",
+      "distance": "Length",
+      "equal": "Equal",
+      "equalMismatch": "Equal needs two lines, or two circles/arcs — a length and a radius are not comparable.",
+      "equalRadius": "Equal radius",
+      "filletRadiusConflict": "The fillet was created, but its radius could not be constrained without conflicting with this sketch's existing constraints.",
+      "fix": "Fix",
+      "glyphConflict": "Conflicting constraint — click to delete",
+      "glyphDelete": "Click to delete this constraint (double- or right-click if it sits on geometry)",
+      "glyphOver": "Redundant (over-defined) constraint — click to delete",
+      "glyphPending": "Will be applied when you click",
+      "horizontal": "Horizontal",
+      "midpoint": "Midpoint",
+      "miss": "Nothing to constrain there — {tool} needs {wants}.",
+      "offset": "Offset",
+      "p2cDistance": "Point-to-rim distance",
+      "p2lDistance": "Distance to line",
+      "p2pDistance": "Distance",
+      "p2pDistanceX": "Horizontal distance",
+      "p2pDistanceY": "Vertical distance",
+      "parallel": "Parallel",
+      "perpendicular": "Perpendicular",
+      "radialGap": "Radial gap",
+      "radius": "Radius",
+      "samePointTwice": "That is the same point twice — Coincident joins two DIFFERENT points.",
+      "sameShape": "Those are two points of the same shape — joining them would collapse it.",
+      "secondEndpoint": "Click the second ENDPOINT to finish this coincident, or press Esc to start over.",
+      "symmetric": "Symmetric",
+      "tangent": "Tangent",
+      "tangentSpan": "I could not keep that circle touching the edge it is tangent to, so this constraint was not applied. The only solutions I found move the touch point off that edge.",
+      "vertical": "Vertical",
+      "wants": {
+        "coincident": "two endpoints, rectangle corners or circle/arc centres",
+        "collinear": "two lines (a rectangle edge counts)",
+        "concentric": "two circles or arcs",
+        "default": "a target",
+        "equal": "two lines, or two circles/arcs",
+        "fix": "a point, an endpoint or a centre",
+        "horizontal": "a line, or a rectangle edge",
+        "midpoint": "a point, an endpoint or a centre, then the line to centre it on",
+        "parallel": "two lines (a rectangle edge counts)",
+        "perpendicular": "two lines (a rectangle edge counts)",
+        "symmetric": "two points, endpoints or centres, then the axis line",
+        "tangent": "a circle or arc, then the line or curve it should touch",
+        "vertical": "a line, or a rectangle edge"
+      }
+    },
+    "dimConflict": {
+      "addConflicts": "I could not add this {what}: the new value conflicts with the constraints already on this sketch.",
+      "addHeld": "I could not add this {what}: {reasons}, so it cannot take the new value.",
+      "centreFixed": "its centre is fixed",
+      "changeConflicts": "I could not change this {what}: the new value conflicts with the constraints already on this sketch.",
+      "changeHeld": "I could not change this {what}: {reasons}, so it cannot take the new value.",
+      "heldBy": "it is held by {list}",
+      "heldItem": {
+        "one": "a {name} constraint",
+        "other": "{count} {name} constraints"
+      },
+      "kind": {
+        "angle": "angle",
+        "c2cDistance": "rim-to-rim distance",
+        "c2lDistance": "rim-to-line distance",
+        "diameter": "diameter",
+        "dimension": "dimension",
+        "distance": "length",
+        "offset": "offset",
+        "p2cDistance": "point-to-rim distance",
+        "p2lDistance": "distance to line",
+        "p2pDistance": "distance",
+        "p2pDistanceX": "horizontal distance",
+        "p2pDistanceY": "vertical distance",
+        "radialGap": "radial gap",
+        "radius": "radius"
+      },
+      "leftAt": "The dimension was left at {value}.",
+      "pointFixed": "one of its points is fixed"
+    },
+    "dimension": {
+      "appliedDirectly": "Without the constraint solver, a length or diameter is applied to the shape directly and is not kept as a live dimension. It will drive the geometry properly once the solver runs.",
+      "applyFailed": "Sketch dimension failed to apply — see the console for details.",
+      "boundValue": "fx: {value}",
+      "cancelEsc": "Cancel (Esc)",
+      "confirmEnter": "Confirm (Enter)",
+      "delete": "Delete dimension",
+      "drivenReference": "Driven (reference)",
+      "drivenValue": "({value})",
+      "error": {
+        "centreOnLine": "That circle's centre lies on the line — there is no edge-to-edge distance to dimension.",
+        "coincidentPoints": "Those two points are coincident — the distance measures 0, nothing to drive.",
+        "collinearLines": "Those lines are collinear — the distance measures 0, nothing to drive.",
+        "concentric": "These circles are concentric — centre distance is 0. Dimension each diameter, or right-click → Pick Circle/Arc Tangent before each pick for the radial gap (wall thickness).",
+        "degenerate": "That {what} measures 0 — nothing to drive.",
+        "invalidValue": "invalid value",
+        "lineCrosses": "That line crosses the circle — there is no edge-to-edge distance to dimension. Dimension the centre to the line instead.",
+        "lineTangent": "That line is tangent to the circle — the edge-to-edge distance measures 0, nothing to drive.",
+        "mustBeNonZero": "must evaluate to a non-zero value",
+        "mustBePositive": "must evaluate to a positive value",
+        "noDocument": "no document",
+        "noEntity": "no entity",
+        "noExpression": "this dimension can't hold an expression yet",
+        "notEditable": "not editable",
+        "overlapping": "These two circles overlap — there is no edge-to-edge clearance to dimension. Dimension their centres, or each diameter.",
+        "ownCentreAndRim": "That is the circle's own centre and rim — dimension its radius instead.",
+        "pointAtCentre": "That point sits at the circle's centre — the distance to its edge IS its radius, so dimension the radius instead.",
+        "pointOnCircle": "That point lies on the circle — the distance to the edge measures 0, nothing to drive.",
+        "pointOnLine": "That point lies on the line — the distance measures 0, nothing to drive.",
+        "rimsTouch": "These two rims touch — the edge-to-edge distance measures 0, nothing to drive.",
+        "sameCircleTwice": "That is one circle picked twice — pick a second entity to measure to.",
+        "sameRim": "These two rims are the same circle — the radial gap measures 0.",
+        "unsupported": "A {kind} can't be dimensioned yet — pick a line, arc, circle or rectangle edge."
+      },
+      "expressionDropped": "Dimension expression \"{expr}\" was dropped: {reason}",
+      "fixedEndsNotApplied": "Both ends are fixed reference geometry, so this dimension can only measure — the value you typed was not applied.",
+      "geometryGone": "The geometry this dimension referenced is gone — dimension cancelled",
+      "hint": {
+        "angle": "Angle: type the included angle · click to place",
+        "arc": "Arc: type a diameter, or pick a second entity · click to place",
+        "arcRadius": "Arc: type a radius, or pick a second entity · click to place",
+        "circle": "Circle: type a diameter, or pick a second entity · click to place",
+        "circleRadius": "Circle: type a radius, or pick a second entity · click to place",
+        "distance": "Distance: type a value · click to place",
+        "distanceToLine": "Distance to line: type a value · click to place",
+        "driven": "{hint} · reference geometry — created as a driven dimension",
+        "edgeToEdge": "Edge-to-edge clearance: type a value · click to place",
+        "edgeToLine": "Edge-to-line distance: type a value · click to place",
+        "line": "Line: type a length, or pick a second entity · click to place",
+        "minRadialClearance": "Minimum radial clearance: type a value · click to place",
+        "parallelLines": "Parallel lines: type the distance · click to place",
+        "pointToEdge": "Point-to-edge distance: type a value · click to place",
+        "projectedPair": "Projected geometry is fixed — Break Link to edit it — pick a second entity to dimension to it",
+        "radialGap": "Radial gap (wall thickness): type a value · click to place",
+        "rectEdge": "Rectangle edge: type a length, or pick a second entity · click to place",
+        "referenceOn": "{hint} · Reference Dim is ON — this dimension will measure, not drive",
+        "secondPoint": "Pick a second point, or a line, for the distance between them"
+      },
+      "label": {
+        "count": "N",
+        "countX": "Nx",
+        "countY": "Ny",
+        "distance": "D",
+        "gap": "Gap",
+        "height": "H",
+        "length": "L",
+        "radius": "R",
+        "rings": "Rings",
+        "width": "W"
+      },
+      "lock": "Lock dimension",
+      "notCreated": "Dimension not created — {error}",
+      "referenceNotSupported": "A line length / circle diameter can't be a reference dimension yet — created as driving.",
+      "referenceOnNotApplied": "Reference Dim is on, so this dimension only measures — the value you typed was not applied. Turn Reference Dim off, or right-click the badge and choose Lock dimension.",
+      "retype": "This is a different dimension now — retype the value",
+      "tangentArmed": "Tangent pick armed — click a circle or arc to measure to its EDGE",
+      "tangentCleared": "Tangent pick cleared",
+      "tangentPick": "Pick Circle/Arc Tangent",
+      "title": {
+        "bound": "= {expr} · click to edit",
+        "editable": "Click to edit, drag to move",
+        "measured": "Measured — nothing holds this value. Click to edit, right-click to lock, drag to move",
+        "reference": "Reference dimension (measured, not driving)",
+        "referenceLock": "Reference dimension (measured, not driving) — right-click to lock it"
+      },
+      "unlock": "Unlock (reference)"
+    },
+    "entity": {
+      "arc": "arc",
+      "circle": "circle",
+      "edge": "edge",
+      "line": "line",
+      "point": "point",
+      "polygon": "polygon",
+      "projected": "projected",
+      "rectangle": "rectangle",
+      "slot": "slot",
+      "spline": "spline",
+      "text": "text"
+    },
+    "guard": {
+      "dragFlattens": "That move would flatten or flip constrained geometry, so it was not applied",
+      "originFixed": "The sketch origin is fixed reference geometry — snap and constrain to it, but it can't be edited",
+      "pointFixed": "That point is fixed — delete its Fix constraint to move it",
+      "projectedFixed": "Projected geometry is fixed — Break Link to edit it"
+    },
+    "history": {
+      "nothingToRedo": "Nothing to redo in this sketch",
+      "nothingToUndo": "Nothing left to undo in this sketch"
+    },
+    "menu": {
+      "breakLink": "Break Link",
+      "breakLinkCount": "Break Link ({count})",
+      "deleteEntities": {
+        "one": "Delete",
+        "other": "Delete {count} entities"
+      }
+    },
+    "offset": {
+      "chainOff": "Chain Selection off — only the clicked curve offsets",
+      "chainOn": "Chain Selection on — the whole connected profile offsets as a unit",
+      "chainSelection": "Chain Selection",
+      "clickCurve": "Offset: click a curve to offset",
+      "collapses": "Offset: that distance collapses the geometry",
+      "noPoint": "Offset needs a curve, not a point",
+      "noText": "Offset doesn't apply to sketch text",
+      "prompt": "Offset: move to pick the side, or type a distance · click / Enter to apply · Esc to cancel",
+      "rigidCopy": "Offset copy created — not linked to the source (this shape type is rigid)",
+      "typeDistance": "Offset: type a distance, or Esc to cancel"
+    },
+    "pattern": {
+      "editPrompt": "Edit the pattern — drag/type to change · click to commit · Delete to remove · Esc to keep",
+      "removed": {
+        "one": "A pattern was removed: its source entity no longer exists",
+        "other": "{count} patterns were removed: their source entities no longer exist"
+      },
+      "selectFirst": "Select entities first, then choose a pattern tool"
+    },
+    "project": {
+      "curveDup": "That curve is already projected into this sketch",
+      "edgeDup": "That edge is already projected into this sketch",
+      "edges": "Edges & faces",
+      "edgesSkipped": {
+        "one": "{count} already-projected edge skipped",
+        "other": "{count} already-projected edges skipped"
+      },
+      "engineUnavailable": "geometry engine unavailable",
+      "failed": "projection failed",
+      "ownCurves": "Can't project the active sketch's own curves",
+      "patternCopy": "Pattern copies can't be projected — pick the pattern's source curve",
+      "silhouette": "Body silhouette",
+      "silhouetteDup": "That body's silhouette is already projected into this sketch",
+      "sketchCurves": "Sketch curves"
+    },
+    "projection": {
+      "lostSource": "Projected geometry in {name} lost its source — keeping last shape",
+      "refreshFailed": "Projected geometry failed to refresh — see the console for details.",
+      "valveClosed": "Projected geometry keeps changing on every rebuild — paused automatic refresh (edit the model or Compute All to retry)."
+    },
+    "prompt": {
+      "arc": "Arc: click start, click end, then click a point it passes through · Esc",
+      "break": "Break: click a line or arc to split it (a circle opens into an arc) · Esc",
+      "centerRectangle": "Center Rectangle: click the center, then a corner · Esc",
+      "chamfer": "Chamfer: click two lines, then type a setback distance + Enter · Esc",
+      "circle": "Circle: click center, then radius · type ⌀ · Enter · Esc",
+      "circle2": "Circle (2-point): click two points on the diameter · Esc",
+      "circle3": "Circle (3-point): click three points the circle passes through · Esc",
+      "coincident": "Coincident: click two endpoints to make them coincide · Esc",
+      "collinear": "Collinear: click two lines to put them on the same axis · Esc",
+      "concentric": "Concentric: click two circles/arcs to share a center · Esc",
+      "copy": "Copy: select entities, then click a base point and a destination (originals kept) · Esc",
+      "dimension": "Dimension: click a line (length) or circle (⌀), type a value + Enter · Esc",
+      "equal": "Equal: click two lines (equal length) or two circles/arcs (equal radius) · Esc",
+      "extend": "Extend: click a line or arc near an end to lengthen it to the nearest crossing · Esc",
+      "fillet": "Fillet: click two lines, then type a radius + Enter · Esc",
+      "fix": "Fix: click a point, endpoint or circle/arc center to lock it in place · Esc",
+      "horizontal": "Horizontal: click a line to make it horizontal · Esc",
+      "line": "Line: click points · type length + Tab + angle · Enter to commit · click the start to close · Esc",
+      "midpoint": "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
+      "mirror": "Mirror: with entities selected, click a line to mirror across · Esc",
+      "move": "Move: select entities first, then click a base point and a destination · Esc",
+      "offset": "Offset: click a curve, then type an offset distance + Enter · Esc",
+      "parallel": "Parallel: click two lines to make the 2nd parallel to the 1st · Esc",
+      "perpendicular": "Perpendicular: click two lines · Esc",
+      "point": "Point: click to place a reference point (snaps + constrains) · Esc",
+      "polygon": "Polygon: click the center, then a vertex (6-sided, inscribed) · Esc",
+      "rectangle": "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
+      "rotate": "Rotate: select entities, click a center, then type an angle + Enter · Esc",
+      "scale": "Scale: select entities, click a base point, then type a factor + Enter · Esc",
+      "select": "Select: click geometry to pick it · drag to move · Delete to remove · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
+      "slot": "Slot: click the two arc centers, then a point for the width · Esc",
+      "spline": "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
+      "symmetric": "Symmetric: click two endpoints, then the symmetry axis line · Esc",
+      "tangent": "Tangent: click two curves (line, circle or arc) to make them tangent · Esc",
+      "trim": "Trim: click a curve (line/arc/circle) to remove it up to the nearest crossings · Esc",
+      "vertical": "Vertical: click a line to make it vertical · Esc"
+    },
+    "solver": {
+      "cspBlocked": "The 2D constraint solver could not start: this build's security policy blocks the code it needs to initialise. That is a bug in SindriCAD, not a problem with your system, so updating your webview or graphics drivers will not help. Sketching still works, but without constraints, dimensions or point dragging.",
+      "failed": "The 2D constraint solver could not start: {detail}",
+      "stopped": "The 2D constraint solver stopped responding — sketching continues without constraints"
+    },
+    "text": {
+      "align": {
+        "center": "center",
+        "left": "left",
+        "right": "right"
+      },
+      "angleDeg": "Angle°",
+      "bold": "B",
+      "boxWidth": "Box width (mm)",
+      "defaultFont": "Default font",
+      "italic": "I",
+      "noBox": "0 = no box",
+      "placeholder": "Text…"
+    },
+    "transform": {
+      "clickDestination": "Click the destination point",
+      "rotatePrompt": "Rotate: type an angle in degrees",
+      "scalePrompt": "Scale: type a factor (e.g. 2 or 0.5)",
+      "selectFirstMove": "Select entities first, then Move/Copy",
+      "selectFirstRotate": "Select entities first, then Rotate",
+      "selectFirstScale": "Select entities first, then Scale"
+    }
+  },
+  "status": {
+    "bodiesSelected": {
+      "one": "{count} body selected — Move (M) to drag · Esc to clear",
+      "other": "{count} bodies selected — Move (M) to drag · Esc to clear"
+    },
+    "buildError": "⚠ {id}: {message}",
+    "componentColorsOff": "Component colors off",
+    "componentColorsOn": "Component colors on",
+    "computeAll": "Compute All — rebuilding everything from scratch…",
+    "connecting": "connecting to sidecar…",
+    "curvatureOff": "Curvature combs off",
+    "curvatureOn": "Curvature combs on (edge bend visualization)",
+    "deletingFace": "Deleting face…",
+    "draftAnalysisOff": "Draft analysis off",
+    "edgesSelected": {
+      "one": "{count} edge selected — Fillet or Chamfer to apply · Esc to clear",
+      "other": "{count} edges selected — Fillet or Chamfer to apply · Esc to clear"
+    },
+    "enterSketchToCheck": "Enter a sketch to check it",
+    "enterSketchToModify": "Enter a sketch to use modify tools",
+    "enterSketchToSelect": "Enter a sketch to select sketch geometry",
+    "faceHit": "Del to delete this face (removes it + heals) · Extrude to push/cut it",
+    "hideSelectFirst": "Hide: select bodies first (press 2 for body select)",
+    "needBody": {
+      "componentColors": "Component colors: create or import a body first",
+      "curvature": "Curvature combs: create or import a body first",
+      "draftAnalysis": "Draft analysis: create or import a body first",
+      "generic": "Create or import a body first",
+      "measure": "Measure: create or import a body first",
+      "section": "Section: create or import a body first",
+      "zebra": "Zebra: create or import a body first"
+    },
+    "overhang": "Overhang: red = unsupported below {threshold}° from horizontal (build {dir})",
+    "ready": "ready",
+    "rebuilding": "Rebuilding",
+    "regionsSelected": {
+      "one": "{count} profile area selected — Extrude (E) · Ctrl-click adds · Esc clears",
+      "other": "{count} profile areas selected — Extrude (E) · Ctrl-click adds · Esc clears"
+    },
+    "rollForwardToEdit": "Roll the timeline forward to edit this feature",
+    "sketchCancelled": "Sketch cancelled",
+    "sketchUnsatisfied": "Sketch {id}: dimensions could not be satisfied — geometry left unchanged",
+    "spaceMouseBlocked": "Found \"{name}\" but can't read it — see the SpaceMouse section of the README (Linux needs a one-time udev rule; a running spacenavd/3Dconnexion driver also holds the device)",
+    "unsuppressToEdit": "Unsuppress the feature to edit it",
+    "zebraOff": "Zebra off",
+    "zebraOn": "Zebra stripes on (surface continuity)"
+  },
+  "texture": {
+    "kind": {
+      "hex": "Hex",
+      "image": "Image Heightmap",
+      "knurl": "Knurl",
+      "noise": "Noise (Perlin)",
+      "ribs": "Ribs",
+      "voronoi": "Voronoi",
+      "waves": "Waves"
+    }
+  },
+  "timeline": {
+    "building": "building…",
+    "buildingProgress": "building {done}/{total}",
+    "busyPercent": "{label} {pct}%",
+    "chip": "{index} · {name}",
+    "chipHint": "right-click for more",
+    "chipHintEditable": "double-click to edit · right-click for more",
+    "chipNote": "⚠ {note}",
+    "empty": "Your modeling history will appear here. Start with a Sketch.",
+    "failed": "failed",
+    "failingFeatures": "Failing features — click to jump to the next one",
+    "markerTitle": "Drag to roll the model back / forward",
+    "meshingProgress": "meshing {done}/{total}",
+    "repickFace": "Re-pick face…",
+    "rollPastHere": "Roll past here",
+    "rollToEnd": "Roll forward to the end",
+    "rollToHere": "Roll to here",
+    "rollToStart": "Roll back to the start",
+    "stepBack": "Step one feature back",
+    "stepForward": "Step one feature forward",
+    "stopOperation": "Stop the running operation",
+    "suppress": "Suppress",
+    "unsuppress": "Unsuppress"
+  },
+  "tinkeratlas": {
+    "error": {
+      "expired": "TinkerAtlas sign-in expired or was revoked",
+      "unreachable": "Can't reach TinkerAtlas — check your connection",
+      "unreachableRetry": "Can't reach TinkerAtlas — check your connection and retry."
+    },
+    "publish": {
+      "descriptionPlaceholder": "Description (optional)",
+      "failed": "Publish failed: {reason}",
+      "featureMissing": "⚠ {feature} failed — its result is NOT in the upload: {reason}",
+      "formatPrompt": "Publish — model format?",
+      "inProgress": "Publishing to TinkerAtlas…",
+      "needsNative": "Publishing needs the native app",
+      "nothing": "Nothing to publish yet — build a body first",
+      "postPublicly": "Post publicly (off = private draft)",
+      "published": "Published to TinkerAtlas",
+      "recommended": "recommended",
+      "savedDraft": "Saved to TinkerAtlas as a draft",
+      "submit": "Publish",
+      "title": "Publish to TinkerAtlas",
+      "titlePlaceholder": "Title",
+      "titleTooShort": "Title needs at least 3 characters.",
+      "untitled": "Untitled design",
+      "view": "View on TinkerAtlas",
+      "warningsTitle": "Publishing with warnings"
+    },
+    "signIn": {
+      "action": "Sign in…",
+      "button": "Sign in with TinkerAtlas",
+      "failed": "Sign-in failed: {reason}",
+      "hint": "Publish your designs straight from SindriCAD with your TinkerAtlas account.",
+      "pasteFirst": "Paste the token first.",
+      "register": "Create a free account",
+      "title": "Connect to TinkerAtlas",
+      "tokenToggle": "Have a desktop token? Paste it instead",
+      "unauthorized": "TinkerAtlas didn't accept the sign-in — try again.",
+      "useToken": "Use token",
+      "waiting": "Finish signing in in your browser.",
+      "waitingAuthorize": "This dialog completes automatically when you click Authorize SindriCAD.",
+      "waitingSignup": "Creating an account first? Take your time — if this times out, just press Sign in again afterwards."
+    },
+    "signOut": {
+      "confirm": "Sign out",
+      "done": "Signed out of TinkerAtlas",
+      "failed": "Sign-out failed: {reason}",
+      "prompt": "Sign out of TinkerAtlas ({user})?"
+    },
+    "signedInAs": "Signed in as {name}"
+  },
+  "tool": {
+    "analyze": "Analyze",
+    "arc": "Arc",
+    "bodyColors": "Body Colors",
+    "boltCircle": "Bolt Circle",
+    "box": "Box",
+    "break": "Break",
+    "cancelSketch": "Cancel Sketch",
+    "centerRectangle": "Center Rect",
+    "chamfer": "Chamfer",
+    "checkSketch": "Check",
+    "circle": "Circle",
+    "circle2": "Circle 2-Pt",
+    "circle3": "Circle 3-Pt",
+    "cleanUp": "Clean Up",
+    "coincident": "Coincident",
+    "collinear": "Collinear",
+    "combine": "Combine",
+    "computeAll": "Compute All",
+    "concentric": "Concentric",
+    "constrain": "Constrain",
+    "copy": "Copy",
+    "curvature": "Curvature",
+    "cylinder": "Cylinder",
+    "datumPlane": "Datum Plane",
+    "deleteFace": "Delete Face",
+    "dimension": "Dimension",
+    "draft": "Draft",
+    "equal": "Equal",
+    "extend": "Extend",
+    "extrude": "Extrude",
+    "fillet": "Fillet",
+    "finishSketch": "Finish Sketch",
+    "fix": "Fix",
+    "gridHoles": "Grid Holes",
+    "hexHoles": "Hex Holes",
+    "honeycomb": "Honeycomb",
+    "horizontal": "Horizontal",
+    "import": "Import",
+    "importMesh": "Import Mesh",
+    "interference": "Interference",
+    "line": "Line",
+    "loft": "Loft",
+    "measure": "Measure",
+    "midpoint": "Midpoint",
+    "mirror": "Mirror",
+    "move": "Move",
+    "offset": "Offset",
+    "offsetFace": "Offset Face",
+    "offsetPlane": "Offset Plane",
+    "openInOrca": "Open in OrcaSlicer",
+    "overhang": "Overhang",
+    "parallel": "Parallel",
+    "parameters": "Parameters",
+    "pattern": "Pattern",
+    "patternCircular": "Circular Pattern",
+    "patternRect": "Rect Pattern",
+    "point": "Point",
+    "polygon": "Polygon",
+    "presspull": "Press/Pull",
+    "primitive": "Primitive",
+    "printProject": "Print Project",
+    "project": "Project",
+    "properties": "Properties",
+    "rectangle": "Rectangle",
+    "removeBody": "Remove Body",
+    "revolve": "Revolve",
+    "rotate": "Rotate",
+    "scale": "Scale",
+    "section": "Section",
+    "select": "Select",
+    "sendToPrinter": "Send to Printer",
+    "shell": "Shell",
+    "simplifyMesh": "Simplify Mesh",
+    "sketch": "Sketch",
+    "sketchPalette": "Sketch Palette",
+    "slot": "Slot",
+    "sphere": "Sphere",
+    "spline": "Spline",
+    "split": "Split Body",
+    "sweep": "Sweep",
+    "symmetric": "Symmetric",
+    "tangent": "Tangent",
+    "text": "Text",
+    "textOnFace": "Text on Face",
+    "texture": "Texture",
+    "thicken": "Thicken",
+    "trim": "Trim",
+    "vertical": "Vertical",
+    "zebra": "Zebra"
+  },
+  "update": {
+    "available": "Update {version} is available",
+    "cannotSelfUpdate": "This install can't update itself. Download the current build, or switch to the AppImage, which does.",
+    "checkFailed": "Update check failed: {reason}",
+    "downloading": "Downloading the update…",
+    "install": "Restart & update",
+    "needsPackaged": "Update checks need the packaged app",
+    "noBrowser": "Couldn't open a browser. The page is {url}",
+    "openDownloads": "Open downloads",
+    "upToDate": "SindriCAD {version} is up to date."
+  },
+  "viewport": {
+    "contextLost": "The 3D view lost its graphics context and is trying to recover.",
+    "cube": {
+      "back": "BACK",
+      "bottom": "BOTTOM",
+      "front": "FRONT",
+      "left": "LEFT",
+      "noFace": "No face there — click a model face (Esc to cancel)",
+      "pickFace": "Click a model face to set as \"{side}\" (Esc to cancel)",
+      "resetDefault": "Reset to default",
+      "right": "RIGHT",
+      "setFromFace": "Set \"{side}\" from face…",
+      "top": "TOP"
+    },
+    "fps": {
+      "gpu": "GPU: {gpu}",
+      "idle": "idle",
+      "idleTitle": "The viewport only draws when something changes — nothing to render right now.",
+      "reading": "{fps} fps · {ms} ms",
+      "title": "{count} frames drawn in the last {span}ms. The viewport renders on demand, so this only counts frames that were actually drawn."
+    },
+    "pivot": {
+      "hint": {
+        "cursor": "the point under the cursor when the drag starts",
+        "model": "the centre of the whole model",
+        "origin": "the world origin (0, 0, 0)",
+        "view": "the centre of the view (default)"
+      },
+      "label": "Pivot: {mode}",
+      "mode": {
+        "cursor": "Cursor",
+        "model": "Model",
+        "origin": "Origin",
+        "view": "View"
+      },
+      "title": "Orbit around {where} — click to cycle"
+    },
+    "selectionMode": {
+      "bodies": "Bodies",
+      "faces": "Faces"
+    }
+  },
+  "welcome": {
+    "connecting": "Connecting to TinkerAtlas…",
+    "recent": "Recent",
+    "showOnStartup": "Show this screen on startup",
+    "signIn": "Sign in with TinkerAtlas",
+    "unreachable": "TinkerAtlas is unreachable — you're offline or the service is down."
+  }
+}

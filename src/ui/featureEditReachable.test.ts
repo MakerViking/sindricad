@@ -223,7 +223,7 @@ describe("editing a feature always reaches an editor or an explanation", () => {
       timelineSrc,
       "the timeline's context menu labels its edit entry unconditionally again — right-clicking "
         + "a loft offers \"Edit\" and then refuses to edit it",
-    ).toMatch(/label:\s*editable\s*\?\s*"Edit"\s*:\s*"Select"/);
+    ).toMatch(/label:\s*editable\s*\?\s*t\("common\.edit"\)\s*:\s*t\("common\.select"\)/);
   });
 
   it("a tool that declines hands over to the inspector exactly like the default arm", () => {

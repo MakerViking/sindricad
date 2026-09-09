@@ -14,6 +14,7 @@ import { setPrompt } from "../ui/prompt";
 import { getUnit, toDisplay, round } from "../ui/units";
 import { esc } from "../ui/escape";
 import { polylineMid } from "../viewport/edgeMatch";
+import { t } from "../i18n";
 
 type Probe =
   | { kind: "face"; faceId: number; point: THREE.Vector3; dir: THREE.Vector3; area: number }
@@ -54,7 +55,7 @@ export class MeasureTool {
     window.addEventListener("keydown", this.boundKey, true);
     this.buildPanel();
     this.update();
-    setPrompt("Measure: click a face or edge · click a second to measure between them · Esc to exit");
+    setPrompt(t("feature.measure.prompt"));
   }
 
   /** Start measuring with the first probe already picked (right-click →
@@ -67,7 +68,7 @@ export class MeasureTool {
     this.probes.push(probe);
     this.highlight();
     this.update();
-    setPrompt("Measure: click a second face or edge for the distance · Esc to exit");
+    setPrompt(t("feature.measure.promptSecond"));
   }
 
   private onMove(e: PointerEvent) {
@@ -199,31 +200,31 @@ export class MeasureTool {
     const rows: [string, string][] = [];
     const [a, b] = this.probes;
     if (!a) {
-      rows.push(["", "Pick a face or edge"]);
+      rows.push(["", t("feature.measure.pick")]);
     } else if (!b) {
-      if (a.kind === "face") rows.push(["Area", A(a.area)]);
-      else rows.push(["Length", L(a.length)]);
-      rows.push(["At", xyz(a.point)]);
+      if (a.kind === "face") rows.push([t("feature.measure.area"), A(a.area)]);
+      else rows.push([t("feature.measure.length"), L(a.length)]);
+      rows.push([t("feature.measure.at"), xyz(a.point)]);
     } else {
       const near = this.closestPair(a, b);
       const delta = near.pb.clone().sub(near.pa);
-      rows.push(["Distance", L(near.d)]);
-      rows.push(["ΔX ΔY ΔZ", xyz(delta)]);
-      rows.push(["Centers", L(a.point.distanceTo(b.point))]);
+      rows.push([t("feature.measure.distance"), L(near.d)]);
+      rows.push([t("feature.measure.delta"), xyz(delta)]);
+      rows.push([t("feature.measure.centers"), L(a.point.distanceTo(b.point))]);
       const ang = THREE.MathUtils.radToDeg(a.dir.angleTo(b.dir));
-      rows.push(["Angle", `${round(ang)}°`]);
+      rows.push([t("feature.measure.angle"), `${round(ang)}°`]);
       this.viewport.setMeasureMarker(near.pa, near.pb);
     }
 
     this.panel.innerHTML =
-      `<div class="measure-title">Measure</div>` +
+      `<div class="measure-title" data-i18n="tool.measure">${esc(t("tool.measure"))}</div>` +
       rows
         .map(
           ([k, v]) =>
             `<div class="measure-row"><span class="measure-k">${esc(k)}</span><span class="measure-v">${esc(v)}</span></div>`,
         )
         .join("") +
-      `<div class="measure-hint">Esc to exit</div>`;
+      `<div class="measure-hint" data-i18n="feature.measure.escToExit">${esc(t("feature.measure.escToExit"))}</div>`;
   }
 
   stop() {

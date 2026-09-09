@@ -6,6 +6,7 @@
 
 import * as THREE from "three";
 import { icon } from "./icons";
+import { t, setText } from "../i18n";
 import {
   AXIS_LABELS,
   AXIS_NAMES,
@@ -78,21 +79,21 @@ export class SpaceMouseSettings {
     overlay.appendChild(panel);
 
     const head = el("div", "modal-head");
-    head.appendChild(text("h2", "3D Mouse Settings"));
+    head.appendChild(text("h2", t("settings.spaceMouse.title"), "", "settings.spaceMouse.title"));
     const x = el("button", "modal-close") as HTMLButtonElement;
-    x.setAttribute("aria-label", "Close");
+    x.setAttribute("aria-label", t("common.close"));
     x.innerHTML = icon("close");
     x.onclick = () => this.close();
     head.appendChild(x);
     panel.appendChild(head);
 
-    const body = el("div", "modal-body sm-grid");
+    const body = el("div", "modal-body sm-grid"); // i18n-ignore CSS class list, not UI text
     panel.appendChild(body);
 
     // --- left column: live axes + test cube ---
     const left = el("div", "sm-col");
-    left.appendChild(text("div", "Live axes — move the puck", "sm-section"));
-    const hint = text("div", "Push/tilt/twist and watch which bar reacts, then map it below.", "sm-hint");
+    left.appendChild(text("div", t("settings.spaceMouse.liveAxes"), "sm-section", "settings.spaceMouse.liveAxes"));
+    const hint = text("div", t("settings.spaceMouse.liveHint"), "sm-hint", "settings.spaceMouse.liveHint");
     left.appendChild(hint);
     for (const a of AXIS_NAMES) {
       const row = el("div", "sm-axis-row");
@@ -104,7 +105,7 @@ export class SpaceMouseSettings {
       this.bars.set(a, bar);
       left.appendChild(row);
     }
-    left.appendChild(text("div", "Test — rotate the cube", "sm-section"));
+    left.appendChild(text("div", t("settings.spaceMouse.test"), "sm-section", "settings.spaceMouse.test"));
     const testCanvas = el("canvas", "sm-test") as HTMLCanvasElement;
     testCanvas.width = 240;
     testCanvas.height = 170;
@@ -114,7 +115,7 @@ export class SpaceMouseSettings {
     // --- right column: mode, sensitivities, mappings ---
     const right = el("div", "sm-col");
 
-    right.appendChild(text("div", "Mode", "sm-section"));
+    right.appendChild(text("div", t("settings.spaceMouse.mode"), "sm-section", "settings.spaceMouse.mode"));
     const modeRow = el("div", "sm-row");
     for (const m of ["object", "camera"] as const) {
       const lab = el("label", "sm-radio");
@@ -123,22 +124,22 @@ export class SpaceMouseSettings {
       r.name = "sm-mode";
       r.checked = cfg.mode === m;
       r.onchange = () => setSpaceMouseConfig({ mode: m });
-      lab.append(r, document.createTextNode(m === "object" ? " Move object" : " Move camera"));
+      lab.append(r, document.createTextNode(" " + t(m === "object" ? "settings.spaceMouse.moveObject" : "settings.spaceMouse.moveCamera")));
       modeRow.appendChild(lab);
     }
     right.appendChild(modeRow);
 
-    right.appendChild(text("div", "Sensitivity", "sm-section"));
-    right.appendChild(this.slider("Pan", cfg.panSens, 0, 0.000003, (v) => setSpaceMouseConfig({ panSens: v })));
-    right.appendChild(this.slider("Zoom", cfg.zoomSens, 0, 0.0000035, (v) => setSpaceMouseConfig({ zoomSens: v })));
-    right.appendChild(this.slider("Rotate", cfg.orbitSens, 0, 0.00001, (v) => setSpaceMouseConfig({ orbitSens: v })));
-    right.appendChild(this.slider("Deadzone", cfg.deadzone, 0, 200, (v) => setSpaceMouseConfig({ deadzone: v }), 1));
+    right.appendChild(text("div", t("settings.spaceMouse.sensitivity"), "sm-section", "settings.spaceMouse.sensitivity"));
+    right.appendChild(this.slider(t("settings.spaceMouse.pan"), cfg.panSens, 0, 0.000003, (v) => setSpaceMouseConfig({ panSens: v })));
+    right.appendChild(this.slider(t("settings.spaceMouse.zoom"), cfg.zoomSens, 0, 0.0000035, (v) => setSpaceMouseConfig({ zoomSens: v })));
+    right.appendChild(this.slider(t("settings.spaceMouse.rotate"), cfg.orbitSens, 0, 0.00001, (v) => setSpaceMouseConfig({ orbitSens: v })));
+    right.appendChild(this.slider(t("settings.spaceMouse.deadzone"), cfg.deadzone, 0, 200, (v) => setSpaceMouseConfig({ deadzone: v }), 1));
     // Cross-axis filter, as a percentage of the strongest axis. 0 turns it off.
     // Capped at 60%: past that a deliberate combined gesture stops working long
     // before the filter buys anything more.
     right.appendChild(
       this.slider(
-        "Cross-axis filter",
+        t("settings.spaceMouse.crossAxis"),
         Math.round(cfg.crossAxis * 100),
         0,
         60,
@@ -148,24 +149,24 @@ export class SpaceMouseSettings {
       ),
     );
     right.appendChild(
-      text("div", "Ignores a weak axis while another axis is much stronger, so a hard tilt doesn't also zoom.", "sm-hint"),
+      text("div", t("settings.spaceMouse.crossAxisHint"), "sm-hint", "settings.spaceMouse.crossAxisHint"),
     );
 
-    right.appendChild(text("div", "Axis mapping", "sm-section"));
+    right.appendChild(text("div", t("settings.spaceMouse.axisMapping"), "sm-section", "settings.spaceMouse.axisMapping"));
     for (const action of Object.keys(ACTION_LABELS) as ActionName[]) {
       right.appendChild(this.mappingRow(action));
     }
 
     const foot = el("div", "modal-foot");
     const reset = el("button", "btn") as HTMLButtonElement;
-    reset.textContent = "Reset to defaults";
+    setText(reset, "settings.spaceMouse.resetDefaults");
     reset.onclick = () => {
       resetSpaceMouseConfig();
       this.close();
       this.open(); // rebuild from defaults
     };
-    const done = el("button", "btn btn-primary") as HTMLButtonElement;
-    done.textContent = "Done";
+    const done = el("button", "btn btn-primary") as HTMLButtonElement; // i18n-ignore CSS class list, not UI text
+    setText(done, "common.done");
     done.onclick = () => this.close();
     foot.append(reset, done);
 
@@ -225,7 +226,7 @@ export class SpaceMouseSettings {
     c.checked = b.invert;
     c.onchange = () =>
       setSpaceMouseConfig({ bind: { [action]: { ...cfg.bind[action], invert: c.checked } } as any });
-    inv.append(c, document.createTextNode(" flip"));
+    inv.append(c, document.createTextNode(" " + t("settings.spaceMouse.flip")));
     row.append(sel, inv);
     return row;
   }
@@ -249,7 +250,7 @@ export class SpaceMouseSettings {
       const suppressed = !dead && f[a] === 0;
       bar.style.background = dead ? "var(--text-mute, #6b7280)" : "var(--accent, #ff7a3c)";
       bar.style.opacity = suppressed ? "0.35" : "1";
-      const note = suppressed ? `${AXIS_LABELS[a]}: suppressed by the cross-axis filter` : "";
+      const note = suppressed ? t("settings.spaceMouse.suppressed", { axis: AXIS_LABELS[a] }) : "";
       if (note) {
         bar.setAttribute("title", note);
         bar.setAttribute("aria-label", note);
@@ -372,9 +373,10 @@ function el(tag: string, cls = ""): HTMLElement {
   if (cls) e.className = cls;
   return e;
 }
-function text(tag: string, txt: string, cls = ""): HTMLElement {
+function text(tag: string, txt: string, cls = "", i18nKey = ""): HTMLElement {
   const e = el(tag, cls);
   e.textContent = txt;
+  if (i18nKey) e.dataset.i18n = i18nKey;
   return e;
 }
 function fmt(v: number): string {

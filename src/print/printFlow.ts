@@ -11,6 +11,7 @@ import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import { exportPrintProject } from "../io/files";
 import { toast } from "../ui/toast";
+import { t } from "../i18n";
 import { filamentMappingDialog, type LogicalSlot } from "./printDialog";
 import {
   activePrinterId,
@@ -33,7 +34,7 @@ export async function openInOrca(store: DocumentStore, geometry: GeometryBackend
   try {
     stagingPath = await invoke<string>("print_staging_path", { name: stem, ext: "3mf" });
   } catch (e) {
-    toast(`Couldn't prepare export: ${String(e)}`, { kind: "error" });
+    toast(t("print.error.prepareExport", { reason: String(e) }), { kind: "error" });
     return;
   }
   // Flatten the user's active OrcaSlicer machine preset so the project OPENS on
@@ -49,19 +50,15 @@ export async function openInOrca(store: DocumentStore, geometry: GeometryBackend
     // invents a throwaway printer named after the file, and a user who cannot
     // see why will hunt through Orca's preset menus for the cause.
     console.warn("slicer_project_settings failed — falling back to minimal settings:", e);
-    toast(`Couldn't read your OrcaSlicer printer preset (${String(e)}) — Orca will not preselect the U1.`, { kind: "warning" });
+    toast(t("print.error.presetRead", { reason: String(e) }), { kind: "warning" });
   }
   const written = await exportPrintProject(store, geometry, { path: stagingPath, ...(settings !== undefined ? { settings } : {}) });
   if (!written) return; // exportPrintProject already surfaced any error
   try {
     await invoke("slicer_open", { path: written });
-    toast(
-      settings
-        ? "Opened in OrcaSlicer on your U1 preset — slice, then Upload & Print."
-        : "Opened in OrcaSlicer — pick your U1 printer, slice, then Upload & Print.",
-    );
+    toast(settings ? t("print.openedWithPreset") : t("print.openedNoPreset"));
   } catch (e) {
-    toast(`Couldn't launch OrcaSlicer: ${String(e)}`, { kind: "error" });
+    toast(t("print.error.launch", { reason: String(e) }), { kind: "error" });
   }
 }
 
@@ -78,7 +75,7 @@ function usedSlots(store: DocumentStore): LogicalSlot[] {
       const mat = palette[i]?.material;
       return {
         index: i,
-        name: palette[i]?.name ?? `Filament ${i + 1}`,
+        name: palette[i]?.name ?? t("print.filamentN", { n: i + 1 }),
         color: palette[i]?.color ?? "#808080",
         ...(mat !== undefined ? { material: mat } : {}),
       };
@@ -102,7 +99,7 @@ export async function sendToPrinter(store: DocumentStore, _geometry: GeometryBac
     toolheads = await printerFilaments(id);
   } catch (e) {
     const pe = asPrinterError(e);
-    toast(pe ? `Can't reach the printer: ${pe.message}` : `Printer error: ${String(e)}`, { kind: "error" });
+    toast(pe ? t("print.error.unreachableReason", { reason: pe.message }) : t("print.error.generic", { reason: String(e) }), { kind: "error" });
     return;
   }
 
@@ -114,14 +111,14 @@ export async function sendToPrinter(store: DocumentStore, _geometry: GeometryBac
     await printerUploadAndPrint(id, picked, remoteName, mapping.mapTable, mapping.opts);
   } catch (e) {
     const pe = asPrinterError(e);
-    if (pe?.code === "Busy") toast("Printer is busy — job not sent.", { kind: "error" });
-    else if (pe?.code === "NozzleMismatch") toast(`Nozzle mismatch — ${pe.message}`, { kind: "error" });
-    else if (pe?.code === "Unreachable") toast("Printer not reachable — is it on?", { kind: "error" });
-    else toast(pe ? `Print rejected: ${pe.message}` : `Send failed: ${String(e)}`, { kind: "error" });
+    if (pe?.code === "Busy") toast(t("print.error.busy"), { kind: "error" });
+    else if (pe?.code === "NozzleMismatch") toast(t("print.error.nozzleMismatch", { reason: pe.message }), { kind: "error" });
+    else if (pe?.code === "Unreachable") toast(t("print.error.unreachable"), { kind: "error" });
+    else toast(pe ? t("print.error.rejected", { reason: pe.message }) : t("print.error.sendFailed", { reason: String(e) }), { kind: "error" });
     return;
   }
 
-  toast(`Sent ${remoteName} — printing`, { kind: "info" });
+  toast(t("print.sent", { name: remoteName }), { kind: "info" });
   void startMonitoring(id);
 }
 
@@ -132,18 +129,19 @@ async function startMonitoring(id: string) {
   const offStatus = await onPrinterStatus((s) => {
     if (s.id !== id) return;
     if (s.state === "printing" || s.state === "paused") {
-      setPrinterStatusText(`${s.state === "paused" ? "Paused" : "Printing"} ${s.filename} — ${Math.round(s.progress * 100)}%`);
+      const params = { name: s.filename, pct: Math.round(s.progress * 100) };
+      setPrinterStatusText(s.state === "paused" ? t("print.status.paused", params) : t("print.status.printing", params));
     } else {
       setPrinterStatusText(null);
-      if (s.state === "complete") toast(`Print complete: ${s.filename}`, { kind: "info" });
-      else if (s.state === "error") toast(`Print error on ${s.filename}`, { kind: "error" });
+      if (s.state === "complete") toast(t("print.complete", { name: s.filename }), { kind: "info" });
+      else if (s.state === "error") toast(t("print.errorOn", { name: s.filename }), { kind: "error" });
       cleanup();
     }
   });
   const offOffline = await onPrinterOffline((oid) => {
     if (oid !== id) return;
     setPrinterStatusText(null);
-    toast("Lost connection to the printer.", { kind: "error" });
+    toast(t("print.error.connectionLost"), { kind: "error" });
     cleanup();
   });
   const cleanup = () => {

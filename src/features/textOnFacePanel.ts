@@ -7,6 +7,7 @@
 // and a refused commit must leave the panel up and recoverable.
 
 import { icon, type IconName } from "../ui/icons";
+import { t, setText, setTitle } from "../i18n";
 
 /** Which filament a flat text should take when the user hasn't chosen one.
  *
@@ -121,9 +122,9 @@ export class TextOnFacePanel {
       root.appendChild(d);
       return d;
     };
-    const label = (t: string) => {
+    const label = (key: string) => {
       const l = document.createElement("label");
-      l.textContent = t;
+      setText(l, key);
       // nowrap: a two-word label ("Across mm") otherwise wraps to two lines and
       // shoves the rest of its row sideways.
       Object.assign(l.style, {
@@ -147,14 +148,14 @@ export class TextOnFacePanel {
     };
 
     const title = document.createElement("div");
-    title.textContent = opts.editing ? "Edit text on face" : "Text on face";
+    setText(title, opts.editing ? "feature.text.editTitle" : "feature.text.title");
     Object.assign(title.style, { fontWeight: "600", marginBottom: "6px" });
     root.appendChild(title);
 
     const text = document.createElement("textarea");
     text.value = init.text ?? "";
     text.rows = 2;
-    text.placeholder = "Type your text";
+    text.placeholder = t("feature.text.placeholder");
     Object.assign(text.style, { width: "100%", resize: "vertical", boxSizing: "border-box" });
     root.appendChild(text);
     root.appendChild(document.createElement("div")).style.height = "6px";
@@ -162,7 +163,7 @@ export class TextOnFacePanel {
     const font = document.createElement("select");
     font.style.flex = "1";
     const def = document.createElement("option");
-    def.value = ""; def.textContent = "Default font";
+    def.value = ""; def.textContent = t("feature.text.defaultFont");
     font.appendChild(def);
     for (const f of opts.fonts) {
       const o = document.createElement("option");
@@ -170,33 +171,33 @@ export class TextOnFacePanel {
       font.appendChild(o);
     }
     font.value = init.font ?? "";
-    row(label("Font"), font);
+    row(label("feature.text.font"), font);
 
     const height = num(init.height ?? 6, "0.5", "0.01");
     const depth = num(init.depth ?? 0.6, "0.1", "0.01");
-    const depthLabel = label("Depth");
-    row(label("Size mm"), height, depthLabel, depth);
+    const depthLabel = label("feature.text.depth");
+    row(label("feature.text.size"), height, depthLabel, depth);
 
     // Placement. Seeded from where the click landed, so these open showing the
     // spot the user already chose rather than 0/0 — a field that disagrees with
     // what is on screen is worse than no field.
     const offU = num(init.u ?? 0, "0.5");
     const offV = num(init.v ?? 0, "0.5");
-    row(label("Across mm"), offU, label("Up"), offV);
+    row(label("feature.text.across"), offU, label("feature.text.up"), offV);
 
     const op = document.createElement("select");
     op.style.flex = "1";
-    for (const [v, t] of [
-      ["emboss", "Emboss (raised)"],
-      ["engrave", "Engrave (cut)"],
-      ["flat", "Flat (color only)"],
+    for (const [v, key] of [
+      ["emboss", "feature.text.emboss"],
+      ["engrave", "feature.text.engrave"],
+      ["flat", "feature.text.flat"],
     ] as const) {
       const o = document.createElement("option");
-      o.value = v; o.textContent = t;
+      o.value = v; o.textContent = t(key);
       op.appendChild(o);
     }
     op.value = init.operation ?? "emboss";
-    row(label("Style"), op);
+    row(label("feature.text.style"), op);
 
     const bold = document.createElement("input");
     bold.type = "checkbox";
@@ -208,32 +209,29 @@ export class TextOnFacePanel {
     Object.assign(align.style, { flex: "1 1 0", minWidth: "0" });
     for (const a of ["left", "center", "right"] as const) {
       const o = document.createElement("option");
-      o.value = a; o.textContent = a;
+      o.value = a; o.textContent = t(`feature.text.align.${a}`);
       align.appendChild(o);
     }
     align.value = init.align ?? "left";
-    row(label("B / I"), bold, italic, align);
+    row(label("feature.text.boldItalic"), bold, italic, align);
 
     const angle = num(init.angle ?? 0, "5");
     const boxWidth = num(init.boxWidth ?? 0, "1", "0");
-    boxWidth.title = "0 = no wrapping";
-    row(label("Angle °"), angle, label("Wrap"), boxWidth);
+    setTitle(boxWidth, "feature.text.wrapTitle");
+    row(label("feature.text.angle"), angle, label("feature.text.wrap"), boxWidth);
 
     const bevel = num(init.bevel ?? 0, "0.05", "0");
-    bevel.title = "0 = sharp edges. Measured in mm, not degrees.";
+    setTitle(bevel, "feature.text.bevelTitle");
     const bevelStyle = document.createElement("select");
     Object.assign(bevelStyle.style, { flex: "1 1 0", minWidth: "0" });
-    for (const [v, t] of [["auto", "auto"], ["chamfer", "chamfer"], ["fillet", "round"], ["taper", "sloped"]] as const) {
+    for (const v of ["auto", "chamfer", "fillet", "taper"] as const) {
       const o = document.createElement("option");
-      o.value = v; o.textContent = t;
+      o.value = v; o.textContent = t(`feature.text.bevelStyle.${v}`);
       bevelStyle.appendChild(o);
     }
     bevelStyle.value = init.bevelStyle ?? "auto";
-    bevelStyle.title =
-      "Which edges the bevel uses. 'auto' picks whichever one this font can " +
-      "actually manage on every letter — that differs by font, so it is usually " +
-      "the right choice.";
-    const bevelRow = row(label("Bevel mm"), bevel, bevelStyle);
+    setTitle(bevelStyle, "feature.text.bevelStyleTitle");
+    const bevelRow = row(label("feature.text.bevel"), bevel, bevelStyle);
 
     // Filament slot for the letters. Chips rather than a <select> because the
     // thing being chosen IS a colour — the same swatch vocabulary the body
@@ -268,12 +266,12 @@ export class TextOnFacePanel {
       chips.push(b);
       return b;
     };
-    const slotRow = row(label("Color"));
-    slotRow.appendChild(chip("transparent", "Use the body's colour", null));
+    const slotRow = row(label("feature.text.color"));
+    slotRow.appendChild(chip("transparent", t("feature.text.inheritColor"), null));
     chips[0]!.textContent = "—";
     Object.assign(chips[0]!.style, { color: "var(--text)", fontSize: "11px", lineHeight: "18px" });
     (opts.palette ?? []).forEach((sl, i) => {
-      slotRow.appendChild(chip(sl.color, `${sl.name} (slot ${i + 1})`, i));
+      slotRow.appendChild(chip(sl.color, t("common.paletteSlot", { name: sl.name, n: i + 1 }), i));
     });
     paintChips();
     const syncBevel = () => {
@@ -346,16 +344,16 @@ export class TextOnFacePanel {
       }
     });
 
-    const btn = (t: string, variant: "confirm" | "cancel", iconName: IconName) => {
+    const btn = (caption: string, variant: "confirm" | "cancel", iconName: IconName) => {
       const b = document.createElement("button");
       b.className = `panel-btn panel-btn-${variant}`;
       b.innerHTML = `${icon(iconName)}<span></span>`;
-      b.querySelector("span")!.textContent = t;
+      b.querySelector("span")!.textContent = caption;
       b.style.flex = "1";
       return b;
     };
-    const ok = btn(opts.editing ? "Apply" : "Add", "confirm", "check");
-    const no = btn("Cancel", "cancel", "close");
+    const ok = btn(t(opts.editing ? "common.apply" : "common.add"), "confirm", "check");
+    const no = btn(t("common.cancel"), "cancel", "close");
     // pointerdown + preventDefault so the button never blurs the field being
     // typed into, and never reaches the canvas underneath
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });

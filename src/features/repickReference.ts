@@ -119,6 +119,7 @@ export function repairableDiagFor(
   return (diagnostics ?? []).find(
     (d) =>
       d.feature_id === featureId &&
+      // i18n-ignore a sidecar wire value, matched not shown
       ((d.code !== undefined && REPAIRABLE_CODES.has(d.code)) || d.reason === "ambiguous nearest pick") &&
       Array.isArray(d.at),
   );

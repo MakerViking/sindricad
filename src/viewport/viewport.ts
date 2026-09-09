@@ -43,6 +43,7 @@ import {
   type PivotMode,
 } from "./orbitPivot";
 import { setPrompt } from "../ui/prompt";
+import { t } from "../i18n";
 import { setSketchLineResolution } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { ViewCubeSide } from "../types";
@@ -2186,7 +2187,7 @@ export class Viewport {
   /** Enter "pick a model face to redefine this cube side" mode. */
   private beginSetOverride(side: ViewCubeSide) {
     this.setOverrideSide = side;
-    setPrompt(`Click a model face to set as "${FACE_VIEWS[side].label}" (Esc to cancel)`);
+    setPrompt(t("viewport.cube.pickFace", { side: FACE_VIEWS[side].label }));
     // listen once for Escape to cancel
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -2208,7 +2209,7 @@ export class Viewport {
     const side = this.setOverrideSide!;
     const plane = this.pickFacePlane(e.clientX, e.clientY);
     if (!plane) {
-      setPrompt("No face there — click a model face (Esc to cancel)");
+      setPrompt(t("viewport.cube.noFace"));
       return;
     }
     // store the face normal (faces the camera when this side is applied) and an

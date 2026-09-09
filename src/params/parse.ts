@@ -24,6 +24,8 @@ export class ExprError extends Error {
   }
 }
 
+import { t } from "../i18n";
+
 /** unit suffix → factor into the canonical unit of its dimension */
 export const UNITS: Record<string, { factor: number; dim: "length" | "angle" }> = {
   mm: { factor: 1, dim: "length" },
@@ -96,14 +98,14 @@ export function tokenize(src: string): Token[] {
       }
       const text = src.slice(start, i);
       const value = Number(text);
-      if (!Number.isFinite(value)) throw new ExprError(`invalid number "${text}"`, start);
+      if (!Number.isFinite(value)) throw new ExprError(t("params.error.invalidNumber", { text }), start);
       out.push({ kind: "num", value, start, end: i });
       continue;
     }
     if (IDENT_START.test(ch)) {
       const start = i;
       while (i < src.length && IDENT_PART.test(src[i]!)) i++;
-      if (src[i] === ".") throw new ExprError("qualified names ('.') are not supported", i);
+      if (src[i] === ".") throw new ExprError(t("params.error.qualifiedNames"), i);
       out.push({ kind: "ident", name: src.slice(start, i), start, end: i });
       continue;
     }
@@ -112,7 +114,7 @@ export function tokenize(src: string): Token[] {
       i++;
       continue;
     }
-    throw new ExprError(`unexpected character "${ch}"`, i);
+    throw new ExprError(t("params.error.unexpectedChar", { char: ch }), i);
   }
   return out;
 }
@@ -143,10 +145,10 @@ class Parser {
   }
 
   parse(): ExprNode {
-    if (this.toks.length === 0) throw new ExprError("empty expression");
+    if (this.toks.length === 0) throw new ExprError(t("params.error.empty"));
     const node = this.add();
     const left = this.peek();
-    if (left) throw new ExprError(`unexpected "${left.kind === "op" ? left.op : left.kind === "ident" ? left.name : left.value}"`, left.start);
+    if (left) throw new ExprError(t("params.error.unexpectedToken", { token: left.kind === "op" ? left.op : left.kind === "ident" ? left.name : left.value }), left.start);
     return node;
   }
 
@@ -176,35 +178,35 @@ class Parser {
     return base;
   }
   private primary(): ExprNode {
-    const t = this.peek();
-    if (!t) throw new ExprError("unexpected end of expression");
-    if (t.kind === "num") {
+    const tok = this.peek();
+    if (!tok) throw new ExprError(t("params.error.unexpectedEnd"));
+    if (tok.kind === "num") {
       this.i++;
       const suffix = this.peek();
       if (suffix?.kind === "ident" && suffix.name in UNITS) {
         this.i++;
         const u = UNITS[suffix.name]!;
-        return { t: "num", v: t.value * u.factor, unit: suffix.name };
+        return { t: "num", v: tok.value * u.factor, unit: suffix.name };
       }
-      return { t: "num", v: t.value };
+      return { t: "num", v: tok.value };
     }
-    if (t.kind === "ident") {
+    if (tok.kind === "ident") {
       this.i++;
       if (this.takeOp("(")) {
         const args: ExprNode[] = [this.add()];
         while (this.takeOp(";")) args.push(this.add());
-        if (!this.takeOp(")")) throw new ExprError(`missing ")" in ${t.name}(…)`, this.peek()?.start ?? t.end);
-        return { t: "call", name: t.name, args };
+        if (!this.takeOp(")")) throw new ExprError(t("params.error.missingParenIn", { name: tok.name }), this.peek()?.start ?? tok.end);
+        return { t: "call", name: tok.name, args };
       }
-      return { t: "ref", name: t.name };
+      return { t: "ref", name: tok.name };
     }
-    if (t.op === "(") {
+    if (tok.op === "(") {
       this.i++;
       const inner = this.add();
-      if (!this.takeOp(")")) throw new ExprError('missing ")"', this.peek()?.start ?? t.end);
+      if (!this.takeOp(")")) throw new ExprError(t("params.error.missingParen"), this.peek()?.start ?? tok.end);
       return inner;
     }
-    throw new ExprError(`unexpected "${t.op}"`, t.start);
+    throw new ExprError(t("params.error.unexpectedToken", { token: tok.op }), tok.start);
   }
 }
 

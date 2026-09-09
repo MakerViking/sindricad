@@ -4,6 +4,7 @@
 // would be overkill. Resolves once; cleans up its own DOM + listeners.
 
 import { esc } from "./escape";
+import { t } from "../i18n";
 
 export interface ChoiceOption<T extends string> {
   value: T;
@@ -144,10 +145,10 @@ export function chooseMulti<T extends string>(
     row.className = "choice-row";
     const cancel = document.createElement("button");
     cancel.className = "choice-btn";
-    cancel.innerHTML = "<span>Cancel</span>";
+    cancel.innerHTML = `<span data-i18n="common.cancel">${esc(t("common.cancel"))}</span>`;
     const ok = document.createElement("button");
     ok.className = "choice-btn choice-primary";
-    ok.innerHTML = `<span>${esc(opts.confirmLabel ?? "OK")}</span>`;
+    ok.innerHTML = `<span>${esc(opts.confirmLabel ?? t("common.ok"))}</span>`;
     row.append(cancel, ok);
     card.appendChild(row);
     backdrop.appendChild(card);
@@ -208,7 +209,7 @@ export function listModal(title: string, items: string[]): Promise<void> {
     card.innerHTML =
       `<div class="choice-title">${esc(title)}</div>` +
       `<ul class="choice-list">${rows}</ul>` +
-      `<div class="choice-row"><button class="choice-btn choice-primary"><span>Done</span></button></div>`;
+      `<div class="choice-row"><button class="choice-btn choice-primary"><span data-i18n="common.done">${esc(t("common.done"))}</span></button></div>`;
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
 

@@ -7,6 +7,7 @@
 
 import { MODEL, SKETCH, leavesOf, type Group } from "./ribbon";
 import { keyHint } from "../input/shortcuts";
+import { t } from "../i18n";
 
 export interface Command {
   id: string; // the action id passed to the central dispatcher (handleAction)
@@ -17,30 +18,31 @@ export interface Command {
 }
 
 // File + View commands that aren't in the ribbon (menus / floating view controls).
+// Labels share their keys with the menubar in main.ts: one string, two places.
 const GLOBAL: Command[] = [
-  { id: "new", label: "New", group: "File", context: "global", key: "Ctrl+N" },
-  { id: "open", label: "Open…", group: "File", context: "global", key: "Ctrl+O" },
-  { id: "save", label: "Save", group: "File", context: "global", key: "Ctrl+S" },
-  { id: "saveas", label: "Save As…", group: "File", context: "global", key: "Ctrl+Shift+S" },
-  { id: "export", label: "Export…", group: "File", context: "global", key: "Ctrl+E" },
-  { id: "import", label: "Import Mesh…", group: "File", context: "global" },
-  { id: "ta-publish", label: "Publish to TinkerAtlas…", group: "File", context: "global" },
-  { id: "welcome", label: "Welcome Screen", group: "Help", context: "global" },
-  { id: "undo", label: "Undo", group: "Edit", context: "global", key: "Ctrl+Z" },
-  { id: "redo", label: "Redo", group: "Edit", context: "global", key: "Ctrl+Y" },
-  { id: "fit", label: "Fit View", group: "View", context: "global", key: "Home / F6" },
-  { id: "iso", label: "Isometric View", group: "View", context: "global" },
-  { id: "top", label: "Top View", group: "View", context: "global" },
-  { id: "front", label: "Front View", group: "View", context: "global" },
-  { id: "right", label: "Right View", group: "View", context: "global" },
-  { id: "persp", label: "Cycle Projection (Persp / Ortho / Auto)", group: "View", context: "global" },
-  { id: "selmode", label: "Toggle Faces / Bodies selection", group: "View", context: "global" },
-  { id: "show-all-bodies", label: "Show All Bodies", group: "View", context: "global", key: "Shift+H" },
-  { id: "shortcut-help", label: "Keyboard Shortcuts…", group: "Help", context: "global", key: "?" },
+  { id: "new", label: t("menu.file.new"), group: t("menu.file.title"), context: "global", key: "Ctrl+N" },
+  { id: "open", label: t("menu.file.open"), group: t("menu.file.title"), context: "global", key: "Ctrl+O" },
+  { id: "save", label: t("menu.file.save"), group: t("menu.file.title"), context: "global", key: "Ctrl+S" },
+  { id: "saveas", label: t("menu.file.saveAs"), group: t("menu.file.title"), context: "global", key: "Ctrl+Shift+S" },
+  { id: "export", label: t("menu.file.export"), group: t("menu.file.title"), context: "global", key: "Ctrl+E" },
+  { id: "import", label: t("menu.file.importMesh"), group: t("menu.file.title"), context: "global" },
+  { id: "ta-publish", label: t("menu.tinkeratlas.publish"), group: t("menu.file.title"), context: "global" },
+  { id: "welcome", label: t("menu.tinkeratlas.welcome"), group: t("menu.help.title"), context: "global" },
+  { id: "undo", label: t("menu.edit.undo"), group: t("menu.edit.title"), context: "global", key: "Ctrl+Z" },
+  { id: "redo", label: t("menu.edit.redo"), group: t("menu.edit.title"), context: "global", key: "Ctrl+Y" },
+  { id: "fit", label: t("menu.view.fit"), group: t("menu.view.title"), context: "global", key: "Home / F6" },
+  { id: "iso", label: t("menu.view.iso"), group: t("menu.view.title"), context: "global" },
+  { id: "top", label: t("menu.view.top"), group: t("menu.view.title"), context: "global" },
+  { id: "front", label: t("menu.view.front"), group: t("menu.view.title"), context: "global" },
+  { id: "right", label: t("menu.view.right"), group: t("menu.view.title"), context: "global" },
+  { id: "persp", label: t("menu.view.cycleProjection"), group: t("menu.view.title"), context: "global" },
+  { id: "selmode", label: t("menu.view.toggleSelectMode"), group: t("menu.view.title"), context: "global" },
+  { id: "show-all-bodies", label: t("menu.view.showAllBodies"), group: t("menu.view.title"), context: "global", key: "Shift+H" },
+  { id: "shortcut-help", label: t("palette.shortcutHelp"), group: t("menu.help.title"), context: "global", key: "?" },
   // pinned ribbon groups (FINISH/PALETTE) live outside the SKETCH const, so the
   // palette must list them explicitly — "Finish Sketch" was unsearchable before
-  { id: "finish", label: "Finish Sketch", group: "SKETCH", context: "sketch" },
-  { id: "palette", label: "Sketch Palette", group: "SKETCH", context: "sketch" },
+  { id: "finish", label: t("tool.finishSketch"), group: t("ribbon.context.sketch"), context: "sketch" },
+  { id: "palette", label: t("palette.sketchPalette"), group: t("ribbon.context.sketch"), context: "sketch" },
 ];
 
 function fromGroups(groups: Group[], context: "model" | "sketch"): Command[] {

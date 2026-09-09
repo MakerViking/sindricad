@@ -11,6 +11,8 @@
 // up until it falls off a cliff, while the millisecond figure degrades smoothly
 // and is directly comparable to a budget (16.7ms at 60Hz).
 
+import { t, setText } from "../i18n";
+
 /** Frames older than this are dropped from the rolling window. */
 const WINDOW_MS = 1000;
 /** No rendered frame for this long = the app is idle, not slow. */
@@ -40,12 +42,12 @@ export class FpsMeter {
   private paint() {
     if (!this.el) return;
     const gpu = (window as { __gpu?: string }).__gpu;
-    const gpuLine = gpu ? `\nGPU: ${gpu}` : "";
+    const gpuLine = gpu ? `\n${t("viewport.fps.gpu", { gpu })}` : "";
     const now = performance.now();
     const last = this.stamps[this.stamps.length - 1];
     if (last === undefined || now - last > IDLE_AFTER_MS) {
-      this.el.textContent = "idle";
-      this.el.title = "The viewport only draws when something changes — nothing to render right now." + gpuLine;
+      setText(this.el, "viewport.fps.idle");
+      this.el.title = t("viewport.fps.idleTitle") + gpuLine;
       return;
     }
     // Rate over the window, and the mean interval between the frames in it.
@@ -56,10 +58,8 @@ export class FpsMeter {
     if (n < 2 || span <= 0) return; // too few samples this tick; keep the last text
     const fps = ((n - 1) / span) * 1000;
     const ms = span / (n - 1);
-    this.el.textContent = `${Math.round(fps)} fps · ${ms.toFixed(1)} ms`;
-    this.el.title = `${n} frames drawn in the last ${Math.round(span)}ms. `
-      + "The viewport renders on demand, so this only counts frames that were actually drawn."
-      + gpuLine;
+    setText(this.el, "viewport.fps.reading", { fps: Math.round(fps), ms: ms.toFixed(1) });
+    this.el.title = t("viewport.fps.title", { count: n, span: Math.round(span) }) + gpuLine;
   }
 
   /** Most recent mean frame time in ms, or null when idle. Read by the bug

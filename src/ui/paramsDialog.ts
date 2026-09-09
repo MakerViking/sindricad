@@ -11,12 +11,14 @@ import { FloatingPanel } from "./panels";
 import { FEATURE_META } from "./featureMeta";
 import { getUnit, toDisplay, round } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
+import { t, setText, setTitle } from "../i18n";
+import { esc } from "./escape";
 
 const panel = new FloatingPanel();
 let unsubscribe: (() => void) | null = null;
 
 export function openParamsDialog(store: DocumentStore): void {
-  const el = panel.open(`<div class="measure-title">Parameters</div><div class="params-body"></div>`, {
+  const el = panel.open(`<div class="measure-title" data-i18n="params.title">${esc(t("params.title"))}</div><div class="params-body"></div>`, {
     closeOnEsc: true,
     onClose: () => {
       unsubscribe?.();
@@ -39,36 +41,36 @@ function render(store: DocumentStore, el: HTMLDivElement): void {
   const user = entries.filter(([, d]) => !d.target);
   const model = entries.filter(([, d]) => d.target);
 
-  body.appendChild(sectionTitle("User Parameters"));
+  body.appendChild(sectionTitle("params.userSection"));
   body.appendChild(headerRow());
   for (const [name, def] of user) body.appendChild(paramRow(store, doc, name, def));
   body.appendChild(addRow(store));
 
   if (model.length) {
-    body.appendChild(sectionTitle("Model Parameters"));
+    body.appendChild(sectionTitle("params.modelSection"));
     body.appendChild(headerRow());
     for (const [name, def] of model) body.appendChild(paramRow(store, doc, name, def));
   }
 
   const hint = document.createElement("div");
   hint.className = "measure-hint";
-  hint.textContent = "Expressions are in mm / degrees; suffixes mm cm in deg rad allowed · Esc to close";
+  setText(hint, "params.hint");
   body.appendChild(hint);
 }
 
-function sectionTitle(text: string): HTMLElement {
-  const t = document.createElement("div");
-  t.className = "params-section";
-  t.textContent = text;
-  return t;
+function sectionTitle(key: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "params-section";
+  setText(el, key);
+  return el;
 }
 
 function headerRow(): HTMLElement {
   const row = document.createElement("div");
   row.className = "params-row params-head";
-  for (const h of ["Name", "Expression", "Value", "Comment / drives", ""]) {
+  for (const key of ["params.header.name", "params.header.expression", "params.header.value", "params.header.comment", null]) {
     const c = document.createElement("span");
-    c.textContent = h;
+    if (key) setText(c, key);
     row.appendChild(c);
   }
   return row;
@@ -102,9 +104,9 @@ function paramRow(store: DocumentStore, doc: CadDocument, name: string, def: Par
     row.appendChild(validatedInput(def.comment ?? "", (raw) => (store.setParamComment(name, raw), null)));
     const del = document.createElement("button");
     del.className = "params-del";
-    del.setAttribute("aria-label", `Delete ${name}`);
+    del.setAttribute("aria-label", t("params.deleteParam", { name }));
     del.innerHTML = icon("close");
-    del.title = `Delete ${name}`;
+    setTitle(del, "params.deleteParam", { name });
     del.addEventListener("click", () => {
       const err = store.deleteParam(name);
       if (err) {
@@ -122,19 +124,19 @@ function addRow(store: DocumentStore): HTMLElement {
   row.className = "params-row params-add";
   const name = document.createElement("input");
   name.type = "text";
-  name.placeholder = "name";
+  name.placeholder = t("params.placeholder.name");
   const expr = document.createElement("input");
   expr.type = "text";
-  expr.placeholder = "expression";
+  expr.placeholder = t("params.placeholder.expression");
   const unit = document.createElement("select");
   for (const u of ["mm", "deg", "count"] as ParamUnit[]) {
     const o = document.createElement("option");
     o.value = u;
-    o.textContent = u === "count" ? "unitless" : u;
+    o.textContent = u === "count" ? t("params.unitless") : u;
     unit.appendChild(o);
   }
   const add = document.createElement("button");
-  add.textContent = "+ Add";
+  setText(add, "params.add");
   const commit = () => {
     if (!name.value.trim() || !expr.value.trim()) return;
     const err = store.addParam(name.value.trim(), expr.value.trim(), unit.value as ParamUnit);
@@ -164,19 +166,19 @@ function formatValue(def: ParamDef): string {
 }
 
 /** Human label for what a model parameter drives. */
-function targetLabel(doc: CadDocument, t: ParamTarget): string {
+function targetLabel(doc: CadDocument, target: ParamTarget): string {
   const featureName = (id: string) => {
     const f = doc.features.find((x) => x.id === id);
-    return f ? `${FEATURE_META[f.type]?.label ?? f.type} ${id}` : id;
+    return f ? t("params.target.featureName", { label: FEATURE_META[f.type]?.label ?? f.type, id }) : id;
   };
-  switch (t.kind) {
+  switch (target.kind) {
     case "feature":
-      return `${featureName(t.feature)} · ${t.field}`;
+      return t("params.target.featureField", { feature: featureName(target.feature), field: target.field });
     case "constraint":
-      return `dimension in ${featureName(t.sketch)}`;
+      return t("params.target.dimensionIn", { feature: featureName(target.sketch) });
     case "entity":
-      return `${t.field} in ${featureName(t.sketch)}`;
+      return t("params.target.entityField", { field: target.field, feature: featureName(target.sketch) });
     case "pattern":
-      return `pattern ${t.field} in ${featureName(t.sketch)}`;
+      return t("params.target.patternField", { field: target.field, feature: featureName(target.sketch) });
   }
 }

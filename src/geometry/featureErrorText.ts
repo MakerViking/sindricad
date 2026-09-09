@@ -17,6 +17,8 @@
  * Precedent: buildAssemblyGroups.
  */
 
+import { hasKey, t } from "../i18n";
+
 /** The token the sidecar leaves where a body's name belongs. Mirrors
  *  `errors.BODY_SLOT` in the sidecar; the contract is in docs/PROTOCOL.md. */
 export const BODY_SLOT = "{body}";
@@ -27,6 +29,11 @@ const MAX_NAME = 120;
 
 export interface FeatureErrorLike {
   message: string;
+  /** A stable code from the sidecar or the shell. When the UI has a
+   *  translation for it (`engine.error.<code>`), that replaces the English
+   *  message; codes whose message carries specifics (which edge, which
+   *  candidates) have no such key and keep the sidecar's own sentence. */
+  code?: string;
   body_id?: string;
   subject?: string;
 }
@@ -51,14 +58,15 @@ export function featureErrorText(
   e: FeatureErrorLike,
   bodies: readonly NamedBody[] | undefined,
 ): string {
-  const msg = e.message ?? "";
+  const coded = e.code && hasKey(`engine.error.${e.code}`) ? t(`engine.error.${e.code}`) : undefined;
+  const msg = coded ?? e.message ?? "";
   if (!msg.includes(BODY_SLOT)) return msg;
 
   const live = e.body_id ? bodies?.find((b) => b.id === e.body_id)?.name : undefined;
   // Trim each candidate BEFORE choosing, not after: a body named "   " is
   // truthy, so trimming downstream let it win the fallback chain and then
   // collapse to nothing, skipping `subject` entirely.
-  const name = (live?.trim() || e.subject?.trim() || "").slice(0, MAX_NAME).trim() || "this body";
+  const name = (live?.trim() || e.subject?.trim() || "").slice(0, MAX_NAME).trim() || t("common.thisBody");
 
   // The replacement MUST go through a function. A plain string replacement
   // interprets $&, $`, $' and $$ as patterns, so a body named `$&` would splice

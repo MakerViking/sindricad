@@ -42,6 +42,7 @@ import faceOffsetSrc from "../features/faceOffsetTool.ts?raw";
 import planeOffsetSrc from "../features/planeOffsetTool.ts?raw";
 import dimInputSrc from "../sketch/dimInput.ts?raw";
 import viewportSrc from "../viewport/viewport.ts?raw";
+import { tEn } from "../i18n";
 ARROW_TOOLS[0]!.src = extrudeSrc;
 ARROW_TOOLS[1]!.src = pressPullSrc;
 ARROW_TOOLS[2]!.src = edgeSrc;
@@ -116,9 +117,14 @@ describe("the drag snap has a fine mode", () => {
   it("tells the user the modifier exists", () => {
     // An escape hatch nobody can discover is not an escape hatch. The reporter
     // could already have zoomed in for a finer step and did not find that either.
-    expect(
-      edgeSrc,
-      "the fillet/chamfer drag prompt does not mention the fine-step modifier",
-    ).toMatch(/Ctrl.{0,12}fine|fine steps/i);
+    //
+    // Asserted against the CATALOGUE, not the source: the prompt is a locale
+    // entry now, so the source only names a key and the sentence the user
+    // actually reads is the thing worth pinning. English, because that is the
+    // wording under review; a translation that drops the modifier is a
+    // translation bug, not a regression of this fix.
+    for (const key of ["feature.edge.dragPrompt.radius", "feature.edge.dragPrompt.distance"]) {
+      expect(tEn(key), `${key} does not mention the fine-step modifier`).toMatch(/Ctrl.{0,12}fine|fine steps/i);
+    }
   });
 });

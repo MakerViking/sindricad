@@ -5,6 +5,7 @@
 // pending/center/edit-original state below is this collaborator's own (moved
 // out of SketchMode entirely), everything else is a live reference back into it.
 
+import { t } from "../i18n";
 import * as THREE from "three";
 import type { SketchPattern } from "../types";
 import type { DimInput } from "./dimInput";
@@ -109,7 +110,7 @@ export class PatternFlow {
   click(p: THREE.Vector2) {
     if (!this.patternCenter) {
       if (ENTITY_PATTERNS.has(this.host.tool()) && this.host.selected().size === 0) {
-        setPrompt("Select entities first, then choose a pattern tool");
+        setPrompt(t("sketch.pattern.selectFirst"));
         return;
       }
       this.patternCenter = p.clone();
@@ -133,11 +134,12 @@ export class PatternFlow {
   }
 
   private patternDimDefs(type: SketchPattern["type"]) {
-    if (type === "boltCircle") return [{ name: "count", label: "N" }, { name: "diameter", label: "⌀" }];
-    if (type === "gridHoles") return [{ name: "countX", label: "Nx" }, { name: "countY", label: "Ny" }, { name: "diameter", label: "⌀" }];
-    if (type === "hexHoles" || type === "honeycomb") return [{ name: "rings", label: "Rings" }, { name: "diameter", label: "⌀" }];
-    if (type === "patternCircular") return [{ name: "count", label: "N" }, { name: "angle", label: "∠", kind: "angle" as const }];
-    return [{ name: "countX", label: "Nx" }, { name: "countY", label: "Ny" }]; // patternRect
+    const L = (k: string) => t(`sketch.dimension.label.${k}`);
+    if (type === "boltCircle") return [{ name: "count", label: L("count") }, { name: "diameter", label: "⌀" }];
+    if (type === "gridHoles") return [{ name: "countX", label: L("countX") }, { name: "countY", label: L("countY") }, { name: "diameter", label: "⌀" }];
+    if (type === "hexHoles" || type === "honeycomb") return [{ name: "rings", label: L("rings") }, { name: "diameter", label: "⌀" }];
+    if (type === "patternCircular") return [{ name: "count", label: L("count") }, { name: "angle", label: "∠", kind: "angle" as const }];
+    return [{ name: "countX", label: L("countX") }, { name: "countY", label: L("countY") }]; // patternRect
   }
 
   /** Live sizing: cursor offset/distance from the start point drives the spatial
@@ -213,7 +215,7 @@ export class PatternFlow {
     }
     this.host.dim().show(this.patternDimDefs(pat.type), () => this.commit());
     this.host.dim().updateFromCursor(cur);
-    setPrompt("Edit the pattern — drag/type to change · click to commit · Delete to remove · Esc to keep");
+    setPrompt(t("sketch.pattern.editPrompt"));
     this.host.refreshActive();
     this.host.onState();
   }

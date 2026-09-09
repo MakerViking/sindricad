@@ -6,6 +6,7 @@
 // Values cross this boundary in MILLIMETRES (the tools work in mm); length
 // fields are shown/parsed in the user's display unit, angles always in degrees.
 
+import { setTitle, t } from "../i18n";
 import { getUnit, displayValue, parseField } from "../ui/units";
 import { icon } from "../ui/icons";
 
@@ -132,8 +133,8 @@ export class DimInput {
     // so pressing them never blurs the input first.
     const ok = document.createElement("button");
     ok.className = "dim-btn dim-ok";
-    ok.title = "Confirm (Enter)";
-    ok.setAttribute("aria-label", "Confirm");
+    setTitle(ok, "sketch.dimension.confirmEnter");
+    ok.setAttribute("aria-label", t("common.confirm"));
     ok.innerHTML = icon("check");
     ok.addEventListener("pointerdown", (e) => {
       e.preventDefault();
@@ -144,8 +145,8 @@ export class DimInput {
     if (this.onCancel) {
       const no = document.createElement("button");
       no.className = "dim-btn dim-no";
-      no.title = "Cancel (Esc)";
-      no.setAttribute("aria-label", "Cancel");
+      setTitle(no, "sketch.dimension.cancelEsc");
+      no.setAttribute("aria-label", t("common.cancel"));
       no.innerHTML = icon("close");
       no.addEventListener("pointerdown", (e) => {
         e.preventDefault();

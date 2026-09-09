@@ -7,6 +7,7 @@ import type { MassPropertiesResult } from "../types";
 import type { Viewport } from "../viewport/viewport";
 import type { GeometryBackend } from "../geometry/client";
 import { esc } from "./escape";
+import { t } from "../i18n";
 import { getUnit, toDisplay, round } from "./units";
 import { printerCameraStart, printerCameraStop, onPrinterCameraFrame, onPrinterCameraOffline } from "../print/printerClient";
 
@@ -72,16 +73,16 @@ export interface PanelsDeps {
  *    - the bounding box is deliberately ABSENT: that row shows dimensions taken
  *      from the same triangulation the sidecar measured, so there is nothing to
  *      correct */
-export function exactPropsRows(t: MassPropertiesResult["total"]): [string, string][] {
+export function exactPropsRows(total: MassPropertiesResult["total"]): [string, string][] {
   const unit = getUnit();
   const f = toDisplay(1);
   const rows: [string, string][] = [
-    ["volume", `${round(t.volume * f * f * f)} ${unit}³`],
-    ["area", `${round(t.area * f * f)} ${unit}²`],
-    ["mass", `${round(t.volume / 1000)} g`],
+    ["volume", `${round(total.volume * f * f * f)} ${unit}³`],
+    ["area", `${round(total.area * f * f)} ${unit}²`],
+    ["mass", `${round(total.volume / 1000)} g`],
   ];
-  if (t.com) {
-    rows.push(["com", `${round(toDisplay(t.com[0]))}, ${round(toDisplay(t.com[1]))}, ${round(toDisplay(t.com[2]))}`]);
+  if (total.com) {
+    rows.push(["com", `${round(toDisplay(total.com[0]))}, ${round(toDisplay(total.com[1]))}, ${round(toDisplay(total.com[2]))}`]);
   }
   return rows;
 }
@@ -130,13 +131,13 @@ export function createPanels(deps: PanelsDeps) {
     const f = toDisplay(1);
     const cm3 = p.volume / 1000; // mm³ → cm³ (mass at 1 g/cm³ baseline)
     return [
-      ["volume", "Volume", `${round(p.volume * f * f * f)} ${unit}³`],
-      ["area", "Surface area", `${round(p.area * f * f)} ${unit}²`],
-      ["mass", "Mass (≈1 g/cm³)", `${round(cm3)} g`],
-      ["com", "Center of mass", `${round(toDisplay(p.com.x))}, ${round(toDisplay(p.com.y))}, ${round(toDisplay(p.com.z))}`],
+      ["volume", t("measure.properties.volume"), `${round(p.volume * f * f * f)} ${unit}³`],
+      ["area", t("measure.properties.surfaceArea"), `${round(p.area * f * f)} ${unit}²`],
+      ["mass", t("measure.properties.mass"), `${round(cm3)} g`],
+      ["com", t("measure.properties.centerOfMass"), `${round(toDisplay(p.com.x))}, ${round(toDisplay(p.com.y))}, ${round(toDisplay(p.com.z))}`],
       [
         "bbox",
-        "Bounding box",
+        t("measure.properties.boundingBox"),
         `${round(toDisplay(p.bbox.max.x - p.bbox.min.x))} × ${round(toDisplay(p.bbox.max.y - p.bbox.min.y))} × ${round(toDisplay(p.bbox.max.z - p.bbox.min.z))} ${unit}`,
       ],
     ] as [string, string, string][];
@@ -154,25 +155,25 @@ export function createPanels(deps: PanelsDeps) {
       if (el) el.textContent = text;
     }
     const hint = root.querySelector(".measure-hint");
-    if (hint) hint.textContent = "Exact — from the geometry kernel · Esc to close";
+    if (hint) hint.textContent = t("measure.properties.exactHint");
   }
 
   function showProperties() {
     if (!hasBody()) {
-      setStatus("Properties: create or import a body first", "");
+      setStatus(t("measure.properties.needBody"), "");
       return;
     }
     const sel = viewport.getSelectedBodies();
     const p = viewport.bodyProperties(sel.length ? sel : null);
     if (!p) return;
-    const title = sel.length === 1 ? p.names[0] : sel.length ? `${sel.length} bodies` : "All bodies";
+    const title = sel.length === 1 ? p.names[0] : sel.length ? t("common.bodies", { count: sel.length }) : t("measure.properties.allBodies");
     const auto = sel.length > 0 && sel.length <= AUTO_REFINE_MAX_BODIES;
     const html =
-      `<div class="measure-title">Properties — ${esc(title)}</div>` +
+      `<div class="measure-title" data-i18n="measure.properties.title">${esc(t("measure.properties.title", { name: title ?? "" }))}</div>` +
       propsRows(p)
         .map(([k, label, v]) => `<div class="measure-row" data-k="${k}"><span class="measure-k">${esc(label)}</span><span class="measure-v">${esc(v)}</span></div>`)
         .join("") +
-      `<div class="measure-hint">${auto ? "Approximate — from the display mesh" : "Approximate — from the display mesh · select bodies for exact values"} · Esc to close</div>`;
+      `<div class="measure-hint">${esc(auto ? t("measure.properties.approxHint") : t("measure.properties.approxHintSelect"))}</div>`;
     // Closing supersedes any in-flight reply too, so a stale one cannot patch a
     // panel the user has reopened on a different selection.
     // Render the mesh figures IMMEDIATELY. They are what the panel has always
@@ -200,25 +201,25 @@ export function createPanels(deps: PanelsDeps) {
   const clashPanel = new FloatingPanel();
   async function showInterference() {
     if (!hasBody()) {
-      setStatus("Interference: create or import a body first", "");
+      setStatus(t("measure.interference.needBody"), "");
       return;
     }
     if ((store.buildState.result?.bodies?.length ?? 0) < 2) {
-      setStatus("Interference: needs at least two bodies", "");
+      setStatus(t("measure.interference.needTwo"), "");
       return;
     }
-    setStatus("Checking interference…", "");
+    setStatus(t("measure.interference.checking"), "");
     // buildDocument(), not document: the same defect the Properties panel had.
     // The raw document carries suppressed and past-rollback features and no body
     // visibility, so a clash could be reported between bodies the app never built.
     const res = await geometry.interference(store.buildDocument());
     if (!res.ok) {
-      setStatus(`Interference check failed: ${res.message ?? "error"}`, "error");
+      setStatus(t("measure.interference.failed", { message: res.message ?? t("common.error") }), "error");
       return;
     }
     const pairs = res.pairs ?? [];
     setStatus(
-      pairs.length ? `${pairs.length} interference${pairs.length > 1 ? "s" : ""} found` : "No interferences found",
+      pairs.length ? t("measure.interference.found", { count: pairs.length }) : t("measure.interference.none"),
       pairs.length ? "error" : "connected",
     );
     const unit = getUnit();
@@ -226,19 +227,19 @@ export function createPanels(deps: PanelsDeps) {
     let html: string;
     if (!pairs.length) {
       html =
-        `<div class="measure-title">Interference</div>` +
-        `<div class="measure-row"><span class="measure-v">No overlapping bodies</span></div>` +
-        `<div class="measure-hint">Esc to close</div>`;
+        `<div class="measure-title" data-i18n="measure.interference.title">${esc(t("measure.interference.title"))}</div>` +
+        `<div class="measure-row"><span class="measure-v" data-i18n="measure.interference.noOverlap">${esc(t("measure.interference.noOverlap"))}</span></div>` +
+        `<div class="measure-hint" data-i18n="common.escToClose">${esc(t("common.escToClose"))}</div>`;
     } else {
       html =
-        `<div class="measure-title">Interference — ${pairs.length} clash${pairs.length > 1 ? "es" : ""}</div>` +
+        `<div class="measure-title" data-i18n="measure.interference.clashTitle">${esc(t("measure.interference.clashTitle", { count: pairs.length }))}</div>` +
         pairs
           .map(
             (p, i) =>
-              `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${esc(p.aName)} ∩ ${esc(p.bName)}</span><span class="measure-v">${round(p.volume * f * f * f)} ${unit}³</span></div>`,
+              `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${esc(t("measure.interference.pair", { a: p.aName, b: p.bName }))}</span><span class="measure-v">${round(p.volume * f * f * f)} ${unit}³</span></div>`,
           )
           .join("") +
-        `<div class="measure-hint">Click a clash to highlight the bodies · Esc to close</div>`;
+        `<div class="measure-hint" data-i18n="measure.interference.clickHint">${esc(t("measure.interference.clickHint"))}</div>`;
     }
     const el = clashPanel.open(html, { closeOnEsc: true });
     el.querySelectorAll<HTMLElement>(".clash-row").forEach((row) => {
@@ -247,7 +248,7 @@ export function createPanels(deps: PanelsDeps) {
         const p = pairs[Number(row.dataset.i)];
         if (!p) return;
         viewport.setSelectionMode("bodies");
-        selBtn.textContent = "Bodies";
+        selBtn.textContent = t("viewport.selectionMode.bodies");
         selBtn.classList.add("active");
         viewport.setSelectedBodies([p.a, p.b]);
       });
@@ -266,13 +267,13 @@ export function createPanels(deps: PanelsDeps) {
     const { dir, threshold } = viewport.draftConfig;
     const dirs = ["+Z", "-Z", "+X", "-X", "+Y", "-Y"];
     const html =
-      `<div class="measure-title">Overhang analysis</div>` +
-      `<div class="measure-row"><span class="measure-k">Build dir</span><select class="oh-dir">${dirs
+      `<div class="measure-title" data-i18n="measure.overhang.title">${esc(t("measure.overhang.title"))}</div>` +
+      `<div class="measure-row"><span class="measure-k" data-i18n="measure.overhang.buildDir">${esc(t("measure.overhang.buildDir"))}</span><select class="oh-dir">${dirs
         .map((d) => `<option${d === dir ? " selected" : ""}>${d}</option>`)
         .join("")}</select></div>` +
-      `<div class="measure-row"><span class="measure-k">Threshold</span><span><input class="oh-thr" type="range" min="0" max="90" step="1" value="${threshold}" style="width:96px;vertical-align:middle"> <span class="oh-val">${threshold}°</span></span></div>` +
-      `<div class="measure-row"><span class="measure-v" style="color:var(--danger-action)">red = unsupported overhang</span></div>` +
-      `<div class="measure-hint">Faces past this angle from horizontal need support · toggle Draft to close</div>`;
+      `<div class="measure-row"><span class="measure-k" data-i18n="measure.overhang.threshold">${esc(t("measure.overhang.threshold"))}</span><span><input class="oh-thr" type="range" min="0" max="90" step="1" value="${threshold}" style="width:96px;vertical-align:middle"> <span class="oh-val">${threshold}°</span></span></div>` +
+      `<div class="measure-row"><span class="measure-v" style="color:var(--danger-action)" data-i18n="measure.overhang.legend">${esc(t("measure.overhang.legend"))}</span></div>` +
+      `<div class="measure-hint" data-i18n="measure.overhang.hint">${esc(t("measure.overhang.hint"))}</div>`;
     const el = overhangPanel.open(html);
     const dirSel = el.querySelector(".oh-dir") as HTMLSelectElement;
     const thr = el.querySelector(".oh-thr") as HTMLInputElement;
@@ -292,10 +293,10 @@ export function createPanels(deps: PanelsDeps) {
   const cameraPanel = new FloatingPanel();
   async function showCameraPanel(printerId: string) {
     const html =
-      `<div class="measure-title">Camera — ${esc(printerId)}</div>` +
-      `<img class="camera-frame" alt="printer camera" style="display:block;max-width:480px;min-width:320px;min-height:180px;background:#111">` +
-      `<div class="camera-offline" style="display:none;padding:8px;color:var(--danger-action)">camera unavailable <button class="camera-retry">Retry</button></div>` +
-      `<div class="measure-hint">~1 frame/s · Esc to close</div>`;
+      `<div class="measure-title" data-i18n="measure.camera.title">${esc(t("measure.camera.title", { printer: printerId }))}</div>` +
+      `<img class="camera-frame" alt="${esc(t("measure.camera.alt"))}" style="display:block;max-width:480px;min-width:320px;min-height:180px;background:#111">` +
+      `<div class="camera-offline" style="display:none;padding:8px;color:var(--danger-action)"><span data-i18n="measure.camera.unavailable">${esc(t("measure.camera.unavailable"))}</span> <button class="camera-retry" data-i18n="common.retry">${esc(t("common.retry"))}</button></div>` +
+      `<div class="measure-hint" data-i18n="measure.camera.hint">${esc(t("measure.camera.hint"))}</div>`;
     let unlistenFrame: (() => void) | null = null;
     let unlistenOffline: (() => void) | null = null;
     const el = cameraPanel.open(html, {

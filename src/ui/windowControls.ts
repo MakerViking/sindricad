@@ -27,6 +27,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { icon } from "./icons";
+import { t } from "../i18n";
 
 /** Running inside Tauri? The browser harnesses load the same bundle and must not
  *  grow three buttons that cannot work. Same probe as io/recovery.ts. */
@@ -68,7 +69,8 @@ export function mountWindowControls(titlebar: HTMLElement) {
   const group = document.createElement("div");
   group.className = "window-controls";
 
-  const btn = (name: "minimize" | "maximize" | "close", label: string, onClick: () => void) => {
+  const btn = (name: "minimize" | "maximize" | "close", labelKey: string, onClick: () => void) => {
+    const label = t(labelKey);
     const b = document.createElement("button");
     b.className = `win-btn win-${name}`;
     b.type = "button";
@@ -76,15 +78,16 @@ export function mountWindowControls(titlebar: HTMLElement) {
     // aria-hidden precisely because the label belongs to the control.
     b.setAttribute("aria-label", label);
     b.title = label;
+    b.dataset.i18nTitle = labelKey;
     b.innerHTML = icon(name);
     b.addEventListener("click", onClick);
     group.appendChild(b);
     return b;
   };
 
-  btn("minimize", "Minimize", () => void win.minimize());
-  const maxBtn = btn("maximize", "Maximize", () => void win.toggleMaximize());
-  btn("close", "Close", () => void win.close());
+  btn("minimize", "common.minimize", () => void win.minimize());
+  const maxBtn = btn("maximize", "common.maximize", () => void win.toggleMaximize());
+  btn("close", "common.close", () => void win.close());
 
   // Keep the middle button honest about what it will do. Driven off the window's
   // own resize event rather than off our click, so a maximize from the WM — a
@@ -92,9 +95,11 @@ export function mountWindowControls(titlebar: HTMLElement) {
   const syncMaxIcon = async () => {
     const max = await win.isMaximized();
     maxBtn.innerHTML = icon(max ? "restore" : "maximize");
-    const label = max ? "Restore" : "Maximize";
+    const labelKey = max ? "common.restore" : "common.maximize";
+    const label = t(labelKey);
     maxBtn.setAttribute("aria-label", label);
     maxBtn.title = label;
+    maxBtn.dataset.i18nTitle = labelKey;
   };
   void syncMaxIcon();
   void win.onResized(() => void syncMaxIcon());

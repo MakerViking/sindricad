@@ -1,6 +1,9 @@
 // The Sketch Palette (mainstream MCAD's right-docked panel shown while sketching).
 // Toggles control drawing/display options; "Look At" re-squares the camera.
 
+import { t, setText, setTitle } from "../i18n";
+import { esc } from "./escape";
+
 export type PaletteToggle = "lockView" | "construction" | "reference" | "grid" | "snap" | "profile" | "dimensions" | "constraints";
 
 interface ToggleDef {
@@ -17,14 +20,14 @@ const TOGGLES: ToggleDef[] = [
   // result, it is impossible to select geometry located behind the sketch
   // support face in order to project it onto the sketch" (field report
   // 9e3da3c7). The lock stays available for anyone who wants it.
-  { key: "lockView", label: "Lock to Plane", default: false },
-  { key: "construction", label: "Construction", default: false },
-  { key: "reference", label: "Reference Dim", default: false },
-  { key: "grid", label: "Sketch Grid", default: true },
-  { key: "snap", label: "Snap", default: true },
-  { key: "profile", label: "Show Profile", default: true },
-  { key: "dimensions", label: "Show Dimensions", default: true },
-  { key: "constraints", label: "Show Constraints", default: true },
+  { key: "lockView", label: t("palette.toggle.lockView"), default: false },
+  { key: "construction", label: t("palette.toggle.construction"), default: false },
+  { key: "reference", label: t("palette.toggle.reference"), default: false },
+  { key: "grid", label: t("palette.toggle.grid"), default: true },
+  { key: "snap", label: t("palette.toggle.snap"), default: true },
+  { key: "profile", label: t("palette.toggle.profile"), default: true },
+  { key: "dimensions", label: t("palette.toggle.dimensions"), default: true },
+  { key: "constraints", label: t("palette.toggle.constraints"), default: true },
 ];
 
 export class SketchPalette {
@@ -66,12 +69,12 @@ export class SketchPalette {
   }
 
   private render() {
-    this.el.innerHTML = `<div class="palette-title">SKETCH PALETTE</div><div class="palette-section">Options</div>`;
+    this.el.innerHTML = `<div class="palette-title" data-i18n="palette.title">${esc(t("palette.title"))}</div><div class="palette-section" data-i18n="palette.options">${esc(t("palette.options"))}</div>`;
 
     const lookAt = document.createElement("button");
     lookAt.className = "palette-btn";
-    lookAt.textContent = "Look At";
-    lookAt.title = "Square the view to the sketch plane";
+    setText(lookAt, "palette.lookAt");
+    setTitle(lookAt, "palette.lookAtTitle");
     lookAt.addEventListener("click", () => this.onLookAt?.());
     this.el.appendChild(lookAt);
 

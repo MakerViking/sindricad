@@ -20,6 +20,7 @@ import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT } from "../viewport/colors3d";
+import { t } from "../i18n";
 
 type Phase = "pick" | "drag";
 
@@ -101,7 +102,7 @@ export class PressPullTool {
     if (pre) {
       this.beginDrag(pre.selectors, pre.faceIds, pre.anchor, pre.normal, pre.bodyId);
     } else {
-      setPrompt("Click a face to Press/Pull · a sketch profile to Extrude · an edge to Fillet");
+      setPrompt(t("feature.pressPull.pickPrompt"));
     }
   }
 
@@ -199,7 +200,7 @@ export class PressPullTool {
         this.commitUpTo();
         return;
       }
-      setPrompt("Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back");
+      setPrompt(t("feature.upTo.pickPrompt"));
       return;
     }
     // drag phase: Ctrl/Cmd-click another face on the SAME body adds it to the
@@ -212,7 +213,7 @@ export class PressPullTool {
         this.faces.push(hit.selector);
         this.faceIds.push(hit.faceId);
         this.refreshPreview();
-        setPrompt(`${this.faces.length} faces — drag or type a distance · click to commit · Esc to cancel`);
+        setPrompt(t("feature.pressPull.facesAdded", { count: this.faces.length }));
       }
       return;
     }
@@ -288,9 +289,9 @@ export class PressPullTool {
         this.viewport.hoverDatum(null);
         // restore the distance field T-mode hid (audit bug #2: leaving it
         // active let Enter commit a plain distance mid-target-pick)
-        this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
+        this.dim.show([{ name: "distance", label: t("feature.dim.distance"), kind: "length" }], () => this.commit(), () => this.cancel());
         this.dim.updateFromCursor({ distance: Math.abs(this.value) });
-        setPrompt("Drag the arrow · type a value · click another face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel");
+        setPrompt(t("feature.pressPull.dragPromptAfterTarget"));
         return;
       }
       this.cancel();
@@ -304,7 +305,7 @@ export class PressPullTool {
       this.pickingTarget = true;
       this.dim.hide(); // Enter must not commit a plain distance while picking
       this.viewport.clearPressPullGhost();
-      setPrompt("Click the face or plane to extrude UP TO (any face, any body) · Esc to go back");
+      setPrompt(t("feature.upTo.clickPrompt"));
     }
   }
 
@@ -322,13 +323,11 @@ export class PressPullTool {
     this.previewId = this.store.nextId();
     this.viewport.clearHover();
     this.buildGizmo();
-    this.dim.show([{ name: "distance", label: "D", kind: "length" }], () => this.commit(), () => this.cancel());
+    this.dim.show([{ name: "distance", label: t("feature.dim.distance"), kind: "length" }], () => this.commit(), () => this.cancel());
     const s = this.viewport.projectToScreen(this.anchor);
     this.dim.position(s.x, s.y);
     this.dim.updateFromCursor({ distance: 0 });
-    setPrompt(
-      "Drag the arrow · type a value (negative = cut) · click ANOTHER face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel",
-    );
+    setPrompt(t("feature.pressPull.dragPrompt"));
     this.raf = requestAnimationFrame(this.boundTick);
   }
 
@@ -414,7 +413,7 @@ export class PressPullTool {
     if (v == null && this.dim.isUserDriven("distance")) {
       // the field holds unparseable text — committing the stale drag value
       // instead would be a silent wrong-number surprise
-      setPrompt("Can't read that number — fix the value, or Esc to cancel");
+      setPrompt(t("feature.badNumber"));
       return;
     }
     // Typed sign wins (out = +, cut = −) — but ONLY when the user actually
@@ -424,7 +423,7 @@ export class PressPullTool {
     if (v != null && this.dim.isUserDriven("distance")) this.value = v;
     if (Math.abs(this.value) < 1e-3) {
       // keep the tool alive: silently cancelling here read as "nothing happened"
-      setPrompt("Nothing to commit — drag the arrow or type a distance first");
+      setPrompt(t("feature.nothingToCommit"));
       return;
     }
     const feature = this.buildFeature();

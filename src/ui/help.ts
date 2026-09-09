@@ -10,6 +10,7 @@
 // widening it.
 
 import { toast } from "./toast";
+import { t } from "../i18n";
 
 /** The tutorial playlist, verbatim from README.md's Tutorials section (eight
  *  clips). The playlist id is the durable part: individual video URLs are not
@@ -40,6 +41,6 @@ export async function openHelp(url: string): Promise<void> {
     await openExternal(url);
   } catch (err) {
     console.error("[help] couldn't open", url, err);
-    toast(`Couldn't open a browser. The page is ${url}`, { kind: "error", timeout: 15000 });
+    toast(t("help.openFailed", { url }), { kind: "error", timeout: 15000 });
   }
 }

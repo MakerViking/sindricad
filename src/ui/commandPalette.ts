@@ -5,6 +5,7 @@
 
 import { allCommands, type Command } from "./commands";
 import { esc } from "./escape";
+import { setText, t } from "../i18n";
 
 export class CommandPalette {
   private backdrop: HTMLDivElement | null = null;
@@ -34,7 +35,7 @@ export class CommandPalette {
     card.className = "cmdk-card";
     this.input = document.createElement("input");
     this.input.className = "cmdk-input";
-    this.input.placeholder = "Search commands…";
+    this.input.placeholder = t("palette.searchPlaceholder");
     this.input.spellcheck = false;
     this.list = document.createElement("div");
     this.list.className = "cmdk-list";
@@ -87,7 +88,7 @@ export class CommandPalette {
     if (!this.items.length) {
       const empty = document.createElement("div");
       empty.className = "cmdk-empty";
-      empty.textContent = "No matching command";
+      setText(empty, "palette.noMatch");
       this.list.appendChild(empty);
     }
   }

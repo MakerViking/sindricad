@@ -189,7 +189,8 @@ describe("the pre-click constraint badge", () => {
     const branch = glyphRendererSrc.slice(at, glyphRendererSrc.indexOf("continue;", at));
     expect(branch, "the pending badge does not carry its own class").toContain('"sketch-glyph pending"');
     expect(branch, "the pending badge wires a click handler — it must not be deletable").not.toContain("onDelete");
-    expect(branch, "the pending badge does not say what it means").toContain("title");
+    // `setTitle` rather than `.title =`: the tooltip is a locale entry now.
+    expect(branch, "the pending badge does not say what it means").toMatch(/setTitle\(|\.title\s*=/);
   });
 
   it("looks different from a constraint that has actually been applied", () => {

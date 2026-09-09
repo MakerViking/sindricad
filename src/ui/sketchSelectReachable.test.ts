@@ -20,14 +20,14 @@ import { SKETCH, PINNED, leavesOf, type Item, type ToolItem } from "./ribbon";
 import { resolveShortcut, keyHint, SHORTCUTS } from "../input/shortcuts";
 import { allCommands } from "./commands";
 
-/** the group label an action sits under, and whether it is a one-click item
+/** the group id an action sits under, and whether it is a one-click item
  *  (a direct ToolItem) rather than a leaf of a split-button dropdown */
 function findInSketch(action: string): { group: string; item: ToolItem; oneClick: boolean } | null {
   for (const g of SKETCH) {
     for (const it of g.items as Item[]) {
       const leaves = leavesOf(it);
       const hit = leaves.find((l) => l.action === action);
-      if (hit) return { group: g.label, item: hit, oneClick: !("children" in it) };
+      if (hit) return { group: g.id, item: hit, oneClick: !("children" in it) };
     }
   }
   return null;

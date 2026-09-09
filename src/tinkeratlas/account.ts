@@ -7,6 +7,8 @@
 
 import { pushModal, popModal, choose } from "../ui/choice";
 import { toast } from "../ui/toast";
+import { esc } from "../ui/escape";
+import { setText, t } from "../i18n";
 import {
   taSignIn,
   taBrowserSignIn,
@@ -27,9 +29,8 @@ export function openSignInDialog(): Promise<TaUser | null> {
     const card = document.createElement("div");
     card.className = "choice-card ta-signin";
     card.innerHTML =
-      `<div class="choice-title">Connect to TinkerAtlas</div>` +
-      `<p class="ta-signin-hint">Publish your designs straight from SindriCAD with your` +
-      ` TinkerAtlas account.</p>`;
+      `<div class="choice-title" data-i18n="tinkeratlas.signIn.title">${esc(t("tinkeratlas.signIn.title"))}</div>` +
+      `<p class="ta-signin-hint" data-i18n="tinkeratlas.signIn.hint">${esc(t("tinkeratlas.signIn.hint"))}</p>`;
     backdrop.appendChild(card);
 
     // --- main view: two big actions + hidden token fallback ---
@@ -38,12 +39,12 @@ export function openSignInDialog(): Promise<TaUser | null> {
 
     const signInBtn = document.createElement("button");
     signInBtn.className = "choice-btn choice-primary";
-    signInBtn.innerHTML = "<span>Sign in with TinkerAtlas</span>";
+    signInBtn.innerHTML = `<span data-i18n="tinkeratlas.signIn.button">${esc(t("tinkeratlas.signIn.button"))}</span>`;
     main.appendChild(signInBtn);
 
     const registerBtn = document.createElement("button");
     registerBtn.className = "choice-btn";
-    registerBtn.innerHTML = "<span>Create a free account</span>";
+    registerBtn.innerHTML = `<span data-i18n="tinkeratlas.signIn.register">${esc(t("tinkeratlas.signIn.register"))}</span>`;
     main.appendChild(registerBtn);
 
     const err = document.createElement("div");
@@ -53,7 +54,7 @@ export function openSignInDialog(): Promise<TaUser | null> {
     // token fallback, folded away behind a small link
     const fallbackToggle = document.createElement("button");
     fallbackToggle.className = "ta-signin-alt";
-    fallbackToggle.textContent = "Have a desktop token? Paste it instead";
+    setText(fallbackToggle, "tinkeratlas.signIn.tokenToggle");
     main.appendChild(fallbackToggle);
 
     const tokenRow = document.createElement("div");
@@ -67,7 +68,7 @@ export function openSignInDialog(): Promise<TaUser | null> {
     input.spellcheck = false;
     const tokenBtn = document.createElement("button");
     tokenBtn.className = "choice-btn";
-    tokenBtn.innerHTML = "<span>Use token</span>";
+    tokenBtn.innerHTML = `<span data-i18n="tinkeratlas.signIn.useToken">${esc(t("tinkeratlas.signIn.useToken"))}</span>`;
     tokenRow.append(input, tokenBtn);
     main.appendChild(tokenRow);
     fallbackToggle.onclick = () => {
@@ -79,18 +80,18 @@ export function openSignInDialog(): Promise<TaUser | null> {
     const waitingView = document.createElement("div");
     waitingView.className = "ta-signin-waiting";
     waitingView.hidden = true;
+    // The two hint sentences are separate keys so each stays whole for a
+    // translator; the inline emphasis the English used to carry is gone with it.
     waitingView.innerHTML =
-      `<p>Finish signing in in your <strong>browser</strong>.</p>` +
-      `<p class="ta-signin-hint">This dialog completes automatically when you click` +
-      ` <em>Authorize SindriCAD</em>. Creating an account first? Take your time —` +
-      ` if this times out, just press Sign in again afterwards.</p>`;
+      `<p data-i18n="tinkeratlas.signIn.waiting">${esc(t("tinkeratlas.signIn.waiting"))}</p>` +
+      `<p class="ta-signin-hint">${esc(t("tinkeratlas.signIn.waitingAuthorize"))} ${esc(t("tinkeratlas.signIn.waitingSignup"))}</p>`;
     card.appendChild(waitingView);
 
     const row = document.createElement("div");
     row.className = "choice-row";
     const cancel = document.createElement("button");
     cancel.className = "choice-btn";
-    cancel.innerHTML = "<span>Cancel</span>";
+    cancel.innerHTML = `<span data-i18n="common.cancel">${esc(t("common.cancel"))}</span>`;
     row.append(cancel);
     card.appendChild(row);
 
@@ -101,10 +102,10 @@ export function openSignInDialog(): Promise<TaUser | null> {
       const ta = asTaError(e);
       err.textContent =
         ta?.code === "Unauthorized"
-          ? "TinkerAtlas didn't accept the sign-in — try again."
+          ? t("tinkeratlas.signIn.unauthorized")
           : ta?.code === "Unreachable"
-            ? "Can't reach TinkerAtlas — check your connection and retry."
-            : `Sign-in failed: ${ta?.message ?? String(e)}`;
+            ? t("tinkeratlas.error.unreachableRetry")
+            : t("tinkeratlas.signIn.failed", { reason: ta?.message ?? String(e) });
     };
 
     const setWaiting = (on: boolean) => {
@@ -131,7 +132,7 @@ export function openSignInDialog(): Promise<TaUser | null> {
     const tokenFlow = async () => {
       const token = input.value.trim();
       if (!token) {
-        err.textContent = "Paste the token first.";
+        err.textContent = t("tinkeratlas.signIn.pasteFirst");
         return;
       }
       tokenBtn.disabled = true;
@@ -174,7 +175,7 @@ export function openSignInDialog(): Promise<TaUser | null> {
       popModal();
       backdrop.remove();
       if (user) {
-        toast(`Signed in as ${user.display_name || user.username}`, { kind: "info" });
+        toast(t("tinkeratlas.signedInAs", { name: user.display_name || user.username }), { kind: "info" });
       } else if (wasWaiting) {
         // the browser round-trip may still complete after cancel — pick the
         // account up from disk so the UI stays truthful either way.
@@ -188,15 +189,15 @@ export function openSignInDialog(): Promise<TaUser | null> {
 export async function signOutFlow(): Promise<void> {
   const user = currentAccount();
   if (!user) return;
-  const pick = await choose<"out" | "stay">(`Sign out of TinkerAtlas (${user.username})?`, [
-    { value: "out", label: "Sign out" },
-    { value: "stay", label: "Cancel" },
+  const pick = await choose<"out" | "stay">(t("tinkeratlas.signOut.prompt", { user: user.username }), [
+    { value: "out", label: t("tinkeratlas.signOut.confirm") },
+    { value: "stay", label: t("common.cancel") },
   ]);
   if (pick !== "out") return;
   try {
     await taSignOut();
-    toast("Signed out of TinkerAtlas", { kind: "info" });
+    toast(t("tinkeratlas.signOut.done"), { kind: "info" });
   } catch (e) {
-    toast(`Sign-out failed: ${asTaError(e)?.message ?? String(e)}`, { kind: "error" });
+    toast(t("tinkeratlas.signOut.failed", { reason: asTaError(e)?.message ?? String(e) }), { kind: "error" });
   }
 }

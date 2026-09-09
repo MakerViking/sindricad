@@ -2,6 +2,8 @@
 // toast stack. Kept separate from the geometry status line (main.ts setStatus)
 // so printer progress never clobbers build/connection state. Pass null to hide.
 
+import { setTitle } from "../i18n";
+
 let pill: HTMLDivElement | null = null;
 let onPillClick: (() => void) | null = null;
 
@@ -16,7 +18,7 @@ export function setPrinterStatusText(text: string | null) {
     pill.className = "print-status-pill";
     if (onPillClick) {
       pill.style.cursor = "pointer";
-      pill.title = "Show camera";
+      setTitle(pill, "print.showCamera");
       pill.addEventListener("click", () => onPillClick?.());
     }
     document.body.appendChild(pill);
@@ -30,7 +32,7 @@ export function setPrinterPillClick(fn: () => void) {
   onPillClick = fn;
   if (pill) {
     pill.style.cursor = "pointer";
-    pill.title = "Show camera";
+    setTitle(pill, "print.showCamera");
     pill.addEventListener("click", () => onPillClick?.());
   }
 }

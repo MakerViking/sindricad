@@ -4,6 +4,7 @@
 // Drives the in-canvas dimension labels (SketchDimensions), the inspector, and
 // SketchMode.editDimension — one place for all per-entity dimension knowledge.
 
+import { t } from "../i18n";
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { DimField, DimPlace, PlaceOffset, SketchConstraint } from "../types";
@@ -198,8 +199,8 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
     const w = linear(v(e.x - hw, e.y - hh), v(e.x + hw, e.y - hh), wDir, e.width, linearOverride(e, "width", wDir, defaults));
     const h = linear(v(e.x - hw, e.y - hh), v(e.x - hw, e.y + hh), hDir, e.height, linearOverride(e, "height", hDir, defaults));
     return [
-      { field: "width", label: "Width", valueMm: e.width, labelPos: w.labelPos, lines: w.lines, place: w.place, write: (mm) => { e.width = mm; } },
-      { field: "height", label: "Height", valueMm: e.height, labelPos: h.labelPos, lines: h.lines, place: h.place, write: (mm) => { e.height = mm; } },
+      { field: "width", label: t("common.width"), valueMm: e.width, labelPos: w.labelPos, lines: w.lines, place: w.place, write: (mm) => { e.width = mm; } },
+      { field: "height", label: t("common.height"), valueMm: e.height, labelPos: h.labelPos, lines: h.lines, place: h.place, write: (mm) => { e.height = mm; } },
     ];
   }
   if (e.type === "circle") {
@@ -207,7 +208,7 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
     return [
       {
         field: "diameter",
-        label: "Diameter",
+        label: t("common.diameter"),
         valueMm: e.radius * 2,
         labelPos: d.labelPos,
         lines: d.lines,
@@ -233,7 +234,7 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
     const dist = p ? Math.max(p.x * c.x + p.y * c.y, dimOffset(0)) : rr * 0.6;
     const end = Math.max(rr, dist); // a label past the vertex pulls the line out to it
     return [{
-      field: "radius", label: "Radius", valueMm: rr,
+      field: "radius", label: t("common.radius"), valueMm: rr,
       labelPos: v(e.x + c.x * dist, e.y + c.y * dist),
       lines: [[v(e.x, e.y), v(e.x + c.x * end, e.y + c.y * end)]],
       place: c.clone().multiplyScalar(dist),
@@ -250,9 +251,9 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
     const wa = A.clone().addScaledVector(perp, e.width / 2), wb = A.clone().addScaledVector(perp, -e.width / 2);
     const wl = linear(wa, wb, wDir, e.width, linearOverride(e, "width", wDir, defaults));
     return [
-      { field: "length", label: "Length", valueMm: len, labelPos: ll.labelPos, lines: ll.lines, place: ll.place,
+      { field: "length", label: t("common.length"), valueMm: len, labelPos: ll.labelPos, lines: ll.lines, place: ll.place,
         write: (mm) => { e.x2 = e.x1 + dir.x * mm; e.y2 = e.y1 + dir.y * mm; } },
-      { field: "width", label: "Width", valueMm: e.width, labelPos: wl.labelPos, lines: wl.lines, place: wl.place,
+      { field: "width", label: t("common.width"), valueMm: e.width, labelPos: wl.labelPos, lines: wl.lines, place: wl.place,
         write: (mm) => { e.width = mm; } },
     ];
   }
@@ -266,7 +267,7 @@ export function entityDims(e: ResolvedEntity, defaults?: DimPlace): EntityDim[] 
   return [
     {
       field: "length",
-      label: "Length",
+      label: t("common.length"),
       valueMm: len,
       labelPos: l.labelPos,
       lines: l.lines,

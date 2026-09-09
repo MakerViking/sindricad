@@ -681,6 +681,12 @@ pub async fn ta_bug_report(
     include_log: bool,
     breadcrumbs: Vec<String>,
     document_json: Option<String>,
+    // Both optional so an older webview build keeps working against this shell.
+    // `locale` is the UI language the report was filed from (the breadcrumbs
+    // and log stay English regardless); `category` is "bug", "translation" or
+    // "other" from the reporter's picker.
+    locale: Option<String>,
+    category: Option<String>,
 ) -> TResult<BugReportResult> {
     let description = description.trim().to_string();
     if description.is_empty() {
@@ -730,6 +736,8 @@ pub async fn ta_bug_report(
         "breadcrumbs": breadcrumbs,
         "fingerprint": fingerprint,
         "document_json": document_value,
+        "locale": locale.as_deref().map(|l| l.chars().take(16).collect::<String>()),
+        "category": category.as_deref().map(|c| c.chars().take(16).collect::<String>()),
     });
 
     let client = http(Duration::from_secs(30))?;

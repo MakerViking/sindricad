@@ -9,6 +9,7 @@ import type { Viewport } from "../viewport/viewport";
 import { pushModal, popModal, choose, listModal } from "../ui/choice";
 import { esc } from "../ui/escape";
 import { toast } from "../ui/toast";
+import { t } from "../i18n";
 import { openExternal } from "../ui/welcome";
 import { openSignInDialog } from "./account";
 import { currentAccount, taStagingPath, taPublish, asTaError } from "./client";
@@ -27,42 +28,42 @@ export async function publishToTinkerAtlas(
   viewport: Viewport,
 ): Promise<void> {
   if (!isTauri()) {
-    toast("Publishing needs the native app", { kind: "error" });
+    toast(t("tinkeratlas.publish.needsNative"), { kind: "error" });
     return;
   }
   const bodies = store.buildState.result?.bodies ?? [];
   if (!bodies.length) {
-    toast("Nothing to publish yet — build a body first", { kind: "error" });
+    toast(t("tinkeratlas.publish.nothing"), { kind: "error" });
     return;
   }
   // publish requires an account; sign-in stays optional everywhere else.
   if (!currentAccount() && !(await openSignInDialog())) return;
 
-  const fmt = await choose<"3mf" | "stl">("Publish — model format?", [
-    { value: "3mf", label: "3MF", hint: "recommended" },
+  const fmt = await choose<"3mf" | "stl">(t("tinkeratlas.publish.formatPrompt"), [
+    { value: "3mf", label: "3MF", hint: t("tinkeratlas.publish.recommended") },
     { value: "stl", label: "STL" },
   ]);
   if (!fmt) return;
 
-  const defaultTitle = store.fileName.replace(/\.sindri$/i, "") || "Untitled design";
+  const defaultTitle = store.fileName.replace(/\.sindri$/i, "") || t("tinkeratlas.publish.untitled");
   const meta = await publishForm(defaultTitle);
   if (!meta) return;
 
-  toast("Publishing to TinkerAtlas…", { kind: "info" });
+  toast(t("tinkeratlas.publish.inProgress"), { kind: "info" });
   try {
     const path = await taStagingPath(defaultTitle, fmt);
     const res = await geometry.export(store.document, fmt, path, {});
     if (!res.ok) {
-      toast(`Export failed: ${res.message ?? "unknown error"}`, { kind: "error" });
+      toast(t("file.error.export", { reason: res.message ?? t("common.unknownError") }), { kind: "error" });
       return;
     }
     if (res.warnings?.length) {
       // export-what-built: failed features are missing from the upload — say so
       // BEFORE it goes public, so the user can back out.
       const lines = res.warnings.map(
-        (w) => `⚠ ${w.feature_id ?? "feature"} failed — its result is NOT in the upload: ${w.message}`,
+        (w) => t("tinkeratlas.publish.featureMissing", { feature: w.feature_id ?? t("file.export.unnamedFeature"), reason: w.message }),
       );
-      await listModal("Publishing with warnings", lines);
+      await listModal(t("tinkeratlas.publish.warningsTitle"), lines);
     }
 
     const cover = viewport.screenshotPNG().replace(/^data:image\/png;base64,/, "");
@@ -73,22 +74,22 @@ export async function publishToTinkerAtlas(
       modelPath: res.path ?? path,
       coverPngBase64: cover,
     });
-    toast(meta.publish ? "Published to TinkerAtlas" : "Saved to TinkerAtlas as a draft", {
+    toast(meta.publish ? t("tinkeratlas.publish.published") : t("tinkeratlas.publish.savedDraft"), {
       kind: "info",
       timeout: 10000,
-      action: { label: "View on TinkerAtlas", onClick: () => void openExternal(url) },
+      action: { label: t("tinkeratlas.publish.view"), onClick: () => void openExternal(url) },
     });
   } catch (e) {
     const ta = asTaError(e);
     if (ta?.code === "Unauthorized") {
-      toast("TinkerAtlas sign-in expired or was revoked", {
+      toast(t("tinkeratlas.error.expired"), {
         kind: "error",
-        action: { label: "Sign in…", onClick: () => void openSignInDialog() },
+        action: { label: t("tinkeratlas.signIn.action"), onClick: () => void openSignInDialog() },
       });
     } else if (ta?.code === "Unreachable") {
-      toast("Can't reach TinkerAtlas — check your connection", { kind: "error" });
+      toast(t("tinkeratlas.error.unreachable"), { kind: "error" });
     } else {
-      toast(`Publish failed: ${ta?.message ?? String(e)}`, { kind: "error" });
+      toast(t("tinkeratlas.publish.failed", { reason: ta?.message ?? String(e) }), { kind: "error" });
     }
   }
 }
@@ -100,19 +101,19 @@ function publishForm(defaultTitle: string): Promise<PublishMeta | null> {
     backdrop.className = "choice-backdrop";
     const card = document.createElement("div");
     card.className = "choice-card ta-publish";
-    card.innerHTML = `<div class="choice-title">Publish to TinkerAtlas</div>`;
+    card.innerHTML = `<div class="choice-title" data-i18n="tinkeratlas.publish.title">${esc(t("tinkeratlas.publish.title"))}</div>`;
 
     const title = document.createElement("input");
     title.className = "ta-signin-input";
     title.maxLength = 200;
     title.value = defaultTitle;
-    title.placeholder = "Title";
+    title.placeholder = t("tinkeratlas.publish.titlePlaceholder");
     card.appendChild(title);
 
     const desc = document.createElement("textarea");
     desc.className = "ta-signin-input ta-publish-desc";
     desc.rows = 4;
-    desc.placeholder = "Description (optional)";
+    desc.placeholder = t("tinkeratlas.publish.descriptionPlaceholder");
     card.appendChild(desc);
 
     const pub = document.createElement("label");
@@ -120,7 +121,8 @@ function publishForm(defaultTitle: string): Promise<PublishMeta | null> {
     const pubCb = document.createElement("input");
     pubCb.type = "checkbox";
     pubCb.checked = true;
-    pub.append(pubCb, document.createTextNode(" Post publicly (off = private draft)"));
+    // the leading space keeps the label off the checkbox; it is layout, not text
+    pub.append(pubCb, document.createTextNode(` ${t("tinkeratlas.publish.postPublicly")}`));
     card.appendChild(pub);
 
     const err = document.createElement("div");
@@ -131,10 +133,10 @@ function publishForm(defaultTitle: string): Promise<PublishMeta | null> {
     row.className = "choice-row";
     const cancel = document.createElement("button");
     cancel.className = "choice-btn";
-    cancel.innerHTML = "<span>Cancel</span>";
+    cancel.innerHTML = `<span data-i18n="common.cancel">${esc(t("common.cancel"))}</span>`;
     const ok = document.createElement("button");
     ok.className = "choice-btn choice-primary";
-    ok.innerHTML = `<span>${esc("Publish")}</span>`;
+    ok.innerHTML = `<span data-i18n="tinkeratlas.publish.submit">${esc(t("tinkeratlas.publish.submit"))}</span>`;
     row.append(cancel, ok);
     card.appendChild(row);
     backdrop.appendChild(card);
@@ -143,13 +145,13 @@ function publishForm(defaultTitle: string): Promise<PublishMeta | null> {
     title.select();
 
     const submit = () => {
-      const t = title.value.trim();
-      if (t.length < 3) {
-        err.textContent = "Title needs at least 3 characters.";
+      const titleText = title.value.trim();
+      if (titleText.length < 3) {
+        err.textContent = t("tinkeratlas.publish.titleTooShort");
         title.focus();
         return;
       }
-      done({ title: t, description: desc.value.trim(), publish: pubCb.checked });
+      done({ title: titleText, description: desc.value.trim(), publish: pubCb.checked });
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

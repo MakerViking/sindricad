@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CadDocument, ExportFormat, ImportFormat, ImportReply, RebuildReply, RebuildResult } from "../types";
 import type { ClashPair, GeometryBackend } from "./client";
+import { t } from "../i18n";
 
 type StatusListener = (connected: boolean) => void;
 
@@ -88,11 +89,11 @@ export class TauriGeometry implements GeometryBackend {
   // Geometry import is not yet wired into the Rust kernel (STL read / sewing need
   // new opencascade-rs FFI). Use the default Python sidecar to import for now.
   async importGeometry(_path: string, _format: ImportFormat): Promise<ImportReply> {
-    return { ok: false, message: "geometry import isn't supported by the Rust backend yet — run without VITE_GEOM=rust" };
+    return { ok: false, message: t("engine.error.rustImportUnsupported") };
   }
 
   // Interference (clash) detection isn't wired into the Rust kernel yet.
   async interference(_doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }> {
-    return { ok: false, message: "interference check isn't supported by the Rust backend yet — run without VITE_GEOM=rust" };
+    return { ok: false, message: t("engine.error.rustInterferenceUnsupported") };
   }
 }

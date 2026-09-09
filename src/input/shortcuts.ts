@@ -10,6 +10,9 @@
 // agreeing after a user has re-keyed half the app. src/ui/shortcutSettings.ts
 // is the editor.
 
+import { t } from "../i18n";
+import { esc } from "../ui/escape";
+
 /** A live key binding. `key` is normalized lowercase ("b", "home", "f6", "?"). */
 export interface Binding {
   key: string;
@@ -31,55 +34,55 @@ export interface Shortcut {
 
 export const SHORTCUTS: Shortcut[] = [
   // --- model context ---
-  { id: "m.sketch", key: "s", action: "sketch", context: "model", label: "Sketch" },
-  { id: "m.extrude", key: "e", action: "extrude", context: "model", label: "Extrude" },
-  { id: "m.presspull", key: "q", action: "presspull", context: "model", label: "Press/Pull" },
-  { id: "m.fillet", key: "f", action: "fillet", context: "model", label: "Fillet" },
-  { id: "m.chamfer", key: "b", action: "chamfer", context: "model", label: "Chamfer (bevel)" },
-  { id: "m.move", key: "m", action: "move", context: "model", label: "Move" },
-  { id: "m.measure", key: "i", action: "measure", context: "model", label: "Measure" },
-  { id: "m.split", key: "k", action: "split", context: "model", label: "Split Body" },
-  { id: "m.combine", key: "j", action: "combine", context: "model", label: "Combine (join)" },
-  { id: "m.cleanup", key: "u", action: "clean-up", context: "model", label: "Clean Up" },
-  { id: "m.offsetplane", key: "o", action: "offset-plane", context: "model", label: "Offset Plane" },
-  { id: "m.hide", key: "h", action: "hide-selected", context: "model", label: "Hide selected bodies" },
-  { id: "m.showall", key: "h", shift: true, action: "show-all-bodies", context: "model", label: "Show all bodies" },
-  { id: "m.selfaces", key: "1", action: "selmode-faces", context: "model", label: "Select faces" },
-  { id: "m.selbodies", key: "2", action: "selmode-bodies", context: "model", label: "Select bodies" },
+  { id: "m.sketch", key: "s", action: "sketch", context: "model", label: t("tool.sketch") },
+  { id: "m.extrude", key: "e", action: "extrude", context: "model", label: t("tool.extrude") },
+  { id: "m.presspull", key: "q", action: "presspull", context: "model", label: t("tool.presspull") },
+  { id: "m.fillet", key: "f", action: "fillet", context: "model", label: t("tool.fillet") },
+  { id: "m.chamfer", key: "b", action: "chamfer", context: "model", label: t("shortcut.m.chamfer") },
+  { id: "m.move", key: "m", action: "move", context: "model", label: t("tool.move") },
+  { id: "m.measure", key: "i", action: "measure", context: "model", label: t("tool.measure") },
+  { id: "m.split", key: "k", action: "split", context: "model", label: t("tool.split") },
+  { id: "m.combine", key: "j", action: "combine", context: "model", label: t("shortcut.m.combine") },
+  { id: "m.cleanup", key: "u", action: "clean-up", context: "model", label: t("tool.cleanUp") },
+  { id: "m.offsetplane", key: "o", action: "offset-plane", context: "model", label: t("tool.offsetPlane") },
+  { id: "m.hide", key: "h", action: "hide-selected", context: "model", label: t("shortcut.m.hide") },
+  { id: "m.showall", key: "h", shift: true, action: "show-all-bodies", context: "model", label: t("shortcut.m.showall") },
+  { id: "m.selfaces", key: "1", action: "selmode-faces", context: "model", label: t("shortcut.m.selfaces") },
+  { id: "m.selbodies", key: "2", action: "selmode-bodies", context: "model", label: t("shortcut.m.selbodies") },
   // --- sketch context ---
   // S is free inside a sketch (the model-context S above starts one, and this
   // table resolves sketch entries first while sketching). Field report c9db7ec2
   // had no key at all for select, leaving Escape as the only route back.
-  { id: "s.select", key: "s", action: "select", context: "sketch", label: "Select" },
-  { id: "s.line", key: "l", action: "line", context: "sketch", label: "Line" },
-  { id: "s.circle", key: "c", action: "circle", context: "sketch", label: "Circle" },
-  { id: "s.rectangle", key: "r", action: "rectangle", context: "sketch", label: "Rectangle" },
-  { id: "s.arc", key: "a", action: "arc", context: "sketch", label: "Arc" },
-  { id: "s.dimension", key: "d", action: "dimension", context: "sketch", label: "Dimension" },
-  { id: "s.trim", key: "t", action: "trim", context: "sketch", label: "Trim" },
-  { id: "s.offset", key: "o", action: "offset", context: "sketch", label: "Offset" },
-  { id: "s.fillet", key: "f", action: "fillet-sketch", context: "sketch", label: "Sketch Fillet" },
-  { id: "s.project", key: "p", action: "project", context: "sketch", label: "Project" },
+  { id: "s.select", key: "s", action: "select", context: "sketch", label: t("tool.select") },
+  { id: "s.line", key: "l", action: "line", context: "sketch", label: t("tool.line") },
+  { id: "s.circle", key: "c", action: "circle", context: "sketch", label: t("tool.circle") },
+  { id: "s.rectangle", key: "r", action: "rectangle", context: "sketch", label: t("tool.rectangle") },
+  { id: "s.arc", key: "a", action: "arc", context: "sketch", label: t("tool.arc") },
+  { id: "s.dimension", key: "d", action: "dimension", context: "sketch", label: t("tool.dimension") },
+  { id: "s.trim", key: "t", action: "trim", context: "sketch", label: t("tool.trim") },
+  { id: "s.offset", key: "o", action: "offset", context: "sketch", label: t("tool.offset") },
+  { id: "s.fillet", key: "f", action: "fillet-sketch", context: "sketch", label: t("shortcut.s.fillet") },
+  { id: "s.project", key: "p", action: "project", context: "sketch", label: t("tool.project") },
   // finish-and-go: E/Q inside a sketch commit it and start the 3D tool
   // (handleAction already finishes an active sketch before any 3D command)
-  { id: "s.extrude", key: "e", action: "extrude", context: "sketch", label: "Finish & Extrude" },
-  { id: "s.presspull", key: "q", action: "presspull", context: "sketch", label: "Finish & Press/Pull" },
+  { id: "s.extrude", key: "e", action: "extrude", context: "sketch", label: t("shortcut.s.extrude") },
+  { id: "s.presspull", key: "q", action: "presspull", context: "sketch", label: t("shortcut.s.presspull") },
   // sketch-start conveniences from model mode (L/C/R/A/P start a sketch with that tool)
-  { id: "m.line", key: "l", action: "line", context: "model", label: "Sketch: Line" },
-  { id: "m.circle", key: "c", action: "circle", context: "model", label: "Sketch: Circle" },
-  { id: "m.rectangle", key: "r", action: "rectangle", context: "model", label: "Sketch: Rectangle" },
-  { id: "m.arc", key: "a", action: "arc", context: "model", label: "Sketch: Arc" },
-  { id: "m.project", key: "p", action: "project", context: "model", label: "Sketch: Project" },
+  { id: "m.line", key: "l", action: "line", context: "model", label: t("shortcut.m.line") },
+  { id: "m.circle", key: "c", action: "circle", context: "model", label: t("shortcut.m.circle") },
+  { id: "m.rectangle", key: "r", action: "rectangle", context: "model", label: t("shortcut.m.rectangle") },
+  { id: "m.arc", key: "a", action: "arc", context: "model", label: t("shortcut.m.arc") },
+  { id: "m.project", key: "p", action: "project", context: "model", label: t("shortcut.m.project") },
   // --- global ---
-  { id: "g.fit", key: "home", action: "fit", context: "global", label: "Fit view" },
-  { id: "g.fit2", key: "f6", action: "fit", context: "global", label: "Fit view (alt)" },
-  { id: "g.help", key: "?", action: "shortcut-help", context: "global", label: "Shortcut help" },
+  { id: "g.fit", key: "home", action: "fit", context: "global", label: t("shortcut.g.fit") },
+  { id: "g.fit2", key: "f6", action: "fit", context: "global", label: t("shortcut.g.fit2") },
+  { id: "g.help", key: "?", action: "shortcut-help", context: "global", label: t("shortcut.g.help") },
 ];
 
 export const CONTEXT_LABELS: Record<Shortcut["context"], string> = {
-  model: "Model",
-  sketch: "Sketch",
-  global: "Global",
+  model: t("shortcut.context.model"),
+  sketch: t("shortcut.context.sketch"),
+  global: t("shortcut.context.global"),
 };
 
 function byId(id: string): Shortcut | undefined {
@@ -290,40 +293,40 @@ export function toggleShortcutHUD() {
     [CONTEXT_LABELS.global, rows("global")],
   ];
   const extra = [
-    ["Ctrl+K", "Command palette"],
-    ["Ctrl+Z / Ctrl+Y", "Undo / Redo"],
-    ["Ctrl+S / Ctrl+Shift+S", "Save / Save As"],
-    ["Ctrl+N / Ctrl+O / Ctrl+E", "New / Open / Export"],
-    ["Del", "Delete face (heal) / feature"],
-    ["Esc", "Cancel / clear selection"],
+    ["Ctrl+K", t("shortcut.hud.palette")],
+    ["Ctrl+Z / Ctrl+Y", t("shortcut.hud.undoRedo")],
+    ["Ctrl+S / Ctrl+Shift+S", t("shortcut.hud.saveSaveAs")],
+    ["Ctrl+N / Ctrl+O / Ctrl+E", t("shortcut.hud.newOpenExport")],
+    ["Del", t("shortcut.hud.deleteFaceFeature")],
+    ["Esc", t("shortcut.hud.cancelClear")],
   ];
   hud = document.createElement("div");
   hud.className = "shortcut-hud";
   const card = document.createElement("div");
   card.className = "shortcut-hud-card";
   card.innerHTML =
-    `<div class="shortcut-hud-title">Keyboard shortcuts</div>` +
+    `<div class="shortcut-hud-title" data-i18n="shortcut.hud.title">${esc(t("shortcut.hud.title"))}</div>` +
     groups
       .map(
         ([name, list]) =>
-          `<div class="shortcut-hud-group"><h4>${name}</h4>` +
+          `<div class="shortcut-hud-group"><h4>${esc(name)}</h4>` +
           list
             .map(
               ({ s, b }) =>
-                `<div class="shortcut-hud-row"><kbd>${formatBinding(b)}</kbd><span>${s.label}</span></div>`,
+                `<div class="shortcut-hud-row"><kbd>${esc(formatBinding(b))}</kbd><span>${esc(s.label)}</span></div>`,
             )
             .join("") +
           `</div>`,
       )
       .join("") +
-    `<div class="shortcut-hud-group"><h4>Always</h4>` +
+    `<div class="shortcut-hud-group"><h4 data-i18n="shortcut.hud.always">${esc(t("shortcut.hud.always"))}</h4>` +
     extra
-      .map(([k, l]) => `<div class="shortcut-hud-row"><kbd>${k}</kbd><span>${l}</span></div>`)
+      .map(([k, l]) => `<div class="shortcut-hud-row"><kbd>${esc(k)}</kbd><span>${esc(l)}</span></div>`)
       .join("") +
     `</div>` +
     // The panel is the only way to discover that any of this is changeable, and
     // this HUD is where someone is already looking at the keys.
-    `<div class="shortcut-hud-foot">Rebind any of these in Help ▸ Customize Shortcuts…</div>`;
+    `<div class="shortcut-hud-foot" data-i18n="shortcut.hud.foot">${esc(t("shortcut.hud.foot"))}</div>`;
   hud.appendChild(card);
   document.body.appendChild(hud);
   const dismiss = () => {

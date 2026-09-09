@@ -20,6 +20,7 @@ import { NoWebGLError, type GpuFailure } from "../viewport/scene";
 import { createBugReporter } from "./bugReporter";
 import { esc } from "./escape";
 import { icon } from "./icons";
+import { t } from "../i18n";
 
 let shown = false;
 
@@ -30,17 +31,12 @@ export function gpuFatalShown(): boolean {
   return shown;
 }
 
-const WHY: Record<GpuFailure, string> = {
-  "webgl1-only":
-    "This computer's graphics driver offers OpenGL ES 2.0 only, and the 3D view needs WebGL 2. " +
-    "That is a limit of the driver, not a damaged install. On Linux it usually means an older " +
-    "NVIDIA card running on the open-source nouveau driver.",
-  "no-webgl":
-    "This computer could not create a 3D context of any kind. That usually means the graphics " +
-    "driver is missing or is being blocked, rather than anything wrong with SindriCAD itself.",
-  renderer:
-    "This computer reports WebGL 2, but the 3D view still could not be created. That is unusual, " +
-    "and I would like to see the report.",
+// Locale keys, not text: t() is a plain lookup with an English fallback and no
+// DOM or network behind it, so it is safe on a machine that cannot draw.
+const WHY_KEY: Record<GpuFailure, string> = {
+  "webgl1-only": "gpu.why.webgl1Only",
+  "no-webgl": "gpu.why.noWebgl",
+  renderer: "gpu.why.renderer",
 };
 
 // Shown as bare assignments rather than a full command line on purpose: the app
@@ -73,23 +69,19 @@ export function showGpuFatal(err: unknown, deps: { store: DocumentStore; geometr
   card.setAttribute("aria-labelledby", "gpu-fatal-title");
   card.innerHTML =
     `<div class="gpu-fatal-head"><span class="gpu-fatal-icon">${icon("warning")}</span>` +
-    `<span class="gpu-fatal-title" id="gpu-fatal-title">The 3D view could not start</span></div>` +
-    `<p class="gpu-fatal-why">${esc(WHY[failure])}</p>` +
-    `<p class="gpu-fatal-why">Two things are worth trying. Close SindriCAD, then start it again ` +
-    `from a terminal with one of these in front of the usual command:</p>` +
+    `<span class="gpu-fatal-title" id="gpu-fatal-title" data-i18n="gpu.title">${esc(t("gpu.title"))}</span></div>` +
+    `<p class="gpu-fatal-why" data-i18n="${WHY_KEY[failure]}">${esc(t(WHY_KEY[failure]))}</p>` +
+    `<p class="gpu-fatal-why" data-i18n="gpu.tryThese">${esc(t("gpu.tryThese"))}</p>` +
     `<pre class="gpu-fatal-cmds">${WORKAROUNDS.map(esc).join("\n")}</pre>` +
-    `<p class="gpu-fatal-note">The first draws in software on the CPU. It is slower on large models, ` +
-    `but it works where the driver does not. The second turns off the webview's shared-buffer path, ` +
-    `which some drivers do not implement correctly.</p>` +
-    `<div class="gpu-fatal-label">What this machine reports</div>` +
-    `<pre class="gpu-fatal-facts">${esc(facts.join("\n") || "nothing readable")}</pre>` +
+    `<p class="gpu-fatal-note" data-i18n="gpu.workaroundNote">${esc(t("gpu.workaroundNote"))}</p>` +
+    `<div class="gpu-fatal-label" data-i18n="gpu.reportsLabel">${esc(t("gpu.reportsLabel"))}</div>` +
+    `<pre class="gpu-fatal-facts">${esc(facts.join("\n") || t("gpu.nothingReadable"))}</pre>` +
     (spoofed
-      ? `<p class="gpu-fatal-note">The renderer name above comes from the Linux webview, which reports ` +
-        `the same fake value on every machine. Ignore it. The WebGL version line is real.</p>`
+      ? `<p class="gpu-fatal-note" data-i18n="gpu.spoofedNote">${esc(t("gpu.spoofedNote"))}</p>`
       : "") +
     `<div class="gpu-fatal-row">` +
-    `<button class="choice-btn gpu-fatal-copy" type="button"><span>Copy the details</span></button>` +
-    `<button class="choice-btn choice-primary gpu-fatal-report" type="button"><span>Report this</span></button>` +
+    `<button class="choice-btn gpu-fatal-copy" type="button"><span data-i18n="gpu.copy">${esc(t("gpu.copy"))}</span></button>` +
+    `<button class="choice-btn choice-primary gpu-fatal-report" type="button"><span data-i18n="gpu.report">${esc(t("gpu.report"))}</span></button>` +
     `</div>`;
   back.appendChild(card);
   document.body.appendChild(back);
@@ -102,9 +94,10 @@ export function showGpuFatal(err: unknown, deps: { store: DocumentStore; geometr
   const copyBtn = card.querySelector(".gpu-fatal-copy span") as HTMLElement;
   card.querySelector(".gpu-fatal-copy")!.addEventListener("click", () => {
     void navigator.clipboard
+      // i18n-ignore the clipboard payload is a bug report; support greps it in English
       .writeText([`SindriCAD: 3D view could not start (${failure})`, ...facts, navigator.userAgent].join("\n"))
-      .then(() => { copyBtn.textContent = "Copied"; })
-      .catch(() => { copyBtn.textContent = "Could not copy"; });
+      .then(() => { copyBtn.textContent = t("gpu.copied"); })
+      .catch(() => { copyBtn.textContent = t("gpu.copyFailed"); });
   });
   card.querySelector(".gpu-fatal-report")!.addEventListener("click", () => {
     (document.querySelector(".bug-report-btn") as HTMLButtonElement | null)?.click();

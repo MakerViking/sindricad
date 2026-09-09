@@ -27,6 +27,7 @@ import type { CadDocument, ParamDef, ParamTarget } from "../types";
 import { FEATURE_NUM_FIELDS, RIGID_ENTITY_NUM_FIELDS, kindUnit } from "./numFields";
 import { isDimConstraint, newConstraintId, noteConstraintId } from "../sketch/id";
 import { nextDName } from "../params/engine";
+import { t } from "../i18n";
 
 // v4 → v5: geometry left the document. An `import` feature used to carry the
 // whole shape inline as base64 ASCII BREP (`brep`); it now carries `geom`, the
@@ -49,9 +50,7 @@ export function migrateDocument(parsed: CadDocument): string[] {
   const version = parsed.version ?? 1;
   if (version > FORMAT_VERSION) {
     // Best effort: load what we understand, but don't rewrite shapes we don't.
-    return [
-      "This file was made by a newer version of SindriCAD — unknown data (e.g. parameter expressions) may be lost if you save it here.",
-    ];
+    return [t("file.warning.newerVersion")];
   }
 
   const features = parsed.features ?? [];

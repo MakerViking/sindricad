@@ -87,7 +87,8 @@ describe("undo button wiring (main.ts source)", () => {
   it("the Edit menu and the buttons ask the SAME question", () => {
     // They disagreed for as long as the bug existed. Pin that they match, so a
     // future change to one is not silently a divergence.
-    const menu = mainSrc.match(/label:\s*"Undo"[\s\S]{0,200}?disabled:\s*\(\)\s*=>\s*!\(([^)]*)\)/);
+    // the label is a locale key now (menu.edit.undo), not the English word
+    const menu = mainSrc.match(/label:\s*t\("menu\.edit\.undo"\)[\s\S]{0,200}?disabled:\s*\(\)\s*=>\s*!\(([^)]*)\)/);
     expect(menu, "the Edit > Undo item no longer has a `disabled` predicate").not.toBeNull();
     expect((menu![1] ?? "").replace(/\s+/g, "")).toBe("sketch.active?sketch.canUndoSketch:store.canUndo");
   });

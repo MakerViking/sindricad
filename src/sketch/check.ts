@@ -10,6 +10,7 @@
 // measured with its own maths would eventually contradict the shading the user
 // is looking at, and then the report is a second opinion rather than a reason.
 
+import { t } from "../i18n";
 import type * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import {
@@ -126,7 +127,7 @@ export function checkSketch(entities: ResolvedEntity[]): SketchIssue[] {
   const head = issues.slice(0, MAX_ISSUES);
   head.push({
     kind: "more", severity: "info",
-    message: `${issues.length - MAX_ISSUES} further findings are not listed. Fix these first, then run the check again.`,
+    message: t("sketch.check.issue.more", { count: issues.length - MAX_ISSUES }),
     entityIds: [],
     at: head[0]?.at ?? { x: 0, y: 0 },
   });
@@ -259,7 +260,7 @@ function openEnds(per: Checked[], tinyIds: Set<string>): SketchIssue[] {
     if (near === undefined || other === undefined) {
       out.push({
         kind: "open", severity: "info",
-        message: "This endpoint joins nothing, so the chain stays open.",
+        message: t("sketch.check.issue.openEnd"),
         entityIds: [n.eid], at: { x: n.p.x, y: n.p.y },
       });
       return;
@@ -274,8 +275,8 @@ function openEnds(per: Checked[], tinyIds: Set<string>): SketchIssue[] {
     out.push({
       kind: "open", severity: "error",
       message: mutual
-        ? "These two endpoints stop short of each other, so the profile never closes."
-        : "This endpoint stops short of the nearest one, so the profile never closes.",
+        ? t("sketch.check.issue.openPair")
+        : t("sketch.check.issue.openSingle"),
       entityIds: mutual ? [...new Set([n.eid, other.eid])] : [n.eid],
       at: mutual
         ? { x: (n.p.x + other.p.x) / 2, y: (n.p.y + other.p.y) / 2 }
@@ -334,7 +335,7 @@ function tinySegments(per: Checked[]): SketchIssue[] {
     if (!worst) continue;
     out.push({
       kind: "tiny", severity: "error",
-      message: "This segment is short enough that it may be dropped when the profile is traced.",
+      message: t("sketch.check.issue.tiny"),
       entityIds: [e.id],
       at: { x: (worst.x1 + worst.x2) / 2, y: (worst.y1 + worst.y2) / 2 },
       measuredMm: worstLen,
@@ -411,7 +412,7 @@ function selfCrossings(per: Checked[]): SketchIssue[] {
       if (!p) return;
       out.push({
         kind: "selfCross", severity: "error",
-        message: "This curve crosses itself here, so it does not bound a single area.",
+        message: t("sketch.check.issue.selfCross"),
         entityIds: [e.id], at: { x: p.x, y: p.y },
       });
     });
@@ -443,7 +444,7 @@ function pairIssues(per: Checked[]): SketchIssue[] {
         // measured loop below would emit one row per segment. Say it once.
         out.push({
           kind: "overlap", severity: "error",
-          message: "This curve is an exact duplicate of another one drawn on top of it.",
+          message: t("sketch.check.issue.duplicate"),
           entityIds: [A.e.id, B.e.id], at: { x: start.x, y: start.y },
         });
         continue;
@@ -485,7 +486,7 @@ function pairIssues(per: Checked[]): SketchIssue[] {
       if (overlapAt)
         out.push({
           kind: "overlap", severity: "info",
-          message: "These two curves run along each other here. The tracer keeps a single shared edge, so the areas on either side of it still close.",
+          message: t("sketch.check.issue.overlap"),
           entityIds: [A.e.id, B.e.id], at: overlapAt, measuredMm: worstLen,
         });
       // One row per PAIR, not per crossing point: two overlapping circles cross
@@ -494,7 +495,7 @@ function pairIssues(per: Checked[]): SketchIssue[] {
       if (crossAt)
         out.push({
           kind: "cross", severity: "info",
-          message: "These two curves cross here, so any area they bound is split into separate regions.",
+          message: t("sketch.check.issue.crossing"),
           entityIds: [A.e.id, B.e.id], at: crossAt,
         });
     }

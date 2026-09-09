@@ -20,6 +20,7 @@ import type { ExprNode } from "./parse";
 import { evalNode } from "./eval";
 import { kindUnit, NON_NUM_STRING_FIELDS, resolveTarget, writeTarget } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
+import { t, localeTag } from "../i18n";
 
 export interface RecomputeResult {
   /** sketch feature ids whose constraint/entity/pattern values changed — these
@@ -91,7 +92,7 @@ export function recompute(doc: CadDocument): RecomputeResult {
   for (const rs of refsByName.values()) for (const r of rs) referenced.add(r);
   for (const [name, def] of Object.entries(defs)) {
     if (def.target && !resolveTarget(doc, def.target)) {
-      if (referenced.has(name)) issues[name] = "its dimension or feature no longer exists";
+      if (referenced.has(name)) issues[name] = t("params.issue.targetGone");
       else {
         delete defs[name];
         nodes.delete(name);
@@ -118,7 +119,7 @@ export function recompute(doc: CadDocument): RecomputeResult {
     }
   }
   const inOrder = new Set(order);
-  for (const n of names) if (!inOrder.has(n)) issues[n] ??= "circular reference";
+  for (const n of names) if (!inOrder.has(n)) issues[n] ??= t("params.issue.circular");
 
   // --- evaluate in order; every def contributes its (possibly cached) value ---
   const values: Record<string, number> = {};
@@ -127,13 +128,13 @@ export function recompute(doc: CadDocument): RecomputeResult {
     const def = defs[n]!;
     const node = nodes.get(n);
     if (!node) {
-      issues[n] = "invalid expression";
+      issues[n] = t("params.issue.invalid");
       continue;
     }
     try {
       const v = evalNode(node, values);
       if (!Number.isFinite(v)) {
-        issues[n] = "does not evaluate to a finite number";
+        issues[n] = t("params.error.notFinite");
       } else {
         def.value = v;
         values[n] = v;
@@ -193,15 +194,15 @@ export function validateExpr(doc: CadDocument, name: string | null, expr: string
   }
   const refs = refsOfNode(node);
   for (const r of refs) {
-    if (!(r in defs)) return { ok: false, error: `unknown parameter "${r}"` };
-    if (r === name) return { ok: false, error: `"${name}" cannot reference itself` };
+    if (!(r in defs)) return { ok: false, error: t("params.error.unknownParameter", { name: r }) };
+    if (r === name) return { ok: false, error: t("params.error.selfReference", { name }) };
   }
   if (name) {
     const cycle = findCycle(defs, name, refs);
-    if (cycle) return { ok: false, error: `circular reference: ${cycle.join(" → ")}` };
+    if (cycle) return { ok: false, error: t("params.error.circularChain", { chain: cycle.join(" → ") }) };
   }
   if (kind === "count" && hasUnitLiteral(node)) {
-    return { ok: false, error: "this field is unitless — write a plain number" };
+    return { ok: false, error: t("params.error.unitless") };
   }
   const values = Object.fromEntries(Object.entries(defs).map(([n, d]) => [n, d.value]));
   let value: number;
@@ -210,7 +211,7 @@ export function validateExpr(doc: CadDocument, name: string | null, expr: string
   } catch (e) {
     return { ok: false, error: e instanceof ExprError ? e.message : String(e) };
   }
-  if (!Number.isFinite(value)) return { ok: false, error: "does not evaluate to a finite number" };
+  if (!Number.isFinite(value)) return { ok: false, error: t("params.error.notFinite") };
   return { ok: true, value };
 }
 
@@ -236,10 +237,10 @@ export function commitParamExpr(doc: CadDocument, name: string, expr: string, un
 
 /** Reject bad user-parameter names in one place. Returns an error or null. */
 export function validateName(defs: Record<string, ParamDef>, name: string): string | null {
-  if (!isIdentName(name)) return "names are letters, digits and _ (not starting with a digit)";
-  if (isReservedName(name)) return `"${name}" is a reserved name`;
-  if (name in defs) return `"${name}" already exists`;
-  if (/^d\d+$/.test(name)) return "dN names are reserved for model parameters";
+  if (!isIdentName(name)) return t("params.name.invalid");
+  if (isReservedName(name)) return t("params.name.reserved", { name });
+  if (name in defs) return t("params.name.exists", { name });
+  if (/^d\d+$/.test(name)) return t("params.name.dnReserved");
   return null;
 }
 
@@ -333,14 +334,14 @@ function eachBareNameRef(doc: CadDocument, name: string, hit: (label: string, se
   for (const f of doc.features) {
     for (const [k, v] of Object.entries(f)) {
       if (v === name && !NON_NUM_STRING_FIELDS.has(k)) {
-        hit(`${f.type} ${f.id} · ${k}`, (nv) => ((f as unknown as Record<string, unknown>)[k] = nv));
+        hit(t("params.ref.feature", { type: f.type, id: f.id, field: k }), (nv) => ((f as unknown as Record<string, unknown>)[k] = nv));
       }
     }
     if (f.type !== "sketch") continue;
     for (const e of f.entities) {
       for (const [k, v] of Object.entries(e)) {
         if (v === name && !NON_NUM_STRING_FIELDS.has(k)) {
-          hit(`${e.type} in ${f.id} · ${k}`, (nv) => ((e as unknown as Record<string, unknown>)[k] = nv));
+          hit(t("params.ref.entity", { type: e.type, sketch: f.id, field: k }), (nv) => ((e as unknown as Record<string, unknown>)[k] = nv));
         }
       }
     }
@@ -361,9 +362,9 @@ export function referencesTo(doc: CadDocument, name: string): string[] {
 
 /** Why `name` can't be deleted right now, or null when it's free. */
 export function deleteBlockers(doc: CadDocument, name: string): string | null {
-  if (!(name in defsOf(doc))) return `no parameter "${name}"`;
+  if (!(name in defsOf(doc))) return t("params.delete.noParameter", { name });
   const refs = referencesTo(doc, name);
-  if (refs.length) return `"${name}" is referenced by: ${refs.join(", ")}`;
+  if (refs.length) return t("params.delete.referencedBy", { name, refs: new Intl.ListFormat(localeTag()).format(refs) });
   return null;
 }
 

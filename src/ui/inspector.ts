@@ -15,6 +15,7 @@ import { entityDims } from "../sketch/entityDims";
 import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
 import { icon } from "./icons";
+import { t, setText, setTitle } from "../i18n";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
@@ -35,9 +36,7 @@ export function isInspectorEditable(type: Feature["type"]): boolean {
  *  false for `import`, which has no tool to re-run. */
 export function editHint(type: Feature["type"]): string {
   const label = labelOf(type);
-  return isInspectorEditable(type)
-    ? `Edit ${label} values in the inspector (right panel)`
-    : `${label} has no editable values in the inspector`;
+  return isInspectorEditable(type) ? t("inspector.editHint.editable", { label }) : t("inspector.editHint.none", { label });
 }
 
 /** Label for a feature type, tolerating a type this build does not know (a
@@ -89,7 +88,7 @@ export class Inspector {
     this.featureBox = null;
 
     // --- parameters (user params only; model params dN live in the dialog) ---
-    this.el.appendChild(title(`Parameters (${unit})`));
+    this.el.appendChild(title(t("inspector.parametersTitle", { unit })));
     const defs = doc.paramDefs ?? {};
     for (const [name, value] of Object.entries(doc.parameters)) {
       if (defs[name]?.target) continue; // model param — edited via its field/dim
@@ -108,7 +107,7 @@ export class Inspector {
     if (!this.selectedId) {
       const hint = document.createElement("div");
       hint.className = "empty-state";
-      hint.textContent = "Select a feature in the timeline or browser to edit its values.";
+      setText(hint, "inspector.emptyHint");
       this.el.appendChild(hint);
       return;
     }
@@ -128,7 +127,7 @@ export class Inspector {
     // re-solves — and owns the open-sketch case; this panel only reports the
     // gesture (field report 8b49c06e).
     if (f.type === "sketch") {
-      box.appendChild(title(`Sketch · ${f.id}`, true));
+      box.appendChild(title(t("inspector.featureTitle", { label: t("tool.sketch"), id: f.id }), true));
       const resolved = resolveEntities(f, doc.parameters);
       resolved.forEach((e, i) => {
         for (const d of entityDims(e)) {
@@ -147,11 +146,11 @@ export class Inspector {
     // indistinguishable from a broken one, and the timeline still told the user
     // to double-click the row (field report c8531ceb). Name the feature and say
     // there is nothing to edit.
-    box.appendChild(title(`${labelOf(f.type)} · ${f.id}`, true));
+    box.appendChild(title(t("inspector.featureTitle", { label: labelOf(f.type), id: f.id }), true));
     if (!fields) {
       const hint = document.createElement("div");
       hint.className = "empty-state";
-      hint.textContent = "No editable values on this feature.";
+      setText(hint, "inspector.noFields");
       box.appendChild(hint);
       return;
     }
@@ -191,7 +190,7 @@ export class Inspector {
     // was out of reach forever. GH #41.
     if (hasUpToTarget(f)) {
       const planeId = (f as { upToPlane?: string }).upToPlane;
-      const target = planeId === undefined ? "Picked face" : planeLabel(this.store.document.features, planeId);
+      const target = planeId === undefined ? t("inspector.upTo.pickedFace") : planeLabel(this.store.document.features, planeId);
       box.appendChild(
         targetRow(target, () => {
           this.store.clearUpToTarget(f.id);
@@ -221,11 +220,11 @@ export class Inspector {
  *  the datums, and the raw id only if nothing in the document matches — a
  *  deleted datum must never make the inspector throw mid-render. */
 function planeLabel(features: readonly Feature[], id: string): string {
-  if (id === "XY" || id === "XZ" || id === "YZ") return `${id} plane`;
+  if (id === "XY" || id === "XZ" || id === "YZ") return t("inspector.upTo.originPlane", { id });
   const datums = features.filter((f) => f.type === "datumPlane");
   const i = datums.findIndex((f) => f.id === id);
   if (i < 0) return id;
-  return (datums[i] as { name?: string }).name || `Plane${i + 1}`;
+  return (datums[i] as { name?: string }).name || t("common.planeName", { n: i + 1 });
 }
 
 function title(text: string, spaced = false): HTMLElement {
@@ -259,7 +258,7 @@ function textRow(label: string, value: string, commit: (raw: string) => string |
   const lab = document.createElement("label");
   lab.textContent = label;
   // text input so an expression / parameter name is allowed
-  const input = validatedInput(value, commit, "number, parameter name, or expression (e.g. width/2 + 5)");
+  const input = validatedInput(value, commit, t("inspector.exprInputHint"));
   row.append(lab, input);
   return row;
 }
@@ -276,7 +275,7 @@ function targetRow(value: string, onClear: () => void): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row param-row-target";
   const lab = document.createElement("label");
-  lab.textContent = "Up to";
+  setText(lab, "inspector.upTo.label");
   const cell = document.createElement("span");
   cell.className = "param-target";
   const name = document.createElement("span");
@@ -285,9 +284,9 @@ function targetRow(value: string, onClear: () => void): HTMLElement {
   const clear = document.createElement("button");
   clear.type = "button";
   clear.className = "params-del";
-  clear.title = "Clear the up-to target and extrude by distance instead";
+  setTitle(clear, "inspector.upTo.clearTitle");
   // icon-only control: the accessible name has to come from the button itself
-  clear.setAttribute("aria-label", "Clear the up-to target");
+  clear.setAttribute("aria-label", t("inspector.upTo.clearAria"));
   clear.innerHTML = icon("close");
   clear.addEventListener("click", onClear);
   cell.append(name, clear);

@@ -3,12 +3,14 @@
 // FloatingPanel widget, and the Sketch Palette is a persistent checkbox list,
 // the wrong shape for a mutually-exclusive mode set).
 
+import { setText } from "../i18n";
+
 export type ProjectFilter = "edges" | "sketchCurves" | "silhouette";
 
 const CHIPS: { key: ProjectFilter; label: string }[] = [
-  { key: "edges", label: "Edges & faces" },
-  { key: "sketchCurves", label: "Sketch curves" },
-  { key: "silhouette", label: "Body silhouette" },
+  { key: "edges", label: "sketch.project.edges" },
+  { key: "sketchCurves", label: "sketch.project.sketchCurves" },
+  { key: "silhouette", label: "sketch.project.silhouette" },
 ];
 
 export class ProjectPanel {
@@ -25,7 +27,7 @@ export class ProjectPanel {
     } as CSSStyleDeclaration);
     for (const c of CHIPS) {
       const b = document.createElement("button");
-      b.textContent = c.label;
+      setText(b, c.label);
       b.className = "tool-chip tool-chip-pill";
       b.addEventListener("click", () => {
         this.filter = c.key;

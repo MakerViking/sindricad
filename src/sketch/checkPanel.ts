@@ -12,6 +12,7 @@
 // points AT a spot in the sketch, so a panel that follows the cursor would sit
 // on top of the thing it is pointing at.
 
+import { t } from "../i18n";
 import { esc } from "../ui/escape";
 import { icon, type IconName } from "../ui/icons";
 import { getUnit, toDisplay } from "../ui/units";
@@ -40,8 +41,6 @@ export function formatMeasurement(mm: number): string {
   const text = mag > 0 && mag < 0.001 ? v.toExponential(1) : String(Math.round(v * 1000) / 1000);
   return `${text} ${getUnit()}`;
 }
-
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 let root: HTMLDivElement | null = null;
 let onKey: ((e: KeyboardEvent) => void) | null = null;
@@ -101,7 +100,7 @@ export function showCheckPanel(issues: SketchIssue[], deps: CheckPanelDeps): voi
   el.className = "tool-panel check-panel";
   el.tabIndex = -1;
   el.setAttribute("role", "region");
-  el.setAttribute("aria-label", "Sketch check results");
+  el.setAttribute("aria-label", t("sketch.check.results"));
   // Position and width inline, chrome in the stylesheet — the convention the
   // .tool-panel block states, because the position is the one thing that
   // genuinely differs per panel.
@@ -109,8 +108,8 @@ export function showCheckPanel(issues: SketchIssue[], deps: CheckPanelDeps): voi
 
   const head =
     `<div class="check-head">` +
-    `<span class="check-title">Sketch check</span>` +
-    `<button type="button" class="check-close panel-btn panel-btn-ghost" aria-label="Close sketch check">${icon("close")}</button>` +
+    `<span class="check-title" data-i18n="sketch.check.title">${esc(t("sketch.check.title"))}</span>` +
+    `<button type="button" class="check-close panel-btn panel-btn-ghost" aria-label="${esc(t("sketch.check.close"))}">${icon("close")}</button>` +
     `</div>`;
 
   // The empty state is the reading most runs produce, so it has to say what it
@@ -118,22 +117,22 @@ export function showCheckPanel(issues: SketchIssue[], deps: CheckPanelDeps): voi
   // grey box that is indistinguishable from "the check did not run".
   const body = ordered.length
     ? (errors.length
-        ? groupHtml(plural(errors.length, "problem", "problems"), "warning", "error", errors.map((e, i) => rowHtml(e, i)).join(""))
+        ? groupHtml(t("sketch.check.problems", { count: errors.length }), "warning", "error", errors.map((e, i) => rowHtml(e, i)).join(""))
         : "") +
       (infos.length
-        ? groupHtml(plural(infos.length, "note", "notes"), "point", "info", infos.map((n, i) => rowHtml(n, errors.length + i)).join(""))
+        ? groupHtml(t("sketch.check.notes", { count: infos.length }), "point", "info", infos.map((n, i) => rowHtml(n, errors.length + i)).join(""))
         : "")
     : `<div class="check-empty">` +
       `<span class="check-empty-icon">${icon("check")}</span>` +
       `<span class="check-empty-text">` +
-      `<span class="check-empty-title">No problems found</span>` +
-      `<span class="check-empty-sub">Nothing open, overlapping, crossing itself or too small to build.</span>` +
+      `<span class="check-empty-title" data-i18n="sketch.check.clean">${esc(t("sketch.check.clean"))}</span>` +
+      `<span class="check-empty-sub" data-i18n="sketch.check.cleanSub">${esc(t("sketch.check.cleanSub"))}</span>` +
       `</span>` +
       `</div>`;
 
   const hint = ordered.length
-    ? `<div class="check-hint">Click a row to select it · Esc to close</div>`
-    : `<div class="check-hint">Esc to close</div>`;
+    ? `<div class="check-hint" data-i18n="sketch.check.hintRows">${esc(t("sketch.check.hintRows"))}</div>`
+    : `<div class="check-hint" data-i18n="common.escToClose">${esc(t("common.escToClose"))}</div>`;
 
   el.innerHTML = `${head}<div class="check-scroll">${body}</div>${hint}`;
   document.body.appendChild(el);

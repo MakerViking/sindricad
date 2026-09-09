@@ -3,6 +3,7 @@
 // solves, and reads the solved point positions back. One wrapper is kept for the
 // app lifetime; clear_data() resets it between solves.
 
+import { t } from "../i18n";
 import { init_planegcs_module, GcsWrapper, SolveStatus } from "@salusoft89/planegcs";
 import wasmUrl from "@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url";
 
@@ -195,11 +196,8 @@ export class SolverUnavailable extends Error {
     const detail = cause instanceof Error ? cause.message : String(cause);
     super(
       /content security policy|unsafe-eval|code generation/i.test(detail)
-        ? "The 2D constraint solver could not start: this build's security policy blocks the "
-          + "code it needs to initialise. That is a bug in SindriCAD, not a problem with your "
-          + "system, so updating your webview or graphics drivers will not help. Sketching "
-          + "still works, but without constraints, dimensions or point dragging."
-        : `The 2D constraint solver could not start: ${detail}`,
+        ? t("sketch.solver.cspBlocked")
+        : t("sketch.solver.failed", { detail }),
     );
     this.name = "SolverUnavailable";
   }

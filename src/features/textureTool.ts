@@ -14,6 +14,7 @@ import type { DocumentStore } from "../document/store";
 import type { Feature, Num, Selector } from "../types";
 import { TexturePanel, ANGLE_KINDS, SEED_KINDS, type TextureMode, type TextureValues } from "./texturePanel";
 import { setPrompt } from "../ui/prompt";
+import { t } from "../i18n";
 
 // Warm texture ticks are ~10-70ms sidecar-side (geometry-skeleton cache), so a
 // short debounce keeps scrubbing responsive while still coalescing keystrokes.
@@ -33,7 +34,7 @@ const defaultValues = (): TextureValues => ({
   invert: false,
 });
 
-const PICK_PROMPT = "Select faces (or switch to Whole Body) for the texture · Esc to cancel";
+const pickPrompt = () => t("feature.texture.pickPrompt");
 
 function sameSet<T>(a: T[], b: T[]): boolean {
   if (a.length !== b.length) return false;
@@ -112,7 +113,7 @@ export class TextureTool {
       if (!s.building && s.result) this.rebuildLanded = true;
     });
     this.openPanel(false);
-    setPrompt(PICK_PROMPT);
+    setPrompt(pickPrompt());
     this.listenForEscape();
     this.raf = requestAnimationFrame(this.boundTick);
   }
@@ -160,7 +161,7 @@ export class TextureTool {
     this.lastFaceIds = [];
     this.lastBodyIds = [];
     this.viewport.setSelectionMode(this.mode === "body" ? "bodies" : "faces");
-    setPrompt("Rolling back to edit… (later features are hidden while editing)");
+    setPrompt(t("feature.rollingBack"));
 
     this.store.beginEditPreview(featureId);
     this.listenForEscape();
@@ -170,7 +171,7 @@ export class TextureTool {
         this.awaitingRollback = false;
         this.seedSelectionFromSaved();
         this.openPanel(true);
-        setPrompt(PICK_PROMPT);
+        setPrompt(pickPrompt());
         this.pushPreview();
         this.raf = requestAnimationFrame(this.boundTick);
       } else {
@@ -292,13 +293,15 @@ export class TextureTool {
     if (this.mode === "body") {
       const ids = this.viewport.getSelectedBodies();
       const id = ids[0];
-      if (!id) return "Whole body: nothing selected — click a body";
+      if (!id) return t("feature.texture.summary.bodyNone");
       const b = (this.store.buildState.result?.bodies ?? []).find((x) => x.id === id);
       const name = this.store.bodyName(id) ?? b?.name ?? id;
-      return ids.length > 1 ? `Whole body: ${name} (using first of ${ids.length} selected)` : `Whole body: ${name}`;
+      return ids.length > 1
+        ? t("feature.texture.summary.bodyMany", { name, count: ids.length })
+        : t("feature.texture.summary.body", { name });
     }
     const n = this.viewport.getSelectedFaceIds().length;
-    return n ? `${n} face${n === 1 ? "" : "s"} selected` : "No faces selected — click one or more faces";
+    return n ? t("feature.texture.summary.faces", { count: n }) : t("feature.texture.summary.facesNone");
   }
 
   private refreshSummary() {
@@ -408,8 +411,8 @@ export class TextureTool {
     if (!feature) {
       setPrompt(
         this.mode === "faces"
-          ? "No faces selected — click one or more faces · Esc to cancel"
-          : "No body selected — click a body · Esc to cancel",
+          ? t("feature.texture.noFaces")
+          : t("feature.texture.noBody"),
       );
       return;
     }

@@ -18,6 +18,7 @@ import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { Feature, PlaneDef, Selector } from "../types";
 import { setPrompt } from "../ui/prompt";
+import { t } from "../i18n";
 import { fetchFonts } from "../sketch/textCache";
 import { TextOnFacePanel, type TextOnFaceValues } from "./textOnFacePanel";
 import { HANDLE_IDLE as OUTLINE_COLOR } from "../viewport/colors3d";
@@ -141,7 +142,7 @@ export class TextOnFaceTool {
     window.addEventListener("keydown", this.boundKey, true);
     // warm the font list while the user is still choosing a face
     if (!this.fonts.length) void fetchFonts().then((f) => (this.fonts = f)).catch(() => {});
-    setPrompt("Click the face to put text on · Esc to cancel");
+    setPrompt(t("feature.text.pickPrompt"));
   }
 
   /** Re-open an existing textOnFace for editing. Returns false when any numeric
@@ -345,7 +346,7 @@ export class TextOnFaceTool {
       }
     }
     if (!this.active) return; // cancelled while the fonts were loading
-    setPrompt("Type the text · Ctrl+Enter to apply · Esc to cancel");
+    setPrompt(t("feature.text.typePrompt"));
     this.watchForSolid();
     this.panel.show(
       {
@@ -515,7 +516,7 @@ export class TextOnFaceTool {
   private commit(v: TextOnFaceValues) {
     if (!v.text.trim()) {
       // the panel deliberately stays up so this is recoverable
-      setPrompt("Type some text first · Esc to cancel");
+      setPrompt(t("feature.text.empty"));
       return;
     }
     window.clearTimeout(this.previewTimer);

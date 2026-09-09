@@ -13,6 +13,7 @@ import { isInspectorEditable } from "./inspector";
 import { icon, type IconName } from "./icons";
 import { contextMenu } from "./menu";
 import { esc } from "./escape";
+import { t, setText, setTitle } from "../i18n";
 
 // A fast op must not flash a Cancel button; a slow one must offer it early.
 const CANCEL_DELAY_MS = 700;
@@ -40,16 +41,16 @@ export function buildProgress(
   meshTotal: number | null,
   total: number,
 ): { label: string; pct: number } {
-  if (progress === null) return { label: "building…", pct: 0 };
+  if (progress === null) return { label: t("timeline.building"), pct: 0 };
   if (progress < 0) {
     if (meshed === null || meshTotal === null || meshTotal <= 0) {
-      return { label: "building…", pct: 0 };
+      return { label: t("timeline.building"), pct: 0 };
     }
     const done = Math.min(meshed, meshTotal);
-    return { label: `meshing ${done}/${meshTotal}`, pct: Math.round((done / meshTotal) * 100) };
+    return { label: t("timeline.meshingProgress", { done, total: meshTotal }), pct: Math.round((done / meshTotal) * 100) };
   }
   return {
-    label: `building ${Math.min(progress + 1, total)}/${total}`,
+    label: t("timeline.buildingProgress", { done: Math.min(progress + 1, total), total }),
     pct: total === 0 ? 0 : Math.round(((progress + 1) / total) * 100),
   };
 }
@@ -67,11 +68,10 @@ export function featureTooltip(
   note: string | undefined,
   editable: boolean,
 ): string {
-  return (
-    `${index + 1} · ${label}` +
-    (note ? `\n⚠ ${note}` : "") +
-    (editable ? "\ndouble-click to edit · right-click for more" : "\nright-click for more")
-  );
+  const lines = [t("timeline.chip", { index: index + 1, name: label })];
+  if (note) lines.push(t("timeline.chipNote", { note }));
+  lines.push(editable ? t("timeline.chipHintEditable") : t("timeline.chipHint"));
+  return lines.join("\n");
 }
 
 export class Timeline {
@@ -120,14 +120,14 @@ export class Timeline {
 
     this.cancelBtn = document.createElement("button");
     this.cancelBtn.className = "timeline-cancel hidden";
-    this.cancelBtn.textContent = "Cancel";
-    this.cancelBtn.title = "Stop the running operation";
+    setText(this.cancelBtn, "common.cancel");
+    setTitle(this.cancelBtn, "timeline.stopOperation");
     this.cancelBtn.addEventListener("click", () => void this.cancelBusy());
     this.el.appendChild(this.cancelBtn);
 
     this.errBadge = document.createElement("button");
     this.errBadge.className = "timeline-errbadge hidden";
-    this.errBadge.title = "Failing features — click to jump to the next one";
+    setTitle(this.errBadge, "timeline.failingFeatures");
     this.errBadge.addEventListener("click", () => this.jumpToNextError());
     this.el.appendChild(this.errBadge);
 
@@ -190,7 +190,7 @@ export class Timeline {
       if (e.feature_id) m.set(e.feature_id, featureErrorText(e, bodies));
     }
     if (b.errorFeatureId && !m.has(b.errorFeatureId)) {
-      m.set(b.errorFeatureId, b.errorMessage ?? "failed");
+      m.set(b.errorFeatureId, b.errorMessage ?? t("timeline.failed"));
     }
     return m;
   }
@@ -231,11 +231,11 @@ export class Timeline {
     const showCancel = busy.active && this.busySince > 0
       && Date.now() - this.busySince >= CANCEL_DELAY_MS;
     this.cancelBtn.classList.toggle("hidden", !showCancel);
-    this.cancelBtn.title = busy.label || "Stop the running operation";
+    this.cancelBtn.title = busy.label || t("timeline.stopOperation");
     this.busyLabel.classList.toggle("hidden", !showCancel);
     this.busyLabel.textContent = busy.pct === null
       ? busy.label
-      : `${busy.label} ${busy.pct}%`;
+      : t("timeline.busyPercent", { label: busy.label, pct: busy.pct });
 
     // `busy.active` joins this guard: importing into an EMPTY document is the
     // most common long operation there is, and without it the timeline would
@@ -243,7 +243,7 @@ export class Timeline {
     if (features.length === 0 && !build.building && !busy.active) {
       const empty = document.createElement("div");
       empty.className = "timeline-empty";
-      empty.textContent = "Your modeling history will appear here. Start with a Sketch.";
+      setText(empty, "timeline.empty");
       this.track.appendChild(empty);
       this.errBadge.classList.add("hidden");
       this.lastCount = 0;
@@ -278,22 +278,22 @@ export class Timeline {
 
   private renderTransport(rollback: number, count: number) {
     this.transport.innerHTML = "";
-    const btn = (name: IconName, title: string, disabled: boolean, go: () => void) => {
+    const btn = (name: IconName, titleKey: string, disabled: boolean, go: () => void) => {
       const b = document.createElement("button");
       b.className = "tl-btn";
       b.innerHTML = icon(name);
-      b.title = title;
-      b.setAttribute("aria-label", title);
+      setTitle(b, titleKey);
+      b.setAttribute("aria-label", b.title);
       b.disabled = disabled;
       b.addEventListener("click", go);
       this.transport.appendChild(b);
     };
-    btn("stepFirst", "Roll back to the start", rollback <= 0, () => this.store.setRollback(0));
-    btn("stepBack", "Step one feature back", rollback <= 0, () =>
+    btn("stepFirst", "timeline.rollToStart", rollback <= 0, () => this.store.setRollback(0));
+    btn("stepBack", "timeline.stepBack", rollback <= 0, () =>
       this.store.setRollback(Math.max(0, rollback - 1)));
-    btn("stepFwd", "Step one feature forward", rollback >= count, () =>
+    btn("stepFwd", "timeline.stepForward", rollback >= count, () =>
       this.store.setRollback(Math.min(count, rollback + 1)));
-    btn("stepLast", "Roll forward to the end", rollback >= count, () =>
+    btn("stepLast", "timeline.rollToEnd", rollback >= count, () =>
       this.store.setRollback(count));
   }
 
@@ -386,7 +386,7 @@ export class Timeline {
   private marker(): HTMLElement {
     const m = document.createElement("div");
     m.className = "timeline-marker";
-    m.title = "Drag to roll the model back / forward";
+    setTitle(m, "timeline.markerTitle");
     m.innerHTML = `<span class="marker-grip"></span>`;
     m.addEventListener("pointerdown", (e) => {
       e.preventDefault();
@@ -423,19 +423,19 @@ export class Timeline {
     // list, and it is wider than ambiguity) — offering it on a healthy feature
     // would invite users to overwrite references that are working.
     const repick = this.canRepick?.(id)
-      ? [{ label: "Re-pick face…", onClick: () => this.onRepick?.(id) }]
+      ? [{ label: t("timeline.repickFace"), onClick: () => this.onRepick?.(id) }]
       : [];
     contextMenu(e.clientX, e.clientY, [
       ...repick,
       // Same fork as the tooltip and as the viewport's face menu
       // (contextMenus.ts): a loft has nothing to edit, so offering "Edit" here
       // just moves the broken promise one gesture over.
-      { label: editable ? "Edit" : "Select", onClick: () => this.onEdit?.(id) },
-      { label: suppressed ? "Unsuppress" : "Suppress", onClick: () => this.store.toggleSuppress(id) },
-      { label: "Roll to here", onClick: () => this.store.setRollback(i) },
-      { label: "Roll past here", onClick: () => this.store.setRollback(i + 1) },
+      { label: editable ? t("common.edit") : t("common.select"), onClick: () => this.onEdit?.(id) },
+      { label: suppressed ? t("timeline.unsuppress") : t("timeline.suppress"), onClick: () => this.store.toggleSuppress(id) },
+      { label: t("timeline.rollToHere"), onClick: () => this.store.setRollback(i) },
+      { label: t("timeline.rollPastHere"), onClick: () => this.store.setRollback(i + 1) },
       { separator: true, label: "" },
-      { label: "Delete", danger: true, onClick: () => this.store.removeFeature(id) },
+      { label: t("common.delete"), danger: true, onClick: () => this.store.removeFeature(id) },
     ]);
   }
 }

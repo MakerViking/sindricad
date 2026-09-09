@@ -9,6 +9,7 @@
 // it for the real geometry.
 
 import { icon, type IconName } from "../ui/icons";
+import { t, setText, setTitle } from "../i18n";
 
 export type TextureKind = "knurl" | "hex" | "waves" | "ribs" | "voronoi" | "noise" | "image";
 export type TextureMode = "faces" | "body";
@@ -29,14 +30,15 @@ export interface TextureValues {
   colorSlot?: number; // palette slot for a two-tone inlay; undefined = body color
 }
 
+// [value, catalogue key] — the label is resolved at render, never stored.
 const KIND_OPTIONS: [TextureKind, string][] = [
-  ["knurl", "Knurl"],
-  ["hex", "Hex"],
-  ["waves", "Waves"],
-  ["ribs", "Ribs"],
-  ["voronoi", "Voronoi"],
-  ["noise", "Noise (Perlin)"],
-  ["image", "Image Heightmap"],
+  ["knurl", "texture.kind.knurl"],
+  ["hex", "texture.kind.hex"],
+  ["waves", "texture.kind.waves"],
+  ["ribs", "texture.kind.ribs"],
+  ["voronoi", "texture.kind.voronoi"],
+  ["noise", "texture.kind.noise"],
+  ["image", "texture.kind.image"],
 ];
 // kinds that show angle/sharpness/direction (a lattice/wave orientation + crispness
 // + emboss-deboss-both make sense for all of these; voronoi/noise use a seed
@@ -115,7 +117,7 @@ export class TexturePanel {
 
     const title = document.createElement("div");
     title.className = "tool-panel-title";
-    title.textContent = "Texture";
+    setText(title, "tool.texture");
     this.root.appendChild(title);
 
     this.summaryEl = document.createElement("div");
@@ -136,30 +138,30 @@ export class TexturePanel {
       });
       return b;
     };
-    const facesBtn = modeBtn("Faces", "faces");
-    const bodyBtn = modeBtn("Whole Body", "body");
+    const facesBtn = modeBtn(t("feature.texture.faces"), "faces");
+    const bodyBtn = modeBtn(t("feature.texture.wholeBody"), "body");
     this.modeBtns = { faces: facesBtn, body: bodyBtn };
     row(facesBtn, bodyBtn);
     this.setMode(opts.mode);
 
     const kind = document.createElement("select");
     Object.assign(kind.style, { flex: "1" });
-    for (const [v, label] of KIND_OPTIONS) kind.appendChild(new Option(label, v));
+    for (const [v, key] of KIND_OPTIONS) kind.appendChild(new Option(t(key), v));
     kind.value = opts.initial.kind ?? "knurl";
-    row(label("Kind"), kind);
+    row(label("feature.texture.kind"), kind);
 
     // Hard surface is the default: planar facets and real creases are what a
     // printer can actually reproduce. "Smooth" restores the original fields.
     const profile = document.createElement("select");
     Object.assign(profile.style, { flex: "1" });
-    profile.appendChild(new Option("Faceted (hard surface)", "facet"));
-    profile.appendChild(new Option("Smooth", "round"));
+    profile.appendChild(new Option(t("feature.texture.profileFacet"), "facet"));
+    profile.appendChild(new Option(t("feature.texture.profileSmooth"), "round"));
     profile.value = opts.initial.profile ?? "facet";
-    row(label("Profile"), profile);
+    row(label("feature.texture.profile"), profile);
 
     const depth = numberInput(opts.initial.depth ?? 0.4, "0.01");
     const scale = numberInput(opts.initial.scale ?? 2, "0.01");
-    row(label("Depth"), depth, label("Scale"), scale);
+    row(label("feature.texture.depth"), depth, label("feature.texture.scale"), scale);
 
     // --- conditional: angle/sharpness/direction (lattice + wave kinds) ---
     const angle = numberInput(opts.initial.angle ?? 0, "1");
@@ -171,47 +173,46 @@ export class TexturePanel {
     // than sitting there dead: a FACETED wave is a fixed 8-join sine polyline
     // with no shape parameter (sidecar `_wave_levels` explains why). Under
     // `round` waves is a real sine and `sharpness` still crisps it.
-    const sharpLabel = label("Sharp");
+    const sharpLabel = label("feature.texture.sharp");
     const syncSharpLabel = () => {
       const facet = profile.value === "facet";
       const dead = facet && (kind.value as TextureKind) === "waves";
       sharpLabel.style.display = dead ? "none" : "";
       sharpness.style.display = dead ? "none" : "";
-      sharpLabel.textContent = facet ? "Land" : "Sharp";
-      sharpLabel.title = facet
-        ? "Flat land on the crests: 0 = pure V-groove peaks, 1 = wide flat tops"
-        : "Crispness of the smooth profile";
+      setText(sharpLabel, facet ? "feature.texture.land" : "feature.texture.sharp");
+      setTitle(sharpLabel, facet ? "feature.texture.landTitle" : "feature.texture.sharpTitle");
     };
     syncSharpLabel();
     profile.addEventListener("change", syncSharpLabel);
-    const angleRow = row(label("Angle°"), angle, sharpLabel, sharpness);
+    const angleRow = row(label("feature.texture.angle"), angle, sharpLabel, sharpness);
     const direction = document.createElement("select");
     Object.assign(direction.style, { flex: "1" });
-    direction.appendChild(new Option("Out (emboss)", "out"));
-    direction.appendChild(new Option("In (deboss)", "in"));
-    direction.appendChild(new Option("Both", "both"));
+    direction.appendChild(new Option(t("feature.texture.dirOut"), "out"));
+    direction.appendChild(new Option(t("feature.texture.dirIn"), "in"));
+    direction.appendChild(new Option(t("feature.texture.dirBoth"), "both"));
     direction.value = opts.initial.direction ?? "out";
-    row(label("Direction"), direction);
+    row(label("feature.texture.direction"), direction);
 
     // --- conditional: seed + randomize (voronoi/noise) ---
     const seed = numberInput(opts.initial.seed ?? 1, "1");
     const randomize = document.createElement("button");
     randomize.className = "panel-btn panel-btn-ghost";
-    randomize.innerHTML = `${icon("randomize")}<span>Randomize</span>`;
+    randomize.innerHTML = `${icon("randomize")}<span></span>`;
+    setText(randomize.querySelector("span")!, "feature.texture.randomize");
     randomize.addEventListener("click", () => {
       seed.value = String(Math.floor(Math.random() * 1_000_000));
       emit();
     });
-    const seedRow = row(label("Seed"), seed, randomize);
+    const seedRow = row(label("feature.texture.seed"), seed, randomize);
 
     // --- conditional: image path + invert ---
     const imagePathLabel = document.createElement("span");
-    imagePathLabel.textContent = opts.initial.imagePath ? basename(opts.initial.imagePath) : "No file chosen";
+    imagePathLabel.textContent = opts.initial.imagePath ? basename(opts.initial.imagePath) : t("feature.texture.noFile");
     imagePathLabel.className = "tool-panel-hint";
     Object.assign(imagePathLabel.style, { flex: "1", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
     let imagePath = opts.initial.imagePath;
     const browse = document.createElement("button");
-    browse.textContent = "Browse…";
+    setText(browse, "feature.texture.browse");
     browse.className = "tool-chip";
     browse.addEventListener("click", async () => {
       if (!isTauri()) {
@@ -221,7 +222,7 @@ export class TexturePanel {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const path = await open({
         multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "bmp"] }],
+        filters: [{ name: t("feature.texture.imageFilter"), extensions: ["png", "jpg", "jpeg", "bmp"] }],
       });
       if (typeof path !== "string") return;
       imagePath = path;
@@ -230,7 +231,7 @@ export class TexturePanel {
     });
     const imageRow = row(browse, imagePathLabel);
     const invert = checkbox(opts.initial.invert ?? false);
-    const invertRow = row(label("Invert", invert), invert);
+    const invertRow = row(label("feature.texture.invert", invert), invert);
 
     const updateVisibility = () => {
       const k = kind.value as TextureKind;
@@ -252,16 +253,18 @@ export class TexturePanel {
     // Only shown when the caller passed a palette (i.e. in a doc with bodies).
     const colorSlot = document.createElement("select");
     Object.assign(colorSlot.style, { flex: "1" });
-    colorSlot.appendChild(new Option("Body color", ""));
-    (opts.palette ?? []).forEach((s, i) => colorSlot.appendChild(new Option(`${s.name} (slot ${i + 1})`, String(i))));
+    colorSlot.appendChild(new Option(t("feature.texture.bodyColor"), ""));
+    (opts.palette ?? []).forEach((s, i) =>
+      colorSlot.appendChild(new Option(t("common.paletteSlot", { name: s.name, n: i + 1 }), String(i))),
+    );
     colorSlot.value = opts.initial.colorSlot != null ? String(opts.initial.colorSlot) : "";
-    const colorRow = row(label("Print color"), colorSlot);
+    const colorRow = row(label("feature.texture.printColor"), colorSlot);
     if (!opts.palette?.length) colorRow.style.display = "none";
 
     // --- Advanced: offset ---
     const details = document.createElement("details");
     const summary = document.createElement("summary");
-    summary.textContent = "Advanced";
+    setText(summary, "feature.texture.advanced");
     Object.assign(summary.style, { cursor: "pointer", marginBottom: "4px" });
     details.appendChild(summary);
     this.root.appendChild(details);
@@ -270,13 +273,12 @@ export class TexturePanel {
     Object.assign(offsetRow.style, { display: "flex", gap: "6px", alignItems: "center" });
     const edgeBlend = numberInput(opts.initial.boundaryInset ?? 0, "0.05");
     edgeBlend.min = "0";
-    offsetRow.append(label("Offset"), offset, label("Edge blend"), edgeBlend);
-    offsetRow.title =
-      "Edge blend: mm the pattern fades over at a face boundary. 0 = a clean machined cut-off.";
+    offsetRow.append(label("tool.offset"), offset, label("feature.texture.edgeBlend"), edgeBlend);
+    setTitle(offsetRow, "feature.texture.edgeBlendTitle");
     details.appendChild(offsetRow);
 
     const note = document.createElement("div");
-    note.textContent = "Preview is real geometry at display resolution — exports keep full detail.";
+    setText(note, "feature.texture.note");
     note.className = "tool-panel-note";
     this.root.appendChild(note);
 
@@ -302,9 +304,9 @@ export class TexturePanel {
       el.addEventListener("change", emit);
     }
 
-    const ok = button(opts.editing ? "Apply" : "Add", "confirm", "check");
+    const ok = button(t(opts.editing ? "common.apply" : "common.add"), "confirm", "check");
     ok.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.commit(); });
-    const no = button("Cancel", "cancel", "close");
+    const no = button(t("common.cancel"), "cancel", "close");
     no.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); this.cancel(); });
     const btns = row(ok, no);
     btns.style.marginBottom = "0";
@@ -362,9 +364,10 @@ function numberInput(value: number, step: string): HTMLInputElement {
   return el;
 }
 
-function label(text: string, forEl?: HTMLElement): HTMLLabelElement {
+/** `key` is a catalogue key, not English — setText stamps data-i18n too. */
+function label(key: string, forEl?: HTMLElement): HTMLLabelElement {
   const l = document.createElement("label");
-  l.textContent = text;
+  setText(l, key);
   l.style.whiteSpace = "nowrap";
   if (forEl) l.style.cursor = "pointer";
   return l;

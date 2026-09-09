@@ -5,6 +5,7 @@
 // provides — no state is copied, so this collaborator always sees SketchMode's
 // live entities/constraints.
 
+import { t } from "../i18n";
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
@@ -95,18 +96,18 @@ export interface ConstraintHost {
  *  an endpoint — say so, because a user who has just been told "needs a line"
  *  after clicking a rectangle side has been told the wrong thing. */
 const WANTS: Partial<Record<SketchTool, string>> = {
-  horizontal: "a line, or a rectangle edge",
-  vertical: "a line, or a rectangle edge",
-  parallel: "two lines (a rectangle edge counts)",
-  perpendicular: "two lines (a rectangle edge counts)",
-  collinear: "two lines (a rectangle edge counts)",
-  equal: "two lines, or two circles/arcs",
-  tangent: "a circle or arc, then the line or curve it should touch",
-  concentric: "two circles or arcs",
-  coincident: "two endpoints, rectangle corners or circle/arc centres",
-  midpoint: "a point, an endpoint or a centre, then the line to centre it on",
-  symmetric: "two points, endpoints or centres, then the axis line",
-  fix: "a point, an endpoint or a centre",
+  horizontal: "sketch.constraint.wants.horizontal",
+  vertical: "sketch.constraint.wants.vertical",
+  parallel: "sketch.constraint.wants.parallel",
+  perpendicular: "sketch.constraint.wants.perpendicular",
+  collinear: "sketch.constraint.wants.collinear",
+  equal: "sketch.constraint.wants.equal",
+  tangent: "sketch.constraint.wants.tangent",
+  concentric: "sketch.constraint.wants.concentric",
+  coincident: "sketch.constraint.wants.coincident",
+  midpoint: "sketch.constraint.wants.midpoint",
+  symmetric: "sketch.constraint.wants.symmetric",
+  fix: "sketch.constraint.wants.fix",
 };
 
 /** A nullable plane point as the list `setPendingPoints` takes — a point the
@@ -114,10 +115,6 @@ const WANTS: Partial<Record<SketchTool, string>> = {
 const pts = (...ps: ({ x: number; y: number } | null)[]): { x: number; y: number }[] =>
   ps.filter((q): q is { x: number; y: number } => q !== null);
 
-const COINCIDENT_MISS =
-  "Coincident joins two POINTS — click the ends of the lines, a rectangle's corners "
-  + "or a circle's centre, not their middles. To make two lines lie along each other, "
-  + "use Collinear.";
 
 
 export class ConstraintTools {
@@ -158,32 +155,35 @@ export class ConstraintTools {
    *  a constraint tool that does nothing and says nothing is indistinguishable
    *  from a broken one, which is exactly how Coincident read (GitHub #17). */
   private missed() {
-    const t = this.host.tool();
-    this.host.warn(`Nothing to constrain there — ${t} needs ${WANTS[t] ?? "a target"}.`);
+    const tool = this.host.tool();
+    this.host.warn(t("sketch.constraint.miss", {
+      tool: t(`sketch.constraint.${tool}`),
+      wants: t(WANTS[tool] ?? "sketch.constraint.wants.default"),
+    }));
   }
 
   /** add a persistent geometric constraint and re-solve (the solver maintains
    *  all constraints together, not just the one you applied). */
   click(p: THREE.Vector2) {
-    const t = this.host.tool();
+    const tool = this.host.tool();
     // point-based constraints pick the nearest endpoint, not an entity body
-    if (t === "coincident" || t === "symmetric" || t === "midpoint") {
+    if (tool === "coincident" || tool === "symmetric" || tool === "midpoint") {
       return this.pointConstraintClick(p);
     }
-    if (t === "fix") return this.fixClick(p);
-    if (t === "tangent") return this.tangentClick(p);
-    if (t === "equal") return this.equalClick(p);
-    if (t === "concentric") return this.concentricClick(p);
+    if (tool === "fix") return this.fixClick(p);
+    if (tool === "tangent") return this.tangentClick(p);
+    if (tool === "equal") return this.equalClick(p);
+    if (tool === "concentric") return this.concentricClick(p);
 
     // line-based constraints (horizontal/vertical/parallel/perpendicular/collinear)
     const op = this.pickOperand(p);
     if (!op || op.kind !== "line") return this.missed();
-    if (t === "horizontal" || t === "vertical") {
+    if (tool === "horizontal" || tool === "vertical") {
       // constraining the projected line ITSELF is meaningless — it's fixed.
       // (Tested on the ENTITY, not on `kind`: a rect edge is a line operand and
-      // is perfectly constrainable, it just isn't a `line` entity.)
+      // is perfectly constrainable, it just isn'tool a `line` entity.)
       if (op.ent.type === "projected") return this.host.warn(PROJECTED_FIXED_MSG);
-      if (t === "horizontal") this.addConstraint({ type: "horizontal", line: op.id });
+      if (tool === "horizontal") this.addConstraint({ type: "horizontal", line: op.id });
       else this.addConstraint({ type: "vertical", line: op.id });
     } else {
       // two-line constraints: first click stores, second applies. The FIRST pick
@@ -193,9 +193,9 @@ export class ConstraintTools {
       if (!pair) return;
       const [a, b] = pair;
       const moves = a.ent.id;
-      if (t === "parallel") this.addConstraint({ type: "parallel", l1: a.id, l2: b.id }, moves);
-      else if (t === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a.id, l2: b.id }, moves);
-      else if (t === "collinear") this.addConstraint({ type: "collinear", l1: a.id, l2: b.id }, moves);
+      if (tool === "parallel") this.addConstraint({ type: "parallel", l1: a.id, l2: b.id }, moves);
+      else if (tool === "perpendicular") this.addConstraint({ type: "perpendicular", l1: a.id, l2: b.id }, moves);
+      else if (tool === "collinear") this.addConstraint({ type: "collinear", l1: a.id, l2: b.id }, moves);
     }
   }
 
@@ -288,8 +288,8 @@ export class ConstraintTools {
   }
 
   private pointConstraintClick(p: THREE.Vector2) {
-    const t = this.host.tool();
-    if (t === "midpoint") {
+    const tool = this.host.tool();
+    if (tool === "midpoint") {
       // pick a point/endpoint, then a line
       if (!this.pendingEndpoint) {
         const ep = this.pickEndpoint(p);
@@ -311,7 +311,7 @@ export class ConstraintTools {
       } else this.missed();
       return;
     }
-    if (t === "coincident") {
+    if (tool === "coincident") {
       const ep = this.pickEndpoint(p);
       if (ep) {
         // An endpoint pick is the primary flow and wins over any line held for
@@ -340,8 +340,8 @@ export class ConstraintTools {
         if (a.id === ep.id) {
           this.host.warn(
             a.idx === ep.idx
-              ? "That is the same point twice — Coincident joins two DIFFERENT points."
-              : "Those are two points of the same shape — joining them would collapse it.",
+              ? t("sketch.constraint.samePointTwice")
+              : t("sketch.constraint.sameShape"),
           );
           return;
         }
@@ -355,13 +355,13 @@ export class ConstraintTools {
       // sketch lines were not selectable at all.
       const op = this.pickOperand(p);
       if (!op || op.kind !== "line") {
-        this.host.warn(COINCIDENT_MISS);
+        this.host.warn(t("sketch.constraint.coincidentMiss"));
         return; // keep any pending endpoint: a stray click must not lose the first pick
       }
       if (this.pendingEndpoint) {
         // half-way through the endpoint pair — say so rather than silently
         // switching them into a different constraint
-        this.host.warn("Click the second ENDPOINT to finish this coincident, or press Esc to start over.");
+        this.host.warn(t("sketch.constraint.secondEndpoint"));
         return;
       }
       // Two line BODIES: apply collinear, the way SolidWorks and Fusion do,
@@ -376,7 +376,7 @@ export class ConstraintTools {
       this.firstOperand = null;
       if (!first || first.id === op.id) return;
       this.addConstraint({ type: "collinear", l1: first.id, l2: op.id }, first.ent.id);
-      this.host.warn("Two lines: applied Collinear (Coincident joins endpoints).");
+      this.host.warn(t("sketch.constraint.collinearApplied"));
       return;
     }
     // symmetric: pick endpoint A, endpoint B, then the axis line
@@ -397,7 +397,7 @@ export class ConstraintTools {
       if (ep.id === this.pendingEndpoint.id && ep.idx === this.pendingEndpoint.idx) {
         // Clicking the SAME point twice used to fall out of here having done and
         // said nothing, holding a pick the user could not tell was still held.
-        this.host.warn("That is the point you already picked — choose the second one to mirror.");
+        this.host.warn(t("sketch.constraint.alreadyPicked"));
         return;
       }
       this.pendingEndpoint2 = ep;
@@ -476,9 +476,7 @@ export class ConstraintTools {
       // emitted nothing and said nothing, which is precisely how a working tool
       // reads as broken. There is no meaning to give it — a length and a radius
       // are not the same measurement — so say that.
-      this.host.warn(
-        "Equal needs two lines, or two circles/arcs — a length and a radius are not comparable.",
-      );
+      this.host.warn(t("sketch.constraint.equalMismatch"));
     }
   }
 

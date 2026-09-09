@@ -11,6 +11,7 @@
 
 import { icon } from "./icons";
 import { pushModal, popModal } from "./choice";
+import { t, setText, setTitle } from "../i18n";
 import {
   CONTEXT_LABELS,
   SHORTCUTS,
@@ -60,9 +61,9 @@ export class ShortcutSettings {
       e.stopPropagation();
       // a bare modifier is the user still reaching for the real key
       if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
-      if (e.key === "Escape") return this.endCapture("Recording cancelled.");
+      if (e.key === "Escape") return this.endCapture(t("shortcut.settings.recordingCancelled"));
       if (e.ctrlKey || e.metaKey || e.altKey) {
-        return this.endCapture("Ctrl, Alt and Cmd combinations are reserved (undo, save, open, palette).");
+        return this.endCapture(t("shortcut.settings.modifiersReserved"));
       }
       this.apply(this.capturing, e);
       return;
@@ -85,8 +86,7 @@ export class ShortcutSettings {
     if (!result.ok) {
       const held = result.conflict;
       this.endCapture(
-        `${formatBinding(normalizeKey(e))} is already ${held.label} (${CONTEXT_LABELS[held.context]}). ` +
-          `Clear that one first, then set this.`,
+        t("shortcut.settings.conflict", { key: formatBinding(normalizeKey(e)), label: held.label, context: CONTEXT_LABELS[held.context] }),
       );
       return;
     }
@@ -95,7 +95,7 @@ export class ShortcutSettings {
 
   private beginCapture(id: string) {
     this.capturing = id;
-    this.setStatus("Press the key to bind. Esc cancels.");
+    this.setStatus(t("shortcut.settings.pressKey"));
     this.repaintAll();
   }
 
@@ -120,19 +120,19 @@ export class ShortcutSettings {
       // a backdrop click mid-recording should abandon the recording, not the
       // whole screen — otherwise a mis-click loses the row you were editing
       if (e.target !== overlay) return;
-      if (this.capturing) this.endCapture("Recording cancelled.");
+      if (this.capturing) this.endCapture(t("shortcut.settings.recordingCancelled"));
       else this.close();
     });
     const panel = el("div", "modal-panel");
     panel.setAttribute("role", "dialog");
     panel.setAttribute("aria-modal", "true");
-    panel.setAttribute("aria-label", "Keyboard Shortcuts");
+    panel.setAttribute("aria-label", t("shortcut.settings.title"));
     overlay.appendChild(panel);
 
     const head = el("div", "modal-head");
-    head.appendChild(text("h2", "Keyboard Shortcuts"));
+    head.appendChild(text("h2", t("shortcut.settings.title"), "", "shortcut.settings.title"));
     const x = el("button", "modal-close") as HTMLButtonElement;
-    x.setAttribute("aria-label", "Close");
+    x.setAttribute("aria-label", t("common.close"));
     x.innerHTML = icon("close");
     x.onclick = () => this.close();
     head.appendChild(x);
@@ -140,11 +140,7 @@ export class ShortcutSettings {
 
     const body = el("div", "modal-body");
     body.appendChild(
-      text(
-        "div",
-        "Click a key to record a new one. Model and Sketch keys are independent — the same key can mean different things in each — so only bindings that could fire together are refused as conflicts.",
-        "ks-intro",
-      ),
+      text("div", t("shortcut.settings.intro"), "ks-intro", "shortcut.settings.intro"),
     );
     for (const ctx of ["model", "sketch", "global"] as const) {
       body.appendChild(text("div", CONTEXT_LABELS[ctx], "ks-section"));
@@ -158,13 +154,13 @@ export class ShortcutSettings {
     // user gets no other signal that the key they pressed didn't take.
     this.status.setAttribute("role", "status");
     const resetAll = el("button", "btn") as HTMLButtonElement;
-    resetAll.textContent = "Reset all";
+    setText(resetAll, "shortcut.settings.resetAll");
     resetAll.onclick = () => {
       resetAllShortcuts();
-      this.endCapture("All shortcuts restored to defaults.");
+      this.endCapture(t("shortcut.settings.allRestored"));
     };
-    const done = el("button", "btn btn-primary") as HTMLButtonElement;
-    done.textContent = "Done";
+    const done = el("button", "btn btn-primary") as HTMLButtonElement; // i18n-ignore CSS class list, not UI text
+    setText(done, "common.done");
     done.onclick = () => this.close();
     foot.append(this.status, resetAll, done);
     panel.appendChild(foot);
@@ -174,7 +170,7 @@ export class ShortcutSettings {
     // Land the caret on the first row rather than nowhere: Tab from an unfocused
     // overlay walks the app BEHIND it, which is how a keyboard user ends up
     // driving the ribbon while a modal is on screen.
-    body.querySelector<HTMLButtonElement>("button.ks-key")?.focus();
+    body.querySelector<HTMLButtonElement>("button.ks-key")?.focus(); // i18n-ignore CSS selector, not UI text
   }
 
   private row(s: Shortcut): HTMLElement {
@@ -186,17 +182,17 @@ export class ShortcutSettings {
 
     const clear = el("button", "ks-icon-btn") as HTMLButtonElement;
     clear.innerHTML = icon("close");
-    clear.title = "Unbind (leaves this tool with no key)";
-    clear.setAttribute("aria-label", `Unbind ${s.label}`);
+    setTitle(clear, "shortcut.settings.unbindTitle");
+    clear.setAttribute("aria-label", t("shortcut.settings.unbindAria", { label: s.label }));
     clear.onclick = () => {
       rebindShortcut(s.id, null);
-      this.endCapture(`${s.label} has no key. Its ribbon and menu entries still work.`);
+      this.endCapture(t("shortcut.settings.unbound", { label: s.label }));
     };
 
     const revert = el("button", "ks-icon-btn") as HTMLButtonElement;
     revert.innerHTML = icon("undo");
-    revert.title = "Restore the default key";
-    revert.setAttribute("aria-label", `Reset ${s.label} to default`);
+    setTitle(revert, "shortcut.settings.revertTitle");
+    revert.setAttribute("aria-label", t("shortcut.settings.revertAria", { label: s.label }));
     revert.onclick = () => {
       resetShortcut(s.id);
       this.endCapture("");
@@ -205,12 +201,12 @@ export class ShortcutSettings {
     const paint = () => {
       const b = bindingOf(s);
       const recording = this.capturing === s.id;
-      keyBtn.textContent = recording ? "Press a key…" : b ? formatBinding(b) : "unbound";
+      keyBtn.textContent = recording ? t("shortcut.settings.pressAKey") : b ? formatBinding(b) : t("shortcut.settings.noKey");
       keyBtn.classList.toggle("recording", recording);
       keyBtn.classList.toggle("unbound", !recording && !b);
       keyBtn.setAttribute(
         "aria-label",
-        `${s.label}: ${b ? formatBinding(b) : "unbound"}. Click to record a new key.`,
+        t("shortcut.settings.rowAria", { label: s.label, key: b ? formatBinding(b) : t("shortcut.settings.noKey") }),
       );
       clear.disabled = !b;
       // Reverting is only meaningful once something differs from the default;
@@ -239,8 +235,9 @@ function el(tag: string, cls = ""): HTMLElement {
   if (cls) e.className = cls;
   return e;
 }
-function text(tag: string, txt: string, cls = ""): HTMLElement {
+function text(tag: string, txt: string, cls = "", i18nKey = ""): HTMLElement {
   const e = el(tag, cls);
   e.textContent = txt;
+  if (i18nKey) e.dataset.i18n = i18nKey;
   return e;
 }

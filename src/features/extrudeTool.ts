@@ -22,6 +22,7 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { axisDragDistance, pixelDistanceToSegment } from "./manipulator";
 import { choose } from "../ui/choice";
+import { t } from "../i18n";
 // One number for "the depth a fresh extrude starts at", shared with the store:
 // clearing an up-to target has to restore a depth, and two constants would
 // drift. It lives in the document layer because the store cannot import this
@@ -193,7 +194,7 @@ export class ExtrudeTool {
     if (this.selected.length) {
       this.beginDrag();
     } else {
-      setPrompt("Select a profile to extrude · Ctrl-click adds areas · Enter to confirm");
+      setPrompt(t("feature.extrude.pickPrompt"));
     }
   }
 
@@ -329,11 +330,7 @@ export class ExtrudeTool {
         // no longer name a cell is NOT quietly re-resolved from its point: the
         // sketch really did change, and a wrong area committed in silence is the
         // whole defect. Say which, and say what happens to it.
-        setPrompt(
-          `Editing extrude: ${unresolved.length} of ${saved.length} areas no longer match the sketch ` +
-            "and are kept unchanged · changing the area set drops them · " +
-            "drag the arrow or type a value + Enter · click to commit · Esc to cancel",
-        );
+        setPrompt(t("feature.extrude.edit.partlyUnmatched", { count: unresolved.length, total: saved.length }));
       }
     } else {
       // Nothing could be DRAWN. The areas are still held (above), so a depth
@@ -347,18 +344,8 @@ export class ExtrudeTool {
       // overlapping cells — coincident profiles, or a text glyph over the plate
       // beneath it. Telling that user their sketch changed is a guess presented
       // as a fact, and it sent them looking for an edit they never made.
-      const one = saved.length === 1;
-      const it = one ? "it" : "them";
       const changed = unresolved.some((ref) => ref.entityIds?.length);
-      setPrompt(
-        changed
-          ? `Editing extrude: its ${one ? "area was" : `${saved.length} areas were`} not found ` +
-              `(sketch changed?) · ${one ? "it is" : "they are"} kept until you pick · ` +
-              `what you pick replaces ${it} · select a profile · Esc to cancel`
-          : `Editing extrude: its ${one ? "area cannot" : `${saved.length} areas cannot`} be shown ` +
-              `· ${one ? "it is" : "they are"} kept as saved · what you pick replaces ${it} ` +
-              "· select a profile · Esc to cancel",
-      );
+      setPrompt(t(changed ? "feature.extrude.edit.notFound" : "feature.extrude.edit.cannotShow", { count: saved.length }));
     }
     return true;
   }
@@ -385,10 +372,7 @@ export class ExtrudeTool {
   private refusesForeignRegion(r: WorldRegion): boolean {
     if (!this.editId || this.forcedSketchId === null) return false;
     if (r.sketchId === this.forcedSketchId) return false;
-    setPrompt(
-      "That area belongs to a different sketch · an extrude uses one sketch, so this edit " +
-        "can only use its own · Esc, then extrude the other sketch separately",
-    );
+    setPrompt(t("feature.extrude.edit.foreignRegion"));
     return true;
   }
 
@@ -574,12 +558,7 @@ export class ExtrudeTool {
       if (!additive && this.selected.length) this.beginDrag();
       // AFTER beginDrag, which sets a prompt of its own: announcing the drop
       // first would put it on screen for one statement and then replace it.
-      if (dropped) {
-        setPrompt(
-          `Editing extrude: ${dropped} area${dropped === 1 ? "" : "s"} that could not be shown ` +
-            `${dropped === 1 ? "is" : "are"} no longer kept · what you pick is the new set`,
-        );
-      }
+      if (dropped) setPrompt(t("feature.extrude.edit.droppedNewSet", { count: dropped }));
     } else {
       e.preventDefault();
       // T-mode: this click names the surface to extrude UP TO. Consume EVERY
@@ -604,7 +583,7 @@ export class ExtrudeTool {
           void this.commit();
           return;
         }
-        setPrompt("Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back");
+        setPrompt(t("feature.upTo.pickPrompt"));
         return;
       }
       // A modifier-held click means "change the area set", not "commit". Edit mode
@@ -637,20 +616,14 @@ export class ExtrudeTool {
           // focus, so nothing else intercepted it. (GitHub issue #14.)
           this.dim.hide();
           setPrompt(
-            (dropped ? `${dropped} unmatched ${dropped === 1 ? "area is" : "areas are"} no longer kept · ` : "") +
-              "Select a profile to extrude · Ctrl-click adds areas · Enter to confirm",
+            dropped
+              ? t("feature.extrude.edit.droppedThenPick", { count: dropped })
+              : t("feature.extrude.pickPrompt"),
           );
           return;
         }
         this.updatePreview();
-        if (dropped) {
-          setPrompt(
-            `Editing extrude: ${dropped} unmatched ${dropped === 1 ? "area is" : "areas are"} ` +
-              "no longer kept, pick again if the feature still needs " +
-              `${dropped === 1 ? "it" : "them"} · Ctrl-click areas to add/remove · ` +
-              "drag the arrow or type a value + Enter · click to commit · Esc to cancel",
-          );
-        }
+        if (dropped) setPrompt(t("feature.extrude.edit.droppedPickAgain", { count: dropped }));
         return;
       }
       // Neither gesture the drag phase offers is decided here. Both start with a
@@ -762,12 +735,9 @@ export class ExtrudeTool {
         // restore the field T-mode hid: leaving it hidden would strand the user
         // with no way to type a depth, and leaving it ACTIVE during the pick let
         // Enter commit a plain distance mid-target-pick.
-        this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
+        this.dim.show([{ name: "distance", label: t("feature.dim.distance") }], () => void this.commit(), () => this.cancel());
         this.dim.seed("distance", this.distance);
-        setPrompt(
-          "Drag the arrow or type a value + Enter · T = extrude up to a face or plane · " +
-            "click to commit · Esc to cancel",
-        );
+        setPrompt(t("feature.extrude.dragPromptAfterTarget"));
         return;
       }
       this.cancel();
@@ -799,14 +769,11 @@ export class ExtrudeTool {
         this.dim.seed("distance", this.distance);
         this.updatePreview();
       }
-      setPrompt(
-        "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · " +
-          "T = up to a face or plane · click to commit · Esc to cancel",
-      );
+      setPrompt(t("feature.extrude.targetCleared"));
     } else if ((e.key === "t" || e.key === "T") && !e.shiftKey && this.phase === "drag" && !this.pickingTarget) {
       this.pickingTarget = true;
       this.dim.hide(); // Enter must not commit a plain distance while picking
-      setPrompt("Click the face or plane to extrude UP TO (any face, any body) · Esc to go back");
+      setPrompt(t("feature.upTo.clickPrompt"));
     }
   }
 
@@ -822,7 +789,7 @@ export class ExtrudeTool {
     const plane = this.selected[0]?.plane;
     if (plane) this.viewport.tiltOffAxis(plane.n);
     if (!this.editId) this.distance = DEFAULT_EXTRUDE_DISTANCE; // a fresh extrude starts there
-    this.dim.show([{ name: "distance", label: "D" }], () => void this.commit(), () => this.cancel());
+    this.dim.show([{ name: "distance", label: t("feature.dim.distance") }], () => void this.commit(), () => this.cancel());
     // Seed on BOTH paths, and lock the field either way.
     //
     // The edit path always did (the SIGNED saved distance — seeding the absolute
@@ -838,25 +805,18 @@ export class ExtrudeTool {
     // grabbing the arrow releases it (onDown). What it buys is that the two
     // paths are the same tool from here on.
     this.dim.seed("distance", this.distance);
-    setPrompt(
-      this.editId
-        ? "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to " +
-            "add/remove · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel " +
-            "(later features are hidden while editing)"
-        : // Advertise the area toggle here too. The pick-phase prompt says
-          // "Ctrl-click adds areas", but a plain click jumps straight to drag, so
-          // a user who picked one of several profiles landed here and was told
-          // only how to set depth — the reporter of issue #14 concluded the other
-          // closed sections simply could not be selected. The handler existed;
-          // nothing said so.
-          //
-          // "Move to set depth" is gone with the scrub it described. A prompt that
-          // advertises a gesture the tool does not have is how issue #14 happened;
-          // one that describes a gesture the tool no longer has is the same fault
-          // in reverse.
-          "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · " +
-          "negative = cut · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel",
-    );
+    // The create prompt advertises the area toggle too. The pick-phase prompt
+    // says "Ctrl-click adds areas", but a plain click jumps straight to drag, so
+    // a user who picked one of several profiles landed here and was told only
+    // how to set depth — the reporter of issue #14 concluded the other closed
+    // sections simply could not be selected. The handler existed; nothing said
+    // so.
+    //
+    // "Move to set depth" is gone with the scrub it described. A prompt that
+    // advertises a gesture the tool does not have is how issue #14 happened;
+    // one that describes a gesture the tool no longer has is the same fault in
+    // reverse.
+    setPrompt(t(this.editId ? "feature.extrude.edit.dragPrompt" : "feature.extrude.dragPrompt"));
     this.positionDim();
     this.updatePreview();
   }
@@ -1008,18 +968,18 @@ export class ExtrudeTool {
       // Flag whichever op would then do nothing, so the choice is informed.
       const into = op === "cut";
       const opts: { value: Op; label: string; hint: string }[] = [
-        { value: "join", label: "Join", hint: into ? "⚠ likely no effect (profile is inside)" : "merge" },
-        { value: "cut", label: "Cut", hint: into ? "remove" : "⚠ nothing to cut here" },
-        { value: "new", label: "New Body", hint: isTextProfile ? "separate — assign its own print color" : "separate" },
-        { value: "intersect", label: "Intersect", hint: "keep overlap" },
+        { value: "join", label: t("feature.op.join"), hint: t(into ? "feature.extrude.op.joinNoEffect" : "feature.extrude.op.joinHint") },
+        { value: "cut", label: t("feature.op.cut"), hint: t(into ? "feature.extrude.op.cutHint" : "feature.extrude.op.cutNothing") },
+        { value: "new", label: t("feature.op.newBody"), hint: t(isTextProfile ? "feature.extrude.op.newTextHint" : "feature.extrude.op.newHint") },
+        { value: "intersect", label: t("feature.op.intersect"), hint: t("feature.extrude.op.intersectHint") },
       ];
       opts.sort((a, b) => (a.value === guess ? -1 : b.value === guess ? 1 : 0)); // default first
-      const chosen = await choose<Op>("Extrude — operation", opts);
+      const chosen = await choose<Op>(t("feature.extrude.op.title"), opts);
       this.committing = false;
       if (!chosen) {
         // modal dismissed — the tool is STILL ALIVE; say so instead of leaving
         // the user staring at an unchanged screen ("nothing happened")
-        setPrompt("Extrude not committed — Enter/✓ to choose an operation · Esc to cancel");
+        setPrompt(t("feature.extrude.notCommitted"));
         return;
       }
       op = chosen;

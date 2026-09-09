@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import { stickyFact } from "../diagnostics/breadcrumbs";
 import { toast } from "../ui/toast";
+import { t } from "../i18n";
 import { niceStep } from "../ui/units";
 
 export interface SceneBundle {
@@ -113,6 +114,7 @@ function recordGpu(renderer: THREE.WebGLRenderer) {
   try {
     const gl = renderer.getContext();
     const a = gl.getContextAttributes();
+    // i18n-ignore GPU diagnostics, English so a report stays searchable
     depth = `depth bits: ${gl.getParameter(gl.DEPTH_BITS)}, samples: ${gl.getParameter(gl.SAMPLES)}`
       + `, attributes: depth=${a?.depth} stencil=${a?.stencil} antialias=${a?.antialias}`;
     const ext = gl.getExtension("WEBGL_debug_renderer_info");
@@ -123,6 +125,7 @@ function recordGpu(renderer: THREE.WebGLRenderer) {
     /* querying the renderer must never break startup */
   }
   const spoofed = /apple/i.test(desc) && !/mac/i.test(navigator.platform ?? "");
+  // i18n-ignore GPU diagnostic note, English on purpose
   const note = spoofed ? " — reported by WebKitGTK, which spoofs this; not the real GPU" : "";
   (window as { __gpu?: string }).__gpu = desc + note;
   stickyFact(`[gpu] ${desc}${note}`);
@@ -144,6 +147,9 @@ function recordGpu(renderer: THREE.WebGLRenderer) {
  *    renderer     WebGL2 probes fine and three still refused, even without MSAA. */
 export type GpuFailure = "no-webgl" | "webgl1-only" | "renderer";
 
+// i18n-ignore-start an Error message and the GPU facts are diagnostics that ride
+// into a bug report; the user-facing screen is ui/gpuFatal.ts, which IS
+// translated.
 export class NoWebGLError extends Error {
   constructor(readonly failure: GpuFailure, readonly facts: string[], cause?: unknown) {
     super(`3D context unavailable (${failure})`);
@@ -183,6 +189,7 @@ function probeGl(): { webgl2: boolean; anyGl: boolean; facts: string[] } {
     facts.push(`shading language: ${gl.getParameter(gl.SHADING_LANGUAGE_VERSION)}`);
   } catch {
     facts.push("renderer strings unreadable");
+    // i18n-ignore-end
   }
   gl.getExtension("WEBGL_lose_context")?.loseContext();
   return { webgl2, anyGl: true, facts };
@@ -258,7 +265,7 @@ function watchContextLoss(
     // one sticky fact, however many times this cycles: a machine losing the
     // context in a loop must not fill the sticky buffer with the same line.
     if (losses++ === 0) stickyFact("[gpu] the 3D context was lost at least once");
-    toast("The 3D view lost its graphics context and is trying to recover.", { kind: "warning" });
+    toast(t("viewport.contextLost"), { kind: "warning" });
   });
   canvas.addEventListener("webglcontextrestored", () => {
     renderer.setClearColor(CLEAR_COLOR, 1);

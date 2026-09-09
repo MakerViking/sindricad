@@ -8,6 +8,7 @@
 import { pushModal, popModal } from "./choice";
 import { icon } from "./icons";
 import { esc } from "./escape";
+import { setText, t } from "../i18n";
 import { getRecentFiles, forgetRecent } from "../io/recentFiles";
 import type { OpenOutcome } from "../io/files";
 import logoUrl from "../../assets/brand/sindricad-lockup-app.svg";
@@ -113,7 +114,7 @@ export class WelcomeScreen {
     head.appendChild(h2);
     const x = document.createElement("button");
     x.className = "modal-close";
-    x.setAttribute("aria-label", "Close");
+    x.setAttribute("aria-label", t("common.close"));
     x.innerHTML = icon("close");
     x.onclick = () => this.close();
     head.appendChild(x);
@@ -134,7 +135,8 @@ export class WelcomeScreen {
     cb.type = "checkbox";
     cb.checked = welcomeOnStartup();
     cb.onchange = () => localStorage.setItem(SHOW_KEY, cb.checked ? "true" : "false");
-    lab.append(cb, document.createTextNode(" Show this screen on startup"));
+    lab.append(cb, document.createTextNode(` ${t("welcome.showOnStartup")}`));
+    lab.dataset.i18n = "welcome.showOnStartup";
     foot.appendChild(lab);
     panel.appendChild(foot);
 
@@ -155,11 +157,11 @@ export class WelcomeScreen {
       b.onclick = onClick;
       actions.appendChild(b);
     };
-    mk("New Document", () => {
+    mk(t("file.newDocument"), () => {
       this.close();
       this.cb.onNew();
     }, true);
-    mk("Open…", () => {
+    mk(t("menu.file.open"), () => {
       this.close();
       this.cb.onOpen();
     });
@@ -170,7 +172,7 @@ export class WelcomeScreen {
     if (recents.length) {
       const title = document.createElement("div");
       title.className = "welcome-section";
-      title.textContent = "Recent";
+      setText(title, "welcome.recent");
       left.appendChild(title);
       const list = document.createElement("div");
       list.className = "welcome-recents";
@@ -206,7 +208,7 @@ export class WelcomeScreen {
       if (!user) {
         const b = document.createElement("button");
         b.className = "choice-btn";
-        b.innerHTML = "<span>Sign in with TinkerAtlas</span>";
+        b.innerHTML = `<span data-i18n="welcome.signIn">${esc(t("welcome.signIn"))}</span>`;
         b.onclick = () => this.cb.onSignIn();
         account.appendChild(b);
         return;
@@ -225,7 +227,7 @@ export class WelcomeScreen {
       name.textContent = user.display_name || user.username;
       const out = document.createElement("button");
       out.className = "welcome-signout";
-      out.textContent = "Sign out";
+      setText(out, "menu.tinkeratlas.signOut");
       out.onclick = () => this.cb.onSignOut();
       row.append(img, name, out);
       account.appendChild(row);
@@ -251,16 +253,16 @@ export class WelcomeScreen {
       right.innerHTML = "";
       const box = document.createElement("div");
       box.className = "welcome-offline";
-      box.innerHTML = `<p>TinkerAtlas is unreachable — you're offline or the service is down.</p>`;
+      box.innerHTML = `<p data-i18n="welcome.unreachable">${esc(t("welcome.unreachable"))}</p>`;
       const retry = document.createElement("button");
       retry.className = "choice-btn";
-      retry.innerHTML = "<span>Retry</span>";
+      retry.innerHTML = `<span data-i18n="common.retry">${esc(t("common.retry"))}</span>`;
       retry.onclick = () => void probe();
       box.appendChild(retry);
       right.appendChild(box);
     };
     const probe = async () => {
-      right.innerHTML = `<div class="welcome-offline"><p>Connecting to TinkerAtlas…</p></div>`;
+      right.innerHTML = `<div class="welcome-offline"><p data-i18n="welcome.connecting">${esc(t("welcome.connecting"))}</p></div>`;
       // a cross-origin iframe never reports load failures, so reachability is
       // probed natively (Rust) before committing to the frame.
       if (await taPing()) showFrame();

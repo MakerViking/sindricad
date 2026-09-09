@@ -6,6 +6,7 @@
 
 import type { CadDocument, Feature, ParamTarget, ParamUnit, SketchEntity, SketchPattern } from "../types";
 import { isDimConstraint } from "../sketch/id";
+import { t } from "../i18n";
 
 /** What kind of quantity a numeric field holds — drives display-unit conversion
  *  (lengths mm↔display), suffixes (° / mm), and parameter unit coercion.
@@ -57,33 +58,33 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>>
   // even with a target set — the sidecar ignores it there, but clearing the
   // target has to restore a depth rather than drop the user at 0.
   extrude: [
-    ["distance", "Distance", "length"],
-    ["startOffset", "Start offset", "length"],
-    ["taper", "Taper", "angle", isBlindExtrude],
-    ["upToOffset", "Target offset", "length", hasUpToTarget],
+    ["distance", t("inspector.field.distance"), "length"],
+    ["startOffset", t("inspector.field.startOffset"), "length"],
+    ["taper", t("inspector.field.taper"), "angle", isBlindExtrude],
+    ["upToOffset", t("inspector.field.targetOffset"), "length", hasUpToTarget],
   ],
-  fillet: [["radius", "Radius", "length"]],
-  chamfer: [["distance", "Length", "length"]],
+  fillet: [["radius", t("inspector.field.radius"), "length"]],
+  chamfer: [["distance", t("inspector.field.length"), "length"]],
   // "Target offset" is measured along the EXTRUDE direction, not the target's
   // normal: positive pushes past the up-to target, negative stops short.
-  "press-pull": [["distance", "Distance", "length"], ["upToOffset", "Target offset", "length", hasUpToTarget]],
-  revolve: [["angle", "Angle", "angle"]],
-  datumPlane: [["offset", "Offset", "length"]],
-  box: [["length", "Length", "length"], ["width", "Width", "length"], ["height", "Height", "length"]],
-  cylinder: [["radius", "Radius", "length"], ["height", "Height", "length"]],
-  sphere: [["radius", "Radius", "length"]],
-  shell: [["thickness", "Thickness", "length"]],
-  offsetFace: [["distance", "Distance", "length"]],
-  thicken: [["thickness", "Thickness", "length"]],
-  draft: [["angle", "Angle", "angle"]],
-  patternRect: [["countX", "Count X", "count"], ["countY", "Count Y", "count"], ["spacingX", "Spacing X", "length"], ["spacingY", "Spacing Y", "length"]],
-  patternCircular: [["count", "Count", "count"], ["angle", "Angle", "angle"]],
-  simplifyMesh: [["tolerance", "Angle tol", "angle"]],
-  cleanUp: [["tolerance", "Tolerance", "length"]],
-  scale: [["factor", "Factor", "count"]],
-  move: [["dx", "Move X", "length"], ["dy", "Move Y", "length"], ["dz", "Move Z", "length"], ["rx", "Rotate X", "angle"], ["ry", "Rotate Y", "angle"], ["rz", "Rotate Z", "angle"]],
-  texture: [["depth", "Depth", "length"], ["scale", "Scale", "length"], ["angle", "Angle", "angle"], ["offset", "Offset", "length"], ["sharpness", "Sharpness", "count"], ["boundaryInset", "Edge blend", "length"], ["seed", "Seed", "count"]],
-  textOnFace: [["height", "Text size", "length"], ["depth", "Depth", "length"], ["bevel", "Bevel", "length"], ["angle", "Angle", "angle"], ["boxWidth", "Box width", "length"], ["u", "Across", "length"], ["v", "Up", "length"]],
+  "press-pull": [["distance", t("inspector.field.distance"), "length"], ["upToOffset", t("inspector.field.targetOffset"), "length", hasUpToTarget]],
+  revolve: [["angle", t("inspector.field.angle"), "angle"]],
+  datumPlane: [["offset", t("inspector.field.offset"), "length"]],
+  box: [["length", t("inspector.field.length"), "length"], ["width", t("inspector.field.width"), "length"], ["height", t("inspector.field.height"), "length"]],
+  cylinder: [["radius", t("inspector.field.radius"), "length"], ["height", t("inspector.field.height"), "length"]],
+  sphere: [["radius", t("inspector.field.radius"), "length"]],
+  shell: [["thickness", t("inspector.field.thickness"), "length"]],
+  offsetFace: [["distance", t("inspector.field.distance"), "length"]],
+  thicken: [["thickness", t("inspector.field.thickness"), "length"]],
+  draft: [["angle", t("inspector.field.angle"), "angle"]],
+  patternRect: [["countX", t("inspector.field.countX"), "count"], ["countY", t("inspector.field.countY"), "count"], ["spacingX", t("inspector.field.spacingX"), "length"], ["spacingY", t("inspector.field.spacingY"), "length"]],
+  patternCircular: [["count", t("inspector.field.count"), "count"], ["angle", t("inspector.field.angle"), "angle"]],
+  simplifyMesh: [["tolerance", t("inspector.field.angleTol"), "angle"]],
+  cleanUp: [["tolerance", t("inspector.field.tolerance"), "length"]],
+  scale: [["factor", t("inspector.field.factor"), "count"]],
+  move: [["dx", t("inspector.field.moveX"), "length"], ["dy", t("inspector.field.moveY"), "length"], ["dz", t("inspector.field.moveZ"), "length"], ["rx", t("inspector.field.rotateX"), "angle"], ["ry", t("inspector.field.rotateY"), "angle"], ["rz", t("inspector.field.rotateZ"), "angle"]],
+  texture: [["depth", t("inspector.field.depth"), "length"], ["scale", t("inspector.field.scale"), "length"], ["angle", t("inspector.field.angle"), "angle"], ["offset", t("inspector.field.offset"), "length"], ["sharpness", t("inspector.field.sharpness"), "count"], ["boundaryInset", t("inspector.field.edgeBlend"), "length"], ["seed", t("inspector.field.seed"), "count"]],
+  textOnFace: [["height", t("inspector.field.textSize"), "length"], ["depth", t("inspector.field.depth"), "length"], ["bevel", t("inspector.field.bevel"), "length"], ["angle", t("inspector.field.angle"), "angle"], ["boxWidth", t("inspector.field.boxWidth"), "length"], ["u", t("inspector.field.across"), "length"], ["v", t("inspector.field.up"), "length"]],
 };
 
 /** Numeric fields on the solver-RIGID parametric shapes (the solver never writes

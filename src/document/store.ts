@@ -15,6 +15,7 @@ import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
+import { t } from "../i18n";
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
  *  dim isn't in the document until the sketch commits, so the binding travels
@@ -363,7 +364,7 @@ export class DocumentStore {
   }
   /** display name: the file's basename, or "Untitled". */
   get fileName(): string {
-    if (!this.path) return "Untitled";
+    if (!this.path) return t("common.untitled");
     return this.path.split(/[\\/]/).pop() || this.path;
   }
   /** mark the document as saved/opened at `path` (clears the dirty flag). */
@@ -505,7 +506,7 @@ export class DocumentStore {
       .then(() => this.commitWithCascade(fn))
       .catch((e) => {
         console.error("param commit failed:", e);
-        this.onWarning?.("Parameter change failed to apply — see the console for details.");
+        this.onWarning?.(t("params.applyFailed"));
       });
   }
   private async commitWithCascade(fn: (d: CadDocument) => void): Promise<void> {
@@ -570,7 +571,7 @@ export class DocumentStore {
     if (this.projStreak >= 5) {
       if (this.projValveOpen) {
         this.projValveOpen = false;
-        this.onWarning?.("Projected geometry keeps changing on every rebuild — paused automatic refresh (edit the model or Compute All to retry).");
+        this.onWarning?.(t("sketch.projection.valveClosed"));
       }
       return;
     }
@@ -584,7 +585,7 @@ export class DocumentStore {
       .then(() => this.commitProjectionRefresh(updates))
       .catch((e) => {
         console.error("projection refresh failed:", e);
-        this.onWarning?.("Projected geometry failed to refresh — see the console for details.");
+        this.onWarning?.(t("sketch.projection.refreshFailed"));
       });
   }
 
@@ -604,7 +605,7 @@ export class DocumentStore {
     // on the not-stale -> stale transition, so every entry here is news)
     for (const sid of new Set(valid.filter((u) => u.stale).map((u) => u.sketch))) {
       const f = sketchOf.get(sid)!;
-      this.onWarning?.(`Projected geometry in ${f.name ?? sid} lost its source — keeping last shape`);
+      this.onWarning?.(t("sketch.projection.lostSource", { name: f.name ?? sid }));
     }
 
     const open = this.openSketchId?.() ?? null;
@@ -747,7 +748,7 @@ export class DocumentStore {
       .then(() => this.commitSketchDimension(sketchId, entityIndex, field, mm))
       .catch((e) => {
         console.error("sketch dimension edit failed:", e);
-        this.onWarning?.("Sketch dimension failed to apply — see the console for details.");
+        this.onWarning?.(t("sketch.dimension.applyFailed"));
       });
   }
 
@@ -937,7 +938,7 @@ export class DocumentStore {
       const nameBad = b.name && b.name !== bound ? params.validateName(params.defsOf(d), b.name) : null;
       const v = params.validateExpr(d, bound, b.expr, b.kind);
       if (!v.ok || nameBad) {
-        this.onWarning?.(`Dimension expression "${b.name ? `${b.name}=` : ""}${b.expr}" was dropped: ${nameBad ?? (v.ok ? "" : v.error)}`);
+        this.onWarning?.(t("sketch.dimension.expressionDropped", { expr: `${b.name ? `${b.name}=` : ""}${b.expr}`, reason: nameBad ?? (v.ok ? "" : v.error) }));
         continue;
       }
       if (b.name) params.commitNamedFieldExpr(d, b.target, b.name, b.expr, b.kind);
@@ -1333,7 +1334,7 @@ export class DocumentStore {
     try {
       parsed = JSON.parse(json) as CadDocument;
     } catch (e) {
-      throw new Error(`could not read document: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(t("file.error.couldNotRead", { reason: e instanceof Error ? e.message : String(e) }));
     }
     for (const w of migrateDocument(parsed)) this.onWarning?.(w);
     this.pushUndo();
@@ -1482,7 +1483,7 @@ export class DocumentStore {
       // that runs for minutes on a large assembly (measured 138.7 s on the
       // reference file). Short rebuilds are unaffected: the button only appears
       // after CANCEL_DELAY_MS (700 ms).
-      await this.runBusy("Rebuilding", async () => {
+      await this.runBusy(t("status.rebuilding"), async () => {
         try {
           do {
             this.rebuildQueued = false;
