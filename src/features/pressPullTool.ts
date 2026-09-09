@@ -21,6 +21,7 @@ import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT } from "../viewport/colors3d";
 import { t } from "../i18n";
+import { isImeComposing } from "../ui/focus";
 
 type Phase = "pick" | "drag";
 
@@ -280,6 +281,7 @@ export class PressPullTool {
   }
 
   private onKey(e: KeyboardEvent) {
+    if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
     if (e.key === "Escape") {
       if (this.pickingTarget) {
         this.pickingTarget = false;

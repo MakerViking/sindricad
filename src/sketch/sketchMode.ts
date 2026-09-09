@@ -9,7 +9,7 @@ import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, Pro
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isDriven, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
-import { DimInput } from "./dimInput";
+import { DimInput, type DimFieldDef } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
 import { fetchFonts } from "./textCache";
@@ -1655,11 +1655,21 @@ export class SketchMode {
       try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       return;
     }
-    if (this.tool === "polygon") return this.polygonClick(p);
-    if (this.tool === "slot") return this.slotClick(p);
-    if (this.tool === "circle2") return this.circle2Click(p);
-    if (this.tool === "circle3") return this.circle3Click(p);
-    if (this.tool === "centerRectangle") return this.centerRectClick(p);
+    // The four multi-click tools that offer a typed field go through
+    // `multiClickAt`, never straight to their own click handler: that is where
+    // the guard lives which refuses a field the user typed and the app cannot
+    // read. Dispatching directly here walked PAST that guard on the gesture
+    // people actually make — the Enter/OK callback in `showMultiDimFields` is
+    // the other, much rarer way in, and it was the only one covered.
+    if (
+      this.tool === "polygon" ||
+      this.tool === "slot" ||
+      this.tool === "circle2" ||
+      this.tool === "centerRectangle"
+    ) {
+      return this.multiClickAt(p);
+    }
+    if (this.tool === "circle3") return this.circle3Click(p); // no typed field, nothing to guard
     if (this.tool === "mirror") return this.mirrorClick(p);
     // (trim is handled above, on the RAW cursor — see the carve-out there)
     if (this.tool === "fillet") return this.filletClick(p);
@@ -1810,26 +1820,86 @@ export class SketchMode {
   // --- typed dims for the multi-click tools: the same isUserDriven gating the
   // single-drag tools use in computeGeometry(), shared by preview + commit ------
 
+  /** True — having said so — when a field the user TYPED INTO does not hold a
+   *  value the operation can legally use. Two ways it can fail, one refusal:
+   *
+   *  Unreadable. `getValue` returns null for text like "5mm" (or a slipped
+   *  "5m") and DimInput.commit drops the field from the committed record, so
+   *  every `?? default` on a commit path used to build the FALLBACK instead: the
+   *  fillet Radius box silently produced a 2 mm fillet and recorded it.
+   *
+   *  Readable but not legal for the field. A radius of -3 parses perfectly, and
+   *  used to reach filletCorner and EXTEND the leg past the corner — a wrong
+   *  sketch, banked with afterModify, with no message anywhere. What counts as
+   *  legal is units.dimValueOk, the SAME rule the dimension editor applies (a
+   *  length is a magnitude and must be positive; an angle may be any finite
+   *  value), so the two can never drift apart. `kind` therefore has to travel
+   *  with the name — a bare list of names cannot tell a radius from a heading —
+   *  and defaults to "length" exactly as DimFieldDef.kind does. A field whose
+   *  sign is meaningful is not passed through here at all: the offset tool
+   *  reads its own signed value, because there the minus IS the side.
+   *
+   *  `isUserDriven` is the whole distinction, and it has to stay: a field nobody
+   *  opened legitimately uses its default — that is what a default is for — while
+   *  a field someone typed into must refuse rather than guess. Refusing
+   *  leaves the box open with the text in it, which is what the message asks for.
+   *  Same branch and same message as pressPullTool/faceOffsetTool. */
+  private badTypedField(...defs: { name: string; kind?: FieldKind }[]): boolean {
+    for (const d of defs) {
+      if (!this.dim.isUserDriven(d.name)) continue;
+      if (dimValueOk(this.dim.getValue(d.name), d.kind ?? "length")) continue;
+      setPrompt(t("feature.badNumber"));
+      return true;
+    }
+    return false;
+  }
+
+  /** A polygon's side count is not merely a positive number: below 3 there is no
+   *  polygon, and the entity caps at 64. polygonClick CLAMPED a typed count into
+   *  that range without saying so — typing 2 built a triangle and typing 100 a
+   *  64-gon, both under the number the user believed they had entered — which is
+   *  the same defect as building a default under a typed value. This is the one
+   *  rule dimValueOk cannot carry, because it is a range this tool owns rather
+   *  than what makes a quantity valid; the refusal and the message are shared. */
+  private badSideCount(): boolean {
+    if (!this.dim.isUserDriven("sides")) return false;
+    const n = this.dim.getValue("sides");
+    if (n != null && Number.isFinite(n) && Math.round(n) >= 3 && Math.round(n) <= 64) return false;
+    setPrompt(t("feature.badNumber"));
+    return true;
+  }
+
+  /** The dim fields a multi-click tool shows in its current phase — one list,
+   *  read both by the box and by the commit guard, so the two can never disagree
+   *  about which fields the user was offered. */
+  private multiDimDefs(): DimFieldDef[] | null {
+    const tool = this.tool;
+    return tool === "circle2"
+      ? [{ name: "diameter", label: "⌀" }]
+      : tool === "polygon"
+        ? [{ name: "radius", label: t("sketch.dimension.label.radius") }, { name: "sides", label: t("sketch.dimension.label.count"), kind: "count" as const }]
+        : tool === "centerRectangle"
+          ? [{ name: "width", label: t("sketch.dimension.label.width") }, { name: "height", label: t("sketch.dimension.label.height") }]
+          : tool === "slot"
+            ? this.clickPts.length === 1
+              ? [{ name: "length", label: t("sketch.dimension.label.length") }]
+              : [{ name: "width", label: t("sketch.dimension.label.width") }]
+            : null;
+  }
+
   /** dim fields per multi-click tool (and phase, for slot); Enter commits at the cursor */
   private showMultiDimFields() {
-    const tool = this.tool;
-    const defs =
-      tool === "circle2"
-        ? [{ name: "diameter", label: "⌀" }]
-        : tool === "polygon"
-          ? [{ name: "radius", label: t("sketch.dimension.label.radius") }, { name: "sides", label: t("sketch.dimension.label.count"), kind: "count" as const }]
-          : tool === "centerRectangle"
-            ? [{ name: "width", label: t("sketch.dimension.label.width") }, { name: "height", label: t("sketch.dimension.label.height") }]
-            : tool === "slot"
-              ? this.clickPts.length === 1
-                ? [{ name: "length", label: t("sketch.dimension.label.length") }]
-                : [{ name: "width", label: t("sketch.dimension.label.width") }]
-              : null;
+    const defs = this.multiDimDefs();
     if (!defs) return;
     this.dim.show(defs, () => this.multiClickAt(this.lastCursor.clone()));
   }
 
   private multiClickAt(p: THREE.Vector2) {
+    // Every one of these reads its typed field through a `?? cursor` fallback,
+    // so unreadable text used to commit the CURSOR's figure under the number the
+    // user believed they had typed. One guard here covers all four.
+    if (this.badTypedField(...(this.multiDimDefs() ?? []))) return;
+    if (this.tool === "polygon" && this.badSideCount()) return;
     if (this.tool === "polygon") this.polygonClick(p);
     else if (this.tool === "slot") this.slotClick(p);
     else if (this.tool === "circle2") this.circle2Click(p);
@@ -3058,6 +3128,10 @@ export class SketchMode {
 
   private commitFromCursor(cursor: THREE.Vector2) {
     if (!this.base) return;
+    // computeGeometry() falls back to the cursor for a field it cannot read —
+    // right for the live preview, wrong for the commit, which would silently
+    // bank a dragged size under a typed one. Refuse here, not in the preview.
+    if (this.badTypedField(...this.drawDimDefs())) return;
     const { entity } = this.computeGeometry(this.base, cursor);
     if (this.constructionMode) entity.construction = true;
     entity.id = newEntityId(); // stamp a stable id (computeGeometry left it "")
@@ -3111,17 +3185,21 @@ export class SketchMode {
     this.constraints.push({ type: r.kind, line: e.id });
   }
 
+  /** The dim fields the drag-draw tools show — see multiDimDefs for why this is
+   *  its own function rather than an expression inside show(). */
+  private drawDimDefs(): DimFieldDef[] {
+    return this.tool === "rectangle"
+      ? [{ name: "width", label: t("sketch.dimension.label.width") }, { name: "height", label: t("sketch.dimension.label.height") }]
+      : this.tool === "circle"
+        ? [{ name: "diameter", label: "⌀" }]
+        : [
+            { name: "length", label: t("sketch.dimension.label.length") },
+            { name: "angle", label: "∠", kind: "angle" as const },
+          ];
+  }
+
   private showDimFields() {
-    const defs =
-      this.tool === "rectangle"
-        ? [{ name: "width", label: t("sketch.dimension.label.width") }, { name: "height", label: t("sketch.dimension.label.height") }]
-        : this.tool === "circle"
-          ? [{ name: "diameter", label: "⌀" }]
-          : [
-              { name: "length", label: t("sketch.dimension.label.length") },
-              { name: "angle", label: "∠", kind: "angle" as const },
-            ];
-    this.dim.show(defs, () => this.commitFromCursor(this.lastCursor));
+    this.dim.show(this.drawDimDefs(), () => this.commitFromCursor(this.lastCursor));
   }
 
   // --- snapping + rendering ---------------------------------------------
@@ -3521,6 +3599,7 @@ export class SketchMode {
    *  withdraws the three constraints and says so — it must not withdraw, or
    *  refuse, the fillet. */
   private applyFillet(iA: number, iB: number) {
+    if (this.badTypedField({ name: "radius" })) return; // before ANY mutation: the pick and the box stay live
     const r = this.dim.getValue("radius") ?? 2;
     const res = filletCorner(this.entities, iA, iB, r);
     this.filletFirst = null;
@@ -3551,6 +3630,7 @@ export class SketchMode {
     );
   }
   private applyChamfer(iA: number, iB: number) {
+    if (this.badTypedField({ name: "distance" })) return; // before ANY mutation: the pick and the box stay live
     const d = this.dim.getValue("distance") ?? 2;
     const res = chamferCorner(this.entities, iA, iB, d);
     if (res) this.entities = res;
@@ -3665,6 +3745,7 @@ export class SketchMode {
     if (!this.selected.size) { toast(t("sketch.transform.selectFirstRotate")); return; }
     const cx = p.x, cy = p.y;
     this.dim.show([{ name: "angle", label: "∠", kind: "angle" }], () => {
+      if (this.badTypedField({ name: "angle", kind: "angle" })) return;
       const ang = ((this.dim.getValue("angle") ?? 0) * Math.PI) / 180;
       this.dim.hide();
       this.transformSelection((e) => this.reid(rotated(e, cx, cy, ang, e.id)));
@@ -3677,6 +3758,7 @@ export class SketchMode {
     if (!this.selected.size) { toast(t("sketch.transform.selectFirstScale")); return; }
     const cx = p.x, cy = p.y;
     this.dim.show([{ name: "factor", label: "×", kind: "count" }], () => {
+      if (this.badTypedField({ name: "factor", kind: "count" })) return;
       const f = this.dim.getValue("factor") ?? 1;
       this.dim.hide();
       if (f > 0) this.transformSelection((e) => [scaled(e, cx, cy, f, e.id)]);

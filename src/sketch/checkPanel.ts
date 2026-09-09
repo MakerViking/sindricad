@@ -14,8 +14,9 @@
 
 import { t } from "../i18n";
 import { esc } from "../ui/escape";
+import { isImeComposing } from "../ui/focus";
 import { icon, type IconName } from "../ui/icons";
-import { getUnit, toDisplay } from "../ui/units";
+import { fmtNumber, getUnit, toDisplay } from "../ui/units";
 import type { SketchIssue } from "./check";
 
 export interface CheckPanelDeps {
@@ -38,8 +39,16 @@ export interface CheckPanelDeps {
 export function formatMeasurement(mm: number): string {
   const v = toDisplay(mm);
   const mag = Math.abs(v);
-  const text = mag > 0 && mag < 0.001 ? v.toExponential(1) : String(Math.round(v * 1000) / 1000);
+  // The tiny branch keeps the exponent form; only the mantissa is localised, so
+  // a comma-decimal reader sees "1,2e-5" rather than a dot they cannot type.
+  const text = mag > 0 && mag < 0.001 ? localiseExponent(v.toExponential(1)) : fmtNumber(Math.round(v * 1000) / 1000);
   return `${text} ${getUnit()}`;
+}
+
+function localiseExponent(sci: string): string {
+  const [mantissa = sci, exp] = sci.split("e");
+  const shown = fmtNumber(Number(mantissa));
+  return exp === undefined ? shown : `${shown}e${exp}`;
 }
 
 let root: HTMLDivElement | null = null;
@@ -156,6 +165,10 @@ export function showCheckPanel(issues: SketchIssue[], deps: CheckPanelDeps): voi
   // selection. That is coherent rather than a bug: the panel goes and the
   // highlight it put on screen goes with it.
   onKey = (e) => {
+    // An Escape raised by an IME cancels its own conversion — a sketch
+    // dimension or a rename can well be open under this panel — so it is never
+    // a dismissal.
+    if (isImeComposing(e)) return;
     if (e.key === "Escape") dismiss();
   };
   window.addEventListener("keydown", onKey, true);

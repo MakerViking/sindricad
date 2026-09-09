@@ -8,7 +8,13 @@
 
 import { icon, type IconName } from "../ui/icons";
 import { t, setText, setTitle } from "../i18n";
+import { isImeComposing } from "../ui/focus";
+import { setPrompt } from "../ui/prompt";
+import { badNumberField, fmtNumber, numericInput, parseNumber, typedNumber } from "../ui/units";
 
+/** True when the user typed something into `el` that the app cannot read
+ *  ("3.14.15", "1.2.3" — ui/units refuses those rather than guessing 314.15 and
+ *  12.3). Empty is NOT bad: a cleared field means "leave it at the default". */
 /** Which filament a flat text should take when the user hasn't chosen one.
  *
  *  Flat glyphs are imprinted flush with the face, so inheriting the body's
@@ -19,8 +25,8 @@ import { t, setText, setTitle } from "../i18n";
  *  (a one-colour palette), and to null when there is no palette at all — better
  *  an uncoloured text than a slot index that indexes nothing.
  *
- *  Exported and pure so it can be tested: the repo has no jsdom, so the rest of
- *  this panel is only reachable by hand. */
+ *  Exported and pure so it can be tested on its own; the panel around it is
+ *  driven through the fakeDom stub (textOnFacePanel.test.ts). */
 export function autoGlyphSlot(paletteLength: number, bodySlot: number | null): number | null {
   for (let i = 0; i < paletteLength; i++) if (i !== bodySlot) return i;
   return paletteLength ? 0 : null;
@@ -52,6 +58,10 @@ export interface TextOnFaceValues {
 export class TextOnFacePanel {
   private root: HTMLDivElement | null = null;
   private read: (() => TextOnFaceValues) | null = null;
+  /** The numeric inputs, for the commit guard. Rebuilt by every show(). */
+  private numFields: HTMLInputElement[] = [];
+  /** The one field whose value must be > 0 — see the commit guard. */
+  private heightField: HTMLInputElement | null = null;
   private onCommit: ((v: TextOnFaceValues) => void) | null = null;
   private onChange: ((v: TextOnFaceValues) => void) | null = null;
   private onCancel: (() => void) | null = null;
@@ -133,8 +143,12 @@ export class TextOnFacePanel {
       return l;
     };
     const num = (v: number, step: string, min?: string) => {
-      const i = document.createElement("input");
-      i.type = "number"; i.value = String(v); i.step = step;
+      const i = numericInput(document.createElement("input"), Number(step));
+      i.value = fmtNumber(v);
+      i.step = step;
+      // `min` is a hint only now that these are text inputs (it always was: a
+      // number input marks an out-of-range value invalid, it does not refuse it,
+      // and read() never asked). Kept so the intent stays visible.
       if (min !== undefined) i.min = min;
       // FLEXIBLE, not a fixed 70px. The paired rows (Size/Depth, Across/Up,
       // Angle/Wrap) put label+input+label+input in one flex row: at fixed widths
@@ -275,7 +289,7 @@ export class TextOnFacePanel {
     });
     paintChips();
     const syncBevel = () => {
-      bevelStyle.style.visibility = Number(bevel.value) > 0 ? "visible" : "hidden";
+      bevelStyle.style.visibility = (parseNumber(bevel.value) ?? 0) > 0 ? "visible" : "hidden";
     };
     bevel.addEventListener("input", syncBevel);
     syncBevel();
@@ -306,26 +320,38 @@ export class TextOnFacePanel {
         bold.checked && italic.checked ? "bolditalic" : bold.checked ? "bold" : italic.checked ? "italic" : "regular";
       const v: TextOnFaceValues = {
         text: text.value,
-        height: Number(height.value) || 0,
+        // parseNumber, not Number(): Number("12,5") is NaN, so a comma-decimal
+        // size silently became the 0 below. An EMPTY field still means "use the
+        // default"; text the parser refuses shows the default in the live
+        // preview and is refused at commit(), never modelled.
+        height: typedNumber(height, 0),
         style: s,
         align: align.value as TextOnFaceValues["align"],
-        angle: Number(angle.value) || 0,
-        depth: Number(depth.value) || 0,
+        angle: typedNumber(angle, 0),
+        depth: typedNumber(depth, 0),
         operation: op.value as TextOnFaceValues["operation"],
-        bevel: Number(bevel.value) || 0,
+        bevel: typedNumber(bevel, 0),
         bevelStyle: bevelStyle.value as TextOnFaceValues["bevelStyle"],
-        u: Number(offU.value) || 0,
-        v: Number(offV.value) || 0,
+        u: typedNumber(offU, 0),
+        v: typedNumber(offV, 0),
         colorSlot: slot,
       };
       if (font.value) v.font = font.value;
-      if (Number(boxWidth.value) > 0) v.boxWidth = Number(boxWidth.value);
+      const box = parseNumber(boxWidth.value);
+      if (box !== null && box > 0) v.boxWidth = box;
       return v;
     };
 
+    // Every field commit() has to be able to read. Depth and bevel are in here
+    // even while a FLAT text hides them: which fields a style ignores is the
+    // tool's business, and one rule for all of them beats a panel that refuses
+    // one unreadable number and quietly defaults another.
+    this.numFields = [height, depth, angle, boxWidth, bevel, offU, offV];
+    this.heightField = height;
+
     this.setUV = (u, v) => {
-      offU.value = String(Math.round(u * 1000) / 1000);
-      offV.value = String(Math.round(v * 1000) / 1000);
+      offU.value = fmtNumber(Math.round(u * 1000) / 1000);
+      offV.value = fmtNumber(Math.round(v * 1000) / 1000);
     };
 
     const emit = () => this.onChange?.(this.read!());
@@ -338,7 +364,10 @@ export class TextOnFacePanel {
     }
     // Plain Enter inserts a newline (multi-line text is a real use); Ctrl/Cmd+Enter commits.
     text.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      // ...but not while an IME is composing: there Enter CONFIRMS the
+      // candidate, and committing the panel out from under it loses the text
+      // being typed (ui/focus owns the two-signal test).
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !isImeComposing(e)) {
         e.preventDefault();
         this.commit();
       }
@@ -368,6 +397,15 @@ export class TextOnFacePanel {
    *  panel has to stay up so the user can fix it. */
   private commit() {
     if (!this.read) return;
+    // A field the app cannot read must not commit as its default: a size typed
+    // "3.14.15" used to commit as 0. Same refusal press/pull and the sketch
+    // dimension fields give, and the panel stays up so it can be fixed.
+    // `height` is passed as must-be-positive for the same reason the sketch text
+    // panel does: 0 or less segfaults the geometry engine through the preview.
+    if (this.numFields.some((el) => badNumberField(el, el === this.heightField))) {
+      setPrompt(t("feature.badNumber"));
+      return;
+    }
     this.onCommit?.(this.read());
   }
 
@@ -375,6 +413,7 @@ export class TextOnFacePanel {
     this.root?.remove();
     this.root = null;
     this.read = null;
+    this.numFields = [];
     this.onCommit = this.onChange = null;
     this.onCancel = null;
   }

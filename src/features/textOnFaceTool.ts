@@ -22,6 +22,7 @@ import { t } from "../i18n";
 import { fetchFonts } from "../sketch/textCache";
 import { TextOnFacePanel, type TextOnFaceValues } from "./textOnFacePanel";
 import { HANDLE_IDLE as OUTLINE_COLOR } from "../viewport/colors3d";
+import { isImeComposing } from "../ui/focus";
 
 type Phase = "pick" | "edit";
 
@@ -539,7 +540,9 @@ export class TextOnFaceTool {
   private onKey(e: KeyboardEvent) {
     // Esc lives on the TOOL, not the panel: the tool is alive from before the
     // panel exists (the face pick) until cleanup, and it owns the rollback.
-    if (e.key !== "Escape") return;
+    // Escape cancels an IME conversion, not the tool — and this tool owns the
+    // text field a Japanese user is most likely composing in.
+    if (e.key !== "Escape" || isImeComposing(e)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     this.cancel();

@@ -63,7 +63,7 @@ def test_every_code_raised_in_the_tree_is_in_the_vocabulary():
     """
     import re
 
-    files = ("geom_select.py", "server.py", "builder.py")
+    files = ("geom_select.py", "server.py", "builder.py", "font_coverage.py")
     seen = set()
     for path in files:
         src = open(os.path.join(os.path.dirname(__file__), path)).read()

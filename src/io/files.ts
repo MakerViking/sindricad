@@ -10,11 +10,12 @@ import type { CadDocument, ExportFormat, Feature, ImportFormat } from "../types"
 import { clearRecovery } from "./recovery";
 import { noteRecent } from "./recentFiles";
 import { localeTag, t } from "../i18n";
+import { fmtCount } from "../ui/units";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-const formatCount = (n: number) => new Intl.NumberFormat(localeTag()).format(n);
+const formatCount = fmtCount; // grouped, active locale — see ui/units
 
 /** Every geometry hash the document references, and the mesh keys worth
  *  carrying. Rust turns these into container entries; the frontend collects them

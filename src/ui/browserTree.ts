@@ -10,6 +10,7 @@ import { contextMenu, type CtxItem } from "./menu";
 import { icon, type IconName } from "./icons";
 import { esc } from "./escape";
 import { t, localeTag } from "../i18n";
+import { isImeComposing } from "./focus";
 
 /** Palette → menu items for assigning a body's color slot. Shared by the
  *  browser-tree row menu and the viewport's right-click body menu so the two
@@ -112,6 +113,56 @@ export function buildAssemblyGroups(
     (g.total = g.bodies.length + g.children.reduce((n, c) => n + total(c), 0));
   for (const r of roots) total(r);
   return { roots, loose, ancestors };
+}
+
+/** Inline-edit a row's label: contentEditable, select-all, commit on Enter/blur,
+ *  cancel on Esc. stopPropagation keeps typing from firing app shortcuts.
+ *
+ *  Module-level rather than a method so a test can drive the real handler
+ *  against a stub element — the Enter/Escape rules below are the whole of it.
+ *  Nothing here reads the tree. */
+export function startInlineRename(
+  labelEl: HTMLElement,
+  current: string,
+  commit: (name: string) => void,
+) {
+  labelEl.style.opacity = "";
+  labelEl.setAttribute("contenteditable", "true");
+  labelEl.textContent = current;
+  labelEl.classList.add("renaming");
+  labelEl.focus();
+  const range = document.createRange();
+  range.selectNodeContents(labelEl);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+
+  let done = false;
+  const finish = (save: boolean) => {
+    if (done) return;
+    done = true;
+    labelEl.removeAttribute("contenteditable");
+    labelEl.classList.remove("renaming");
+    const name = (labelEl.textContent ?? "").trim();
+    if (save && name && name !== current) commit(name);
+    else labelEl.textContent = current; // a re-render will overwrite this anyway
+  };
+  labelEl.addEventListener("keydown", (e) => {
+    e.stopPropagation(); // keep keystrokes out of the global keymap while editing
+    // The first Enter of a Japanese conversion CONFIRMS the candidate, and the
+    // first Escape CANCELS it — neither is aimed at the rename. Committing on
+    // that Enter used to save a half-typed reading ("にほんg") as the name.
+    // The IME swallows the key itself; a second, uncomposed press ends the edit.
+    if (isImeComposing(e)) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  labelEl.addEventListener("blur", () => finish(true));
 }
 
 export class BrowserTree {
@@ -408,7 +459,7 @@ export class BrowserTree {
       input.addEventListener("change", () => this.store.setPaletteSlot(i, { color: input.value }));
       const label = row.querySelector(".tree-label") as HTMLElement;
       label.addEventListener("dblclick", () =>
-        this.startInlineRename(label, slot.name, (name) => this.store.setPaletteSlot(i, { name })),
+        startInlineRename(label, slot.name, (name) => this.store.setPaletteSlot(i, { name })),
       );
       this.el.appendChild(row);
     });
@@ -718,7 +769,7 @@ export class BrowserTree {
       // inline rename bound to THIS row's label element
       const labelEl = row.querySelector(".tree-label") as HTMLElement;
       const startRename = it.rename
-        ? () => this.startInlineRename(labelEl, it.label, it.rename!)
+        ? () => startInlineRename(labelEl, it.label, it.rename!)
         : null;
       if (it.id && startRename) this.renameHooks.set(it.id, startRename);
 
@@ -747,42 +798,5 @@ export class BrowserTree {
       }
       this.el.appendChild(row);
     }
-  }
-
-  /** Inline-edit a row's label: contentEditable, select-all, commit on Enter/blur,
-   *  cancel on Esc. stopPropagation keeps typing from firing app shortcuts. */
-  private startInlineRename(labelEl: HTMLElement, current: string, commit: (name: string) => void) {
-    labelEl.style.opacity = "";
-    labelEl.setAttribute("contenteditable", "true");
-    labelEl.textContent = current;
-    labelEl.classList.add("renaming");
-    labelEl.focus();
-    const range = document.createRange();
-    range.selectNodeContents(labelEl);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
-
-    let done = false;
-    const finish = (save: boolean) => {
-      if (done) return;
-      done = true;
-      labelEl.removeAttribute("contenteditable");
-      labelEl.classList.remove("renaming");
-      const name = (labelEl.textContent ?? "").trim();
-      if (save && name && name !== current) commit(name);
-      else labelEl.textContent = current; // a re-render will overwrite this anyway
-    };
-    labelEl.addEventListener("keydown", (e) => {
-      e.stopPropagation(); // keep keystrokes out of the global keymap while editing
-      if (e.key === "Enter") {
-        e.preventDefault();
-        finish(true);
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        finish(false);
-      }
-    });
-    labelEl.addEventListener("blur", () => finish(true));
   }
 }

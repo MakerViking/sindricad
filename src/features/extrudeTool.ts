@@ -28,6 +28,7 @@ import { t } from "../i18n";
 // drift. It lives in the document layer because the store cannot import this
 // file (that would pull the viewport stack into the document layer).
 import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
+import { isImeComposing } from "../ui/focus";
 
 type Phase = "pick" | "drag";
 type Op = "new" | "join" | "cut" | "intersect";
@@ -714,7 +715,9 @@ export class ExtrudeTool {
 
   private onKey(e: KeyboardEvent) {
     if (this.dim.isActive && e.target instanceof HTMLInputElement) {
-      if (e.key === "Escape") { this.cancel(); return; }
+      if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
+      if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
+    if (e.key === "Escape") { this.cancel(); return; }
       // Everything else aimed at the depth box is the FIELD's — Enter commits,
       // Tab locks and advances — except this tool's own letter hotkey on a box
       // nobody has typed into yet. Without that exception T and Shift-T below

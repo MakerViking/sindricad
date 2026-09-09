@@ -74,6 +74,70 @@ export const LABEL_INK_HOVER = "#10141a";
 export const NUB_IDLE_OPACITY = 0.35;
 export const NUB_HOVER_OPACITY = 0.95;
 
+// ---- face-plate label typography -------------------------------------------
+//
+// The plate was painted with a hardcoded `600 56px Inter, system-ui,
+// sans-serif`. Nothing in that list has a Japanese glyph, so 上面 was drawn by
+// whatever the engine happened to reach for, or as tofu boxes.
+//
+// The family list now comes from `--font-ui` in styles.css — one stack for the
+// whole app, including the bundled Noto Sans JP subset — with the literal below
+// as the fallback for the case where the stylesheet has not applied yet.
+//
+// Canvas is not layout, and that is the trap: naming a family in `ctx.font`
+// neither starts a webfont download nor repaints when one arrives. These
+// textures are painted once at construction, so without the document.fonts wait
+// in the constructor the six plates would stay on the fallback face for the
+// whole session even after the rest of the UI had switched to Noto.
+const LABEL_WEIGHT = 600;
+/** Nominal label size on the 256px plate. */
+export const LABEL_PX = 56;
+/** Shrink below LABEL_PX only past this fraction of the plate, and the plate
+ *  itself is the budget rather than some margin inside it. Measured, because
+ *  the tempting 0.9-ish margin would have moved English: the longest English
+ *  label, BOTTOM, is 243px at 56px/600 in Noto Sans and 270px in DejaVu Sans
+ *  against a 256px plate. So a label that fits today is left exactly as it is,
+ *  and one that does not — a wide platform font, or a translated side name —
+ *  is brought back onto the plate instead of being cut off at its edge. */
+const LABEL_FIT = 1;
+/** Never go below this: smaller than this is unreadable at cube size, and a
+ *  label that must be condensed to fit is better than one that cannot be read. */
+export const LABEL_PX_MIN = 26;
+// i18n-ignore a CSS font-family list, not UI text — it mirrors --font-ui in styles.css
+const LABEL_FAMILIES_FALLBACK =
+  '"Inter", "Noto Sans JP", system-ui, "Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP", sans-serif';
+
+let labelFamiliesCache: string | null = null;
+/** The `--font-ui` family list, whitespace-collapsed for the canvas shorthand. */
+function labelFamilies(): string {
+  if (labelFamiliesCache !== null) return labelFamiliesCache;
+  let declared = "";
+  try {
+    declared = getComputedStyle(document.documentElement).getPropertyValue("--font-ui").replace(/\s+/g, " ").trim();
+  } catch {
+    /* no document (tests) — the literal below is the same list */
+  }
+  labelFamiliesCache = declared || LABEL_FAMILIES_FALLBACK;
+  return labelFamiliesCache;
+}
+
+/** A canvas 2D `font` shorthand for the face plates, at `px`. */
+export function cubeLabelFont(px: number = LABEL_PX): string {
+  return `${LABEL_WEIGHT} ${px}px ${labelFamilies()}`;
+}
+
+/** The largest size, from LABEL_PX down to LABEL_PX_MIN, whose measured width
+ *  is inside `budget`. `measureAt` is the caller's canvas; separated from it so
+ *  the fit rule can be exercised without a WebGL context.
+ *
+ *  Returns LABEL_PX unchanged whenever the label already fits, which is what
+ *  keeps the English plates exactly as they were. */
+export function fitLabelPx(measureAt: (px: number) => number, budget: number): number {
+  let px = LABEL_PX;
+  while (px > LABEL_PX_MIN && measureAt(px) > budget) px -= 2;
+  return px;
+}
+
 type PartKind = "face" | "edge" | "corner";
 interface Part {
   kind: PartKind;
@@ -131,6 +195,34 @@ export class ViewCube {
     this.scene.add(this.group);
     this.buildCube();
     this.installPointer();
+    void this.repaintWhenLabelFontLoads();
+  }
+
+  /** Paint the six plates again once the label font is actually available.
+   *
+   *  `buildCube` paints them during construction, and at that moment a webfont
+   *  named in `ctx.font` is typically not loaded yet — canvas silently uses the
+   *  next family that is, and unlike layout it never comes back to fix it. So
+   *  the plates would keep the fallback face for the session. Asking
+   *  `document.fonts` for the exact string we draw with, for the exact text we
+   *  draw, is what triggers the fetch AND tells us when to repaint.
+   *
+   *  For an English UI this is a no-op that resolves immediately: the Latin
+   *  families in the stack are all local, and the bundled subset's
+   *  `unicode-range` carries no Latin character, so there is nothing to fetch. */
+  private async repaintWhenLabelFontLoads(): Promise<void> {
+    const fonts = document.fonts as FontFaceSet | undefined;
+    if (!fonts?.load) return;
+    const text = (Object.keys(FACE_VIEWS) as ViewCubeSide[]).map((s) => FACE_VIEWS[s].label).join("");
+    try {
+      await fonts.load(cubeLabelFont(), text);
+    } catch {
+      // A malformed shorthand rejects rather than throwing synchronously. The
+      // plates already carry a readable fallback, so there is nothing to do but
+      // keep it — never let this take the viewport down.
+      return;
+    }
+    this.refreshOverrideMarks();
   }
 
   // ---- geometry -----------------------------------------------------------
@@ -232,10 +324,21 @@ export class ViewCube {
     ctx.fillStyle = hovered ? C.hex(COLOR_FACE_HOVER) : C.hex(COLOR_FACE);
     ctx.fillRect(0, 0, W, W);
     ctx.fillStyle = hovered ? LABEL_INK_HOVER : LABEL_INK;
-    ctx.font = "600 56px Inter, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(FACE_VIEWS[side].label, W / 2, W / 2);
+    const label = FACE_VIEWS[side].label;
+    // Step the size down rather than let a label leave the plate. A label that
+    // already fits the 256px canvas never shrinks, so nothing that renders
+    // correctly today moves; see LABEL_FIT for the measurement.
+    const budget = W * LABEL_FIT;
+    const px = fitLabelPx((p) => {
+      ctx.font = cubeLabelFont(p);
+      return ctx.measureText(label).width;
+    }, budget);
+    ctx.font = cubeLabelFont(px);
+    // …and a last-resort condense at the floor, so even a label that no size in
+    // that range can fit stays on the plate rather than running past its edge.
+    ctx.fillText(label, W / 2, W / 2, budget);
     if (redefined) {
       // small accent dot marking a user-redefined side
       ctx.beginPath();

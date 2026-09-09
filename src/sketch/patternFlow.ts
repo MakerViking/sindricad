@@ -12,6 +12,7 @@ import type { DimInput } from "./dimInput";
 import { newPatternId } from "./id";
 import { setPrompt } from "../ui/prompt";
 import type { SketchTool } from "./sketchMode";
+import { dimValueOk } from "../ui/units";
 
 // preset hole patterns: self-contained (click a center, no source selection)
 export const PRESET_PATTERNS = new Set<SketchTool>(["hexHoles", "honeycomb", "boltCircle", "gridHoles"]);
@@ -150,6 +151,9 @@ export class PatternFlow {
     const dim = this.host.dim();
     const dx = p.x - this.patternCenter.x, dy = p.y - this.patternCenter.y;
     const r = Math.hypot(dx, dy);
+    // PREVIEW only: a field that cannot be read holds its last good figure so
+    // the ghost keeps drawing while the user is mid-keystroke. The commit path
+    // must NOT do this — see badTypedField() below.
     const dimN = (name: string, fallback: number) => Math.round(dim.getValue(name) ?? fallback);
     if (pat.type === "boltCircle") {
       if (r > 1) pat.bcd = Math.round(2 * r * 10) / 10;
@@ -178,8 +182,41 @@ export class PatternFlow {
     this.host.refreshActive();
   }
 
+  /** True — having said so — when a field the user TYPED INTO cannot be read as
+   *  a number. `move()` deliberately falls back to the pattern's current value so
+   *  the live ghost survives a half-typed number, and `commit()` then banked that
+   *  fallback: typing "12mm" into ⌀ and pressing Enter produced a 6 mm hole with
+   *  no error anywhere. A field nobody opened still uses its default — that is
+   *  what `isUserDriven` distinguishes. Same message as the feature tools. */
+  private badTypedField(): boolean {
+    const pat = this.pendingPattern;
+    if (!pat) return false;
+    const dim = this.host.dim();
+    for (const d of this.patternDimDefs(pat.type)) {
+      if (!dim.isUserDriven(d.name)) continue;
+      const v = dim.getValue(d.name);
+      // Unreadable is only half of it. A diameter of 0 or -5, and a count of 0,
+      // all PARSE — and then reach the pattern and get written into the feature.
+      // An angle may legitimately be any finite value, which is the distinction
+      // `dimValueOk` already draws, so it is reused rather than re-stated here.
+      const legal =
+        v != null &&
+        (d.kind === "angle"
+          ? dimValueOk(v, "angle")
+          : d.name.startsWith("count") || d.name === "rings"
+            ? Number.isFinite(v) && Math.round(v) >= 1
+            : dimValueOk(v, "length"));
+      if (!legal) {
+        setPrompt(t("feature.badNumber"));
+        return true;
+      }
+    }
+    return false;
+  }
+
   commit() {
     if (!this.pendingPattern) return;
+    if (this.badTypedField()) return; // leave it pending, box open, so the number can be fixed
     this.host.patterns().push(this.pendingPattern);
     this.pendingPattern = null;
     this.editOriginal = null;

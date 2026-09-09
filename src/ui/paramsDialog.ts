@@ -13,6 +13,7 @@ import { getUnit, toDisplay, round } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { t, setText, setTitle } from "../i18n";
 import { esc } from "./escape";
+import { isImeComposing } from "./focus";
 
 const panel = new FloatingPanel();
 let unsubscribe: (() => void) | null = null;
@@ -119,7 +120,10 @@ function paramRow(store: DocumentStore, doc: CadDocument, name: string, def: Par
   return row;
 }
 
-function addRow(store: DocumentStore): HTMLElement {
+/** The "add a parameter" row at the bottom of the user section: name +
+ *  expression + unit + Add. Exported so a test can drive the real row (its
+ *  Enter handling is the part with rules in it) without a whole dialog. */
+export function addRow(store: DocumentStore): HTMLElement {
   const row = document.createElement("div");
   row.className = "params-row params-add";
   const name = document.createElement("input");
@@ -153,6 +157,10 @@ function addRow(store: DocumentStore): HTMLElement {
   };
   add.addEventListener("click", commit);
   expr.addEventListener("keydown", (e) => {
+    // The Enter that CONFIRMS an IME conversion arrives here first; adding the
+    // parameter on it would file a half-typed reading as the expression and
+    // wipe both fields under the person still typing.
+    if (isImeComposing(e)) return;
     if (e.key === "Enter") commit();
   });
   row.append(name, expr, unit, add);

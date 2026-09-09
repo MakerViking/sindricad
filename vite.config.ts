@@ -28,6 +28,14 @@ const PORT = Number(process.env.SINDRI_VITE_PORT ?? 5173);
 
 export default defineConfig({
   clearScreen: false,
+  // Vite's default, stated out loud because something load-bearing now lives
+  // there: public/fonts/NotoSansJP-subset.woff2, which src/styles.css asks for
+  // by absolute URL (`/fonts/…`). Files here are copied to dist/ VERBATIM —
+  // not hashed, not rewritten — which is exactly what an @font-face url and a
+  // `font-src 'self'` CSP need. Point `root` or `publicDir` somewhere else and
+  // the app still builds, still runs, and renders Japanese as tofu boxes on any
+  // machine without a system CJK font. See public/fonts/README.md.
+  publicDir: "public",
   server: {
     port: PORT,
     strictPort: true,

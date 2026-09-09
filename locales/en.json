@@ -932,7 +932,7 @@
       "name": "Name",
       "value": "Value"
     },
-    "hint": "Expressions are in mm / degrees; suffixes mm cm in deg rad allowed · Esc to close",
+    "hint": "Expressions are in mm / degrees; suffixes mm cm in deg rad allowed · in an expression the decimal separator is always \".\" and arguments are separated by \";\", even though other fields accept a comma · Esc to close",
     "issue": {
       "circular": "circular reference",
       "invalid": "invalid expression",

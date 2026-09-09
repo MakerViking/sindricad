@@ -43,12 +43,15 @@ MATCH_IMPLAUSIBLE = "matchImplausible"      # a by:"match" resolved to something
 PLANE_TILTED = "planeTilted"                # a face-anchored plane's face is no longer parallel
 SEALED_VOID = "sealedVoid"                  # a cut closed a cavity inside the body
 CLEAN_UP_FITTED = "cleanUpFitted"           # Clean Up recognised cylinders on a body (advisory)
+FONT_MISSING_GLYPHS = "fontMissingGlyphs"   # the chosen font cannot draw some of the text
+FONT_UNUSABLE = "fontUnusable"              # the chosen font has no outlines to emboss at all
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
     KERNEL_CRASHED, ENGINE_UNAVAILABLE, REPLY_TOO_LARGE, BODY_TOO_LARGE,
     UNKNOWN_OP, BAD_REQUEST, EXPECT_FAILED, BUDGET_EXHAUSTED, MATCH_IMPLAUSIBLE,
-    PLANE_TILTED, SEALED_VOID, CLEAN_UP_FITTED,
+    PLANE_TILTED, SEALED_VOID, CLEAN_UP_FITTED, FONT_MISSING_GLYPHS,
+    FONT_UNUSABLE,
 })
 
 # --- the body slot -----------------------------------------------------------

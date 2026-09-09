@@ -10,7 +10,21 @@
 
 import { icon, type IconName } from "../ui/icons";
 import { t, setText, setTitle } from "../i18n";
+import { setPrompt } from "../ui/prompt";
+import { badNumberField, fmtNumber, numericInput, typedNumber } from "../ui/units";
 
+/** What a typed field is worth to the model: the number if the app can read one,
+ *  otherwise `dflt`.
+ *
+ *  `??`, not `||` — a typed 0 is a number the user chose, and `||` swapped it
+ *  for the default (a 0mm depth silently became 0.4mm). `parseNumber` returns
+ *  null both for an EMPTY field, where the default is right, and for text it
+ *  refuses, where it is not: `badNumberField` below is what stops the second
+ *  case from ever reaching a commit. */
+/** True when the user typed something into `el` that the app cannot read
+ *  ("3.14.15", "1.2.3" — see ui/units, which refuses those rather than guessing
+ *  314.15 and 12.3). Empty is NOT bad: a cleared field has always meant "leave
+ *  it at the default", and still does. */
 export type TextureKind = "knurl" | "hex" | "waves" | "ribs" | "voronoi" | "noise" | "image";
 export type TextureMode = "faces" | "body";
 
@@ -61,6 +75,8 @@ export class TexturePanel {
   private onChange: ((v: TextureValues) => void) | null = null;
   private onModeChange: ((mode: TextureMode) => void) | null = null;
   private read: (() => TextureValues) | null = null;
+  /** The numeric inputs, for the commit guard. Rebuilt by every show(). */
+  private numFields: HTMLInputElement[] = [];
   private summaryEl: HTMLDivElement | null = null;
   private modeBtns: { faces: HTMLButtonElement; body: HTMLButtonElement } | null = null;
   // Esc is NOT handled here. TextureTool owns it for its whole active lifetime,
@@ -200,7 +216,7 @@ export class TexturePanel {
     randomize.innerHTML = `${icon("randomize")}<span></span>`;
     setText(randomize.querySelector("span")!, "feature.texture.randomize");
     randomize.addEventListener("click", () => {
-      seed.value = String(Math.floor(Math.random() * 1_000_000));
+      seed.value = fmtNumber(Math.floor(Math.random() * 1_000_000));
       emit();
     });
     const seedRow = row(label("feature.texture.seed"), seed, randomize);
@@ -284,19 +300,30 @@ export class TexturePanel {
 
     this.read = (): TextureValues => ({
       kind: kind.value as TextureKind,
-      depth: parseFloat(depth.value) || 0.4,
-      scale: parseFloat(scale.value) || 2,
-      angle: parseFloat(angle.value) || 0,
-      offset: parseFloat(offset.value) || 0,
-      sharpness: parseFloat(sharpness.value) || 0,
+      // parseNumber, not parseFloat: "0,4" is four tenths in half of Europe and
+      // parseFloat reads it as 0, which then falls through to the default here
+      // — a wrong texture with no error anywhere. An EMPTY field still means
+      // "use the default"; text the parser refuses shows a default in the live
+      // preview and is refused at commit(), never modelled.
+      depth: typedNumber(depth, 0.4),
+      scale: typedNumber(scale, 2),
+      angle: typedNumber(angle, 0),
+      offset: typedNumber(offset, 0),
+      sharpness: typedNumber(sharpness, 0),
       profile: profile.value as TextureValues["profile"],
-      boundaryInset: Math.max(0, parseFloat(edgeBlend.value) || 0),
+      boundaryInset: Math.max(0, typedNumber(edgeBlend, 0)),
       direction: direction.value as TextureValues["direction"],
-      seed: parseFloat(seed.value) || 1,
+      seed: typedNumber(seed, 1),
       invert: invert.checked,
       ...(imagePath ? { imagePath } : {}),
       ...(colorSlot.value !== "" ? { colorSlot: Number(colorSlot.value) } : {}),
     });
+
+    // Every field commit() has to be able to read. A hidden row's field is in
+    // here too: the tool trims the feature by kind, but which fields it keeps
+    // is its business, and a panel that refuses one number it cannot read while
+    // quietly defaulting another is worse than one rule for all of them.
+    this.numFields = [depth, scale, angle, sharpness, offset, edgeBlend, seed];
 
     const emit = () => this.onChange?.(this.read!());
     for (const el of [depth, scale, angle, sharpness, profile, direction, seed, invert, offset, edgeBlend, colorSlot]) {
@@ -331,6 +358,18 @@ export class TexturePanel {
 
   private commit() {
     if (!this.active || !this.read) return;
+    // A field the app cannot read must not commit as its default: "3.14.15"
+    // typed into depth used to model a 0.4mm knurl with nothing said anywhere.
+    // Same refusal press/pull and the sketch dimension fields give.
+    // Wrapped, not passed by reference: `some` hands the callback the INDEX as
+    // its second argument, which is now the must-be-positive flag — so a bare
+    // `.some(badNumberField)` would demand a positive value of every field but
+    // the first. No texture field is required to be positive (a depth of 0 is a
+    // flat texture, an angle and an offset of 0 are ordinary).
+    if (this.numFields.some((el) => badNumberField(el))) {
+      setPrompt(t("feature.badNumber"));
+      return;
+    }
     // Do NOT hide here. The tool REFUSES a commit with no target (nothing
     // selected) and leaves itself active — hiding first stranded the user in an
     // invisible modal: the panel was gone, the tool still owned face-picking,
@@ -350,16 +389,15 @@ export class TexturePanel {
     this.active = false;
     this.root.style.display = "none";
     this.onCommit = this.onCancel = this.onChange = this.onModeChange = this.read = null;
+    this.numFields = [];
     this.summaryEl = null;
     this.modeBtns = null;
   }
 }
 
 function numberInput(value: number, step: string): HTMLInputElement {
-  const el = document.createElement("input");
-  el.type = "number";
-  el.step = step;
-  el.value = String(value);
+  const el = numericInput(document.createElement("input"), Number(step));
+  el.value = fmtNumber(value);
   Object.assign(el.style, { width: "64px" });
   return el;
 }

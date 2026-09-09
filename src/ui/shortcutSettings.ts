@@ -24,6 +24,7 @@ import {
   resetShortcut,
   type Shortcut,
 } from "../input/shortcuts";
+import { isImeComposing } from "./focus";
 
 export class ShortcutSettings {
   private overlay: HTMLDivElement | null = null;
@@ -56,6 +57,12 @@ export class ShortcutSettings {
   // ALSO starting Fillet behind the panel. The keymap only skips input/textarea
   // targets, and every control on this screen is a button.
   private onKey = (e: KeyboardEvent) => {
+    // Hands every keystroke of an IME composition straight back: while
+    // capturing, the engine reports the key as "Process" (keyCode 229) and
+    // recording THAT as a shortcut would bind a key nobody can press; while
+    // not capturing, this handler swallows the whole keyboard, Escape
+    // included — and Escape is how the conversion gets cancelled.
+    if (isImeComposing(e)) return;
     if (this.capturing) {
       e.preventDefault();
       e.stopPropagation();

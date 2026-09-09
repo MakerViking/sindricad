@@ -20,6 +20,11 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A text height of zero could take the geometry engine down.** Zero or a
+  negative size crashes the kernel outright, and the live preview reaches it on
+  every keystroke, so typing "0" as the first character of "0.5" was enough. It
+  is refused now, both in the app and in the geometry engine itself.
+
 - **"Open in OrcaSlicer" lands on your U1 preset again.** If your active
   Orca printer preset was made from scratch rather than copied from the
   Snapmaker one, the handoff silently gave up and Orca opened the file on a
@@ -63,6 +68,29 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Typing a comma as the decimal separator now works everywhere.** "12,5" and
+  "12.5" both mean twelve and a half, in every numeric field, whatever your
+  language is set to. Before, a comma was silently truncated: typing "12,5" as
+  an extrude depth built a 12 mm wall and said nothing about it. A comma is
+  always the decimal separator in a dimension field and never a thousands
+  separator, so "1,500" is one and a half. Fullwidth digits from a Japanese
+  input method are read too. Anything that is not a number in any language is
+  refused with a message rather than guessed at, and the tools that used to
+  fall back to a hidden default when they could not read a number now refuse
+  and say so.
+
+- **Japanese text renders without installing anything.** A subset of Noto Sans
+  JP ships with the app and is used only for characters the rest of the font
+  stack cannot draw, so English text is unchanged. Text on a face and sketch
+  text now check that the chosen font can actually draw what you typed, and
+  refuse with the characters named instead of embossing empty boxes into a part
+  you then print.
+
+- **An input method no longer loses what you typed.** Pressing Escape to cancel
+  a kanji conversion used to close the panel and throw the text away, and the
+  Enter that confirms a candidate used to commit a half-typed name. Keyboard
+  shortcuts now stand aside while a conversion is open.
+
 - **SindriCAD can now be translated.** Every label, menu, tooltip, dialog and
   message goes through a locale catalogue (`locales/en.json`), with English as
   the fallback for anything a translation lacks. Edit → Settings… picks the
@@ -80,6 +108,14 @@ This file starts on 2026-08-03. For anything before that, see the
   at all. Unlock turns a driving dimension back into a measurement; Delete
   removes it. Asked for from the in-app reporter, who had no way to hold a
   value the sketch was already showing.
+
+### Changed
+
+- **The first rebuild after this update is slower, once per document.** The
+  glyph check above has to discard geometry cached before it existed, or a
+  document that already contains unrenderable text would keep restoring from
+  the cache with no warning while the same file opened fresh elsewhere was
+  refused.
 
 ### Fixed
 

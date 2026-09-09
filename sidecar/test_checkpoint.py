@@ -197,6 +197,119 @@ def test_diagnostics_survive_disk_resume():
     print(PASS, "diagnostics survive a DISK-checkpoint resume")
 
 
+def test_a_sketch_that_newly_fails_on_replay_is_blamed_for_it():
+    """A disk resume replays the prefix's sketches. That replay used to swallow
+    EVERY exception on the premise that "its failure is already in the restored
+    errors" — true only while `_build_sketch` could not newly fail.
+
+    It can now: the font-coverage guard refuses strings that built before it
+    existed, so a checkpoint written pre-guard resumes into a sketch that raises.
+    What the user then saw was the checkpoint's own fails-green mode: the sketch
+    chip stayed GREEN and the only error was the downstream extrude's "the sketch
+    this extrude depends on (s1) did not build — fix that sketch first". The
+    timeline said the sketch was fine and the message said to fix it.
+
+    Reproduced without any font dependency by making `_build_sketch` raise during
+    the resume only, which is exactly the shape the guard produces. The assertion
+    is the PAIR: the extrude's cascade is still reported (nothing was hidden), AND
+    the sketch that actually failed carries the real message and its code.
+    """
+    import geomstore
+
+    doc = {"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 20, "height": 20, "x": 0, "y": 0}]},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 4, "operation": "new"},
+    ]}
+    MSG = "Text: the font 'Noto Sans Thai' has no glyph for x"
+
+    tmp = tempfile.mkdtemp(prefix="sindri_replay_test_")
+    orig_store = builder._disk_store
+    orig_build_sketch = builder._build_sketch
+    try:
+        store = geomstore.Store(root=tmp)
+        builder._disk_store = lambda: store
+
+        keys = builder._chain_keys_scoped(doc, builder._feature_sigs(doc["features"]))
+        _part, cold_errs, _ = builder.rebuild(
+            doc, persist={"store": store, "keys": keys, "mod": {},
+                          "acc_ms": 0.0, "budget_ms": 0.0})
+        assert not cold_errs, cold_errs
+
+        # edit the EXTRUDE, so the resume lands after s1: the sketch is replayed
+        # from the prefix and the extrude re-runs and depends on it.
+        edited = json.loads(json.dumps(doc))
+        edited["features"][1]["distance"] = 6
+        hit = builder._restore_from_disk(
+            store, builder._chain_keys_scoped(
+                edited, builder._feature_sigs(edited["features"])))
+        assert hit is not None and hit[0] == 1, f"expected resume after s1, got {hit and hit[0]}"
+
+        def failing_sketch(f, val, datums=None):
+            if f.get("id") == "s1":
+                raise ValueError(MSG)
+            return orig_build_sketch(f, val, datums)
+
+        builder._build_sketch = failing_sketch
+        builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+        _part, errs, _ = builder.rebuild_cached(edited)
+    finally:
+        builder._build_sketch = orig_build_sketch
+        builder._disk_store = orig_store
+        builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    by_id = {e["feature_id"]: e for e in errs}
+    assert "e1" in by_id and "did not build" in by_id["e1"]["message"], \
+        f"the downstream cascade must still be reported: {errs}"
+    assert "s1" in by_id, \
+        f"the sketch that actually failed was replayed green: {errs}"
+    assert MSG in by_id["s1"]["message"], by_id["s1"]
+    print(PASS, "a sketch that newly fails during a disk-resume replay is red, "
+                "instead of green under a puzzled extrude")
+
+
+def test_env_sig_tracks_builder_bytes():
+    """Defect 9's premise, asserted rather than assumed: the replay fix above is
+    an edit to builder.py, and builder.py's BYTES are hashed into the checkpoint
+    key — so every checkpoint written before it is now invalid and every affected
+    document costs one cold rebuild. That invalidation is the POINT (a stale
+    checkpoint would keep serving pre-guard tofu geometry), so it needs a test,
+    not a comment."""
+    import shutil
+    import tempfile
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    # A COPY, never the running sidecar's own source. The first version of this
+    # test appended a probe line to the real builder.py and restored it in a
+    # `finally`; that restores correctly on a normal exit and leaves a mutated
+    # builder.py — i.e. a silently different checkpoint key for every document
+    # on this install — if the process is killed while the probe is in place.
+    names = ("builder.py", "geom_select.py", "tessellate.py", "untrusted.py",
+             "font_coverage.py", "selector_tuning.json")
+    with tempfile.TemporaryDirectory() as td:
+        for n in names:
+            src = os.path.join(here, n)
+            if os.path.exists(src):
+                shutil.copy(src, os.path.join(td, n))
+        s1 = builder._env_sig(td)
+        for n in ("builder.py", "font_coverage.py"):
+            path = os.path.join(td, n)
+            with open(path, "ab") as fh:
+                fh.write(b"\n# env_sig coverage probe\n")
+            assert builder._env_sig(td) != s1, (
+                f"env_sig must change when {n} changes, or a fix to the build path "
+                "never reaches anyone who already has a checkpoint"
+            )
+            with open(path, "wb") as fh:
+                fh.write(open(os.path.join(here, n), "rb").read())
+        assert builder._env_sig(td) == s1, "restoring the sources must restore the signature"
+    # and the real one is untouched and still cached
+    assert builder._env_sig() == builder._env_sig()
+    print(PASS, "_env_sig invalidates on a builder.py or font_coverage.py edit "
+                "(deliberate: one cold rebuild beats resuming stale geometry)")
+
+
 def test_every_diagnostic_shape_is_json_safe():
     """`_save_checkpoint` swallows exceptions, so a diagnostic carrying a value
     json can't encode (a numpy scalar, an OCCT handle) would not raise — it would
@@ -349,9 +462,11 @@ def main():
     test_diagnostics_survive_resume()
     test_diagnostics_survive_disk_resume()
     test_textures_survive_disk_resume()
+    test_a_sketch_that_newly_fails_on_replay_is_blamed_for_it()
     test_every_diagnostic_shape_is_json_safe()
     test_body_fingerprint_carries_topology()
     test_env_sig_tracks_tuning()
+    test_env_sig_tracks_builder_bytes()
     print("ALL PASS")
 
 

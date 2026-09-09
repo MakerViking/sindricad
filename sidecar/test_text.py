@@ -2,6 +2,8 @@
 ops (tessellate_text / list_fonts) match the solid. Run: uv run python test_text.py
 """
 
+import os
+
 import builder
 
 PASS = "  ok"
@@ -60,6 +62,41 @@ def test_list_fonts_nonempty():
     print(PASS, f"list_fonts enumerated {len(fams)} families")
 
 
+def test_non_positive_height_does_not_kill_the_process():
+    """A font size of 0 or less SEGFAULTS OCCT — exit 139, which no `except` can
+    catch, and which takes the whole geometry engine down with it.
+
+    Measured 2026-09-09: tessellate_text at height 0 and height -5 both died,
+    height 0.0001 was fine. The live preview calls this on every render, so
+    typing "0" as the first character of "0.5" in the size field was enough. The
+    client refuses it now too, but this is the guard that counts: a saved
+    document, an import, or any other caller reaches here without that field.
+
+    Run in a SUBPROCESS deliberately. A segfault is not an exception: in-process
+    this test would take the whole suite down with it rather than fail, and the
+    run would look like a crash of the harness rather than a broken guard."""
+    import subprocess
+    import sys
+
+    for height in (0, -5, 0.0):
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import builder;"
+             "r = builder.tessellate_text({'type':'text','text':'hello',"
+             f"'height':{height},'x':0,'y':0}});"
+             "print(len(r.get('faces', [])))"],
+            capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+        assert r.returncode == 0, (
+            f"height {height} killed the geometry process (exit {r.returncode}); "
+            "a non-positive font size must be refused before it reaches OCCT"
+        )
+        assert r.stdout.strip().endswith("0"), f"height {height} should make no glyphs, got {r.stdout!r}"
+    # ...and a real size still draws.
+    assert len(builder.tessellate_text({"type": "text", "text": "hello", "height": 0.5, "x": 0, "y": 0})["faces"]) > 0
+    print(PASS, "a non-positive text height is refused instead of segfaulting OCCT")
+
+
 def main():
     print("Sketch-text tests")
     test_text_extrudes_to_a_solid()
@@ -67,6 +104,7 @@ def main():
     test_tessellate_text_gives_outer_and_holes()
     test_tessellate_matches_solid_face_count()
     test_list_fonts_nonempty()
+    test_non_positive_height_does_not_kill_the_process()
     print("ALL PASS")
 
 

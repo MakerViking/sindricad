@@ -5,6 +5,7 @@
 // undo/redo (file shortcuts are handled centrally in main.ts).
 
 import { normalizeKey, resolveShortcut } from "./shortcuts";
+import { isImeComposing } from "../ui/focus";
 
 /** Ctrl+Z / Ctrl+Y aimed at a 3D tool's on-canvas dimension box whose text has
  *  not changed since it took focus (DimInput marks it). There is no typing in
@@ -29,6 +30,10 @@ export function installKeymap(
   context: () => "model" | "sketch",
 ) {
   window.addEventListener("keydown", (e) => {
+    // An IME is composing: the keystroke belongs to the conversion (Escape
+    // cancels it, Enter confirms it), not to a shortcut. First, so it also
+    // covers the undoBelongsToTheApp exception below.
+    if (isImeComposing(e)) return;
     if (
       (e.target instanceof HTMLInputElement ||
         e.target instanceof HTMLTextAreaElement ||

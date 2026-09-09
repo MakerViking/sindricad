@@ -138,6 +138,14 @@ jobs:
           uv run python test_heartbeat.py
           uv run python test_sysmem.py
           uv run python test_export_gates.py
+          # The glyph-coverage guard: it decides whether text becomes geometry
+          # at all, so an unlisted suite here is exactly the "inert regression
+          # protection" the comment above warns about. On a runner with no CJK
+          # font most geometry assertions take their skip branch; the install,
+          # idempotence and backstop coverage still runs, and that is the part
+          # that breaks silently.
+          uv run python test_font_coverage.py
+          uv run python test_font_guard.py
           uv run python test_canonicalize.py
           # These six existed and PASSED for weeks without ever running here —
           # the same gap that had left texture/checkpoint/projected/val_guard/

@@ -7,8 +7,12 @@ import type { MassPropertiesResult } from "../types";
 import type { Viewport } from "../viewport/viewport";
 import type { GeometryBackend } from "../geometry/client";
 import { esc } from "./escape";
+import { isImeComposing } from "./focus";
 import { t } from "../i18n";
-import { getUnit, toDisplay, round } from "./units";
+// fmtNumber: the numbers below are shown to a person, so they follow the
+// locale (Intl) — ungrouped, because a measurement is a value the user may
+// type back into a field. The unit abbreviations are never translated.
+import { getUnit, toDisplay, fmtNumber } from "./units";
 import { printerCameraStart, printerCameraStop, onPrinterCameraFrame, onPrinterCameraOffline } from "../print/printerClient";
 
 /** One floating "measure-panel" element with optional Esc-to-dismiss. Only one
@@ -29,6 +33,12 @@ export class FloatingPanel {
     this.onClose = opts.onClose ?? null;
     if (opts.closeOnEsc) {
       this.onEsc = (e) => {
+        // Capture-phase and on window, so this sees the Escape a CJK user
+        // presses to cancel an IME conversion in ANY field on screen —
+        // including the parameter rows this very panel hosts. That keystroke
+        // belongs to the input method; closing on it drops the panel out from
+        // under someone mid-word.
+        if (isImeComposing(e)) return;
         if (e.key === "Escape") this.close();
       };
       window.addEventListener("keydown", this.onEsc, true);
@@ -77,12 +87,12 @@ export function exactPropsRows(total: MassPropertiesResult["total"]): [string, s
   const unit = getUnit();
   const f = toDisplay(1);
   const rows: [string, string][] = [
-    ["volume", `${round(total.volume * f * f * f)} ${unit}³`],
-    ["area", `${round(total.area * f * f)} ${unit}²`],
-    ["mass", `${round(total.volume / 1000)} g`],
+    ["volume", `${fmtNumber(total.volume * f * f * f)} ${unit}³`],
+    ["area", `${fmtNumber(total.area * f * f)} ${unit}²`],
+    ["mass", `${fmtNumber(total.volume / 1000)} g`],
   ];
   if (total.com) {
-    rows.push(["com", `${round(toDisplay(total.com[0]))}, ${round(toDisplay(total.com[1]))}, ${round(toDisplay(total.com[2]))}`]);
+    rows.push(["com", `${fmtNumber(toDisplay(total.com[0]))}, ${fmtNumber(toDisplay(total.com[1]))}, ${fmtNumber(toDisplay(total.com[2]))}`]);
   }
   return rows;
 }
@@ -131,14 +141,14 @@ export function createPanels(deps: PanelsDeps) {
     const f = toDisplay(1);
     const cm3 = p.volume / 1000; // mm³ → cm³ (mass at 1 g/cm³ baseline)
     return [
-      ["volume", t("measure.properties.volume"), `${round(p.volume * f * f * f)} ${unit}³`],
-      ["area", t("measure.properties.surfaceArea"), `${round(p.area * f * f)} ${unit}²`],
-      ["mass", t("measure.properties.mass"), `${round(cm3)} g`],
-      ["com", t("measure.properties.centerOfMass"), `${round(toDisplay(p.com.x))}, ${round(toDisplay(p.com.y))}, ${round(toDisplay(p.com.z))}`],
+      ["volume", t("measure.properties.volume"), `${fmtNumber(p.volume * f * f * f)} ${unit}³`],
+      ["area", t("measure.properties.surfaceArea"), `${fmtNumber(p.area * f * f)} ${unit}²`],
+      ["mass", t("measure.properties.mass"), `${fmtNumber(cm3)} g`],
+      ["com", t("measure.properties.centerOfMass"), `${fmtNumber(toDisplay(p.com.x))}, ${fmtNumber(toDisplay(p.com.y))}, ${fmtNumber(toDisplay(p.com.z))}`],
       [
         "bbox",
         t("measure.properties.boundingBox"),
-        `${round(toDisplay(p.bbox.max.x - p.bbox.min.x))} × ${round(toDisplay(p.bbox.max.y - p.bbox.min.y))} × ${round(toDisplay(p.bbox.max.z - p.bbox.min.z))} ${unit}`,
+        `${fmtNumber(toDisplay(p.bbox.max.x - p.bbox.min.x))} × ${fmtNumber(toDisplay(p.bbox.max.y - p.bbox.min.y))} × ${fmtNumber(toDisplay(p.bbox.max.z - p.bbox.min.z))} ${unit}`,
       ],
     ] as [string, string, string][];
   }
@@ -236,7 +246,7 @@ export function createPanels(deps: PanelsDeps) {
         pairs
           .map(
             (p, i) =>
-              `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${esc(t("measure.interference.pair", { a: p.aName, b: p.bName }))}</span><span class="measure-v">${round(p.volume * f * f * f)} ${unit}³</span></div>`,
+              `<div class="measure-row clash-row" data-i="${i}"><span class="measure-k">${esc(t("measure.interference.pair", { a: p.aName, b: p.bName }))}</span><span class="measure-v">${fmtNumber(p.volume * f * f * f)} ${unit}³</span></div>`,
           )
           .join("") +
         `<div class="measure-hint" data-i18n="measure.interference.clickHint">${esc(t("measure.interference.clickHint"))}</div>`;

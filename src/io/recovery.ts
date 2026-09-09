@@ -8,6 +8,7 @@
 import type { DocumentStore } from "../document/store";
 import { toast } from "../ui/toast";
 import { t } from "../i18n";
+import { fmtCount } from "../ui/units";
 
 const IDLE_MS = 30_000; // quiet period after the last edit
 const MAX_MS = 120_000; // never lag a busy session by more than this
@@ -101,6 +102,17 @@ export async function clearRecovery(path: string | null) {
   }
 }
 
+/** How old the snapshot is, in whole minutes, written the way the active locale
+ *  writes a number — the value for the "~{age} min old" line. At least 1: a
+ *  snapshot that is seconds old is still "a minute", not "0 min".
+ *
+ *  The unit word stays in the catalogue rather than being glued on here, so a
+ *  translation can put it wherever its grammar wants it. Exported so the line
+ *  can be tested without a Tauri command behind it. */
+export function recoveryAge(savedAt: number, now: number = Date.now()): string {
+  return fmtCount(Math.max(1, Math.round((now - savedAt) / 60000)));
+}
+
 /** On launch: if any snapshot exists, offer to restore the newest one. */
 export async function checkRecovery(store: DocumentStore) {
   if (!isTauri()) return;
@@ -114,7 +126,7 @@ export async function checkRecovery(store: DocumentStore) {
     const raw = await invoke<string | null>("recovery_read", { slot });
     if (!raw) return;
     const env = JSON.parse(raw) as Envelope;
-    const age = Math.max(1, Math.round((Date.now() - (env.savedAt || mtime)) / 60000));
+    const age = recoveryAge(env.savedAt || mtime);
     const from = env.source ? env.source.split(/[\\/]/).pop() ?? env.source : t("recovery.unsavedDocument");
     const { choose } = await import("../ui/choice");
     const pick = await choose<"recover" | "discard">(

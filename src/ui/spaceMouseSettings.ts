@@ -6,7 +6,8 @@
 
 import * as THREE from "three";
 import { icon } from "./icons";
-import { t, setText } from "../i18n";
+import { t, setText, localeTag } from "../i18n";
+import { fmtNumber } from "./units";
 import {
   AXIS_LABELS,
   AXIS_NAMES,
@@ -21,6 +22,11 @@ import {
   type AxisName,
   type Motion,
 } from "../input/spacemouse";
+
+/** Top of each sensitivity slider's range (its bottom is 0). Exported so the
+ *  readout test walks the real numbers: these spans are what broke the readout —
+ *  the whole of every one of them rounds to 0 at three decimals. */
+export const SENS_MAX = { pan: 0.000003, zoom: 0.0000035, rotate: 0.00001 } as const;
 
 export class SpaceMouseSettings {
   private overlay: HTMLDivElement | null = null;
@@ -130,9 +136,9 @@ export class SpaceMouseSettings {
     right.appendChild(modeRow);
 
     right.appendChild(text("div", t("settings.spaceMouse.sensitivity"), "sm-section", "settings.spaceMouse.sensitivity"));
-    right.appendChild(this.slider(t("settings.spaceMouse.pan"), cfg.panSens, 0, 0.000003, (v) => setSpaceMouseConfig({ panSens: v })));
-    right.appendChild(this.slider(t("settings.spaceMouse.zoom"), cfg.zoomSens, 0, 0.0000035, (v) => setSpaceMouseConfig({ zoomSens: v })));
-    right.appendChild(this.slider(t("settings.spaceMouse.rotate"), cfg.orbitSens, 0, 0.00001, (v) => setSpaceMouseConfig({ orbitSens: v })));
+    right.appendChild(this.slider(t("settings.spaceMouse.pan"), cfg.panSens, 0, SENS_MAX.pan, (v) => setSpaceMouseConfig({ panSens: v })));
+    right.appendChild(this.slider(t("settings.spaceMouse.zoom"), cfg.zoomSens, 0, SENS_MAX.zoom, (v) => setSpaceMouseConfig({ zoomSens: v })));
+    right.appendChild(this.slider(t("settings.spaceMouse.rotate"), cfg.orbitSens, 0, SENS_MAX.rotate, (v) => setSpaceMouseConfig({ orbitSens: v })));
     right.appendChild(this.slider(t("settings.spaceMouse.deadzone"), cfg.deadzone, 0, 200, (v) => setSpaceMouseConfig({ deadzone: v }), 1));
     // Cross-axis filter, as a percentage of the strongest axis. 0 turns it off.
     // Capped at 60%: past that a deliberate combined gesture stops working long
@@ -185,7 +191,7 @@ export class SpaceMouseSettings {
     max: number,
     onInput: (v: number) => void,
     step?: number,
-    format: (v: number) => string = fmt,
+    format: (v: number) => string = fmtSliderValue,
   ): HTMLElement {
     const row = el("div", "sm-row");
     row.appendChild(text("span", label, "sm-slabel"));
@@ -379,8 +385,27 @@ function text(tag: string, txt: string, cls = "", i18nKey = ""): HTMLElement {
   if (i18nKey) e.dataset.i18n = i18nKey;
   return e;
 }
-function fmt(v: number): string {
+/** A slider's readout. Whole numbers at 1 and above, two SIGNIFICANT digits
+ *  below — written the way the active locale writes a number ("0,25" in de/fr).
+ *
+ *  Significant digits, not fraction digits: the sensitivity sliders top out at
+ *  3.5e-6 (SENS_MAX), so fmtNumber's three-decimal cap — right for a dimension,
+ *  and left alone — printed "0" at every position of all three of them. */
+export function fmtSliderValue(v: number): string {
   if (v === 0) return "0";
-  if (Math.abs(v) >= 1) return String(Math.round(v));
-  return v.toPrecision(2);
+  if (Math.abs(v) >= 1) return fmtNumber(Math.round(v));
+  return sigFormat().format(v);
+}
+
+// Cached like the formatters in units.ts: building an Intl.NumberFormat costs
+// far more than using one, and this runs on every drag frame.
+let sigTag: string | null = null;
+let sigFmt: Intl.NumberFormat | null = null;
+function sigFormat(): Intl.NumberFormat {
+  const tag = localeTag();
+  if (tag !== sigTag || !sigFmt) {
+    sigTag = tag;
+    sigFmt = new Intl.NumberFormat(tag, { maximumSignificantDigits: 2, useGrouping: false, numberingSystem: "latn" });
+  }
+  return sigFmt;
 }

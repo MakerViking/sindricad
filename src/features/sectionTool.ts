@@ -12,6 +12,7 @@ import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_HOT as HOT } from "../viewport/colors3d";
 import { t } from "../i18n";
+import { isImeComposing } from "../ui/focus";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
 const AXES: Record<string, THREE.Vector3> = {
@@ -136,6 +137,7 @@ export class SectionTool {
   }
 
   private onKey(e: KeyboardEvent) {
+    if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
     if (e.key === "Escape") this.stop();
     else if (e.key === "f" || e.key === "F") {
       // Same as extrude's T: the offset box holds focus, so an unswallowed "f"

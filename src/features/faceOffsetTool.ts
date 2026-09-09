@@ -22,6 +22,7 @@ import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
 import { HANDLE_IDLE, HANDLE_HOT, HANDLE_CUT as HANDLE_IN } from "../viewport/colors3d";
 import { t } from "../i18n";
+import { isImeComposing } from "../ui/focus";
 
 export type FaceOffsetMode = "offsetFace" | "thicken";
 
@@ -169,6 +170,7 @@ export class FaceOffsetTool {
   }
 
   private onKey(e: KeyboardEvent) {
+    if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
     if (e.key === "Escape") { this.cancel(); return; }
     // Thicken's one option worth a key: grow the wall both ways about the surface
     if ((e.key === "s" || e.key === "S") && this.mode === "thicken" && this.phase === "drag") {

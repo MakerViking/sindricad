@@ -8,7 +8,7 @@
 import type { DocumentStore } from "../document/store";
 import type { Feature, Num, ParamTarget } from "../types";
 import { FEATURE_META } from "./featureMeta";
-import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, parseField, fromDisplay } from "./units";
+import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, parseField, parseNumber, fmtNumber, canonicalDecimal, fromDisplay } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
@@ -169,7 +169,7 @@ export class Inspector {
       const shown = bound
         ? bound.expr
         : typeof cur === "number"
-          ? String(kind === "length" ? round(toDisplay(cur)) : cur)
+          ? fmtNumber(kind === "length" ? round(toDisplay(cur)) : cur)
           : (cur ?? "");
       const row = textRow(`${label}${suffix}`, String(shown), (raw) => {
         const err = this.commitField(target, kind, raw);
@@ -178,7 +178,7 @@ export class Inspector {
       });
       if (bound && this.store.isParamBound(target)) {
         row.classList.add("fx-row");
-        row.title = `${bound.name} = ${bound.expr} = ${round(bound.value)}`;
+        row.title = `${bound.name} = ${bound.expr} = ${fmtNumber(round(bound.value))}`;
       }
       box.appendChild(row);
     }
@@ -211,7 +211,9 @@ export class Inspector {
       this.store.setTargetValue(target, parseField(raw, kind)!, kind);
       return null;
     }
-    return this.store.setTargetExpr(target, raw, kind);
+    // The expression is stored dot-decimal whatever the user typed, so the
+    // document means the same thing on every machine (ui/units.canonicalDecimal).
+    return this.store.setTargetExpr(target, canonicalDecimal(raw), kind);
   }
 }
 
@@ -241,12 +243,17 @@ function numberRow(label: string, value: number, onChange: (v: number) => void):
   const lab = document.createElement("label");
   lab.textContent = label;
   const input = document.createElement("input");
-  input.type = "number";
-  input.step = "any";
-  input.value = String(value);
+  // TEXT, not `type="number"`, and the reason is the comma: a number input
+  // whose text is not a valid dot-decimal literal reports its value as the
+  // EMPTY STRING, so "1,5" typed under an English webview reaches this handler
+  // as "" — indistinguishable from a cleared field. Text plus inputMode keeps
+  // the numeric keypad on touch and lets parseNumber apply the app's one rule.
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.value = fmtNumber(value);
   input.addEventListener("change", () => {
-    const v = parseFloat(input.value);
-    if (!Number.isNaN(v)) onChange(v);
+    const v = parseNumber(input.value);
+    if (v !== null) onChange(v);
   });
   row.append(lab, input);
   return row;

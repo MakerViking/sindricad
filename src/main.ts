@@ -12,7 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { DocumentStore, EMPTY_DOCUMENT } from "./document/store";
 import { soleFeatureForBody } from "./document/bodyMaker";
 import { Timeline } from "./ui/timeline";
-import { isEditableTarget } from "./ui/focus";
+import { isEditableTarget, isImeComposing } from "./ui/focus";
 import { BrowserTree } from "./ui/browserTree";
 import { Inspector, editHint } from "./ui/inspector";
 import { Ribbon } from "./ui/ribbon";
@@ -354,6 +354,7 @@ const toolCursor = mountToolCursor(document.body, canvas);
 // Cmd/Ctrl-K command palette — search + run any command (discoverability safety net)
 const cmdk = new CommandPalette(handleAction);
 window.addEventListener("keydown", (e) => {
+  if (isImeComposing(e)) return; // the IME owns this keystroke
   if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
     e.preventDefault();
     cmdk.toggle(sketch.active ? "sketch" : "model");
@@ -808,6 +809,9 @@ viewport.regionPickAt = (x, y, additive) => {
 };
 // Esc clears a pre-selected profile-area selection (when not in a tool/sketch)
 window.addEventListener("keydown", (e) => {
+  // Escape is how an IME CANCELS a conversion; while one is running the key
+  // never reaches the app's meaning of Escape.
+  if (isImeComposing(e)) return;
   if (e.key === "Escape" && !toolBusy() && !sketch.active && overlay.selectedRegions().length) {
     overlay.clearRegionSelection();
     setPrompt(null);
@@ -878,6 +882,8 @@ viewport.onBodySelectionChange = () => {
 // Faces/edges made the same promise via onSelectionChange and had NO handler
 // at all; same defect, so it is cleared here too.
 window.addEventListener("keydown", (e) => {
+  // Escape cancels an IME conversion; that keystroke is never the app's.
+  if (isImeComposing(e)) return;
   // `!toolBusy()` rather than an early return: a running tool owns Escape and
   // will cancel itself, so this is "not my key", not a refusal to voice — the
   // same shape as the region handler above (featureStarters.test.ts reads it).
@@ -1668,6 +1674,7 @@ installKeymap(
 // imported geometry, where there's no feature to delete); otherwise delete the
 // selected timeline feature.
 window.addEventListener("keydown", (e) => {
+  if (isImeComposing(e)) return; // Backspace edits the composition, not the model
   if (isEditableTarget(e.target)) return; // typing in a field, not a shortcut
   // The key test comes FIRST on purpose: this listener sees every keystroke, so
   // refusing before it knows the key was Delete would have meant either silence
@@ -1692,6 +1699,11 @@ window.addEventListener("keydown", (e) => {
 //
 // Capture phase, so it lands before any tool's own keydown handler. Left working
 // in DEV: reloading the shell by hand is part of working on it.
+//
+// Deliberately NOT gated on isImeComposing, unlike every other global handler
+// here: this one only ever calls preventDefault on F5 / Ctrl+R, so it cannot
+// steal a keystroke from a composition — and skipping it while composing would
+// hand F5 back to the webview and throw the document away.
 window.addEventListener("keydown", (e) => {
   if (import.meta.env.DEV) return;
   const reload = e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r");
@@ -1700,6 +1712,7 @@ window.addEventListener("keydown", (e) => {
 
 // file shortcuts (work everywhere, even mid-sketch)
 window.addEventListener("keydown", (e) => {
+  if (isImeComposing(e)) return; // the IME owns this keystroke
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
   if (k === "n") { e.preventDefault(); void newDocument(); }

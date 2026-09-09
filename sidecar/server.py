@@ -270,6 +270,20 @@ def _worker_init(hb=None, hb_idx=None, err_buf=None, mesh=None, mesh_total=None)
         import builder  # noqa: F401  (warm the import)
         import tessellate  # noqa: F401
 
+        # Coverage-guard the ONE function every glyph comes out of, so a string
+        # the chosen font cannot draw is refused instead of embossed as .notdef
+        # boxes. Installed here, not imported by builder.py, for the same
+        # _env_sig reason as font_guard above — see font_coverage's docstring.
+        # A failure to install must not stop the worker coming up (that would
+        # trade a cosmetic-but-serious bug for a dead app), but it must be LOUD:
+        # silently leaving the guard off is how tofu ships.
+        try:
+            import font_coverage
+
+            font_coverage.install()
+        except Exception as ex:  # pragma: no cover - defensive
+            print(f"[worker] font coverage guard NOT installed: {ex!r}", flush=True)
+
         # Warm the OCCT font subsystem (~1.6 s cold on the first glyph build) at startup so
         # the user's first sketch-text/tessellateText isn't laggy.
         try:

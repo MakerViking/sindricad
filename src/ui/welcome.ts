@@ -19,6 +19,7 @@ import {
   taAvatar,
   taPing,
 } from "../tinkeratlas/client";
+import { isImeComposing } from "./focus";
 
 const SHOW_KEY = "sindri.welcomeOnStartup";
 export function welcomeOnStartup(): boolean {
@@ -50,6 +51,8 @@ export class WelcomeScreen {
   private unsubAccount: (() => void) | null = null;
   private onMessage = this.handleMessage.bind(this);
   private onKey = (e: KeyboardEvent) => {
+    // Escape while an IME is composing cancels the conversion, not the screen.
+    if (isImeComposing(e)) return;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopImmediatePropagation();

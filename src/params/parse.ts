@@ -14,6 +14,13 @@
 // arguments use SEMICOLON separators (Fusion convention — comma is ambiguous in
 // comma-decimal locales). Identifiers are case-sensitive; '.' is rejected in
 // identifiers (qualified names are reserved for the future).
+//
+// THE DECIMAL POINT HERE IS ALWAYS '.', in every locale, and a comma is not in
+// the operator set at all — an expression is stored in the document and has to
+// mean the same thing on the machine that opens it next. Input FIELDS are the
+// opposite: they take "12,5" as readily as "12.5". The two meet at
+// ui/units.canonicalDecimal, which rewrites a typed comma before an expression
+// ever reaches this tokenizer; nothing here needs to know about locales.
 
 export class ExprError extends Error {
   constructor(

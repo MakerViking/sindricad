@@ -15,6 +15,7 @@ import type { Feature, Num, Selector } from "../types";
 import { TexturePanel, ANGLE_KINDS, SEED_KINDS, type TextureMode, type TextureValues } from "./texturePanel";
 import { setPrompt } from "../ui/prompt";
 import { t } from "../i18n";
+import { isImeComposing } from "../ui/focus";
 
 // Warm texture ticks are ~10-70ms sidecar-side (geometry-skeleton cache), so a
 // short debounce keeps scrubbing responsive while still coalescing keystrokes.
@@ -78,7 +79,9 @@ export class TextureTool {
   // up. Anything narrower leaves a window where main.ts's Esc handlers are all
   // gated off by toolBusy() and the user has no way out at all.
   private escHandler = (e: KeyboardEvent) => {
-    if (!this.active || e.key !== "Escape") return;
+    // Escape cancels an IME conversion, not the tool. A composition can be open
+    // over this panel's numeric fields (a Japanese IME types fullwidth digits).
+    if (!this.active || e.key !== "Escape" || isImeComposing(e)) return;
     e.preventDefault();
     e.stopPropagation();
     this.cancel();

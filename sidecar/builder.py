@@ -5300,8 +5300,32 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                 if f2.get("type") == "sketch":
                     try:
                         sketches[f2["id"]] = _build_sketch(f2, val, datums)
-                    except Exception:
-                        pass  # its failure is already in the restored errors
+                    except Exception as ex:
+                        # Only silent when the restored errors ALREADY blame this
+                        # feature. That premise held while _build_sketch could not
+                        # newly fail; it can now — the font-coverage guard refuses
+                        # strings a checkpoint was written before it existed — and
+                        # swallowing the exception put the sketch green and left a
+                        # downstream extrude to complain that its sketch "did not
+                        # build", i.e. told the user to fix a feature the timeline
+                        # says is fine. Record it against the sketch instead.
+                        #
+                        # NOTE: `_env_sig` hashes builder.py's BYTES, so this edit
+                        # invalidates every checkpoint written before it. That is
+                        # DELIBERATE, not collateral: without it an existing user
+                        # keeps resuming pre-guard geometry (tofu boxes and all)
+                        # while a colleague opening the same file cold is refused.
+                        # One cold rebuild is the price; do not "optimise" it away.
+                        fid = f2.get("id")
+                        if not any(e.get("feature_id") == fid for e in errors):
+                            entry = {"feature_id": fid, "message": untrusted.clean(
+                                str(ex) if isinstance(ex, ValueError)
+                                else f"sketch failed ({type(ex).__name__})",
+                                untrusted.MAX_MESSAGE)}
+                            _code = getattr(ex, "code", None)
+                            if _code:
+                                entry["code"] = _code
+                            errors.append(entry)
 
     # One context, built once per rebuild, handed to every feature handler below
     # (see _RebuildCtx) — bundles the exact closures/containers the old inline
@@ -5535,15 +5559,24 @@ def _global_sig(document):
 _ENV_SIG = None
 
 
-def _env_sig():
+def _env_sig(_dir=None):
     """Hash of everything outside the document that shapes geometry: kernel/library
     versions + the sidecar's own geometry source files. Automatic and conservative —
     any builder change costs one cold rebuild per doc instead of risking stale
-    geometry from a forgotten manual version bump. SINDRI_ENV_SIG overrides for dev."""
+    geometry from a forgotten manual version bump. SINDRI_ENV_SIG overrides for dev.
+
+    `_dir` is for TESTS ONLY: it points the source-file half at a copy of this
+    directory and bypasses the cache, so a test can prove an edit moves the
+    signature without editing the running sidecar's own files. The version that
+    did edit them restored the original in a `finally`, which is correct right
+    up until the process is killed mid-test — and a half-restored builder.py
+    silently shifts the checkpoint key for every user of that install."""
     global _ENV_SIG
-    if _ENV_SIG is None:
+    if _dir is not None:
+        pass  # uncached: the caller wants THIS directory's answer, not the cached one
+    if _ENV_SIG is None or _dir is not None:
         forced = os.environ.get("SINDRI_ENV_SIG")
-        if forced:
+        if forced and _dir is None:
             _ENV_SIG = forced
         else:
             h = hashlib.blake2b(digest_size=16)
@@ -5557,17 +5590,28 @@ def _env_sig():
                 h.update(getattr(_b3d, "__version__", "?").encode())
             except Exception:
                 pass
-            here = os.path.dirname(os.path.abspath(__file__))
+            here = _dir or os.path.dirname(os.path.abspath(__file__))
             # untrusted.py is in here because feature errors are PERSISTED into
             # checkpoints: without it, editing the sanitiser would leave every
             # cached document replaying the messages the old one produced.
+            #
+            # font_coverage.py is here for the same reason and it was learned the
+            # hard way: the glyph guard REFUSES text a font cannot render, so its
+            # verdict shapes what geometry exists. It lives outside builder.py to
+            # keep ordinary edits off this hash, but that is exactly what let a
+            # document cached BEFORE the guard shipped keep restoring its
+            # .notdef-box geometry from disk, green, while the same file opened
+            # cold was refused. The guard only reaches a user whose checkpoints
+            # its own bytes invalidate.
             for name in ("builder.py", "geom_select.py", "tessellate.py",
-                         "untrusted.py", "selector_tuning.json"):
+                         "untrusted.py", "font_coverage.py", "selector_tuning.json"):
                 try:
                     with open(os.path.join(here, name), "rb") as fh:
                         h.update(fh.read())
                 except OSError:
                     pass
+            if _dir is not None:
+                return h.hexdigest()
             _ENV_SIG = h.hexdigest()
     return _ENV_SIG
 
@@ -8776,8 +8820,22 @@ def _text_faces(e, val, path_edge=None):
     if not txt.strip():
         return []
     try:
+        size = val(e["height"])
+    except Exception:
+        return []
+    # A non-positive font size SEGFAULTS OCCT — exit 139, not an exception, so
+    # the `except` below cannot catch it and neither can the worker's. Measured
+    # 2026-09-09 through tessellate_text: height 0 and height -5 both kill the
+    # process, 0.0001 is fine. It reaches here from the LIVE PREVIEW, which runs
+    # on every render, so typing "0" as the first character of "0.5" in the size
+    # field was enough to take the geometry engine down. The client refuses it
+    # too, but this guard is the one that matters: a saved document, an imported
+    # one, or any other caller reaches this function without passing that field.
+    if not (size > 0):
+        return []
+    try:
         kw = {
-            "font_size": val(e["height"]),
+            "font_size": size,
             "font_style": _TEXT_FONT_STYLE.get(e.get("style", "regular"), FontStyle.REGULAR),
             "align": (_TEXT_HALIGN.get(e.get("align", "left"), Align.MIN), Align.CENTER),
             "rotation": val(e.get("angle", 0) or 0),

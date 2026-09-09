@@ -7,8 +7,9 @@
 // fields are shown/parsed in the user's display unit, angles always in degrees.
 
 import { setTitle, t } from "../i18n";
-import { getUnit, displayValue, parseField } from "../ui/units";
+import { getUnit, fieldText, parseField } from "../ui/units";
 import { icon } from "../ui/icons";
+import { isImeComposing } from "../ui/focus";
 
 export interface DimFieldDef {
   name: string;
@@ -64,6 +65,12 @@ export class DimInput {
    *  arbitrate and passes straight through. `ownsTarget` is what keeps this
    *  from claiming e.g. a dimension label's inline value input. */
   claimToolHotkey(e: KeyboardEvent): boolean {
+    // Mid-conversion the letter is part of the reading the IME is assembling,
+    // whatever the field's undo state says (a composition need not have fired
+    // an `input` event yet). Claiming it would fire the tool AND swallow the
+    // keystroke the input method was waiting for, so the tool stands down and
+    // the key passes through untouched.
+    if (isImeComposing(e)) return false;
     const el = e.target;
     if (!this.active || !(el instanceof HTMLInputElement) || !this.ownsTarget(el)) return true;
     if (el.getAttribute("data-undo-passthrough") !== "1") return false; // the user is typing
@@ -172,6 +179,15 @@ export class DimInput {
   }
 
   private onKey(e: KeyboardEvent, field: Field) {
+    // Mid-IME-conversion the keystroke belongs to the input method (Enter
+    // confirms a candidate, Tab walks the candidate list), not to this box —
+    // committing there ends the whole tool on half-typed text. Still swallowed,
+    // so no drawing shortcut fires either. These fields are numeric but
+    // type="text", and fullwidth digits are composed like any other text.
+    if (isImeComposing(e)) {
+      e.stopPropagation();
+      return;
+    }
     if (e.key === "Tab") {
       e.preventDefault();
       field.userDriven = true; // Tab locks the current field
@@ -209,7 +225,7 @@ export class DimInput {
     for (const f of this.fields) {
       const v = values[f.def.name];
       if (!f.userDriven && v != null) {
-        f.input.value = String(displayValue(v, f.def.kind));
+        f.input.value = fieldText(v, f.def.kind);
         // Keep the live value SELECTED while it tracks the cursor (Fusion-style), so
         // typing a number at any moment replaces it instead of appending.
         if (document.activeElement === f.input) f.input.select();
@@ -223,7 +239,7 @@ export class DimInput {
   seed(name: string, value: number) {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return;
-    f.input.value = String(displayValue(value, f.def.kind));
+    f.input.value = fieldText(value, f.def.kind);
     f.userDriven = true;
   }
 
@@ -243,7 +259,12 @@ export class DimInput {
     if (f) f.userDriven = false;
   }
 
-  /** returns the field value in MM (length fields converted from display unit) */
+  /** returns the field value in MM (length fields converted from display unit).
+   *  `parseField` is the ONE numeric entry point: it takes "12,5" as readily as
+   *  "12.5" (ui/units), so this box — extrude, press/pull, fillet, chamfer,
+   *  move, offset, section and every sketch primitive — needs no rule of its
+   *  own. null for text that is not a bare number; commit() drops such a field
+   *  rather than committing a truncated number. */
   getValue(name: string): number | null {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return null;

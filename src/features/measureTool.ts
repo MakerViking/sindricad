@@ -11,8 +11,9 @@ import type { EdgeRef } from "../viewport/edgeLines";
 import type { Viewport } from "../viewport/viewport";
 import type { Hit } from "../viewport/picking";
 import { setPrompt } from "../ui/prompt";
-import { getUnit, toDisplay, round } from "../ui/units";
+import { getUnit, toDisplay, fmtNumber } from "../ui/units";
 import { esc } from "../ui/escape";
+import { isImeComposing } from "../ui/focus";
 import { polylineMid } from "../viewport/edgeMatch";
 import { t } from "../i18n";
 
@@ -94,6 +95,10 @@ export class MeasureTool {
   }
 
   private onKey(e: KeyboardEvent) {
+    // Window-level and capture-phase: it also sees the Escape that cancels an
+    // IME conversion in a field open behind the readout. That one is the input
+    // method's, not ours — exiting on it loses the picks and the typing.
+    if (isImeComposing(e)) return;
     if (e.key === "Escape") this.stop();
   }
 
@@ -193,9 +198,12 @@ export class MeasureTool {
     if (!this.panel) return;
     const unit = getUnit();
     const f = toDisplay(1); // display units per mm (area uses f²)
-    const L = (mm: number) => `${round(toDisplay(mm))} ${unit}`;
-    const A = (mm2: number) => `${round(mm2 * f * f)} ${unit}²`;
-    const xyz = (v: THREE.Vector3) => `${round(toDisplay(v.x))}, ${round(toDisplay(v.y))}, ${round(toDisplay(v.z))}`;
+    // Measurements are read by a person, so the number follows the locale
+    // (fmtNumber) while the unit abbreviation never does. Ungrouped: a measured
+    // length is a value the user goes on to type into a field.
+    const L = (mm: number) => `${fmtNumber(toDisplay(mm))} ${unit}`;
+    const A = (mm2: number) => `${fmtNumber(mm2 * f * f)} ${unit}²`;
+    const xyz = (v: THREE.Vector3) => `${fmtNumber(toDisplay(v.x))}, ${fmtNumber(toDisplay(v.y))}, ${fmtNumber(toDisplay(v.z))}`;
 
     const rows: [string, string][] = [];
     const [a, b] = this.probes;
@@ -212,7 +220,7 @@ export class MeasureTool {
       rows.push([t("feature.measure.delta"), xyz(delta)]);
       rows.push([t("feature.measure.centers"), L(a.point.distanceTo(b.point))]);
       const ang = THREE.MathUtils.radToDeg(a.dir.angleTo(b.dir));
-      rows.push([t("feature.measure.angle"), `${round(ang)}°`]);
+      rows.push([t("feature.measure.angle"), `${fmtNumber(ang)}°`]);
       this.viewport.setMeasureMarker(near.pa, near.pb);
     }
 

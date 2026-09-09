@@ -17,13 +17,14 @@ import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
 import { entityDims, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import { isOriginGeometry } from "./origin";
+import { isImeComposing } from "../ui/focus";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
-import { fmtLength, parseField, displayValue, isPlainNumber, dimValueOk } from "../ui/units";
+import { fmtLength, parseField, canonicalDecimal, displayValue, fieldText, fmtNumber, isPlainNumber, dimValueOk } from "../ui/units";
 
 /** format a dim value for display: length in the display unit, angle in degrees;
  *  driven (reference) dims are wrapped in brackets, param-driven get fx:. */
 const fmtDim = (mm: number, kind?: "length" | "angle", driven?: boolean, fx?: boolean) => {
-  const s = kind === "angle" ? `${displayValue(mm, "angle")}°` : fmtLength(mm);
+  const s = kind === "angle" ? `${fmtNumber(displayValue(mm, "angle"))}°` : fmtLength(mm);
   return driven ? t("sketch.dimension.drivenValue", { value: s }) : fx ? t("sketch.dimension.boundValue", { value: s }) : s;
 };
 
@@ -457,7 +458,7 @@ export class SketchDimensions {
     // a param-driven dim reopens its EXPRESSION (Fusion behavior); a plain dim
     // opens its value in display units
     const fx = !!label.expr && !isPlainNumber(label.expr);
-    input.value = fx ? label.expr! : String(displayValue(label.valueMm, label.kind));
+    input.value = fx ? label.expr! : fieldText(label.valueMm, label.kind);
     label.el.textContent = "";
     label.el.appendChild(input);
     input.focus();
@@ -484,6 +485,15 @@ export class SketchDimensions {
     });
     input.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      // While an IME is converting, every keystroke is the input method's:
+      // Enter confirms the candidate, Escape cancels the conversion, Backspace
+      // erases the last kana. Acting on them here committed a half-typed
+      // reading (which parses as NaN, so the dimension snapped back), reverted
+      // the edit, or — on Backspace, before the field has fired an `input`
+      // event — deleted the dimension outright. The field being numeric is no
+      // defence: it is type="text" and a Japanese IME composes fullwidth
+      // digits into it.
+      if (isImeComposing(e)) return;
       if (untouched() && (e.key === "Delete" || e.key === "Backspace") && label.onDelete) {
         e.preventDefault();
         label.onDelete();
@@ -494,7 +504,10 @@ export class SketchDimensions {
         if (label.commitExpr && (!isPlainNumber(raw) || label.expr !== undefined)) {
           // formulas — and any edit to an already-bound dim — go through the
           // expression path so the binding stays consistent
-          const err = label.commitExpr(raw);
+          // "12,5" typed into a bound dim is a number, not a formula: normalise
+          // the separator so the expression the document stores is dot-decimal
+          // (ui/units.canonicalDecimal) instead of a syntax error.
+          const err = label.commitExpr(canonicalDecimal(raw));
           if (err) {
             input.classList.add("input-error");
             input.title = err;

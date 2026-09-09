@@ -4,8 +4,14 @@
 // every edit it fires onChange for a live preview; Add/Enter commits, Cancel/Esc dismisses.
 
 import { t } from "../i18n";
+import { isImeComposing } from "../ui/focus";
 import { icon, type IconName } from "../ui/icons";
+import { setPrompt } from "../ui/prompt";
+import { badNumberField, fmtNumber, numericInput, parseNumber, typedNumber } from "../ui/units";
 
+/** True when the user typed something into `el` that the app cannot read
+ *  ("3.14.15", "1.2.3" — ui/units refuses those rather than guessing 314.15 and
+ *  12.3). Empty is NOT bad: a cleared field means "leave it at the default". */
 export interface TextValues {
   text: string;
   font?: string;
@@ -27,8 +33,16 @@ export class TextPanel {
   private onCancel: (() => void) | null = null;
   private onChange: ((v: TextValues) => void) | null = null;
   private read: (() => TextValues) | null = null;
+  /** The numeric inputs, for the commit guard. Rebuilt by every show(). */
+  private numFields: HTMLInputElement[] = [];
+  /** The one field whose value must be > 0 — see the commit guard. */
+  private sizeField: HTMLInputElement | null = null;
   private escHandler = (e: KeyboardEvent) => {
-    if (this.active && e.key === "Escape") {
+    // NOT while an IME is composing: Escape is how a Japanese, Chinese or
+    // Korean IME CANCELS A CONVERSION, and this panel is the likeliest place in
+    // the app to be mid-conversion. Cancelling here threw away the sentence
+    // being typed, one keystroke into it. (ui/focus owns the two-signal test.)
+    if (this.active && e.key === "Escape" && !isImeComposing(e)) {
       e.preventDefault();
       e.stopPropagation();
       this.cancel();
@@ -88,14 +102,12 @@ export class TextPanel {
     font.value = initial.font ?? "";
     row(font);
 
-    const size = document.createElement("input");
-    size.type = "number";
-    size.value = String(initial.height ?? 10);
+    const size = numericInput(document.createElement("input"));
+    size.value = fmtNumber(initial.height ?? 10);
     size.min = "0.1";
     Object.assign(size.style, { width: "56px" });
-    const angle = document.createElement("input");
-    angle.type = "number";
-    angle.value = String(initial.angle ?? 0);
+    const angle = numericInput(document.createElement("input"));
+    angle.value = fmtNumber(initial.angle ?? 0);
     Object.assign(angle.style, { width: "56px" });
     row(label(t("common.size")), size, label(t("sketch.text.angleDeg")), angle);
 
@@ -106,11 +118,10 @@ export class TextPanel {
     align.value = initial.align ?? "left";
     row(label(t("sketch.text.bold"), bold), bold, label(t("sketch.text.italic"), italic), italic, align);
 
-    const boxW = document.createElement("input");
-    boxW.type = "number";
+    const boxW = numericInput(document.createElement("input"), 0.5);
     boxW.min = "0";
     boxW.step = "0.5";
-    boxW.value = initial.boxWidth ? String(initial.boxWidth) : "";
+    boxW.value = initial.boxWidth ? fmtNumber(initial.boxWidth) : "";
     boxW.placeholder = t("sketch.text.noBox");
     Object.assign(boxW.style, { flex: "1", minWidth: "0" });
     row(label(t("sketch.text.boxWidth")), boxW);
@@ -118,11 +129,15 @@ export class TextPanel {
     this.read = (): TextValues => ({
       text: ta.value,
       ...(font.value ? { font: font.value } : {}),
-      height: parseFloat(size.value) || 10,
+      // parseNumber, not parseFloat: parseFloat("12,5") is 12, so a
+      // comma-decimal size silently shrank the text (ui/units). An EMPTY field
+      // still means "use the default"; text the parser refuses shows the
+      // default in the live preview and is refused at commit(), never modelled.
+      height: typedNumber(size, 10),
       style: styleOf(bold.checked, italic.checked),
       align: align.value as TextValues["align"],
-      angle: parseFloat(angle.value) || 0,
-      ...(parseFloat(boxW.value) > 0 ? { boxWidth: parseFloat(boxW.value) } : {}),
+      angle: typedNumber(angle, 0),
+      ...((parseNumber(boxW.value) ?? 0) > 0 ? { boxWidth: parseNumber(boxW.value)! } : {}),
     });
 
     const emit = () => this.onChange?.(this.read!());
@@ -139,8 +154,13 @@ export class TextPanel {
     btns.style.marginBottom = "0";
     btns.style.justifyContent = "flex-end";
 
+    this.numFields = [size, angle, boxW];
+    this.sizeField = size;
+
     ta.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); this.commit(); }
+      // Enter belongs to the IME while a conversion is open — it CONFIRMS the
+      // candidate, and committing the panel out from under that loses the text.
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !isImeComposing(e)) { e.preventDefault(); this.commit(); }
     });
     document.addEventListener("keydown", this.escHandler, true);
     ta.focus();
@@ -148,6 +168,16 @@ export class TextPanel {
 
   private commit() {
     if (!this.active || !this.read) return;
+    // A field the app cannot read must not commit as its default: a size typed
+    // "3.14.15" used to model 10mm text with nothing said anywhere. Same
+    // refusal the sketch dimension fields and press/pull give.
+    // `size` is passed as must-be-positive: a height of 0 or less segfaults the
+    // geometry engine through the live preview (sidecar/builder.py _text_faces),
+    // and the sidecar refuses it too — this is the half that can say why.
+    if (this.numFields.some((el) => badNumberField(el, el === this.sizeField))) {
+      setPrompt(t("feature.badNumber"));
+      return;
+    }
     const v = this.read();
     const cb = this.onCommit;
     this.hide();
@@ -165,6 +195,7 @@ export class TextPanel {
     this.active = false;
     this.root.style.display = "none";
     this.onCommit = this.onCancel = this.onChange = this.read = null;
+    this.numFields = [];
     document.removeEventListener("keydown", this.escHandler, true);
   }
 }

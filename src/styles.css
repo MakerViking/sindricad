@@ -86,6 +86,94 @@
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
   --t-fast: 120ms;
   --t-med: 160ms;
+
+  /* --- type ---------------------------------------------------------------
+     The UI stack, and the reason it has a tail. Inter is NOT bundled — it is
+     used if the user happens to have it and otherwise `system-ui` is what
+     everyone actually sees. Neither has a single Japanese glyph, and neither
+     does the generic `sans-serif` on a Windows install without the Japanese
+     language pack or on a minimal Linux image: 日本語 comes out as tofu boxes.
+
+     So "Noto Sans JP" sits second, resolved by the @font-face below to the
+     subset in public/fonts/. It cannot affect a Latin UI — its unicode-range
+     covers no Latin character, so for English the file is never requested and
+     the first family that matches is still Inter/system-ui, exactly as before.
+
+     The platform faces after it are the fallback for anything the subset does
+     not carry (a rare kanji, hanzi, hangul): Hiragino Sans is macOS, Yu Gothic
+     UI and Meiryo are Windows, Noto Sans CJK JP is the usual Linux package. */
+  --font-ui: "Inter", "Noto Sans JP", system-ui, "Hiragino Sans", "Yu Gothic UI", "Meiryo",
+    "Noto Sans CJK JP", sans-serif;
+  /* Same idea for the monospace surfaces (body lists, diagnostics, the fps
+     readout) — with one ordering rule that is not optional: THE `monospace`
+     GENERIC COMES BEFORE THE CJK FAMILIES.
+
+     Every one of those CJK faces is PROPORTIONAL. `ui-monospace` does not
+     resolve in WebKitGTK 4.1 — the engine the packaged Linux build runs — so
+     with the CJK families ahead of the generic the stack lands on Noto Sans
+     CJK JP and the "monospace" surfaces silently stop being monospaced, in
+     English, on the primary Linux target (measured: Latin advances go ragged,
+     ui-monospace measures identically to sans-serif).
+
+     Putting the generic first costs the CJK fallback nothing, because CSS
+     font fallback is PER CHARACTER: `monospace` resolves to a face with no
+     kana, so a Japanese character walks straight past it to Noto Sans JP.
+     Latin gets a real mono face, Japanese still gets a Japanese one. */
+  --font-mono: ui-monospace, monospace, "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI",
+    "Meiryo", "Noto Sans CJK JP";
+
+  /* Line-height for the few places that pack text into a fixed number of lines
+     (today: a ribbon button's two-line label). The number is not a taste call:
+     Noto Sans JP declares ascent 1160 / descent 288 on a 1000-unit em, so one
+     line of Japanese occupies 1.448em of content box against Inter's ~1.21em.
+     At line-height 1.15 the glyph box overflows its line box at both ends, and
+     with a two-line cap the overflow is what gets sliced off.
+
+     Overridden per language rather than raised globally, because raising it
+     would move every English label by a pixel and this phase must leave English
+     pixel-identical. 1.32 is under the font's own 1.448 on purpose — a ribbon
+     label is two tight lines in a strip, not body copy. */
+  --lh-label: 1.15;
+}
+
+/* `applyDocumentLang()` in src/i18n/index.ts writes the active locale onto
+   <html lang>, which is what makes this reachable. :lang() matches by language
+   subtag, so ja-JP and zh-Hans are covered too. */
+:root:lang(ja),
+:root:lang(zh),
+:root:lang(ko) {
+  --lh-label: 1.32;
+}
+
+/* ============================================================================
+   BUNDLED FONT
+   ============================================================================
+   Self-hosted, not a CDN: the packaged webview's CSP is `font-src 'self' data:`
+   with connect-src pinned to localhost, and a desktop CAD app has to open a
+   file with the network off.
+
+   `unicode-range` is the whole design. It is the exact coverage of the subset
+   (kana, CJK punctuation, halfwidth/fullwidth forms, the jōyō kanji, plus the
+   one jōyō character outside the BMP), so:
+     - an English UI never requests the file, and cannot render differently;
+     - a Japanese UI gets it on the first Japanese character painted;
+     - a character the subset lacks falls straight through to the platform
+       families in --font-ui instead of being drawn from a font that does not
+       have it.
+   The weight is a RANGE, not a number: this is the variable font, and its
+   default instance is Thin (wght 100). Declaring `font-weight: 400` here would
+   render the whole UI in hairline Japanese while looking correct in English.
+
+   public/fonts/README.md has the provenance, the licence and the exact
+   subsetting command. */
+@font-face {
+  font-family: "Noto Sans JP";
+  src: url("/fonts/NotoSansJP-subset.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+3000-303F, U+3041-309F, U+30A0-30FF, U+31F0-31FF, U+4E00-9FFF,
+    U+FF00-FFEF, U+20B9F;
 }
 
 * {
@@ -97,7 +185,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
   font-feature-settings: "cv11", "ss01", "tnum";
   -webkit-font-smoothing: antialiased;
@@ -681,8 +769,11 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: center;
-  line-height: 1.15;
-  max-height: calc(2 * 1.15em);
+  /* 1.15 in Latin, 1.32 under a CJK <html lang> — see --lh-label. The cap has
+     to be computed from the SAME token or the two disagree and the second line
+     is cut in half, which is the failure this whole knob exists to avoid. */
+  line-height: var(--lh-label);
+  max-height: calc(2 * var(--lh-label) * 1em);
   max-width: 88px;
 }
 .ribbon-btn:hover {
@@ -938,7 +1029,13 @@ body {
   right: var(--s-4);
   bottom: var(--s-4);
   padding: 2px 7px;
-  font: 11px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* No `font:` shorthand here: the shorthand RESETS font-family, so this had
+     its own mono list and could never reach the bundled font. The readout's
+     text goes through t() ("idle", "{fps} fps · {ms} ms"), so a translated
+     "idle" would have been tofu. Family named, size and leading separate. */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
   font-variant-numeric: tabular-nums; /* digits stop twitching as the value changes */
   color: var(--text-mute);
   background: rgba(22, 24, 29, 0.55);
@@ -1158,7 +1255,10 @@ button.active {
 .timeline-empty {
   display: flex;
   align-items: center;
-  height: 38px;
+  /* A minimum, not a height: the only text-bearing box in the timeline strip,
+     and "No features yet" is a full sentence in some languages. A fixed height
+     would clip the second line rather than grow. */
+  min-height: 38px;
   padding: 0 var(--s-3);
   color: var(--text-mute);
   font-size: 12px;
@@ -1369,9 +1469,14 @@ button.active {
 .param-row label {
   font-size: 12px;
   color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Wraps; it does NOT truncate. This label is the only thing that says what
+     the input beside it means, and the track is a 1fr in a 252px panel — so
+     "Distance" fits and "テーパー角度" or "Abstand bis Fläche" does not. An
+     ellipsis here leaves the user typing into an unnamed box. Wrapping makes
+     the row taller instead, which the grid already tolerates (align-items is
+     centre and nothing sets a row height). English labels are all short enough
+     to stay on one line, so nothing moves in English. */
+  overflow-wrap: anywhere;
 }
 /* The "Up to" row's value is text + a clear button, not an input. It needs more
    than the 84px input track ("Picked face" alone measures 68.5px against the
@@ -1964,7 +2069,11 @@ button.finish:hover {
   position: absolute;
   transform: translate(-50%, -50%);
   min-width: 16px;
-  height: 16px;
+  /* Paired with min-width, so the badge is square for H/V/T/= and grows for a
+     symbol the font draws taller — ⊙ ◎ ⋈ ⚓ come from whichever CJK or symbol
+     face the platform falls back to, whose em box is taller than the Latin
+     letters this box was measured against. */
+  min-height: 16px;
   padding: 0 3px;
   display: flex;
   align-items: center;
@@ -2124,7 +2233,10 @@ button.finish:hover {
 }
 .sm-axis-row {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  /* minmax, not a fixed track: below 120px the label column is unchanged (the
+     track floors at its minimum), above it the column grows and the meter
+     gives up the width, instead of the label spilling across the meter. */
+  grid-template-columns: minmax(120px, auto) 1fr;
   align-items: center;
   gap: 8px;
 }
@@ -2168,10 +2280,12 @@ button.finish:hover {
    nothing longer: "Cross-axis filter" measures 76-85px in every font in the
    stack, so it wrapped to two lines and made its row half again as tall as its
    neighbours. Widened rather than shortening the label, which is the only text
-   that says what the control does. */
+   that says what the control does.
+   A translation walks straight back into that: minmax lets the track grow past
+   92px rather than wrap, and floors at 92px so English is untouched. */
 .sm-row {
   display: grid;
-  grid-template-columns: 92px 1fr 52px;
+  grid-template-columns: minmax(92px, auto) 1fr 52px;
   align-items: center;
   gap: 8px;
 }
@@ -2196,7 +2310,7 @@ button.finish:hover {
 }
 .sm-map-row {
   display: grid;
-  grid-template-columns: 84px 1fr auto;
+  grid-template-columns: minmax(84px, auto) 1fr auto;
   align-items: center;
   gap: 8px;
 }
@@ -2343,7 +2457,7 @@ button.finish:hover {
 .choice-list li {
   padding: 5px 8px;
   border-radius: var(--r-sm);
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2747,7 +2861,9 @@ button.finish:hover {
   color: var(--text);
   padding: 8px 10px;
   font-size: 12px;
-  font-family: monospace;
+  /* the shared stack, not a bare `monospace`: this input is reused by the
+     publish dialog for a body title, which can be Japanese */
+  font-family: var(--font-mono);
 }
 .ta-signin-error {
   min-height: 16px;
@@ -2947,7 +3063,14 @@ button.finish:hover {
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-3);
-  font: 12px/1.4 system-ui, sans-serif;
+  /* Size and line-height ONLY — never the `font:` shorthand. The shorthand
+     resets font-family to whatever it names, so `font: 12px/1.4 system-ui,
+     sans-serif` here silently dropped var(--font-ui) (and with it Noto Sans JP
+     and every platform CJK face) for this whole subtree: the five tool panels
+     that carry this class rendered Japanese as tofu on exactly the machines
+     the bundled font exists to serve, and the inputs below inherited it. */
+  font-size: 12px;
+  line-height: 1.4;
   box-sizing: border-box;
   /* native <select> popups, checkboxes and number spinners render dark */
   color-scheme: dark;
@@ -3071,7 +3194,7 @@ button.finish:hover {
   background: var(--bg-deep);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;

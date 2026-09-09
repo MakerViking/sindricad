@@ -19,6 +19,7 @@ import { taBugReport, asTaError } from "../tinkeratlas/client";
 import type { Viewport } from "../viewport/viewport";
 import type { SketchMode } from "../sketch/sketchMode";
 import type { Feature } from "../types";
+import { isImeComposing } from "./focus";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
@@ -149,6 +150,10 @@ export function createBugReporter(deps: {
       popModal();
     };
     const onKey = (e: KeyboardEvent) => {
+      // The description box is free text, so a Japanese user spends most of
+      // their time in this dialog mid-composition — where Escape CANCELS the
+      // conversion. Closing on it would throw the report away mid-sentence.
+      if (isImeComposing(e)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();

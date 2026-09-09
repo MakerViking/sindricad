@@ -5,6 +5,7 @@
 
 import { esc } from "./escape";
 import { t } from "../i18n";
+import { isImeComposing } from "./focus";
 
 export interface ChoiceOption<T extends string> {
   value: T;
@@ -68,6 +69,11 @@ export function choose<T extends string>(
     buttons[0]?.focus();
 
     const onKey = (e: KeyboardEvent) => {
+      // A window-level CAPTURE listener that preventDefaults everything it does
+      // not recognise, so it would eat an IME conversion outright — Escape
+      // cancels one, Enter confirms it. Nothing in this modal takes free text
+      // today; the guard is what keeps that still true if one gains a field.
+      if (isImeComposing(e)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -164,6 +170,11 @@ export function chooseMulti<T extends string>(
     checks[0]?.focus();
 
     const onKey = (e: KeyboardEvent) => {
+      // A window-level CAPTURE listener that preventDefaults everything it does
+      // not recognise, so it would eat an IME conversion outright — Escape
+      // cancels one, Enter confirms it. Nothing in this modal takes free text
+      // today; the guard is what keeps that still true if one gains a field.
+      if (isImeComposing(e)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
@@ -214,6 +225,9 @@ export function listModal(title: string, items: string[]): Promise<void> {
     document.body.appendChild(backdrop);
 
     const onKey = (e: KeyboardEvent) => {
+      // Escape cancels an IME conversion and Enter confirms one; neither is a
+      // dismissal while a composition is running.
+      if (isImeComposing(e)) return;
       if (e.key === "Escape" || e.key === "Enter") done();
     };
     backdrop.addEventListener("pointerdown", (e) => {
