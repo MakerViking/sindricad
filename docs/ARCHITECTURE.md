@@ -40,8 +40,11 @@ reason, not a quick patch.
    there. There is an experimental, off-by-default Rust/OCCT path (`--features
    rust-geom` / `VITE_GEOM=rust`) kept as a spike; the Python build123d sidecar is the
    default and the source of truth.
-2. **Stateless full rebuild.** The frontend's logical model is "send the document, get
-   back a mesh" - the sidecar rebuilds the build123d tree from scratch on every change.
+2. **Document-defined geometry.** The frontend's logical model is "send the document,
+   get back a mesh". The worker reuses unchanged history prefixes in RAM or on disk;
+   a cache miss replays the build123d tree from scratch. Cache contents must never
+   change the result. A deeper valid disk checkpoint can beat a matching RAM prefix
+   on undo/redo, while RAM wins ties and remains the fallback on a failed restore.
    A failing feature is recorded as a no-op and the rebuild continues past it, rather
    than aborting the whole document. (The wire protocol layers a delta encoding and a
    per-body cache on top of this for performance; see PROTOCOL.md - the semantics stay
@@ -79,8 +82,10 @@ reason, not a quick patch.
 
 1. The frontend sends the document (or, once a baseline is established, just the
    changed features) over the WebSocket.
-2. The sidecar replays the build123d feature tree from scratch - sketch, extrude,
-   fillet, pattern, and so on, in timeline order - inside a long-lived worker process.
+2. Inside a long-lived worker, the sidecar finds a reusable history prefix and
+   replays the remaining features in timeline order. Projected sketches constrain
+   the resume point so pending projection updates still reach the frontend. A disk
+   restore is promoted to a RAM snapshot, including when it already covers the tip.
 3. If a feature fails (a fillet with no matching edge, a boolean that would be a
    no-op), that failure is recorded and the feature is treated as a no-op. The rebuild
    **continues** with the remaining features rather than discarding the whole document.
@@ -92,6 +97,7 @@ reason, not a quick patch.
 
 See [PROTOCOL.md](PROTOCOL.md) for the exact wire shapes, including the delta-send and
 per-body etag mechanisms that make this fast without changing the statelessness above.
+See [PERFORMANCE.md](PERFORMANCE.md) for current measurements and optimisation priorities.
 
 ## Bundled runtime layout (shipped builds)
 

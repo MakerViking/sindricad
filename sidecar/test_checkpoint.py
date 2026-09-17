@@ -430,6 +430,120 @@ def test_textures_survive_disk_resume():
     print(PASS, "textures survive a DISK-checkpoint resume")
 
 
+def test_deeper_disk_checkpoint_wins_without_losing_ram_fallback():
+    """Undo should reuse a saved tip even when an earlier RAM prefix matches.
+
+    Exercise actual binary BREP checkpoints, not a mocked restore. The competing
+    RAM prefix is created by a normal feature edit. Count executed handlers so
+    this regression gate does not depend on machine speed.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+    import geomstore
+
+    with tempfile.TemporaryDirectory(prefix="sindri_resume_choice_") as tmp, ExitStack() as stack:
+        store = geomstore.Store(root=tmp)
+        stack.callback(store.db.close)
+        stack.enter_context(patch.object(builder, "_disk_store", lambda: store))
+        stack.enter_context(patch.object(builder, "_CACHE", {
+            "feature_sigs": [], "snaps": [], "global_sig": None,
+        }))
+        executed = []
+        handlers = {}
+        for kind, handler in builder._FEATURE_HANDLERS.items():
+            def counted(f, ctx, handler=handler):
+                executed.append(f["id"])
+                return handler(f, ctx)
+            handlers[kind] = counted
+        stack.enter_context(patch.object(builder, "_FEATURE_HANDLERS", handlers))
+        original_rebuild = builder.rebuild
+        resumes = []
+
+        def traced_rebuild(*args, **kwargs):
+            resumes.append(kwargs.get("resume"))
+            return original_rebuild(*args, **kwargs)
+
+        stack.enter_context(patch.object(builder, "rebuild", traced_rebuild))
+
+        # Keep the failed feature and its repair diagnostic in the saved state.
+        keys = builder._chain_keys_scoped(DIAG_DOC, builder._feature_sigs(DIAG_DOC["features"]))
+        reference_diags = []
+        reference = builder.rebuild(DIAG_DOC, diagnostics=reference_diags, persist={
+            "store": store, "keys": keys, "mod": {}, "acc_ms": 0.0, "budget_ms": 0.0,
+        })
+        assert store.find_checkpoint(keys)["feat_index"] == 3, "setup: missing saved tip"
+        edited = _edit_feature(DIAG_DOC, 3, "radius", 1.5)
+        with patch.object(builder, "_disk_store", lambda: None):
+            builder.rebuild_cached(edited, diagnostics=[], projections=[])
+
+        previous_cache = builder._CACHE
+        executed.clear()
+        readonly_diags = []
+        readonly = builder.rebuild_cached(DIAG_DOC, diagnostics=readonly_diags,
+                                          projections=[], readonly=True)
+        assert executed == [], f"readonly lookup replayed cached features: {executed}"
+        assert builder._CACHE is previous_cache, "readonly lookup replaced the editing cache"
+        assert _sig(readonly, readonly_diags) == _sig(reference, reference_diags)
+
+        executed.clear()
+        diags = []
+        restored = builder.rebuild_cached(DIAG_DOC, diagnostics=diags, projections=[])
+        assert executed == [], f"undo replayed cached features: {executed}"
+        assert _sig(restored, diags) == _sig(reference, reference_diags)
+        assert restored[1] == reference[1], "disk preference lost the feature error"
+        assert restored[2][0]["owners"] == reference[2][0]["owners"]
+        assert restored[0].is_valid, "restored solid is invalid"
+
+        # A full disk hit must become a RAM snapshot. Otherwise every subsequent
+        # no-op rereads the BREP, replaces shape identities and misses mesh caches.
+        with patch.object(builder, "_restore_from_disk", side_effect=AssertionError("unnecessary disk read")):
+            repeated = builder.rebuild_cached(DIAG_DOC, diagnostics=[], projections=[])
+        assert repeated[2][0]["shape"] is restored[2][0]["shape"]
+        assert executed == [], "unchanged rebuild executed a feature"
+
+        # Unavailable or corrupt deeper checkpoints must leave the earlier RAM
+        # snapshot usable. The saved error/diagnostic prefix must still survive.
+        for failure in ("missing", "corrupt", "fingerprint"):
+            builder._CACHE = {"feature_sigs": [], "snaps": [], "global_sig": None}
+            with patch.object(builder, "_disk_store", lambda: None):
+                builder.rebuild_cached(edited, diagnostics=[], projections=[])
+            cp = store.find_checkpoint(keys)
+            if cp is None or cp["feat_index"] != 3:
+                builder.rebuild(DIAG_DOC, diagnostics=[], persist={
+                    "store": store, "keys": keys, "mod": {}, "acc_ms": 0.0, "budget_ms": 0.0,
+                })
+                cp = store.find_checkpoint(keys)
+            blob_key = cp["manifest"][0]["blob_key"]
+            if failure == "missing":
+                store.db.execute("DELETE FROM checkpoints WHERE chain_key = ?", (keys[-1],))
+                store.db.commit()
+            elif failure == "fingerprint":
+                state = json.loads(cp["state_json"])
+                state["fps"][0]["f"] += 1
+                store.db.execute("UPDATE checkpoints SET state = ? WHERE chain_key = ?",
+                                 (json.dumps(state), keys[-1]))
+                store.db.commit()
+            executed.clear()
+            diags = []
+            blob_path = store._blob_path(blob_key)
+            blob_bytes = None
+            if failure == "corrupt":
+                with open(blob_path, "rb") as fh:
+                    blob_bytes = fh.read()
+                with open(blob_path, "wb") as fh:
+                    fh.write(b"truncated checkpoint")
+            try:
+                fallback = builder.rebuild_cached(DIAG_DOC, diagnostics=diags, projections=[])
+            finally:
+                if blob_bytes is not None:
+                    with open(blob_path, "wb") as fh:
+                        fh.write(blob_bytes)
+            assert resumes[-1][0] == 3, f"{failure}: lost the usable RAM prefix"
+            assert executed == ["d4"], f"{failure}: unexpected replay {executed}"
+            assert _sig(fallback, diags) == _sig(reference, reference_diags)
+    print(PASS, "deeper disk wins; warm identity and RAM fallback survive")
+
+
 def test_body_fingerprint_carries_topology():
     fp = builder._body_fingerprint(Box(10, 10, 10))
     assert fp["f"] == 6 and fp["e"] == 12 and fp["vx"] == 8, fp
@@ -462,6 +576,7 @@ def main():
     test_diagnostics_survive_resume()
     test_diagnostics_survive_disk_resume()
     test_textures_survive_disk_resume()
+    test_deeper_disk_checkpoint_wins_without_losing_ram_fallback()
     test_a_sketch_that_newly_fails_on_replay_is_blamed_for_it()
     test_every_diagnostic_shape_is_json_safe()
     test_body_fingerprint_carries_topology()

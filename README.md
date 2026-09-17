@@ -512,8 +512,10 @@ Design decisions worth knowing up front:
   `VITE_GEOM=rust`, but a 2026 feasibility study found a Rust kernel could not beat
   OCCT on robustness or speed, so the Python build123d sidecar stays the default and
   the source of truth.
-- **Full rebuild on every change.** The frontend sends the whole document, the sidecar
-  rebuilds from scratch and returns a fresh mesh. There is no server-side state.
+- **Incremental history replay.** The worker resumes from an unchanged RAM prefix
+  or a validated disk checkpoint and rebuilds the remaining features. Document
+  deltas and per-body mesh caches reduce transfer and drawing work. Cache misses
+  fall back to a full rebuild; Compute All explicitly bypasses the caches.
 - **The parametric engine is the build123d tree, re-run.** Nothing more exotic.
 - **Selectors, not indices.** Geometry is referenced by queryable descriptors so
   references survive edits that renumber the underlying topology.

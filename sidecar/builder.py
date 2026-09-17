@@ -5210,6 +5210,7 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
       snapshots_out : if a list is given, append (feature_index, snapshot) after each
                       successfully-built feature, so a caller can cache per-feature
                       state and resume from the longest unchanged prefix next time.
+                      A disk resume also emits its rehydrated prefix snapshot.
     A snapshot copies the body dicts (sharing OCCT shape refs — no geometry copy) plus
     the sketches/datums/id-counter, and is restored by mutating those containers IN
     PLACE so the new_body/active/find_body closures stay bound to them.
@@ -5367,6 +5368,12 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
                             if _code:
                                 entry["code"] = _code
                             errors.append(entry)
+            if snapshots_out is not None:
+                # Promote the restored prefix to a normal RAM snapshot AFTER
+                # replaying its sketches. In particular, a disk hit at the tip
+                # executes no new features: without this snapshot the next
+                # unchanged rebuild rereads the BREP and loses mesh identities.
+                snapshots_out.append((start - 1, _snapshot()))
 
     # One context, built once per rebuild, handed to every feature handler below
     # (see _RebuildCtx) — bundles the exact closures/containers the old inline
@@ -6085,10 +6092,10 @@ def rebuild_cached(document, diagnostics=None, projections=None, readonly=False,
     document that was resume 5 rather than 19, and it accounted for essentially
     the whole penalty on its own.
 
-    Note this leaves a shallow-RAM-beats-deep-disk asymmetry untouched: the disk
-    tier is consulted only `if resume is None`, so any shallow `_CACHE` still
-    vetoes a deeper valid checkpoint (measured 2.550 s vs 0.022 s). Writing
-    nothing avoids CREATING that state; it does not fix the preference order.
+    A matching RAM prefix competes with strictly deeper disk checkpoints. This
+    matters on undo/redo: RAM describes the last edited history, while disk can
+    already hold the complete result of the history being restored. RAM wins
+    ties and remains the fallback if the deeper disk state cannot be restored.
     """
     global _CACHE
     features = document.get("features", [])
@@ -6139,13 +6146,19 @@ def rebuild_cached(document, diagnostics=None, projections=None, readonly=False,
         # snaps below the RAM retention window are None — fall through to disk
         if k > 0 and k - 1 < len(_CACHE["snaps"]) and _CACHE["snaps"][k - 1] is not None:
             resume = (k, _CACHE["snaps"][k - 1])  # restore state after feature k-1
-    if resume is None and store is not None:
+    disk_keys = keys if proj_cap is None else keys[:proj_cap]
+    if resume is not None:
+        # keys[i] describes state AFTER feature i; resume[0] is the NEXT
+        # feature. Search only strictly deeper checkpoints, preserving RAM on
+        # ties and avoiding disk reads altogether for an unchanged warm tip.
+        disk_keys = disk_keys[resume[0]:]
+    if store is not None and disk_keys:
         # Checkpoint restore reads every prefix body from disk — on a large
         # document that is a long phase, and these two calls only bracket it.
         # Bracketing is NOT what keeps it alive: the gap the stall watchdog sees
         # is the one INSIDE, which is why _restore_from_disk ticks per body.
         progress_tick()
-        hit = _restore_from_disk(store, keys if proj_cap is None else keys[:proj_cap])
+        hit = _restore_from_disk(store, disk_keys)
         progress_tick()
         if hit is not None:
             start_i, snap, disk_mod = hit
@@ -6195,7 +6208,11 @@ def rebuild_cached(document, diagnostics=None, projections=None, readonly=False,
         merged = [None] * start  # no per-feature RAM snaps for the disk prefix
     else:
         merged = list(_CACHE["snaps"][:start])  # reused prefix
-    merged.extend(snap for (_i, snap) in snaps_out)  # freshly built tail
+    for i, snap in snaps_out:
+        if i < len(merged):
+            merged[i] = snap  # rehydrated disk prefix (including a tip-only hit)
+        else:
+            merged.append(snap)  # freshly built tail
     for j in range(0, max(0, len(merged) - _RAM_SNAP_WINDOW)):
         merged[j] = None  # bound RAM; disk checkpoints cover the deep prefix
     if not readonly:

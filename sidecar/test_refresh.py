@@ -295,6 +295,48 @@ def test_quiet_proof_deep_resume():
     print(PASS, "quiet previous build lets a downstream edit resume past the sketch")
 
 
+def test_deeper_disk_tip_cannot_swallow_projection_updates():
+    """A disk tip must not beat a RAM prefix across an unacknowledged projection.
+
+    The saved geometry alone cannot prove that the frontend applied a previous
+    refresh. Keep the real deeper checkpoint available while reverting a fillet,
+    and require the projected sketch to emit its correction again.
+    """
+    import tempfile
+    from unittest.mock import patch
+    import geomstore
+
+    src, true_curve = _edge_source()
+    tail = [{"id": "f4", "type": "fillet",
+             "edges": {"kind": "edge", "by": "axis", "axis": "Z"}, "radius": 2}]
+    doc = _doc(WRONG, src, tail=tail)
+    with tempfile.TemporaryDirectory(prefix="sindri_projection_checkpoint_") as tmp:
+        store = geomstore.Store(root=tmp)
+        try:
+            with patch.object(builder, "_disk_store", lambda: store), patch.object(builder, "_CACHE", {
+                "feature_sigs": [], "snaps": [], "global_sig": None,
+            }):
+                keys = builder._chain_keys_scoped(doc, builder._feature_sigs(doc["features"]))
+                rebuild(doc, projections=[], persist={
+                    "store": store, "keys": keys, "mod": {}, "acc_ms": 0.0, "budget_ms": 0.0,
+                })
+                assert store.find_checkpoint(keys)["feat_index"] == 3
+                edited = copy.deepcopy(doc)
+                edited["features"][-1]["radius"] = 1.5
+                with patch.object(builder, "_disk_store", lambda: None):
+                    updates = []
+                    rebuild_cached(edited, projections=updates)
+                assert len(updates) == 1, "setup must leave a pending projection update"
+                updates = []
+                _part, errors, _bodies = rebuild_cached(doc, projections=updates)
+                assert not errors, errors
+                assert len(updates) == 1, "deeper disk tip swallowed the pending update"
+                assert _curve_close(updates[0]["curve"], true_curve, 1e-6)
+        finally:
+            store.db.close()
+    print(PASS, "deeper disk checkpoint respects pending projection updates")
+
+
 def main():
     print("test_refresh:")
     src, true_curve = test_wrong_cache_corrected()
@@ -308,6 +350,7 @@ def main():
     test_resume_cap_ram_tier()
     test_resume_cap_disk_tier()
     test_quiet_proof_deep_resume()
+    test_deeper_disk_tip_cannot_swallow_projection_updates()
     print("ALL PASS")
 
 

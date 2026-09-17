@@ -384,8 +384,10 @@ class Store:
         self.db.commit()
 
     def find_checkpoint(self, chain_keys):
-        """Given the FULL ordered list of per-feature chain keys (index i = key after
-        feature i), return the DEEPEST restorable checkpoint as a dict, or None.
+        """Given ordered per-feature chain keys, return the DEEPEST restorable
+        checkpoint as a dict, or None. The keys may cover the full history or
+        only the suffix deeper than a RAM snapshot. Returned `feat_index` is
+        always the absolute feature index stored in the checkpoint row.
 
         "Restorable" = the row exists AND every blob its manifest references is on
         disk. One IN query fetches the candidates; we then walk from deepest to
