@@ -7342,6 +7342,27 @@ def _noop_eps(ref):
     return max(1e-6, 1e-4 * (ref or 0.0))
 
 
+def _validated_boolean_cleanup(raw, cleaned, analyzer):
+    """Return the unified boolean unless it broke an otherwise-valid result.
+
+    This is the same one-directional safety rule `_serial_bool` has always used,
+    ordered around the overwhelmingly common case: when `cleaned` is valid it is
+    selected regardless of `raw`, so validating `raw` first cannot affect the
+    answer. Check it only on the exceptional invalid-cleanup path. On a 49-hole
+    plate this removes one full topology validation per successful cut while the
+    Shroud backstop (valid raw -> invalid cleaned) remains unchanged.
+    """
+    try:
+        if analyzer(cleaned).IsValid():
+            return cleaned
+    except Exception:
+        # Preserve the old fallback exactly: it checked raw first, so a broken
+        # cleaned-shape analysis selected raw only when raw was valid; an
+        # already-invalid raw result still kept the cleanup.
+        return raw if analyzer(raw).IsValid() else cleaned
+    return raw if analyzer(raw).IsValid() else cleaned
+
+
 def _serial_bool(base, tool, kind):
     """A boolean (kind = "fuse" | "cut" | "common") forced SERIAL.
 
@@ -7386,11 +7407,10 @@ def _serial_bool(base, tool, kind):
         # So the tidy-up is only accepted when it leaves the solid at least as
         # valid as it found it. Checked in this direction on purpose: a boolean
         # that was ALREADY invalid is a different problem, and refusing the
-        # cleanup there would change results for no reason.
-        if BRepCheck_Analyzer(raw).IsValid() and not BRepCheck_Analyzer(cleaned).IsValid():
-            shape = raw
-        else:
-            shape = cleaned
+        # cleanup there would change results for no reason. Validate CLEANED
+        # first: when it is valid the old truth table always selected it, so the
+        # expensive raw check is needed only when cleanup actually looks broken.
+        shape = _validated_boolean_cleanup(raw, cleaned, BRepCheck_Analyzer)
     except Exception:
         pass  # keep the un-cleaned result rather than fail the whole boolean
     return Compound(shape)

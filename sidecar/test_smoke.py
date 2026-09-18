@@ -2088,32 +2088,70 @@ def test_unify_never_costs_a_valid_solid():
     prefer a valid raw result over an invalid cleaned one. The user's own part is
     not in the repo, so what is pinned is the RULE, not that one document.
     """
-    from OCP.BRepCheck import BRepCheck_Analyzer
-
     # 1. the guard does not disturb an ordinary boolean: unify still merges the
     #    coplanar faces a cut leaves behind
     doc = {"parameters": {}, "features": [
         {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 20},
         {"id": "b2", "type": "box", "length": 10, "width": 10, "height": 40},
         {"id": "c1", "type": "combine", "operation": "cut", "target": "body1", "tool": "body2"}]}
-    _, err, bodies = rebuild(doc)
+    from unittest.mock import patch
+
+    with patch.object(builder, "_validated_boolean_cleanup",
+                      wraps=builder._validated_boolean_cleanup) as cleanup_check:
+        _, err, bodies = rebuild(doc)
+    assert cleanup_check.called, "the real boolean path bypassed the cleanup guard"
+    assert not err, err
     solids = [b["shape"] for b in bodies if b.get("shape") is not None]
     assert solids, f"the cut produced no body: {err}"
     assert solids[0].is_valid, "an ordinary cut came back invalid"
 
-    # 2. the rule itself, stated as code so it cannot rot: a cleaned shape is
-    #    only accepted when it does not DESTROY validity the raw result had.
-    src = inspect.getsource(builder._serial_bool)
-    assert "BRepCheck_Analyzer" in src, (
-        "_serial_bool no longer checks the cleaned shape's validity — "
-        "UnifySameDomain can return successfully and hand back a broken solid")
-    assert "raw" in src and "cleaned" in src, \
-        "_serial_bool no longer distinguishes the raw boolean from the cleaned one"
+    # 2. Pin the whole truth table, including the call order. A valid cleanup is
+    #    ALWAYS selected, so measuring raw first was redundant on every ordinary
+    #    boolean. Raw is consulted only when cleanup is invalid, preserving the
+    #    field backstop without paying two full topology walks on the good path.
+    raw, cleaned = object(), object()
 
-    # 3. and the direction of the check: a boolean that was ALREADY invalid must
-    #    still get its cleanup, or the guard would change results for no reason.
-    assert "IsValid() and not" in src.replace("\n", " "), \
-        "the validity guard is no longer one-directional (raw valid -> cleaned invalid)"
+    def choose(cleaned_valid, raw_valid):
+        seen = []
+
+        class Result:
+            def __init__(self, value):
+                self.value = value
+
+            def IsValid(self):
+                seen.append(self.value)
+                return cleaned_valid if self.value is cleaned else raw_valid
+
+        got = builder._validated_boolean_cleanup(raw, cleaned, Result)
+        return got, seen
+
+    got, seen = choose(True, False)
+    assert got is cleaned and seen == [cleaned], "valid cleanup should skip raw validation"
+    got, seen = choose(True, True)
+    assert got is cleaned and seen == [cleaned], "two valid results must select cleanup"
+    got, seen = choose(False, True)
+    assert got is raw and seen == [cleaned, raw], "valid raw result must rescue bad cleanup"
+    got, seen = choose(False, False)
+    assert got is cleaned and seen == [cleaned, raw], \
+        "an already-invalid boolean must still keep its cleanup"
+
+    # Analyzer failure follows the old outer-try behavior too: good raw rescues
+    # an unreadable cleanup; bad raw still keeps cleanup rather than regressing
+    # to the already-invalid pre-clean shape.
+    def choose_when_cleaned_check_raises(raw_valid):
+        class Result:
+            def __init__(self, value):
+                self.value = value
+
+            def IsValid(self):
+                if self.value is cleaned:
+                    raise RuntimeError("synthetic analyzer failure")
+                return raw_valid
+
+        return builder._validated_boolean_cleanup(raw, cleaned, Result)
+
+    assert choose_when_cleaned_check_raises(True) is raw
+    assert choose_when_cleaned_check_raises(False) is cleaned
 
     print("  unify-guard OK: a tidy-up may not cost a valid solid")
 

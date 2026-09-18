@@ -8,6 +8,10 @@ shipping worker's geometry + mesh payload path and binary encoding separately;
 excludes application startup, process transport, and browser rendering. Imports
 and geometry checks are outside the timers. Every run gets a fresh temporary
 cache; no user documents or application caches are changed.
+
+Pass --profile to attribute overlapping portions of each phase to feature
+handlers, the boolean path, provenance and body payload generation. Profiling
+wrappers are absent from normal benchmark runs.
 """
 
 import argparse
@@ -45,7 +49,7 @@ def plate():
     return {"parameters": {}, "features": features}
 
 
-def run_once():
+def run_once(profile=False):
     import builder
     import geomstore
     import server
@@ -54,6 +58,19 @@ def run_once():
     edited = copy.deepcopy(original)
     edited["features"][62]["entities"][0]["radius"] = 2.1
     rows = []
+    events = []
+    current_phase = [None]
+
+    def timed(label, fn):
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                events.append((current_phase[0], label,
+                               (time.perf_counter() - start) * 1000))
+        return wrapper
+
     with tempfile.TemporaryDirectory(prefix="sindri-history-bench-") as cache:
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, {"XDG_CACHE_HOME": cache, "SINDRI_DISK_CACHE": "1"}))
@@ -63,10 +80,24 @@ def run_once():
                 "feature_sigs": [], "snaps": [], "global_sig": None,
             }))
             stack.enter_context(patch.object(server, "_MESH_CACHE", {}))
+            if profile:
+                stack.enter_context(patch.object(builder, "_FEATURE_HANDLERS", {
+                    kind: timed(f"feature:{kind}", handler)
+                    for kind, handler in builder._FEATURE_HANDLERS.items()
+                }))
+                for module, name, label in (
+                    (builder, "_boolean_into_bodies", "boolean_path"),
+                    (builder, "_serial_bool", "kernel_boolean"),
+                    (builder, "_update_owners", "provenance"),
+                    (server, "_body_payload", "body_payload"),
+                ):
+                    stack.enter_context(patch.object(
+                        module, name, timed(label, getattr(module, name))))
             known = {}
             for phase, doc in [("cold", original), ("unchanged", original),
                                ("edit", edited), ("undo", original), ("after_undo", original),
                                ("redo", edited), ("after_redo", edited)]:
+                current_phase[0] = phase
                 with contextlib.redirect_stdout(io.StringIO()) as logs:
                     start = time.perf_counter()
                     result = server._rebuild_job(doc, 0.1, known)
@@ -90,26 +121,49 @@ def run_once():
                 known = {body["id"]: body["etag"]}
                 resume_log = next(line for line in logs.getvalue().splitlines()
                                   if line.startswith("[rebuild-cached]"))
-                rows.append({"phase": phase, "worker_ms": round(worker_ms, 3),
-                             "encode_ms": round(encode_ms, 3), "wire_bytes": len(wire),
-                             "resume": resume_log, "volume": round(shape.volume, 6)})
+                row = {"phase": phase, "worker_ms": round(worker_ms, 3),
+                       "encode_ms": round(encode_ms, 3), "wire_bytes": len(wire),
+                       "resume": resume_log, "volume": round(shape.volume, 6)}
+                if profile:
+                    labels = sorted({label for event_phase, label, _ms in events
+                                     if event_phase == phase})
+                    row["profile_ms"] = {
+                        label: round(sum(ms for event_phase, item, ms in events
+                                         if event_phase == phase and item == label), 3)
+                        for label in labels
+                    }
+                rows.append(row)
     return rows
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--runs", type=int, default=3)
+    ap.add_argument("--profile", action="store_true",
+                    help="attribute feature/boolean/provenance/payload costs")
     args = ap.parse_args()
     if args.runs < 1:
         ap.error("--runs must be positive")
-    runs = [run_once() for _ in range(args.runs)]
+    runs = [run_once(args.profile) for _ in range(args.runs)]
     summaries = []
     for i, first in enumerate(runs[0]):
         values = [run[i]["worker_ms"] for run in runs]
         summaries.append({"phase": first["phase"], "worker_median_ms": statistics.median(values),
                           "worker_min_ms": min(values), "worker_max_ms": max(values),
                           "encode_median_ms": statistics.median(run[i]["encode_ms"] for run in runs)})
-    print(json.dumps({"runs": runs, "summary": summaries, "geometry_checks": "passed"}, indent=2))
+    out = {"runs": runs, "summary": summaries, "geometry_checks": "passed"}
+    if args.profile:
+        profile_summary = []
+        for i, first in enumerate(runs[0]):
+            for label in sorted(first.get("profile_ms", {})):
+                values = [run[i]["profile_ms"].get(label, 0) for run in runs]
+                profile_summary.append({
+                    "phase": first["phase"], "label": label,
+                    "median_ms": statistics.median(values),
+                })
+        out["profile_summary"] = profile_summary
+        out["profile_note"] = "Nested categories overlap; they are attribution, not additive."
+    print(json.dumps(out, indent=2))
 
 
 if __name__ == "__main__":

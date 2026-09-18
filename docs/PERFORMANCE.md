@@ -136,6 +136,92 @@ The production frontend build passed (with bundler warnings); Vitest passed
 151 files / 2,093 tests, with one skipped test. These supplement the sidecar suites
 listed above, not replace them.
 
+## Boolean validity checks — 2026-09-18
+
+The first-edit profile on the same 100-feature plate attributed 603 ms of a
+786 ms worker request to the 19 replayed cut booleans. Sketch handlers accounted
+for 28 ms, provenance for 41 ms and the changed body's payload for 104 ms. The
+categories overlap where one wraps another; they are attribution, not values to
+add together.
+
+Separate instrumentation inside the boolean path showed the 19 raw-result validity checks cost 152 ms and the
+19 cleaned-result checks another 151 ms. The actual OCCT cuts cost 162 ms and
+same-domain cleanup cost 26 ms. `_serial_bool` previously evaluated this rule:
+
+```text
+valid raw AND invalid cleanup -> keep raw; otherwise keep cleanup
+```
+
+A valid cleanup is selected regardless of raw validity. The implementation now
+checks cleanup first and consults raw only when cleanup is invalid or its
+analysis raises an exception. Its decision table and cleanup-analysis exception
+fallback are regression-tested: a valid
+raw result still rescues broken cleanup, while an already-invalid raw result
+still keeps cleanup. Mesh settings, boolean settings and the validity standard
+are unchanged.
+
+Five-run worker medians before and after this change:
+
+| Phase | Before, ms | After, ms | Change |
+| --- | ---: | ---: | ---: |
+| Cold rebuild | 1,319.795 | 1,060.752 | -19.6% |
+| First radius edit | 811.941 | 668.864 | -17.6% |
+| Undo | 63.969 | 65.455 | noise |
+| Redo | 64.577 | 64.443 | noise |
+
+Every timed phase still checks analytic volume, solid validity, 55 faces and
+complete face ownership. The saved-document golden corpus passed 13/13 after the
+change. This is a win for successful booleans; it does not make the OCCT boolean
+itself faster, and documents dominated by imports, blends or meshing should not
+be expected to improve by these percentages.
+
+Run the attribution mode with:
+
+```sh
+sidecar/.venv/bin/python sidecar/tools/bench_cache_history.py --runs 3 --profile
+```
+
+The profiler is opt-in and its nested categories overlap. Use uninstrumented
+runs for before/after timing comparisons.
+
+### Saved models and browser verification
+
+Fresh-process, disk-cache-disabled A/B runs compared the old raw-first rule
+with the new cleanup-first rule on saved documents. These measure geometry
+rebuild only, excluding import, meshing and browser rendering:
+
+| Document | Runs per variant | Before median, ms | After median, ms | Change |
+| --- | ---: | ---: | ---: | ---: |
+| Basket.sindri | 5 | 2,088.720 | 1,983.153 | -5.1% |
+| src-tauri/1.sindri | 3 | 4,267.504 | 3,600.386 | -15.6% |
+| src-tauri/test2.sindri | 5 | 355.549 | 339.658 | -4.5% |
+
+Each document retained matching body and face counts, reported per-body volumes,
+solid validity and feature errors. `1.sindri` still has its three existing
+feature errors; this is not a claim that all documents rebuild without errors.
+Its before samples also included a 6,129 ms outlier. These small samples establish
+gains on these models, not a general speedup for all CAD work.
+
+The three-run live-browser check on the plate passed all geometry assertions,
+with no page errors, and the final model was visually inspected. Current medians
+with software SwiftShader rendering were:
+
+| Phase | Rebuild API, ms | Settled model, ms | Two animation frames, ms |
+| --- | ---: | ---: | ---: |
+| Cold rebuild | 1,280.3 | 1,316.4 | 1,341.4 |
+| First radius edit | 829.5 | 854.0 | 888.7 |
+| Undo | 122.1 | 152.1 | 367.4 |
+| Redo | 118.0 | 149.1 | 319.4 |
+
+The previous browser baseline above was collected separately, not as a matched
+A/B run. Use the worker comparison for the measured percentage improvement;
+software-rendered frame timing is not a hardware-GPU latency guarantee.
+
+Validation for this change: focused cleanup-guard behavioral and integration
+tests, the full sidecar smoke suite, the existing 13-document golden corpus,
+and the live-browser geometry checks all passed. The earlier frontend test/build
+results above belong to the checkpoint change; no frontend code changed here.
+
 ## Next measurements
 
 1. Measure input-to-screen median and slow-case latency on brackets, long single-body
@@ -151,5 +237,5 @@ listed above, not replace them.
    targets a demonstrated bottleneck. Evaluate custom geometry algorithms against
    the same workloads when there is a concrete case for them.
 
-This pass changes cache selection and reuse. It does not change OCCT algorithms,
+These passes change cache selection, reuse and validity-check ordering. They do not change OCCT algorithms,
 mesh quality, timeouts or the geometry worker's process isolation.
