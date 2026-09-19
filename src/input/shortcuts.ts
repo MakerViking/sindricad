@@ -63,6 +63,10 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "s.offset", key: "o", action: "offset", context: "sketch", label: t("tool.offset") },
   { id: "s.fillet", key: "f", action: "fillet-sketch", context: "sketch", label: t("shortcut.s.fillet") },
   { id: "s.project", key: "p", action: "project", context: "sketch", label: t("tool.project") },
+  // G = "grow": widen the selection to whole connected chains. The gesture for
+  // this is double-clicking an entity; this row is how anyone finds out it
+  // exists (field report #15).
+  { id: "s.chain", key: "g", action: "select-chain", context: "sketch", label: t("shortcut.s.chain") },
   // finish-and-go: E/Q inside a sketch commit it and start the 3D tool
   // (handleAction already finishes an active sketch before any 3D command)
   { id: "s.extrude", key: "e", action: "extrude", context: "sketch", label: t("shortcut.s.extrude") },

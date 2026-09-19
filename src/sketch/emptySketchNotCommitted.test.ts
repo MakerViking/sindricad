@@ -101,6 +101,12 @@ function makeSketch(doc: CadDocument) {
       const i = doc.features.findIndex((x) => x.id === id);
       if (i >= 0) doc.features[i] = f;
     },
+    // mirrors DocumentStore.updateFeature: a SHALLOW merge onto the feature.
+    // This is the whole of the rename path (main.ts: tree.onRenameSketch).
+    updateFeature(id: string, patch: Partial<Feature>) {
+      const i = doc.features.findIndex((x) => x.id === id);
+      if (i >= 0) doc.features[i] = { ...doc.features[i], ...patch } as Feature;
+    },
   };
   return { s, store: store as never };
 }
@@ -191,5 +197,94 @@ describe("hasDrawnGeometry reports what the user would lose", () => {
       type: "circle", id: "c1", x: 0, y: 0, radius: 3,
     });
     expect(s.hasDrawnGeometry()).toBe(true);
+  });
+});
+
+// A sketch you renamed in the Browser lost that name the next time you edited
+// it (field report, Doug Smith #19). finish() -> snapshotFeature() rebuilds the
+// feature from the sketcher's working copy and replaceFeature overwrites the
+// committed one wholesale, so any field the sketcher does not model is dropped.
+// `name` was the only one.
+//
+// These watch `doc.features` after a REAL rename-then-edit cycle, not the
+// serialiser in isolation: the rename goes through the same shallow-merge
+// updateFeature that main.ts wires tree.onRenameSketch to.
+describe("a renamed sketch keeps its name across an edit", () => {
+  let doc: CadDocument;
+  const named = () =>
+    doc.features.find((f) => f.id === "s1") as Extract<Feature, { type: "sketch" }>;
+  // makeSketch hands the store back as `never` (it is a structural stub, not a
+  // DocumentStore), so the rename path needs naming back to call through it.
+  const rename = (store: unknown, id: string, name: string) =>
+    (store as { updateFeature(i: string, p: Partial<Feature>): void })
+      .updateFeature(id, { name } as Partial<Feature>);
+
+  beforeEach(() => {
+    doc = {
+      version: 5,
+      parameters: {},
+      features: [
+        { ...DATUM },
+        {
+          id: "s1", type: "sketch", plane: PLANE,
+          entities: [{ type: "circle", id: "c1", x: 0, y: 0, radius: 3 }],
+        },
+      ],
+    };
+  });
+
+  it("survives opening the sketch and pressing Finish", () => {
+    const { s, store } = makeSketch(doc);
+    rename(store, "s1", "Bearing profile");
+    s.enter(PLANE, store, "s1");
+    s.finish(true);
+    expect(named().name).toBe("Bearing profile");
+  });
+
+  it("survives an edit that actually changes the geometry", () => {
+    const { s, store } = makeSketch(doc);
+    rename(store, "s1", "Bearing profile");
+    s.enter(PLANE, store, "s1");
+    (s as unknown as { entities: unknown[] }).entities.push({
+      type: "circle", id: "c2", x: 10, y: 0, radius: 1,
+    });
+    s.finish(true);
+    expect(named().name).toBe("Bearing profile");
+    expect(named().entities.map((e) => e.id)).toEqual(["c1", "c2"]);
+  });
+
+  it("takes the LATEST name when the sketch is renamed twice", () => {
+    const { s, store } = makeSketch(doc);
+    rename(store, "s1", "First");
+    s.enter(PLANE, store, "s1");
+    s.finish(true);
+    rename(store, "s1", "Second");
+    const again = makeSketch(doc);
+    again.s.enter(PLANE, again.store, "s1");
+    again.s.finish(true);
+    expect(named().name).toBe("Second");
+  });
+
+  // The other half of the guard: never INVENT a name. A sketch the user has not
+  // renamed must come back with no `name` key at all, because the Browser falls
+  // back to a positional "Sketch1" label on absence (browserTree sketchLabel)
+  // and a baked-in name would freeze that label against reordering.
+  it("does not add a name to a sketch that never had one", () => {
+    const { s, store } = makeSketch(doc);
+    s.enter(PLANE, store, "s1");
+    s.finish(true);
+    expect("name" in named()).toBe(false);
+  });
+
+  it("does not add a name to a brand-new sketch", () => {
+    const { s, store } = makeSketch(doc);
+    s.enter(PLANE, store, undefined, "dp1");
+    (s as unknown as { entities: unknown[] }).entities.push({
+      type: "circle", id: "c9", x: 0, y: 0, radius: 2,
+    });
+    s.finish(true);
+    const fresh = doc.features.find((f) => f.id === "s99") as Extract<Feature, { type: "sketch" }>;
+    expect(fresh).toBeDefined();
+    expect("name" in fresh).toBe(false);
   });
 });

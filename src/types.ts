@@ -558,7 +558,14 @@ export type Feature =
   // whole-un-consumed-sketch fallback (ribbon). One of the two is present.
   | { id: string; type: "loft"; profiles?: { sketch: string; region: [number, number, number] }[]; sketches?: string[]; operation?: "new" | "join" | "cut" | "intersect" }
   // Sweep a closed profile sketch along an open path sketch (a line/arc/spline).
-  | { id: string; type: "sweep"; profile: string; path: string; operation: "new" | "join" | "cut" }
+  // `path` names a sketch whose curve the profile follows. `pathEdges` names
+  // BODY EDGES instead (#16: "select an edge of a solid to define the path…
+  // should also allow for sweeping around contours not lying in a plane") — a
+  // selector each, never a topology index, so the path survives upstream edits
+  // that renumber topology. When `pathEdges` is present the sidecar uses it and
+  // ignores `path`; `path` stays optional so an edge-path sweep needs no
+  // placeholder sketch.
+  | { id: string; type: "sweep"; profile: string; path?: string; pathEdges?: Selector[]; operation: "new" | "join" | "cut" }
   // A persistent construction/datum plane in the timeline. Carries no geometry;
   // sketches and splits reference it by id (resolved to its PlaneSpec on rebuild).
   // `plane` is the source reference and `offset` shifts along its normal (mm), so

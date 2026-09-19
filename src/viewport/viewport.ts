@@ -1388,6 +1388,10 @@ export class Viewport {
     if (this.zebra) this.applyZebra();
     if (this.combs) this.applyCombs();
     if (fit) this.rig.fit(this.model.box, true);
+    // A section cut outlives the rebuild that replaced these materials (#17).
+    // Unconditional: applyClipPlane with no plane is what the fresh materials
+    // already are, so this costs a loop and nothing else.
+    this.applyClipPlane();
     // The new model is on screen only once a frame is drawn. applyAnalysis above
     // happens to request one today, but that is its business, not this method's:
     // under render-on-demand a commit that draws nothing leaves the previous
@@ -1936,6 +1940,28 @@ export class Viewport {
    *  Lost on the next rebuild (materials are recreated) — fine for an interactive
    *  section that you set, look at, then close. */
   setClipPlane(plane: THREE.Plane | null) {
+    // Remembered, because the clip is written onto the CURRENT materials and a
+    // rebuild makes new ones (render.ts and edgeLines.ts both start a fresh
+    // material at clippingPlanes = null). Before this, a section cut vanished
+    // the moment anything rebuilt the model — which is why the tool's own
+    // header called it "a view state that clears on the next rebuild" and why
+    // you could not sketch inside one: committing the sketch threw the cut
+    // away. setModel re-applies it (field report #17).
+    this.clipPlane = plane;
+    this.applyClipPlane();
+  }
+
+  /** The section plane currently cutting the model, if any. */
+  private clipPlane: THREE.Plane | null = null;
+
+  /** True while a section cut is showing — a persistent VIEW state, distinct
+   *  from the section tool's interactive gizmo being up. */
+  get clipped(): boolean {
+    return !!this.clipPlane;
+  }
+
+  private applyClipPlane() {
+    const plane = this.clipPlane;
     this.scene.renderer.localClippingEnabled = !!plane;
     const planes = plane ? [plane] : null;
     if (this.model) {

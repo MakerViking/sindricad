@@ -584,13 +584,28 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   }
 
   // Sweep: select a closed profile region, then pick a second (open) sketch as the
-  // path. The profile should sit at the start of the path, roughly perpendicular.
+  // path — or pre-select BODY EDGES in the viewport and they become the path
+  // instead (#16). The profile should sit at the start of the path, roughly
+  // perpendicular.
   async function startSweep() {
     if (busy()) return;
     const regions = overlay.selectedRegions();
     const wr = regions[0] ?? (overlay.regions.length === 1 ? overlay.regions[0] : null);
     if (!wr) {
       setStatus(t("feature.starters.sweep.needsProfile"), "");
+      return;
+    }
+    // Edges win over a sketch path when both are available: picking edges is an
+    // explicit act aimed at this command, whereas a path sketch merely exists in
+    // the document. Same pre-selection the Fillet/Chamfer hint advertises, so
+    // there is nothing new to learn — and it is the only route to a path that
+    // does not lie in a plane, which is what was asked for.
+    const pathEdges = viewport.selectedEdgeSelectors();
+    if (pathEdges.length) {
+      store.addFeature({
+        id: store.nextId(), type: "sweep", profile: wr.sketchId, pathEdges, operation: "new",
+      } as Feature);
+      viewport.clearSelection(); // consumed — leaving it lit would re-apply on the next run
       return;
     }
     const all = store.document.features.filter((f) => f.type === "sketch");

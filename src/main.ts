@@ -26,14 +26,14 @@ import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { openShortcutSettings } from "./ui/shortcutSettings";
-import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel } from "./io/files";
+import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel, confirmDiscardChanges } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
 import { createBugReporter } from "./ui/bugReporter";
 import "./diagnostics/breadcrumbs"; // installs window error listeners (bug-report trail)
 import { stickyFact, crumb, isBenignBrowserNoise } from "./diagnostics/breadcrumbs";
-import { installAutosave, checkRecovery } from "./io/recovery";
+import { installAutosave, checkRecovery, clearRecovery } from "./io/recovery";
 import { WelcomeScreen, welcomeOnStartup, warmAccount } from "./ui/welcome";
 import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
 import { publishToTinkerAtlas } from "./tinkeratlas/publish";
@@ -388,15 +388,9 @@ for (const id of ["browser", "inspector"]) {
 
 // --- File menu + document-name titlebar ---
 async function newDocument() {
-  // window.confirm is a no-op in Tauri's WebKitGTK webview — use the native dialog.
-  if (store.dirty) {
-    const { ask } = await import("@tauri-apps/plugin-dialog");
-    const ok = await ask(t("file.discardConfirm"), {
-      title: t("file.newDocument"),
-      kind: "warning",
-    });
-    if (!ok) return;
-  }
+  // Was a binary native `ask` ("discard?") with no way to save first, and it
+  // left the autosave slot behind — see confirmDiscardChanges (#20).
+  if (!(await confirmDiscardChanges(store, t("file.close.confirmNew")))) return;
   if (sketch.active) sketch.cancel();
   store.newDocument();
   viewport.resetView(); // a new document starts at the home view, not wherever the last one ended
@@ -404,8 +398,21 @@ async function newDocument() {
 // Open must exit an active sketch first — else the in-progress sketch's curves
 // orphan on screen (loading the new doc doesn't touch the active-sketch overlay).
 async function openDoc() {
+  // Open had NO unsaved-changes guard at all: it replaced the document in
+  // place, and the abandoned autosave then offered itself back on next launch.
+  if (!(await confirmDiscardChanges(store, t("file.close.confirmOpen")))) return;
   if (sketch.active) sketch.cancel();
   await openDocument(store, geometry);
+}
+/** File ▸ Close: hand back an empty document, after offering to save. The
+ *  thing Doug asked for by name — a deliberate end to a model, so the next
+ *  launch has nothing to recover. */
+async function closeDoc() {
+  if (!(await confirmDiscardChanges(store, t("file.close.confirmClose")))) return;
+  if (sketch.active) sketch.cancel();
+  await clearRecovery(store.filePath); // a closed document is not a crashed one
+  store.newDocument();
+  viewport.resetView();
 }
 const spaceMouseSettings = new SpaceMouseSettings();
 const welcome = new WelcomeScreen({
@@ -429,6 +436,7 @@ new Menubar(document.getElementById("menubar")!, [
     items: [
       { label: t("menu.file.new"), shortcut: "Ctrl+N", onClick: () => void newDocument() },
       { label: t("menu.file.open"), shortcut: "Ctrl+O", onClick: () => void openDoc() },
+      { label: t("menu.file.close"), shortcut: "Ctrl+W", onClick: () => void closeDoc() },
       { separator: true, label: "" },
       { label: t("menu.file.importMesh"), onClick: () => void importModel(store, geometry) },
       { separator: true, label: "" },
@@ -1360,6 +1368,13 @@ async function cancelSketch() {
 
 function handleAction(action: string) {
   if (!NON_REPEATABLE.has(action)) lastAction = action; // for "Repeat <command>"
+  // A section cut is a VIEW state, not a mode. Starting any other tool hands the
+  // cut over to the viewport and takes the gizmo down, rather than the tool
+  // refusing because toolBusy() counts section.active — which is what made
+  // "sketch inside a section" impossible (#17). Applies to every tool, not just
+  // Sketch: there is no reason Fillet should be the one command you cannot run
+  // while looking inside a part. "section" itself still toggles.
+  if (section.active && action !== "section") section.stop(true);
   // Select is in neither table below because it draws and modifies nothing — it
   // is how you get BACK to picking entities. It needs its own line for the same
   // reason field report c9db7ec2 exists: every other route to it (ribbon, key,
@@ -1368,6 +1383,14 @@ function handleAction(action: string) {
   if (action === "select") {
     if (sketch.active) sketch.setTool("select");
     else setStatus(t("status.enterSketchToSelect"), "");
+    return;
+  }
+  // Chain select (#15): grow the selection to whole connected contours. Its own
+  // line for the same reason `select` has one — it sets no tool, so neither
+  // table below would route it and the key would silently do nothing.
+  if (action === "select-chain") {
+    if (!sketch.active) setStatus(t("status.enterSketchToSelect"), "");
+    else if (!sketch.growSelectionToChains()) setStatus(t("status.chainNothingToGrow"), "");
     return;
   }
   // "Rect Pattern" / "Circular Pat." sit in the SKETCH ribbon's PATTERN group and
@@ -1533,6 +1556,12 @@ function handleAction(action: string) {
     case "section":
       if (section.active) {
         section.stop();
+        break;
+      }
+      // The gizmo is down but the cut is still on screen (it outlived a tool or
+      // a rebuild). Toggling Section is how you put the model back together.
+      if (viewport.clipped) {
+        viewport.setClipPlane(null);
         break;
       }
       if (!hasBody()) {
@@ -1717,6 +1746,10 @@ window.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (k === "n") { e.preventDefault(); void newDocument(); }
   else if (k === "o") { e.preventDefault(); void openDoc(); }
+  // preventDefault matters more here than elsewhere in this block: in a webview
+  // Ctrl+W is "close the window", so without it the app would exit behind the
+  // save prompt this is supposed to put up.
+  else if (k === "w") { e.preventDefault(); void closeDoc(); }
   else if (k === "s" && e.shiftKey) { e.preventDefault(); void saveDocumentAs(store); }
   else if (k === "s") { e.preventDefault(); void saveDocument(store); }
   else if (k === "e") { e.preventDefault(); void exportModel(store, geometry); }

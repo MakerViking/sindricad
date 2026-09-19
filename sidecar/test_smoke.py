@@ -1368,6 +1368,119 @@ def test_simplify_mesh():
           f"{simp.volume:.0f}; a fitted cylinder stays at 3 faces")
 
 
+def test_sweep_along_body_edge():
+    """Sweep a profile along a picked BODY EDGE instead of a path sketch (#16).
+
+    Field request (Doug Smith): "instead of creating a sketch, it would really be
+    great to be able to select an edge of a solid to define the path for the
+    sweep." The path arrives as SELECTORS, like fillet's edges, so it survives
+    upstream edits that renumber topology.
+
+    Geometry: a 30x30x10 box spanning x/y 0..30, so its corner post runs from
+    (0,0,0) to (0,0,10). An r2 circle at the origin swept along that post is a
+    cylinder of pi*4*10 = 125.664.
+    """
+    doc = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 30, "height": 30, "x": 15, "y": 15}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"},
+        {"id": "prof", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "circle", "radius": 2}]},
+        {"id": "sw", "type": "sweep", "profile": "prof", "operation": "new",
+         "pathEdges": [{"kind": "edge", "by": "nearest", "point": [0, 0, 5]}]}]}
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    assert len(bodies) == 2, f"box + swept solid expected, got {len(bodies)}"
+    # Bodies are named body1/body2, not after the features, so identify the swept
+    # one by what it should be: everything that is not the 9000 mm3 box.
+    want = math.pi * 4 * 10
+    vols = sorted(b["shape"].volume for b in bodies)
+    assert abs(vols[1] - 9000) < 1.0, f"the box should be untouched, got {vols[1]:.3f}"
+    assert abs(vols[0] - want) < 1.0, (
+        f"sweeping r2 along the 10 mm corner post should give {want:.3f}, "
+        f"got {vols[0]:.3f}")
+    print(f"  sweep-along-edge OK: corner post pipe vol {vols[0]:.3f}")
+
+
+def test_sweep_edge_path_reports_disconnected_edges():
+    """Edges that do not meet end to end must not be swept silently.
+
+    The longest-wire rule a sketch path uses applies here too, and sweeping along
+    "whichever of my picks was longest" is exactly the failure field report
+    780bdbd0 was about — a lip hugging 54% of a contour with no error anywhere.
+    Two opposite corner posts of the same box share no endpoint.
+
+    Reported the same way a disconnected SKETCH path is: a non-fatal `lossy`
+    diagnostic, not a build-halting error. The body still builds (MCAD-style),
+    but the truncation is on the record instead of being invisible.
+    """
+    doc = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 30, "height": 30, "x": 15, "y": 15}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"},
+        {"id": "prof", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "circle", "radius": 2}]},
+        {"id": "sw", "type": "sweep", "profile": "prof", "operation": "new",
+         "pathEdges": [{"kind": "edge", "by": "nearest", "point": [0, 0, 5]},
+                       {"kind": "edge", "by": "nearest", "point": [30, 30, 5]}]}]}
+    diag = []
+    _part, _err, _bodies = rebuild(doc, diagnostics=diag)
+    truncation = [d for d in diag
+                  if d.get("feature_id") == "sw" and "disconnected pieces" in (d.get("reason") or "")]
+    assert truncation, (
+        "two disconnected posts were swept as one path with nothing on the "
+        f"record; diagnostics were {diag}")
+    assert truncation[0]["lossy"] is True
+    print(f"  disconnected edge path reported: {truncation[0]['reason']}")
+
+
+def test_sweep_along_non_planar_edge_chain():
+    """The point of the whole feature: a path that does NOT lie in a plane.
+
+    "This should also allow for sweeping around contours not lying in a plane."
+    A sketch path is planar by construction, so this was unreachable before —
+    the limitation was the SKETCH, never the kernel (MakePipeShell has never
+    required a planar spine).
+
+    The chain, on a box spanning x/y 0..30, z 0..10:
+      corner post (0,0,0)->(0,0,10)   along +Z
+      top edge    (0,0,10)->(30,0,10) along +X   [with the post, in plane y=0]
+      top edge    (30,0,10)->(30,30,10) along +Y [leaves that plane]
+    Three mutually perpendicular directions cannot share a plane, so if this
+    builds at all the non-planar claim holds.
+
+    The volume is asserted as a BAND, not a number: an r2 pipe round two square
+    corners loses and gains material at the mitres, and pinning the exact figure
+    would be pinning OCCT's corner treatment rather than the feature.
+    """
+    swept_len = 10 + 30 + 30
+    doc = {"parameters": {}, "features": [
+        {"id": "s", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 30, "height": 30, "x": 15, "y": 15}]},
+        {"id": "e", "type": "extrude", "sketch": "s", "distance": 10, "operation": "new"},
+        {"id": "prof", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "circle", "radius": 2}]},
+        {"id": "sw", "type": "sweep", "profile": "prof", "operation": "new",
+         "pathEdges": [{"kind": "edge", "by": "nearest", "point": [0, 0, 5]},
+                       {"kind": "edge", "by": "nearest", "point": [15, 0, 10]},
+                       {"kind": "edge", "by": "nearest", "point": [30, 15, 10]}]}]}
+    diag = []
+    _part, err, bodies = rebuild(doc, diagnostics=diag)
+    assert not err, err
+    # No truncation: all three edges must have joined into ONE spine, or this is
+    # testing a shorter path than it claims to.
+    truncated = [d for d in diag if "disconnected pieces" in (d.get("reason") or "")]
+    assert not truncated, f"the three edges did not form one path: {truncated}"
+    assert len(bodies) == 2, f"box + swept solid expected, got {len(bodies)}"
+    vols = sorted(b["shape"].volume for b in bodies)
+    nominal = math.pi * 4 * swept_len
+    assert 0.75 * nominal < vols[0] < 1.25 * nominal, (
+        f"an r2 pipe along {swept_len} mm of non-planar chain should be near "
+        f"{nominal:.0f}, got {vols[0]:.3f}")
+    assert bodies[0]["shape"].is_valid and bodies[1]["shape"].is_valid
+    print(f"  non-planar sweep OK: 3-edge chain vol {vols[0]:.3f} (nominal {nominal:.0f})")
+
+
 def test_sweep():
     """Sweep a circle profile (XY) along an arc path (XZ) — a smooth pipe."""
     doc = {"parameters": {}, "features": [
@@ -3435,6 +3548,9 @@ if __name__ == "__main__":
     test_face_selector_on_concentric_cylinders()
     test_simplify_mesh()
     test_sweep()
+    test_sweep_along_body_edge()
+    test_sweep_edge_path_reports_disconnected_edges()
+    test_sweep_along_non_planar_edge_chain()
     test_revolve_loft_operation()
     test_loft_profiles_keeps_holes_as_tube()
     test_boolean_guards_combine_sweep()

@@ -39,7 +39,7 @@ import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
-import { detectRegions } from "./region";
+import { detectRegions, entityPolyline, EPS } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
 import { setPrompt } from "../ui/prompt";
@@ -577,12 +577,21 @@ export class SketchMode {
   snapshotFeature(): Feature | null {
     if (!this.active || !this.store) return null;
     if (this.entities.length === 0 && this.patterns.length === 0) return null;
+    // A re-edit REBUILDS the feature from this working copy and replaceFeature
+    // overwrites the committed one wholesale, so every field the sketcher does
+    // not itself model is silently dropped on Finish. `name` is the only such
+    // field: the user sets it from the browser tree (onRenameSketch writes it
+    // straight onto the feature), the sketcher never reads it, and so a rename
+    // survived only until the next edit. Carry it across from the committed
+    // feature. If that list ever grows past `name`, this is where it belongs.
+    const committed = this.editingId ? this.sourceSketch(this.editingId) : null;
     return {
       id: this.editingId ?? this.store.nextId(),
       type: "sketch",
       plane: this.plane.serialize(),
       ...(this.planeId ? { planeId: this.planeId } : {}),
       ...(this.faceAnchor ? { face: this.faceAnchor } : {}),
+      ...(committed?.name ? { name: committed.name } : {}),
       entities: this.entities
         .filter((e) => e.id !== TEXT_PREVIEW_ID && !isOriginGeometry(e.id))
         .map(toSketchEntity),
@@ -1440,6 +1449,76 @@ export class SketchMode {
     return this.entities.filter((e) => !isOriginGeometry(e.id));
   }
 
+  /** Every entity reachable from `startId` by walking coincident endpoints —
+   *  the sketch "chain select" a field tester asked for (Doug Smith #15:
+   *  "select a contiguous string of elements in a sketch all together").
+   *
+   *  Connectivity, NOT tangency. The 3D edge chain in edgeFeatureTool requires
+   *  G1 continuity because OCCT cannot end a blend mid-tangency; that is a
+   *  kernel constraint, not a selection one. In a sketch a sharp corner in a
+   *  profile is still one contour to the user, so a chain crosses it.
+   *
+   *  A CLOSED entity (circle, rectangle, polygon, slot) is a contour on its own:
+   *  it has no free ends, so it neither drags neighbours in nor is dragged in by
+   *  one that happens to touch it. That keeps a circle tangent to a rail out of
+   *  the rail's chain, which is what "contiguous string" means to a user.
+   *
+   *  The origin geometry is excluded via ownEntities. That is defensive rather
+   *  than load-bearing: this walk matches ENDPOINT to ENDPOINT, and the axes'
+   *  ends are at ±10 000 mm while the origin point collapses to a single vertex
+   *  (so it reads as closed). Neither is reachable from a real sketch. The
+   *  exclusion stays because it is what makes that safety a property of the
+   *  code rather than of the axis length. */
+  private entityChain(startId: string): string[] {
+    // id → its two free ends. Absent = closed, or too degenerate to walk.
+    const ends = new Map<string, [THREE.Vector2, THREE.Vector2]>();
+    for (const e of this.ownEntities()) {
+      const pts = entityPolyline(e);
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      if (!a || !b) continue; // text: entityPolyline is empty
+      if (a.distanceTo(b) <= EPS) continue; // closed
+      ends.set(e.id, [a, b]);
+    }
+    if (!ends.has(startId)) return [startId];
+
+    const chain = new Set<string>([startId]);
+    const queue: string[] = [startId];
+    while (queue.length) {
+      const cur = queue.pop();
+      if (cur === undefined) break;
+      const curEnds = ends.get(cur);
+      if (!curEnds) continue;
+      for (const [id, other] of ends) {
+        if (chain.has(id)) continue;
+        const touches = curEnds.some((p) => other.some((q) => p.distanceTo(q) <= EPS));
+        if (!touches) continue;
+        chain.add(id);
+        queue.push(id);
+      }
+    }
+    return [...chain];
+  }
+
+  /** Grow the current selection to every entity chain-connected to it — the
+   *  keyboard route to the same thing double-clicking an entity does (#15).
+   *  A gesture nobody is told about is not a feature, and the shortcut list is
+   *  where this app advertises its gestures.
+   *
+   *  Returns false when there was nothing to grow (not in a sketch, not in the
+   *  select tool, nothing selected, or the selection is already whole chains),
+   *  so the caller can say why instead of appearing to do nothing. */
+  growSelectionToChains(): boolean {
+    if (!this.active || this.tool !== "select" || this.selected.size === 0) return false;
+    const before = this.selected.size;
+    for (const id of [...this.selected]) {
+      for (const linked of this.entityChain(id)) this.selected.add(linked);
+    }
+    if (this.selected.size === before) return false;
+    this.refreshActive();
+    return true;
+  }
+
   /** Geometry-beats-label: called from a dimension badge's pointerdown when the
    *  badge sits over sketch geometry (common at low zoom — the badge is a DOM
    *  element above the canvas, so the canvas never sees the click). Select the
@@ -1583,6 +1662,22 @@ export class SketchMode {
         const te = this.textEntityAt(raw);
         if (te) {
           this.editText(te, e);
+          return;
+        }
+      }
+      // DOUBLE-click a plain entity → take its whole connected chain (#15). The
+      // FIRST press of the pair has already selected that entity on its own, so
+      // this widens the selection rather than replacing it from nothing. Shift /
+      // Ctrl keeps what was already selected, matching the single-click
+      // modifiers below. Handled before the body-drag arm, because a
+      // double-click must not start a drag.
+      if (doubleClick) {
+        const ci = pickEntity(this.entities, raw, this.pickTol());
+        const ce = ci >= 0 ? this.entities[ci] : undefined;
+        if (ce && !isOriginGeometry(ce.id)) {
+          if (!(e.shiftKey || e.ctrlKey || e.metaKey)) this.selected.clear();
+          for (const id of this.entityChain(ce.id)) this.selected.add(id);
+          this.refreshActive();
           return;
         }
       }

@@ -97,9 +97,15 @@ describe("the origin is PINNED, which is the whole point", () => {
 
 describe("the origin never reaches the document", () => {
   it("is stripped in snapshotFeature, beside the text preview", () => {
-    const at = sketchModeSrc.indexOf("snapshotFeature(): Feature | null {");
+    // Comments are stripped BEFORE the window is taken, the same way
+    // pointBranch() does it above. A fixed-width slice of commented source is
+    // measuring prose: adding an explanatory comment inside snapshotFeature
+    // pushed the code this pins past the 900-char edge and failed the test
+    // without changing any behaviour.
+    const src = sketchModeSrc.replace(/\/\/[^\n]*/g, "");
+    const at = src.indexOf("snapshotFeature(): Feature | null {");
     expect(at).toBeGreaterThan(-1);
-    const body = sketchModeSrc.slice(at, at + 900);
+    const body = src.slice(at, at + 900);
     expect(body).toContain("isOriginGeometry(e.id)");
     // If this ever stops holding, the origin starts being written into saved
     // documents as a real point entity, and every reopen adds another one.

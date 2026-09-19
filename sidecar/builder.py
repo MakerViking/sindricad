@@ -4074,24 +4074,65 @@ def _sweep_solid(prof, path):
     )
 
 
+def _sweep_edge_path(f, ctx):
+    """The sweep path as a wire built from picked BODY EDGES, not a sketch (#16).
+
+    Field request (Doug Smith): "When doing a Sweep, instead of creating a sketch,
+    it would really be great to be able to select an edge of a solid to define the
+    path for the sweep. This should also allow for sweeping around contours not
+    lying in a plane."
+
+    Non-planar falls out for free: nothing here flattens anything, and
+    MakePipeShell has never required a planar spine — it was the SKETCH that
+    constrained the path to a plane, not the kernel.
+
+    Edges are resolved per owning body, the same way fillet/chamfer do it, so a
+    path may run across several bodies. They are combined at `_PATH_JOIN_TOL`
+    like a sketch path, so a picked tangent chain that meets only to kernel
+    precision still forms one spine.
+    """
+    edges = []
+    for body, sels in _group_sels_by_body(f["pathEdges"], ctx, "Sweep"):
+        found = resolve_edges(body["shape"], sels, diag=ctx.diagnostics,
+                              feature_id=f.get("id"))
+        if not found:
+            raise GeomError(f"no edge found to sweep along on {BODY_SLOT}",
+                            body_id=body["id"], subject=body.get("name"))
+        edges.extend(found)
+    wire, dropped = _path_wire(edges)
+    if wire is None:
+        raise ValueError(
+            "the selected edges do not form a path to sweep along — they may not "
+            "meet end to end"
+        )
+    return wire, dropped
+
+
 def _handle_sweep(f, ctx):
     prof = _require_sketch(ctx, f.get("profile"), "sweep")["sketch"]
     if prof is None:
         raise ValueError("sweep profile has no closed section")
-    path_sketch = _require_sketch(ctx, f.get("path"), "sweep")
-    path = path_sketch.get("wire")
-    if path is None:
-        raise ValueError("sweep path sketch has no curve to follow")
-    # The path sketch may form several disconnected wires; only the longest is
+    # `pathEdges` (body edges) takes precedence over `path` (a sketch). Both are
+    # resolved to the same kind of wire, so everything downstream is unchanged.
+    if f.get("pathEdges"):
+        path, dropped = _sweep_edge_path(f, ctx)
+        pieces_label = "the selected edges are"
+    else:
+        path_sketch = _require_sketch(ctx, f.get("path"), "sweep")
+        path = path_sketch.get("wire")
+        if path is None:
+            raise ValueError("sweep path sketch has no curve to follow")
+        dropped = path_sketch.get("wireDropped") or []
+        pieces_label = "the path sketch is"
+    # The path may form several disconnected wires; only the longest is
     # followed. Say so — a path in pieces was silently indistinguishable from a
     # whole one, which is exactly how field report 780bdbd0 reached the user as a
     # lip hugging 54% of a contour with no error anywhere.
-    dropped = path_sketch.get("wireDropped") or []
     if dropped:
         whole = path.length + sum(dropped)
         _skip_feature(
             ctx.diagnostics, f, "sweep",
-            f"the path sketch is in {len(dropped) + 1} disconnected pieces; the "
+            f"{pieces_label} in {len(dropped) + 1} disconnected pieces; the "
             f"sweep followed the longest ({path.length:.3f} mm of {whole:.3f} mm)",
         )
     solid = _sweep_solid(prof, path)
@@ -9930,10 +9971,14 @@ def _build_sketch(f, val, datums=None):
             "edgesByEntity": by_ent, "plane": plane, "cellEntities": cell_eids}
 
 
-def _path_wire(edges, plane):
-    """Combine a sketch's free line/arc/spline edges into ONE located wire (open or
-    closed) for use as a sweep path, at `_PATH_JOIN_TOL` so the document's own 6
-    decimal rounding does not split a closed contour.
+def _path_wire(edges, plane=None):
+    """Combine free line/arc/spline edges into ONE located wire (open or closed)
+    for use as a sweep path, at `_PATH_JOIN_TOL` so the document's own 6 decimal
+    rounding does not split a closed contour.
+
+    `plane` locates a SKETCH's edges, which are built in the sketch's own frame.
+    Pass None for edges that are already in world coordinates — the body edges a
+    sweep can now follow (#16); there is nothing to transform them by.
 
     Returns `(wire, dropped)`: the LONGEST wire the edges form, and the lengths of
     the wires that were left behind. `dropped` is what makes the truncation
@@ -9951,7 +9996,7 @@ def _path_wire(edges, plane):
         return None, []
     longest = max(wires, key=lambda w: w.length)
     dropped = [w.length for w in wires if w is not longest]
-    return plane * longest, dropped
+    return (longest if plane is None else plane * longest), dropped
 
 
 # How far a rebuilt region's area may sit from the arrangement cell its anchor

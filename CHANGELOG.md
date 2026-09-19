@@ -20,6 +20,21 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A sketch you renamed keeps its name when you edit it.** Renaming a sketch in
+  the Browser and then opening it to change something put the generic
+  "Sketch3" name back the moment you pressed Finish. Editing a sketch rebuilds
+  it from what the sketcher is holding, and the name was the one thing the
+  sketcher never held, so it was dropped on every edit. Reported by Doug Smith.
+
+- **Closing or replacing a document no longer leaves a phantom recovery
+  prompt.** Starting a new document offered only "discard", with no way to save
+  first, and opening another document replaced the current one with no warning
+  at all. Either way the autosave snapshot of the abandoned work stayed on
+  disk, so the next launch offered to recover a document you had deliberately
+  walked away from. New, Open and the new Close all ask whether to save first,
+  and discarding clears the snapshot, so a recovery prompt again means what it
+  says: the app stopped with work you never saved. Reported by Doug Smith.
+
 - **A text height of zero could take the geometry engine down.** Zero or a
   negative size crashes the kernel outright, and the live preview reaches it on
   every keystroke, so typing "0" as the first character of "0.5" was enough. It
@@ -67,6 +82,34 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
+
+- **File ▸ Close (Ctrl+W).** Puts the current model down and hands you an empty
+  document, asking whether to save first if there is anything unsaved.
+  Requested by Doug Smith.
+
+- **Chain select in a sketch.** Double-click any line, arc or curve and the
+  whole connected contour comes with it; G does the same from the keyboard for
+  everything already selected. It follows the geometry through corners, so a
+  profile of straight edges and fillets selects as one thing, and it stops at a
+  gap rather than jumping across it. A closed shape such as a circle or
+  rectangle is a contour on its own and is never pulled into a neighbour's
+  chain. Requested by Doug Smith.
+
+- **A sweep can follow the edges of a solid.** Select one or more body edges,
+  select a profile, and Sweep follows those edges instead of needing a path
+  sketch drawn for the purpose. The path does not have to lie in a plane, which
+  a sketch path always did, so a profile can now travel around a contour that
+  turns in three dimensions. If the edges you picked do not meet end to end the
+  timeline says so rather than quietly following the longest run of them.
+  Requested by Doug Smith.
+
+- **A section cut stays put, and you can sketch inside one.** The cut used to
+  vanish the moment anything rebuilt the model, which included finishing a
+  sketch, and no tool could be started while the section was open. The cut is
+  now kept until you switch it off, and starting any tool puts the drag arrow
+  away while leaving the model open so you can work inside it. Toggling
+  Inspect ▸ Section again puts the model back together.
+  Requested by Doug Smith.
 
 - **Typing a comma as the decimal separator now works everywhere.** "12,5" and
   "12.5" both mean twelve and a half, in every numeric field, whatever your

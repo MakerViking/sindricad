@@ -1,8 +1,13 @@
 // Section analysis (Inspect): a draggable clipping plane that cuts the model so
 // you can see inside. Pick an axis, drag the arrow to move the cut, F flips which
 // half is kept, Esc closes (restores the full model). Uncapped (shows the hollow
-// interior) — a filled cap is a later refinement. The clip is a view state, not a
-// feature; it clears on the next rebuild.
+// interior) — a filled cap is a later refinement.
+//
+// The clip is a view state rather than a feature, but it is a PERSISTENT one:
+// the viewport owns the plane and re-applies it after every rebuild, and
+// starting another tool takes this gizmo down via stop(true) while leaving the
+// cut on screen. That is what lets you sketch inside a section (#17). Toggling
+// Inspect ▸ Section again, or Esc while the gizmo is up, puts the model back.
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
@@ -190,7 +195,18 @@ export class SectionTool {
     return this.viewport.rayFrom(x, y).intersectObjects(this.gizmo.children, false).length > 0;
   }
 
-  stop() {
+  /** Close the tool.
+   *
+   *  `keepClip` leaves the CUT on screen and only takes down the gizmo and the
+   *  key/pointer handlers — a "persistent section", which is what makes
+   *  sketching inside a section possible (field report #17: "Allow sketch
+   *  creation while in a section cut. Perhaps a persistent section"). The
+   *  viewport owns the plane and re-applies it across rebuilds, so the cut
+   *  survives committing the sketch.
+   *
+   *  Esc still clears the cut outright: an invisible clip you cannot get rid of
+   *  would be worse than no feature at all. */
+  stop(keepClip = false) {
     if (!this.active) return;
     const el = this.viewport.domElement;
     el.removeEventListener("pointermove", this.boundMove);
@@ -201,7 +217,7 @@ export class SectionTool {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.dim.hide();
-    this.viewport.setClipPlane(null);
+    if (!keepClip) this.viewport.setClipPlane(null);
     if (this.gizmo) {
       this.viewport.removeFromScene(this.gizmo);
       for (const c of this.gizmo.children) if (c instanceof THREE.Mesh) c.geometry.dispose();

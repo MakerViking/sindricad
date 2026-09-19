@@ -92,6 +92,44 @@ export async function saveDocumentAs(store: DocumentStore) {
   }
 }
 
+/** Stand between the user and losing unsaved work, and leave no stale recovery
+ *  snapshot behind. Returns true when the caller may proceed to replace the
+ *  document, false when the user backed out.
+ *
+ *  This exists because of a field report (Doug Smith, #20): "a close file option
+ *  with a save / discard option so you can work on another model and do not get
+ *  asked to recover the previous model". Two separate holes produced that:
+ *
+ *   - New asked a BINARY "discard?" — there was no way to say "save it first" —
+ *     and on discard it left the autosave slot on disk. The next launch duly
+ *     offered to recover a document the user had deliberately abandoned.
+ *   - Open had no guard at all: it replaced the document silently, unsaved
+ *     changes and all, and left the same stale slot.
+ *
+ *  Discarding CLEARS the slot, which is the half that makes the recovery prompt
+ *  mean what its own comment claims it means ("the app died with unsaved work")
+ *  rather than "you once pressed New". */
+export async function confirmDiscardChanges(store: DocumentStore, title: string): Promise<boolean> {
+  if (!store.dirty) return true;
+  const { choose } = await import("../ui/choice");
+  const pick = await choose<"save" | "discard">(title, [
+    { value: "save", label: t("file.close.save"), hint: t("file.close.saveHint") },
+    { value: "discard", label: t("common.discard"), hint: t("file.close.discardHint") },
+  ]);
+  if (pick === "save") {
+    await saveDocument(store);
+    // Save As can be cancelled at the native dialog, which leaves the document
+    // dirty and unsaved. Treat that as "I changed my mind", not as consent to
+    // throw the work away.
+    return !store.dirty;
+  }
+  if (pick === "discard") {
+    await clearRecovery(store.filePath);
+    return true;
+  }
+  return false; // Esc / dismissed
+}
+
 export async function openDocument(store: DocumentStore, geometry: GeometryBackend) {
   if (isTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
