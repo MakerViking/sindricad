@@ -20,6 +20,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Undo and redo on a heavy model are about eleven times faster.** On a
+  100 feature plate with 49 through holes, undoing a radius change took 717 ms
+  of engine time and now takes 64 ms; redo went from 722 ms to 65 ms. The engine
+  used to consult its saved history only when nothing in memory matched, so a
+  short match in memory could force it to replay 38 features it had already
+  built and stored. It now prefers whichever of the two goes deeper. This is
+  engine time on one machine and one model, not the whole round trip to the
+  screen, and the gain needs a usable saved checkpoint to exist.
+
 - **A diameter change that would break the part is refused in words, not built
   quietly.** Over the 2,009 part import, changing a diameter used to hand back
   nine broken bodies with no error at all: six that fail a validity check
