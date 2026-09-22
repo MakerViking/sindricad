@@ -479,6 +479,61 @@ jobs:
         with:
           path: dist
 
+      # download-artifact@v4 can report success having finished only SOME of the
+      # artifacts it started. Run 34219484729 logged "Found 3 artifact(s)" and then
+      # only two "download completed successfully" lines; the windows one was cut
+      # off mid-extract, leaving SindriCAD_0.1.221_x64_en-US.msi at 25,847,670 of
+      # its real 166,015,556 bytes and setup.exe absent entirely. Nothing checked,
+      # so the beta shipped a truncated MSI ("This installation package could not
+      # be opened") and a latest.json with no windows platform at all ("None of the
+      # fallback platforms ... were found"). Windows testers could neither update
+      # nor reinstall until it was hot-patched by hand on 2026-09-10.
+      #
+      # So: assert the full expected bundle set is on disk before publishing
+      # anything. The size floor is what catches a truncation that still leaves a
+      # file behind -- every real bundle here is >100 MB because of the embedded
+      # Python geometry runtime, so 40 MB is far below any legitimate build yet far
+      # above a partial write. If this step fails, re-run the release job; the
+      # artifacts themselves are intact, only the transfer was not.
+      - name: Verify every platform's bundles arrived intact
+        shell: bash
+        run: |
+          set -euo pipefail
+          min=41943040 # 40 MiB
+          missing=0
+          check() { # $1 = human label, $2 = find pattern
+            f="$(find dist -type f -name "$2" | head -1)"
+            if [ -z "$f" ]; then
+              echo "::error::$1: no file matching '$2' in the downloaded artifacts"
+              missing=1
+              return
+            fi
+            sz=$(stat -c %s "$f")
+            if [ "$sz" -lt "$min" ]; then
+              echo "::error::$1: $f is only $sz bytes — truncated download, not a real bundle"
+              missing=1
+              return
+            fi
+            if [ ! -f "$f.sig" ]; then
+              echo "::error::$1: $f has no .sig alongside it"
+              missing=1
+              return
+            fi
+            echo "ok  $1: $f ($sz bytes, signed)"
+          }
+          check "linux AppImage"  '*.AppImage'
+          check "windows NSIS"    '*setup.exe'
+          check "macOS updater"   '*.app.tar.gz'
+          # Installers users download by hand. No .sig, so checked for size only.
+          for p in '*.deb' '*.rpm' '*.dmg' '*.msi'; do
+            f="$(find dist -type f -name "$p" | head -1)"
+            [ -n "$f" ] || { echo "::error::no file matching '$p'"; missing=1; continue; }
+            sz=$(stat -c %s "$f")
+            [ "$sz" -ge "$min" ] || { echo "::error::$f is only $sz bytes — truncated"; missing=1; continue; }
+            echo "ok  installer: $f ($sz bytes)"
+          done
+          [ "$missing" -eq 0 ] || { echo "::error::refusing to publish an incomplete beta"; exit 1; }
+
       - name: Assemble latest.json
         shell: bash
         run: |
@@ -488,9 +543,16 @@ jobs:
           d="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           jq -n --arg v "$v" --arg d "$d" '{version:$v, pub_date:$d, platforms:{}}' > latest.json
           add() { # $1 = updater platform key, $2 = updater bundle path
-            [ -n "$2" ] && [ -f "$2" ] || { echo "NOTE: no bundle for $1"; return 0; }
+            # Hard failures, not skips. A latest.json missing a platform is not a
+            # smaller release, it is a release that platform cannot update from --
+            # and the app says so out loud: "None of the fallback platforms
+            # ["windows-x86_64-nsis", "windows-x86_64"] were found in the response
+            # `platforms` object". The verify step above should already have caught
+            # this; belt and braces, because the cost of getting it wrong is every
+            # tester on that OS stranded until someone notices.
+            [ -n "$2" ] && [ -f "$2" ] || { echo "::error::no updater bundle for $1"; exit 1; }
             sig="$2.sig"
-            [ -f "$sig" ] || { echo "WARNING: $2 has no .sig — $1 left out of latest.json"; return 0; }
+            [ -f "$sig" ] || { echo "::error::$2 has no .sig — cannot publish $1"; exit 1; }
             jq --arg k "$1" --arg u "$base/$(basename "$2")" --rawfile s "$sig" \
               '.platforms[$k] = {signature: $s, url: $u}' latest.json > t && mv t latest.json
           }
