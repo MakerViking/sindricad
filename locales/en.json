@@ -683,6 +683,14 @@
         "one": "Recognised {n} curved surface.",
         "other": "Recognised {n} curved surfaces."
       },
+      "reference": {
+        "notWatertight": "I rebuilt this mesh from the flat surfaces its triangles actually lie on, which is why it opened quickly and has so few faces, but the rebuilt surface still has gaps in it, so it is not a closed solid.",
+        "summary": "{why} It comes in as reference geometry: you can measure it and build against it, but not edit its shape. Thicken turns it into a solid you can model with.",
+        "tooManyFacetDirections": "This mesh has {n} distinct facet directions, where a clean CAD part has a few hundred at most, so there was almost nothing in it for me to recognise as a curve or a flat face.",
+        "tooManyFaces": "I recognised the curved surfaces I could here, and what I could not recognise stays faceted, so this mesh is still too detailed to edit at {n} faces against a limit of {limit}.",
+        "tooManyFacesInBody": "I recognised the curved surfaces I could here, and body {index} of {count} is still too detailed to edit at {n} faces against a limit of {limit}.",
+        "tooManyTotalFaces": "Each part in this file is simple enough on its own, but together they come to {n} faces across {bodies} bodies, past the {limit} this document can draw comfortably."
+      },
       "stayedFaceted": {
         "one": "{n} face stayed faceted.",
         "other": "{n} faces stayed faceted."

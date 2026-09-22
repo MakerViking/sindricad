@@ -567,10 +567,12 @@ def test_the_long_mesh_passes_tick_from_inside_their_loops():
     loop proves nothing — the gap the watchdog sees is INSIDE it. Both long
     stretches of the mesh-import path that HAVE loops are checked here, because
     the second one was written against the first as a model and would inherit
-    the same defect: `_refacet_clean` (which published nothing at all before)
-    and `_fit_surfaces` (GH #49, which walks the face graph three times and then
-    rebuilds a face per region). A later edit that hoists a tick out of a loop
-    in either would restore the reap."""
+    the same defect: `_refacet_clean` (which published nothing at all before),
+    `_fit_surfaces` (GH #49, which walks the face graph three times and then
+    rebuilds a face per region), and `_replane_mesh_file`, which region-grows
+    over every triangle in the file and then rebuilds a face per region. A later
+    edit that hoists a tick out of a loop in any of them would restore the
+    reap."""
     import ast
 
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -589,7 +591,7 @@ def test_the_long_mesh_passes_tick_from_inside_their_loops():
                 and c.func.id in ("progress_tick", "_tick_every")
                 and id(c) not in skip]
 
-    for name in ("_refacet_clean", "_fit_surfaces"):
+    for name in ("_refacet_clean", "_fit_surfaces", "_replane_mesh_file"):
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == name)
         inside = []

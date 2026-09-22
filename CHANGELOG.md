@@ -18,6 +18,175 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ## Unreleased
 
+### Changed
+
+- **A diameter change that would break the part is refused in words, not built
+  quietly.** Over the 2,009 part import, changing a diameter used to hand back
+  nine broken bodies with no error at all: six that fail a validity check
+  outright, one where an 89 face part came back as 2 faces with 96% of its
+  volume gone, and two where moving one 4.85 mm wall also moved nine unrelated
+  cylinders elsewhere in the part. All nine are now refused with a sentence, and
+  your model is left as it was. Nothing that worked before stopped working: the
+  count of walls handled by the two exact paths is identical, 59 and 61 of 183,
+  and not one correct answer was lost.
+
+- **Offsetting one wall no longer quietly offsets the rest of the part.** Pick
+  one wall of a slot and ask for 0.15 mm, and what you used to get was both
+  walls and both end radii moved, four times the change you asked for, reported
+  as a success. Any wall that is not a full circle went down this path, which is
+  a third of the round faces in a typical import. The result is now checked
+  against the part it came from: the face you picked may move, and a chamfer or
+  fillet along its edge may follow it, and anything else moving means you get a
+  sentence instead of a model.
+
+- **A pin standing in a bore is seen even when it sticks out of the bore.** The
+  check that stops a wall being driven through a neighbouring part needed the
+  neighbour to sit entirely inside the bore's depth, which a dowel in an
+  assembly almost never does. Growing a 3 mm bore by 0.6 mm around a 2.6 mm pin
+  gave two parts overlapping by 31 mm³, with every other check green.
+
+- **Kernel failures now say something.** Four of those 183 attempts used to
+  surface as `Standard_ConstructionError` with nothing after the colon. And the
+  message for a face the sandbox refuses no longer claims the amount is
+  irrelevant: sweeping one face over six distances at both signs shows the same
+  face passing at 0.05 mm and crashing at 0.15, and another crashing at 0.15 and
+  passing at 0.30, so the amount does matter and the sentence no longer pretends
+  otherwise. A ring cut that would delete a solid also stopped telling Offset
+  Face users to "pick a target inside it", which is Press/Pull's advice for a
+  control Offset Face does not have.
+
+- **Changing a plain diameter got about a fifth cheaper.** The same body was
+  being handed to the validity checker three times per edit; one of those was
+  redundant and is gone. On a 1,433 face part that is 0.47 seconds of a cost you
+  pay on every keystroke of a drag.
+
+- **Press/Pull on a round wall and Offset Face now work on imported parts,
+  including bores and bosses with a chamfer or a fillet on the rim.** The
+  entries below give the detail; the short version is that everything about
+  changing a diameter on a STEP import is different. The test part I use is a
+  4 mm chamfered bushing lifted straight out of a vendor's file: before this,
+  changing either of its diameters killed the geometry engine, and the session
+  went with it. Now both build in a few milliseconds, and the 0.3 mm chamfers
+  come back at 0.3 mm. Where a face genuinely cannot be served, you get a
+  sentence naming what is in the way, your model is left exactly as it was, and
+  the app is still running. Two answers that used to look completely fine are
+  now caught: a chamfer that quietly resized itself from 0.3 mm to 0.45 mm while
+  the opening it belongs to stayed put, and an offset that reported success
+  having moved every face of the part, adding 67.17 mm³ of material where the
+  change you asked for was 3.90 mm³. One thing worth saying plainly, because it
+  surprised me: a part read in from a file and the same part built inside
+  SindriCAD are not interchangeable here. Identical face count, identical volume
+  to nine decimal places, and only the imported one crashed. So the tests for
+  this run against real imported files rather than against shapes I build to
+  match them.
+
+- **Changing a diameter now refuses the changes that would quietly break the
+  part, and checks that far faster than before.** Moving a round wall and its
+  chamfer together is exact, but "exact" is not the same as "safe", and I found
+  four ways it could hand back a body that passes every arithmetic check and is
+  still wrong. A chamfer sitting on a counterbore floor only 0.2 mm wide walks
+  off the outer edge of that floor once you grow the bore 0.25 mm, leaving an
+  inward overhanging knife edge that no machine can cut; the result is a valid,
+  watertight, single solid with the right volume and a perfectly preserved
+  chamfer. A bore grown 0.2 mm into a cross hole that was 0.2 mm clear of it
+  produces a solid that self intersects, and because the face layout never
+  changes, every face still meets its own edges and the volume still agrees with
+  what the change should have produced. A bore in one part of an assembly can be
+  driven straight through a neighbouring part, which is invisible to any check
+  that looks at one solid at a time. And a long shallow taper looks exactly like
+  a chamfer to every test I had: coaxial, fully round, meeting the wall at the
+  right radius, one flat face beyond it. On a 22 mm eight degree taper that
+  meant its wide end silently moved from 6.09 mm to 5.94 mm, which is not a
+  change of bore diameter, it is a redesign. Three of the four are now refused
+  by name, with a sentence saying what is in the way rather than a kernel
+  message, and the model is left alone. The taper is the exception and it turned
+  out to be good news: the fallback path holds the taper's angle and its wide
+  end where they were and just lengthens it, which is the answer you want, so
+  that one builds. Nothing that used to work stopped working: over the same
+  2,009 part import the number of round walls handled is unchanged at 119
+  of 183.
+
+- **The safety checking behind that is between 3 and 19 times cheaper on a real
+  import.** It matters because the whole model rebuilds on every frame while you
+  drag a distance, so this is a cost per keystroke, not per edit. Proving a
+  change clears the rest of the body used to mean measuring the distance from
+  the moving faces to every face whose bounding box was anywhere near them, and
+  on a threaded part that came to 1.7 seconds for an edit that itself takes
+  three milliseconds. Now the region a wall actually sweeps through is worked
+  out first, as a ring around its own axis, and almost everything is ruled out
+  by comparing two numbers. What survives is measured against the axis, which is
+  nine times cheaper than measuring it against the moving faces and is usually
+  enough to settle it. That threaded part is now half a second, a 148 face
+  casting went from 92 to 5 milliseconds, and across the whole import the
+  typical edit is 5 milliseconds. One body of the 2,009 got slower, by about a
+  seventh of a second, because its eight large freeform panels defeat every
+  cheap test and end up measured anyway.
+
+- **Changing the diameter of a plain bore or boss is now exact, and an offset
+  that would crash the geometry kernel is caught before it reaches your model.**
+  Press/Pull on a round wall, and Offset Face, used to hand the whole job to
+  OCCT's surface offsetter. On imported STEP geometry that is broadly broken:
+  over 198 bodies of a real import I measured 17 of them crashing the kernel
+  outright, five running for 29 seconds or more, and most of the rest simply
+  refusing. Worse, two came back reporting success having quietly moved every
+  face of the solid, or having grown a chamfer from 0.3 mm to 0.45 mm while the
+  opening it belongs to stayed put. A straight bore or boss, meaning a full
+  round wall whose neighbours are flat and square to it, now changes radius by a
+  direct boolean instead. That is exact to the last digit, takes about ten
+  milliseconds, and is checked against the radius the kernel actually produced
+  rather than against a volume that can look right for the wrong reason.
+  Anything else is tried in a throwaway process first, so a face that would take
+  the kernel down gets you a sentence about what is actually wrong instead of a
+  dead session.
+
+- **A bore or boss with a chamfer or a fillet on the rim now keeps that chamfer
+  or fillet when you change its diameter.** This was the worst of the offset
+  bugs because it looked like it worked. Growing a 1.3 mm chamfered bore by
+  0.15 mm gave back a perfectly valid solid in which the chamfer had silently
+  grown from 0.3 mm to 0.45 mm, while the opening it belongs to had not moved at
+  all. The fillet version was worse again: on one imported part it reported
+  success having thickened the entire solid, and on another it replaced the
+  fillet with a surface that is no longer a torus, so nothing downstream could
+  read its radius any more. A round wall and the chamfers or fillets sitting on
+  it are now moved together as one feature, by changing their radius directly
+  rather than by rebuilding the body. The chamfer keeps its angle and its size,
+  the fillet keeps its radius and its sweep, and the face count comes back
+  identical, so selections and later features still point at the same faces.
+  Measured over every body of a 2,009 part import, it handles 119 of the 183
+  round walls I tried, all of them valid, in about 5 milliseconds each. It also
+  checks its own answer three ways before handing it back, including against the
+  volume the change should have produced worked out in closed form, and hands
+  the job back to the old path if any of them disagrees. Walls it cannot take,
+  such as a half cylinder or one whose neighbour is a freeform surface, are
+  unchanged from before.
+
+- **A dirty mesh export is rebuilt from its real planes instead of imported
+  facet by facet.** Some STL exports shatter every flat surface into thousands
+  of slivers whose normals are off by a fraction of a degree, which is enough to
+  defeat the exact-coplanar merge, so a building made of a few hundred walls
+  arrived as a hundred thousand faces that took minutes to open and crawled in
+  the viewport. Those files now come in rebuilt: I find the planes the triangles
+  actually lie on, snap the vertices onto them and build one face per plane. The
+  architectural STL that started this went from 102,618 faces in about four
+  minutes to 404 faces in under four seconds. This only runs on files that
+  today already fail to import as something editable, and only when the mesh
+  really is made of planes. A curved or scanned mesh is left alone, because
+  flattening a sphere into plates would be a worse answer than the one it gets
+  now. It is an approximation, not a faithful copy: vertices move up to
+  0.36 mm to land on clean planes.
+
+- **A mesh that is too detailed to edit now imports as reference geometry
+  instead of being refused.** If a file had more detail than I can turn into an
+  editable model, the import failed and you got nothing: a message explaining
+  why, and no geometry. Now the body comes in read-only, the way a
+  non-watertight mesh already did, with a note saying which limit it passed and
+  that Thicken turns it into a solid you can model with. You can measure it,
+  sketch against it and export it. Reported on an architectural STL that had
+  21,326 distinct facet directions; the limits themselves have not moved, only
+  what happens when a file exceeds one. Files too large to read at all are still
+  refused up front, because that guard protects against a crash rather than
+  judging how editable the result would be.
+
 ### Fixed
 
 - **A sketch you renamed keeps its name when you edit it.** Renaming a sketch in

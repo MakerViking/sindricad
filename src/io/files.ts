@@ -714,6 +714,59 @@ export function describeSurfaceFit(res: { fitted?: number; faceted?: number; fit
   return key ? t(key) : null;
 }
 
+/** What to tell the user about an import that came back as read-only REFERENCE
+ *  geometry instead of as an editable body, or null when it did not.
+ *
+ *  This is the one message the import path cannot afford to drop. These meshes
+ *  used to be REFUSED with a sentence explaining why; degrading them instead is
+ *  strictly better only if the explanation survives, because a body that
+ *  silently refuses every modelling operation reads as the app being broken.
+ *  That is the whole reason the sidecar sends a structured reason rather than
+ *  just setting `solid: false`.
+ *
+ *  An unrecognised `why` from a newer sidecar returns null rather than throwing
+ *  or rendering a raw key: the caller is a toast on a successful import, and a
+ *  reason we cannot word is not worth breaking the import over. Pure, so the
+ *  wording is testable without a backend, a file or a toast. */
+export function describeReferenceImport(res: { reference?: {
+  why: string; faces?: number; limit?: number; bodies?: number;
+  bodyIndex?: number; bodyCount?: number; directions?: number;
+} }): string | null {
+  const ref = res.reference;
+  if (!ref) return null;
+  let why: string | null = null;
+  if (ref.why === "tooManyFacetDirections" && isCount(ref.directions)) {
+    why = t("file.import.reference.tooManyFacetDirections", { n: formatCount(ref.directions) });
+  } else if (ref.why === "tooManyFaces" && isCount(ref.faces) && isCount(ref.limit)) {
+    // The body index is sent only for a multi-body file, where "which one" is
+    // an actual question; naming "body 1 of 1" would be noise.
+    why = isCount(ref.bodyIndex) && isCount(ref.bodyCount)
+      ? t("file.import.reference.tooManyFacesInBody", {
+          index: formatCount(ref.bodyIndex), count: formatCount(ref.bodyCount),
+          n: formatCount(ref.faces), limit: formatCount(ref.limit) })
+      : t("file.import.reference.tooManyFaces", {
+          n: formatCount(ref.faces), limit: formatCount(ref.limit) });
+  } else if (ref.why === "tooManyTotalFaces" && isCount(ref.faces)
+             && isCount(ref.bodies) && isCount(ref.limit)) {
+    why = t("file.import.reference.tooManyTotalFaces", {
+      n: formatCount(ref.faces), bodies: formatCount(ref.bodies),
+      limit: formatCount(ref.limit) });
+  } else if (ref.why === "notWatertight") {
+    // The only reason here that is NOT about a limit: the mesh was replaned
+    // successfully and came out small and fast, and still did not close. It
+    // carries no counts, so it needs no isCount guard.
+    why = t("file.import.reference.notWatertight");
+  }
+  // A known reason whose counts did not arrive still has to say the body is
+  // read-only — that half of the message does not depend on the numbers.
+  if (why === null && !KNOWN_REFERENCE_REASONS.has(ref.why)) return null;
+  return t("file.import.reference.summary", { why: why ?? "" }).trim();
+}
+
+const KNOWN_REFERENCE_REASONS = new Set([
+  "tooManyFacetDirections", "tooManyFaces", "tooManyTotalFaces", "notWatertight",
+]);
+
 
 async function importPath(store: DocumentStore, geometry: GeometryBackend, path: string) {
   const fmt = extToImportFormat(path);
@@ -763,10 +816,16 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
   // sentence: the two are about different things (how the document will FEEL vs
   // what it is made of), and either can be absent.
   const surfaces = describeSurfaceFit(res);
-  if (capability || surfaces) {
+  // Why the body is read-only, when it is. Its own toast, and a WARNING rather
+  // than info: the other two are observations about a body the user can model
+  // with, this one says they cannot, which is the thing they will otherwise
+  // discover as every tool refusing.
+  const reference = describeReferenceImport(res);
+  if (capability || surfaces || reference) {
     const { toast } = await import("../ui/toast");
     if (capability) toast(capability, { kind: "info" });
     if (surfaces) toast(surfaces, { kind: "info" });
+    if (reference) toast(reference, { kind: "warning" });
   }
 
   // Carry the file's own colour onto the body it produced. The body doesn't

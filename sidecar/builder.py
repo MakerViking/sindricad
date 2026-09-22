@@ -306,6 +306,300 @@ def _list_shapes(lst):
     return tuple(lst)  # non-manifold: rare, and correctness beats the microseconds
 
 
+def _tick_every(k, n=64):
+    """Publish liveness from inside a long loop, every `n`th iteration.
+
+    Shared by `_refacet_clean` and `_replane_mesh_file`, the two longest
+    loop-heavy stretches on the mesh-import path. `keep_index=True` because both
+    run INSIDE something that has already said what it is (the import's
+    "Simplifying faces" phase, or a cleanUp feature's own index), and a bare
+    liveness tick that overwrote that would leave the STALL line and the crash
+    reply naming nothing."""
+    if k % n == 0:
+        progress_tick(keep_index=True)
+
+
+# region-rebuild outcomes, shared by `_refacet_clean` and `_replane_mesh_file`.
+# What a failure MEANS differs between them — refacet bails on the whole shape,
+# replane falls back to that one region's triangles — so the two failure kinds
+# travel as values and the policy stays with the caller.
+_REGION_OK = "ok"
+_REGION_EMPTY = "collapsed by the snap"
+_REGION_NO_LOOP = "has no closed boundary"
+_REGION_NO_FACE = "MakeFace failed"
+
+
+def _planar_face_from_region(rtris, p0, nn, snapped, prune_collinear=False):
+    """One planar face for one planar region, rebuilt from its triangles.
+
+    The region's boundary is the DIRECTED edges that do not cancel against an
+    opposite twin, and they chain into closed loops: the largest encloses the
+    face, the rest are holes. Points are projected EXACTLY onto the region plane
+    and the plane is handed to MakeFace explicitly, because the lstsq snap's
+    residuals exceed OCCT's own plane-finding precision.
+
+    `rtris` are welded index triples into `snapped`; `p0`/`nn` are the region's
+    anchor plane. Returns `(status, face)`, face being None unless the status is
+    `_REGION_OK`.
+
+    `prune_collinear` drops the boundary points the snap has made straight (see
+    `flat` below). It is OFF for `_refacet_clean`, whose rebuild is not merely
+    cheaper with it but SUCCEEDS more often, and succeeding more often is a
+    behaviour change: a tessellated sphere that used to arrive as read-only
+    reference geometry would instead arrive as an editable body of ~1,150 flat
+    faces with its vertices moved up to `3 * tol`. That may well be the better
+    answer, but it is a decision about curved mesh imports, not a side effect
+    this flag gets to make on the way past.
+
+    An edge whose two endpoints welded to the SAME vertex is skipped. Such a
+    triangle is a line: it bounds nothing, and counting its collapsed edge would
+    chain a one-vertex "loop" through the middle of an otherwise closed region.
+    A dirty mesh export is full of them (17.8% of the triangles in the field
+    file), and they are load-bearing for adjacency, so they are grown into
+    regions like any other triangle and only ignored here."""
+    import numpy as np
+
+    from collections import Counter, defaultdict
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
+    from OCP.ShapeFix import ShapeFix_Face
+
+    ec = Counter()
+    for a, b, c in rtris:
+        for e in ((a, b), (b, c), (c, a)):
+            if e[0] != e[1]:
+                ec[e] += 1
+    # Boundary by DIRECTED cancellation, not by "used once". Two neighbouring
+    # triangles wound in opposite directions both emit the edge the same way
+    # round, so an undirected count reads 2 and calls the edge interior — and a
+    # hole whose entire rim is such a pair vanishes and gets filled in. Netting
+    # each edge against its opposite twin is the boundary of the triangle chain,
+    # and its signed area equals the triangles' exactly. Measured on the field
+    # file: the two largest regions were 3,103 mm² and 3,048 mm² (10%) too big,
+    # both a single missed hole, and both land on the triangles to 0.05% here.
+    # A dirty export is full of flipped triangles — 17,079 of 44,064 in one
+    # region — so this is the normal case, not a pathological one.
+    nxt = defaultdict(list)
+    for (a, b), n in ec.items():
+        net = n - ec.get((b, a), 0)
+        if net > 0:
+            nxt[a].extend([b] * net)
+    # Walk the boundary and cut a loop out every time it meets a vertex it is
+    # already standing on, rather than only when it returns to where it started.
+    # Both are cheap; only this one finds the HOLES. A boundary vertex can be
+    # entered twice (a hole touching its outer wall at a point, or a sliver
+    # bridging two rims), and a walk that insists on closing at its own start
+    # then runs past the hole's rim, never comes back, and discards the whole
+    # path — so the hole is silently filled in. Measured on the field file: the
+    # largest region alone chained 3,866 boundary edges into 1 loop and 21
+    # discarded paths, and came out 3,103 mm² (10%) too big.
+    loops = []
+    while any(nxt.values()):
+        stack = [next(k for k, v in nxt.items() if v)]
+        at = {stack[0]: 0}
+        while stack:
+            outs = nxt.get(stack[-1])
+            if not outs:
+                at.pop(stack.pop(), None)  # dead end: an unclosable tail
+                continue
+            v = outs.pop()
+            cut = at.get(v)
+            if cut is not None:
+                loop = stack[cut:]
+                if len(loop) >= 3:
+                    loops.append(loop)
+                for u in loop:
+                    at.pop(u, None)
+                del stack[cut:]
+            at[v] = len(stack)
+            stack.append(v)
+    if not loops:
+        return _REGION_NO_LOOP, None
+
+    def flat(idx_loop):
+        # exact in-plane projection, then two prunings: exact duplicates always,
+        # and — when `prune_collinear` is set — points lying exactly ON the
+        # segment between their neighbours.
+        #
+        # Collinear pruning is only safe because it comes out IDENTICAL in both
+        # regions sharing a boundary — otherwise the sew is left with open
+        # T-junction seams — and here it does, for a reason rather than by luck.
+        # A shared boundary runs along the intersection LINE of the two regions'
+        # planes, and the lstsq snap above puts every vertex on it exactly, so
+        # both regions see the same points and read the same turns. The
+        # threshold is a relative 1e-9 (about a nanoradian): it removes what the
+        # snap made straight and nothing else. Anything looser would move a
+        # point off a boundary the neighbour still follows.
+        #
+        # It is worth doing because a region outline mostly consists of these:
+        # measured on the field file, 19,326 boundary points across 393 faces
+        # come down to 4,488, and the sew's cost is driven by the edge count it
+        # is handed. UnifySameDomain at the end would merge them too, but only
+        # after the expensive part has already paid for them.
+        pts = [snapped[i] - ((snapped[i] - p0) @ nn) * nn for i in idx_loop]
+        out = []
+        m = len(pts)
+        for k in range(m):
+            if np.linalg.norm(pts[k] - pts[(k - 1) % m]) < 1e-6:
+                continue
+            out.append(pts[k])
+        m = len(out)
+        if not prune_collinear or m < 4:
+            return out
+        keep = []
+        for k in range(m):
+            u = out[k] - out[k - 1]
+            v = out[(k + 1) % m] - out[k]
+            scale = np.linalg.norm(u) * np.linalg.norm(v)
+            if np.linalg.norm(np.cross(u, v)) > 1e-9 * max(scale, 1e-12):
+                keep.append(out[k])
+        return keep
+
+    def loop_area(pts):
+        s = np.zeros(3)
+        for k in range(len(pts)):
+            s += np.cross(pts[k], pts[(k + 1) % len(pts)])
+        return abs(s @ nn) / 2
+
+    def perimeter(pts):
+        return sum(np.linalg.norm(pts[k] - pts[k - 1]) for k in range(len(pts)))
+
+    wires = []
+    for loop in loops:
+        pts = flat(loop)
+        if len(pts) < 3:
+            continue  # loop collapsed by the snap — nothing to bound
+        area = loop_area(pts)
+        # A slit: a loop that runs out along a sliver and back, enclosing less
+        # than its own length times the kernel's confusion (1e-7 mm), so it is
+        # thinner than OCCT can tell from nothing. Netted boundaries produce a
+        # crowd of them around the zero-area triangles — 144 of 558 loops on the
+        # field file. ShapeFix_Face happens to discard them too (dropping them
+        # here changed neither the result nor the runtime, measured), but a hole
+        # that bounds nothing has no business being handed to MakeFace, and
+        # leaving them in makes `wires` a list this code cannot reason about.
+        if area <= perimeter(pts) * 1e-7:
+            continue
+        mp = BRepBuilderAPI_MakePolygon()
+        for p in pts:
+            mp.Add(gp_Pnt(*p))
+        mp.Close()
+        if mp.IsDone():
+            wires.append((mp.Wire(), area))
+    if not wires:
+        return _REGION_EMPTY, None  # region was pure debris — no face needed
+    wires.sort(key=lambda w: -w[1])
+    mf = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*p0), gp_Dir(*nn)), wires[0][0])
+    for w, _ in wires[1:]:
+        mf.Add(w)
+    if not mf.IsDone():
+        return _REGION_NO_FACE, None
+    fx = ShapeFix_Face(mf.Face())
+    fx.Perform()
+    return _REGION_OK, fx.Face()
+
+
+def _close_sewn_components(sewn, tol, keep_shells=False):
+    """Split a sewn face soup into edge-connected components and close each one.
+
+    Sewing disjoint bodies yields ONE shell holding several disconnected face
+    components, and SolidFromShell on that is garbage (mixed orientation,
+    nonsense volume). So the faces are split into edge-connected components
+    first, and each component is sewn and closed on its own.
+
+    `keep_shells` is for `_replane_mesh_file`, whose input genuinely may not be
+    watertight: a component that will not close comes back as a SHELL, which the
+    app imports as read-only reference geometry, rather than as a "solid" with a
+    meaningless volume, and a face the sew leaves loose comes back as itself
+    rather than being dropped. `_refacet_clean` leaves it False — it validates
+    against the solid's volume and always has an untouched original to fall
+    back to, so a loose face there is noise it is better off without."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+    from OCP.BRepCheck import BRepCheck_Analyzer, BRepCheck_Shell, BRepCheck_Status
+    from OCP.ShapeFix import ShapeFix_Solid
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS, TopoDS_Shell
+    from OCP.TopTools import (
+        TopTools_IndexedDataMapOfShapeListOfShape,
+        TopTools_IndexedMapOfShape,
+    )
+
+    cmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(sewn, TopAbs_FACE, cmap)
+    cemap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(sewn, TopAbs_EDGE, TopAbs_FACE, cemap)
+    unvisited = set(range(1, cmap.Extent() + 1))
+    out = []
+    while unvisited:
+        progress_tick(keep_index=True)  # one connected component per pass, each its own sew
+        seed = unvisited.pop()
+        compo, queue = [seed], [seed]
+        while queue:
+            k = queue.pop()
+            eexp = TopExp_Explorer(cmap.FindKey(k), TopAbs_EDGE)
+            while eexp.More():
+                if cemap.Contains(eexp.Current()):
+                    for other in _list_shapes(cemap.FindFromKey(eexp.Current())):
+                        j = cmap.FindIndex(other)
+                        if j in unvisited:
+                            unvisited.discard(j)
+                            compo.append(j)
+                            queue.append(j)
+                eexp.Next()
+        if keep_shells:
+            # The component's faces already share their edges — the caller's sew
+            # did that, and this very walk read the sharing back out of the edge
+            # ancestor map — so the shell IS those faces in a shell, and sewing
+            # them a second time only invites the sewer to re-approximate
+            # geometry it has already stitched. Measured on the field file, the
+            # re-sew handed back the same 403 faces carrying 209,367 mm² where
+            # the input held 221,436 mm², and unlike the caller's sew there is no
+            # ShapeFix_Shape after this one to put it back. It also answers with
+            # a bare FACE for a one-face component and a COMPOUND for a partial
+            # stitch, neither of which a SHELL explorer sees, so 76 faces were
+            # being dropped in silence on top of that.
+            shell_builder = BRep_Builder()
+            shell = TopoDS_Shell()
+            shell_builder.MakeShell(shell)
+            for k in compo:
+                shell_builder.Add(shell, cmap.FindKey(k))
+            shells = [shell]
+        else:
+            # `_refacet_clean` keeps the re-sew: it judges the result by the
+            # solid's VOLUME and holds an untouched original to fall back to, so
+            # the sewer's own idea of a shell is the safer input there.
+            part_sew = BRepBuilderAPI_Sewing(1.5 * tol)
+            for k in compo:
+                part_sew.Add(cmap.FindKey(k))
+            part_sew.Perform()
+            shells = []
+            sexp = TopExp_Explorer(part_sew.SewedShape(), TopAbs_SHELL)
+            while sexp.More():
+                shells.append(TopoDS.Shell_s(sexp.Current()))
+                sexp.Next()
+        for shell in shells:
+            if keep_shells:
+                # ask the kernel whether the shell actually closes rather than
+                # trusting SolidFromShell, which happily wraps an open shell
+                try:
+                    closed = (BRepCheck_Shell(shell).Closed()
+                              == BRepCheck_Status.BRepCheck_NoError)
+                except Exception:
+                    closed = False
+                if not closed:
+                    out.append(Shell(shell))
+                    continue
+            solid = Solid(ShapeFix_Solid().SolidFromShell(shell))
+            if keep_shells and not BRepCheck_Analyzer(solid.wrapped).IsValid():
+                out.append(Shell(shell))
+                continue
+            out.append(solid)
+    return out
+
+
 def _refacet_clean(shape, tol=0.12, debug=False):
     """Collapse facet-import raggedness. STL→B-rep leaves sliver bands and
     near-coplanar "staircase" faces around every real design plane (the planar
@@ -398,13 +692,7 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         # is per-loop because one iteration means very different work in each —
         # a whole region rebuilt vs one triangle bucketed.
         #
-        # keep_index throughout this function: it runs INSIDE something that has
-        # already said what it is — the import's "Simplifying faces" phase, or a
-        # cleanUp feature's own index — and a bare liveness tick that overwrote
-        # that would leave the STALL line and the crash reply naming nothing.
-        def _tick_every(k, n=64):
-            if k % n == 0:
-                progress_tick(keep_index=True)
+        # keep_index throughout this function: see `_tick_every`.
 
         # region-grow from the biggest faces: absorb an edge-adjacent face when
         # ALL its vertices lie within tol of the ANCHOR's plane (anchored, not
@@ -489,15 +777,10 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         # sewing at 1e-3 merges the per-face copies of shared boundaries. This
         # avoids the mesh round-trip entirely — no degenerate-triangle repair,
         # and the output IS the ideal one-face-per-plane solid.
-        from collections import Counter, defaultdict
+        from collections import defaultdict
 
-        from OCP.BRepBuilderAPI import (
-            BRepBuilderAPI_MakeFace,
-            BRepBuilderAPI_MakePolygon,
-            BRepBuilderAPI_Sewing,
-        )
-        from OCP.gp import gp_Dir, gp_Pln, gp_Pnt
-        from OCP.ShapeFix import ShapeFix_Face, ShapeFix_Shape, ShapeFix_Solid
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+        from OCP.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
         from OCP.TopAbs import TopAbs_SHELL
 
         tri_w = widx[tris]
@@ -512,82 +795,14 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         for rebuilt, (rid, rtris) in enumerate(region_tris.items()):
             _tick_every(rebuilt, 16)  # a whole region per iteration: short stride
             p0, nn = planes[rid]
-            ec = Counter()
-            for a, b, c in rtris:
-                for e in ((a, b), (b, c), (c, a)):
-                    ec[tuple(sorted(e))] += 1
-            nxt = defaultdict(list)
-            for a, b, c in rtris:
-                for e in ((a, b), (b, c), (c, a)):
-                    if ec[tuple(sorted(e))] == 1:
-                        nxt[e[0]].append(e[1])
-            loops = []
-            while any(nxt.values()):
-                start = next(k for k, v in nxt.items() if v)
-                loop, v = [start], nxt[start].pop()
-                guard = sum(len(x) for x in nxt.values()) + 2
-                while v != start and guard > 0:
-                    loop.append(v)
-                    outs = nxt.get(v)
-                    if not outs:
-                        loop = None
-                        break
-                    v = outs.pop()
-                    guard -= 1
-                if loop and len(loop) >= 3:
-                    loops.append(loop)
-            if not loops:
+            status, face = _planar_face_from_region(rtris, p0, nn, snapped)
+            if status == _REGION_EMPTY:
+                continue
+            if status != _REGION_OK:
                 if debug:
-                    print(f"refacet: region {rid} has no closed boundary")
-                return shape  # a region without a closed boundary — bail
-
-            def flat(idx_loop):
-                # exact in-plane projection; prune ONLY exact duplicates — any
-                # smarter (collinear) pruning must be identical in BOTH regions
-                # sharing a boundary, or the sew is left with open T-junction
-                # seams. Segmented collinear edges are merged by the final
-                # UnifySameDomain pass instead.
-                pts = [snapped[i] - ((snapped[i] - p0) @ nn) * nn for i in idx_loop]
-                out = []
-                m = len(pts)
-                for k in range(m):
-                    if np.linalg.norm(pts[k] - pts[(k - 1) % m]) < 1e-6:
-                        continue
-                    out.append(pts[k])
-                return out
-
-            def loop_area(pts):
-                s = np.zeros(3)
-                for k in range(len(pts)):
-                    s += np.cross(pts[k], pts[(k + 1) % len(pts)])
-                return abs(s @ nn) / 2
-
-            wires = []
-            for loop in loops:
-                pts = flat(loop)
-                if len(pts) < 3:
-                    continue  # loop collapsed by the snap — nothing to bound
-                mp = BRepBuilderAPI_MakePolygon()
-                for p in pts:
-                    mp.Add(gp_Pnt(*p))
-                mp.Close()
-                if mp.IsDone():
-                    wires.append((mp.Wire(), loop_area(pts)))
-            if not wires:
-                continue  # region fully collapsed (pure debris) — no face needed
-            wires.sort(key=lambda w: -w[1])
-            mf = BRepBuilderAPI_MakeFace(
-                gp_Pln(gp_Pnt(*p0), gp_Dir(*nn)), wires[0][0]
-            )
-            for w, _ in wires[1:]:
-                mf.Add(w)
-            if not mf.IsDone():
-                if debug:
-                    print(f"refacet: MakeFace failed for region {rid}")
+                    print(f"refacet: region {rid} {status}")
                 return shape  # can't rebuild this region faithfully — bail
-            fx = ShapeFix_Face(mf.Face())
-            fx.Perform()
-            new_faces.append(fx.Face())
+            new_faces.append(face)
 
         # sew tolerance must cover the step seams: a vertex pinched between two
         # near-parallel surviving regions (a real step ≤ tol whose wall got
@@ -609,41 +824,7 @@ def _refacet_clean(shape, tol=0.12, debug=False):
         fixer.Perform()
         progress_tick(keep_index=True)
         sewn = fixer.Shape()
-        # sewing disjoint bodies yields ONE shell holding several disconnected
-        # face components; SolidFromShell on that is garbage (mixed orientation,
-        # nonsense volume). Split faces into edge-connected components and build
-        # one solid per component.
-        cmap = TopTools_IndexedMapOfShape()
-        TopExp.MapShapes_s(sewn, TopAbs_FACE, cmap)
-        cemap = TopTools_IndexedDataMapOfShapeListOfShape()
-        TopExp.MapShapesAndAncestors_s(sewn, TopAbs_EDGE, TopAbs_FACE, cemap)
-        unvisited = set(range(1, cmap.Extent() + 1))
-        solids = []
-        while unvisited:
-            progress_tick(keep_index=True)  # one connected component per pass, each its own sew
-            seed = unvisited.pop()
-            compo, queue = [seed], [seed]
-            while queue:
-                k = queue.pop()
-                eexp = TopExp_Explorer(cmap.FindKey(k), TopAbs_EDGE)
-                while eexp.More():
-                    if cemap.Contains(eexp.Current()):
-                        for other in _list_shapes(cemap.FindFromKey(eexp.Current())):
-                            j = cmap.FindIndex(other)
-                            if j in unvisited:
-                                unvisited.discard(j)
-                                compo.append(j)
-                                queue.append(j)
-                    eexp.Next()
-            part_sew = BRepBuilderAPI_Sewing(1.5 * tol)
-            for k in compo:
-                part_sew.Add(cmap.FindKey(k))
-            part_sew.Perform()
-            sexp = TopExp_Explorer(part_sew.SewedShape(), TopAbs_SHELL)
-            while sexp.More():
-                sf = ShapeFix_Solid()
-                solids.append(Solid(sf.SolidFromShell(TopoDS.Shell_s(sexp.Current()))))
-                sexp.Next()
+        solids = _close_sewn_components(sewn, tol)
         if not solids:
             if debug:
                 print("refacet: sew produced no solids")
@@ -1873,8 +2054,13 @@ def _wrap_topods(topods):
 
 # Import guards. SindriCAD imports CLEAN / prismatic models as editable B-rep
 # bodies (one B-rep face per mesh triangle). That's great for CAD-exported meshes
-# but explodes on dense organic/scanned models — so we refuse those up front with
-# a clear message rather than letting OCCT grind into the job timeout.
+# but explodes on dense organic/scanned models.
+#
+# Only MAX_IMPORT_TRIANGLES refuses. The two FACE gates below degrade the import
+# to read-only reference geometry instead (see `_note_reference`): "too detailed
+# to edit" is a statement about editing, and the app already has a home for
+# geometry you cannot edit — a surface body, which Thicken turns into a solid.
+# Refusing was the one outcome that left the user with nothing.
 MAX_IMPORT_TRIANGLES = 150_000  # reject before the slow read (avoids the timeout)
 MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/curved,
                                 # not a clean editable model (a prismatic CAD part —
@@ -1890,6 +2076,13 @@ MAX_IMPORT_FACES = 2_000        # after merge: more faces than this = organic/cu
 # ~100k faces. 20,000 is a FIRST GUESS, not a measured ceiling — nobody has
 # measured where the viewport actually starts to hurt, so treat it as a number to
 # revisit with a real measurement, not as a calibrated one.
+#
+# It is safe for this one to DEGRADE rather than refuse because it is not the
+# bound that protects the app: sewing and unifying only ever merge faces, so a
+# mesh import's face count can never exceed its triangle count, and
+# MAX_IMPORT_TRIANGLES already caps that at 150,000. For scale, the 356 MiB
+# reference assembly is 133,284 faces and opens in ~8.5 s, so the worst case this
+# gate can now admit is the same order as a document that demonstrably works.
 MAX_IMPORT_TOTAL_FACES = 20_000
 # Untrusted-input guards (an import path or embedded BREP comes from a .sindri doc
 # the user opened, which may be hostile). Caps bound the worst case BEFORE a heavy
@@ -2320,6 +2513,361 @@ def _too_dense_error(ntri):
     )
 
 
+def _note_reference(report, why, **detail):
+    """Record that this import is REFERENCE GEOMETRY rather than an editable body.
+
+    First reason wins, matching `_fit_surfaces`' `_skipped`: with several bodies
+    in one file the news is that the import degraded, not which body degraded it
+    last.
+
+    This is a note, never a refusal. The caller returns the shape either way —
+    the whole point of the degrade is that the user gets their geometry. The
+    frontend turns this dict into the toast that explains why the body is
+    read-only and points at Thicken (`describeReferenceImport` in
+    src/io/files.ts); the wording lives in locales/en.json, which is why what
+    travels here is a reason plus counts and never a sentence.
+
+    `report` is None on the callers that do not want a census (the glTF and OBJ
+    round-trips pass one, the direct triangle sews may not), so a missing dict
+    silently drops the note rather than breaking an import that otherwise worked.
+    """
+    if report is None:
+        return
+    if "reference" not in report:
+        report["reference"] = {"why": why, **{k: v for k, v in detail.items()
+                                              if v is not None}}
+
+
+def _triangle_faces(rtris, verts):
+    """One planar face per triangle. The per-region fallback in
+    `_replane_mesh_file`: a region whose boundary will not chain keeps its own
+    triangles rather than costing the import every OTHER region. Collapsed
+    triangles are skipped — they carry no area and MakeFace refuses them."""
+    import numpy as np
+
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCP.gp import gp_Pnt
+
+    out = []
+    for t in rtris:
+        p = [verts[i] for i in t]
+        if min(np.linalg.norm(p[a] - p[b]) for a, b in ((0, 1), (1, 2), (2, 0))) < 1e-9:
+            continue
+        mp = BRepBuilderAPI_MakePolygon()
+        for q in p:
+            mp.Add(gp_Pnt(*q))
+        mp.Close()
+        if not mp.IsDone():
+            continue
+        mf = BRepBuilderAPI_MakeFace(mp.Wire())
+        if mf.IsDone():
+            out.append(mf.Face())
+    return out
+
+
+def _replane_mesh_file(path, tol=0.12, report=None, debug=False):
+    """Rebuild a dirty STL from the PLANES it is actually made of, or None.
+
+    None means "not this file's problem": the caller then imports it the
+    existing way, unchanged. Best-effort by contract, exactly like
+    `_refacet_clean` — any doubt at all returns None rather than a shape nobody
+    checked.
+
+    Why this exists. A CAD-exported architectural mesh can be built of a few
+    hundred real planes and still arrive as a hundred thousand faces, because
+    `ShapeUpgrade_UnifySameDomain` merges only EXACTLY coplanar faces and a
+    dirty exporter jitters every sliver's normal by a fraction of a degree.
+    Measured on the field file House-opgeruimd.stl: 128,838 triangles, of which
+    22,920 have zero area and 101,116 (78.5%) together carry 0.01% of the
+    surface; 21,315 distinct facet directions; and 393 planar regions at this
+    tolerance. Sewing that triangle-by-triangle took 237 s and produced a
+    102,618-face body that nothing in the app can edit.
+
+    The algorithm is `_refacet_clean`'s, run on TRIANGLES instead of on a sewn
+    B-rep: grow planar regions, snap the vertices onto them, rebuild one polygon
+    face per region. Reading the mesh directly is why it is fast — the old
+    path's cost was sewing and unifying 128,838 one-triangle faces before any of
+    this could begin.
+
+    Three things differ from `_refacet_clean`, and each is forced by the input:
+
+    - A region that will not rebuild falls back to ITS OWN triangles instead of
+      failing the import. Exactly 1 of the field file's 393 regions has no
+      closed boundary loop, and refacet's all-or-nothing bail would throw away
+      the other 392 for it.
+    - A component that will not close stays a SHELL. This mesh has 700 boundary
+      edges (3.7 mm of edge in total, longest 0.06 mm), so it may well close —
+      but "may" is not "does", and a shell imports as reference geometry.
+    - Validation is by AREA. Volume is not an oracle for a mesh that might not
+      be watertight, and there is no original B-rep to compare a solid count to.
+    """
+    import numpy as np
+
+    try:
+        try:
+            pos, idx = _read_stl_triangles(path)
+        except Exception:
+            return None  # not an STL we can read — the normal path will say so
+        P = np.asarray(pos, dtype=np.float64).reshape(-1, 3)
+        T = np.asarray(idx, dtype=np.int64).reshape(-1, 3)
+        if len(T) < 4:
+            return None
+
+        # Weld on a 1e-4 grid. NOT `tessellate.weld_vertices`: that one DROPS
+        # the triangles that collapse, and the collapsed triangles here are
+        # load-bearing for adjacency — dropping this file's 22,920 zero-area
+        # triangles takes its boundary edges from 700 to 13,572, i.e. it tears
+        # the mesh into fragments (measured). They are grown into regions like
+        # any other triangle, and ignored only where a boundary is counted.
+        _, first, inv = np.unique(np.round(P / 1e-4).astype(np.int64), axis=0,
+                                  return_index=True, return_inverse=True)
+        V = P[first]  # an original coordinate per welded slot, unmoved
+        W = inv.ravel()[T]
+
+        cr = np.cross(V[W[:, 1]] - V[W[:, 0]], V[W[:, 2]] - V[W[:, 0]])
+        twice = np.linalg.norm(cr, axis=1)
+        areas = 0.5 * twice
+        with np.errstate(invalid="ignore", divide="ignore"):
+            normals = cr / twice[:, None]  # NaN on a collapsed triangle: never a seed
+
+        # edge -> triangles, by sorting the 3N edges. An edge whose endpoints
+        # welded together is not an edge and joins nothing.
+        ev = np.concatenate((W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]))
+        owner = np.tile(np.arange(len(W)), 3)
+        live = ev[:, 0] != ev[:, 1]
+        ev, owner = np.sort(ev[live], axis=1), owner[live]
+        order = np.lexsort((ev[:, 1], ev[:, 0]))
+        ev, owner = ev[order], owner[order]
+        head = np.ones(len(ev), dtype=bool)
+        head[1:] = np.any(ev[1:] != ev[:-1], axis=1)
+        starts = np.flatnonzero(head)
+        adj = [[] for _ in range(len(W))]
+        for g, (s, e) in enumerate(zip(starts, np.append(starts[1:], len(ev)))):
+            _tick_every(g, 8192)  # one mesh edge per iteration: long stride
+            if e - s < 2:
+                continue  # a boundary edge: one triangle, nobody to join
+            grp = owner[s:e]
+            for a in grp:
+                for b in grp:
+                    if a != b:
+                        adj[a].append(b)
+
+        # region-grow from the biggest triangles: absorb an edge-adjacent
+        # triangle when ALL its vertices lie within tol of the ANCHOR's plane
+        # (anchored, not chained, so a region cannot drift across the building)
+        region = np.full(len(W), -1, dtype=np.int64)
+        planes = []
+        for grown, seed in enumerate(np.argsort(-areas)):
+            _tick_every(grown, 8192)
+            if region[seed] >= 0 or not areas[seed] > 0:
+                continue
+            p0, nn = V[W[seed, 0]], normals[seed]
+            rid = len(planes)
+            planes.append((p0, nn))
+            region[seed] = rid
+            queue, popped = [seed], 0
+            while queue:
+                popped += 1
+                _tick_every(popped, 8192)
+                for j in adj[queue.pop()]:
+                    if region[j] < 0 and np.abs((V[W[j]] - p0) @ nn).max() <= tol:
+                        region[j] = rid
+                        queue.append(j)
+
+        # A collapsed triangle no region reached is still part of the surface:
+        # attach it to any assigned neighbour, so the region it sits inside
+        # keeps a closed boundary instead of gaining a pinhole.
+        left = set(np.flatnonzero(region < 0).tolist())
+        changed = True
+        while left and changed:
+            changed = False
+            for t in list(left):
+                for j in adj[t]:
+                    if region[j] >= 0:
+                        region[t] = region[j]
+                        left.discard(t)
+                        changed = True
+                        break
+
+        # The decline. One region per facet means a CURVED mesh, where replaning
+        # would flatten a cylinder that `_fit_or_refacet` could have recognised;
+        # falling straight back leaves that behaviour untouched. Deliberately
+        # NOT screened against MAX_IMPORT_FACES: a mesh that collapses to 5,000
+        # planes is still worth replaning, it just lands as reference geometry
+        # by the face gate downstream instead of as an editable body.
+        nreg = len(planes)
+        if not nreg or nreg * 4 > len(W):
+            return None
+
+        # The decline that matters: a mesh of FACETS rather than of planes.
+        # The ratio above cannot see the difference — measured, a torus reaches
+        # 5.5 triangles per region and a legitimately stepped pair of blocks
+        # only 4.7 — because "few regions" is a statement about tessellation
+        # density, not about whether the regions are real. The shape of a
+        # faceted curve is: neighbouring regions meet at a SHALLOW angle,
+        # everywhere, because that is what approximating a curve by planes
+        # looks like. Real planar geometry meets at real angles.
+        #
+        # Measured as the share of manifold seams whose two regions' planes are
+        # within 15 degrees: sphere 99%, torus 93% — against field file 47%,
+        # shattered box 37%, plate with a bore 20%. The gate sits at 80%, in the
+        # gap, and like MAX_IMPORT_FACET_DIRECTIONS it is calibrated from those
+        # measurements rather than derived. Being wrong costs a fallback to the
+        # existing import, which is what a curved mesh gets today anyway.
+        sizes = np.append(starts[1:], len(ev)) - starts
+        two = starts[sizes == 2]
+        ra, rb = region[owner[two]], region[owner[two + 1]]
+        seam = (ra != rb) & (ra >= 0) & (rb >= 0)
+        nseam = int(seam.sum())
+        if nseam:
+            N = np.array([pl[1] for pl in planes])
+            cos = np.abs(np.einsum("ij,ij->i", N[ra[seam]], N[rb[seam]]))
+            shallow = float((cos > np.cos(np.radians(15))).mean())
+            if shallow > 0.80:
+                if debug:
+                    print(f"replane: {100 * shallow:.1f}% of {nseam} seams are "
+                          f"shallower than 15 degrees — a faceted curve, declining")
+                return None
+
+        vregions = [set() for _ in range(len(V))]
+        for t, rid in enumerate(region):
+            _tick_every(t, 8192)
+            if rid >= 0:
+                for a in W[t]:
+                    vregions[a].add(rid)
+
+        # snap each welded vertex to the intersection of its regions' planes:
+        # min |x−v| s.t. n_r·x = n_r·p_r — rank-deficient (near-parallel planes)
+        # solved by lstsq, so a staircase vertex lands on the merged plane
+        # instead of flying off along a bad intersection line
+        snapped = V.copy()
+        for vi, rs in enumerate(vregions):
+            _tick_every(vi, 8192)
+            if not rs:
+                continue
+            if len(rs) == 1:
+                # what lstsq returns for a single plane, without the solve —
+                # and by construction it can never exceed the cap below
+                p0, nn = planes[next(iter(rs))]
+                snapped[vi] = V[vi] - ((V[vi] - p0) @ nn) * nn
+                continue
+            A = np.array([planes[r][1] for r in rs])
+            b = np.array([planes[r][1] @ planes[r][0] for r in rs])
+            v = V[vi]
+            try:
+                y, *_ = np.linalg.lstsq(A @ A.T, b - A @ v, rcond=1e-3)
+                x = v + A.T @ y
+            except Exception:
+                continue
+            if np.linalg.norm(x - v) <= 3 * tol:
+                snapped[vi] = x
+
+        from collections import defaultdict
+
+        region_tris = defaultdict(list)
+        for t, rid in enumerate(region):
+            _tick_every(t, 8192)
+            if rid >= 0:
+                region_tris[rid].append(W[t])
+
+        new_faces, fallback = [], 0
+        for rebuilt, (rid, rtris) in enumerate(region_tris.items()):
+            _tick_every(rebuilt, 16)  # a whole region per iteration: short stride
+            p0, nn = planes[rid]
+            status, face = _planar_face_from_region(rtris, p0, nn, snapped,
+                                                    prune_collinear=True)
+            if status == _REGION_OK:
+                new_faces.append(face)
+            elif status != _REGION_EMPTY:
+                if debug:
+                    print(f"replane: region {rid} {status}, keeping its triangles")
+                fallback += 1
+                new_faces.extend(_triangle_faces(rtris, snapped))
+        if not new_faces:
+            return None
+
+        from OCP.BRepBuilderAPI import BRepBuilderAPI_Sewing
+        from OCP.ShapeFix import ShapeFix_Shape
+
+        # sew tolerance must cover the step seams: a vertex pinched between two
+        # near-parallel regions cannot lie on both planes, so the two regions'
+        # boundary copies diverge by up to ~tol there
+        sew = BRepBuilderAPI_Sewing(1.5 * tol)
+        for f in new_faces:
+            sew.Add(f)
+        sew.Perform()
+        progress_tick(keep_index=True)  # no loop to tick inside either call
+        fixer = ShapeFix_Shape(sew.SewedShape())
+        fixer.Perform()
+        progress_tick(keep_index=True)
+        parts = _close_sewn_components(fixer.Shape(), tol, keep_shells=True)
+        if not parts:
+            return None
+        out = _unify_if_valid(parts[0] if len(parts) == 1 else Compound(parts))
+
+        # Validate against the MESH, the only original there is. Area, not
+        # volume: a shell has none worth comparing. The bbox band is the snap's
+        # own cap, since that is how far a vertex is allowed to have moved.
+        nf = len(out.faces())
+        want = float(areas.sum())
+        if not nf or nf >= len(W) or want <= 0:
+            return None
+        if abs(out.area - want) > 0.02 * want:
+            if debug:
+                print(f"replane: area {out.area:.1f} vs mesh {want:.1f} — declining")
+            return None
+        bb = out.bounding_box()
+        got = np.array([[bb.min.X, bb.min.Y, bb.min.Z], [bb.max.X, bb.max.Y, bb.max.Z]])
+        if np.abs(got - np.array([V.min(axis=0), V.max(axis=0)])).max() > 3 * tol:
+            if debug:
+                print("replane: bounding box moved — declining")
+            return None
+
+        if report is not None:
+            report["replaned"] = {"from": int(len(W)), "to": int(nf),
+                                  "regions": int(nreg), "fallback": int(fallback)}
+        if debug:
+            print(f"replane: {len(W)} triangles -> {nf} faces from {nreg} regions "
+                  f"({fallback} kept as triangles), solids {len(out.solids())}")
+        return out
+    except Exception:
+        if debug:
+            raise
+        # An exception here is a bug, not a decline, and the import still
+        # succeeds the slow way — so it would otherwise be completely silent.
+        print(f"[replane] {traceback.format_exc(limit=3)}", file=sys.stderr, flush=True)
+        return None
+
+
+def _judge_import_faces(shape, report):
+    """Note whether this import is editable, by face count. Returns `shape`.
+
+    Judged PER BODY. "Did this reduce to something editable" is a question about
+    ONE part, and a project file from Bambu, Orca or PrusaSlicer is inherently
+    several parts, so summing them charged a multi-object plate N times the
+    budget of the same parts imported one at a time (GH #49)."""
+    bodies = _explode_solids(shape) or [shape]
+    per_body = [len(b.faces()) for b in bodies]
+    nf = max(per_body)
+    if nf > MAX_IMPORT_FACES:
+        # Name the offending body: with twelve objects in the file, a bare
+        # number says nothing about WHICH one is too detailed. The count is
+        # read AFTER fitting, so it is the number of faces the user would
+        # actually have got. Sent as an index and a total rather than as a
+        # sentence, so the wording stays on the frontend where it can be
+        # localised; both are omitted for a single-body file, where "which one"
+        # is not a question.
+        multi = len(per_body) > 1
+        _note_reference(report, "tooManyFaces", faces=nf, limit=MAX_IMPORT_FACES,
+                        bodyIndex=(per_body.index(nf) + 1) if multi else None,
+                        bodyCount=len(per_body) if multi else None)
+    total = sum(per_body)
+    if total > MAX_IMPORT_TOTAL_FACES:
+        _note_reference(report, "tooManyTotalFaces", faces=total,
+                        bodies=len(per_body))
+    return shape
+
+
 def _sew_mesh_file(path, report=None):
     """Read a triangle-mesh file (STL/3MF/OBJ) into a sewn, editable B-rep body.
 
@@ -2330,25 +2878,44 @@ def _sew_mesh_file(path, report=None):
 
     `report` is the optional out-dict `_fit_surfaces` writes its skip reason
     into; `import_geometry` passes one so the reply can carry `fitSkipped`."""
-    # Refuse a hopeless mesh BEFORE the expensive path, not after it. The face gate
-    # at the bottom of this function only fires once sew + unify + refacet have run,
-    # which on an organic mesh means the user waits for work that cannot succeed:
-    # measured 117.8 s for a 125,706-triangle sphere before the refusal, and at
-    # 147,851 triangles ShapeUpgrade_UnifySameDomain SIGSEGVs the worker outright
-    # (~35 s in, reproduced twice) — under MAX_IMPORT_TRIANGLES, so the cap does not
-    # protect against it. Screening on facet directions rejects those in ~50 ms.
+    # A mesh too detailed to become an EDITABLE body is not a mesh we have to
+    # refuse. The app already has a home for geometry you cannot edit: a surface
+    # body arrives as read-only reference geometry, and Thicken is what turns it
+    # into something you can model with. Refusing outright is the one outcome that
+    # leaves the user with nothing, so both detail gates below DEGRADE to that
+    # reference import instead of raising. `MAX_IMPORT_TRIANGLES` stays a hard
+    # refusal: it is the SIGSEGV guard, not an editability opinion.
+    #
+    # What the facet-direction screen still buys is skipping work that cannot pay
+    # off. `_fit_or_refacet` on a body this detailed is minutes of surface fitting
+    # that will recognise almost nothing (measured 117.8 s on a 125,706-triangle
+    # sphere before the old refusal), so a reference import skips it and keeps the
+    # cheap `_unify_if_valid` merge, which is what actually collapses the face
+    # count. Reported on the field file House-opgeruimd.stl (2026-09-13): 128,838
+    # triangles, 21,326 facet directions, 700 boundary edges and 1,513
+    # non-manifold edges — a detailed ARCHITECTURAL model, not the organic/scanned
+    # mesh the old message accused it of being, and one that can never be a solid.
     #
     # OBJ and glTF both round-trip through a temporary binary STL to get here, so
-    # they inherit the gate; native 3MF does not and still takes the slow path.
+    # they inherit the screen; native 3MF does not and still takes the slow path.
     nn = _stl_distinct_normals(path)
-    if nn is not None and nn > MAX_IMPORT_FACET_DIRECTIONS:
-        raise ValueError(
-            f"I recognise curved surfaces where I can, but this mesh has "
-            f"{nn:,} distinct facet directions (a clean CAD part has a few "
-            f"hundred at most), so nearly all of it would stay faceted and "
-            f"there would be nothing to edit. Reduce it first, or import a "
-            f"STEP or a flat-faced part."
-        )
+    too_detailed_to_fit = nn is not None and nn > MAX_IMPORT_FACET_DIRECTIONS
+    if too_detailed_to_fit:
+        # A mesh this detailed is usually not detailed at all, it is DIRTY: a
+        # few hundred real planes shattered into slivers whose jittered normals
+        # defeat the exact-coplanar merge. Rebuilding from those planes is both
+        # the fast path and the only one that ends in an editable body, so it
+        # gets first refusal here. It declines (None) on a genuinely curved or
+        # genuinely detailed mesh, which then imports exactly as before.
+        replaned = _replane_mesh_file(path, report=report)
+        if replaned is not None:
+            _import_phase(IMPORT_PHASE_CANONICALIZE)
+            if not replaned.solids():
+                # Said only here, where the shell is a REBUILD the user cannot
+                # inspect. An ordinary open mesh still imports as it always did,
+                # silently: this is a new reason, not a new policy.
+                _note_reference(report, "notWatertight")
+            return _judge_import_faces(replaned, report)
     shapes = Mesher().read(path)
     if not shapes:
         raise ValueError("no geometry found in the mesh file")
@@ -2364,46 +2931,27 @@ def _sew_mesh_file(path, report=None):
     # Guarded, for the same reason as in `_refacet_clean`: a sewn mesh can be
     # invalid (two interpenetrating solids in one file is enough to produce one,
     # measured), and UnifySameDomain segfaults on invalid input rather than
-    # raising. Skipping the merge leaves more faces, so such a file is refused by
-    # the MAX_IMPORT_FACES check below instead of killing the worker — which is
-    # the right outcome anyway: an invalid solid should not become an "editable"
-    # model.
+    # raising. Skipping the merge leaves more faces, so such a file lands as
+    # reference geometry via the MAX_IMPORT_FACES check below instead of killing
+    # the worker — which is the right outcome anyway: an invalid solid should not
+    # become an "editable" model.
     shape = _unify_if_valid(shape)
-    # Recognise curved surfaces FIRST, while the vertices are still exactly on
-    # them: `_refacet_clean` snaps mesh vertices onto PLANES, which inflates a
-    # bore's rim (judge 1 measured +1.7% at the default tol) and destroys the
-    # evidence a fit needs. Both are best-effort and return their input
-    # unchanged on any doubt, and the choice between them is made PER BODY.
-    shape = _fit_or_refacet(shape, report=report)
-    # Judged PER BODY. "Did this reduce to something editable" is a question
-    # about ONE part, and a project file from Bambu, Orca or PrusaSlicer is
-    # inherently several parts, so summing them charged a multi-object plate N
-    # times the budget of the same parts imported one at a time (GH #49).
-    bodies = _explode_solids(shape) or [shape]
-    per_body = [len(b.faces()) for b in bodies]
-    nf = max(per_body)
-    if nf > MAX_IMPORT_FACES:
-        # Name the offending body: with twelve objects in the file, a bare
-        # number says nothing about WHICH one is the organic mesh. The count is
-        # read AFTER fitting, so it is the number of faces the user would
-        # actually have got.
-        which = (f"body {per_body.index(nf) + 1} of {len(per_body)} still has "
-                 f"{nf:,} faces" if len(per_body) > 1 else f"it still has {nf:,} faces")
-        raise ValueError(
-            f"I recognised the curved surfaces I could here, and what I could "
-            f"not recognise stays faceted, so this mesh is still too detailed "
-            f"to edit ({which}, against a limit of {MAX_IMPORT_FACES:,}). "
-            f"Import a STEP, or a part with flatter faces."
-        )
-    total = sum(per_body)
-    if total > MAX_IMPORT_TOTAL_FACES:
-        raise ValueError(
-            f"This file has too much detail to open ({total:,} faces across "
-            f"{len(per_body):,} bodies, the limit is {MAX_IMPORT_TOTAL_FACES:,}). "
-            f"Each part is simple enough on its own, so import fewer objects at "
-            f"a time."
-        )
-    return shape
+    if too_detailed_to_fit:
+        # Skip the FIT, not the import, and not the gates below. Nothing the
+        # fitter could recognise would bring a body with this many facet
+        # directions under the editable ceiling, and it is the expensive half of
+        # the pipeline — but the face counts still have to be judged and still
+        # have to reach the user, so this falls through rather than returning.
+        _note_reference(report, "tooManyFacetDirections", directions=nn)
+    else:
+        # Recognise curved surfaces FIRST, while the vertices are still exactly
+        # on them: `_refacet_clean` snaps mesh vertices onto PLANES, which
+        # inflates a bore's rim (judge 1 measured +1.7% at the default tol) and
+        # destroys the evidence a fit needs. Both are best-effort and return
+        # their input unchanged on any doubt, and the choice between them is
+        # made PER BODY.
+        shape = _fit_or_refacet(shape, report=report)
+    return _judge_import_faces(shape, report)
 
 
 def _read_obj_triangles(path):
@@ -2504,8 +3052,8 @@ def _is_ascii_stl(path):
         return False
 
 
-def _read_ascii_stl_triangles(path):
-    """(positions, indices) from an ASCII STL, read by OCCT.
+def _read_stl_triangles(path):
+    """(positions, indices) from an STL of either encoding, read by OCCT.
 
     build123d's Mesher is lib3mf, and lib3mf cannot read ASCII STL AT ALL: it
     raises "Lib3MFException 5: Reading from a stream was not possible" (verified
@@ -2859,7 +3407,7 @@ def import_geometry(path, fmt):
             # lib3mf (build123d's Mesher) cannot read ASCII STL, so this used to
             # fail 100% of the time. Read it with OCCT and round-trip the
             # triangles through the shared recovery path.
-            pos, idx = _read_ascii_stl_triangles(path)
+            pos, idx = _read_stl_triangles(path)
             shape = _sew_triangles(pos, idx, report=fit_report)
         else:
             shape = _sew_mesh_file(path, report=fit_report)
@@ -2927,6 +3475,11 @@ def import_geometry(path, fmt):
         out["faceted"] = faceted
         if fit_report.get("skipped"):
             out["fitSkipped"] = fit_report["skipped"]
+        # Degraded to read-only reference geometry rather than refused. Carried
+        # as a structured reason, not a sentence, so the frontend owns the
+        # wording and it can be localised like every other user-facing string.
+        if fit_report.get("reference"):
+            out["reference"] = fit_report["reference"]
     return out
 
 
@@ -8213,8 +8766,19 @@ def _press_pull(part, face, d, clamp=True, trim=None):
     raise ValueError("Press/Pull supports flat and cylindrical faces only")
 
 
-def _refuse_if_cut_deletes_a_solid(part, cut):
+def _refuse_if_cut_deletes_a_solid(part, cut, what=None):
     """Refuse an up-to cut that would make one of `part`'s solids DISAPPEAR.
+
+    `what` is the pair of sentences to raise — (every solid gone, some solids
+    gone) — the same discipline `_prism_to_plane` uses with its `label`
+    parameter. It defaults to Press/Pull's own "up to" prose because that is the
+    caller this was written for, and it is a parameter because rung 2 of the
+    offset ladder also calls it: an Offset Face has no "up to" target and
+    nothing to "push by a distance", so the default sentence named a command and
+    a control the user never touched. Reproduced through `_offset_faces` on a
+    two-solid body — a thin r2.0/r2.1 tube plus a separate plate, outer wall
+    offset by -0.2 — which raised "Press/Pull would delete 1 of the body's 2
+    solids ... Pick a target inside it, or push it by a distance."
 
     An up-to target past the body's FAR side used to cut the whole thing away and
     report success — solids 0, volume 0, err []. Same silent class as the boolean
@@ -8274,16 +8838,20 @@ def _refuse_if_cut_deletes_a_solid(part, cut):
             gone += 1  # a crumb _drop_debris will delete is not a survivor
     if not gone:
         return
-    if gone == len(solids):
-        raise ValueError(
+    if what is None:
+        # Both sentences verbatim as Press/Pull has always said them, including
+        # the "inside the body" / "inside it" difference between the two.
+        what = (
             "Press/Pull removed the whole body — the 'up to' target is past its "
-            "far side. Pick a target inside the body, or push it by a distance."
+            "far side. Pick a target inside the body, or push it by a distance.",
+            "Press/Pull would delete {gone} of the body's {total} solids — the "
+            "'up to' target is past the far side of the piece you picked. Pick "
+            "a target inside it, or push it by a distance.",
         )
-    raise ValueError(
-        f"Press/Pull would delete {gone} of the body's {len(solids)} "
-        "solids — the 'up to' target is past the far side of the piece you "
-        "picked. Pick a target inside it, or push it by a distance."
-    )
+    all_gone, some_gone = what
+    if gone == len(solids):
+        raise ValueError(all_gone)
+    raise ValueError(some_gone.format(gone=gone, total=len(solids)))
 
 
 def _prism_to_plane(face, d, target_pt, target_n, part, label="Press/Pull"):
@@ -8566,26 +9134,2163 @@ def _guard_offsetable(part, faces, label):
             pass
 
 
-def _offset_face(part, face, d):
-    """Single-face convenience wrapper over _offset_faces (curved Press/Pull)."""
-    return _offset_faces(part, [(face, d)])
+# --- surface offset: the rung ladder ------------------------------------------
+#
+# `_offset_faces` used to be ONE call to BRepOffset in Skin mode. On STEP
+# imports that call is broadly broken, and the numbers are bad enough to be
+# worth writing down here rather than in any one function's docstring. Measured
+# over 198 bodies of a real import, offsetting the two largest cylindrical faces
+# of each by +0.15 mm, one subprocess per body: 115 attempts -> 60 completed, 50
+# refused, 5 ran past 20 s (29 s, 78 s, 183 s), and 17 MORE bodies took the
+# process down with SIGSEGV. Restricted to faces >= 1 mm^2 — anything a user
+# would actually click — 8 completed, 26 refused, 5 stalled, and all 8 successes
+# were 4-face washers.
+#
+# Worse, when it does not crash it is often silently WRONG, and the old code
+# checked only `mk.IsDone()`. Two measured cases: an imported filleted bore
+# returns `is_valid == True` in 1.5 ms having offset EVERY face of the solid
+# (dV +67.17 against an ideal +3.28, almost exactly `part.area * 0.15`); and a
+# chamfered bore leaves the cone surface exactly where it was and re-trims it,
+# so the chamfer silently grows 0.3 -> 0.45 mm while the top opening stays
+# pinned.
+#
+# So `_offset_faces` is now a ladder. Cheap exact rungs first, BRepOffset last
+# and behind a fail-closed fork:
+#
+#   rung 2  `_offset_cylinder_by_boolean` — a straight bore/boss is an annulus
+#   rung 3  `_retune_radially`            — STAGE 2; bump the radial constant
+#   rung 4  BRepOffset, only after `_probe_offsets` says a forked copy survived
+#
+# The census over all 2,009 bodies of the reference import (627 cylindrical
+# faces >= 1 mm^2) says how the population splits: 222 partial-U (not a full
+# 360), 166 "simple" (every neighbour a plane perpendicular to the axis — rung
+# 2's class), 239 "lip" (at least one cone/torus neighbour — rung 3's class).
+
+_OFFSET_AX_TOL = 1e-6          # |cos| deviation for "parallel" / "perpendicular"
+_OFFSET_RADIUS_TOL = 1e-7      # mm, when two radii count as the same radius
+_OFFSET_MIN_RADIUS = 1e-7      # mm, below this the boolean rung refuses outright
+_OFFSET_VOLUME_REL_TOL = 1e-2  # loose volume BACKSTOP — never the primary gate
+# 1e-2 and the real margin is 3.5x, not the four orders the fixture numbers
+# suggest. Measured over all 59 rung-2 attempts of the reference-import census:
+#   worst  2.857e-03  body    2 face 55  dv +3.054302236 want +3.063052837
+#          2.543e-03  body 2008 face 47  dv +51.35570043 want +51.48660678
+#          2.362e-03  body   23 face 39
+#   median 7.5e-15
+# Every one of those is a CORRECT result — the fuse re-trims material elsewhere
+# — so tightening the band refuses good work, and the 3.5x is stated here rather
+# than left to be discovered. What actually does the gating is the DIRECT area
+# oracle two lines above the volume check, and that was tested rather than
+# assumed: a 3.0 mm bore grown towards a parallel 0.5 mm drilling whose near
+# wall sits at rho 3.2 is BUILT at d = -0.15 (reaches 3.15, no contact) and
+# DECLINED at -0.25 and -0.60, because breaking through costs the new wall its
+# 2*pi*r'*L. A separate solid standing in the ring a shrinking bore sweeps is
+# declined the same way. Rung 2 has no BRepExtrema sweep and does not need one.
 
 
-def _offset_faces(part, pairs):
-    """Local surface offset via OCCT (BRepOffset in Skin mode with per-face
-    offsets, global offset 0). `pairs` is [(face, signed_distance_mm), ...];
-    every face is registered before ONE MakeOffsetShape() pass so adjacent
-    offsets close against each other instead of fighting over shared edges.
-    Returns a fixed-up Solid."""
+def _cylinder_frame(face):
+    """(gp_Ax3, radius, v0, v1, u_span) of a cylindrical face, or None.
+
+    Read through `BRepAdaptor_Surface`, never off `Face.radius`: that property
+    returns None for a `Geom_RectangularTrimmedSurface`, which is exactly what
+    `ShapeFix_Face` hands back for a fitted bore (GH #49). The same trap is
+    already recorded in `_clamp_cylinder` and `geom_select._face_radius`; this
+    is the third site and the adaptor is the answer at all three.
+
+    v0/v1 are the cylinder's own V parameters, which for `gp_Cylinder` are the
+    unscaled axial coordinate, so `v1 - v0` is a length in mm."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    try:
+        s = BRepAdaptor_Surface(face.wrapped)
+        if s.GetType() != GeomAbs_SurfaceType.GeomAbs_Cylinder:
+            return None
+        c = s.Cylinder()
+        return (
+            c.Position(),
+            c.Radius(),
+            s.FirstVParameter(),
+            s.LastVParameter(),
+            s.LastUParameter() - s.FirstUParameter(),
+        )
+    except Exception:
+        return None
+
+
+def _straight_cylinder_plan(part, face, d):
+    """The annulus that turns this face's offset into a boolean, or None.
+
+    Eligible iff the face is a FULL 360-degree cylinder with a positive axial
+    extent and every face sharing an edge with it is a PLANE whose normal is
+    parallel to the axis. That is the exact definition of a plain straight bore
+    or boss, and its offset is expressible as an annulus fused on or cut away —
+    no BRepOffset, no approximation, and a closed-form volume to check it with.
+
+    Measured coverage: 166 of the 627 cylindrical faces >= 1 mm^2 in the
+    reference STEP import are this class. On the 198-body census sample the rung
+    fired on 16 of 43 attempts and all 16 completed, the slowest in 0.9 s.
+
+    Returns (ax3, r, r2, v0, length, add_material) or None. `add_material` is
+    simply `d > 0`: measured on both a bore and a boss, material is added iff
+    the distance is positive, because `d` runs along the face's own outward
+    normal in both cases.
+
+    COLLAPSE REFUSES HERE, it does not clamp. `_clamp_cylinder` (:8950) caps
+    |d| at 0.9r before this is ever called, because BRepOffset segfaults on a
+    radius driven to ~0. This rung is exact, so silently building a different
+    ring than the user asked for would be a wrong answer rather than a saved
+    crash — `r2 <= _OFFSET_MIN_RADIUS` returns None and the ladder moves on. A
+    deliberate divergence from the clamp the BRepOffset rung still needs."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    info = _cylinder_frame(face)
+    if info is None:
+        return None
+    ax3, r, v0, v1, uspan = info
+    if abs(uspan - 2.0 * math.pi) > _OFFSET_AX_TOL:
+        return None  # partial-U: 222 of 627 faces in the reference import
+    if not (v1 - v0 > 1e-9):
+        return None
+    direction = ax3.Direction()
+    axis = (direction.X(), direction.Y(), direction.Z())
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(part.wrapped, TopAbs_EDGE, TopAbs_FACE, emap)
+    exp = TopExp_Explorer(face.wrapped, TopAbs_EDGE)
+    seen = 0
+    k = 0
+    while exp.More():
+        e = exp.Current()
+        if emap.Contains(e):
+            # _list_shapes, not iteration: exhausting a pybind-bound OCCT list
+            # costs ~101 us of fixed cost when StopIteration fires, and this is
+            # a per-edge loop (builder._list_shapes).
+            for other in _list_shapes(emap.FindFromKey(e)):
+                if other.IsSame(face.wrapped):
+                    continue
+                try:
+                    nf = Face(TopoDS.Face_s(other))
+                    if nf.geom_type != GeomType.PLANE:
+                        return None
+                    n = nf.normal_at()
+                except Exception:
+                    return None
+                dot = abs(n.X * axis[0] + n.Y * axis[1] + n.Z * axis[2])
+                if abs(dot - 1.0) > _OFFSET_AX_TOL:
+                    return None
+                seen += 1
+        k += 1
+        _tick_every(k, 256)
+        exp.Next()
+    if seen == 0:
+        return None  # a floating cylinder has nothing to close against
+
+    # Which side is the material on? The face normal points OUT of the solid, so
+    # comparing it with the radial direction at the same point says boss or bore.
+    try:
+        p = face.center()
+        n = face.normal_at(p)
+    except Exception:
+        return None
+    loc = ax3.Location()
+    vx, vy, vz = p.X - loc.X(), p.Y - loc.Y(), p.Z - loc.Z()
+    t = vx * axis[0] + vy * axis[1] + vz * axis[2]
+    rx, ry, rz = vx - t * axis[0], vy - t * axis[1], vz - t * axis[2]
+    rl = math.sqrt(rx * rx + ry * ry + rz * rz)
+    if rl <= _OFFSET_MIN_RADIUS:
+        return None  # the sample point sits on the axis; no radial direction
+    outward = (n.X * rx + n.Y * ry + n.Z * rz) / rl > 0  # True => boss
+    r2 = (r + d) if outward else (r - d)
+    if r2 <= _OFFSET_MIN_RADIUS or min(r, r2) <= _OFFSET_MIN_RADIUS:
+        return None
+    return ax3, r, r2, v0, v1 - v0, d > 0
+
+
+def _coaxial_cylinders(shape, ax3):
+    """[(radius, area)] for every cylindrical face of `shape` sharing `ax3`'s
+    axis line. The DIRECT oracle for the boolean rung: it reads the radius the
+    kernel actually produced instead of inferring it from a volume."""
+    loc, direction = ax3.Location(), ax3.Direction()
+    ax = (direction.X(), direction.Y(), direction.Z())
+    out = []
+    try:
+        faces = shape.faces()
+    except Exception:
+        return out
+    for i, f in enumerate(faces):
+        _tick_every(i, 256)
+        info = _cylinder_frame(f)
+        if info is None:
+            continue
+        other, r = info[0], info[1]
+        od = other.Direction()
+        if abs(abs(od.X() * ax[0] + od.Y() * ax[1] + od.Z() * ax[2]) - 1.0) > _OFFSET_AX_TOL:
+            continue
+        ol = other.Location()
+        dx, dy, dz = ol.X() - loc.X(), ol.Y() - loc.Y(), ol.Z() - loc.Z()
+        t = dx * ax[0] + dy * ax[1] + dz * ax[2]
+        px, py, pz = dx - t * ax[0], dy - t * ax[1], dz - t * ax[2]
+        if math.sqrt(px * px + py * py + pz * pz) > _OFFSET_RADIUS_TOL:
+            continue  # parallel but not the same axis line
+        try:
+            out.append((r, f.area))
+        except Exception:
+            continue
+    return out
+
+
+def _boolean_offset_reason(part, out, ax3, r, r2, length, want):
+    """Why the boolean rung's result must NOT be trusted, or None if it is sound.
+
+    THE VOLUME ORACLE ALONE IS NOT ENOUGH, and this is the measurement that
+    settles it. On census body 2 a CORRECT result reads 0.29% off the analytic
+    (dV = +3.054302 against want = +3.063053) because the fuse also re-trims
+    material elsewhere, while the DIRECT oracle is exact: a cylinder at
+    precisely r' = 1.55 exists on the result with area matching 2*pi*r'*L to
+    3.5e-15. So the radius is the primary check and the volume is a 1%
+    backstop, not the other way round.
+
+    Deliberately conservative in one place: a coaxial cylinder still sitting at
+    the OLD radius fails the check even though a second, unrelated bore of the
+    same radius on the same axis line elsewhere in the body would be innocent.
+    That case refuses and drops to the next rung, which is the cheap direction
+    to be wrong in."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    if out is None:
+        return "the boolean produced nothing"
+    try:
+        if not BRepCheck_Analyzer(out.wrapped).IsValid():
+            return "the boolean produced an invalid solid"
+        if len(out.solids()) != len(part.solids()):
+            return "the boolean changed the solid count"
+    except Exception as e:  # noqa: BLE001
+        return f"the result could not be checked ({e})"
+
+    found = _coaxial_cylinders(out, ax3)
+    new_area = sum(a for rad, a in found if abs(rad - r2) <= _OFFSET_RADIUS_TOL)
+    if any(abs(rad - r) <= _OFFSET_RADIUS_TOL for rad, _a in found):
+        return "the old radius is still there"
+    want_area = 2.0 * math.pi * r2 * length
+    if abs(new_area - want_area) > max(1e-6, 1e-6 * want_area):
+        return f"the wall at {r2:g} is {new_area:g} mm^2, not {want_area:g}"
+    try:
+        dv = out.volume - part.volume
+    except Exception as e:  # noqa: BLE001
+        return f"the volume could not be read ({e})"
+    if abs(dv - want) > max(1e-6, _OFFSET_VOLUME_REL_TOL * abs(want)):
+        return f"volume moved {dv:+g}, not {want:+g}"
+    return None
+
+
+def _offset_cylinder_by_boolean(part, face, d):
+    """RUNG 2 of the offset ladder: offset a straight bore or boss by fusing or
+    cutting an annulus, instead of asking BRepOffset to rebuild the body.
+
+    Returns the new shape, or None to fall through to the next rung. It never
+    raises for ineligibility — only `_refuse_if_cut_deletes_a_solid` raises
+    from here, and that is a real refusal the user has to see.
+
+    The rung exists because it is EXACT where BRepOffset is merely lucky: the
+    answer is a primitive minus a primitive, it cannot invoke the offsetter at
+    all, and pi*|r'^2 - r^2|*L gives a closed-form volume to check against. It
+    also absorbs one measured topology-CHANGING case that a parametric retune
+    structurally cannot (census body 23, r = 2.425, where growing the wall
+    swallows a neighbouring feature).
+
+    Measured: 16 of 43 attempts on the 198-body census sample, all 16
+    completing, the slowest 0.9 s.
+
+    The fuse leaves DUPLICATE COPLANAR FACES — measured 85 -> 87 on census body
+    2 — so a unify runs afterwards, keyed off the validity
+    `_boolean_offset_reason` has already established (see the note at the call).
+    The unified result is kept only if it is still valid and still has the same
+    solid count; otherwise the un-unified one is returned, since duplicate
+    coplanar faces are cosmetic and a lost solid is not.
+
+    NOT ROUND-TRIP EXACT, and the duplicate faces above are not the only
+    topological side effect. Offsetting +d and then -d gives the right SOLID but
+    not always the right face inventory, because the boolean merges periodic
+    seam splits on the way out and does not restore them on the way back.
+    Measured over 41 round trips: 36 exact (dvol 0.0 to 7.3e-12, inventory
+    identical), 5 not, and all 5 are this rung — reference-import body 10 at
+    +0.15 goes 41 -> 38 -> 38 faces with four r=0.525/0.7 seam pieces merged
+    into three and dvol -8.1e-08; body 2 at -0.15 goes 85 -> 85 -> 87, gaining
+    two coplanar planes the unify did not absorb, dvol -3.4e-04. Geometrically
+    harmless, but a selector keyed on those faces re-binds, so a user who nudges
+    a bore and nudges it back does not get their face ids back. Every rung-3
+    round trip is exact, including the off-axis one."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCylinder
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.gp import gp_Ax2, gp_Pnt
+
+    plan = _straight_cylinder_plan(part, face, d)
+    if plan is None:
+        return None
+    ax3, r, r2, v0, length, add_material = plan
+    lo, hi = min(r, r2), max(r, r2)
+    direction = ax3.Direction()
+    loc = ax3.Location()
+    base = gp_Pnt(
+        loc.X() + v0 * direction.X(),
+        loc.Y() + v0 * direction.Y(),
+        loc.Z() + v0 * direction.Z(),
+    )
+    ax2 = gp_Ax2(base, direction)
+    try:
+        big = BRepPrimAPI_MakeCylinder(ax2, hi, length).Shape()
+        small = BRepPrimAPI_MakeCylinder(ax2, lo, length).Shape()
+        ring = _wrap_topods(BRepAlgoAPI_Cut(big, small).Shape())
+    except Exception:
+        return None
+    if ring is None:
+        return None
+    progress_tick(keep_index=True)
+
+    if not add_material:
+        # A ring cut that makes one of the body's solids disappear is the same
+        # silent class as the up-to cut this guard was written for: it reports
+        # success with the solid simply gone. It RAISES; that is intentional.
+        # Its own sentences, because the default ones are Press/Pull's and talk
+        # about an "up to" target this path does not have.
+        _refuse_if_cut_deletes_a_solid(part, ring, (
+            "that offset removed the whole body, so it was not applied. The "
+            "wall has less material behind it than you asked to take off.",
+            "that offset would delete {gone} of the body's {total} solids, so "
+            "it was not applied. The wall has less material behind it than you "
+            "asked to take off.",
+        ))
+    try:
+        op = BRepAlgoAPI_Fuse if add_material else BRepAlgoAPI_Cut
+        out = _wrap_topods(op(part.wrapped, ring.wrapped).Shape())
+    except Exception:
+        return None
+    progress_tick(keep_index=True)
+
+    want = math.pi * abs(hi * hi - lo * lo) * length
+    if not add_material:
+        want = -want
+    if _boolean_offset_reason(part, out, ax3, r, r2, length, want) is not None:
+        return None
+
+    # `_maybe_unify`, not `_unify_if_valid`, and ONLY because the line above has
+    # just established on THIS shape the very thing `_unify_if_valid` re-checks.
+    # `UnifySameDomain.Build()` SEGFAULTS on an invalid solid rather than raising
+    # (GH #49), so the check is not optional — it is already paid for.
+    #
+    # Measured, because this rung is supposed to be the cheap one and was not.
+    # `BRepCheck_Analyzer` was being constructed THREE times per call on the same
+    # geometry: once inside `_boolean_offset_reason`, twice more inside
+    # `_unify_if_valid` (it checks, then `_maybe_unify` returns and the caller
+    # below checks the unified shape). The one removed here is the redundant
+    # middle one, and it is worth, on the result of the boolean:
+    #   body 852 (1433 faces)  0.4735 s, 25% of what rung 2 used to cost
+    #   body  29 ( 383 faces)  0.2999 s, 17%
+    #   body   2 (  85 faces)  0.1426 s, 15%
+    # Across all 59 rung-2 attempts of the census that is 8.3 s -> 7.4 s total
+    # and a worst case of 1.305 s -> 1.083 s. The third construction below stays:
+    # it checks the UNIFIED shape, which is a different shape and has not been
+    # checked at all.
+    unified = _maybe_unify(out)
+    try:
+        if (
+            unified is not out
+            and BRepCheck_Analyzer(unified.wrapped).IsValid()
+            and len(unified.solids()) == len(out.solids())
+        ):
+            return unified
+    except Exception:
+        pass
+    return out
+
+
+_RETUNE_ANG_TOL = 1e-6        # |cos| deviation for "parallel" / "perpendicular"
+_RETUNE_RAD_TOL = 1e-6        # mm, radial continuity between a wall and its lip
+_RETUNE_ON_AXIS_TOL = 1e-7    # mm, closer than this to the axis has no radial dir
+_RETUNE_MAX_CHAIN = 8         # faces; beyond this a "lip" is something else
+# The analytic-volume band. 1e-4 RELATIVE, and the reason it is not 1e-9 is a
+# measurement, not taste — see `_retune_radially_report`'s ORACLE 3.
+_RETUNE_VOLUME_REL_TOL = 1e-4
+
+# Graft 2's band-shape bound, and it is deliberately the SAME NUMBER as
+# `_expand_blend_chain`'s BAND_ASPECT_MAX (builder.py:7022) because it answers
+# the same question: is this face a blend, or a functional surface that merely
+# touches like one. Measured 2·area/perimeter over longest edge, via the same
+# `_face_width` those chains use:
+#     /tmp/jx_taper_lip.brep, a 22.2 mm 8 deg functional taper   0.4180
+#     widest real lip in the fixture set (fx_mixed_boss cone)    0.1120
+#     0.3 mm chamfers at r = 3.0 -> 3.3                          0.0202
+#     fillets (fx_fillet_bore tori)                     0.0116 .. 0.0503
+# so 0.4 sits 3.6x above the widest real lip. The taper margin is THIN and that
+# is the honest number: the same 8 deg taper at a 19.41 mm slant instead of
+# 22.216 mm reads exactly 0.4, so a taper 13% shorter than this one is accepted
+# as a lip. REJECTED ALTERNATIVE: a fixed fraction-of-the-wall's-extent bound,
+# tried in one of the four stage-3 designs and measured NOT GENERAL — the same
+# fraction that refuses this taper refuses real deep-bore chamfers, because the
+# thing that distinguishes them is the lip's own aspect, not its share of a
+# wall it does not know the length of.
+_RETUNE_BAND_ASPECT_MAX = 0.4
+
+# mm. Graft 1's radial room, graft 6's clearance floor, and graft 7's "buried
+# inside the band" margin. Well under the 1e-6 the lips themselves meet at.
+_RETUNE_ROOM_TOL = 1e-7
+
+# Graft 4's lateral-area band, RELATIVE to the face's own analytic area. Set from
+# the residue, the way ORACLE 3's is: the worst relative disagreement between
+# OCCT's measured area and the closed form over the 183-attempt census is
+# 1.299e-10 (body 1921, 122.522114 mm2 against 122.522113), and over the fixture
+# set 1.06e-13. 1e-8 leaves 77x headroom above the observed floor and still sits
+# five orders BELOW the smallest wrong answer it has to catch — a chained face
+# whose trim moved by 0.1% is a 1e-3 residual.
+_RETUNE_AREA_REL_TOL = 1e-8
+
+# mm. Graft 5's "moved by exactly delta" band on a radial constant.
+_RETUNE_MOVE_TOL = 1e-9
+
+# The guards-off test hatch (graft 8). READ ONCE, HERE, AT IMPORT — never from
+# request data, so no document and no wire message can reach it. Everything the
+# wire can influence arrives as arguments to `_offset_faces`; this is a module
+# constant fixed before the first request is parsed, which is what makes the
+# claim "unreachable from the protocol" checkable rather than a promise.
+#
+# It exists because this venv has no pytest and the tests are plain scripts, so
+# without it "oracle N protects against X" is an argument. With it, every
+# adversarial fixture is two assertions in one file — wrong with the guards off,
+# refused with them on — and a screen that has quietly stopped screening fails
+# the first half. See `test_retune_screens`.
+_OFFSET_NO_ORACLES = os.environ.get("SINDRI_OFFSET_NO_ORACLES") == "1"
+
+
+class _RetuneDecline(ValueError):
+    """Rung 3 declined: THIS RUNG cannot do it. Caught by `_retune_radially`,
+    which returns None so the ladder falls through to rung 4. The message is
+    kept because it names the thing that stopped it (`neighbour is
+    BSPLINESURFACE`, `lip is not coaxial with the wall`), which is what a future
+    diagnostic wants — see the note on `_retune_radially_report`."""
+
+
+class _RetuneRefuse(_RetuneDecline):
+    """Rung 3 did not decline, it REFUSED: it has PROOF that this offset would
+    produce a wrong solid, whichever rung built it. `_retune_radially` re-raises
+    it, and the sentence reaches the user.
+
+    THE DISTINCTION IS THE WHOLE POINT, and getting it backwards was measured
+    both ways. Until this class existed every screen's sentence was swallowed
+    and the ladder ran BRepOffset anyway, so `sidecar/fixtures/
+    offset_cbore_break.brep` at d = -0.25 — where graft 1 says in words "the lip
+    would reach 3.5500 mm from the axis but the face beyond it stops at 3.5000
+    mm" — came back BUILT and valid with the 0.30 mm chamfer silently resized to
+    0.05 mm, and reference-import bodies 1745 and 1761 came back INVALID, split
+    into two solids with both fillets deleted. Eight screens protecting rung 3's
+    own output and nothing else.
+
+    Only the screens that MEASURE A COLLISION raise this:
+      - GRAFT 1, `_retune_far_plane_reason`: the lip overruns the face beyond
+        it. Its two "cannot measure this edge" sentences are NOT proof and stay
+        soft.
+      - GRAFTS 6 and 7, `_retune_band_reason`: the swept ring runs into, or
+        swallows, geometry elsewhere in the body. Its "could not prove it
+        clears" sentence is not proof either and stays soft.
+
+    Everything else stays soft ON PURPOSE, and each one is a measurement:
+      - GRAFT 2 (`the ring ... looks like a taper`) is a statement about THIS
+        RUNG's method, not about the geometry. Measured on
+        `fixtures/offset_taper_lip.brep`: the retune would drag the taper's far
+        end 6.09 -> 6.24 mm, while rung 4 keeps the semi-angle at 7.9952 deg
+        AND the far end at 6.09 mm and just lengthens the cone 22.0 -> 23.07 mm.
+        Rung 4's answer is the better one, so refusing here would cost a good
+        case to catch nothing. (Two reviewers read this screen as a hard
+        geometric refusal; the numbers above are why it is not.)
+      - ORACLE 2 (`not a valid B-rep`) is rung 3 failing its own audit. Rung 4
+        now gates its result on validity too (`_offset_result_reason`), so
+        falling through cannot ship an invalid body any more — which is exactly
+        why this one does not need to be hard.
+      - GRAFTS 4 and 5 and ORACLE 3 are arithmetic self-checks on the retune."""
+
+
+def _retune_explore(shape, kind):
+    """Sub-shapes of `shape` of one type, in TopExp_Explorer order.
+
+    Explorer order and NOT `Shape.faces()`: the copy and the original are
+    indexed against each other by position, and the explorer's order is the one
+    that is stable across `BRepBuilderAPI_Copy`."""
+    from OCP.TopExp import TopExp_Explorer
+
+    out, e = [], TopExp_Explorer(shape, kind)
+    while e.More():
+        out.append(e.Current())
+        e.Next()
+    return out
+
+
+def _retune_faces(shape):
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopoDS import TopoDS
+
+    return [TopoDS.Face_s(f) for f in _retune_explore(shape, TopAbs_FACE)]
+
+
+def _retune_radial(pt, o, d):
+    """(rho, radial unit vector or None, axial coordinate) of a point about an
+    axis. All three arguments and the result are plain (x, y, z) tuples."""
+    wx, wy, wz = pt[0] - o[0], pt[1] - o[1], pt[2] - o[2]
+    t = wx * d[0] + wy * d[1] + wz * d[2]
+    rx, ry, rz = wx - t * d[0], wy - t * d[1], wz - t * d[2]
+    rho = math.sqrt(rx * rx + ry * ry + rz * rz)
+    if rho < _RETUNE_ON_AXIS_TOL:
+        return rho, None, t
+    return rho, (rx / rho, ry / rho, rz / rho), t
+
+
+def _retune_axis(face):
+    """((ox, oy, oz), (dx, dy, dz)) of a surface-of-revolution face's axis, in
+    GLOBAL coordinates, or None if the face is not one of the three types."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    s = BRepAdaptor_Surface(face)
+    t = s.GetType()
+    if t == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+        ax = s.Cylinder().Position()
+    elif t == GeomAbs_SurfaceType.GeomAbs_Cone:
+        ax = s.Cone().Position()
+    elif t == GeomAbs_SurfaceType.GeomAbs_Torus:
+        ax = s.Torus().Position()
+    else:
+        return None
+    p, v = ax.Location(), ax.Direction()
+    return (p.X(), p.Y(), p.Z()), (v.X(), v.Y(), v.Z())
+
+
+def _retune_outward_normal(face):
+    """(unit outward normal, (midpoint, u, v)) at the face's parametric middle,
+    with the face's own orientation applied — or (None, None).
+
+    Orientation is the whole point: `BRepLProp_SLProps` hands back the SURFACE
+    normal, which on a REVERSED face points into the material. Every sign in
+    this rung — boss vs bore, and the traversal sense of the volume integral —
+    descends from this one flip."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepLProp import BRepLProp_SLProps
+    from OCP.TopAbs import TopAbs_Orientation
+
+    s = BRepAdaptor_Surface(face)
+    um = 0.5 * (s.FirstUParameter() + s.LastUParameter())
+    vm = 0.5 * (s.FirstVParameter() + s.LastVParameter())
+    pr = BRepLProp_SLProps(s, um, vm, 1, 1e-9)
+    if not pr.IsNormalDefined():
+        return None, None
+    n = pr.Normal()
+    sg = -1.0 if face.Orientation() == TopAbs_Orientation.TopAbs_REVERSED else 1.0
+    p = s.Value(um, vm)
+    return (n.X() * sg, n.Y() * sg, n.Z() * sg), ((p.X(), p.Y(), p.Z()), um, vm)
+
+
+def _retune_radius_range(face, o, ax):
+    """(min rho, max rho) reached by a revolution face over its OWN v range,
+    analytically. None if the face is not one of the three types.
+
+    Analytic and not sampled because `gp_Cone.RefRadius()` is the radius at
+    v = 0, which on real imports is routinely far outside the face's own V
+    range — one census body reads RefRadius 1.0 on a face whose radii run
+    4.25..4.35. Reading RefRadius as an end radius is the trap; this is the
+    function that stops anyone doing it.
+
+    For the torus the interior extrema of cos v have to be included explicitly,
+    or a fillet spanning v = 0 reports a radius range that misses its own
+    widest point."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    s = BRepAdaptor_Surface(face)
+    t = s.GetType()
+    v0, v1 = s.FirstVParameter(), s.LastVParameter()
+    if t == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+        r = s.Cylinder().Radius()
+        return r, r
+    if t == GeomAbs_SurfaceType.GeomAbs_Cone:
+        c = s.Cone()
+        sa = math.sin(c.SemiAngle())  # SIGNED; that is what makes this correct
+        a, b = c.RefRadius() + v0 * sa, c.RefRadius() + v1 * sa
+        return min(a, b), max(a, b)
+    if t == GeomAbs_SurfaceType.GeomAbs_Torus:
+        tr = s.Torus()
+        big, small = tr.MajorRadius(), tr.MinorRadius()
+        vs = [v0, v1]
+        k = math.floor(v0 / math.pi)
+        while k * math.pi <= v1 + 1e-12:
+            if v0 - 1e-12 <= k * math.pi <= v1 + 1e-12:
+                vs.append(k * math.pi)
+            k += 1
+        rs = [big + small * math.cos(v) for v in vs]
+        return min(rs), max(rs)
+    return None
+
+
+def _retune_perp(v, ax):
+    """The component of a vector perpendicular to the axis direction."""
+    t = v[0] * ax[0] + v[1] * ax[1] + v[2] * ax[2]
+    return (v[0] - t * ax[0], v[1] - t * ax[1], v[2] - t * ax[2])
+
+
+def _retune_axial_range(face, o, ax):
+    """(min, max) axial coordinate reached by a revolution face over its OWN v
+    range. None if the face is not one of the three types.
+
+    The companion to `_retune_radius_range`: together they are the face's exact
+    (rho, z) footprint about the feature's axis, and that footprint is what the
+    band screens (grafts 6 and 7) are cut from. Exact and not from a bounding
+    box, for the same reason `_retune_radius_range` is analytic — on
+    /tmp/jx_offaxis.brep the axis runs at 37 deg to every world axis, where an
+    AABB's axial extent is wider than the face by most of its own diagonal.
+
+    The torus is the only one that is not monotone in v: its axial coordinate is
+    a·sin v, so a fillet spanning v = pi/2 reaches further than either of its
+    ends does."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    ST = GeomAbs_SurfaceType
+    s = BRepAdaptor_Surface(face)
+    t = s.GetType()
+    if t not in (ST.GeomAbs_Cylinder, ST.GeomAbs_Cone, ST.GeomAbs_Torus):
+        return None
+    v0, v1 = s.FirstVParameter(), s.LastVParameter()
+    vs = [v0, v1]
+    if t == ST.GeomAbs_Torus:
+        k = math.floor((v0 - math.pi / 2.0) / math.pi)
+        while math.pi / 2.0 + k * math.pi <= v1 + 1e-12:
+            v = math.pi / 2.0 + k * math.pi
+            if v0 - 1e-12 <= v <= v1 + 1e-12:
+                vs.append(v)
+            k += 1
+    um = 0.5 * (s.FirstUParameter() + s.LastUParameter())
+    zs = []
+    for v in vs:
+        p = s.Value(um, v)
+        zs.append(_retune_radial((p.X(), p.Y(), p.Z()), o, ax)[2])
+    return min(zs), max(zs)
+
+
+def _retune_hull_rho_range(pts, o, ax):
+    """(min rho, max rho) over the CONVEX HULL of a set of points, about the
+    axis. A true outer bound for anything that set contains.
+
+    rho is convex, so its maximum over a hull is at one of the points. Its
+    minimum is not: it is the distance from the axis LINE to the hull, and taking
+    the smallest point rho instead is an over-estimate that quietly turns a
+    safety screen into a false accept — the 24 mm block side face of
+    /tmp/jx_cbore_break.brep reads 16.97 mm at its bounding-box corners and
+    12.0 mm at its true closest point, so a band reaching 13 mm would be declared
+    clear of a face it runs straight into.
+
+    No hull is built. If the projected points do not surround the origin — some
+    angular gap between neighbours exceeds pi — then the closest point of the
+    hull lies on a hull edge, and the smallest origin-to-segment distance over
+    ALL pairs is that edge's, because every other pair's segment lies inside the
+    hull and so cannot be nearer. If they do surround it, the distance is 0."""
+    e1 = _retune_perp((1.0, 0.0, 0.0), ax)
+    if e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2] < 0.25:
+        e1 = _retune_perp((0.0, 1.0, 0.0), ax)
+    n1 = math.sqrt(e1[0] ** 2 + e1[1] ** 2 + e1[2] ** 2)
+    e1 = (e1[0] / n1, e1[1] / n1, e1[2] / n1)
+    e2 = (ax[1] * e1[2] - ax[2] * e1[1], ax[2] * e1[0] - ax[0] * e1[2],
+          ax[0] * e1[1] - ax[1] * e1[0])
+
+    flat = []
+    for c in pts:
+        w = (c[0] - o[0], c[1] - o[1], c[2] - o[2])
+        flat.append((w[0] * e1[0] + w[1] * e1[1] + w[2] * e1[2],
+                     w[0] * e2[0] + w[1] * e2[1] + w[2] * e2[2]))
+    if not flat:
+        return None
+    hi = max(math.hypot(p[0], p[1]) for p in flat)
+    if min(math.hypot(p[0], p[1]) for p in flat) < _RETUNE_ON_AXIS_TOL:
+        return 0.0, hi
+    angs = sorted(math.atan2(p[1], p[0]) for p in flat)
+    gaps = [angs[i + 1] - angs[i] for i in range(len(angs) - 1)]
+    gaps.append(angs[0] + 2.0 * math.pi - angs[-1])
+    if max(gaps) <= math.pi + 1e-12:
+        return 0.0, hi  # the axis passes through the hull
+    lo = hi
+    for i in range(len(flat)):
+        px, py = flat[i]
+        for j in range(i + 1, len(flat)):
+            bx, by = flat[j][0] - px, flat[j][1] - py
+            ll = bx * bx + by * by
+            t = 0.0 if ll < 1e-20 else min(1.0, max(0.0,
+                                                    -(px * bx + py * by) / ll))
+            lo = min(lo, math.hypot(px + t * bx, py + t * by))
+    return lo, hi
+
+
+def _retune_shape_box_points(shape):
+    """The eight corners of a shape's axis-aligned bounding box.
+
+    `BRepBndLib.Add_s` INFLATES rather than trims, so the box contains the shape
+    and any bound taken from these corners is an outer bound."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    bb = Bnd_Box()
+    BRepBndLib.Add_s(shape, bb)
+    if bb.IsVoid():
+        return None
+    x0, y0, z0, x1, y1, z1 = bb.Get()
+    return [(x, y, z) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)]
+
+
+def _retune_edge_rho_range(edge, o, ax):
+    """(min rho, max rho, is it exact) over an edge's TRIMMED 3D curve. Closed
+    form for the two shapes that carry the load, a rigorous outer bound flagged
+    as inexact for everything else, None only for an edge with no curve at all.
+
+    A LINE and a circle whose axis is parallel to this one are exact, and those
+    two are what a flat perpendicular to the axis is actually bounded by — every
+    junction ring and every machined outline in the reference import. Everything
+    else (a B-spline rim, an ellipse, a circle tilted so that it projects to an
+    ellipse) falls back to the convex hull of its bounding box, which OVER-states
+    the range. THE THIRD ELEMENT IS NOT DECORATION: an over-stated range is safe
+    for deciding that an edge is clear of the moving ring (a wider interval only
+    makes that harder to conclude) but NOT for deciding that it straddles it, and
+    graft 1 treats the two differently for exactly that reason.
+
+    REJECTED ALTERNATIVE, and it was measured, not reasoned: returning None on
+    anything but the two exact forms and declining the whole retune. It cost 9 of
+    the 183 census attempts — bodies 1, 2, 10, 19, 20, 22, 1896, 1900 and 1932,
+    whose bores sit in flats whose OUTER outline is a spline 15 to 25 mm from a
+    ring at 4.8 mm — and caught nothing, because none of those outlines is
+    anywhere near the moving ring. Refusing 9 good cases to catch none is the
+    wrong trade; bounding them loosely and letting the comparison decide keeps
+    all 9 and is just as safe.
+
+    Read through `BRepAdaptor_Curve`, which APPLIES the edge's location, so
+    everything here is in the same global frame as `o`/`ax`. The stored-frame
+    trap `_retune_edge` documents does not arise, because nothing is written
+    back through this."""
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.GeomAbs import GeomAbs_CurveType
+
+    ac = BRepAdaptor_Curve(edge)
+    t0, t1 = ac.FirstParameter(), ac.LastParameter()
+    if not (t1 > t0):
+        return None
+    ts = [t0, t1]
+    ct = ac.GetType()
+    if ct == GeomAbs_CurveType.GeomAbs_Line:
+        lin = ac.Line()
+        p0, dr = lin.Location(), lin.Direction()
+        # rho(t)^2 = |A + t B|^2 with A, B the perpendicular parts: a quadratic
+        # in t, so its one interior minimum is where the derivative vanishes.
+        a = _retune_perp((p0.X() - o[0], p0.Y() - o[1], p0.Z() - o[2]), ax)
+        b = _retune_perp((dr.X(), dr.Y(), dr.Z()), ax)
+        bb = b[0] * b[0] + b[1] * b[1] + b[2] * b[2]
+        if bb > 1e-20:
+            ts.append(min(t1, max(t0, -(a[0] * b[0] + a[1] * b[1]
+                                        + a[2] * b[2]) / bb)))
+    elif ct == GeomAbs_CurveType.GeomAbs_Circle and abs(abs(
+            ac.Circle().Axis().Direction().X() * ax[0]
+            + ac.Circle().Axis().Direction().Y() * ax[1]
+            + ac.Circle().Axis().Direction().Z() * ax[2]) - 1.0) <= \
+            _RETUNE_ANG_TOL:
+        c = ac.Circle()
+        cen = c.Location()
+        rho_c, _, _ = _retune_radial((cen.X(), cen.Y(), cen.Z()), o, ax)
+        if rho_c < _RETUNE_RAD_TOL:
+            return c.Radius(), c.Radius(), True  # coaxial: one radius, any trim
+        # rho(th)^2 = rho_c^2 + R^2 + 2 R rho_c cos(th - phi), so the two
+        # extrema sit half a turn apart at th = phi and th = phi + pi.
+        q = _retune_perp((cen.X() - o[0], cen.Y() - o[1], cen.Z() - o[2]), ax)
+        xd, yd = c.XAxis().Direction(), c.YAxis().Direction()
+        phi = math.atan2(q[0] * yd.X() + q[1] * yd.Y() + q[2] * yd.Z(),
+                         q[0] * xd.X() + q[1] * xd.Y() + q[2] * xd.Z())
+        k = math.floor((t0 - phi) / math.pi)
+        while phi + k * math.pi <= t1 + 1e-12:
+            th = phi + k * math.pi
+            if t0 - 1e-12 <= th <= t1 + 1e-12:
+                ts.append(th)
+            k += 1
+    else:
+        pts = _retune_shape_box_points(edge)
+        if pts is None:
+            return None
+        rr = _retune_hull_rho_range(pts, o, ax)
+        return None if rr is None else (rr[0], rr[1], False)
+    rhos = []
+    for t in ts:
+        p = ac.Value(t)
+        rhos.append(_retune_radial((p.X(), p.Y(), p.Z()), o, ax)[0])
+    return min(rhos), max(rhos), True
+
+
+def _retune_face_footprint(face, o, ax):
+    """((rho lo, rho hi), (z lo, z hi), is it exact) — a box guaranteed to
+    contain the face, in the feature's own (rho, z) coordinates.
+
+    A face COAXIAL with the feature is answered analytically and exactly, by the
+    same two functions the chain itself is measured with. That is not a
+    micro-optimisation: on census body 1, a threaded part, 17 of the 24 faces are
+    coaxial cylinders, and every one of their bounding boxes straddles the axis
+    and so reports a radial range starting at 0 — useless, and it dragged all 17
+    into `BRepExtrema`. Read analytically they read [9.0, 9.0] against a band of
+    [7.35, 7.50] and all 17 are dismissed for free.
+
+    Everything else falls back to the axis-aligned bounding box, flagged INEXACT
+    so `_retune_band_reason` knows a second, sharper ruler is worth paying for.
+    `BRepBndLib.Add_s` inflates rather than trims, so the box contains the face,
+    and `_retune_hull_rho_range` is where the reason for not just taking the
+    smallest corner is written down."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    ST = GeomAbs_SurfaceType
+    if BRepAdaptor_Surface(face).GetType() in (
+            ST.GeomAbs_Cylinder, ST.GeomAbs_Cone, ST.GeomAbs_Torus) \
+            and _retune_is_coaxial(face, o, ax):
+        rr = _retune_radius_range(face, o, ax)
+        zr = _retune_axial_range(face, o, ax)
+        if rr is not None and zr is not None:
+            return rr, zr, True
+    pts = _retune_shape_box_points(face)
+    if pts is None:
+        return None
+    rr = _retune_hull_rho_range(pts, o, ax)
+    if rr is None:
+        return None
+    zs = [(c[0] - o[0]) * ax[0] + (c[1] - o[1]) * ax[1] + (c[2] - o[2]) * ax[2]
+          for c in pts]
+    return rr, (min(zs), max(zs)), False
+
+
+def _retune_axis_distance(face, o, ax, zr):
+    """The EXACT smallest distance from a face to the feature's axis — its true
+    rho minimum — or None if the kernel will not say.
+
+    THE SECOND TIER of graft 6's screen, and the thing the brief actually asks
+    for: a distance to the AXIS, not to the moving surfaces. Measured on census
+    body 1, whose two B-spline thread flanks are the only faces its bounding
+    boxes cannot dismiss: 0.088 s each against the axis versus 0.82 s each
+    against the chain, 9.3x cheaper, and it returns 9.00 mm and 8.25 mm against a
+    band that stops at 7.50 — so both are dismissed and the expensive
+    measurement never runs at all. Rung 3 on that body went from 1.70 s to
+    0.50 s on this one change.
+
+    The segment is cut to span the face's own axial extent, so every point of the
+    face projects INSIDE it and the distance to the segment is the distance to
+    the infinite line. A shorter segment would over-state rho and could dismiss a
+    face that is really in the way."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.gp import gp_Pnt
+
+    z0, z1 = zr[0] - 1.0, zr[1] + 1.0
+    a = gp_Pnt(o[0] + z0 * ax[0], o[1] + z0 * ax[1], o[2] + z0 * ax[2])
+    b = gp_Pnt(o[0] + z1 * ax[0], o[1] + z1 * ax[1], o[2] + z1 * ax[2])
+    mk = BRepBuilderAPI_MakeEdge(a, b)
+    if not mk.IsDone():
+        return None
+    dss = BRepExtrema_DistShapeShape(face, mk.Edge())
+    return dss.Value() if dss.IsDone() else None
+
+
+def _retune_band_area(face):
+    """The area a face MUST have if it really is the FULL annular band its
+    surface parameters describe — the revolved lateral area of the decoded
+    profile, by Pappus.
+
+    Every one of the three surfaces has an orthogonal parametrisation whose area
+    element is rho (cylinder, cone) or MinorRadius·rho (torus) with no u
+    dependence at all, so the integral over the face's (u, v) BOX is closed
+    form. That makes the comparison against OCCT's measured area two statements
+    at once: that the profile was decoded correctly, and that the face's
+    parametric domain really is that box and not a box with a bite out of it (a
+    cross-drilled wall, a keyway) — which is the assumption the whole retune
+    rests on and which nothing else here checks.
+
+    None for anything that is not one of the three."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    ST = GeomAbs_SurfaceType
+    s = BRepAdaptor_Surface(face)
+    t = s.GetType()
+    du = s.LastUParameter() - s.FirstUParameter()
+    v0, v1 = s.FirstVParameter(), s.LastVParameter()
+    if t == ST.GeomAbs_Cylinder:
+        return du * s.Cylinder().Radius() * (v1 - v0)
+    if t == ST.GeomAbs_Cone:
+        c = s.Cone()
+        return du * (c.RefRadius() * (v1 - v0)
+                     + math.sin(c.SemiAngle()) * (v1 * v1 - v0 * v0) / 2.0)
+    if t == ST.GeomAbs_Torus:
+        tr = s.Torus()
+        big, small = tr.MajorRadius(), tr.MinorRadius()
+        return du * small * (big * (v1 - v0)
+                             + small * (math.sin(v1) - math.sin(v0)))
+    return None
+
+
+def _retune_measured_area(face):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    p = GProp_GProps()
+    BRepGProp.SurfaceProperties_s(face, p, 1e-11)
+    return p.Mass()
+
+
+def _retune_is_coaxial(face, o, ax):
+    fr = _retune_axis(face)
+    if fr is None:
+        return False
+    o2, d2 = fr
+    if abs(abs(d2[0] * ax[0] + d2[1] * ax[1] + d2[2] * ax[2]) - 1.0) > _RETUNE_ANG_TOL:
+        return False
+    rho, _, _ = _retune_radial(o2, o, ax)
+    return rho < _RETUNE_RAD_TOL
+
+
+def _retune_plane_is_perpendicular(face, ax):
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    s = BRepAdaptor_Surface(face)
+    if s.GetType() != GeomAbs_SurfaceType.GeomAbs_Plane:
+        return False
+    n = s.Plane().Axis().Direction()
+    dot = n.X() * ax[0] + n.Y() * ax[1] + n.Z() * ax[2]
+    return abs(abs(dot) - 1.0) < _RETUNE_ANG_TOL
+
+
+def _retune_no_scale(loc, what):
+    """Refuse a location that is not rigid.
+
+    The radial arithmetic below edits a radius STORED in an entity's own frame
+    while every screen above read the radius in GLOBAL coordinates. Those are
+    the same number only under a rigid location, so a scale factor anywhere in
+    the feature silently scales the offset. Stricter than the prototype, which
+    checked edges only; it costs one comparison per entity."""
+    if abs(loc.Transformation().ScaleFactor() - 1.0) > 1e-12:
+        raise _RetuneDecline(f"a {what} location carries a scale factor")
+
+
+def _retune_is_band_shaped(face):
+    """GRAFT 2. Is this ring a BLEND (a chamfer, a fillet) or a functional
+    surface that merely sits where one would?
+
+    `_face_width(f)` (builder.py:6909) is 2·area/perimeter — the true width of a
+    long strip, small for a corner patch, large for a real face — and a blend is
+    a band: its width is well under its own longest edge. That is
+    `_expand_blend_chain`'s test (builder.py:7022) and this is it grafted in,
+    same function, same 0.4, because it answers the same question and disagreeing
+    with it would mean this file held two opinions about what a chamfer is.
+
+    Measured on the fixture set: the /tmp/jx_taper_lip.brep taper reads 0.4180
+    and every real lip reads 0.0116 to 0.1120. The margin either side, and the
+    rejected fraction-of-extent alternative, are on `_RETUNE_BAND_ASPECT_MAX`.
+    Over the reference import it refuses census bodies 1443 and 1446 and costs
+    0 attempts: both were already refused one link further along the chain, so
+    what changes is that the reason names the taper instead of naming whatever
+    happened to sit beyond it.
+
+    `_face_width` memoizes on TShape, so a lip measured during the plan is free
+    again if the same body is retuned at the next keystroke of a distance drag."""
+    bf = Face(face)
+    longest = max((e.length for e in bf.edges()), default=0.0)
+    if longest <= 0.0:
+        return False
+    return _face_width(bf) / longest <= _RETUNE_BAND_ASPECT_MAX
+
+
+def _retune_far_plane_reason(plan):
+    """GRAFT 1, the RADIAL-OVERRUN screen. None if every junction has room, else
+    the sentence saying which one does not.
+
+    THE DEFECT THIS CLOSES: /tmp/jx_cbore_break.brep, a chamfered bore whose
+    0.3 mm chamfer lands on a COUNTERBORE FLOOR only 0.2 mm wide (r 3.3 -> 3.5).
+    Grow the bore and the chamfer walks off the outer edge of that floor and
+    undercuts the counterbore wall. Two of the four stage-3 designs returned a
+    valid, watertight, single solid with the correct volume and a perfectly
+    preserved 0.3 mm x 45 deg chamfer — and an inward-overhanging knife edge
+    0.05 mm deep at d = -0.25; at d = -0.5 the chamfer has become a buried
+    internal groove. `BRepAlgoAPI_Check(bTestSE, bTestSI)` reports it valid.
+
+    The far-plane screens every design shipped check the plane's TYPE, its axial
+    position and that there is exactly one of them. None checks its RADIAL
+    EXTENT, which is the only thing that runs out here. This rung happens to
+    refuse the case today, via BRepCheck's `IntersectingWires` — by accident of
+    mechanism, not by a named check — so the point of this is that the refusal
+    is deliberate, arrives before the edit, and says something a user can act on.
+
+    The rule: the junction circle where the chain meets a flat is going to move
+    by `delta`, and every OTHER boundary of that flat is staying still. So for
+    each of them, which side of the junction it lies on must not change.
+
+    An edge that lies on BOTH sides — one that crosses the junction circle in
+    projection — cannot happen on a valid face, since the two would intersect. So
+    meeting one means either the input was already broken or this could not
+    measure the edge tightly enough to tell, and those are not the same thing.
+    An EXACT range that straddles is a refusal; a conservative one that straddles
+    is a shrug, and the screen says nothing and leaves the case to
+    `BRepCheck_Analyzer`, which is what caught it before stage 3 anyway.
+    Measured: refusing on an inexact straddle as well cost 4 more census
+    attempts — bodies 1, 10, 19 and 22, spline-outlined flats whose conservative
+    box brackets a ring it comes nowhere near — and caught nothing extra.
+
+    Measured over the whole reference import: it refuses 4 of the 183 census
+    attempts and costs 0, because all four were already being refused — bodies
+    21 and 23, which ORACLE 2 above records catching with `IntersectingWires` /
+    `InvalidImbricationOfWires`, and bodies 1745 and 1761 on the inward side.
+    Those are the same defect, and the difference is what the user is told:
+
+        before   the retuned body is not a valid B-rep
+        now      the lip would reach 5.0500 mm from the axis but the face
+                 beyond it stops at 5.0000 mm
+
+    and it now arrives before the edit rather than after it.
+
+    RETURNS a sentence for the two cases where it could not measure the junction
+    and RAISES `_RetuneRefuse` for the overrun itself, because only the second
+    is proof: an overrun is a fact about the solid whichever rung builds it, so
+    it must reach the user rather than hand the case to BRepOffset — which
+    answers `fixtures/offset_cbore_break.brep` at d = -0.25 by silently resizing
+    the chamfer 0.30 -> 0.05 mm. See `_RetuneRefuse`."""
+    o, ax, delta = plan["origin"], plan["axis"], plan["delta"]
+    tol = _RETUNE_ROOM_TOL
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopoDS import TopoDS
+
+    for plane, shared in plan["far_planes"]:
+        rng = _retune_edge_rho_range(shared, o, ax)
+        if rng is None or not rng[2]:
+            return "the feature meets a flat along a curve this cannot measure"
+        r_lo, r_hi, _exact = rng
+        if r_hi - r_lo > _RETUNE_RAD_TOL:
+            return "the feature meets a flat along something that is not a ring"
+        rj, moved = r_lo, r_lo + delta
+        for e in _retune_explore(plane, TopAbs_EDGE):
+            if any(e.IsSame(x) for x in plan["edges"]):
+                continue  # this one moves with the feature
+            other = _retune_edge_rho_range(TopoDS.Edge_s(e), o, ax)
+            if other is None:
+                # DECLINE, do not skip. An edge of the far flat whose curve will
+                # not decode is an edge this screen cannot say is out of the
+                # way, and shrugging it off was the other fail-OPEN site in a
+                # safety screen. Soft, so the case still reaches rung 4, which
+                # gates its own result. Unreachable on the census.
+                return ("a boundary of the flat beyond the feature could not "
+                        "be measured")
+            lo, hi, exact = other
+            if rj <= lo + tol:
+                if moved > lo - tol:
+                    raise _RetuneRefuse(
+                        f"the lip would reach {moved:.4f} mm from the axis "
+                        f"but the face beyond it stops at {lo:.4f} mm")
+            elif rj >= hi - tol:
+                if moved < hi + tol:
+                    raise _RetuneRefuse(
+                        f"the lip would reach {moved:.4f} mm from the axis "
+                        f"but the face beyond it starts at {hi:.4f} mm")
+            elif exact:
+                return ("the flat beyond the feature has a boundary on both "
+                        "sides of the lip, so there is no telling which way it "
+                        "has room")
+    return None
+
+
+def _retune_area_reason(plan, where):
+    """GRAFT 4, the LATERAL-AREA (Pappus) oracle. None if every chained face's
+    measured area matches the revolved lateral area of its decoded profile.
+
+    A SECOND RULER, and the point is that it is not the volume one. One of the
+    stage-3 designs proved by fault injection that a volume oracle CANNOT catch a
+    too-thin profile: a wrong profile is self-consistent with its own volume
+    prediction, so the check passes on a shape that is wrong. Retune is
+    structurally immune to that particular fault — it never writes `SemiAngle` or
+    `MinorRadius`, so a lip cannot change size — but the volume oracle is its
+    general backstop and ORACLE 3 states plainly that the 4.15e-5 residue that
+    sets its band is UNATTRIBUTED. An unexplained noise floor is a bad thing to
+    have only one of.
+    This one integrates rho·du·dv where the volume one integrates rho²·dz: a
+    different integrand, a different traversal-sign argument (none — area has no
+    sign), and a different failure mode.
+
+    WHAT IT ACTUALLY CHECKS, stated narrowly because the broad version is not
+    true: that each chained face IS the full annular band its surface parameters
+    and (u, v) box describe. A face with a bite out of its domain — a bore wall
+    with a side pocket milled into it, a keyed bore — measures less area than its
+    own profile says, and NOTHING ELSE IN THIS FILE STATES THAT ASSUMPTION even
+    though every other oracle rests on it: the closed-form volume, the closed-form
+    area and the swept band all integrate over the box, not over the domain.
+    Measured on a 3 mm bore with an 8x2x4 mm pocket cut into its wall: 565.486678
+    mm2 analytic against 557.330592 measured, 1.44e-2 relative, six orders above
+    the band.
+
+    WHAT IT DOES NOT CATCH, and this was fault-injected rather than assumed: a
+    surface that moved by the WRONG AMOUNT. Make `_retune_surface` write
+    1.01·delta and this screen stays green, because it re-reads the face's own
+    parameters and the measured area agrees with them perfectly — the face is
+    still the full band, just the wrong band. That is graft 5's job, and with
+    graft 5 stubbed out the refusal comes from `BRepCheck_Analyzer`, and with
+    that stubbed too from ORACLE 3. Three deep, and this is not one of the three.
+
+    RESIDUAL: the before-the-move half has no reachable case in the shipped
+    ladder. The pocket body above is refused earlier by `_retune_plan` — the
+    pocket's side walls are planes parallel to the axis — and every other bitten
+    domain that could be constructed is refused earlier too. It is kept because
+    the assumption is load-bearing and unstated elsewhere, not because it has a
+    scalp.
+
+    Measured: over the 183-attempt census the worst relative residual is
+    1.299e-10 and over the fixture set 1.06e-13, against a band of 1e-8. Cost is
+    two `SurfaceProperties_s` per chained face — 0.38 ms per call averaged over
+    the census's 123 plans, so 0.76 ms for the pair."""
+    for f in plan["affected"]:
+        want = _retune_band_area(f)
+        if want is None:
+            return f"a face of the feature has no lateral area ({where})"
+        got = _retune_measured_area(f)
+        if abs(got - want) > max(1e-12, _RETUNE_AREA_REL_TOL * abs(want)):
+            return (f"a face of the feature measures {got:.9f} mm2 {where} but "
+                    f"its own profile says {want:.9f} mm2 — it is not the whole "
+                    f"ring this assumed")
+    return None
+
+
+def _retune_shifted_like(before, after, delta):
+    """Is `after` the fingerprint `before` with its ONE radial constant moved by
+    exactly `delta` and nothing else touched?
+
+    The fingerprints are compared numerically and not as tuples, because
+    `round(r + delta, 12)` and `round(r, 12) + delta` differ in the last place
+    often enough to matter at these magnitudes."""
+    if len(before) != len(after) or before[0] != after[0]:
+        return False
+    if len(before) < 2:
+        return before == after
+    if abs((before[1] + delta) - after[1]) > _RETUNE_MOVE_TOL:
+        return False
+    return all(abs(a - b) <= _RETUNE_MOVE_TOL
+               for a, b in zip(before[2:], after[2:]))
+
+
+def _retune_swept_band(plan):
+    """The region the feature's surfaces sweep through, as ONE (rho, z)
+    rectangle PER CHAINED FACE about the feature's own axis. None if any of them
+    will not decode.
+
+    SCOPED TO THE FEATURE, NOT TO THE WHOLE INTERIOR, and that is the measured
+    correction. Two of the four stage-3 designs screened over `[0, r_reach]` —
+    everything from the axis out to the furthest the feature reaches — and the
+    judge measured that this single choice is the cause of EVERY false refusal
+    either of them produced: a pin at radius 1.2 mm refused while the wall only
+    ever moves between 2.85 and 3.15; a 0.20 mm gap that only ever widens; a bore
+    moving AWAY from its obstacle; a cross hole at radius 3.10 that is never
+    touched. Narrowing the band to what the surfaces actually pass through keeps
+    every true catch and drops all four.
+
+    ONE RECTANGLE PER FACE AND NOT ONE FOR THE CHAIN, and that is measured too. A
+    single rectangle takes the widest radial reach of the chain (the chamfer's)
+    and the longest axial reach (the wall's) and claims the product of the two,
+    which is a region neither face goes near. On /tmp/g3_engulfed.brep — a 3 mm
+    bore with a 0.5 mm top chamfer and a 0.2 mm void at rho 3.2 halfway down —
+    shrinking the bore to 2.85 sweeps [2.85, 3.0] along the wall and [2.85, 3.5]
+    only in the top 0.5 mm, and the merged rectangle refused that void though
+    nothing goes anywhere near it. Per face, it is dismissed: outside the wall's
+    rectangle radially, outside the chamfer's axially.
+
+    Each rectangle is a face's own analytic (rho, z) footprint unioned with a
+    copy of itself shifted by delta — which for the usual bore-with-a-chamfer is
+    exactly the brief's `[min(r, r'), max(r_lip_old, r_lip_new)]`, and stays
+    right when the lip runs inward of the wall instead (a chamfered boss) where
+    that formula does not. The axial window does not move at all: every one of
+    the three edits is purely radial."""
+    d = plan["delta"]
+    out = []
+    for f in plan["affected"]:
+        rr = _retune_radius_range(f, plan["origin"], plan["axis"])
+        zr = _retune_axial_range(f, plan["origin"], plan["axis"])
+        if rr is None or zr is None:
+            return None
+        out.append((rr[0] + min(0.0, d), rr[1] + max(0.0, d), zr[0], zr[1]))
+    return out or None
+
+
+def _retune_band_reason(shape, plan, band):
+    """GRAFTS 6 and 7: does anything the feature is about to sweep through stand
+    in its way? None if not, else the sentence saying what does.
+
+    GRAFT 6 is the performance fix, and it is a per-KEYSTROKE cost, not a
+    per-operation one: under the stateless-full-rebuild invariant this whole
+    ladder re-runs on every frame of a distance drag. The prototype's blanket
+    oracle — one `BRepExtrema_DistShapeShape` of the moving faces against every
+    face a bounding box could not dismiss — IS the operation; the edit it is
+    protecting takes 0.003 s. Measured, blanket against this, per call:
+
+        census body 1     24 faces, threaded   1.708 s -> 0.452 s   3.8x
+        census body 1893  24 faces             0.107 s -> 0.036 s   3.0x
+        census body 1900  147 faces            0.037 s -> 0.005 s   7.4x
+        census body 2001  148 faces            0.092 s -> 0.005 s  18.7x
+        census body 2     85 faces             0.341 s -> 0.484 s   0.7x
+
+    Body 2 is the honest one: it gets SLOWER, by 0.14 s, because its eight big
+    B-spline panels survive every cheap screen and then pay for the second tier
+    as well, which dismisses two of them and saves 0.01 s. That trade was taken
+    deliberately — the same second tier is what turns the worst case in the whole
+    import, body 1, from 1.76 s into 0.50 s, and the worst case is the one a user
+    feels. Over the whole 183-attempt census the median goes 0.0035 s -> 0.0050 s
+    and the maximum 1.70 s -> 0.76 s.
+
+    It cannot simply be dropped, which is the other half of the story: it is the
+    only thing standing between the user and a bore drilled through a cross-hole.
+    Measured on /tmp/g3_crossnear.brep, a 3 mm bore with a 1.5 mm cross hole
+    passing 0.20 mm clear of its wall: at d = -0.15 the gap closes to 0.05 mm and
+    every other screen in this file is content, at d = -0.20 the wall reaches the
+    cross hole and this is what says so. `BRepCheck_Analyzer` calls the d = -0.20
+    result valid, because the topology never changed and every face still meets
+    its own edges, and the analytic and measured volumes agree with each other to
+    2e-12 because both are surface integrals over the same, now overlapping,
+    surfaces.
+
+    GRAFT 7 is the inventory, and it is complementary rather than redundant: the
+    fingerprint audit asks what MOVED, this asks what is INSIDE. A face whose
+    whole conservative box is buried in a rectangle the feature sweeps is being
+    swept through, full stop, and that is decided without any distance call —
+    which also means it still fires on the day `BRepExtrema` returns
+    `IsDone() == false`. It is the one that answers the case the arithmetic
+    cannot: a void the wall sweeps straight past and leaves floating in the
+    material that was just cut away never touches the wall's final position, so
+    no distance is ever zero, and the volume it should have changed by and the
+    volume it did change by are both wrong by the same cavity. Being
+    conservative, the box test can only ever MISS such a face, never invent one.
+
+    Faces sharing an edge with the feature are excluded throughout: the lip's far
+    edge lies ON the flat beyond it, so its distance is 0 by construction. A
+    collision with one of THOSE is graft 1's, radially, and BRepCheck's, as a
+    self-crossing wire."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS_Compound
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    o, ax = plan["origin"], plan["axis"]
+    tol = _RETUNE_ROOM_TOL
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+    adjacent = []
+    for f in plan["affected"]:
+        for e in _retune_explore(f, TopAbs_EDGE):
+            if emap.Contains(e):
+                adjacent.extend(_list_shapes(emap.FindFromKey(e)))
+
+    bld = BRep_Builder()
+    rest = TopoDS_Compound()
+    bld.MakeCompound(rest)
+    moving = TopoDS_Compound()
+    bld.MakeCompound(moving)
+    mbox = Bnd_Box()
+    for f in plan["affected"]:
+        bld.Add(moving, f)
+        BRepBndLib.Add_s(f, mbox)
+    mbox.Enlarge(tol)
+    n = 0
+
+    def verdict(frl, frh, fzl, fzh):
+        """(does it touch any swept rectangle, is it buried in one)."""
+        touched = buried = False
+        for rho_lo, rho_hi, z_lo, z_hi in band:
+            if frl > rho_hi + tol or frh < rho_lo - tol:
+                continue
+            if fzl > z_hi + tol or fzh < z_lo - tol:
+                continue
+            touched = True
+            # BURIED needs RADIAL containment and only AXIAL OVERLAP, not axial
+            # containment. Requiring containment in both was the bug: a dowel
+            # standing in a bore is the normal arrangement in a STEP assembly
+            # (the reference import is 2009 solids in one compound), and a dowel
+            # that STICKS OUT of its bore escaped both grafts — graft 7 because
+            # its z range is not inside the band's, and graft 6 because
+            # BRepExtrema measures SURFACE to surface, and two coaxial cylinders
+            # 0.2 mm apart read 0.2 mm of clearance while the SOLIDS they bound
+            # interpenetrate. Measured on a 2.6 mm pin in a 3.0 mm bore grown by
+            # 0.60 mm: pin flush with the plate -> refused (its flat ends happen
+            # to touch, so the distance reads 0); pin 2 mm proud -> ACCEPTED,
+            # err 5.0e-13, valid True, and 31.415927 mm3 of solid-solid overlap.
+            # At d = 1.00 the overlap is 86.707957 mm3.
+            #
+            # Radial containment alone already says "the moving wall passes
+            # through this face's whole radial extent"; the axial test can only
+            # ever weaken that, and the overlap form is the one that is true.
+            if (frl > rho_lo + tol and frh < rho_hi - tol
+                    and not (fzl > z_hi + tol or fzh < z_lo - tol)):
+                buried = True
+        return touched, buried
+
+    for i, f in enumerate(_retune_faces(shape)):
+        _tick_every(i, 32)
+        if any(f.IsSame(a) for a in plan["affected"]):
+            continue
+        if any(f.IsSame(a) for a in adjacent):
+            continue
+        fp = _retune_face_footprint(f, o, ax)
+        if fp is None:
+            # DECLINE, do not skip. This used to `continue`, which dropped an
+            # unmeasurable face out of the clearance sweep entirely — a
+            # fail-OPEN site inside a safety screen, and the only one on this
+            # path: `_offset_needs_probing` probes when it cannot tell,
+            # `_probe_offsets` returns "unsafe", `_retune_swept_band` declines.
+            # This now matches them. Unreachable on the 183-attempt census (a
+            # footprint is only None for a void bounding box), so it costs
+            # nothing and the statement becomes checkable.
+            raise _RetuneDecline("a face of the body could not be bounded")
+        (frl, frh), (fzl, fzh), exact = fp
+        touched, buried = verdict(frl, frh, fzl, fzh)   # GRAFT 6, first tier
+        if not touched:
+            continue
+        if buried:                                      # GRAFT 7
+            raise _RetuneRefuse(
+                "there is other geometry standing inside the ring this "
+                "would sweep through")
+        # The moving faces' own bounding box, which is the prototype's screen and
+        # is kept because on a SMALL feature it is the tighter of the two: a
+        # 1.7 mm bore in an 85-face casting sweeps a ring that every big curved
+        # panel's (rho, z) box overlaps, while its 3.4 mm cube overlaps almost
+        # none of them. The two dismiss different things, both soundly, so a face
+        # has to survive both.
+        b = Bnd_Box()
+        BRepBndLib.Add_s(f, b)
+        if mbox.IsOut(b):
+            continue
+        if not exact:
+            # GRAFT 6, second tier. Only faces neither cheap box could dismiss
+            # pay for this, and it is still an order of magnitude below the
+            # clearance measurement it is trying to avoid.
+            rmin = _retune_axis_distance(f, o, ax, (fzl, fzh))
+            if rmin is not None and rmin > frl:
+                if not verdict(rmin, frh, fzl, fzh)[0]:
+                    continue
+        bld.Add(rest, f)
+        n += 1
+    if n == 0:
+        return None
+
+    progress_tick(keep_index=True)
+    dss = BRepExtrema_DistShapeShape(moving, rest)
+    if not dss.IsDone():
+        return "could not prove the feature clears the rest of the body"
+    if dss.Value() <= tol:
+        raise _RetuneRefuse(f"the feature runs into other geometry "
+                            f"(gap {dss.Value():.6f} mm)")
+    return None
+
+
+def _retune_plan(shape, face, d):
+    """Everything the retune must move, or raise `_RetuneDecline` saying why.
+
+    THE CHAIN IS A BFS, NOT A TWO-LEVEL WALK, and that is measured: a chamfer
+    whose far side runs into a fillet is the same problem with one more link —
+    the whole coaxial chain translates radially by the same delta and every
+    member keeps its own size. Growing the walk from two levels to a BFS took
+    the TORUS bucket of the 2,009-body reference import from 18/34 to 23/34 and
+    the CONE bucket to 35/46.
+
+    The chain stops at a PLANE perpendicular to the axis (a flat end: nothing
+    there moves, because the retune slides points along that plane). It EXTENDS
+    through a CONE or TORUS that is coaxial and shares a radius endpoint with
+    what it sits on. Anything else declines BY NAME, so the reason is a sentence
+    and not a bare False — the census reasons are exactly these strings, and
+    they are what says whether a future rung is worth building.
+
+    REJECTED ALTERNATIVE: `BRepTools_Modifier` with a custom
+    `BRepTools_Modification`, which is the kernel's own supported way to do
+    this. OCP ships no pybind trampoline for it ("M: No constructor defined!"),
+    so it cannot be subclassed from Python in this build. Do not retry it."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.Geom import Geom_Circle, Geom_Line
+    from OCP.Geom2d import Geom2d_Circle
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    ST = GeomAbs_SurfaceType
+
+    def kind_of(f):
+        return BRepAdaptor_Surface(f).GetType()
+
+    def kind_name(k):
+        return str(k).split("_")[-1].upper()
+
+    s = BRepAdaptor_Surface(face)
+    if s.GetType() != ST.GeomAbs_Cylinder:
+        raise _RetuneDecline("target is not a cylindrical face")
+    u_span = s.LastUParameter() - s.FirstUParameter()
+    if abs(u_span - 2.0 * math.pi) > 1e-6:
+        raise _RetuneDecline(
+            f"partial cylinder (u span {math.degrees(u_span):.1f} deg)")
+    cyl = s.Cylinder()
+    pos = cyl.Position()
+    o = (pos.Location().X(), pos.Location().Y(), pos.Location().Z())
+    ax = (pos.Direction().X(), pos.Direction().Y(), pos.Direction().Z())
+    r_wall = cyl.Radius()
+    length = s.LastVParameter() - s.FirstVParameter()
+    if length <= 1e-9:
+        raise _RetuneDecline("degenerate axial extent")
+
+    n, info = _retune_outward_normal(face)
+    if n is None:
+        raise _RetuneDecline("normal undefined on the target face")
+    _, rhat, _ = _retune_radial(info[0], o, ax)
+    if rhat is None:
+        raise _RetuneDecline("target face lies on its own axis")
+    # On a BOSS the outward normal points away from the axis, so +d grows the
+    # radius; on a BORE it points at the axis, so +d shrinks it. One dot
+    # product is the whole boss/bore decision.
+    boss = (n[0] * rhat[0] + n[1] * rhat[1] + n[2] * rhat[2]) > 0
+    delta = d if boss else -d
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_EDGE, TopAbs_FACE, emap)
+
+    def neighbours(f):
+        """[(neighbouring face, the edge it is shared across)] — the edge comes
+        back because graft 1 needs the radius of the junction the chain meets a
+        far plane at, and rediscovering it afterwards means walking the map a
+        second time."""
+        out = []
+        for e in _retune_explore(f, TopAbs_EDGE):
+            if not emap.Contains(e):
+                continue
+            for other in _list_shapes(emap.FindFromKey(e)):
+                if not other.IsSame(f):
+                    out.append((TopoDS.Face_s(other), TopoDS.Edge_s(e)))
+        return out
+
+    affected, lips, queue, far_planes = [face], [], [face], []
+    while queue:
+        cur = queue.pop(0)
+        cur_lo, cur_hi = _retune_radius_range(cur, o, ax)
+        for i, (nb, shared) in enumerate(neighbours(cur)):
+            _tick_every(i, 64)
+            if any(nb.IsSame(x) for x in affected):
+                continue
+            k = kind_of(nb)
+            if k == ST.GeomAbs_Plane:
+                if not _retune_plane_is_perpendicular(nb, ax):
+                    raise _RetuneDecline(
+                        "a neighbouring plane is not perpendicular to the axis")
+                far_planes.append((nb, shared))
+                continue  # a flat end: the chain stops here
+            if k not in (ST.GeomAbs_Cone, ST.GeomAbs_Torus):
+                raise _RetuneDecline(
+                    f"beyond the feature is {kind_name(k)}, not a flat face"
+                    if cur is not face else f"neighbour is {kind_name(k)}")
+            if not _retune_is_coaxial(nb, o, ax):
+                raise _RetuneDecline("lip is not coaxial with the wall")
+            lo, hi = _retune_radius_range(nb, o, ax)
+            # Radial continuity: a ring that does not share a radius endpoint
+            # with what it sits on is not a lip of it, it is a separate feature
+            # that happens to be coaxial. Exact to 1e-6 in all 182 real rings.
+            if min(abs(lo - cur_lo), abs(lo - cur_hi),
+                   abs(hi - cur_lo), abs(hi - cur_hi)) > _RETUNE_RAD_TOL:
+                raise _RetuneDecline("lip does not meet the wall radius (not a lip)")
+            # GRAFT 2, the band-shape screen. Everything above is satisfied by
+            # /tmp/jx_taper_lip.brep — a 22.2 mm 8 deg FUNCTIONAL TAPER that is
+            # coaxial, full 360, meets the wall at exactly r, and has one
+            # perpendicular plane beyond it. All four stage-3 designs accepted it
+            # and silently translated its large end 6.09 -> 5.94 mm, which is not
+            # an offset of the bore, it is a redesign of the part. What separates
+            # it from a lip is not where it sits, it is its own SHAPE: a chamfer
+            # or a fillet is a narrow BAND, a taper is a wall. That is exactly
+            # the question `_expand_blend_chain` already answers, so this is its
+            # test grafted in rather than a new invention.
+            if not _OFFSET_NO_ORACLES and not _retune_is_band_shaped(nb):
+                raise _RetuneDecline(
+                    "the ring beyond the wall is too broad to be a chamfer or a "
+                    "fillet — it looks like a taper, and moving the wall would "
+                    "move its far end too")
+            if len(affected) >= _RETUNE_MAX_CHAIN:
+                raise _RetuneDecline("the coaxial chain is too long to be one lip")
+            affected.append(nb)
+            lips.append(nb)
+            queue.append(nb)
+
+    for f in affected:
+        lo, _hi = _retune_radius_range(f, o, ax)
+        if lo + delta <= _RETUNE_ON_AXIS_TOL:
+            raise _RetuneDecline("that would collapse the radius to zero")
+        if kind_of(f) == ST.GeomAbs_Torus:
+            tr = BRepAdaptor_Surface(f).Torus()
+            if tr.MajorRadius() + delta <= tr.MinorRadius() + 1e-9:
+                raise _RetuneDecline("that would turn the fillet torus inside out")
+        L = TopLoc_Location()
+        BRep_Tool.Surface_s(f, L)
+        _retune_no_scale(L, "face")
+
+    eset, vset = [], []
+    for f in affected:
+        for e in _retune_explore(f, TopAbs_EDGE):
+            if not any(e.IsSame(x) for x in eset):
+                eset.append(e)
+    for i, e in enumerate(eset):
+        _tick_every(i, 64)
+        ed = TopoDS.Edge_s(e)
+        if BRep_Tool.Degenerated_s(ed):
+            raise _RetuneDecline("the feature carries a degenerate edge (an apex)")
+        L = TopLoc_Location()
+        c = BRep_Tool.Curve_s(ed, L, 0.0, 0.0)
+        if c is None:
+            raise _RetuneDecline("an edge of the feature has no 3D curve")
+        if not isinstance(c, (Geom_Circle, Geom_Line)):
+            raise _RetuneDecline(f"an edge of the feature is a {type(c).__name__}")
+        _retune_no_scale(L, "curve")
+        for v in _retune_explore(ed, TopAbs_VERTEX):
+            if not any(v.IsSame(x) for x in vset):
+                vset.append(v)
+
+    # Every vertex that moves must belong ONLY to edges that move, or the move
+    # tears an edge off its own endpoint while leaving the topology intact —
+    # which no validity check downstream would call a change.
+    vmap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(shape, TopAbs_VERTEX, TopAbs_EDGE, vmap)
+    for v in vset:
+        if not vmap.Contains(v):
+            continue
+        for e in _list_shapes(vmap.FindFromKey(v)):
+            if not any(e.IsSame(x) for x in eset):
+                raise _RetuneDecline(
+                    "a vertex of the feature is shared with an outside edge")
+
+    # A moving edge seen from a face that is NOT moving carries a pcurve in that
+    # face's parameter space, and that pcurve is now stale. On a plane
+    # perpendicular to the axis it is a circle centred on the axis, so the same
+    # +delta fixes it. A `Geom2d_Line` there (2 real declines in the census)
+    # means the flat is not parametrised the way this assumes; refuse.
+    stale = []
+    for e in eset:
+        ed = TopoDS.Edge_s(e)
+        if not emap.Contains(e):
+            continue
+        for other in _list_shapes(emap.FindFromKey(e)):
+            of = TopoDS.Face_s(other)
+            if any(of.IsSame(x) for x in affected):
+                continue
+            c2 = BRep_Tool.CurveOnSurface_s(ed, of, 0.0, 0.0)
+            if c2 is None:
+                continue
+            if not isinstance(c2, Geom2d_Circle):
+                raise _RetuneDecline(
+                    f"a pcurve beyond the feature is a {type(c2).__name__}")
+            stale.append(c2)
+
+    return dict(origin=o, axis=ax, delta=delta, boss=boss, r_wall=r_wall,
+                length=length, affected=affected, lips=lips, edges=eset,
+                verts=vset, stale=stale, far_planes=far_planes)
+
+
+def _retune_face_dvolume(face, o, ax, delta):
+    """pi * s * integral[(rho+delta)^2 - rho^2] dz over ONE face of the chain,
+    signed so that the sum over the whole chain is the solid's volume change.
+
+    Closed form per surface type, because a sampled integral cannot be the
+    oracle for an operation whose failure mode is a surface that moved by the
+    wrong amount. Each of the three forms was checked against a 20,000-sample
+    numerical integration of the same surface and agrees to 1e-12 — that check
+    lives on as `test_retune_analytic_volume` rather than as a one-off, because
+    getting the sign wrong on ONE face of a chain leaves an oracle that happily
+    accepts a result off by twice that face's contribution.
+
+    A plane perpendicular to the axis contributes nothing (dz = 0 along it), so
+    the flats beyond the chain are correctly absent from the sum even though
+    their area changes."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    ST = GeomAbs_SurfaceType
+    s = BRepAdaptor_Surface(face)
+    t = s.GetType()
+    v0, v1 = s.FirstVParameter(), s.LastVParameter()
+
+    # Which way v runs along the profile, and which way the profile must be
+    # traversed for the interior to stay on the left. n ~ (n_rho, n_z), so the
+    # traversal direction is the normal turned a quarter turn: (-n_z, n_rho).
+    um = 0.5 * (s.FirstUParameter() + s.LastUParameter())
+    vm = 0.5 * (v0 + v1)
+    h = 1e-6 * max(1.0, abs(v1 - v0))
+    pa, pb = s.Value(um, vm - h), s.Value(um, vm + h)
+    r_a, _, z_a = _retune_radial((pa.X(), pa.Y(), pa.Z()), o, ax)
+    r_b, _, z_b = _retune_radial((pb.X(), pb.Y(), pb.Z()), o, ax)
+    tp = (r_b - r_a, z_b - z_a)
+    n, info = _retune_outward_normal(face)
+    if n is None:
+        return None
+    _, rhat, _ = _retune_radial(info[0], o, ax)
+    if rhat is None:
+        return None
+    n_rho = n[0] * rhat[0] + n[1] * rhat[1] + n[2] * rhat[2]
+    n_z = n[0] * ax[0] + n[1] * ax[1] + n[2] * ax[2]
+    want = (-n_z, n_rho)
+    sgn = 1.0 if (tp[0] * want[0] + tp[1] * want[1]) > 0 else -1.0
+
+    if t == ST.GeomAbs_Cylinder:
+        r = s.Cylinder().Radius()
+        integ = ((r + delta) ** 2 - r ** 2) * (v1 - v0)
+    elif t == ST.GeomAbs_Cone:
+        c = s.Cone()
+        big, angle = c.RefRadius(), c.SemiAngle()
+        sa, ca = math.sin(angle), math.cos(angle)
+        cd = c.Position().Direction()
+        sig = 1.0 if (cd.X() * ax[0] + cd.Y() * ax[1] + cd.Z() * ax[2]) > 0 else -1.0
+        integ = sig * ca * (delta * delta * (v1 - v0)
+                            + 2.0 * delta * (big * (v1 - v0)
+                                             + sa * (v1 * v1 - v0 * v0) / 2.0))
+    elif t == ST.GeomAbs_Torus:
+        tr = s.Torus()
+        big, small = tr.MajorRadius(), tr.MinorRadius()
+        td = tr.Position().Direction()
+        sig = 1.0 if (td.X() * ax[0] + td.Y() * ax[1] + td.Z() * ax[2]) > 0 else -1.0
+        cos2 = (v1 - v0) / 2.0 + (math.sin(2 * v1) - math.sin(2 * v0)) / 4.0
+        integ = sig * small * (
+            (2 * delta * big + delta * delta) * (math.sin(v1) - math.sin(v0))
+            + 2 * delta * small * cos2)
+    else:
+        return None
+    return math.pi * sgn * integ
+
+
+def _retune_expected_dvolume(plan):
+    total = 0.0
+    for f in plan["affected"]:
+        c = _retune_face_dvolume(f, plan["origin"], plan["axis"], plan["delta"])
+        if c is None:
+            return None
+        total += c
+    return total
+
+
+def _retune_surface(face, delta):
+    """Move ONE chained surface radially by delta, in place.
+
+    `BRep_Tool.Surface_s(F)` — the ONE-ARG form — returns a COPY when the face
+    carries a location, and mutating that copy does nothing while reporting
+    success. Imported leaves are all `.Moved()`, so on the geometry this rung
+    exists for, the one-arg form is silently a no-op. The two-arg form below is
+    mandatory. (The radius itself needs no frame transform: the plan has
+    already refused any location with a scale factor, and a rigid location
+    preserves lengths.)"""
+    from OCP.BRep import BRep_Tool
+    from OCP.Geom import (Geom_ConicalSurface, Geom_CylindricalSurface,
+                          Geom_ToroidalSurface)
+    from OCP.TopLoc import TopLoc_Location
+
+    L = TopLoc_Location()
+    raw = BRep_Tool.Surface_s(face, L)
+    if isinstance(raw, Geom_CylindricalSurface):
+        raw.SetRadius(raw.Radius() + delta)
+    elif isinstance(raw, Geom_ConicalSurface):
+        raw.SetRadius(raw.RefRadius() + delta)
+    elif isinstance(raw, Geom_ToroidalSurface):
+        raw.SetMajorRadius(raw.MajorRadius() + delta)
+    else:
+        raise _RetuneDecline(f"cannot retune a {type(raw).__name__}")
+
+
+def _retune_edge(edge, o, ax, delta):
+    """Move ONE edge's 3D curve radially by delta, in place.
+
+    Two shapes of curve reach here and they need different treatment. A ring
+    CENTRED on the axis just changes radius, which keeps its parametrisation
+    and therefore keeps every pcurve of every face it bounds. Anything else —
+    a torus tube circle, a seam line — is rigidly translated along its OWN
+    radial direction, which is the same motion the surface just made.
+
+    The axis has to be pushed into the curve's stored frame first
+    (`L.Transformation().Inverted()`). Reading the curve through the two-arg
+    `Curve_s(E, L, f, l)` gives the STORED curve, whose coordinates are in that
+    frame, while `o`/`ax` arrived in global coordinates; mixing the two is the
+    failure that costs a debugging cycle, because it produces a plausible small
+    wrong translation rather than an error."""
+    from OCP.BRep import BRep_Tool
+    from OCP.Geom import Geom_Circle, Geom_Line
+    from OCP.gp import gp_Dir, gp_Pnt, gp_Vec
+    from OCP.TopLoc import TopLoc_Location
+
+    L = TopLoc_Location()
+    c = BRep_Tool.Curve_s(edge, L, 0.0, 0.0)
+    inv = L.Transformation().Inverted()
+    op = gp_Pnt(o[0], o[1], o[2]).Transformed(inv)
+    od = gp_Dir(ax[0], ax[1], ax[2]).Transformed(inv)
+    lo = (op.X(), op.Y(), op.Z())
+    ld = (od.X(), od.Y(), od.Z())
+
+    def translate_radially(point, fallback_dir=None):
+        _, rh, _ = _retune_radial(point, lo, ld)
+        if rh is None and fallback_dir is not None:
+            _, rh, _ = _retune_radial(
+                (point[0] + fallback_dir[0], point[1] + fallback_dir[1],
+                 point[2] + fallback_dir[2]), lo, ld)
+        if rh is None:
+            raise _RetuneDecline("a seam curve of the feature lies on the axis")
+        c.Translate(gp_Vec(rh[0] * delta, rh[1] * delta, rh[2] * delta))
+
+    if isinstance(c, Geom_Circle):
+        circ = c.Circ()
+        cen = circ.Location()
+        cd = circ.Axis().Direction()
+        cenv = (cen.X(), cen.Y(), cen.Z())
+        rho_c, _, _ = _retune_radial(cenv, lo, ld)
+        parallel = abs(abs(cd.X() * ld[0] + cd.Y() * ld[1] + cd.Z() * ld[2])
+                       - 1.0) < _RETUNE_ANG_TOL
+        if parallel and rho_c < _RETUNE_RAD_TOL:
+            c.SetRadius(c.Radius() + delta)
+        else:
+            translate_radially(cenv)
+    elif isinstance(c, Geom_Line):
+        lin = c.Lin()
+        p0 = lin.Location()
+        dr = lin.Direction()
+        translate_radially((p0.X(), p0.Y(), p0.Z()),
+                           (dr.X(), dr.Y(), dr.Z()))
+    else:
+        raise _RetuneDecline(f"cannot retune a {type(c).__name__} edge")
+
+
+def _retune_vertex(vert, o, ax, delta, bld):
+    """Move ONE vertex radially by delta.
+
+    `BRep_Tool.Pnt_s` reads the point with the vertex's location APPLIED and
+    `BRep_Builder.UpdateVertex` transforms back by that same location, so this
+    one is global-in / global-out and needs no frame handling — the only entity
+    here that does not."""
+    from OCP.BRep import BRep_Tool
+    from OCP.gp import gp_Pnt
+
+    g = BRep_Tool.Pnt_s(vert)
+    p = (g.X(), g.Y(), g.Z())
+    _rho, rh, _t = _retune_radial(p, o, ax)
+    if rh is None:
+        raise _RetuneDecline("a vertex of the feature sits on the axis")
+    bld.UpdateVertex(vert,
+                     gp_Pnt(p[0] + rh[0] * delta, p[1] + rh[1] * delta,
+                            p[2] + rh[2] * delta),
+                     BRep_Tool.Tolerance_s(vert))
+
+
+def _retune_fingerprint(face):
+    """A cheap signature of a face's SURFACE, so a Geom handle shared with a
+    face OUTSIDE the chain cannot drag it along unnoticed.
+
+    It has to be geometric and not by identity: `BRep_Tool.Surface_s(f) is
+    BRep_Tool.Surface_s(f)` is False, because pybind hands back a fresh wrapper
+    every call, so comparing handles proves nothing.
+
+    GRAFT 3: the tuple carries the AXIS as well as the radial constants. Without
+    it a cylinder was signed by its radius ALONE, so two unrelated cylinders that
+    happen to share a radius — which on a real part is the normal case, not a
+    coincidence, because parts are drilled with the same drill twice — were
+    indistinguishable to the audit, and one could take the other's place in it
+    unnoticed. The prototype's own author flagged this. It costs six floats per
+    face and it is what lets `_retune_shifted_like` say "moved radially and ONLY
+    radially": a surface that had been rigidly translated instead of retuned
+    keeps its radius and changes its axis, and the tuple now says so.
+
+    The PLANE branch already was its own axis and is left alone. For the four
+    analytic types it is radial constants plus the axis and nothing else,
+    deliberately: this rung writes exactly one float per surface, so anything
+    else that moved did not move because of it. Everything else falls to the
+    bounding-box branch below, which is coarse but positional — see the comment
+    there for why a bare type name was a false assurance.
+
+    ALSO RUNG 4'S RULER. `_offset_moved_far_away` compares this signature across
+    a BRepOffset pass to decide whether anything moved that was not asked to, so
+    both the axis and the non-analytic branch matter to a second caller."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    ST = GeomAbs_SurfaceType
+    s = BRepAdaptor_Surface(face)
+    t = s.GetType()
+    axis = None
+    if t == ST.GeomAbs_Plane:
+        a = s.Plane().Axis()
+        p, v = a.Location(), a.Direction()
+        params = (round(p.X(), 12), round(p.Y(), 12), round(p.Z(), 12),
+                  round(v.X(), 12), round(v.Y(), 12), round(v.Z(), 12))
+    elif t == ST.GeomAbs_Cylinder:
+        params = (round(s.Cylinder().Radius(), 12),)
+        axis = s.Cylinder().Position().Ax2().Axis()
+    elif t == ST.GeomAbs_Cone:
+        c = s.Cone()
+        params = (round(c.RefRadius(), 12), round(c.SemiAngle(), 12))
+        axis = c.Position().Ax2().Axis()
+    elif t == ST.GeomAbs_Torus:
+        tr = s.Torus()
+        params = (round(tr.MajorRadius(), 12), round(tr.MinorRadius(), 12))
+        axis = tr.Position().Ax2().Axis()
+    else:
+        # NOT ANALYTIC — a sphere, a B-spline, a surface of revolution. There is
+        # no radial constant to read, and a bare type name made every such face
+        # identical to every other of its type, so the audit that says "a face
+        # outside the feature moved" could not tell a r=5 sphere from a r=11 one
+        # and was a FALSE ASSURANCE for that whole class. The bounding box is
+        # not a shape signature, but it is positional and it is cheap, and it is
+        # enough for the one question asked here: did this surface move?
+        #
+        # Latent rather than live — the deep copy breaks intra-shape Geom
+        # sharing, so nothing was dragging such a face along — but the audit now
+        # says what its docstring always claimed. `BRepBndLib.Add_s` inflates,
+        # which only ever makes this coarser, never wrong: an unmoved face reads
+        # the same box twice.
+        params = ()
+        try:
+            from OCP.Bnd import Bnd_Box
+            from OCP.BRepBndLib import BRepBndLib
+
+            b = Bnd_Box()
+            BRepBndLib.Add_s(face, b)
+            if not b.IsVoid():
+                params = tuple(round(x, 9) for x in b.Get())
+        except Exception:
+            params = ()
+    if axis is not None:
+        p, v = axis.Location(), axis.Direction()
+        params += (round(p.X(), 12), round(p.Y(), 12), round(p.Z(), 12),
+                   round(v.X(), 12), round(v.Y(), 12), round(v.Z(), 12))
+    return (str(t),) + params
+
+
+def _retune_volume(shape):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    p = GProp_GProps()
+    BRepGProp.VolumeProperties_s(shape, p)
+    return p.Mass()
+
+
+def _retune_radially_report(part, face, d):
+    """(new build123d shape, report dict), or raise `_RetuneDecline`.
+
+    The reporting twin of `_retune_radially`. It exists so the census harness
+    and `test_retune_*` can read the analytic volume, the chain length and the
+    decline REASON — `_retune_radially` throws all of that away to honour the
+    ladder's "None means fall through" contract.
+
+    Three oracles run after the edit, and each one catches a different way this
+    can be wrong. Stage 3 added four more; the eight screens are numbered by
+    their graft and each one lives in its own function, with the defect it
+    closes and the fixture that proves it in that function's docstring.
+
+    ORACLE 1, the fingerprint audit. Every face's radial constants AND AXIS
+    (graft 3) are snapshotted before and re-read after; any face outside the
+    chain that moved means a Geom handle is shared and the edit leaked. This is
+    why the deep copy is `BRepBuilderAPI_Copy(shape, copyGeom=True)` and not a
+    plain copy — imported leaves are `.Moved()` and share their Geom handles with
+    every other placement of the same part (verified: editing body 10 left
+    siblings 19 and 22 byte-identical afterwards). The audit is the belt to that
+    braces. GRAFT 5 turns its other half into an assertion: the faces that were
+    SUPPOSED to move are checked to have moved by exactly delta with every other
+    parameter untouched, which until stage 3 nothing checked at all.
+
+    ORACLE 2, `BRepCheck_Analyzer`. Measured to catch real collisions exactly,
+    not just malformed data: on /tmp/tube.brep it accepts a chamfer outer radius
+    of 1.9990 against an outer wall at 2.0 and refuses 2.0010, and on the
+    reference import it is what caught bodies 21 and 23 with
+    `IntersectingWires` / `InvalidImbricationOfWires`. It declined 4 of 183
+    census attempts.
+
+    ORACLE 3, the analytic volume, band 1e-4 RELATIVE. The band is not taste.
+    Nine of ten fixtures agree with the closed form to ~1e-14 relative; ONE
+    imported body (census body 2, 85 faces, 8298 mm^3) reads 4.15e-5 relative
+    off it — measured +3.063179826 against analytic +3.063052837 — and the
+    prototype ruled out seven explanations by measurement (the closed form
+    itself, against a 20k-sample numerical integration, 1e-12; the faces not
+    filling their UV box, areas match OCCT's to 4e-16; a tilted end plane,
+    perpendicular to 2.2e-16; a non-coaxial lip, axis offset 1.4e-14; an
+    unintended face moving, exactly the retuned faces change area; and the
+    VolumeProperties Eps / OnlyClosed / SkipShared flags, none of which move
+    it). UNATTRIBUTED. So the band is set by the residue rather than by a
+    theory of it. It is still the SHARPER of the two rulers this file owns: on
+    the same face, rung 2's annulus boolean lands 8.75e-3 off the same analytic,
+    69x further, while the annulus solid it cuts with measures its own analytic
+    volume to 8.4e-15. And the smallest WRONG answer this method can produce —
+    a lip of the wrong size — is a percent, four orders above the band.
+
+    An unexplained noise floor is a bad thing to have only one of, which is why
+    GRAFT 4 exists: a second ruler over the same faces that integrates rho·du·dv
+    where this one integrates rho²·dz. It is narrower than that framing suggests
+    and its own docstring says exactly what it does and does not catch. And the
+    risk stage 2 left named — that the topology never changes, so a bore grown
+    straight THROUGH a neighbouring pocket is called valid by everything
+    arithmetic here — is closed by GRAFTS 6 and 7 in `_retune_band_reason`.
+
+    ORDER, and it is not arbitrary. Grafts 1, 2 and 4-before run on the ORIGINAL
+    geometry, so the cases they refuse cost nothing but a plan. Everything else
+    needs the edit to have happened. Within that, cheap-and-decisive comes first:
+    the audit is tuple comparisons, BRepCheck is the kernel's own sweep, and the
+    band screen — the only one that can call `BRepExtrema` — is last, so nothing
+    that any other screen would have refused ever pays for it."""
+    from OCP.BRep import BRep_Builder
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_Copy
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.BRepTools import BRepTools
+    from OCP.TopoDS import TopoDS
+
+    if abs(d) < 1e-12:
+        raise _RetuneDecline("distance must not be 0")
+    src = getattr(part, "wrapped", part)
+    tgt = TopoDS.Face_s(getattr(face, "wrapped", face))
+
+    src_faces = _retune_faces(src)
+    idx = next((i for i, f in enumerate(src_faces) if f.IsSame(tgt)), None)
+    if idx is None:
+        raise _RetuneDecline("the target face is not part of this body")
+
+    cp = BRepBuilderAPI_Copy(src, True, False).Shape()
+    cp_faces = _retune_faces(cp)
+    if len(cp_faces) != len(src_faces):
+        raise _RetuneDecline("the copy did not preserve the face list")
+    f2 = cp_faces[idx]
+    if _retune_fingerprint(f2) != _retune_fingerprint(tgt):
+        # The WHOLE tuple, not element [0]. Comparing the type string alone let
+        # any cylinder-for-cylinder or plane-for-plane reordering across
+        # BRepBuilderAPI_Copy through silently — on a body like
+        # `fixtures/offset_fillet_bore.brep` (two cylinders, four tori) a swap
+        # within a type was invisible here, and the retune would then edit the
+        # wrong face of the copy while ORACLE 1 compared before/after on the
+        # same mis-ordered list. Graft 3 put the axis and the radial constants
+        # in the tuple precisely so this comparison could be made; the copy is
+        # rigid, so both sides are bit-identical when order is preserved.
+        raise _RetuneDecline("the copy did not preserve face order")
+    progress_tick(keep_index=True)
+
+    plan = _retune_plan(cp, f2, d)
+    # The band has to be cut from the geometry BEFORE the edit: it is the union
+    # of where the chained surfaces are and where they are going, and reading it
+    # afterwards would take the destination as the origin and shift it a second
+    # time. Measured while wiring this up — on a bore growing 3.0 -> 3.5 past a
+    # void at rho 4.0 the late reading gave [3.5, 4.5] instead of [3.0, 4.0] and
+    # graft 7 refused a shape with 0.5 mm of clearance.
+    band = _retune_swept_band(plan)
+    if not _OFFSET_NO_ORACLES:
+        if band is None:
+            raise _RetuneDecline("the swept region could not be bounded")
+        for reason in (_retune_far_plane_reason(plan),          # GRAFT 1
+                       _retune_area_reason(plan, "before the move")):  # GRAFT 4
+            if reason:
+                raise _RetuneDecline(reason)
+    want = _retune_expected_dvolume(plan)
+    if want is None:
+        raise _RetuneDecline("no analytic volume expectation could be formed")
+    v_before = _retune_volume(cp)
+    before = [(_retune_fingerprint(f), any(f.IsSame(a) for a in plan["affected"]))
+              for f in cp_faces]
+
+    bld = BRep_Builder()
+    o, ax, delta = plan["origin"], plan["axis"], plan["delta"]
+    for f in plan["affected"]:
+        _retune_surface(f, delta)
+    for e in plan["edges"]:
+        _retune_edge(TopoDS.Edge_s(e), o, ax, delta)
+    for c2 in plan["stale"]:
+        c2.SetRadius(c2.Radius() + delta)
+    for v in plan["verts"]:
+        _retune_vertex(TopoDS.Vertex_s(v), o, ax, delta, bld)
+    BRepTools.Update_s(cp)
+    progress_tick(keep_index=True)
+
+    if _OFFSET_NO_ORACLES:
+        out = _wrap_topods(cp)
+        if out is None:
+            raise _RetuneDecline("the retuned shape could not be wrapped")
+        v_after = _retune_volume(cp)
+        return out, dict(want=want, got=v_after - v_before,
+                         err=abs((v_after - v_before) - want), v0=v_before,
+                         v1=v_after, delta=delta, boss=plan["boss"],
+                         n_lips=len(plan["lips"]),
+                         n_affected=len(plan["affected"]))
+
+    for (fp, was_affected), f in zip(before, cp_faces):
+        now = _retune_fingerprint(f)
+        if was_affected:
+            # GRAFT 5. The other half of ORACLE 1, and the half nothing checked:
+            # the faces that were supposed to move must have moved by EXACTLY
+            # delta, with the shape parameters that make a chamfer a chamfer — a
+            # cone's SemiAngle, a torus's MinorRadius — and the axis bit for bit
+            # where they were. The brief's version re-decodes the coaxial rings of
+            # the RESULT inside the feature's axial window; doing it over every
+            # face of the body is the same statement over a superset, so the
+            # window is not needed and a lip that drifted outside it cannot hide.
+            if not _retune_shifted_like(fp, now, delta):
+                raise _RetuneDecline(
+                    "a face of the feature did not move the way it was told to")
+        elif now != fp:
+            raise _RetuneDecline(
+                "a face outside the feature moved (shared surface handle)")
+
+    if not BRepCheck_Analyzer(cp).IsValid():
+        raise _RetuneDecline("the retuned body is not a valid B-rep")
+    progress_tick(keep_index=True)
+
+    reason = _retune_area_reason(plan, "after the move")        # GRAFT 4
+    if reason:
+        raise _RetuneDecline(reason)
+
+    v_after = _retune_volume(cp)
+    err = abs((v_after - v_before) - want)
+    if err > max(1e-9, _RETUNE_VOLUME_REL_TOL * abs(want)):
+        raise _RetuneDecline(
+            f"volume moved by {v_after - v_before:+.9f}, "
+            f"analytic says {want:+.9f}")
+
+    reason = _retune_band_reason(cp, plan, band)                # GRAFTS 6 and 7
+    if reason:
+        raise _RetuneDecline(reason)
+
+    out = _wrap_topods(cp)
+    if out is None:
+        raise _RetuneDecline("the retuned shape could not be wrapped")
+    return out, dict(want=want, got=v_after - v_before, err=err,
+                     v0=v_before, v1=v_after, delta=delta, boss=plan["boss"],
+                     n_lips=len(plan["lips"]), n_affected=len(plan["affected"]))
+
+
+def _retune_radially(part, face, d):
+    """RUNG 3 of the offset ladder: RADIAL RETUNE.
+
+    All three surfaces involved are surfaces of revolution whose OCCT
+    parametrisation separates the radial constant from everything else:
+
+        cylinder  P(u,v) = O + r            *(cos u X + sin u Y) + v       Z
+        cone      P(u,v) = O + (R + v sinA) *(cos u X + sin u Y) + v cosA Z
+        torus     P(u,v) = O + (R + r cos v)*(cos u X + sin u Y) + r sin v Z
+
+    Bump the one radial constant (Radius / RefRadius / MajorRadius) by the same
+    delta on all of them and every point moves radially by exactly delta at an
+    UNCHANGED (u,v). The cone keeps its SemiAngle and axial extent (same
+    chamfer, new radius), the torus keeps its MinorRadius and v-range (same
+    fillet, new radius), and every pcurve stays valid verbatim because the
+    parametric domain did not move. The topology comes out byte-identical.
+
+    It is a surgical edit of ~10 floats on a deep copy, then 99.9% of the time
+    spent proving it did no harm. Prototype measured over the whole reference
+    import: 119 of 183 attempts (65%), all valid, all face counts preserved,
+    all lip parameters bit-identical, median 0.012 s / p95 0.357 s — CONE lips
+    35/46, TORUS lips 23/34 — and it survives 8 successive edits with no drift.
+
+    Traps paid for once, recorded so nobody pays them twice — each one is
+    re-stated at the site that respects it:
+      - `BRep_Tool.Surface_s(F)` returns a COPY when the face carries a
+        location, and mutating it does nothing SILENTLY (`_retune_surface`).
+      - the axis must be transformed into each entity's own stored frame
+        (`_retune_edge`), except for vertices, which are global both ways.
+      - `BRepBuilderAPI_Copy(shape, copyGeom=True)` is mandatory: imported
+        leaves are `.Moved()` and share Geom handles with every other placement
+        of the same part (`_retune_radially_report`, ORACLE 1).
+      - `BRep_Tool.Surface_s(f) is BRep_Tool.Surface_s(f)` is False; pybind
+        hands back a fresh wrapper each time (`_retune_fingerprint`).
+      - `gp_Cone.SemiAngle()` is SIGNED, and `RefRadius()` is the radius at
+        v = 0, which on real imports is frequently far outside the face's own V
+        range (`_retune_radius_range`).
+      - `BRepTools_Modification` cannot be subclassed in this OCP build (no
+        pybind trampoline) — do not try (`_retune_plan`).
+
+    `delta` is +d for a boss and -d for a bore, with `d` signed along the
+    face's outward normal, the same sense `_offset_faces` already uses.
+
+    RETURNS None ON A DECLINE — "this rung's arithmetic does not apply here" —
+    and the ladder falls through to the probe and BRepOffset, which is exactly
+    what happened before this rung existed. The reason is not lost, it is just
+    not raised; `_retune_radially_report` is where it is readable.
+
+    IT RAISES ON A REFUSAL. `_RetuneRefuse` is the subclass the three screens
+    that measure a COLLISION throw — graft 1's radial overrun and grafts 6/7's
+    clearance — and it comes straight back out as a ValueError with its own
+    sentence, so rung 4 is never asked to second-guess a screen that measured
+    the obstacle. That distinction is the whole of `_RetuneRefuse`'s docstring;
+    read it before moving a screen from one class to the other.
+
+    An UNEXPECTED exception falls through too, because a new rung that starts
+    throwing kernel messages at users on geometry that used to work is a worse
+    regression than a rung that quietly does nothing. It is not silent, though:
+    it goes to stderr the way `_replane_mesh_file` does, because a rung failing
+    for a reason nobody predicted is the thing worth seeing in a log."""
+    try:
+        return _retune_radially_report(part, face, d)[0]
+    except _RetuneRefuse as e:
+        raise ValueError(str(e)) from None
+    except _RetuneDecline:
+        return None
+    except Exception:  # noqa: BLE001  a rung that throws must still fall through
+        print(f"[retune] {traceback.format_exc(limit=3)}",
+              file=sys.stderr, flush=True)
+        return None
+
+
+# The fork costs a COLD INTERPRETER — the child re-imports build123d, OCP,
+# sklearn and IPython before it touches geometry: 1.6 s on a fast Linux box and
+# ~16 s on a Windows laptop (field report afd4e10c). Same shape of cost, and the
+# same answer, as `_probe_tapers` and `_probe_blend` already record.
+_OFFSET_PROBE_TIMEOUT = 20.0
+# 20 s and not 25 or 30, from the census: every measured stall was 29 s or worse
+# (29 s, 78 s, 183 s) and NONE of them produced anything usable, while every
+# success on clean geometry came back under 1 s. There is nothing between 1 s
+# and 29 s to protect, so the deadline sits where it costs the least.
+_OFFSET_PROBE_TICK = 1.0  # how long the wait below goes between liveness ticks
+# (sha256 of the BREP, ((face index, rounded distance), ...))
+#   -> "pass" | "raise" | "unsafe"
+# A DIGEST and not the BREP itself: the value is six bytes and the key was 319.7
+# KiB for a 161-face body, so sixty probes of one face during a drag retained
+# 18.7 MiB of dead string. BOUNDED, because nothing evicted it: one entry per
+# distinct (body, face, distance) for the life of the worker, and a drag makes a
+# new one per keystroke.
+_OFFSET_PROBE_CACHE = {}
+_OFFSET_PROBE_CACHE_MAX = 256
+_OFFSET_PROBE_MAX_FACES = 60
+# The amount IS part of what decides this, and the sentence used to say it was
+# not. Measured by sweeping one face's probe verdict over both signs at 0.01,
+# 0.05, 0.15, 0.30, 0.60 and 1.00 mm, cache cleared between:
+#   body   17 face  5   +0.01 pass  +0.05 pass  +0.15..+1.00 unsafe
+#   body 1880 face  4   +0.01..+0.15 unsafe     +0.30..+1.00 pass
+#   body 1935 face 37   unsafe at every magnitude, both signs
+# so it flips in BOTH directions, and there is no monotone carry rule to be had
+# — see `_probe_offsets` on why the cache key still carries the exact distance.
+# What IS stable is that the surrounding surfaces put a face in this class at
+# all, so the sentence says that and no longer claims the amount is irrelevant.
+_OFFSET_PROBE_REFUSAL = (
+    "can't offset this face — tried in a sandbox first, it crashed the geometry "
+    "kernel or was still running after {t:g}s, so it was never run on your "
+    "model. What puts a face in that class is the surfaces AROUND it: a rim "
+    "chamfer or fillet, or a wall of an imported solid. A plain straight bore "
+    "or boss offsets fine; otherwise move the wall with a sketched cut or join "
+    "instead."
+)
+
+
+def _brep_offset_pass(part, pairs):
+    """The BRepOffset Skin-mode pass itself — rung 4's actual work, factored out
+    so `_offset_probe_main` runs the SAME call the worker is about to run.
+
+    That sharing is the point: `_probe_blend` records the failure mode where a
+    probe answers a slightly different question and refuses a valid operation.
+    Here the child cannot drift, because there is one implementation."""
     import OCP.BRepOffset as _bro
     from OCP.GeomAbs import GeomAbs_JoinType
     from OCP.TopAbs import TopAbs_ShapeEnum
     from OCP.TopoDS import TopoDS
     from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
-
-    pairs = [(f, d) for f, d in pairs if abs(d) > 1e-9]
-    if not pairs:
-        return part
 
     mk = _bro.BRepOffset_MakeOffset()
     # GeomAbs_Intersection join is what makes a local single-face offset close up
@@ -8612,6 +11317,495 @@ def _offset_faces(part, pairs):
     if sh.ShapeType() == TopAbs_ShapeEnum.TopAbs_SHELL:
         sh = BRepBuilderAPI_MakeSolid(TopoDS.Shell_s(sh)).Solid()
     return Solid(sh)
+
+
+# Rung 4 raised a raw `Standard_*` from inside OCCT, half the time with an EMPTY
+# message. Measured over the 183-attempt census: 4 attempts (bodies 3, 1886 and
+# friends) escape as `Standard_NoSuchObject:
+# NCollection_IndexedDataMap::FindFromKey` or a `Standard_ConstructionError`
+# with nothing after the colon. The rebuild loop catches them so the session
+# survives, but the user reads `offsetFace failed (Standard_ConstructionError)`
+# instead of a sentence, and `errors.py:21` asks for a plain ValueError with a
+# usable message. It deliberately does NOT name the amount: on this path nothing
+# has been measured to say a different number helps, and builder.py:4240 is the
+# standing rule against telling that particular lie.
+_OFFSET_KERNEL_REFUSAL = (
+    "can't offset this face — the geometry kernel gave up part way through "
+    "and did not say why. What decides that is the surfaces AROUND the face, "
+    "not the amount: a rim chamfer or fillet, or a wall of an imported solid, "
+    "is the usual reason. Move the wall with a sketched cut or join instead."
+)
+
+
+def _offset_result_reason(part, out, pairs):
+    """None if rung 4's result is sound, else the sentence saying it is not.
+
+    RUNG 4 WAS THE ONLY RUNG WITH NO GATE ON ITS OWN OUTPUT. Rung 2 has
+    `_boolean_offset_reason`, rung 3 has eight screens and three oracles, and
+    `_brep_offset_pass` checked `mk.IsDone()` — which the block comment above
+    `_cylinder_frame` opens by saying is not a usable signal. `_offset_faces`
+    then returned it and `_handle_offset_face` (builder.py:4969) assigned it
+    straight into `act["shape"]`, so a destroyed body was stored as a successful
+    feature with no error and no diagnostic.
+
+    Measured over the 183-attempt reference-import census, BEFORE this existed.
+    Rung 4 answered 15 attempts and SIX of them came back INVALID:
+
+        body  854 face 10/18  valid False, 22 unrelated 1.5 mm bores moved
+        body 1745 face  0/1   valid False, 66 -> 52 faces, 1 -> 2 solids,
+                              both fillets deleted
+        body 1761 face  0/1   the same body again
+        body 1933 face 11     valid TRUE, 89 -> 2 faces, dV -1850.41 on a
+                              1919 mm3 body: everything but one cylinder gone
+
+    Three gates, in rising cost:
+
+      1. VALID. `BRepCheck_Analyzer`, the same gate `_unify_if_valid` (:265) and
+         `_boolean_offset_reason` (:9237) already apply to their own results.
+      2. SAME SOLID COUNT. `_unify_if_valid`'s other condition, and the one that
+         separates "the offset closed up" from "the offset cut the body in two".
+      3. NOTHING MOVED THAT WAS NOT ASKED TO. See `_offset_moved_far_away`.
+
+    Gate 3 is the one with a coverage cost and it is worth stating exactly. It
+    takes rung 4 from 15 built to 4 built on that census. The 11 it removes are
+    every one of the six invalid results above plus five more that BRepCheck
+    calls valid — body 2000, where offsetting a 4.85 mm wall also moved nine
+    cylinders scattered across the part, and body 1933's 87. Not one of the 11
+    is a correct answer somebody loses. Measured face by face: the results that
+    survive lose at most ONE adjacent surface, the ones removed lose 6 to 74
+    surfaces ELSEWHERE on the body. There is no overlap between the two
+    populations, so the screen is not a threshold anybody has to tune."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    try:
+        if not BRepCheck_Analyzer(out.wrapped).IsValid():
+            return ("that offset came back as a broken solid, so it was not "
+                    "applied. The surfaces around this face are what decide "
+                    "it: a rim chamfer or fillet, or a wall of an imported "
+                    "part. Move the wall with a sketched cut or join instead.")
+        if len(out.solids()) != len(part.solids()):
+            return ("that offset would have split the body into a different "
+                    "number of pieces, so it was not applied. Move the wall "
+                    "with a sketched cut or join instead.")
+    except Exception:
+        return ("that offset could not be checked, so it was not applied. "
+                "Move the wall with a sketched cut or join instead.")
+    return _offset_moved_far_away(part, out, pairs)
+
+
+def _offset_moved_far_away(part, out, pairs):
+    """None if every surface that moved is one this offset was allowed to move,
+    else the sentence naming how many were not.
+
+    "ALLOWED" IS THE PICKED FACES PLUS WHAT THEY TOUCH, and the second half is
+    not slack, it is required: a chamfer or fillet bordering the wall HAS to
+    follow the wall, which is the whole of rung 3. Measured on
+    `fixtures/offset_taper_lip.brep`, where rung 4 does the right thing — it
+    moves the 3.0 mm wall to 2.85 and carries the bordering cone with it, at an
+    unchanged 7.9952 deg semi-angle and an unchanged 6.09 mm far end. A screen
+    that let only the picked face move would refuse that.
+
+    One link and no further, and the reference import says one link is the whole
+    of the honest population. Over the 15 attempts rung 4 answered:
+
+        surfaces lost, edge-adjacent / elsewhere
+        bodies 1993..1996   0 / 0     the picked cylinder and nothing else
+        bodies 1744, 1760   1 / 0     the picked cylinder and its end cap
+        body  2000 (x2)     2 / 6     nine cylinders across the part
+        bodies 854  (x2)    2 / 19    twenty-two unrelated 1.5 mm bores
+        bodies 1745, 1761   0..3 / 10..14
+        body  1933         13 / 74    89 faces down to 2
+
+    A clean gap between 0 and 6, not a threshold.
+
+    THE TEST IS ON SURFACES, NOT ON TOPOLOGY, and that is deliberate: BRepOffset
+    legitimately RE-TRIMS the faces around the one it moves, extending or
+    shortening them, and a re-trim leaves the surface exactly where it was, so
+    it does not register here. `_retune_fingerprint` is the signature — the same
+    one rung 3's ORACLE 1 uses, which is why graft 3's axis and the non-analytic
+    bounding box in it matter to this caller too.
+
+    Multi-face offsets pay nothing: Thicken registers every face of the body, so
+    the unregistered set is empty and this returns immediately.
+
+    ALSO CLOSES THE PARTIAL-360 HOLE. 222 of the 627 cylindrical faces in the
+    brief's census are partial cylinders, which rungs 2 and 3 both decline by
+    construction, so they all land here. On a plain build123d slot — no import
+    involved — picking ONE half-bore and offsetting it 0.15 mm returned a valid
+    solid with the SAME face count in which the other half-bore and both slot
+    walls had also moved: dV +57.567476 against a one-face ideal of +13.783738,
+    4.18x wrong, at every distance from 0.001 to 1.0 and both signs. The other
+    half-bore is two links away, so this refuses it."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import (TopTools_IndexedDataMapOfShapeListOfShape,
+                              TopTools_MapOfShape)
+    from collections import Counter
+
+    try:
+        src_shape = getattr(part, "wrapped", part)
+        picked = [getattr(f, "wrapped", f) for f, _d in pairs]
+        # A TopTools_MapOfShape and not a list scan with IsSame. Offset Face
+        # resolves a LIST of selectors and Thicken hands over whole bodies, so
+        # "is this face allowed" is asked once per face of the body against a
+        # set that can be the whole body: the list form is O(faces^2) IsSame and
+        # would put seconds on a 1433-face import for a screen that is meant to
+        # cost milliseconds. The map hashes on TShape + location, which is the
+        # same identity IsSame tests.
+        allowed = TopTools_MapOfShape()
+        for p in picked:
+            allowed.Add(p)
+        emap = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(src_shape, TopAbs_EDGE, TopAbs_FACE, emap)
+        for p in picked:
+            for e in _retune_explore(p, TopAbs_EDGE):
+                if emap.Contains(e):
+                    for x in _list_shapes(emap.FindFromKey(e)):
+                        allowed.Add(x)
+
+        far = Counter()
+        for i, f in enumerate(_retune_faces(src_shape)):
+            _tick_every(i, 64)
+            if allowed.Contains(f):
+                continue
+            far[_retune_fingerprint(f)] += 1
+        if not far:
+            return None
+        after = Counter(_retune_fingerprint(f)
+                        for f in _retune_faces(getattr(out, "wrapped", out)))
+        lost = sum((far - after).values())
+    except Exception:
+        # Cannot audit => cannot vouch for it. Same direction as
+        # `_probe_offsets`' serialisation failure and for the same reason: an
+        # unproven pass here costs the user a silently wrong model.
+        return ("that offset could not be checked against the rest of the "
+                "body, so it was not applied.")
+    if not lost:
+        return None
+    return (f"that offset moved {lost} other surface"
+            f"{'' if lost == 1 else 's'} elsewhere on the body, not just the "
+            "face you picked, so it was not applied. Offsetting one wall of a "
+            "slot or a shared pocket does this. Move the wall with a sketched "
+            "cut or join instead.")
+
+
+def _offset_needs_probing(part, pairs):
+    """Is this offset in the class that can take the kernel down?
+
+    The cheapest gate of the three probes in this file, because the ladder above
+    does most of the work: a face rung 2 or rung 3 already claimed never reaches
+    rung 4, so it never pays a fork at all. Only what actually fell through is
+    even asked about. That matters — probing every fillet once added ~27 minutes
+    to the test leg (see `_blend_needs_probing`), and the fork here costs the
+    same cold interpreter.
+
+    Of what is left, two signals, either of which is enough to probe:
+      - a face that is not a PLANE. Every SIGSEGV in the 198-body sweep was on a
+        cylindrical face (17 bodies cored), and a synthetic filleted lip cores
+        7 of 7. A planar offset on a small body is the well-trodden path — it is
+        what Offset Face and Thicken do on native geometry all day.
+      - a body past `_OFFSET_PROBE_MAX_FACES` faces. Complexity alone is reason
+        enough, and it is also the cheapest proxy for "imported", which is where
+        every measured crash lives.
+
+    A HEURISTIC, and the residual risk is stated rather than hidden: a small
+    all-planar body that segfaults BRepOffset would go unprobed and take the
+    worker down exactly as it did before this existed. Nothing measured has done
+    that — the crash class is curved faces on imports. `server.py`'s
+    out-of-process worker remains the backstop underneath."""
+    try:
+        if len(part.faces()) > _OFFSET_PROBE_MAX_FACES:
+            return True
+        for f, _d in pairs:
+            if f.geom_type != GeomType.PLANE:
+                return True
+        return False
+    except Exception:
+        return True  # cannot tell => probe, the safe direction
+
+
+def _offset_probe_main():
+    """Entry point of the offset probe subprocess: `python -c "import builder;
+    builder._offset_probe_main()"` with the recipe as JSON on stdin.
+
+    Prints a `try` line BEFORE the attempt and a `done` line after, the protocol
+    `_bevel_probe_main` uses, and for the same reason: when the kernel takes the
+    process down there is no exception and no traceback, so an unmatched `try` is
+    the only evidence that it died inside MakeOffsetShape rather than in the
+    reader. There is exactly ONE attempt, index 0, because rung 4 is one pass
+    over all pairs by contract — see `_offset_faces`.
+
+    SETUP IS OUTSIDE THE GUARDED BLOCK, and that is load-bearing. It used to sit
+    in the same `try` as the kernel call, so a recipe the child could not
+    deserialise, or a face index it could not resolve, set `raised = True` — the
+    ONE verdict that tells the parent "BRepOffset refused honestly, go ahead and
+    run it for real". A probe that learned nothing was handing out permission to
+    run the unprobed call on the user's body. Reproduced with a recipe naming a
+    face index the child cannot resolve: `{"done": 0, "ok": false, "raised":
+    true}` -> verdict "raise".
+
+    `_taper_probe_main` (below) has the same `except Exception` and is fine,
+    because there `ok = False` is the REFUSING direction. Here the polarity is
+    inverted, so the conflation is not cosmetic. A setup failure now reports the
+    silence-equivalent, which `_probe_offsets` already reads as "unsafe"."""
+    recipe = json.load(sys.stdin)
+    print(json.dumps({"try": 0}), flush=True)
+    try:
+        shp = _brep_b64_to_shape(recipe["brep"])
+        faces = shp.faces()
+        pairs = [(faces[i], float(d)) for i, d in recipe["pairs"]]
+    except Exception:
+        print(json.dumps({"done": 0, "ok": False, "raised": False}), flush=True)
+        return
+    ok, raised = False, False
+    try:
+        _brep_offset_pass(shp, pairs)
+        ok = True
+    except Exception:
+        raised = True
+    print(json.dumps({"done": 0, "ok": ok, "raised": raised}), flush=True)
+
+
+def _probe_offsets(part, pairs):
+    """Run this exact offset in a THROWAWAY PROCESS first. Returns:
+
+        "pass"    the child completed the same pass and it succeeded
+        "raise"   the child completed and BRepOffset refused it honestly — the
+                  real call is about to refuse the same way, so let it, and the
+                  user gets OCCT's own (accurate) "try a different amount"
+        "unsafe"  nothing came back: it cored, or it ran past the deadline
+
+    FAILS CLOSED. Anything unreported is "unsafe", copying `_probe_tapers` /
+    `_probe_bevels` and deliberately NOT `_probe_blend`, which fails OPEN. That
+    inversion is the single easiest thing to get backwards here, so: a blend
+    that fails fast has a better message from OCCT than the guard could write,
+    which is why blends let an unreported child through. Offsets are the SIGSEGV
+    class — 17 bodies cored in the 198-body sweep and a synthetic filleted lip
+    cores 7 of 7 — and a SIGSEGV produces silence, not a raise. Silence here
+    therefore has to mean no.
+
+    Fails closed on serialisation trouble too, which is the one place this
+    diverges from every other probe in the file: if the body will not serialise,
+    or a face cannot be named by index into `part.faces()`, we cannot fork the
+    operation we are about to run, and an unproven pass on this path costs the
+    user their whole session rather than one feature. The cost is real and worth
+    stating: a body that offsets correctly today but does not round-trip through
+    BREP would start being refused.
+
+    A CACHE IS MANDATORY. Without one a ~0.5 s fork lands on every rebuild —
+    that is field report a0a76571, where the viewport lagged so far behind the
+    number that typing looked like it changed nothing.
+
+    THE KEY CARRIES THE EXACT ROUNDED DISTANCE, AND THAT IS NOT FREE. Under the
+    stateless-full-rebuild invariant a distance drag re-runs the feature at every
+    keystroke, so a user typing 0.15 -> 0.16 -> 0.17 pays a cold fork per
+    character: measured at 2.6-2.8 s each on `fixtures/offset_taper_lip.brep`,
+    and at a hard 20.03 s each on reference-import body 13 face 11, where the
+    child stalls to the deadline. Only an exact repeat hits the cache, which is
+    the one thing a drag never does.
+
+    THERE IS NO SOUND CARRY RULE, and it was measured rather than assumed —
+    keying on the SIGN alone, or bucketing the magnitude, is the obvious fix and
+    it is wrong. Sweeping one face's verdict at 0.01, 0.05, 0.15, 0.30, 0.60 and
+    1.00 mm with the cache cleared between:
+
+        body   17 face  5   +0.01 pass, +0.05 pass, +0.15 and up unsafe
+        body 1880 face  4   +0.01 to +0.15 unsafe, +0.30 and up PASS
+        body 1880 face  5   the same inversion
+        body 1935 face 37   unsafe everywhere, both signs
+
+    It flips both ways, so "unsafe carries upward" and "unsafe carries downward"
+    are each refuted by one of those two rows. Carrying a PASS onto a magnitude
+    that cores is the expensive direction — it hands out permission to run the
+    unprobed call and costs the whole session. So the key stays exact and the
+    drag cost stands, recorded here rather than traded for a rule the geometry
+    does not support. `_probe_blend`'s "a pass carries downwards" rule is not
+    inherited for the same reason it never was: it is justified for blends and
+    unproven here."""
+    import subprocess
+    import threading
+
+    try:
+        brep = _shape_to_brep_b64(part)
+        # Identify faces by INDEX into the body's own face list, the same
+        # discipline `_probe_blend` uses for edges: a BREP round-trip preserves
+        # order, while a nearest-centre re-match in the child would be free to
+        # pick DIFFERENT faces, so the probe would be testing an operation the
+        # worker is not about to run.
+        #
+        # One pass over the body's faces rather than one scan per pair. It is
+        # still O(faces x pairs) of IsSame in the worst case — there is no cheap
+        # hash for a TopoDS_Shape that is stable across OCP versions — but
+        # Thicken hands this EVERY face of the body, so the loop ticks: a body
+        # big enough to be worth probing is big enough for the supervisor to
+        # notice 60 s of silence.
+        all_faces = list(part.faces())
+        idxs = [None] * len(pairs)
+        for i, cand in enumerate(all_faces):
+            _tick_every(i, 256)
+            for j, (f, d) in enumerate(pairs):
+                if idxs[j] is None and cand.wrapped.IsSame(f.wrapped):
+                    idxs[j] = (i, round(float(d), 6))
+        if any(x is None for x in idxs):
+            return "unsafe"
+    except Exception:
+        return "unsafe"
+
+    key = (hashlib.sha256(brep.encode("ascii")).hexdigest(), tuple(idxs))
+    cached = _OFFSET_PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    recipe = json.dumps({"brep": brep, "pairs": [[i, d] for i, d in idxs]})
+
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import builder; builder._offset_probe_main()"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, cwd=os.path.dirname(os.path.abspath(__file__)),
+        )
+    except Exception:
+        return "unsafe"  # probe infrastructure failed; nothing cleared
+
+    # Feed and drain from THREADS, then wait in slices. `subprocess.run` blocks
+    # this thread for the full timeout without publishing anything, and the
+    # supervisor reaps a worker whose heartbeat has not moved for 60 s — so a
+    # slow probe would be reported to the user as a stall. The child also
+    # imports build123d BEFORE it reads stdin, and a BREP is routinely larger
+    # than a pipe buffer, so a synchronous write here would deadlock.
+    # keep_index=True: the feature that owns this probe has already announced
+    # itself and must keep its name.
+    lines = []
+
+    def _feed():
+        try:
+            proc.stdin.write(recipe)
+            proc.stdin.close()
+        except Exception:
+            pass  # the child died early; the wait below is what decides
+
+    def _drain():
+        try:
+            for line in proc.stdout:
+                lines.append(line)
+        except Exception:
+            pass
+
+    threading.Thread(target=_feed, daemon=True).start()
+    reader = threading.Thread(target=_drain, daemon=True)
+    reader.start()
+    deadline = time.monotonic() + _OFFSET_PROBE_TIMEOUT
+    try:
+        while True:
+            try:
+                proc.wait(timeout=_OFFSET_PROBE_TICK)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    break  # nothing reported => "unsafe", the right default
+                progress_tick(keep_index=True)
+    except Exception:
+        pass
+    reader.join(timeout=1.0)
+
+    verdict = "unsafe"
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue  # kernel/font chatter on stdout, not our protocol
+        if "done" in rec:
+            verdict = "pass" if rec.get("ok") else ("raise" if rec.get("raised") else "unsafe")
+    if len(_OFFSET_PROBE_CACHE) >= _OFFSET_PROBE_CACHE_MAX:
+        # Crude, deliberately: a drag makes one entry per keystroke and nothing
+        # ever evicted them. Dropping the whole map at the bound costs at most
+        # one extra fork for whatever was still live, which is a fork the drag
+        # was going to pay anyway, and it needs no ordering bookkeeping.
+        _OFFSET_PROBE_CACHE.clear()
+    _OFFSET_PROBE_CACHE[key] = verdict
+    return verdict
+
+
+def _offset_face(part, face, d):
+    """Single-face convenience wrapper over _offset_faces (curved Press/Pull)."""
+    return _offset_faces(part, [(face, d)])
+
+
+def _offset_faces(part, pairs):
+    """Local surface offset. `pairs` is [(face, signed_distance_mm), ...].
+    Returns a Solid (or a Compound, on a multi-solid body).
+
+    A LADDER of four rungs, tried in order, because the single BRepOffset call
+    this used to be is broadly broken on imported geometry and silently wrong
+    often enough that `mk.IsDone()` is not a usable gate — see the block comment
+    above `_cylinder_frame` for the census.
+
+      1. more than one face  -> straight to rung 4, which is today's behaviour
+      2. `_offset_cylinder_by_boolean`  straight bore/boss as an annulus
+      3. `_retune_radially`             bump the radial constant (STAGE 2)
+      4. `_brep_offset_pass`            BRepOffset, behind a fail-closed fork
+
+    RUNG 1 IS A REFUSAL BY STRUCTURE, NOT BY A FLAG. Rungs 2 and 3 are both
+    single-face, and this function's contract — unchanged since it was written —
+    is that every face is registered before ONE MakeOffsetShape() pass so
+    adjacent offsets close against each other instead of fighting over shared
+    edges. Looping rungs 2/3 per face would break that promise silently, and
+    multi-face is a first-class user action: `_handle_offset_face` resolves a
+    LIST of selectors. So with len(pairs) > 1 the ladder simply falls through to
+    rung 4 and the multi-face case behaves exactly as it did before.
+
+    Rung 4's `IsDone() == false` message is deliberately left word for word: on
+    that path a different amount genuinely does help, and a face this code
+    declines must not start producing a different sentence than it did
+    yesterday. The probe's refusal is a separate, differently-worded message,
+    because there the amount is not the whole story.
+
+    A RUNG-3 REFUSAL IS NOT A FALL-THROUGH. `_retune_radially` returns None when
+    its arithmetic does not apply and RAISES when a screen measured a collision
+    — see `_RetuneRefuse`. Until that split existed all eight of rung 3's
+    screens protected rung 3's own output and nothing else, and every case they
+    were written to catch came back from rung 4 as a success with the wrong
+    answer in it.
+
+    RUNG 4 IS GATED ON ITS RESULT, not on `IsDone()`. `_offset_result_reason`
+    is to rung 4 what `_boolean_offset_reason` is to rung 2. It refuses 11 of
+    the 15 results rung 4 produced on the reference-import census — six of them
+    invalid, one an 89-face body reduced to 2 — and every one of the 11 is a
+    wrong answer, not a lost capability. The numbers are on that function.
+
+    A RAW KERNEL EXCEPTION IS TRANSLATED. OCCT throws `Standard_*` out of
+    `MakeOffsetShape`, half the time with an empty message (4 of the 183 census
+    attempts), and `errors.py:21` asks for a plain ValueError carrying something
+    a user can act on."""
+    pairs = [(f, d) for f, d in pairs if abs(d) > 1e-9]
+    if not pairs:
+        return part
+
+    if len(pairs) == 1:
+        face, d = pairs[0]
+        out = _offset_cylinder_by_boolean(part, face, d)
+        if out is not None:
+            return out
+        out = _retune_radially(part, face, d)
+        if out is not None:
+            return out
+
+    if _offset_needs_probing(part, pairs):
+        verdict = _probe_offsets(part, pairs)
+        if verdict == "unsafe":
+            raise ValueError(_OFFSET_PROBE_REFUSAL.format(t=_OFFSET_PROBE_TIMEOUT))
+    try:
+        out = _brep_offset_pass(part, pairs)
+    except ValueError:
+        raise          # the hand-authored "by that amount" sentence
+    except Exception:
+        raise ValueError(_OFFSET_KERNEL_REFUSAL) from None
+    reason = _offset_result_reason(part, out, pairs)
+    if reason:
+        raise ValueError(reason)
+    return out
 
 
 def _translate_entity(e, dx, dy, eid, val):

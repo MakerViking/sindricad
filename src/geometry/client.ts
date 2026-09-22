@@ -1063,6 +1063,8 @@ export class Geometry implements GeometryBackend {
       nodes?: { name: string; parent: number | null; color?: string }[];
       parts?: { node: number; faces: number }[];
       fitted?: number; faceted?: number; fitSkipped?: string;
+      reference?: { why: string; faces?: number; limit?: number; bodies?: number;
+                    bodyIndex?: number; bodyCount?: number; directions?: number };
     }>("import", { path, format }, onStarted);
     if (msg.ok) {
       const r = msg.result;
@@ -1076,6 +1078,10 @@ export class Geometry implements GeometryBackend {
         ...(r.fitted !== undefined ? { fitted: r.fitted } : {}),
         ...(r.faceted !== undefined ? { faceted: r.faceted } : {}),
         ...(r.fitSkipped !== undefined ? { fitSkipped: r.fitSkipped } : {}),
+        // Degraded to read-only reference geometry rather than refused. Spread
+        // like the rest: a sidecar that still REFUSES these imports sends no
+        // `reference` at all and the reply is unchanged.
+        ...(r.reference !== undefined ? { reference: r.reference } : {}),
       };
     }
     if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.importCancelled") };

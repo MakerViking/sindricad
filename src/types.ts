@@ -1068,7 +1068,32 @@ export type ImportReply =
       // compatibility for a newer sidecar; nothing emits them yet, so do not
       // write code that branches on them arriving. Absent when fitting ran
       // normally.
-      fitSkipped?: string }
+      fitSkipped?: string;
+      // Present when the import DEGRADED to read-only reference geometry rather
+      // than arriving as an editable body. Absent on every import that stayed
+      // editable, so its presence is the signal and `why` only says which gate
+      // decided it. The sidecar sends a structured reason, never a sentence:
+      // the wording lives in locales/en.json under file.import.reference so it
+      // can be localised like everything else the user reads.
+      //
+      // `why` is one of "tooManyFacetDirections" (the mesh had nothing
+      // recognisable in it), "tooManyFaces" (one body is past the editable
+      // ceiling; `bodyIndex`/`bodyCount` name which, and are absent for a
+      // single-body file), "tooManyTotalFaces" (the whole-file viewport
+      // backstop) or "notWatertight" (a dirty mesh that WAS rebuilt from its
+      // planes, successfully and fast, and still did not close into a solid —
+      // the only reason here that is not about passing a limit, and the only
+      // one that carries no counts). An unknown `why` from a newer sidecar must
+      // degrade to silence, not to a thrown error — see describeReferenceImport().
+      reference?: {
+        why: string;
+        faces?: number;
+        limit?: number;
+        bodies?: number;
+        bodyIndex?: number;
+        bodyCount?: number;
+        directions?: number;
+      } }
   // `cancelled` = the user stopped it. Distinct from a failure so the UI can
   // dismiss quietly instead of showing an error the user already knows about.
   | { ok: false; cancelled?: boolean; message: string };

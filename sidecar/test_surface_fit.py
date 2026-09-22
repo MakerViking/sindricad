@@ -1034,9 +1034,9 @@ def test_a_blend_around_a_corner_comes_back_as_a_run_of_cylinders():
     finding here is "many, not one".
 
     The faceted control is not `_import_with_fit_disabled` here, deliberately.
-    That path REFUSES this fixture outright ("still too detailed to edit ... 2,069
-    faces, against a limit of 2,000"), which is its own small finding: fitting is
-    what makes this file importable at all. So the volume is compared against the
+    That path lands this fixture as read-only REFERENCE geometry (2,069 faces
+    against a limit of 2,000), which is its own small finding: fitting is what
+    makes this file editable at all. So the volume is compared against the
     pre-fit sewn shape, which is what the body gate itself compares against."""
     from build123d import Box, Cylinder, GeomType, export_stl, fillet
 

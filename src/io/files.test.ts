@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 
-import { describeImportCapability, describeSurfaceFit, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot, needsUnassignedConfirm } from "./files";
+import { describeImportCapability, describeReferenceImport, describeSurfaceFit, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot, needsUnassignedConfirm } from "./files";
 
 // Both mappers are TOTAL — an unrecognised extension silently becomes "step"
 // rather than erroring. That is deliberate (the save dialog can hand back a bare
@@ -515,5 +515,93 @@ describe("describeSurfaceFit", () => {
     expect(msg!).toContain("4 curved surfaces");
     expect(msg!).not.toMatch(/NaN/);
     expect(msg!).not.toMatch(/faceted/);
+  });
+});
+
+// These meshes used to be REFUSED, with a sentence saying why. They now import
+// as read-only reference geometry instead, which is only the better trade if
+// the explanation survives the change: a body that silently refuses every
+// modelling operation reads as the app being broken, and the user has no way to
+// discover that Thicken is the way out. So this message is not decoration, it
+// is the half of the degrade that makes it defensible.
+describe("describeReferenceImport", () => {
+  it("says nothing for an import that stayed editable", () => {
+    expect(describeReferenceImport({})).toBeNull();
+  });
+
+  it("explains a mesh with nothing recognisable in it, and points at Thicken", () => {
+    // The field file that forced this change: House-opgeruimd.stl, 21,326
+    // distinct facet directions against a limit of 20,000.
+    const msg = describeReferenceImport({
+      reference: { why: "tooManyFacetDirections", directions: 21326 },
+    });
+    expect(msg).not.toBeNull();
+    expect(msg!).toContain("21,326");             // thousands separator
+    expect(msg!).toMatch(/reference geometry/i);
+    expect(msg!).toMatch(/thicken/i);             // the way out has to be named
+    expect(msg!).not.toContain("—");              // house style: no em-dashes
+  });
+
+  it("names which body is at fault only when there is more than one", () => {
+    const multi = describeReferenceImport({
+      reference: { why: "tooManyFaces", faces: 7413, limit: 2000, bodyIndex: 2, bodyCount: 3 },
+    });
+    expect(multi!).toMatch(/body 2 of 3/i);
+    expect(multi!).toContain("7,413");
+
+    // "body 1 of 1" would be noise, so a single-body file gets the plain wording.
+    const single = describeReferenceImport({
+      reference: { why: "tooManyFaces", faces: 7413, limit: 2000 },
+    });
+    expect(single).not.toBeNull();
+    expect(single!).not.toMatch(/body \d+ of/i);
+    expect(single!).toContain("7,413");
+  });
+
+  it("keeps the viewport backstop distinct from the editability judgement", () => {
+    // MAX_IMPORT_FACES asks "is this ONE body a clean CAD part"; the total gate
+    // asks "can we draw all of it at once". They are different problems with
+    // different answers, so they must not read as one vague sentence.
+    const perBody = describeReferenceImport({
+      reference: { why: "tooManyFaces", faces: 7413, limit: 2000 },
+    });
+    const total = describeReferenceImport({
+      reference: { why: "tooManyTotalFaces", faces: 44000, bodies: 50, limit: 20000 },
+    });
+    expect(total!).toContain("44,000");
+    expect(total!).toMatch(/50 bodies/);
+    expect(perBody).not.toBe(total);
+  });
+
+  it("stays quiet on a reason it cannot word, rather than showing a raw key", () => {
+    // A newer sidecar may grow a fourth gate. The caller is a toast on a
+    // SUCCESSFUL import, so an unknown reason must degrade to silence; showing
+    // "file.import.reference.whatever" would be worse than saying nothing.
+    const msg = describeReferenceImport({ reference: { why: "somethingNewer", faces: 9 } });
+    expect(msg).toBeNull();
+  });
+
+  it("still says the body is read-only when the counts did not arrive", () => {
+    // A known reason with missing numbers: the half of the message that matters
+    // (this is reference geometry, use Thicken) does not depend on them.
+    const msg = describeReferenceImport({ reference: { why: "tooManyFaces" } });
+    expect(msg).not.toBeNull();
+    expect(msg!).toMatch(/reference geometry/i);
+    expect(msg!).toMatch(/thicken/i);
+  });
+
+  it("explains a replaned mesh that came out fast and small and still open", () => {
+    // The one reason that is NOT about passing a limit, and the only one with no
+    // counts at all. A user who just watched a 128,838-triangle file open in
+    // seconds as 404 faces needs to be told why it is still read-only, or the
+    // speed reads as the app having silently thrown their model away.
+    const msg = describeReferenceImport({ reference: { why: "notWatertight" } });
+    expect(msg).not.toBeNull();
+    expect(msg!).toMatch(/gaps/i);
+    expect(msg!).toMatch(/reference geometry/i);
+    expect(msg!).toMatch(/thicken/i);
+    expect(msg!).not.toContain("—");              // house style: no em-dashes
+    // and it must not borrow the limit reasons' wording: nothing was too much here
+    expect(msg!).not.toMatch(/too detailed|limit/i);
   });
 });
