@@ -2371,6 +2371,89 @@ def test_multibody_import_and_guards():
           f"mesh degraded to reference at {ref['faces']:,} faces")
 
 
+def test_a_coloured_3mf_can_be_reopened():
+    """The app must be able to import the coloured 3MF it exports.
+
+    lib3mf (build123d's Mesher) raises on any 3MF carrying the MATERIAL
+    extension: "Resource not found" when an object references `m:basematerials`
+    by pid/pindex, "unknown error" for an `m:colorgroup`. Measured 2026-09-23
+    across every 3MF on the dev machine — TEN OF TEN failed, `project3mf.py`'s
+    own output included. So the multicolour export verified against Orca and
+    PrusaSlicer wrote files this app refused to reopen, and 3MF is offered in
+    both the Open and the Import dialog.
+
+    The suite did not catch it, and the reason is the point of this test: every
+    3MF fixture here is written by build123d's Mesher, which emits NO materials.
+    A synthetic 3MF is precisely the one kind that never has the bug. The
+    fixture has to look like what users actually have, so this one is written by
+    the real exporter — a round trip, not a shape.
+
+    The control at the end is the other half. The fallback reader must be
+    reached ONLY by files lib3mf refuses; if it ever became the normal path it
+    would quietly replace a C++ reader with a Python one for every import."""
+    import project3mf
+    from build123d import Box, Pos
+
+    d = tempfile.mkdtemp()
+
+    def flat(solid):
+        pos, idx, _f = tessellate(solid, 0.1)
+        return list(pos), list(idx)
+
+    pa, ia = flat(Box(10, 10, 10))
+    pb, ib = flat(Pos(30, 0, 0) * Box(10, 10, 10))
+    palette, colors, names = project3mf.sanitize_inputs(
+        [{"name": "Red", "color": "#E03030"}, {"name": "Blue", "color": "#3050E0"}],
+        {"b2": 1}, {})
+    path = project3mf.write_project_3mf(
+        [{"id": "b1", "name": "RedCube", "positions": pa, "indices": ia},
+         {"id": "b2", "name": "BlueCube", "positions": pb, "indices": ib}],
+        os.path.join(d, "coloured.3mf"), palette, colors, names,
+        {"printer_model": "Snapmaker U1"})
+
+    # It must open at all -- this raised ELib3MFException before the fallback.
+    pay = import_geometry(path, "3mf")
+    assert pay["faces"] > 0, "a coloured 3MF imported with no geometry"
+    assert pay.get("color"), (
+        "the file's material colour was dropped on import — keeping it is the "
+        "whole reason this is parsed rather than stripped and retried")
+
+    # Two objects in, two BODIES out: the fallback concatenates the objects into
+    # one triangle soup, so this is what proves the disjoint pieces still split.
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "3mf", "name": pay["name"],
+         "geom": pay["geom"]}]}
+    part, errs, bodies = rebuild(doc)
+    assert not errs and len(bodies) == 2, (
+        f"coloured two-object 3MF → {len(bodies)} bodies, want 2 ({errs})")
+
+    # The geometry must be what lib3mf would have produced. Same two bodies
+    # written WITHOUT colour is the like-for-like control -- and it is a real
+    # check, because an earlier version of this fix hand-parsed the triangles
+    # and concatenated the objects, which sewed the two disjoint cubes into one
+    # shell: 24 faces where lib3mf gives 12.
+    plain = os.path.join(d, "plain.3mf")
+    export(Box(10, 10, 10) + Pos(30, 0, 0) * Box(10, 10, 10), "3mf", plain)
+    ctrl = import_geometry(plain, "3mf")
+    assert pay["faces"] == ctrl["faces"], (
+        f"coloured 3MF read {pay['faces']} faces where lib3mf reads "
+        f"{ctrl['faces']} for the same geometry")
+
+    # CONTROL: a 3MF lib3mf can read must NOT reach the fallback. Poison the
+    # strip; a file that still imports never called it.
+    keep = builder._3mf_without_colour
+    builder._3mf_without_colour = lambda p, o: (_ for _ in ()).throw(
+        AssertionError("the fallback ran for a 3MF lib3mf can read"))
+    try:
+        again = import_geometry(plain, "3mf")
+    finally:
+        builder._3mf_without_colour = keep
+    assert again["faces"] == ctrl["faces"]
+
+    print(f"  coloured-3MF reopen OK: {pay['faces']} faces, 2 bodies, colour "
+          f"{pay['color']} kept; a colourless 3MF still goes through lib3mf")
+
+
 def test_interference():
     """Two overlapping boxes (separate bodies) report one clash with the right
     overlap volume; clear of each other they report none."""
@@ -5279,6 +5362,7 @@ if __name__ == "__main__":
     test_fillet_failure_diagnostics()
     test_scale_and_move()
     test_multibody_import_and_guards()
+    test_a_coloured_3mf_can_be_reopened()
     test_interference()
     test_remove_body()
     print("ALL PASS")

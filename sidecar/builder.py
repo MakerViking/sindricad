@@ -36,10 +36,12 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import time
 import traceback
+import zipfile
 from collections import ChainMap
 from dataclasses import dataclass
 
@@ -3082,6 +3084,172 @@ def _read_stl_triangles(path):
     return pos, idx
 
 
+def _looks_like_lib3mf_refusal(e):
+    """Is this exception lib3mf declining to parse, rather than a real failure?
+
+    Deliberately narrow. The fallback reader must not swallow a genuine problem
+    — an out-of-memory, a size refusal, a `_too_dense_error` — and turn it into
+    a second, slower attempt that fails differently. lib3mf's own exception type
+    is the signal; the two messages measured on real files are "Resource not
+    found" (an object referencing `m:basematerials` by pid) and "unknown error"
+    (`m:colorgroup`), but the message text is lib3mf's to change, so match on the
+    type and leave the wording out of the condition."""
+    return type(e).__name__ in ("ELib3MFException", "Lib3MFException")
+
+
+def _3mf_model_parts(zf):
+    """Every `.model` part in a 3MF, root first.
+
+    The production extension that Bambu, Orca and PrusaSlicer write leaves
+    3D/3dmodel.model as a manifest of <build><item> references and puts the
+    geometry in 3D/Objects/*.model — the same split `_peek_triangle_count`
+    already has to walk, for the same reason."""
+    names = [n for n in zf.namelist() if n.lower().endswith(".model")]
+    names.sort(key=lambda n: (n.lower() != "3d/3dmodel.model", n.lower()))
+    return names
+
+
+# A model part big enough to be a decompression bomb rather than a part. The
+# triangle count is already gated by `_peek_triangle_count` before we get here,
+# so this only has to stop the pathological case, not size a real file.
+_MAX_3MF_MODEL_BYTES = 512 * 1024 * 1024
+
+# The material extension's resource blocks, and every attribute that references
+# one. `\s` in front matters: without it `pid` would also match inside a longer
+# attribute name.
+_RE_3MF_COLOUR_RES = re.compile(
+    rb"<m:(basematerials|colorgroup)\b(?:[^>]*/>|.*?</m:\1>)", re.S)
+_RE_3MF_COLOUR_REF = re.compile(rb'\s(?:pid|pindex|p1|p2|p3)="[^"]*"')
+
+
+def _3mf_model_bytes(zf, name):
+    """One `.model` part, size-checked and refused if it declares a DTD.
+
+    We never need a DTD, and the alternative is trusting an XML parser with
+    someone else's file: ElementTree is explicitly not safe against hostile
+    input, and an imported mesh is exactly that."""
+    info = zf.getinfo(name)
+    if info.file_size > _MAX_3MF_MODEL_BYTES:
+        raise ValueError("3MF model part is implausibly large")
+    raw = zf.read(name)
+    if re.search(rb"<!(DOCTYPE|ENTITY)", raw[:4096].lstrip(), re.I):
+        raise ValueError("3MF declares a DTD, which this reader refuses")
+    return raw
+
+
+def _3mf_without_colour(path, out_path):
+    """Copy a 3MF with the material extension removed, for lib3mf to read.
+
+    build123d's Mesher is lib3mf, and lib3mf raises on any 3MF carrying that
+    extension: "Lib3MFException 5: Resource not found" when an object
+    references an `m:basematerials` via pid/pindex, "unknown error" for an
+    `m:colorgroup`. Measured 2026-09-23 over every 3MF on the dev machine — TEN
+    OF TEN failed, `project3mf.py`'s OWN output included, so the multicolour
+    export verified against Orca and PrusaSlicer wrote files this app could not
+    reopen. Removing only these blocks and their references, changing nothing
+    else, made all ten import — which is what identifies the extension as the
+    cause rather than something else about those files.
+
+    The colour itself is NOT lost: `_3mf_material_colour` reads it off the
+    original and `import_geometry` puts it on the reply, so the body arrives
+    coloured. Stripping is only how the GEOMETRY gets read.
+
+    Why strip-and-reread rather than parse the triangles here: lib3mf returns
+    one shape PER OBJECT and `_sew_mesh_file` compounds them, which is what
+    keeps two disjoint bodies apart. A hand-parsed concatenation of the same
+    file sews them into ONE shell and unify then fails — measured, two 10 mm
+    cubes came back as 24 faces instead of 12. Letting lib3mf do the geometry
+    means a file that needed stripping behaves exactly like one that did not,
+    including the production extension, components and build placements."""
+    with zipfile.ZipFile(path) as zin:
+        names = zin.namelist()
+        parts = set(_3mf_model_parts(zin))
+        if not parts:
+            raise ValueError("no geometry found in the mesh file")
+        data = {}
+        for n in names:
+            if n in parts:
+                raw = _3mf_model_bytes(zin, n)
+                raw = _RE_3MF_COLOUR_RES.sub(b"", raw)
+                raw = _RE_3MF_COLOUR_REF.sub(b"", raw)
+            else:
+                raw = zin.read(n)
+            data[n] = raw
+
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in names:
+            zout.writestr(n, data[n])
+    return out_path
+
+
+def _3mf_material_colour(path):
+    """The first object's material colour as '#RRGGBB', or None.
+
+    `m:basematerials` carries it as `displaycolor`, `m:colorgroup` as `color`,
+    both "#RRGGBB" or "#RRGGBBAA". An object names one with pid (the resource)
+    and pindex (which swatch); with a single resource in the file the pid is
+    redundant and some writers omit it, so fall back to the only one there is.
+
+    Best effort by contract: a file whose colour cannot be read still imports,
+    it just imports uncoloured, which is what happened to every one of these
+    files before. Never raises."""
+    import xml.etree.ElementTree as ET
+
+    def _local(tag):
+        return tag.rsplit("}", 1)[-1]
+
+    try:
+        with zipfile.ZipFile(path) as zf:
+            for name in _3mf_model_parts(zf):
+                root = ET.fromstring(_3mf_model_bytes(zf, name))
+                swatches = {}
+                for res in root.iter():
+                    if _local(res.tag) not in ("basematerials", "colorgroup"):
+                        continue
+                    rid = res.get("id")
+                    got = [c for c in (child.get("displaycolor") or child.get("color")
+                                       for child in res) if c]
+                    if rid is not None and got:
+                        swatches[rid] = got
+                if not swatches:
+                    continue
+                for obj in root.iter():
+                    if _local(obj.tag) != "object":
+                        continue
+                    got = swatches.get(obj.get("pid"))
+                    if got is None and len(swatches) == 1:
+                        got = next(iter(swatches.values()))
+                    if not got:
+                        continue
+                    try:
+                        k = int(obj.get("pindex") or 0)
+                    except ValueError:
+                        k = 0
+                    return _normalise_hex_colour(got[k] if 0 <= k < len(got) else got[0])
+                # Resources but no object naming one: the file is still coloured.
+                return _normalise_hex_colour(next(iter(swatches.values()))[0])
+    except Exception:
+        return None
+    return None
+
+
+def _normalise_hex_colour(c):
+    """'#RRGGBBAA' or '#RRGGBB' -> '#RRGGBB', or None.
+
+    The alpha 3MF writes (`displaycolor="#B8ACD6FF"`) is not part of a palette
+    match, and `nearestPaletteSlot` on the frontend takes six digits."""
+    if not isinstance(c, str):
+        return None
+    c = c.strip()
+    if not c.startswith("#"):
+        return None
+    body = c[1:]
+    if len(body) not in (6, 8) or any(ch not in "0123456789abcdefABCDEF"
+                                      for ch in body):
+        return None
+    return "#" + body[:6].upper()
+
+
 def _glb_dominant_color(path):
     """The base colour of the glTF's most-used material, as '#RRGGBB', or None.
 
@@ -3359,6 +3527,9 @@ def import_geometry(path, fmt):
     # the bottom. Left None on the STEP/BREP branches, which never fit anything
     # and must send NO fitting fields at all rather than a row of zeros.
     fit_report = None
+    # The file's own material colour, set only by the 3MF fallback below. Read
+    # once at the bottom beside glTF's.
+    mesh_colour = None
     if fmt in ("step", "stp"):
         # Read the XCAF product tree ourselves rather than through
         # build123d.import_step: that helper mangles every product name
@@ -3410,7 +3581,35 @@ def import_geometry(path, fmt):
             pos, idx = _read_stl_triangles(path)
             shape = _sew_triangles(pos, idx, report=fit_report)
         else:
-            shape = _sew_mesh_file(path, report=fit_report)
+            try:
+                shape = _sew_mesh_file(path, report=fit_report)
+            except Exception as e:
+                # lib3mf refuses a 3MF that carries the material extension, which
+                # is every coloured 3MF a slicer or `project3mf.py` writes. Read
+                # it ourselves and round-trip the triangles through the same
+                # recovery path, exactly as the ASCII-STL and OBJ branches above
+                # do. Narrow by construction: a file lib3mf CAN read never
+                # reaches here, so nothing that imports today changes.
+                if fmt != "3mf" or not _looks_like_lib3mf_refusal(e):
+                    raise
+                fd, tmp = tempfile.mkstemp(suffix=".3mf")
+                os.close(fd)
+                try:
+                    _3mf_without_colour(path, tmp)
+                    shape = _sew_mesh_file(tmp, report=fit_report)
+                except Exception:
+                    # The fallback is a RECOVERY, so its own failure must not
+                    # become the story: a file that is not a zip at all reached
+                    # here only because lib3mf already refused it, and
+                    # "File is not a zip file" is a worse answer than lib3mf's.
+                    # Re-raise what actually rejected the file.
+                    raise e from None
+                finally:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                mesh_colour = _3mf_material_colour(path)
     elif fmt == "glb":
         # OCCT's glTF reader returns ONE triangulated FACE per mesh — geometrically
         # correct but a surface body, so a GLB box arrived as 1 face / 0 solids
@@ -3453,12 +3652,16 @@ def import_geometry(path, fmt):
         "faces": len(shape.faces()),
         "name": name,
     }
-    # Only glTF carries a material colour worth honouring. Omitted (not null) when
-    # there is none, so the frontend can tell "no colour in the file" from black.
+    # glTF carries a material colour, and so does a coloured 3MF — which only
+    # reaches us via `_read_3mf_triangles`, because lib3mf refuses exactly the
+    # files that have one. Omitted (not null) when there is none, so the frontend
+    # can tell "no colour in the file" from black.
     if fmt == "glb":
         colour = _glb_dominant_color(path)
         if colour:
             out["color"] = colour
+    elif mesh_colour:
+        out["color"] = mesh_colour
     # The assembly tree, when the file carried one. Absent for every other
     # import, which is what keeps the historical rebuild path byte-identical.
     if manifest:

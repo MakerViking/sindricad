@@ -198,6 +198,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A 3MF with colours in it opens again, including the ones SindriCAD writes.**
+  Any 3MF carrying colour or material information failed to import at all, with
+  a raw "Resource not found" or "unknown error" from the mesh library. That is
+  most files a slicer saves, and it was every coloured project file SindriCAD
+  exports, so the multicolour export wrote files the app itself could not
+  reopen. Ten of ten real 3MF files on my machine failed. They now open, and the
+  colour comes with them and lands on the nearest slot in your palette instead
+  of being thrown away. A 3MF that already opened is read exactly as before.
+
 - **A sketch you renamed keeps its name when you edit it.** Renaming a sketch in
   the Browser and then opening it to change something put the generic
   "Sketch3" name back the moment you pressed Finish. Editing a sketch rebuilds
