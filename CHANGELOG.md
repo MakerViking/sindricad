@@ -283,6 +283,13 @@ This file starts on 2026-08-03. For anything before that, see the
   imported assembly that means going straight from a part on screen to its row,
   however deep it sits in the tree.
 
+- **Export one body, and single one out, from its right-click menu.**
+  Right-click a body in the Browser or the 3D view and choose Export ▸ STL… or
+  3MF… to save just that body, named after it, without the which-bodies
+  question File ▸ Export asks. The Browser's body menu also gains Isolate body
+  (hide every other body, to work on this one) and Show all bodies to bring
+  them back.
+
 - **Right-click a face ▸ Find in Timeline.** Selects the feature that last
   shaped that face and scrolls the timeline to it if it is off screen, with the
   same short flash.

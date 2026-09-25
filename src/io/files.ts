@@ -317,7 +317,47 @@ export async function exportModel(store: DocumentStore, geometry: GeometryBacken
     defaultPath: opts.separate ? "parts.step" : "part.step",
   });
   if (!path) return;
-  const fmt = extToFormat(path);
+  await runExport(store, geometry, path, extToFormat(path), opts);
+}
+
+/** Export ONE body straight to `fmt` (right-click a body ▸ Export ▸ STL…/3MF…):
+ *  no which-bodies question, and the save dialog offers only that format, named
+ *  after the body. */
+export async function exportBody(
+  store: DocumentStore,
+  geometry: GeometryBackend,
+  bodyId: string,
+  fmt: "stl" | "3mf",
+) {
+  if (!isTauri()) {
+    console.warn("export needs the native app (a real filesystem path)");
+    return;
+  }
+  const body = store.buildState.result?.bodies?.find((b) => b.id === bodyId);
+  if (!body) return;
+  const name = (store.bodyName(bodyId) ?? body.name).replace(/[\\/:*?"<>|]/g, "_").trim() || "part";
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  let path = await save({
+    filters: [{ name: fmt.toUpperCase(), extensions: [fmt] }],
+    defaultPath: `${name}.${fmt}`,
+  });
+  if (!path) return;
+  // Linux save dialogs do not always append the filter's extension, and the
+  // format is decided here, not by what the user typed.
+  if (!path.toLowerCase().endsWith(`.${fmt}`)) path = `${path}.${fmt}`;
+  await runExport(store, geometry, path, fmt, { body: bodyId });
+}
+
+/** Run an export to a chosen path and report the result: the written files,
+ *  and any feature whose geometry is missing from them. Shared by File ▸ Export
+ *  and the per-body Export. */
+async function runExport(
+  store: DocumentStore,
+  geometry: GeometryBackend,
+  path: string,
+  fmt: ExportFormat,
+  opts: { body?: string; separate?: boolean },
+) {
   // GLB carries one material per body, so it needs the palette and each body's
   // slot; the other formats ignore both.
   // Wrapped exactly like importPath's runBusy below, and for the same reason:

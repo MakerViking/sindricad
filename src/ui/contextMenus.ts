@@ -28,6 +28,7 @@ export interface ContextMenusDeps {
   measure: MeasureTool;
   tree: BrowserTree;
   timeline: Timeline;
+  exportBody: (bodyId: string, fmt: "stl" | "3mf") => void;
   toolBusy: () => boolean;
   setStatus: (text: string, cls: "" | "connected" | "error") => void;
   selectFeature: (id: string | null) => void;
@@ -51,6 +52,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
     measure,
     tree,
     timeline,
+    exportBody,
     toolBusy,
     setStatus,
     selectFeature,
@@ -171,6 +173,30 @@ export function createContextMenus(deps: ContextMenusDeps) {
   }
 
 
+  /** Export ▸ STL… / 3MF… for one body. Shared by the viewport's body menu and
+   *  the Browser's body rows, so both offer the same thing. */
+  function exportBodyItem(bodyId: string): CtxItem {
+    return {
+      label: t("context.exportBody"),
+      children: [
+        { label: t("context.exportStl"), onClick: unlessBusy(() => exportBody(bodyId, "stl")) },
+        { label: t("context.export3mf"), onClick: unlessBusy(() => exportBody(bodyId, "3mf")) },
+      ],
+    };
+  }
+
+  /** The body actions the Browser adds to a body row's menu (its Color, Rename
+   *  and Delete are its own): export it, or single it out. */
+  function bodyActions(bodyId: string): CtxItem[] {
+    return [
+      exportBodyItem(bodyId),
+      { separator: true, label: "" },
+      { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
+      { label: t("context.showAllBodies"), shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
+      { separator: true, label: "" },
+    ];
+  }
+
   function openBodyMenu(x: number, y: number, bodyId: string) {
     if (!viewport.getSelectedBodies().includes(bodyId)) viewport.setSelectedBodies([bodyId]);
     contextMenu(x, y, [
@@ -178,6 +204,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
       { label: t("tool.move"), shortcut: keyHint("move"), onClick: unlessBusy(() => handleAction("move")) },
       { label: t("context.combineWith"), shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
       { label: t("context.properties"), onClick: unlessBusy(() => handleAction("properties")) },
+      exportBodyItem(bodyId),
       { label: t("context.findInBrowser"), onClick: () => findInBrowser(bodyId) },
       { separator: true, label: "" },
       { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },
@@ -253,7 +280,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
     openEmptyMenu(x, y);
   }
 
-  return { openDatumMenu, openEdgeMenu, openFaceMenu, openBodyMenu, openEmptyMenu, openCanvasMenu };
+  return { openDatumMenu, openEdgeMenu, openFaceMenu, openBodyMenu, openEmptyMenu, openCanvasMenu, bodyActions };
 }
 
 export type ContextMenus = ReturnType<typeof createContextMenus>;

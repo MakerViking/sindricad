@@ -229,6 +229,9 @@ export class BrowserTree {
   onDeletePlane: ((id: string) => void) | null = null;
   onRenameBody: ((id: string, name: string) => void) | null = null;
   onDeleteBody: ((id: string) => void) | null = null;
+  /** Extra actions on a body row's menu (Export ▸, Isolate, Show all), supplied
+   *  by the viewport's context menus so both places offer the same entries. */
+  bodyMenu: ((id: string) => CtxItem[]) | null = null;
 
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
@@ -401,7 +404,10 @@ export class BrowserTree {
         visible: this.isBodyVisible?.(b.id) ?? true,
         onClick: (e: MouseEvent) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
         onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
-        extraMenu: [{ label: t("context.color"), children: bodyColorMenuItems(this.store, b.id) }],
+        extraMenu: [
+          { label: t("context.color"), children: bodyColorMenuItems(this.store, b.id) },
+          ...(this.bodyMenu?.(b.id) ?? []),
+        ],
         rename: this.onRenameBody ? (name: string) => this.onRenameBody!(b.id, name) : undefined,
         onDelete: this.onDeleteBody ? () => this.onDeleteBody!(b.id) : undefined,
         title: t("browser.bodyTitle"),

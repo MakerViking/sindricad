@@ -26,7 +26,7 @@ import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { openShortcutSettings } from "./ui/shortcutSettings";
-import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportPrintProject, importModel, confirmDiscardChanges } from "./io/files";
+import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportBody, exportPrintProject, importModel, confirmDiscardChanges } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
@@ -718,6 +718,7 @@ const menus = createContextMenus({
   measure,
   tree,
   timeline,
+  exportBody: (id, fmt) => void exportBody(store, geometry, id, fmt),
   toolBusy,
   setStatus,
   selectFeature,
@@ -743,6 +744,7 @@ const menus = createContextMenus({
 // ---------------------------------------------------------------------------
 viewport.shouldOpenContextMenu = () => !toolBusy();
 viewport.onContextClick = (x, y) => menus.openCanvasMenu(x, y);
+tree.bodyMenu = (id) => menus.bodyActions(id);
 
 // A context menu holds targets captured at open time (faceId, edge line, body
 // id) — a completed rebuild renumbers topology and replaces the mesh, and any
