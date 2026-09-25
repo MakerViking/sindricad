@@ -186,6 +186,8 @@
     "deletePlane": "Delete plane",
     "editFeature": "Edit {name}",
     "fitView": "Fit view",
+    "findInBrowser": "Find in Browser",
+    "findInTimeline": "Find in Timeline",
     "hideBody": "Hide body",
     "hidePlane": "Hide plane",
     "isolateBody": "Isolate body",

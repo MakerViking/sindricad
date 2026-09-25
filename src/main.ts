@@ -717,6 +717,7 @@ const menus = createContextMenus({
   sketch,
   measure,
   tree,
+  timeline,
   toolBusy,
   setStatus,
   selectFeature,

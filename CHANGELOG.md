@@ -276,6 +276,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Added
 
+- **Right-click ▸ Find in Browser.** Right-click a body, or any face or edge of
+  one, and choose Find in Browser: the Browser opens the Bodies folder and every
+  assembly group above that body, scrolls it into view if it is off screen, and
+  selects it with a short flash so you can spot it in a long list. On an
+  imported assembly that means going straight from a part on screen to its row,
+  however deep it sits in the tree.
+
+- **Right-click a face ▸ Find in Timeline.** Selects the feature that last
+  shaped that face and scrolls the timeline to it if it is off screen, with the
+  same short flash.
+
 - **File ▸ Close (Ctrl+W).** Puts the current model down and hands you an empty
   document, asking whether to save first if there is anything unsaved.
   Requested by Doug Smith.

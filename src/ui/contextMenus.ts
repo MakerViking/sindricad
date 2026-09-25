@@ -9,6 +9,7 @@ import type { Viewport } from "../viewport/viewport";
 import type { SketchMode } from "../sketch/sketchMode";
 import type { MeasureTool } from "../features/measureTool";
 import { BrowserTree, bodyColorMenuItems } from "./browserTree";
+import type { Timeline } from "./timeline";
 import { contextMenu, type CtxItem } from "./menu";
 import { isInspectorEditable } from "./inspector";
 import { allCommands } from "./commands";
@@ -26,6 +27,7 @@ export interface ContextMenusDeps {
   sketch: SketchMode;
   measure: MeasureTool;
   tree: BrowserTree;
+  timeline: Timeline;
   toolBusy: () => boolean;
   setStatus: (text: string, cls: "" | "connected" | "error") => void;
   selectFeature: (id: string | null) => void;
@@ -48,6 +50,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
     sketch,
     measure,
     tree,
+    timeline,
     toolBusy,
     setStatus,
     selectFeature,
@@ -102,6 +105,10 @@ export function createContextMenus(deps: ContextMenusDeps) {
       { label: t("tool.chamfer"), shortcut: keyHint("chamfer"), onClick: unlessBusy(() => { viewport.selectOnlyEdge(hit.edge); handleAction("chamfer"); }) },
       { separator: true, label: "" },
       { label: t("context.measureFromHere"), shortcut: keyHint("measure"), onClick: unlessBusy(() => { setLastAction("measure"); measure.startWith(hit); }) },
+      // the body this edge belongs to; absent only for an orphan edge
+      ...(hit.edge.body
+        ? [{ label: t("context.findInBrowser"), onClick: () => findInBrowser(hit.edge.body!) }]
+        : []),
     ]);
   }
 
@@ -136,6 +143,10 @@ export function createContextMenus(deps: ContextMenusDeps) {
         : []),
       ...(bodyId
         ? [
+            { label: t("context.findInBrowser"), onClick: () => findInBrowser(bodyId) },
+            // the feature that last shaped THIS face (the same owner "Edit …"
+            // above names); absent when the build carried no provenance
+            ...(ownerId ? [{ label: t("context.findInTimeline"), onClick: () => findInTimeline(ownerId) }] : []),
             { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },
             { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
           ]
@@ -146,6 +157,20 @@ export function createContextMenus(deps: ContextMenusDeps) {
     contextMenu(x, y, items);
   }
 
+  /** Select the body and show its row in the Browser (opening whatever folds
+   *  hide it). Works from a FACE too: the row is the body the face belongs to. */
+  function findInBrowser(bodyId: string) {
+    viewport.setSelectedBodies([bodyId]);
+    tree.reveal(bodyId);
+  }
+
+  /** Select a feature and show its chip in the Timeline. */
+  function findInTimeline(featureId: string) {
+    selectFeature(featureId);
+    timeline.reveal(featureId);
+  }
+
+
   function openBodyMenu(x: number, y: number, bodyId: string) {
     if (!viewport.getSelectedBodies().includes(bodyId)) viewport.setSelectedBodies([bodyId]);
     contextMenu(x, y, [
@@ -153,6 +178,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
       { label: t("tool.move"), shortcut: keyHint("move"), onClick: unlessBusy(() => handleAction("move")) },
       { label: t("context.combineWith"), shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
       { label: t("context.properties"), onClick: unlessBusy(() => handleAction("properties")) },
+      { label: t("context.findInBrowser"), onClick: () => findInBrowser(bodyId) },
       { separator: true, label: "" },
       { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },
       { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },

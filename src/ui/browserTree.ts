@@ -165,6 +165,10 @@ export function startInlineRename(
   labelEl.addEventListener("blur", () => finish(true));
 }
 
+/** How long a Find in Browser / Find in Timeline flash lasts; matches the
+ *  `.find-flash` animation in styles.css. */
+export const FIND_FLASH_MS = 1200;
+
 export class BrowserTree {
   private el: HTMLElement;
   private selectedId: string | null = null;
@@ -192,6 +196,11 @@ export class BrowserTree {
   // per-render map of row id → start-inline-rename, for programmatic rename
   // (right-click a body in the viewport → Rename…). Rebuilt on every real render.
   private renameHooks = new Map<string, () => void>();
+  // The row Find in Browser last revealed. Kept as state, not just a class on
+  // the DOM node, because a build landing mid-flash rebuilds every row and
+  // would silently drop a class set on the old one.
+  private flashId: string | null = null;
+  private flashTimer: number | null = null;
 
   onSelect: ((id: string) => void) | null = null;
   onEditSketch: ((id: string) => void) | null = null;
@@ -249,6 +258,35 @@ export class BrowserTree {
     }
     if (opened) this.render();
     this.renameHooks.get(id)?.();
+  }
+
+  /** Find in Browser (right-click a body or face → Find in Browser): open the
+   *  Bodies folder and every assembly group above the body, scroll its row into
+   *  view and flash it, so the eye lands on it. Selection is the caller's job:
+   *  it already goes through the viewport, which keeps both panels in step.
+   *  Returns false when the body has no row (a stale id after a rebuild). */
+  reveal(id: string): boolean {
+    for (const key of ["f:Bodies", ...(this.bodyAncestors.get(id) ?? [])]) this.collapsed.delete(key);
+    this.flashId = id;
+    this.refresh();
+    const row = this.el.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(id)}"]`);
+    if (!row) {
+      this.flashId = null;
+      return false;
+    }
+    // A row already fully on screen stays put (the flash is enough). One that is
+    // not is scrolled to the MIDDLE, not the nearest edge, so the groups just
+    // opened above it are in view too and the reveal reads as a path.
+    const box = row.getBoundingClientRect();
+    const view = this.el.getBoundingClientRect();
+    if (box.top < view.top || box.bottom > view.bottom) row.scrollIntoView({ block: "center" });
+    if (this.flashTimer !== null) window.clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
+      this.flashId = null;
+      this.flashTimer = null;
+      this.el.querySelector(".find-flash")?.classList.remove("find-flash");
+    }, FIND_FLASH_MS);
+    return true;
   }
 
   private toggle(key: string) {
@@ -752,6 +790,8 @@ export class BrowserTree {
       row.className = "feature-row tree-child";
       if (depth > 0) row.style.paddingLeft = `${BrowserTree.indent(depth, 26)}px`;
       if (it.selected) row.classList.add("selected");
+      if (it.id) row.dataset.rowId = it.id;
+      if (it.id && it.id === this.flashId) row.classList.add("find-flash");
       if (it.error) row.classList.add("error");
       if (it.dim) row.style.opacity = "0.7";
       if (it.title) row.title = it.title;

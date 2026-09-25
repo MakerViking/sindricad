@@ -14,6 +14,7 @@ import { icon, type IconName } from "./icons";
 import { contextMenu } from "./menu";
 import { esc } from "./escape";
 import { t, setText, setTitle } from "../i18n";
+import { FIND_FLASH_MS } from "./browserTree";
 
 // A fast op must not flash a Cancel button; a slow one must offer it early.
 const CANCEL_DELAY_MS = 700;
@@ -178,6 +179,36 @@ export class Timeline {
     this.render();
   }
 
+  // The chip Find in Timeline last revealed. State, not just a class, for the
+  // same reason as BrowserTree.flashId: a build mid-flash re-renders every chip.
+  private flashId: string | null = null;
+  private flashTimer: number | null = null;
+
+  /** Find in Timeline: scroll a feature's chip into view (only if it is not
+   *  already fully visible) and flash it. Selection is the caller's job, so the
+   *  Browser and Inspector follow along. Returns false for an unknown id. */
+  reveal(id: string): boolean {
+    this.flashId = id;
+    this.render();
+    const chip = this.track.querySelector<HTMLElement>(`.timeline-node[data-id="${CSS.escape(id)}"]`);
+    if (!chip) {
+      this.flashId = null;
+      return false;
+    }
+    const box = chip.getBoundingClientRect();
+    // Against the SCROLLER, not the track: the track is as wide as all its
+    // chips and never clips, so measured against it every chip is "visible".
+    const view = this.scroller.getBoundingClientRect();
+    if (box.left < view.left || box.right > view.right) chip.scrollIntoView({ inline: "center", block: "nearest" });
+    if (this.flashTimer !== null) window.clearTimeout(this.flashTimer);
+    this.flashTimer = window.setTimeout(() => {
+      this.flashId = null;
+      this.flashTimer = null;
+      this.track.querySelector(".find-flash")?.classList.remove("find-flash");
+    }, FIND_FLASH_MS);
+    return true;
+  }
+
   /** every failing feature this build: id -> message (continue-past-errors can
    *  yield several; fall back to the single legacy error field). The message's
    *  `{body}` slot is filled from the bodies in the same reply — see
@@ -327,6 +358,7 @@ export class Timeline {
     node.className = "timeline-node";
     node.dataset.id = f.id;
     if (this.selectedId === f.id) node.classList.add("selected");
+    if (this.flashId === f.id) node.classList.add("find-flash");
     if (errMsg) node.classList.add("error");
     // amber, and only where there is no red: the build SUCCEEDED, so the chip
     // must not read as a failure. diagMap already excludes failing features, so
