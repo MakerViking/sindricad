@@ -135,6 +135,7 @@ jobs:
           uv run python test_blobstore.py
           uv run python test_import_blob.py
           uv run python test_blob_rebuild.py
+          uv run python test_separate.py
           uv run python test_heartbeat.py
           uv run python test_sysmem.py
           uv run python test_export_gates.py

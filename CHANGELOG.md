@@ -283,6 +283,15 @@ This file starts on 2026-08-03. For anything before that, see the
   imported assembly that means going straight from a part on screen to its row,
   however deep it sits in the tree.
 
+- **Separate into bodies.** Right-click a body that holds several parts which
+  do not touch (a whole imported assembly, or a join of pieces that never
+  overlapped) and choose Separate into bodies: each part becomes its own body,
+  so you can hide, move, colour or export it on its own. The first part keeps
+  the body's name and the rest are numbered after it. It is a step in the
+  timeline, so undo or deleting it puts the body back together. Parts that
+  touch or were fused into one solid cannot be separated this way; Split cuts
+  those.
+
 - **Export one body, and single one out, from its right-click menu.**
   Right-click a body in the Browser or the 3D view and choose Export ▸ STL… or
   3MF… to save just that body, named after it, without the which-bodies

@@ -35,6 +35,7 @@ export const FEATURE_META: Record<FeatureType, { iconName: IconName; label: stri
   scale: { iconName: "scale", label: t("tool.scale") },
   move: { iconName: "move", label: t("tool.move") },
   removeBody: { iconName: "removeBody", label: t("tool.removeBody") },
+  separate: { iconName: "separate", label: t("tool.separate") },
   texture: { iconName: "texture", label: t("tool.texture") },
   textOnFace: { iconName: "textOnFace", label: t("tool.textOnFace") },
 };

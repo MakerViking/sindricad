@@ -144,6 +144,7 @@ const PATHS = {
 
   // --- destructive / removal ---
   deleteFace: `<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M9 10.5l6 6M15 10.5l-6 6"/>`,
+  separate: `<rect x="3" y="9" width="7" height="8" rx="0.5"/><rect x="14" y="7" width="7" height="8" rx="0.5"/><path d="M12 4v16" stroke-dasharray="2 2"/>`,
   removeBody: `<path d="M5 7h14"/><path d="M10 7V5h4v2"/><path d="M6.5 7l1 13h9l1-13"/>`,
 
   // Text driven onto a face: the plane carries the glyph, which is what separates it

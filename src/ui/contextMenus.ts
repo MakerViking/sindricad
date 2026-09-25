@@ -185,11 +185,17 @@ export function createContextMenus(deps: ContextMenusDeps) {
     };
   }
 
+  /** Separate into bodies: one body per piece that does not touch the others. */
+  function separateItem(bodyId: string): CtxItem {
+    return { label: t("context.separateBody"), onClick: unlessBusy(() => store.separateBody(bodyId)) };
+  }
+
   /** The body actions the Browser adds to a body row's menu (its Color, Rename
    *  and Delete are its own): export it, or single it out. */
   function bodyActions(bodyId: string): CtxItem[] {
     return [
       exportBodyItem(bodyId),
+      separateItem(bodyId),
       { separator: true, label: "" },
       { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
       { label: t("context.showAllBodies"), shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
@@ -205,6 +211,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
       { label: t("context.combineWith"), shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
       { label: t("context.properties"), onClick: unlessBusy(() => handleAction("properties")) },
       exportBodyItem(bodyId),
+      separateItem(bodyId),
       { label: t("context.findInBrowser"), onClick: () => findInBrowser(bodyId) },
       { separator: true, label: "" },
       { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },

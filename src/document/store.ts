@@ -1245,6 +1245,14 @@ export class DocumentStore {
     this.addFeature(feat, this.doc.features.length);
   }
 
+  /** split a body into one body per disjoint solid, as a `separate` feature at
+   *  the END of the timeline (like removeBody, so it acts on the final body list
+   *  and appends its new bodies after every existing one). Undoable. */
+  separateBody(bodyId: string) {
+    const feat: Feature = { id: this.nextId(), type: "separate", body: bodyId };
+    this.addFeature(feat, this.doc.features.length);
+  }
+
   // --- color palette + per-body color (multi-color; display + export metadata) -
   /** the project's filament palette (≤4 slots map to U1 toolheads). */
   get colorPalette(): { name: string; color: string; material?: string }[] {

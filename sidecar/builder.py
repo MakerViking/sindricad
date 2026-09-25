@@ -5867,6 +5867,42 @@ def _handle_remove_body(f, ctx):
     ctx.bodies[:] = [b for b in ctx.bodies if b["id"] not in ids]
 
 
+def _handle_separate(f, ctx):
+    """Separate: split one body into one body per disjoint solid.
+
+    For a body that holds several parts that never touch — an import kept whole
+    (`explode: false`), a join of bodies that did not overlap — with no other way
+    to take them apart. The FIRST piece stays in the original body (same id, same
+    name) and the rest are appended as new bodies, so no existing body id moves:
+    ids are positional, and renumbering them would break every later feature
+    that names a body. A body with no solid falls back to its shells, so a
+    surface body separates too; one that is already a single piece is refused in
+    words rather than succeeding at nothing."""
+    bid = f.get("body")
+    b = ctx.find_body(bid) if bid else None
+    if b is None:
+        raise ValueError(f"Separate: no such body {bid} — it may have been "
+                         "renumbered or consumed by an earlier feature")
+    sh = b.get("shape")
+    if sh is None:
+        raise ValueError("Separate: this body has no solid geometry to separate")
+    whole = _as_compound(sh)
+    pieces = list(whole.solids()) or list(whole.shells())
+    if len(pieces) < 2:
+        raise ValueError("Separate: this body is already one piece. Parts that "
+                         "touch or were joined into one solid cannot be separated; "
+                         "use Split to cut them apart.")
+    b["shape"] = pieces[0]
+    for i, piece in enumerate(pieces[1:], start=2):
+        nb = ctx.new_body(piece, f"{b['name']} ({i})", node_ref=b.get("node_ref"))
+        # Body state that lives beside the shape travels with each piece: its
+        # textures and face colours are keyed by face. (`_intact` does not need
+        # to: the debris pass never touches a single-solid body.)
+        for key in ("_textures", "_faceSlots"):
+            if b.get(key):
+                nb[key] = b[key]
+
+
 # type string -> handler. Unknown types are NOT in this dict — the rebuild loop
 # below raises the exact same "unknown feature type" ValueError the old trailing
 # `else` branch did.
@@ -5901,6 +5937,7 @@ _FEATURE_HANDLERS = {
     "split": _handle_split,
     "combine": _handle_combine,
     "removeBody": _handle_remove_body,
+    "separate": _handle_separate,
 }
 
 

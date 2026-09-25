@@ -210,6 +210,7 @@
       "one": "Selected {count} coplanar face",
       "other": "Selected {count} coplanar faces"
     },
+    "separateBody": "Separate into bodies",
     "showAllBodies": "Show all bodies",
     "sketchOnFace": "Sketch on this face",
     "sketchOnPlane": "Sketch on plane",
@@ -1725,6 +1726,7 @@
     "section": "Section",
     "select": "Select",
     "sendToPrinter": "Send to Printer",
+    "separate": "Separate",
     "shell": "Shell",
     "simplifyMesh": "Simplify Mesh",
     "sketch": "Sketch",

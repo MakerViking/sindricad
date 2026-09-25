@@ -738,6 +738,9 @@ export type Feature =
   // drops the listed bodies from the model — the way to delete a body from the
   // browser. Body ids are positional, so this is appended at the end.
   | { id: string; type: "removeBody"; bodies: string[] }
+  // One body per disjoint solid: the first piece stays in `body` (same id), the
+  // rest are appended as new bodies, so no existing body id moves.
+  | { id: string; type: "separate"; body: string }
   // Printed surface texture: real mesh displacement (not appearance-only), computed
   // by the sidecar at tessellation time. `faces` absent = whole body (then `body`
   // names the target, required); present = the operated face set (mirrors
