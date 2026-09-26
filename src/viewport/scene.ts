@@ -7,6 +7,7 @@ import { stickyFact } from "../diagnostics/breadcrumbs";
 import { toast } from "../ui/toast";
 import { t } from "../i18n";
 import { niceStep } from "../ui/units";
+import { isSaneCoord } from "./modelBox";
 
 export interface SceneBundle {
   renderer: THREE.WebGLRenderer;
@@ -26,9 +27,13 @@ export interface SceneBundle {
  *
  *  Price of the clamp, stated out loud: a part authored far ABOVE the origin
  *  (a STEP assembly at z=+500) gets the grid at z=0, well below it, rather than
- *  tucked under the part. Keeping the grid and the origin together wins. */
+ *  tucked under the part. Keeping the grid and the origin together wins.
+ *
+ *  A floor that is not a real coordinate is no floor: the ±1e100 box of an
+ *  untriangulated cone face (see modelBox.ts) is finite, so a finite-only check
+ *  let it through and the grid was drawn at z = -1e100, gone from the view. */
 export function groundGridZ(modelMinZ: number): number {
-  if (!Number.isFinite(modelMinZ)) return 0; // empty Box3 min is +Infinity
+  if (!isSaneCoord(modelMinZ)) return 0; // empty Box3 min is +Infinity; see above for -1e100
   return Math.min(0, modelMinZ);
 }
 

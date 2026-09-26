@@ -65,6 +65,58 @@ describe("Fit with nothing in the document", () => {
   });
 });
 
+// resetView() is setStandardView("iso"), which only sets where an ANIMATED
+// transition ends, followed in the same tick by Fit. Fit keeps the view
+// direction, so it has to take that direction from where the transition is
+// headed. A version that read the camera where it was drawn (2026-09-26, the
+// stranded-camera fix) overwrote the iso turn with the old direction: File > New
+// from Front stayed on Front, and from Top it ended on a Front ortho view.
+describe("Fit while a standard view is still easing in", () => {
+  const PART = () => new THREE.Box3(new THREE.Vector3(-10, -10, 0), new THREE.Vector3(10, 10, 20));
+  const degFrom = (rig: ReturnType<typeof harness>["rig"], want: THREE.Vector3) => {
+    const dir = rig.controls
+      .getPosition(new THREE.Vector3())
+      .sub(rig.controls.getTarget(new THREE.Vector3()))
+      .normalize();
+    return THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(dir.dot(want), -1, 1)));
+  };
+  const settle = (rig: ReturnType<typeof harness>["rig"], frames = 600) => {
+    for (let i = 0; i < frames; i++) rig.update(1 / 60);
+  };
+
+  for (const from of ["front", "top", "an orbited view"] as const) {
+    it(`File > New from ${from} ends on the iso home view`, () => {
+      const { rig } = harness();
+      rig.update(0.016);
+      if (from === "an orbited view") rig.controls.setLookAt(-100, 50, 30, 0, 0, 0, false);
+      else rig.setStandardView(from);
+      settle(rig);
+      // exactly what viewport.resetView() does
+      rig.setStandardView("iso");
+      rig.fit(PART(), true);
+      settle(rig);
+      expect(
+        degFrom(rig, new THREE.Vector3(1, -1, 0.8).normalize()),
+        "Fit read the camera mid-transition and cancelled the turn to iso",
+      ).toBeLessThan(0.5);
+    });
+  }
+
+  for (const frames of [3, 10, 20]) {
+    it(`Front, then Fit ${frames} frames later, ends looking straight on from the front`, () => {
+      const { rig } = harness();
+      rig.controls.setLookAt(80, -120, 90, 0, 0, 0, false);
+      rig.update(0.016);
+      rig.setStandardView("front");
+      settle(rig, frames);
+      rig.fit(PART(), true);
+      settle(rig);
+      expect(degFrom(rig, new THREE.Vector3(0, -1, 0)), "Fit froze an in-between angle").toBeLessThan(0.5);
+      expect(rig.isOrtho(), "Auto did not switch to ortho on the straight-on view").toBe(true);
+    });
+  }
+});
+
 describe("the wiring that reaches that behaviour", () => {
   it("Fit no longer bails out when there is no model", () => {
     const at = viewportSrc.indexOf("fitView()");

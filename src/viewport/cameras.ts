@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import CameraControls from "camera-controls";
 import { foldPivot } from "./orbitPivot";
+import { isSaneBox, isSaneCoord } from "./modelBox";
 
 CameraControls.install({ THREE });
 
@@ -17,6 +18,42 @@ const MIN_PERSP_DIST = 0.5;
  *  Roughly a fist-sized part, so the ground grid lands at a legible scale rather
  *  than as one enormous cell or a haze of tiny ones. */
 const EMPTY_VIEW_MM = 50;
+/** The orthographic camera's depth range: near = -this, far = +this, measured
+ *  from the camera, so everything within it is DRAWN, behind the camera too. */
+const ORTHO_DEPTH_MM = 10000;
+
+/** How far from the box centre Fit puts the camera, for a bounding sphere of
+ *  radius `r` (padding already applied).
+ *
+ *  Perspective: the distance at which the sphere just fills the vertical FOV.
+ *
+ *  Orthographic: the frustum carries the scale, so the distance changes nothing
+ *  on screen. It decides where the camera stands in the scene, and that
+ *  matters for picking: the depth range reaches ORTHO_DEPTH_MM BEHIND the
+ *  camera, so geometry back there is drawn, but a pick ray starts at the
+ *  camera, so it cannot be clicked, and a click on it selects whatever is drawn
+ *  under it. So the camera goes 2r out, or further when the rest of the model
+ *  reaches further toward it: `reach` is how far the model's bounding sphere
+ *  extends from the centre toward the camera. Never so far that the framed
+ *  sphere leaves the depth range, which caps it at ORTHO_DEPTH_MM - r.
+ *
+ *  This used to be max(controls.distance, 2r), which keeps the camera wherever
+ *  it already was when that is further out. A camera an absurd box had thrown
+ *  5.2e100 mm away therefore STAYED there on every later Fit in Ortho (and in
+ *  Auto on a straight-on view, which is ortho too), with the model 5e100 mm
+ *  beyond the far plane: a blank view that Fit could not recover. Nothing
+ *  about the previous camera belongs in the answer. A bare 2r, the first
+ *  replacement, stood the camera INSIDE an assembly after Isolate and Fit
+ *  (measured in the app on a Front view: 19.9 mm from a 10 mm part). Show all
+ *  then drew the plate in front of the part, and a click on the plate
+ *  selected the part. */
+export function fitDistance(r: number, ortho: boolean, reach = 0): number {
+  if (!ortho) return r / Math.sin((FOV * Math.PI) / 180 / 2);
+  const framed = r * 2;
+  // `reach > framed` rather than Math.max, so a NaN reach falls back to 2r
+  const clear = reach > framed ? reach : framed;
+  return Math.min(clear, Math.max(framed, ORTHO_DEPTH_MM - r));
+}
 
 export interface CameraRig {
   controls: CameraControls;
@@ -70,6 +107,9 @@ export interface CameraRig {
   /** Announce an intercepted mouse orbit's start (camera-controls' own
    *  `controlstart` does not fire for one — see beginOrbit). */
   setOnOrbitStart(fn: () => void): void;
+  /** Announce that a pointer drag actually MOVED the camera (an orbit or a
+   *  pan), as opposed to a press. See onUserMove. */
+  setOnUserMove(fn: () => void): void;
   /** Fold an orbit pivot back into a plain position/target pair. No-op when no
    *  pivot is set, and never changes what is on screen. */
   clearOrbitPivot(): void;
@@ -129,8 +169,8 @@ export function createCameraRig(
     (frustum * aspect) / 2,
     frustum / 2,
     -frustum / 2,
-    -10000,
-    10000,
+    -ORTHO_DEPTH_MM,
+    ORTHO_DEPTH_MM,
   );
   ortho.up.set(0, 0, 1);
   ortho.position.copy(persp.position);
@@ -294,6 +334,18 @@ export function createCameraRig(
    *  camera-controls' `controlstart`, which no longer fires for one. Set by the
    *  viewport, which uses it to aim the orbit pivot. */
   let onOrbitStart: (() => void) | undefined;
+  /** Called when a pointer drag MOVES the camera. Not the same as a gesture
+   *  starting: camera-controls fires `controlstart` on every press on the
+   *  canvas, a left SELECTION click included (its action is NONE, and it moves
+   *  nothing), so a start cannot say whether the user moved the camera. The
+   *  viewport needs exactly that to know when a load's owed Fit must give way:
+   *  a click on the view while a document loads cost it its framing. */
+  let onUserMove: (() => void) | undefined;
+  // camera-controls fires `control` on every pointer move of any press, the
+  // selection press included, so only a press mapped to an action counts.
+  controls.addEventListener("control", () => {
+    if (controls.currentAction !== A.NONE) onUserMove?.();
+  });
   const TAU = Math.PI * 2;
   type MouseAction = CameraControls["mouseButtons"]["left"];
   let orbitDrag: { id: number; x: number; y: number; button: "left" | "middle"; restore: MouseAction } | null = null;
@@ -325,6 +377,7 @@ export function createCameraRig(
     const dy = e.clientY - orbitDrag.y;
     orbitDrag.x = e.clientX;
     orbitDrag.y = e.clientY;
+    if (dx !== 0 || dy !== 0) onUserMove?.();
     // camera-controls' own conversion, so the drag feels identical: it divides
     // by HEIGHT for both axes (its comment: "to refer the resolution") and
     // passes the negated pointer delta to rotate().
@@ -712,18 +765,39 @@ export function createCameraRig(
       // away from the scene: an empty viewport with no grid and no way to tell
       // why. It never showed while startup always loaded an example part with a
       // real box. Fall back to a human-scale view of the origin instead.
+      //
+      // A box the camera cannot sensibly aim at gets the same answer: the
+      // ±1e100 mm box of an untriangulated cone face (see modelBox.ts) framed
+      // "correctly" puts the camera 5.2e100 mm out, past any far plane, and a
+      // blank view with the grid gone is no better than a wrong one. The
+      // viewport sanitises its boxes before they get here; this is the last
+      // line, because a stranded camera is the one failure Fit cannot undo.
       let r = sphere.radius * 1.15; // padding
-      if (!Number.isFinite(r) || r <= 0) {
+      if (!isSaneBox(box) || !(r > 0)) {
         r = EMPTY_VIEW_MM;
         center.set(0, 0, 0);
       }
+      // The direction is taken from where a transition is HEADED (the end
+      // values), not from where the camera is drawn: resetView() is
+      // setStandardView("iso") and then this, in the same tick, and reading the
+      // drawn camera cancelled the turn to iso (viewReset.test.ts).
       const dir = controls
         .getPosition(new THREE.Vector3())
         .sub(controls.getTarget(new THREE.Vector3()))
         .normalize();
-      if (dir.lengthSq() < 1e-6) dir.set(1, -1, 0.8).normalize();
+      // `!(x > y)` rather than `x < y` so a NaN direction takes the fallback too
+      if (!(dir.lengthSq() > 1e-6)) dir.set(1, -1, 0.8).normalize();
+      // An animated fit eases from wherever the camera is DRAWN. camera-controls'
+      // ease is critically damped, closing about three orders of magnitude a
+      // second, so from a camera stranded 5.2e100 mm out it took 28.6 s at
+      // 60 fps (measured, 1,714 frames) before the part was even back inside
+      // the far plane. Snap instead: the user is already looking at nothing.
+      const drawnPos = controls.getPosition(new THREE.Vector3(), false);
+      const drawnTarget = controls.getTarget(new THREE.Vector3(), false);
+      const stranded = ![drawnPos.x, drawnPos.y, drawnPos.z, drawnTarget.x, drawnTarget.y, drawnTarget.z]
+        .every(isSaneCoord);
+      const animate = enableTransition && !stranded;
 
-      let dist: number;
       if (usingOrtho) {
         // frame the sphere by setting the ortho zoom via frustum height
         const aspect2 = (ortho.right - ortho.left) / (ortho.top - ortho.bottom);
@@ -742,16 +816,20 @@ export function createCameraRig(
         // does not work properly in Ortho". Same idiom as swapProjection.
         pendingOrthoZoom = null; // a queued wheel step must not re-apply over this
         controls.zoomTo(1, false);
-        dist = Math.max(controls.distance, r * 2);
-      } else {
-        dist = r / Math.sin((FOV * Math.PI) / 180 / 2);
       }
-      controls.setTarget(center.x, center.y, center.z, enableTransition);
+      // How far the whole model reaches toward the camera from the framed
+      // centre: after Isolate, Fit frames one part, and the rest of the
+      // assembly must still end up in front of an ortho camera (fitDistance).
+      const reach = contentCentre
+        ? contentCentre.clone().sub(center).dot(dir) + contentRadius * 1.15
+        : 0;
+      const dist = fitDistance(r, usingOrtho, reach);
+      controls.setTarget(center.x, center.y, center.z, animate);
       controls.setPosition(
         center.x + dir.x * dist,
         center.y + dir.y * dist,
         center.z + dir.z * dist,
-        enableTransition,
+        animate,
       );
     },
     setStandardView(view: StandardView) {
@@ -894,6 +972,9 @@ export function createCameraRig(
     clearOrbitPivot,
     setOnOrbitStart(fn: () => void) {
       onOrbitStart = fn;
+    },
+    setOnUserMove(fn: () => void) {
+      onUserMove = fn;
     },
     setOrbitLocked(locked) {
       orbitLocked = locked;

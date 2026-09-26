@@ -198,6 +198,23 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A model with a few unusual imported surfaces no longer blanks the whole
+  view.** On a 340 body Ender 3 assembly, seven imported parts each had a
+  cone-shaped face that was never cut into triangles, and the size reported for
+  the model came back as effectively infinite. The 3D view believed it: Fit and
+  every window resize threw the camera so far away that nothing was left on
+  screen, not even the grid, and pressing Fit again could not bring it back.
+  The view now measures the model from what it actually draws whenever a
+  reported size is not believable, and Fit always puts the camera back where the
+  model is. Three related changes came with it. Opening or recovering a document
+  frames it again: since early August an opened document came up wherever the
+  camera happened to be, often showing nothing at all. File > New and Close now
+  come back to the origin, instead of framing the document you just closed. Fit
+  frames the bodies you can see, so after Isolate it goes to that one body
+  instead of the whole assembly. And a document that opens with most or all of
+  its bodies hidden now says so, with a Show all button, instead of leaving an
+  empty view to puzzle over.
+
 - **The installers now include the full license texts of the libraries inside
   them.** NOTICE.md has always said these texts ship under `LICENSES/`, and no
   build before this one actually included them. Every build now collects 61

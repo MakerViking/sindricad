@@ -812,8 +812,16 @@ def _union_bbox(boxes):
     356 MiB reference assembly against STALL_TIMEOUT = 60 s, so the supervisor
     reaped the worker before the rebuild could finish, every time. The union is
     exactly equivalent (`part` is the Compound of the same shapes) but is
-    accumulated per body, where _body_payload's own progress tick covers it."""
-    present = [bb for bb in boxes if bb is not None]
+    accumulated per body, where _body_payload's own progress tick covers it.
+
+    A box the camera cannot frame is SKIPPED, not unioned: one body's +/-1e100
+    made the whole document's box +/-1e100 and emptied the viewport (Ender 3
+    assembly, 7 of 340 bodies). mesh_bbox no longer produces one, so this is the
+    last gate before the wire rather than the fix. The gate is the one mass
+    properties already applies to the same boxes."""
+    from builder import _publishable_bbox
+
+    present = [bb for bb in boxes if _publishable_bbox(bb)]
     if not present:
         return None
     return {

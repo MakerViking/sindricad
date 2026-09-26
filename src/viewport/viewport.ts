@@ -69,6 +69,7 @@ const FLUSH_SEAM_MAX_EDGES = 20_000;
 
 import { Highlighter } from "./highlight";
 import { ProgressiveModel } from "./progressive";
+import { documentBox, framingBox, isSaneBox, wireBox } from "./modelBox";
 import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
 import { niceStep } from "../ui/units";
@@ -259,6 +260,14 @@ export class Viewport {
   // (common under remote desktops / fractional scaling), which would otherwise
   // leave the model rendered off-centre and un-aimable.
   private userMovedCamera = false;
+  // Whether the user has actually MOVED the camera (a drag that orbits or pans,
+  // a wheel zoom, the SpaceMouse) since releaseCamera(), that is, since this
+  // document came on screen. A load's owed Fit gives way to that and to nothing
+  // less. userMovedCamera above is not it: every PRESS on the canvas sets that
+  // one, a left selection click included. Gated on it, one click on the view
+  // during a 2-body Open left the camera 2,455 mm out instead of framing the
+  // parts at 54 mm (measured in the app).
+  private cameraDriven = false;
   // Render-on-demand: the loop only draws when something is actually dirty —
   // the camera moved (rig.update's own return), a mutation flagged us via
   // requestRender(), or we're still in the few-frame "linger" window after one
@@ -325,6 +334,9 @@ export class Viewport {
     // pivot was silently never applied to the gesture it matters most for. The
     // rig announces that start itself.
     this.rig.setOnOrbitStart(gestureStarted);
+    this.rig.setOnUserMove(() => {
+      this.cameraDriven = true;
+    });
     mountPivotButton(
       () => this.pivotMode,
       (m) => this.setOrbitPivotMode(m),
@@ -510,7 +522,7 @@ export class Viewport {
         e.preventDefault();
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1; // lines/pages -> px
         const dy = Math.max(-240, Math.min(240, e.deltaY * unit));
-        this.userMovedCamera = true;
+        this.noteCameraDriven();
         // zoom toward what's under the cursor (MCAD-style), not the orbit centre
         this.rig.zoomBy(Math.pow(1.0016, dy), this.cursorWorldPoint(e.clientX, e.clientY));
         this.requestRender();
@@ -1189,19 +1201,24 @@ export class Viewport {
    *  before any geometry exists, and never move again during the load.
    *
    *  The commit (setModel, with the finished result) is still authoritative;
-   *  everything built here is keyed by id+etag so setModel reuses it. */
+   *  everything built here is keyed by id+etag so setModel reuses it.
+   *
+   *  Returns whether the fit it was asked for is paid in full, or is still
+   *  owed to the commit. */
   beginProgressiveModel(
     epoch: number,
     manifest: NonNullable<RebuildResult["bodies"]>,
     result: RebuildResult,
-    bbox: RebuildResult["bbox"],
+    bbox: RebuildResult["bbox"] | null,
     hiddenBodies: string[],
     fit: boolean,
-  ) {
-    const box = new THREE.Box3(
-      new THREE.Vector3(...(bbox?.min ?? [0, 0, 0])),
-      new THREE.Vector3(...(bbox?.max ?? [0, 0, 0])),
-    );
+  ): boolean {
+    // Nothing has arrived yet to check `bbox` against, so a box the camera
+    // cannot be aimed at (missing, non-finite, or the ±1e100 of an open OCCT
+    // box, see modelBox.ts) is not used at all: the stream runs on an empty
+    // box and the fit waits for the commit, which measures the triangles.
+    const sent = wireBox(bbox);
+    const box = isSaneBox(sent) ? sent : new THREE.Box3();
     this.streaming = true;
     // Force any stray setModel during the stream down the FULL path: the
     // visibility-only fast path keys on result identity, and the in-progress
@@ -1212,8 +1229,16 @@ export class Viewport {
     );
     this.adoptProgressiveView(view);
     this.targetGridZ = groundGridZ(box.min.z);
-    if (fit) this.rig.fit(box, true);
+    // Fit here whenever the box is sane, so the parts arrive in view instead of
+    // wherever the previous document left the camera. With a body hidden it is
+    // not the whole answer: Fit frames the VISIBLE bodies (fitTarget), and only
+    // the commit has their triangles to measure, so the fit stays owed to the
+    // commit to finish. Not at all once the user has moved the camera over
+    // this document (see setModel).
+    const fitNow = fit && !this.cameraDriven && !box.isEmpty();
+    if (fitNow) this.rig.fit(box, true);
     this.requestRender();
+    return fitNow && hiddenBodies.length === 0;
   }
 
   /** Add the bodies one chunk delivered. Deliberately does NOT run the
@@ -1288,7 +1313,16 @@ export class Viewport {
           anyChanged = true;
         }
       }
-      if (anyChanged) for (const d of edgeObjects(this.model)) d.flush();
+      if (anyChanged) {
+        for (const d of edgeObjects(this.model)) d.flush();
+        // Render-on-demand: flipping `visible` dirties nothing the loop can
+        // see. Without this line the eye toggle repaints only because main.ts
+        // happens to call setErrorEdgeMids next, which requests a frame (a
+        // headless drive of 63c669f read needsRender false after this path
+        // alone). That is its business, not this path's, as with the full
+        // path below.
+        this.requestRender();
+      }
       return;
     }
     // A stream that reached here has done its job: every body it built is keyed
@@ -1364,7 +1398,10 @@ export class Viewport {
     const orphanEdges = orphans.length ? buildEdgeLines(orphans, this.resolution) : null;
     if (orphanEdges) this.scene.modelGroup.add(orphanEdges.object);
 
-    const box = new THREE.Box3(new THREE.Vector3(...result.bbox.min), new THREE.Vector3(...result.bbox.max));
+    // Never the sidecar's box verbatim: every consumer below (grid floor,
+    // orbit containment, datum quad size, Fit) trusts it, and one bad box
+    // blanked the whole view (modelBox.ts). A sane box is used as sent.
+    const { box } = documentBox(result.bbox, result.mesh.positions);
     const edges = bodies.flatMap((b) => b.edges.refs).concat(orphanEdges?.refs ?? []);
     this.model = { bodies, edges, orphanEdges, box };
 
@@ -1387,7 +1424,13 @@ export class Viewport {
     this.applyAnalysis(); // paints the analysis overlay, or assigned body colors when "none"
     if (this.zebra) this.applyZebra();
     if (this.combs) this.applyCombs();
-    if (fit) this.rig.fit(this.model.box, true);
+    // `fit` is a load's owed fit, not a command, so it gives way to the user:
+    // a large load streams for seconds (minutes cold), and someone who orbited
+    // to watch the parts arrive must not be yanked to a fresh Fit when the
+    // build commits. main.ts calls releaseCamera() at a replacing document's
+    // first frame, so the flag means exactly "the user moved the camera while
+    // this document was on screen".
+    if (fit && !this.cameraDriven) this.rig.fit(this.fitTarget(this.model), true);
     // A section cut outlives the rebuild that replaced these materials (#17).
     // Unconditional: applyClipPlane with no plane is what the fresh materials
     // already are, so this costs a loop and nothing else.
@@ -1577,7 +1620,10 @@ export class Viewport {
     for (const draw of edgeObjects(model)) draw.flush();
   }
 
-  clearModel() {
+  /** Drop the model. `fit` is a load's owed fit (see setModel) for a document
+   *  with no solid: it frames the human-scale origin view, as Fit does. */
+  clearModel(fit = false) {
+    if (fit && !this.cameraDriven) this.rig.fit(new THREE.Box3(), true);
     // END THE STREAM FIRST, above the early return. A build whose mesh is empty
     // (any document with a sketch but no solid yet) still arrives chunked, so it
     // opens a stream, and main.ts answers it with clearModel instead of
@@ -1628,7 +1674,48 @@ export class Viewport {
     // are off screen reaches for Fit, and Fit is the one command that knows
     // where "here" is. rig.fit() already answers an empty box with a
     // human-scale view of the origin, so hand it one rather than returning.
-    this.rig.fit(this.model?.box ?? new THREE.Box3(), true);
+    this.rig.fit(this.model ? this.fitTarget(this.model) : new THREE.Box3(), true);
+  }
+
+  /** What every Fit frames (the command, Home/F6, the SpaceMouse button, the
+   *  load fit and the resize re-fit): the VISIBLE bodies, so Fit after Isolate
+   *  frames the isolated body rather than the whole assembly around it. Every
+   *  body when none is visible, and the model box when no body has triangles
+   *  yet.
+   *
+   *  During a stream it is the model box whenever that box is sane: the bodies
+   *  are only the ones delivered so far, while the sidecar's box is already the
+   *  whole document. Framing the bodies there, a resize a few chunks in zoomed
+   *  onto the first handful of parts, and the commit, whose fit was already
+   *  paid at the first frame, left it there.
+   *
+   *  Cheap enough for the resize path: over 3,072 synthetic bodies (node,
+   *  2.4M vertices) the first call took 23 ms, because three computes and
+   *  caches each geometry's box, and every call after that 1.7 ms. */
+  private fitTarget(model: ModelView): THREE.Box3 {
+    if (this.streaming && isSaneBox(model.box)) return model.box.clone();
+    const box = framingBox(model.bodies.map((b) => b.mesh));
+    return box.isEmpty() ? model.box.clone() : box;
+  }
+
+  /** Forget that the user has driven the camera, so the next model gets its
+   *  owed load fit and is kept framed through resizes, the way a fresh
+   *  launch's is. For a document replacement, at the new document's FIRST
+   *  frame (main.ts, loadDebts.ts): until then the old one is on screen, and
+   *  the camera decisions the user makes are about it. */
+  releaseCamera() {
+    this.userMovedCamera = false;
+    this.cameraDriven = false;
+  }
+
+  /** The user moved the camera by a path camera-controls never reports: the
+   *  wheel, and the SpaceMouse, which drives the rig directly (truck, zoomBy,
+   *  tumble, roll) and so fires neither `controlstart` nor the rig's
+   *  onUserMove. From here on a load's owed Fit and the resize re-fit leave
+   *  the camera where the user put it. */
+  noteCameraDriven() {
+    this.userMovedCamera = true;
+    this.cameraDriven = true;
   }
 
   /** Back to the startup view: iso orientation, framed on whatever exists — or
@@ -2554,7 +2641,7 @@ export class Viewport {
     // (the actual cause of "the model renders in the corner and I can't aim at
     // it" under remote desktops / fractional scaling).
     if (this.model && !this.userMovedCamera && w > 10 && h > 10) {
-      this.rig.fit(this.model.box, false);
+      this.rig.fit(this.fitTarget(this.model), false);
     }
     this.requestRender();
   }

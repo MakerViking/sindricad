@@ -26,7 +26,9 @@ function ensureStack(): HTMLDivElement {
   return stack;
 }
 
-export function toast(message: string, opts: ToastOptions = {}) {
+/** Show a toast. Returns a function that dismisses it (harmless once it has
+ *  gone), for a toast whose message can stop being true while it is up. */
+export function toast(message: string, opts: ToastOptions = {}): () => void {
   const host = ensureStack();
   const kind = opts.kind ?? "info";
   // Toasts double as bug-report breadcrumbs. The crumb is the ENGLISH text plus
@@ -74,4 +76,5 @@ export function toast(message: string, opts: ToastOptions = {}) {
   // sticky by accident: nothing passes 0 unless it means it.
   const ms = opts.timeout ?? (kind === "error" ? 8000 : kind === "warning" ? 6000 : 3500);
   if (ms > 0) timer = window.setTimeout(dismiss, ms);
+  return dismiss;
 }

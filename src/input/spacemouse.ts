@@ -279,6 +279,13 @@ export async function initSpaceMouse(
     const modeSign = CONFIG.mode === "object" ? -1 : 1;
     const b = CONFIG.bind;
 
+    // Whether this frame moved the camera. None of the calls below reports
+    // itself (they drive the rig directly, not through camera-controls'
+    // pointer input), so without telling the viewport, a user navigating by
+    // puck alone was yanked by a load's owed Fit and re-framed on every
+    // window resize.
+    let moved = false;
+
     const px = val(b.panX, m), py = val(b.panY, m);
     // zoom-proportional: scale pan by the visible view height and zoom
     // multiplicatively (via the same rig.zoomBy the wheel uses), so the puck
@@ -290,10 +297,14 @@ export async function initSpaceMouse(
         modeSign * py * CONFIG.panSens * dt * scale,
         false,
       );
+      moved = true;
     }
     const z = val(b.zoom, m); // direction is its own preference, not mode-dependent
     // exp(-z): positive axis kept as zoom-IN (old dolly(+z)); zoomBy(>1) = out
-    if (z) viewport.rig.zoomBy(Math.exp(-z * CONFIG.zoomSens * dt));
+    if (z) {
+      viewport.rig.zoomBy(Math.exp(-z * CONFIG.zoomSens * dt));
+      moved = true;
+    }
 
     const az = val(b.orbitAz, m), pol = val(b.orbitPolar, m);
     if (!orbitLocked && (az || pol)) {
@@ -302,10 +313,15 @@ export async function initSpaceMouse(
       // tumble() rotates the orbit up-vector along with the camera — free
       // rotation over the poles, matching the 3Dconnexion driver feel.
       viewport.rig.tumble(modeSign * az * CONFIG.orbitSens * dt, modeSign * pol * CONFIG.orbitSens * dt);
+      moved = true;
     }
 
     const roll = val(b.roll, m);
-    if (!orbitLocked && roll) viewport.rig.roll(modeSign * roll * CONFIG.orbitSens * dt);
+    if (!orbitLocked && roll) {
+      viewport.rig.roll(modeSign * roll * CONFIG.orbitSens * dt);
+      moved = true;
+    }
+    if (moved) viewport.noteCameraDriven();
   };
   requestAnimationFrame(loop);
 }

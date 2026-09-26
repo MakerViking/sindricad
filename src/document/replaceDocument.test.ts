@@ -102,3 +102,55 @@ describe("replacing the document", () => {
     expect(h.cancels()).toBe(0);
   });
 });
+
+// The viewport has to know a replacement happened, not just see the model go:
+// Open/Recover owe the new document a Fit, and since ee204bc the one fit armed
+// at launch was spent on the blank startup document's empty reply, so no opened
+// file was ever framed. main.ts re-arms on this event. It must fire on every
+// replacement, BEFORE the replacement's rebuild is requested (or the reply could
+// land unarmed), and never on an ordinary edit (or every edit would re-fit and
+// yank the camera).
+describe("announcing a replacement", () => {
+  function recording() {
+    const events: string[] = [];
+    const be = {
+      async rebuild() {
+        events.push("rebuild");
+        return { ok: true as const, result: RESULT };
+      },
+      async init() {},
+      onStatus() { return () => {}; },
+      onProgress() { return () => {}; },
+      async cancel() { return true; },
+    } as unknown as GeometryBackend;
+    const store = new DocumentStore(be, DOC);
+    store.onReplace((how) => events.push(how));
+    return { store, events };
+  }
+
+  it("says 'load' for Open and Recover, before the rebuild of what was loaded", async () => {
+    const { store, events } = recording();
+    store.load(JSON.stringify({ parameters: {}, features: [] }));
+    expect(events.slice(0, 2)).toEqual(["load", "rebuild"]);
+  });
+
+  it("says 'new' for File > New and Close", async () => {
+    const { store, events } = recording();
+    store.newDocument();
+    expect(events.slice(0, 2)).toEqual(["new", "rebuild"]);
+  });
+
+  it("says nothing for a file it could not read, which replaces nothing", () => {
+    const { store, events } = recording();
+    expect(() => store.load("{ not json")).toThrow();
+    expect(events).toEqual([]);
+  });
+
+  it("says nothing for an ordinary edit and rebuild", async () => {
+    const { store, events } = recording();
+    await store.rebuildNow();
+    store.setBodiesVisibility(new Map([["b1", false]]));
+    await store.rebuildNow();
+    expect(events.filter((e) => e !== "rebuild")).toEqual([]);
+  });
+});

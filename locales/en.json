@@ -1778,6 +1778,17 @@
       "reading": "{fps} fps · {ms} ms",
       "title": "{count} frames drawn in the last {span}ms. The viewport renders on demand, so this only counts frames that were actually drawn."
     },
+    "hiddenBodies": {
+      "all": {
+        "one": "The only body in this document is hidden, so I have nothing to show.",
+        "other": "All {count} bodies in this document are hidden, so I have nothing to show."
+      },
+      "most": {
+        "one": "{count} of {total} bodies is hidden.",
+        "other": "{count} of {total} bodies are hidden."
+      },
+      "showAll": "Show all"
+    },
     "pivot": {
       "hint": {
         "cursor": "the point under the cursor when the drag starts",

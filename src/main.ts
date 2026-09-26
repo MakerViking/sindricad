@@ -41,6 +41,8 @@ import { currentAccount } from "./tinkeratlas/client";
 import { Menubar, dismissContextMenu } from "./ui/menu";
 import { choose, isChoiceOpen } from "./ui/choice";
 import { toast } from "./ui/toast";
+import { hiddenBodiesCue } from "./ui/hiddenBodiesCue";
+import { LoadDebts } from "./viewport/loadDebts";
 import { FEATURE_META } from "./ui/featureMeta";
 import { SketchOverlay } from "./sketch/overlay";
 import { SketchMode, type SketchTool } from "./sketch/sketchMode";
@@ -920,11 +922,26 @@ viewport.onSelectionChange = () => {
 };
 
 // --- rebuild pipeline -> viewport ---
-// Whether the camera still owes the model a frame. Cleared by whichever path
-// performs the fit — a progressive load fits from the manifest's bbox on its
-// FIRST frame, so the camera settles before any geometry exists and never moves
-// again while chunks land.
-let pendingFit = true;
+// What the camera and the user are still owed by the document on screen: a Fit
+// for every document that replaces the last one (Open, the recent list,
+// Recover, File > New, Close) and for the blank one at launch, a camera that
+// forgets the user's moves over the document it replaced, and the hidden-bodies
+// cue for a load. loadDebts.ts decides which build owes them; a progressive
+// load pays the fit on its FIRST frame when the manifest's box can be trusted,
+// so the camera settles before any geometry exists and never moves again while
+// chunks land, and otherwise the commit pays it. With bodies hidden, the commit
+// also narrows it to the visible ones.
+const owed = new LoadDebts();
+// The hidden-bodies cue on screen, if any. It describes one document and its
+// Show all acts on whichever is open when clicked, so it goes with its document:
+// left up, it described the file before, and its Show all un-hid the bodies the
+// NEXT file had been saved with hidden.
+let hiddenCue: { message: string; dismiss: () => void } | null = null;
+store.onReplace((how) => {
+  owed.replaced(how);
+  hiddenCue?.dismiss();
+  hiddenCue = null;
+});
 
 // resolve each body's assigned palette slot to a hex color for the viewport.
 function computeBodyPaint(bodies = store.buildState.result?.bodies): Record<string, string> {
@@ -988,8 +1005,17 @@ store.onBuildChunk((c) => {
     // streamed bodies arrive already wearing their assigned colour instead of
     // popping from grey when the build commits.
     viewport.setBodyPaint(computeBodyPaint(c.manifest));
-    viewport.beginProgressiveModel(c.epoch, c.manifest, c.result, c.bbox, hidden, pendingFit);
-    pendingFit = false;
+    // A replacing document's first frame. The one it replaces stayed on screen
+    // and navigable until now, for a minute or more on a cold open, and the
+    // user's moves over it must not cost this one its fit.
+    if (owed.firstFrame()) viewport.releaseCamera();
+    // It declines to fit on a box it cannot trust, and with bodies hidden
+    // it frames the whole model for now; either way the fit stays owed to the
+    // commit below. Neither fits once the user has moved the camera over this
+    // document.
+    if (viewport.beginProgressiveModel(c.epoch, c.manifest, c.result, c.bbox, hidden, owed.fit)) {
+      owed.fit = false;
+    }
     return;
   }
   const hidden = c.bodies.filter((b) => !store.isBodyVisible(b.id)).map((b) => b.id);
@@ -998,23 +1024,54 @@ store.onBuildChunk((c) => {
 store.onBuildAbort(() => viewport.abortProgressiveModel());
 
 store.onBuild((s) => {
+  // Every state, even one this handler otherwise ignores: the owing build is
+  // recognised by its start, and what it leaves unpaid at its settle is dropped
+  // (bar one case, a dropped connection: see LoadDebts.reconnected).
+  const due = owed.onBuild(s);
   // Only render COMPLETED builds. A `building` tick carries the previous result
   // (the new geometry isn't ready yet); re-rendering it would momentarily revert an
   // in-progress ghost (a committed Move/Press-Pull) to the old placement until the
   // real rebuild lands. Skipping it keeps the ghost on screen seamlessly.
   if (s.result && !s.building) {
+    // A reply that did not stream: this commit is the replacing document's
+    // first frame (see the chunk handler above).
+    if (due.release) viewport.releaseCamera();
     if (s.result.mesh.positions.length > 0) {
       // hide the faces AND wireframe of any body the user toggled off (filtered
       // in the render, no sidecar rebuild — setBodyVisibility re-emits the build).
       const hidden = (s.result.bodies ?? [])
         .filter((b) => !store.isBodyVisible(b.id))
         .map((b) => b.id);
-      viewport.setModel(s.result, pendingFit, hidden);
-      pendingFit = false;
+      viewport.setModel(s.result, due.fit, hidden);
       viewport.setBodyPaint(computeBodyPaint()); // apply assigned per-body colors
       viewport.setTexturePaint(computeTexturePaint()); // + per-face inlay colors
     } else {
-      viewport.clearModel();
+      // no solid yet (sketches only): an owed fit frames the origin view
+      viewport.clearModel(due.fit);
+    }
+    // A document that opens with most of its bodies hidden looks empty or
+    // broken, and the eye icons in the Browser are the only other trace.
+    const bodyIds = (s.result.bodies ?? []).map((b) => b.id);
+    const hiddenNow = () => hiddenBodiesCue(bodyIds, (id) => store.isBodyVisible(id));
+    // A cue already up goes as soon as what it says stops being true. Bodies
+    // shown with Shift+H, the View menu or an eye icon left "All 2 bodies ...
+    // are hidden" up over a view that was no longer empty.
+    if (hiddenCue && hiddenNow()?.message !== hiddenCue.message) {
+      hiddenCue.dismiss();
+      hiddenCue = null;
+    }
+    const cue = due.cue && bodyIds.length ? hiddenNow() : null;
+    if (cue) {
+      const dismiss = toast(cue.message, {
+        kind: cue.kind,
+        // Every body hidden means an empty view, and this button is the way
+        // back, so it stays until used or dismissed: a load can run for over a
+        // minute, long enough to look away. Most hidden is usually deliberate
+        // (an isolated part, saved), so that one goes on its own.
+        timeout: cue.kind === "warning" ? 0 : 10000,
+        action: { label: t("viewport.hiddenBodies.showAll"), onClick: () => handleAction("show-all-bodies") },
+      });
+      hiddenCue = { message: cue.message, dismiss };
     }
     // Failed-edge red paint (fillet/chamfer edgeOpFailed diagnostics). Runs for
     // BOTH committed and preview builds (a just-toggled bad edge should turn
@@ -1104,6 +1161,9 @@ geometry.onStatus((connected) => {
     // report of a dead engine: after "Try again" the flag stays set until one
     // does, so the status line is never optimistic on the strength of a click.
     engineDown = false;
+    // A load whose build the dropped connection failed is owed its Fit and
+    // cue by this rebuild of the same document (loadDebts.ts).
+    owed.reconnected();
     void store.rebuildNow();
   }
 });

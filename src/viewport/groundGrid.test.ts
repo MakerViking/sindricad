@@ -41,6 +41,17 @@ describe("the height the ground grid is drawn at", () => {
     expect(groundGridZ(NaN)).toBe(0);
   });
 
+  it("stays on the XY plane when the model's floor is not a real coordinate", () => {
+    // The 2026-09 blank viewport: a document box of ±1e100 mm (an untriangulated
+    // cone face, see modelBox.ts) is FINITE, so the finite-only guard above let
+    // it through and the grid was drawn at z = -1e100, nowhere near the view.
+    expect(groundGridZ(-1e100), "the grid followed an open OCCT box down to -1e100").toBe(0);
+    // ...while a real model hanging well below the origin is still followed,
+    // however far: the guard is for OCCT's sentinel, not for distance
+    expect(groundGridZ(-2500)).toBe(-2500);
+    expect(groundGridZ(-2e7), "a real floor 20 km down was taken for a sentinel").toBe(-2e7);
+  });
+
   it("puts the grid object itself on the XY plane, where the origin marker is", () => {
     // The effect, not the arithmetic: the group three actually renders.
     const grid = new AdaptiveGrid(new THREE.Scene());

@@ -12,6 +12,8 @@ Python loop — single-threaded and GIL-bound. On a 6-sphere union @0.01mm that 
 ~670ms; the parallel path below is ~85ms on a 5900X.)
 """
 
+import math
+
 from OCP.Bnd import Bnd_Box
 from OCP.BRep import BRep_Tool
 from OCP.BRepBndLib import BRepBndLib
@@ -28,7 +30,13 @@ from OCP.TopLoc import TopLoc_Location
 #   1 -> fixed 24-segment edge polylines, absolute-only surface deflection
 #   2 -> deviation-bounded edge polylines + optional relative surface deflection
 #   3 -> the cached payload carries the body's mesh bbox (see mesh_bbox)
-CODE_VERSION = 3
+#   4 -> mesh_bbox no longer returns OCCT's +/-1e100 open box for a body with an
+#        untriangulated unbounded face. The box rides INSIDE the cached payload.
+#        Belt and braces: an edit to this file already moves builder._env_sig,
+#        which seeds every meshKey, so a shipped build never serves a payload
+#        cached at 3. This bump is what still holds when SINDRI_ENV_SIG pins the
+#        signature (dev) or the file bytes did not change (an in-process test).
+CODE_VERSION = 4
 
 
 def tessellate(shape, tolerance=0.1, angular_tolerance=0.5, textures=None, density_cap=None,
@@ -943,10 +951,51 @@ def mesh_bbox(shape):
     than exact is also the safe direction for a camera fit: it never clips.
 
     Requires a triangulation to be present, so call it AFTER tessellate();
-    without one OCCT falls back to the loose poles-based box."""
+    without one OCCT falls back to the loose poles-based box.
+
+    That fallback is also how a box goes OPEN. BRepMesh leaves an unbounded face
+    untriangulated (7 of the 340 bodies in the Ender 3 assembly carry a cone face
+    with V bounds of +/-2e100), BRepBndLib then adds that face's geometric box,
+    and Get() comes back as +/-1e100 on every axis. The viewport framed that and
+    put the camera 5.2e100 mm away: an empty screen that Fit could not recover.
+    So an open or absurd box is rebuilt from the faces that WERE triangulated,
+    which is exactly what tessellate() emits, and None is returned if even that
+    is not a real box. A closed, sane box is returned exactly as before."""
     bnd = Bnd_Box()
     BRepBndLib.Add_s(shape.wrapped, bnd, True)
     if bnd.IsVoid():
         return None
+    if bnd.IsOpen() or not _coords_sane(bnd.Get()):
+        bnd = _triangulated_faces_box(shape)
+        if bnd.IsVoid() or bnd.IsOpen() or not _coords_sane(bnd.Get()):
+            return None
     xm, ym, zm, xM, yM, zM = bnd.Get()
     return {"min": [xm, ym, zm], "max": [xM, yM, zM]}
+
+
+# OCCT's scale for "unbounded", and the same limit builder._publishable_bbox
+# applies (its _BBOX_LIMIT): an open side reads Bnd_Precision_Infinite = 1e100,
+# and a face evaluated at its +/-2e100 parameter bounds lands at that scale too.
+# It is a SENTINEL test, not a size or distance limit. The camera frames relative
+# to the box, so a real part far from the origin (site coordinates: 1 m at
+# x = 20 km) frames fine, and an earlier 1e7 mm cap here took its box away.
+_UNBOUNDED_MM = 1e99
+
+
+def _coords_sane(values):
+    return all(math.isfinite(v) and abs(v) < _UNBOUNDED_MM for v in values)
+
+
+def _triangulated_faces_box(shape):
+    """The box BRepBndLib.Add_s builds, over only the faces that carry a
+    triangulation, i.e. exactly the faces tessellate() emits triangles for.
+
+    Not Bnd_Box.FinitePart(), although it agreed with this on all 7 Ender
+    bodies: FinitePart keeps whatever finite coordinates the unbounded face
+    contributed. An infinite plane at z=50 next to a box spanning x 95..105,
+    z -15..15 gives a FinitePart reaching x=0 and z=50, where nothing is drawn."""
+    bnd = Bnd_Box()
+    for face in shape.faces():
+        if BRep_Tool.Triangulation_s(face.wrapped, TopLoc_Location()) is not None:
+            BRepBndLib.Add_s(face.wrapped, bnd, True)
+    return bnd

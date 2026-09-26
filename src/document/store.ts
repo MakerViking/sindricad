@@ -203,6 +203,7 @@ export class DocumentStore {
   private buildEpoch = 0;
   private chunkListeners = new Set<(c: BuildChunk) => void>();
   private abortListeners = new Set<(epoch: number) => void>();
+  private replaceListeners = new Set<(how: "new" | "load") => void>();
   private build: RebuildState = {
     building: false,
     result: null,
@@ -348,6 +349,15 @@ export class DocumentStore {
     this.abortListeners.add(fn);
     return () => this.abortListeners.delete(fn);
   }
+  /** The document was REPLACED: "new" for File > New and Close, "load" for
+   *  everything that reads one in (Open, the recent list, Recover). Fired after
+   *  the old model is discarded and before the replacement's rebuild starts,
+   *  so a listener can prepare for that rebuild's reply. Not replayed to a new
+   *  subscriber: a replacement is an event, not a state. */
+  onReplace(fn: (how: "new" | "load") => void): () => void {
+    this.replaceListeners.add(fn);
+    return () => this.replaceListeners.delete(fn);
+  }
   /** notified when the file path or dirty flag changes (for the titlebar). */
   onMeta(fn: MetaListener): () => void {
     this.metaListeners.add(fn);
@@ -425,6 +435,7 @@ export class DocumentStore {
     this.path = null;
     this.isDirty = false;
     this.discardModelForReplacement();
+    for (const fn of this.replaceListeners) fn("new");
     this.emitDoc();
     this.emitMeta();
     this.scheduleRebuild(true);
@@ -1372,6 +1383,7 @@ export class DocumentStore {
     }
     this.markDirty(); // openDocument clears this via markSaved() once the path is known
     this.discardModelForReplacement();
+    for (const fn of this.replaceListeners) fn("load");
     this.emitDoc();
     this.scheduleRebuild(true);
   }
