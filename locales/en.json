@@ -43,7 +43,7 @@
       "syncQuestion": "Sync palette from printer?",
       "synced": "Palette synced from printer."
     },
-    "planeTitle": "Construction plane — select then Split Body cuts by it · right-click for Cut / Rename / Delete · eye to show/hide",
+    "planeTitle": "Construction plane · right-click to split bodies with it, rename or delete · eye to show/hide",
     "showNamed": "Show {name}",
     "sketchTitle": "Double-click to edit · right-click for Edit / Rename / Delete · eye to show/hide",
     "title": "Browser",
@@ -181,7 +181,6 @@
   "context": {
     "color": "Color",
     "combineWith": "Combine with…",
-    "cutAllBodies": "Cut all bodies",
     "deleteFaceHeal": "Delete face (heal)",
     "deletePlane": "Delete plane",
     "editFeature": "Edit {name}",
@@ -214,6 +213,8 @@
     "showAllBodies": "Show all bodies",
     "sketchOnFace": "Sketch on this face",
     "sketchOnPlane": "Sketch on plane",
+    "splitBody": "Split Body…",
+    "splitWithPlane": "Split bodies with this plane…",
     "view": {
       "front": "Front",
       "isometric": "Isometric",
@@ -244,6 +245,35 @@
       "replyTooLarge": "the result is too large to display",
       "rustImportUnsupported": "geometry import isn't supported by the Rust backend yet — run without VITE_GEOM=rust",
       "rustInterferenceUnsupported": "interference check isn't supported by the Rust backend yet — run without VITE_GEOM=rust",
+      "splitBodiesGone": {
+        "one": "{count} of the bodies this split was made on does not exist at this point in the timeline, so I cut only the others.",
+        "other": "{count} of the bodies this split was made on do not exist at this point in the timeline, so I cut only the others."
+      },
+      "splitCrashed": "Split crashed the geometry kernel, so nothing was split. Moving the plane slightly with an offset may help.",
+      "splitDamaged": "Split changed nothing: every part of {body} that the plane crosses is damaged, and I leave damaged parts whole rather than cut them.",
+      "splitDamagedAll": {
+        "one": "Split changed nothing: the one part of {body} that the plane crosses is damaged, and the plane does not pass through the other selected bodies. I leave damaged parts whole rather than cut them.",
+        "other": "Split changed nothing: the {count} parts of {body} that the plane crosses are damaged, and the plane does not pass through the other selected bodies. I leave damaged parts whole rather than cut them."
+      },
+      "splitDamagedAllMore": {
+        "one": "Split changed nothing: {count} of the selected bodies, {body}, has damaged parts crossing the plane ({parts} in all), and the plane cuts nothing else. I leave damaged parts whole rather than cut them.",
+        "other": "Split changed nothing: {count} of the selected bodies, {body} among them, have damaged parts crossing the plane ({parts} in all), and the plane cuts nothing else. I leave damaged parts whole rather than cut them."
+      },
+      "splitDamagedParts": {
+        "one": "{count} part of {body} crosses the plane but is damaged, so I left it whole.",
+        "other": "{count} parts of {body} cross the plane but are damaged, so I left them whole."
+      },
+      "splitFaceGone": "Split: the face the splitting plane was taken from is gone, because its body does not exist at this point in the timeline. Pick the splitting plane again.",
+      "splitFailed": "Split failed on {body}: the geometry kernel could not cut it. Nothing was changed.",
+      "splitLegacyFailed": "Split failed on {body}: this split was made in an older version, which could not cut it. Edit the split and press OK to cut it part by part.",
+      "splitLegacyVolume": "The pieces of {body} do not add up to the body this split cut: some of its parts are damaged, and this split was made in an older version, which cut damaged parts anyway. Edit the split and press OK to cut it part by part, which leaves damaged parts whole.",
+      "splitMissed": "Split changed nothing: the plane does not pass through {body}.",
+      "splitMissedAll": "Split changed nothing: the plane does not pass through any of the selected bodies.",
+      "splitNoBody": "Split: nothing it was made to cut exists at this point in the timeline. Edit the split and pick the bodies to cut again.",
+      "splitNoPlane": "Split: the plane this cut uses does not exist at this point in the timeline. Pick the splitting plane again.",
+      "splitOnFace": "Split changed nothing: the plane lies on a face of {body} and does not pass through it. Give the cut an offset to move it into the body.",
+      "splitSeparated": "Nothing solid was cut through on {body}: the plane only separated the parts on each side of it.",
+      "splitSeparatedKept": "Nothing solid was cut through on {body}: I kept the parts on the side you chose and removed the ones on the other side.",
       "stalled": "the geometry engine stopped responding",
       "timedOut": "operation timed out — geometry too complex or degenerate",
       "tooLarge": "This model is too large for the geometry engine: {size} MiB, and the limit is {limit} MiB. Remove or simplify the imported body, then try again.",
@@ -251,6 +281,9 @@
       "unknownOp": "the geometry engine does not know this operation (update SindriCAD)"
     },
     "reportHere": "click the bug button in the bottom-right corner so I get the log",
+    "warning": {
+      "splitMissed": "The plane does not pass through {body}, so I left it as it was."
+    },
     "wire": {
       "incomplete": "the geometry engine's reply was incomplete",
       "manifestMismatch": "the geometry engine sent a body that did not match its manifest",
@@ -426,6 +459,70 @@
       "horizontalHint": "horizontal cut",
       "prompt": "Section: drag the arrow to move the cut · type a value + Enter · F flips the kept side · Esc to close"
     },
+    "split": {
+      "above": "Above",
+      "allVisible": "All visible bodies ({count})",
+      "bodyCount": {
+        "one": "{count} body",
+        "other": "{count} bodies"
+      },
+      "bodyField": "Body to split",
+      "bodyNone": "Click a body to split",
+      "clearField": "Clear",
+      "curvedFace": "Split needs a flat face. Click a flat face, a construction plane or an origin plane.",
+      "face": "Flat face",
+      "faceOf": "Face of {name}",
+      "fixedPlane": "Fixed plane",
+      "keep": "Keep",
+      "keepAbove": "Above",
+      "keepAboveTitle": "Keep the side the arrow points to and remove the other",
+      "keepBelow": "Below",
+      "keepBelowTitle": "Keep the side away from the arrow and remove the other",
+      "keepBoth": "Both",
+      "keepBothTitle": "Keep both sides, as separate bodies",
+      "needBody": "Pick at least one body to split.",
+      "needTool": "Pick a plane or a flat face to split with.",
+      "pieceName": "{name} ({n})",
+      "planeGone": "The plane this split used no longer exists. Pick another plane or a flat face to split with.",
+      "planeMisses": "The plane does not pass through the selected bodies. Change the offset or pick another plane.",
+      "planeMissesBody": "The plane does not pass through {name}. Ctrl-click it to take it out of the split, or change the offset or the plane.",
+      "planeNotYet": "{name} comes later in the timeline than this split, so the split cannot use it. Pick a plane made before it.",
+      "planeSuppressed": "{name} is suppressed, so the split cannot use it. Unsuppress it or pick another plane.",
+      "prompt": {
+        "body": "Click the bodies to split. Ctrl-click adds or removes one.",
+        "ready": "Drag the arrow or type an offset, then press OK or Enter. To pick a body or plane again, click its field first.",
+        "tool": "Click a flat face, a construction plane or an origin plane to split with."
+      },
+      "summary": {
+        "damaged": {
+          "one": "{count} body has damaged parts crossing the plane ({parts} in all), so I left those parts whole: {names}.",
+          "other": "{count} bodies have damaged parts crossing the plane ({parts} in all), so I left those parts whole: {names}."
+        },
+        "legacyVolume": {
+          "one": "The pieces of {count} body do not add up to the body this split cut: {names}. This split was made in an older version, which cut damaged parts anyway. Edit the split and press OK to cut it part by part.",
+          "other": "The pieces of {count} bodies do not add up to the bodies this split cut: {names}. This split was made in an older version, which cut damaged parts anyway. Edit the split and press OK to cut it part by part."
+        },
+        "missed": {
+          "one": "The plane does not pass through {count} of the bodies you picked, so I left it as it was: {names}.",
+          "other": "The plane does not pass through {count} of the bodies you picked, so I left them as they were: {names}."
+        },
+        "more": {
+          "one": "{count} more",
+          "other": "{count} more"
+        },
+        "partsIn": "{count} in {name}",
+        "separated": {
+          "one": "Nothing solid was cut through on {count} body, the plane only separated its parts: {names}.",
+          "other": "Nothing solid was cut through on {count} bodies, the plane only separated their parts: {names}."
+        },
+        "separatedKept": {
+          "one": "Nothing solid was cut through on {count} body, so I kept its parts on the side you chose and removed the others: {names}.",
+          "other": "Nothing solid was cut through on {count} bodies, so I kept their parts on the side you chose and removed the others: {names}."
+        }
+      },
+      "toolField": "Splitting tool",
+      "toolNone": "Click a plane or a flat face"
+    },
     "starters": {
       "axis": {
         "x": "X axis",
@@ -444,20 +541,8 @@
       },
       "curvedFacePlane": "Curved face — this plane sits on a tangent and will not follow later edits.",
       "curvedFaceSketch": "Curved face — this sketch sits on a tangent plane and will not follow later edits.",
-      "cutByPlane": {
-        "name": "Cut",
-        "title": "Cut — keep which side?"
-      },
       "draft": {
         "pickFace": "Select a face to draft · Esc to cancel"
-      },
-      "keep": {
-        "both": "Both",
-        "bothHint": "two bodies",
-        "bottom": "Bottom",
-        "bottomHint": "−normal side",
-        "top": "Top",
-        "topHint": "+normal side"
       },
       "mirror": {
         "needsBody": "Mirror: create a body first",
@@ -503,11 +588,6 @@
         "cutHint": "remove",
         "joinHint": "merge",
         "newHint": "separate"
-      },
-      "split": {
-        "pickPlane": "Select a plane or face to cut by",
-        "title": "Split Body — keep which side?",
-        "whichBody": "Which body to split?"
       },
       "sweep": {
         "needsPath": "Sweep: add a second sketch with an open curve for the path",
@@ -602,7 +682,8 @@
     "upTo": {
       "clickPrompt": "Click the face or plane to extrude UP TO (any face, any body) · Esc to go back",
       "pickPrompt": "Pick the face or plane to extrude UP TO (any face, any body) · Esc to go back"
-    }
+    },
+    "warned": "{name}: {reason}"
   },
   "file": {
     "close": {
@@ -1594,6 +1675,10 @@
     "failingFeatures": "Failing features — click to jump to the next one",
     "markerTitle": "Drag to roll the model back / forward",
     "meshingProgress": "meshing {done}/{total}",
+    "moreNotes": {
+      "one": "and {count} more",
+      "other": "and {count} more"
+    },
     "repickFace": "Re-pick face…",
     "rollPastHere": "Roll past here",
     "rollToEnd": "Roll forward to the end",

@@ -252,9 +252,22 @@ describe("editing a feature always reaches an editor or an explanation", () => {
     expect(fallback, "the fallback does not put the caret in the inspector").toMatch(/inspector\.select\(id,\s*true\)/);
   });
 
+  it("a split can be edited: its panel re-opens, and the inspector has its Offset", () => {
+    // Before the Split Body panel a split had no arm and no fields, so the
+    // only way to move a cut was to delete it and cut again.
+    expect(isInspectorEditable("split")).toBe(true);
+    const body = editSwitchBody(mainSrc);
+    const at = body.indexOf('case "split"');
+    expect(at, "editFeature has no split arm — double-clicking a split lands on the bare inspector").toBeGreaterThan(-1);
+    const arm = body.slice(at, body.indexOf("break;", at));
+    expect(arm, "the split arm does not re-open the panel, or has no inspector fallback").toMatch(/if \(!splitTool\.startEdit\(id, done\)\) toInspector\(\);/);
+  });
+
   it("promises double-click only where something can be edited", () => {
-    // The 8 types with neither numeric fields nor an interactive tool
-    // (deleteFace, mirror, loft, sweep, import, split, combine, removeBody).
+    // The types with neither numeric fields nor an interactive tool
+    // (deleteFace, mirror, loft, sweep, import, combine, removeBody, ...).
+    // Split left this list when the Split Body panel made it editable: it has
+    // an Offset field in the inspector and re-opens its panel on double-click.
     const fieldless = TYPES.filter((t) => !isInspectorEditable(t));
     expect(fieldless.length, "no fieldless types found — the predicate is broken").toBeGreaterThan(0);
     for (const t of fieldless) {

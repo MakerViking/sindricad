@@ -16,6 +16,8 @@ import type { MoveTool } from "./moveTool";
 import type { PlaneOffsetTool } from "./planeOffsetTool";
 import type { TextureTool } from "./textureTool";
 import type { TextOnFaceTool } from "./textOnFaceTool";
+import type { SplitTool } from "./splitTool";
+import type { SplitSeed } from "./splitState";
 import { choose } from "../ui/choice";
 import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
@@ -30,11 +32,10 @@ import { t } from "../i18n";
  *  the two are indistinguishable on screen. Shared with contextMenus, which
  *  offers the same two entries from the right-click menu.
  *
- *  Two nouns, because the picker is shared by four flows: warning about "this
+ *  Two nouns, because the picker is shared by three flows: warning about "this
  *  sketch" while the user is placing a Datum Plane names a feature that is not
- *  being created. Split Body passes NEITHER — it bakes an absolute plane and has
- *  no `face` field at all (types.ts), so no follow was ever on offer there and
- *  the whole warning would be about nothing. */
+ *  being created. (Split Body no longer uses this picker: its panel refuses a
+ *  curved face outright, because a split needs a plane.) */
 export const CURVED_FACE_NOTE = t("feature.starters.curvedFaceSketch");
 export const CURVED_FACE_NOTE_PLANE = t("feature.starters.curvedFacePlane");
 
@@ -58,6 +59,7 @@ export interface FeatureStartersDeps {
   planeOffset: PlaneOffsetTool;
   texture: TextureTool;
   textOnFace: TextOnFaceTool;
+  split: SplitTool;
   canvas: HTMLCanvasElement;
   toolBusy: () => boolean;
   hasBody: () => boolean;
@@ -83,6 +85,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     planeOffset,
     texture,
     textOnFace,
+    split,
     canvas,
     toolBusy,
     hasBody,
@@ -343,56 +346,27 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     );
   }
 
-  // Split Body: choose which side(s) to keep, then pick + position a cutting plane.
-  // Reuses the plane picker + offset gizmo so the cut lands exactly where you want.
-  async function startSplit() {
+  // Split Body: a docked panel with two fields, Body to split and Splitting
+  // tool, filled by clicking the model or the Browser (splitTool.ts).
+  //
+  // It replaced three modal steps: "keep which side?", a list of every body by
+  // name (340 near-identical names on an imported assembly), then a plane
+  // pick. It also retires a trap: a selected datum plane used to switch this
+  // command to "cut every visible body" there and then, with no way to say
+  // which. A selected datum now just fills the Tool field, and "All visible
+  // bodies" is a choice the user makes on purpose.
+  //
+  // `seed` is what a right-click already named: the Browser row a body menu
+  // was opened on, or the datum a plane menu was opened on.
+  function startSplit(seed?: SplitSeed) {
     if (busy()) return;
     if (needsBody(t("tool.split"))) return;
-    // "select that plane and cut": a selected construction plane cuts ALL visible
-    // bodies by id (startCutByPlane handles the keep-side prompt).
     const selId = getSelectedFeature();
     const sel = selId ? store.document.features.find((f) => f.id === selId) : null;
-    if (sel?.type === "datumPlane") return void startCutByPlane(sel.id);
-
-    const keep = await choose<"both" | "top" | "bottom">(t("feature.starters.split.title"), keepSideOptions());
-    if (!keep) return;
-    const bodies = store.buildState.result?.bodies ?? [];
-    let body: string | undefined;
-    if (bodies.length > 1) {
-      const picked = await chooseBody(t("feature.starters.split.whichBody"), bodies);
-      if (!picked) return;
-      body = picked;
-    }
-    pickPlaneInteractive(t("feature.starters.split.pickPlane"), (spec) => {
-      planeOffset.start(new SketchPlane(spec), (def) => {
-        if (def) store.addFeature({ id: store.nextId(), type: "split", plane: def, keep, body, groupSides: true } as Feature);
-      });
-      // no note: a split bakes its plane and has no `face` field, so there is no
-      // follow here to lose and nothing to warn about
-    }, null);
-  }
-
-  // Cut ALL visible bodies by a construction plane (right-click a plane → Cut, or
-  // select a plane + Split Body). Reuses the split feature with `planeId` + the list
-  // of currently-visible body ids.
-  async function startCutByPlane(planeId: string) {
-    if (busy()) return;
-    if (needsBody(t("feature.starters.cutByPlane.name"))) return;
-    const keep = await choose<"both" | "top" | "bottom">(t("feature.starters.cutByPlane.title"), keepSideOptions());
-    if (!keep) return;
-    const ids = (store.buildState.result?.bodies ?? [])
-      .filter((b) => store.isBodyVisible(b.id))
-      .map((b) => b.id);
-    store.addFeature({ id: store.nextId(), type: "split", planeId, keep, bodies: ids, groupSides: true } as Feature);
-  }
-
-  /** The keep-which-side choices Split Body and Cut share. */
-  function keepSideOptions() {
-    return [
-      { value: "both" as const, label: t("feature.starters.keep.both"), hint: t("feature.starters.keep.bothHint") },
-      { value: "top" as const, label: t("feature.starters.keep.top"), hint: t("feature.starters.keep.topHint") },
-      { value: "bottom" as const, label: t("feature.starters.keep.bottom"), hint: t("feature.starters.keep.bottomHint") },
-    ];
+    split.start(
+      { seed, selectedDatum: sel?.type === "datumPlane" ? sel.id : null },
+      (id) => { noteCommitted(id); if (id) selectFeature(id); },
+    );
   }
 
   // Combine: boolean-join/cut/intersect bodies. With exactly two bodies the first
@@ -890,7 +864,6 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     createDatumPlane,
     offsetPlaneFromFace,
     startSplit,
-    startCutByPlane,
     startCombine,
     startSimplifyMesh,
     startCleanUp,

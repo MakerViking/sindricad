@@ -1,11 +1,13 @@
 // WHICH warning a curved-face pick says, and to whom.
 //
-// The plane picker is shared by four flows (sketch, offset plane, datum plane,
+// The plane picker was shared by four flows (sketch, offset plane, datum plane,
 // split body), and the "curved face" toast used to be emitted inside it,
 // unconditionally, in the SKETCH's words. So picking the barrel of a cylinder to
-// split by warned about a sketch that was not being created — and about a follow
-// that was never on offer there: a split bakes an absolute plane and has no
-// `face` field at all (types.ts), so nothing was ever going to anchor.
+// split by warned about a sketch that was not being created.
+//
+// Split Body no longer uses this picker: its panel owns its own Tool pick and
+// REFUSES a curved face in its own words (a split needs a plane), which
+// splitTool.test.ts covers. The two flows left here still share the picker.
 //
 // Driving the real picker means driving its pointerdown, so the canvas stub here
 // hands back the handler the starter registered. Everything under test is real.
@@ -110,16 +112,5 @@ describe("the curved-face warning names the feature being made", () => {
     starters.createDatumPlane();
     click();
     expect(spoken.map((s) => s.text)).toEqual([CURVED_FACE_NOTE_PLANE]);
-  });
-
-  it("says nothing for Split Body, which never had a follow to lose", async () => {
-    spoken.length = 0;
-    const { starters, click } = harness();
-    await starters.startSplit();
-    click();
-    expect(
-      spoken.map((s) => s.text),
-      "Split warned about a sketch it is not creating, and a follow it never offered",
-    ).toEqual([]);
   });
 });

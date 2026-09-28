@@ -104,7 +104,6 @@ const ARGS: Record<string, unknown[]> = {
   createDatumPlane: [],
   offsetPlaneFromFace: [PLANE],
   startSplit: [],
-  startCutByPlane: ["p1"],
   startCombine: [],
   startSimplifyMesh: [],
   startCleanUp: [],
@@ -200,6 +199,7 @@ function harness(world: World) {
     planeOffset: tool("planeOffset"),
     texture: tool("texture"),
     textOnFace: tool("textOnFace"),
+    split: tool("split"),
     canvas: {
       addEventListener: (t: string) => act(`canvas.on(${t})`),
       removeEventListener: () => {},

@@ -88,6 +88,46 @@ describe("the timeline's amber diagnostic tier", () => {
       .toContain("This cut closed a cavity inside the body.");
   });
 
+  it("lists every distinct reason, not just the first, and caps a long list", () => {
+    // A split over many bodies reports one warning per body, and its toast only
+    // counts them (splitWarnings.ts), so the chip is where the user reads WHICH
+    // bodies. First-reason-only showed one body out of 73 on the field file.
+    const per = (i: number): ResolveDiag => ({ ...sealedVoid, reason: `note ${i}` });
+    const [, two] = renderChips(FEATURES, [per(1), per(2), per(1)]);
+    expect(two!.title).toContain("note 1");
+    expect(two!.title, "the second body's reason never reaches the tooltip").toContain("note 2");
+    expect(two!.title.split("note 1").length - 1, "a repeated reason is listed once").toBe(1);
+    // the same sentence about two DIFFERENT bodies (two bodies both named "Box") is two lines
+    const box = (b: string): ResolveDiag => ({ ...sealedVoid, reason: "cut on Box", body_id: b });
+    const [, same] = renderChips(FEATURES, [box("body1"), box("body5"), box("body1")]);
+    expect(same!.title.split("cut on Box").length - 1, "two bodies with one name collapsed into one line").toBe(2);
+    const [, many] = renderChips(FEATURES, Array.from({ length: 20 }, (_x, i) => per(i)));
+    expect(many!.title).toContain("note 11");
+    expect(many!.title).not.toContain("note 12");
+    expect(many!.title).toContain("and 8 more");
+  });
+
+  it("a split over many bodies names EVERY body in its tooltip, not the first twelve", () => {
+    // The field file's "All visible" cut: 62 bodies with damaged parts left
+    // whole and 11 only separated, one warning each. One line per warning cut
+    // off after 12 left the toast's count ("62 bodies have damaged parts...")
+    // the only trace of the other 50, and Q3 promised to NAME them.
+    const split = { id: "sp", type: "split" };
+    const note = (code: string, i: number, count?: number): ResolveDiag => ({
+      feature_id: "sp", kind: code as ResolveDiag["kind"], code, resolved: 0, confidence: 0, lossy: false,
+      reason: "r", body_id: `body${i}`, subject: `Part${i}`, ...(count === undefined ? {} : { count }),
+    });
+    const diags = [
+      ...Array.from({ length: 62 }, (_x, i) => note("splitDamagedParts", i, 2)),
+      ...Array.from({ length: 11 }, (_x, i) => note("splitSeparated", 100 + i)),
+    ];
+    const [, chip] = renderChips([FEATURES[0]!, split], diags);
+    expect(chip!.classList.contains("warn")).toBe(true);
+    for (let i = 0; i < 62; i++) expect(chip!.title, `Part${i}'s damaged parts are not named`).toContain(`2 in Part${i}`);
+    for (let i = 100; i < 111; i++) expect(chip!.title, `Part${i} is not named`).toContain(`Part${i}`);
+    expect(chip!.title, "the tooltip cut the list short").not.toMatch(/\d+ more/);
+  });
+
   it("red wins: a failing feature stays red even when it also diagnosed", () => {
     const chips = renderChips(FEATURES, [sealedVoid], [{ feature_id: "x1", message: "boom" }]);
     const extrude = chips[1]!;

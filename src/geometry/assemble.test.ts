@@ -148,6 +148,17 @@ describe("assemble (protocol v2, unchanged stubs)", () => {
     expect((r.bodies ?? []).map((x) => x.nodeRef)).toEqual(["f1/1", "f1/2"]);
   });
 
+  it("carries a split piece's pieceOf from the envelope, full body and stub alike", () => {
+    // It names the piece in the Browser ("<rename> (2)") and changes without
+    // the mesh, so like nodeRef it must come off the envelope.
+    const piece = { ...wireBody("body2", [0, 0, 1]), pieceOf: ["body1", 2] as [string, number] };
+    const r = assembleWithCache(
+      [piece],
+      [{ id: "body2", name: "Case (3)", etag: "etag-body2", pieceOf: ["body1", 3], unchanged: true }],
+    );
+    expect((r.bodies ?? [])[0]!.pieceOf).toEqual(["body1", 3]);
+  });
+
   it("omits nodeRef entirely for a body that has none", () => {
     const r = assembleWithCache(
       [wireBody("bodyA", [0, 0, 1])],

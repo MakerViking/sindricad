@@ -59,6 +59,8 @@ import { SectionTool } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
+import { SplitTool } from "./features/splitTool";
+import { diagBodyName, diagnosticText, splitWarningsToShow } from "./features/splitWarnings";
 import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStarters";
 import { repairableDiagFor } from "./features/repickReference";
 import { planeOf, activeDatumPlanes, datumPlaneDef as datumPlaneDefOf } from "./document/planeOf";
@@ -239,6 +241,21 @@ const section = new SectionTool(viewport);
 const planeOffset = new PlaneOffsetTool(viewport, store);
 const textureTool = new TextureTool(viewport, store);
 const textOnFaceTool = new TextOnFaceTool(viewport, store, geometry);
+const splitTool = new SplitTool({
+  viewport,
+  store,
+  // `tree` is declared further down; these run only once the tool starts.
+  setTreePick: (fn) => { tree.pickHook = fn; },
+  datumPlane: (id) => {
+    const f = store.document.features.find((x) => x.id === id);
+    return f?.type === "datumPlane" ? datumPlaneDef(f) : null;
+  },
+  datumName: (id) => {
+    const datums = store.document.features.filter((x) => x.type === "datumPlane");
+    const i = datums.findIndex((x) => x.id === id);
+    return (datums[i] as { name?: string } | undefined)?.name || t("common.planeName", { n: i + 1 });
+  },
+});
 
 // Debug handles for console + headless frontend-logic tests. Gated to DEV so
 // they're absent from production bundles — a post-XSS attacker shouldn't be
@@ -255,6 +272,7 @@ if (import.meta.env.DEV) {
   (window as any).pressPull = pressPull;
   (window as any).textureTool = textureTool;
   (window as any).textOnFaceTool = textOnFaceTool;
+  (window as any).splitTool = splitTool;
   (window as any).solveSketch = solveSketch;
 }
 // Warm up the constraint solver WASM. Deliberately ignores failure: initSolver
@@ -271,11 +289,11 @@ void initSolver().then((ok) => {
 // DEV-only handle for driving the app from outside (demo capture, e2e). Never
 // present in a production bundle — Vite drops the branch at build time.
 if (import.meta.env.DEV) {
-  (window as any).__sindri = { store, viewport, sketch, handleAction, extrude, overlay, toolBusy,
+  (window as any).__sindri = { store, viewport, sketch, handleAction, extrude, overlay, toolBusy, splitTool,
     busyWhy: () => ({ sketch: sketch.active, extrude: extrude.active, edgeFeature: edgeFeature.active,
       pressPull: pressPull.active, faceOffset: faceOffset.active, loft: loftTool.active,
       planeOffset: planeOffset.active, move: moveTool.active, measure: measure.active,
-      section: section.active, texture: textureTool.active, planePick, choice: isChoiceOpen() }) };
+      section: section.active, texture: textureTool.active, split: splitTool.active, planePick, choice: isChoiceOpen() }) };
 }
 void initSpaceMouse(viewport, (pressed) => {
   if (pressed & 1) viewport.fitView(); // button 1 → Fit
@@ -552,6 +570,7 @@ function cancelModelingTool() {
   if (moveTool.active) moveTool.cancel();
   if (textureTool.active) textureTool.cancel();
   if (textOnFaceTool.active) textOnFaceTool.cancel();
+  if (splitTool.active) splitTool.cancel();
 }
 
 const undoBtn = document.getElementById("undo-btn") as HTMLButtonElement;
@@ -659,7 +678,7 @@ function startFaceOffset(mode: "offsetFace" | "thicken") {
 // Guard predicates checked at the top of every start* tool + interactive helper:
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || textOnFaceTool.active || planePick || isChoiceOpen();
+  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || textOnFaceTool.active || splitTool.active || planePick || isChoiceOpen();
 }
 // True when the current rebuild produced a solid body (something to modify).
 function hasBody(): boolean {
@@ -696,6 +715,7 @@ const starters = createFeatureStarters({
   planeOffset,
   texture: textureTool,
   textOnFace: textOnFaceTool,
+  split: splitTool,
   canvas,
   toolBusy,
   hasBody,
@@ -732,7 +752,7 @@ const menus = createContextMenus({
   handleAction,
   getLastAction: () => lastAction,
   setLastAction: (a) => { lastAction = a; },
-  startCutByPlane: starters.startCutByPlane,
+  startSplit: starters.startSplit,
   offsetPlaneFromFace: starters.offsetPlaneFromFace,
 });
 
@@ -759,7 +779,7 @@ store.onBuild((s) => {
 
 tree.onEditSketch = (id) => editFeature(id);
 tree.onSketchOnPlane = (plane) => {
-  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !loftTool.active && !planeOffset.active) {
+  if (!sketch.active && !extrude.active && !edgeFeature.active && !pressPull.active && !loftTool.active && !planeOffset.active && !splitTool.active) {
     // Answering "select a plane" from the Browser instead of the viewport: end
     // the interactive pick, or its planePick flag stays set and toolBusy() is
     // true forever, silently disabling every tool from here on.
@@ -856,7 +876,10 @@ tree.onSelectBody = (id, additive) => {
   else { cur.clear(); cur.add(id); }
   viewport.setSelectedBodies([...cur]);
 };
-tree.onCutPlane = (id) => void starters.startCutByPlane(id);
+tree.onSplitWithPlane = (id) => {
+  lastAction = "split"; // "Repeat Split Body", as from the canvas menus
+  starters.startSplit({ planeId: id });
+};
 // rename / delete from the browser tree. Sketches & planes are features → patch
 // or remove them; body names are display-only overrides; deleting a body appends
 // a removeBody feature (see store). All paths re-emit and re-render the tree.
@@ -977,6 +1000,10 @@ function computeTexturePaint(): Record<number, string> {
 // toast every NEW failure; if it's the feature the user JUST committed from an
 // interactive tool, select it immediately (red chip scrolls into view).
 let prevErrorIds = new Set<string>();
+// The split warnings already toasted, by what they are about (feature, and per
+// note its code, body and count; SplitWarning.key), so each is said once rather
+// than on every rebuild that repeats it, a rename of the body included.
+let prevSplitWarnings = new Set<string>();
 // Failed fillet/chamfer edges (midpoints per feature id) — survives sidecar
 // cache-hit rebuilds that re-emit the error without its diagnostics.
 const failedEdgeMids = new Map<string, [number, number, number][]>();
@@ -1099,6 +1126,29 @@ store.onBuild((s) => {
     if (!store.hasPreview) {
       const errs = s.result.featureErrors ?? [];
       const ids = new Set(errs.map((e) => e.feature_id).filter(Boolean) as string[]);
+      // A split that BUILT but has something to say (splitWarnings.ts has the
+      // rule): one toast per split, said once, not again on every rebuild that
+      // repeats it. BEFORE the errors: the stack keeps 3 and drops the oldest,
+      // so a warning toasted after an error would be what pushes it out.
+      const named = store.namedBodies(s.result.bodies);
+      const warned = new Set<string>();
+      const warnings = splitWarningsToShow(
+        s.result.diagnostics,
+        (fid) => store.document.features.find((x) => x.id === fid)?.type === "split",
+        ids,
+        (d) => diagnosticText(d, named),
+        (d) => diagBodyName(d, named),
+      );
+      for (const w of warnings) {
+        warned.add(w.key);
+        if (prevSplitWarnings.has(w.key)) continue;
+        const fid = w.featureId;
+        toast(t("feature.warned", { name: FEATURE_META.split.label, reason: w.text }), {
+          kind: "warning",
+          action: { label: t("common.show"), onClick: () => selectFeature(fid) },
+        });
+      }
+      prevSplitWarnings = warned;
       for (const e of errs) {
         if (!e.feature_id || prevErrorIds.has(e.feature_id)) continue;
         const f = store.document.features.find((x) => x.id === e.feature_id);
@@ -1113,7 +1163,7 @@ store.onBuild((s) => {
         const action = repairable?.at
           ? { label: t("feature.repickFace"), onClick: () => starters.repickReference(id, repairable.at!) }
           : { label: t("common.show"), onClick: () => selectFeature(id) };
-        toast(t("feature.failed", { name: label, reason: featureErrorText(e, s.result.bodies) }), { kind: "error", action });
+        toast(t("feature.failed", { name: label, reason: featureErrorText(e, store.namedBodies(s.result.bodies)) }), { kind: "error", action });
         if (id === lastCommittedId) selectFeature(id);
       }
       prevErrorIds = ids;
@@ -1141,8 +1191,14 @@ store.onBuild((s) => {
 // decides. Drawing them all leaves a plane the rebuild never made on screen and
 // in the pick set (report 9ee3fb35).
 function syncDatumPlanes() {
+  // While a feature is being edited the model is rolled back to just before
+  // it, and so are the planes: a datum made after the edited feature does not
+  // exist there, and drawn as a live quad it was pickable as the tool of the
+  // very split being edited (which then failed on rebuild).
+  const editing = store.editPreviewId;
+  const editAt = editing ? store.document.features.findIndex((f) => f.id === editing) : -1;
   viewport.setDatumPlanes(activeDatumPlanes(store.document.features, {
-    rollbackIndex: store.rollbackIndex,
+    rollbackIndex: editAt >= 0 ? Math.min(store.rollbackIndex, editAt) : store.rollbackIndex,
     isSuppressed: (id) => store.isSuppressed(id),
     isVisible: (id) => store.isPlaneVisible(id),
     resolvedPlanes: store.buildState.result?.planes,
@@ -1349,6 +1405,12 @@ function editFeature(id: string) {
       break;
     case "textOnFace":
       if (!textOnFaceTool.startEdit(id, done)) toInspector();
+      break;
+    // Re-opens the Split Body panel with the split's fields, keep and offset,
+    // on the model as it stood before the split. A split had no arm, so its
+    // cut could only be deleted and redone.
+    case "split":
+      if (!splitTool.startEdit(id, done)) toInspector();
       break;
     // An offset plane had NO arm at all, so it fell to the default below and the
     // only way to move one was to type a number into the inspector's Offset
@@ -1707,6 +1769,7 @@ function handleAction(action: string) {
     case "selmode": {
       const next = viewport.selecting === "faces" ? "bodies" : "faces";
       viewport.setSelectionMode(next);
+      splitTool.selectionModeChanged(); // the switch cleared the targets' paint
       setText(selBtn, next === "bodies" ? "menu.view.select.bodies" : "menu.view.select.faces");
       selBtn.classList.toggle("active", next === "bodies");
       break;
@@ -1715,6 +1778,7 @@ function handleAction(action: string) {
     case "selmode-bodies": {
       const mode = action === "selmode-bodies" ? "bodies" : "faces";
       viewport.setSelectionMode(mode);
+      splitTool.selectionModeChanged();
       setText(selBtn, mode === "bodies" ? "menu.view.select.bodies" : "menu.view.select.faces");
       selBtn.classList.toggle("active", mode === "bodies");
       break;

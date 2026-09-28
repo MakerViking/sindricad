@@ -239,6 +239,12 @@ export class Highlighter {
       if (r !== undefined && g !== undefined && b !== undefined) colorAttr.setXYZ(v, r, g, b);
     }
     this.uploadRange(colorAttr, [0, colorAttr.count - 1]);
+    // A face still selected on this body keeps its paint. The body's paint
+    // covered it and the base colours above wiped it, so it stayed SELECTED
+    // but unlit: Split Body paints its targets as the body selection and now
+    // leaves a face it did not use selected, and the next Press/Pull would
+    // act on a face nothing showed.
+    for (const f of this.selectedFaces) if (body.faceTriangles.has(f)) this.paintFace(f, SELECT);
   }
 
   /** Run `fn` over every vertex of the given triangle indices, returning the

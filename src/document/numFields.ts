@@ -70,6 +70,10 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>>
   "press-pull": [["distance", t("inspector.field.distance"), "length"], ["upToOffset", t("inspector.field.targetOffset"), "length", hasUpToTarget]],
   revolve: [["angle", t("inspector.field.angle"), "angle"]],
   datumPlane: [["offset", t("inspector.field.offset"), "length"]],
+  // A split's offset moves the cut along its plane's normal, the same number
+  // the Split Body panel's Offset field and arrow set. Listed here so a split
+  // is editable in the inspector too, and so a parameter can drive it.
+  split: [["offset", t("inspector.field.offset"), "length"]],
   box: [["length", t("inspector.field.length"), "length"], ["width", t("inspector.field.width"), "length"], ["height", t("inspector.field.height"), "length"]],
   cylinder: [["radius", t("inspector.field.radius"), "length"], ["height", t("inspector.field.height"), "length"]],
   sphere: [["radius", t("inspector.field.radius"), "length"]],

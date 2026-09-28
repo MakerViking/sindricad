@@ -7,6 +7,7 @@
 // wheel scrolls horizontally, and dragging a chip near an edge auto-scrolls.
 
 import type { DocumentStore } from "../document/store";
+import type { ResolveDiag } from "../types";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FEATURE_META } from "./featureMeta";
 import { isInspectorEditable } from "./inspector";
@@ -15,9 +16,30 @@ import { contextMenu } from "./menu";
 import { esc } from "./escape";
 import { t, setText, setTitle } from "../i18n";
 import { FIND_FLASH_MS } from "./browserTree";
+import { diagBodyName, diagnosticText, reasonedByFeature, splitNoteLines, TOOLTIP_NAMES } from "../features/splitWarnings";
 
 // A fast op must not flash a Cancel button; a slow one must offer it early.
 const CANCEL_DELAY_MS = 700;
+/** How many diagnostic lines a chip's tooltip lists before "and N more". */
+const DIAG_LINES = 12;
+
+/** Each diagnostic in the user's words (diagnosticText: a coded warning in the
+ *  user's language, its `{body}` slot filled), a repeat said once. A repeat is
+ *  the same sentence about the same BODY: two bodies with one name (two "Box"
+ *  primitives; 340 near-identical imported names on the field file) are two
+ *  lines, not one. */
+function distinctLines(list: readonly ResolveDiag[], text: (d: ResolveDiag) => string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const d of list) {
+    const said = text(d);
+    const key = `${d.body_id ?? ""}\u0000${said}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(said);
+  }
+  return out;
+}
 
 /** Label and bar percentage for the "building" chip.
  *
@@ -216,7 +238,7 @@ export class Timeline {
   private errorMap(): Map<string, string> {
     const b = this.store.buildState;
     const m = new Map<string, string>();
-    const bodies = b.result?.bodies;
+    const bodies = this.namedBodies();
     for (const e of b.result?.featureErrors ?? []) {
       if (e.feature_id) m.set(e.feature_id, featureErrorText(e, bodies));
     }
@@ -236,15 +258,37 @@ export class Timeline {
    *  here. `errors` wins: a feature that failed is red, not amber, and its own
    *  message is the useful one.
    *
-   *  First reason wins per feature: the chip is 28px and this is its tooltip. */
+   *  Every distinct reason, one per line, in the order they came: the chip is
+   *  28px and this is its tooltip. Capped, so a feature with many notes cannot
+   *  grow a tooltip taller than the window.
+   *
+   *  A split over several bodies is where the user reads WHICH bodies: it has
+   *  one warning per body, 73 on the field file's "All visible" cut, and one
+   *  sentence per body cut off after 12 lines hid most of them (among them the
+   *  bodies with damaged parts left whole, which Q3 promised to name). So a
+   *  split's notes are one line per kind that names every body of that kind
+   *  (splitWarnings.splitNoteLines), the toast's summary with the full list. */
   private diagMap(errors: Map<string, string>): Map<string, string> {
+    const bodies = this.namedBodies();
+    const text = (d: ResolveDiag) => diagnosticText(d, bodies);
+    const features = this.store.document.features;
     const m = new Map<string, string>();
-    for (const d of this.store.buildState.result?.diagnostics ?? []) {
-      const id = d.feature_id;
-      if (!id || !d.reason || errors.has(id) || m.has(id)) continue;
-      m.set(id, d.reason);
+    for (const [id, list] of reasonedByFeature(this.store.buildState.result?.diagnostics, (fid) => !errors.has(fid))) {
+      const isSplit = features.find((f) => f.id === id)?.type === "split";
+      const lines = isSplit ? splitNoteLines(list, text, (d) => diagBodyName(d, bodies), TOOLTIP_NAMES) : distinctLines(list, text);
+      const shown = lines.slice(0, DIAG_LINES);
+      if (lines.length > DIAG_LINES) shown.push(t("timeline.moreNotes", { count: lines.length - DIAG_LINES }));
+      m.set(id, shown.join("\n"));
     }
     return m;
+  }
+
+  /** The last build's bodies under their Browser names — see
+   *  DocumentStore.namedBodies. Optional-called: a stub store in a test need
+   *  not carry it, and then the built names are used as before. */
+  private namedBodies(): { id: string; name: string }[] | undefined {
+    const bodies = this.store.buildState.result?.bodies;
+    return this.store.namedBodies?.(bodies) ?? bodies;
   }
 
   private render() {

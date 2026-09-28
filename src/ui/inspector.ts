@@ -16,6 +16,7 @@ import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget } from "../document/num
 import type { FieldKind } from "../document/numFields";
 import { icon } from "./icons";
 import { t, setText, setTitle } from "../i18n";
+import { isLegacySplit } from "../features/splitState";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
@@ -32,7 +33,7 @@ export function isInspectorEditable(type: Feature["type"]): boolean {
  *  row is broken" (field report c8531ceb).
  *
  *  The not-editable wording stays NEUTRAL on purpose: "delete it and re-run the
- *  tool" is true for loft/sweep/combine/split/mirror/removeBody/deleteFace and
+ *  tool" is true for loft/sweep/combine/mirror/removeBody/deleteFace and
  *  false for `import`, which has no tool to re-run. */
 export function editHint(type: Feature["type"]): string {
   const label = labelOf(type);
@@ -208,12 +209,26 @@ export class Inspector {
    *  the display-unit spelling inside expressions. */
   private commitField(target: ParamTarget, kind: FieldKind, raw: string): string | null {
     if (isPlainNumber(raw)) {
-      this.store.setTargetValue(target, parseField(raw, kind)!, kind);
+      const value = parseField(raw, kind)!;
+      if (value === 0 && this.isOldSplitOffset(target)) return null;
+      this.store.setTargetValue(target, value, kind);
       return null;
     }
     // The expression is stored dot-decimal whatever the user typed, so the
     // document means the same thing on every machine (ui/units.canonicalDecimal).
     return this.store.setTargetExpr(target, canonicalDecimal(raw), kind);
+  }
+
+  /** An offset of 0 typed into a split saved before the Split Body panel.
+   *  Such a split has no `offset` key (the field shows blank), and the key's
+   *  absence is what makes the sidecar rebuild it the old way
+   *  (splitState.isLegacySplit): written, `offset: 0` moved the cut nowhere and
+   *  still re-ordered its pieces, so a later removeBody deleted a different
+   *  piece. The Split Body panel refuses the same no-op edit (editedSplit). */
+  private isOldSplitOffset(target: ParamTarget): boolean {
+    if (target.kind !== "feature" || target.field !== "offset") return false;
+    const f = this.store.document.features.find((x) => x.id === target.feature);
+    return f?.type === "split" && isLegacySplit(f);
   }
 }
 

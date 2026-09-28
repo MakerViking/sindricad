@@ -68,6 +68,23 @@ and on `ResolveDiag` entries.
 | `replyTooLarge` / `bodyTooLarge` | the whole reply, or one body, exceeded the frame cap |
 | `unknownOp` | no such op — this is the capability-probe answer |
 | `badRequest` | malformed or oversized input, refused before any work |
+| `splitMissed` | a split's plane does not pass through `{body}`; on a split over several bodies also a per-body `ResolveDiag` for each body it left as it was: a warning with a `reason` when the user picked the bodies, a record with no `reason` on an `allVisible` cut or an old "Cut all bodies" (`bodies`, no `offset`, no `face`) |
+| `splitOnFace` | a split's plane lies on a face of `{body}` and cuts nothing |
+| `splitDamaged` | a split's plane crosses only damaged parts of `{body}`, which are left whole |
+| `splitMissedAll` | a split over several bodies changed none of them |
+| `splitDamagedAll` | the same, and the only parts it crosses are `count` damaged parts of `{body}` |
+| `splitDamagedAllMore` | the same, with damaged parts crossing in `count` bodies (`{body}` the first) and `parts` damaged parts in all |
+| `splitFailed` | the kernel failed on `{body}`; the split changed nothing |
+| `splitNoPlane` | the plane a split cuts along does not exist at its place in the timeline (a datum made after it, suppressed or failed) |
+| `splitFaceGone` | the face a split's plane is anchored to belongs to a body that does not exist at its place in the timeline |
+| `splitCrashed` | the worker died while a split was cutting |
+| `splitNoBody` | none of the bodies a split names exists at its place in the timeline |
+| `splitLegacyFailed` | a split saved before the Split Body panel, whose old whole-body computation failed on `{body}`; it stays red rather than cut part by part and renumber later bodies |
+| `splitSeparated` | warning (`ResolveDiag` with a `reason`): no solid was cut through, the parts on each side of the plane were separated |
+| `splitSeparatedKept` | the same with keep top/bottom: the parts on the kept side were kept and the others removed |
+| `splitDamagedParts` | warning (`ResolveDiag` with a `reason`): `count` damaged parts of `{body}` cross the plane and were left whole |
+| `splitBodiesGone` | warning (`ResolveDiag` with a `reason`, no body): `count` of the bodies a split names do not exist at its place in the timeline; the others were cut |
+| `splitLegacyVolume` | warning (`ResolveDiag` with a `reason`): an old split's pieces of `{body}` do not add up to the body it cut (damaged parts cut anyway) |
 
 **Treat an unrecognised code as unclassified, never as an error.** The set only grows, and
 a newer sidecar may emit one this client has not heard of. Codes are added freely; renaming
@@ -177,7 +194,9 @@ Reply `result` is one of:
   were recorded as no-ops; the geometry that *did* build is still returned (a failing
   feature never blanks the whole model). `featureError` is the most-downstream failure,
   for a single-line banner; `featureErrors` carries all of them. Each entry may also
-  carry `code`, `body_id` and `subject` — see **Untrusted text** below.
+  carry `code`, `body_id` and `subject` (see **Untrusted text** below), and `count` and
+  `parts`: integers a coded sentence counts, which its translation takes as `{count}`
+  (it also picks the plural form) and `{parts}`.
 
   `diagnostics` is omitted when empty, but when present it is **complete for the whole
   document** — an incrementally-resumed rebuild replays the diagnostics of its cached
@@ -210,6 +229,12 @@ or a **full payload**, when the client's `known` etag for that body is stale or 
   "faceCount": 12
 }
 ```
+Both forms can carry two identity fields, taken from the envelope (never the cached
+mesh) because they change without the geometry: `nodeRef` (`"<importFeatureId>/<nodeIndex>"`,
+the imported assembly node a body came from) and `pieceOf` (`["body114", 2]`: a piece a
+split made, the body it came from and its number, which the app uses to show a piece of a
+renamed body as "<rename> (2)").
+
 The client (`Geometry.assemble()` in `src/geometry/client.ts`) keeps the last full
 payload per body id and merges stubs + full payloads into one flat mesh (vertex/index/
 faceId offsets rebased per body), reproducing the pre-v2 single-mesh `RebuildReply`
@@ -655,7 +680,7 @@ and each chunk decodes independently. The framing rides in one extra envelope fi
 
 - **`seq: 0` (the head)** carries every non-body field (`protocol`, `bbox`,
   `diagnostics`, `planes`, `projectionUpdates`, `featureError(s)`) plus a **`manifest`**: one entry
-  per body of the reply, in final order, as `{id, name, etag, nodeRef?, unchanged?}` plus
+  per body of the reply, in final order, as `{id, name, etag, nodeRef?, pieceOf?, unchanged?}` plus
   `{faceCount, nVerts3, nIdx, nTris, nEdges, hasNormals?}` **for full bodies only**.
   Sizes are absent on stubs by design - the sidecar does not have them, because those
   arrays live in the client's own per-body cache. The head carries no `bodies`.

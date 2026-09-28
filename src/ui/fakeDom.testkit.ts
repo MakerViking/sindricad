@@ -94,6 +94,10 @@ export class FakeEl {
     }
     return null;
   }
+  /** Node.contains: this element or one inside it. */
+  contains(other: unknown): boolean {
+    return other === this || this.children.some((c) => c.contains(other));
+  }
   focus() {
     fakeFocus.el = this;
   }

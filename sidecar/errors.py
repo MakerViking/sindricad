@@ -45,13 +45,35 @@ SEALED_VOID = "sealedVoid"                  # a cut closed a cavity inside the b
 CLEAN_UP_FITTED = "cleanUpFitted"           # Clean Up recognised cylinders on a body (advisory)
 FONT_MISSING_GLYPHS = "fontMissingGlyphs"   # the chosen font cannot draw some of the text
 FONT_UNUSABLE = "fontUnusable"              # the chosen font has no outlines to emboss at all
+# Split. Errors (the feature changed nothing, so it is red):
+SPLIT_MISSED = "splitMissed"                # the plane does not reach {body}; on several bodies also a per-body diagnostic
+SPLIT_ON_FACE = "splitOnFace"               # the plane lies on a face of {body} and cuts no material
+SPLIT_DAMAGED = "splitDamaged"              # the plane crosses only damaged parts of {body}, left whole
+SPLIT_MISSED_ALL = "splitMissedAll"         # cut-all: the plane cuts none of the selected bodies
+SPLIT_DAMAGED_ALL = "splitDamagedAll"       # several bodies: nothing cut; `count` damaged parts of {body}, the only one crossed
+SPLIT_DAMAGED_ALL_MORE = "splitDamagedAllMore"  # same, `count` bodies with damaged parts crossed ({body} first), `parts` in all
+SPLIT_FAILED = "splitFailed"                # the kernel failed on {body}; nothing was changed
+SPLIT_NO_PLANE = "splitNoPlane"              # the plane it cuts along is not there at this point in the timeline
+SPLIT_FACE_GONE = "splitFaceGone"           # the face its plane is anchored to belongs to a body not there
+SPLIT_CRASHED = "splitCrashed"              # the worker died while a split was cutting
+SPLIT_NO_BODY = "splitNoBody"               # none of the bodies it names exists at its place in the timeline
+SPLIT_LEGACY_FAILED = "splitLegacyFailed"   # a split saved by an older version, whose way of cutting fails on {body}
+# Split warnings (diagnostics on a split that DID change something):
+SPLIT_SEPARATED = "splitSeparated"          # no solid was cut through; the parts on each side were separated
+SPLIT_SEPARATED_KEPT = "splitSeparatedKept"  # same, with keep=top/bottom: the other side's parts were removed
+SPLIT_DAMAGED_PARTS = "splitDamagedParts"   # `count` damaged parts of {body} cross the plane and were left whole
+SPLIT_BODIES_GONE = "splitBodiesGone"       # `count` of the bodies it names do not exist here; the rest were cut
+SPLIT_LEGACY_VOLUME = "splitLegacyVolume"   # an older version's split of {body} does not add up to the body it cut
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
     KERNEL_CRASHED, ENGINE_UNAVAILABLE, REPLY_TOO_LARGE, BODY_TOO_LARGE,
     UNKNOWN_OP, BAD_REQUEST, EXPECT_FAILED, BUDGET_EXHAUSTED, MATCH_IMPLAUSIBLE,
     PLANE_TILTED, SEALED_VOID, CLEAN_UP_FITTED, FONT_MISSING_GLYPHS,
-    FONT_UNUSABLE,
+    FONT_UNUSABLE, SPLIT_MISSED, SPLIT_ON_FACE, SPLIT_DAMAGED, SPLIT_MISSED_ALL,
+    SPLIT_DAMAGED_ALL, SPLIT_FAILED, SPLIT_NO_PLANE, SPLIT_CRASHED, SPLIT_SEPARATED,
+    SPLIT_SEPARATED_KEPT, SPLIT_DAMAGED_PARTS, SPLIT_NO_BODY, SPLIT_LEGACY_FAILED,
+    SPLIT_BODIES_GONE, SPLIT_LEGACY_VOLUME, SPLIT_DAMAGED_ALL_MORE, SPLIT_FACE_GONE,
 })
 
 # --- the body slot -----------------------------------------------------------
@@ -95,13 +117,19 @@ class GeomError(ValueError):
     imported assembly is whatever the STEP file's author called it. It is a
     separate field precisely so it never has to be dug back out of a sentence:
     see untrusted.py. `body_id` is ours and is safe to branch on.
+
+    `count` and `parts` are numbers the coded sentence counts (how many damaged
+    parts a split left whole, and in how many bodies). The app passes them to
+    the translation, where `count` also picks the plural form. Ours, ints only.
     """
 
-    def __init__(self, message, code=None, body_id=None, subject=None):
+    def __init__(self, message, code=None, body_id=None, subject=None, count=None, parts=None):
         super().__init__(message)
         self.code = code
         self.body_id = body_id
         self.subject = subject
+        self.count = count
+        self.parts = parts
 
 
 def code_of(ex, default=None):

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { setMissingKeyReporter } from "../i18n";
 import { BODY_SLOT, featureErrorText } from "./featureErrorText";
 
 /**
@@ -93,5 +94,39 @@ describe("featureErrorText", () => {
         { id: "b", name: "   " },
       ]),
     ).toBe("on Fallback");
+  });
+});
+
+// The split codes are the first TRANSLATIONS with a `{body}` slot in them, so
+// these go through the real catalogue (locales/en.json), not a mock: the key
+// has to exist, the plural has to pick, and the name has to land.
+describe("featureErrorText on a coded split message", () => {
+  // The sidecar's English, which the translation replaces.
+  const english = (n: number) => `${n} parts of ${BODY_SLOT} cross the plane but are damaged, so I left them whole.`;
+
+  it("translates, picks the plural from `count`, and names the body", () => {
+    const d = (count: number) => ({ message: english(count), code: "splitDamagedParts", count, body_id: "body2" });
+    expect(featureErrorText(d(1), BODIES)).toBe("1 part of Plate crosses the plane but is damaged, so I left it whole.");
+    expect(featureErrorText(d(3), BODIES)).toBe("3 parts of Plate cross the plane but are damaged, so I left them whole.");
+  });
+
+  it("fills the slot in a translated error from the live name, then subject", () => {
+    const e = { message: "x", code: "splitMissed", body_id: "body1", subject: "Built Name" };
+    expect(featureErrorText(e, BODIES)).toBe("Split changed nothing: the plane does not pass through Bracket Left.");
+    expect(featureErrorText(e, [])).toBe("Split changed nothing: the plane does not pass through Built Name.");
+  });
+
+  it("does not report the slot as a placeholder t() was never given", () => {
+    // t() warns once per unfilled `{name}`, which in DEV is a console line on
+    // every split error. The slot is filled HERE, after t(), so t() must be
+    // handed it back as itself.
+    const missing: string[] = [];
+    setMissingKeyReporter((key) => missing.push(key));
+    try {
+      featureErrorText({ message: "x", code: "splitSeparated", body_id: "body2" }, BODIES);
+    } finally {
+      setMissingKeyReporter(() => {});
+    }
+    expect(missing).toEqual([]);
   });
 });

@@ -169,6 +169,12 @@ export function startInlineRename(
  *  `.find-flash` animation in styles.css. */
 export const FIND_FLASH_MS = 1200;
 
+/** A row click offered to a running tool first (see BrowserTree.pickHook). */
+export type TreePick =
+  | { kind: "body"; id: string; additive: boolean }
+  | { kind: "origin"; plane: Plane3 }
+  | { kind: "datum"; id: string };
+
 export class BrowserTree {
   private el: HTMLElement;
   private selectedId: string | null = null;
@@ -220,8 +226,15 @@ export class BrowserTree {
    *  array allocation plus a linear scan PER BODY, paid on every doc change and
    *  every build even when the signature guard then bails. */
   selectedBodyIds: (() => string[]) | null = null;
-  // right-click a construction plane → cut all bodies by it.
-  onCutPlane: ((id: string) => void) | null = null;
+  // right-click a construction plane → open Split Body with it as the tool.
+  onSplitWithPlane: ((id: string) => void) | null = null;
+  /** A running tool that picks FROM the Browser (Split Body's two fields) owns
+   *  row clicks while it is set: a body, origin-plane or datum row is offered
+   *  to it first, and a `true` return consumes the click. Without this an
+   *  origin row STARTS A SKETCH, which is what it does the rest of the time,
+   *  and a datum row only selects the feature. The tool sets it when it starts
+   *  and clears it when it ends; nothing else writes it. */
+  pickHook: ((pick: TreePick) => boolean) | null = null;
   // rename / delete from the tree (context menu + double-click).
   onRenameSketch: ((id: string, name: string) => void) | null = null;
   onDeleteSketch: ((id: string) => void) | null = null;
@@ -242,6 +255,24 @@ export class BrowserTree {
   select(id: string | null) {
     this.selectedId = id;
     this.render();
+  }
+
+  // What a row click does. A running tool's pickHook sees it FIRST: during
+  // Split Body an origin-plane row is the splitting tool, not "start a sketch
+  // on this plane" in the middle of the command, and a body row fills the
+  // Body field instead of changing the selection. Methods rather than inline
+  // closures so browserTreePick.test.ts drives the real decision.
+  clickOriginRow(plane: Plane3) {
+    if (this.pickHook?.({ kind: "origin", plane })) return;
+    this.onSketchOnPlane?.(plane);
+  }
+  clickDatumRow(id: string) {
+    if (this.pickHook?.({ kind: "datum", id })) return;
+    this.onSelect?.(id);
+  }
+  clickBodyRow(id: string, additive: boolean) {
+    if (this.pickHook?.({ kind: "body", id, additive })) return;
+    this.onSelectBody?.(id, additive);
   }
 
   /** force a re-render (e.g. after a visibility toggle). */
@@ -362,7 +393,7 @@ export class BrowserTree {
         label: t("browser.originPlane", { plane: p }),
         icon: "plane" as const,
         dim: true,
-        onClick: () => this.onSketchOnPlane?.(p),
+        onClick: () => this.clickOriginRow(p),
         title: t("browser.originPlaneTitle", { plane: p }),
       })),
     ]);
@@ -379,9 +410,9 @@ export class BrowserTree {
           selected: this.selectedId === f.id,
           error: errId === f.id,
           visible: this.isPlaneVisible?.(f.id) ?? true,
-          onClick: () => this.onSelect?.(f.id),
+          onClick: () => this.clickDatumRow(f.id),
           onToggleVis: this.onTogglePlane ? () => this.onTogglePlane!(f.id) : undefined,
-          extraMenu: [{ label: t("context.cutAllBodies"), onClick: () => this.onCutPlane?.(f.id) }],
+          extraMenu: [{ label: t("context.splitWithPlane"), onClick: () => this.onSplitWithPlane?.(f.id) }],
           rename: this.onRenamePlane ? (name: string) => this.onRenamePlane!(f.id, name) : undefined,
           onDelete: this.onDeletePlane ? () => this.onDeletePlane!(f.id) : undefined,
           title: t("browser.planeTitle"),
@@ -402,7 +433,9 @@ export class BrowserTree {
         swatch: slot != null && pal[slot] ? pal[slot].color : undefined,
         selected: selectedIds ? selectedIds.has(b.id) : (this.isBodySelected?.(b.id) ?? false),
         visible: this.isBodyVisible?.(b.id) ?? true,
-        onClick: (e: MouseEvent) => this.onSelectBody?.(b.id, e.ctrlKey || e.metaKey),
+        onClick: (e: MouseEvent) => {
+          this.clickBodyRow(b.id, e.ctrlKey || e.metaKey);
+        },
         onToggleVis: this.onToggleBody ? () => this.onToggleBody!(b.id) : undefined,
         extraMenu: [
           { label: t("context.color"), children: bodyColorMenuItems(this.store, b.id) },

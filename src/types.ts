@@ -623,9 +623,27 @@ export type Feature =
     }
   // Cut a body by a plane. keep=top/bottom keeps one side; keep=both splits it
   // into separate bodies. `body` targets a specific body (default: the active one);
-  // `bodies` cuts every listed body (used for "cut all visible bodies"). The
-  // cutting plane is either an inline `plane` or `planeId` (a datum plane by id).
-  | { id: string; type: "split"; plane?: PlaneSpec; planeId?: string; keep: "top" | "bottom" | "both"; body?: string; bodies?: string[]; groupSides?: boolean }
+  // `bodies` cuts every listed body (an explicit multi-pick, or "All visible
+  // bodies" as the ids stood when OK was pressed). The cutting plane is an
+  // inline `plane` or `planeId` (a datum plane by id).
+  //
+  // `face` mirrors datumPlane's: the planar body face `plane` was picked off, so
+  // the cut FOLLOWS that face when the body changes upstream instead of staying
+  // where the face used to be. `plane` stays the cached placement it falls back
+  // to. `offset` (mm, default 0) moves the cut along the plane's normal, on top
+  // of whichever of plane / planeId / face placed it. Keep "top" is the side the
+  // normal points to, which the panel calls Above.
+  //
+  // Both are absent from every split saved before the Split Body panel, which
+  // is what keeps those rebuilding as they did.
+  //
+  // `allVisible: true` = the panel's "All visible bodies (N)" was the choice,
+  // and `bodies` is the visible ids as they stood at OK. Only then is a body
+  // the plane misses quiet (a plane through an assembly misses most of it);
+  // bodies picked one by one that it misses are named in a warning. An OLD
+  // split with `bodies` and neither `offset` nor `face` came from "Cut all
+  // bodies" and is quiet the same way.
+  | { id: string; type: "split"; plane?: PlaneSpec; planeId?: string; face?: Selector; offset?: Num; keep: "top" | "bottom" | "both"; body?: string; bodies?: string[]; allVisible?: true; groupSides?: boolean }
   // Boolean-combine bodies. The target is modified in place; tool bodies are
   // consumed unless keepTools. Omitted target/tools default to "all bodies".
   | { id: string; type: "combine"; operation: "join" | "cut" | "intersect"; target?: string; tools?: string[]; keepTools?: boolean }
@@ -897,13 +915,38 @@ export interface ResolveDiag {
   // describes a RESULT, and it too is legal (that pass is what re-fits a
   // pre-#49 import). It exists because the pass has no provenance to read, so a
   // deliberately many-sided prism you drew yourself is fitted just as readily.
-  kind: "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted";
+  // "splitSeparated" / "splitSeparatedKept" / "splitDamagedParts" = a split
+  // BUILT but has something to say that is not an error: a plane lying between
+  // the parts only separated them (Keep Both) or kept one side's parts and
+  // removed the others (Above/Below), or damaged parts it left whole rather
+  // than repair. They carry a `reason` (a warning: amber chip, and main.ts
+  // toasts it yellow). "splitMissed" is a body of a split over several that
+  // the split left unchanged (the plane misses it, or only lies on a face of
+  // it). On bodies the user picked it carries a `reason` and is a warning like
+  // the others; on an "All visible" cut, or an old "Cut all bodies", it has NO
+  // `reason` and lights nothing (a plane through an assembly misses most of
+  // it). The same code is the red error of a one-body split that misses, so
+  // as a warning it has a sentence of its own (engine.warning.splitMissed,
+  // splitWarnings.diagnosticText). "splitBodiesGone" (with `count`, no body):
+  // some of the bodies a split names do not exist at its place in the timeline,
+  // the rest were cut. "splitLegacyVolume": a split saved before the Split Body
+  // panel cut damaged parts of a body and its pieces do not add up. Both are
+  // warnings. Kind and code are the same string for all.
+  kind: "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted" | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
   reason?: string;
   /** Machine-readable classification; prefer this over matching `reason`. */
   code?: GeomErrorCode;
+  /** A `{body}` slot in `reason` is filled from these, exactly as for a
+   *  FeatureError (featureErrorText): the sidecar's own id, and the UNTRUSTED
+   *  name it stood for. Display only. */
+  body_id?: string;
+  subject?: string;
+  /** splitDamagedParts: how many damaged parts were left whole;
+   *  splitBodiesGone: how many of the named bodies are not there */
+  count?: number;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
   // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the
   // SELECTOR's own stored point — not the geometry that was found — which is what
@@ -943,6 +986,11 @@ export interface FeatureError {
   /** UNTRUSTED: that body's (or feature's) name as it stood when the build
    *  failed, already capped and control-stripped by the sidecar. Display only. */
   subject?: string;
+  /** Numbers the coded sentence counts (featureErrorText passes them to the
+   *  translation): e.g. splitDamagedAllMore's bodies (`count`) and damaged
+   *  parts in all (`parts`). Ours, never document text. */
+  count?: number;
+  parts?: number;
 }
 
 /** One body's exact kernel mass properties, or a record of why it has none.
@@ -1005,7 +1053,10 @@ export interface RebuildResult {
   // `etag` (when the backend supplies one) is a content fingerprint the render
   // layer diffs to decide whether a body needs rebuilding at all — absent means
   // "always rebuild" (e.g. the in-process Rust backend, which has no etag cache).
-  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string; nodeRef?: string }[];
+  // `pieceOf`: a piece a Split Body made, as [the body it came from, its
+  // number (2, 3, ...)]. The Browser shows it as "<that body's rename> (n)"
+  // when the source was renamed and the piece was not (DocumentStore.bodyName).
+  bodies?: { id: string; name: string; faceStart: number; faceCount: number; faceOwners?: (string | null)[]; textureColorSlots?: (number | null)[]; etag?: string; nodeRef?: string; pieceOf?: [string, number] }[];
   // selector-resolution diagnostics, when any selector resolved with low confidence.
   diagnostics?: ResolveDiag[];
   /** feature id -> the plane the sidecar actually USED this rebuild, for every

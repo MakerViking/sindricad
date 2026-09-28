@@ -59,6 +59,10 @@ export const HANDLE_HOT = 0xffe9a8;
 /** A handle whose drag direction REMOVES material (cut / push in). */
 export const HANDLE_CUT = 0xff6b5c;
 
+/** The translucent preview of a plane that does not exist yet: where an offset
+ *  plane will land, and where a split will cut. */
+export const PLANE_PREVIEW = 0xffd24a;
+
 // --- analysis / flags ------------------------------------------------------
 
 /** Unsupported overhang in draft analysis. Matches CSS `--danger-action`, which

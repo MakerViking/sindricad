@@ -1122,6 +1122,10 @@ def _rebuild_job(document, tolerance, known=None):
         # geometry last changed. The stub branch matters most — on an assembly
         # rebuild almost every body is unchanged.
         node_ref = {"nodeRef": b["node_ref"]} if b.get("node_ref") else {}
+        # A split piece's lineage rides in the envelope for the same reason:
+        # it names the piece in the Browser, and it changes without the mesh.
+        if b.get("piece_of"):
+            node_ref["pieceOf"] = list(b["piece_of"])
         if known.get(b["id"]) == ent["etag"]:
             out.append({"id": b["id"], "name": b["name"], "etag": ent["etag"],
                         **node_ref, "unchanged": True})
@@ -1738,7 +1742,9 @@ def _ok(req_id, result):
 #
 # `subject` is untrusted document text; `body_id` is ours. See untrusted.py for
 # why they are separate fields instead of words in `message`.
-_ERR_FIELDS = ("message", "feature_id", "code", "body_id", "subject")
+# `count`/`parts`: the numbers a coded sentence counts (errors.GeomError), which
+# the app's translation needs as much as it needs `code`.
+_ERR_FIELDS = ("message", "feature_id", "code", "body_id", "subject", "count", "parts")
 
 
 def _err_entry(e):
@@ -2027,6 +2033,8 @@ def _manifest_entry(b):
     e = {"id": b["id"], "name": b.get("name"), "etag": b.get("etag")}
     if b.get("nodeRef") is not None:
         e["nodeRef"] = b["nodeRef"]
+    if b.get("pieceOf") is not None:
+        e["pieceOf"] = b["pieceOf"]
     if b.get("unchanged"):
         e["unchanged"] = True
         return e
@@ -2643,11 +2651,27 @@ def _crash_feature(res, document):
     fid, ftype = f.get("id"), (f.get("name") or f.get("type") or "feature")
     if fid:
         err["feature_id"] = fid
-    err["message"] = (
-        f"{ftype} crashed the geometry kernel — this shape is degenerate for OCCT "
-        "(often a cut that runs exactly tangent to a fillet); try a slightly "
-        "different value"
-    )
+    if f.get("type") == "split":
+        # The fillet advice below sent a split's crash report after the wrong
+        # cause (field report, body201 of the Ender 3 assembly: split whole, it
+        # crashed the kernel, and a split has no fillet to be tangent to).
+        # It does not say WHERE the kernel died: a panel split cuts one part at
+        # a time, but a split saved before the panel still cuts each body whole
+        # (builder._split_is_legacy), and that is where body201 died. Moving the
+        # plane is the lever the user has either way, and any offset makes an
+        # old split a panel split. Coded, so the app shows it in the user's
+        # language (engine.error.*).
+        err["message"] = (
+            "Split crashed the geometry kernel, so nothing was split. Moving the "
+            "plane slightly with an offset may help."
+        )
+        err["code"] = errors_mod.SPLIT_CRASHED
+    else:
+        err["message"] = (
+            f"{ftype} crashed the geometry kernel — this shape is degenerate for OCCT "
+            "(often a cut that runs exactly tangent to a fillet); try a slightly "
+            "different value"
+        )
     # ALSO write it to stderr, which is mirrored into <app_data>/sidecar.log —
     # the file the bug reporter uploads. A segfaulted worker leaves no traceback,
     # so without this line a field report contains no evidence the kernel died at

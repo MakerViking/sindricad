@@ -3106,6 +3106,64 @@ button.finish:hover {
 .tool-panel-title { font-weight: 600; margin-bottom: 6px; }
 .tool-panel-hint { color: var(--text-dim); }
 .tool-panel-note { color: var(--text-dim); font-style: italic; margin: 8px 0; }
+/* something that will stop OK, said before OK is pressed */
+.tool-panel-warn { color: var(--warn); margin: 6px 0; }
+/* a typed number the app cannot read ("3.14.15"): OK refuses it */
+.tool-panel input.invalid { border-color: var(--error); }
+
+/* Split Body panel (src/features/splitPanel.ts). A selection field is a box
+   the user makes ACTIVE; the active one takes the next click in the model or
+   the Browser, and has to be obvious at a glance, so it gets the accent. The
+   label sits ABOVE the value rather than beside it so a longer translation
+   does not squeeze the body name out of a 270px panel. */
+.split-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.split-field {
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.split-field:hover { border-color: var(--line-hover); }
+.split-field.active { border-color: var(--accent); background: var(--accent-tint); }
+.split-field-label { color: var(--text-dim); font-size: 11px; }
+.split-field-line { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.split-field-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.split-field-value.empty { color: var(--text-mute); font-style: italic; }
+.split-field-clear {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.split-field-clear:hover { color: var(--text); }
+.split-field-clear svg { width: 12px; height: 12px; display: block; }
+.split-all-visible { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--text-dim); cursor: pointer; }
+/* names the side the offset arrow points to, at its tip */
+/* Mounted in #viewport-overlay and placed with projectToOverlay's canvas-local
+   pixels, so `absolute`: a `fixed` child would escape the overlay's clip and be
+   placed against the window, off by the Browser's width. */
+.split-above-marker {
+  position: absolute;
+  z-index: 40;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font-size: 11px;
+  white-space: nowrap;
+}
 
 /* segmented / chip toggles inside a tool panel */
 .tool-chip {

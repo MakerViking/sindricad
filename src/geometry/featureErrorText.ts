@@ -17,7 +17,7 @@
  * Precedent: buildAssemblyGroups.
  */
 
-import { hasKey, t } from "../i18n";
+import { hasKey, type Params, t } from "../i18n";
 
 /** The token the sidecar leaves where a body's name belongs. Mirrors
  *  `errors.BODY_SLOT` in the sidecar; the contract is in docs/PROTOCOL.md. */
@@ -36,6 +36,14 @@ export interface FeatureErrorLike {
   code?: string;
   body_id?: string;
   subject?: string;
+  /** A number the coded sentence counts, e.g. how many damaged parts a split
+   *  left whole (`splitDamagedParts`). Passed to the translation as `{count}`,
+   *  which also picks its plural form. Ours, never document text. */
+  count?: number;
+  /** A second number beside `count`, e.g. the damaged parts in all when
+   *  `count` is the bodies they are in (`splitDamagedAllMore`). Passed as
+   *  `{parts}`; it picks no plural form. Ours, never document text. */
+  parts?: number;
 }
 
 /** Just enough of a body to name it. */
@@ -58,7 +66,14 @@ export function featureErrorText(
   e: FeatureErrorLike,
   bodies: readonly NamedBody[] | undefined,
 ): string {
-  const coded = e.code && hasKey(`engine.error.${e.code}`) ? t(`engine.error.${e.code}`) : undefined;
+  const codeText = `engine.error.${e.code}`;
+  // `{body}` is handed back to t() as itself: the split codes are the first
+  // translations to carry the slot, and t() warns on any placeholder it is not
+  // given a value for. The name goes in below, by function, not through t().
+  const params: Params = { body: BODY_SLOT };
+  if (typeof e.count === "number") params.count = e.count;
+  if (typeof e.parts === "number") params.parts = e.parts;
+  const coded = e.code && hasKey(codeText) ? t(codeText, params) : undefined;
   const msg = coded ?? e.message ?? "";
   if (!msg.includes(BODY_SLOT)) return msg;
 

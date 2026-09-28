@@ -159,6 +159,36 @@ describe("inspector: where the edit gesture lands", () => {
   });
 });
 
+describe("inspector: a split saved before the Split Body panel", () => {
+  // It has no `offset` key, and that absence is what makes the sidecar rebuild
+  // it the old way, whose piece ORDER every later positional body id depends
+  // on. Typing 0 into its blank Offset wrote `offset: 0`: the cut moved
+  // nowhere, the pieces re-ordered, and a later removeBody deleted another one.
+  const old = { id: "s1", type: "split", keep: "both", plane: "XY", body: "body1", groupSides: true } as unknown as Feature;
+  const offsetOf = (root: FakeEl) => rows(root).find((r) => r.label === "Offset mm")!.input;
+
+  it("typing 0 into an old split's blank Offset writes nothing", () => {
+    const { root, inspector, writes } = mount([old]);
+    inspector.select("s1");
+    const input = offsetOf(root);
+    expect(input.value).toBe("");
+    input.value = "0";
+    input.dispatch("change");
+    expect(writes).toEqual([]);
+  });
+
+  it("a real offset on an old split is written, and 0 on a panel split is too", () => {
+    const { root, inspector, writes } = mount([old, { ...old, id: "s2", offset: 4 } as unknown as Feature]);
+    inspector.select("s1");
+    offsetOf(root).value = "3";
+    offsetOf(root).dispatch("change");
+    inspector.select("s2");
+    offsetOf(root).value = "0";
+    offsetOf(root).dispatch("change");
+    expect(writes).toEqual(["field offset=3", "field offset=0"]);
+  });
+});
+
 describe("inspector: rows that don't apply are not offered", () => {
   const plain = { id: "p1", type: "press-pull", face: {}, distance: 3, operation: "join" } as unknown as Feature;
   const upTo = { id: "p2", type: "press-pull", face: {}, distance: 3, operation: "join", upToPlane: "top" } as unknown as Feature;

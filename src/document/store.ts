@@ -1236,9 +1236,40 @@ export class DocumentStore {
   }
 
   // --- body name overrides (display-only; no geometry effect) -----------------
-  /** display-name override for a body, or undefined (→ use the rebuilt name). */
-  bodyName(id: string): string | undefined {
-    return this.bodyNames.get(id);
+  /** The name a body is shown by when it is not its built name, or undefined
+   *  (→ use the rebuilt name). The user's own rename wins. Failing that, a
+   *  piece a split made of a body the user renamed is shown as "<that rename>
+   *  (n)": the build says which body each piece came from (`pieceOf`), so the
+   *  name is derived afresh every build. The split tool used to WRITE those
+   *  names as renames, and a rename is keyed on a positional id: an edit that
+   *  made fewer pieces, or an undo, left "Skjermdeksel (2)" on whatever body
+   *  took the id next, a redo lost them, and after a reopen nothing knew to
+   *  take them off. */
+  bodyName(id: string, depth = 0): string | undefined {
+    const own = this.bodyNames.get(id);
+    if (own !== undefined) return own;
+    const piece = depth < 8 ? this.pieceIndex().get(id) : undefined;
+    const base = piece ? this.bodyName(piece[0], depth + 1) : undefined;
+    return piece && base ? t("feature.split.pieceName", { name: base, n: piece[1] }) : undefined;
+  }
+  private pieceMemo: { result: RebuildResult | null; map: Map<string, [string, number]> } = { result: null, map: new Map() };
+  /** id → pieceOf for the last build, rebuilt only when the result changes:
+   *  bodyName runs once per Browser row. */
+  private pieceIndex(): Map<string, [string, number]> {
+    const result = this.build.result ?? null;
+    if (this.pieceMemo.result !== result) {
+      const map = new Map<string, [string, number]>();
+      for (const b of result?.bodies ?? []) if (b.pieceOf) map.set(b.id, b.pieceOf);
+      this.pieceMemo = { result, map };
+    }
+    return this.pieceMemo.map;
+  }
+  /** `bodies` under the names the Browser shows them by, for filling an error's
+   *  `{body}` slot (featureErrorText). The sidecar only knows a body's BUILT
+   *  name — an import's product name — so an error about "Skjermdeksel" used to
+   *  name the body by a string that appears nowhere on screen. */
+  namedBodies(bodies: readonly { id: string; name: string }[] | undefined): { id: string; name: string }[] {
+    return (bodies ?? []).map((b) => ({ id: b.id, name: this.bodyName(b.id) ?? b.name }));
   }
   /** rename a body (display-only override; blank clears it). Re-emits the build so
    *  the tree updates without a geometry rebuild — names don't affect geometry. */
@@ -1474,7 +1505,7 @@ export class DocumentStore {
         // The bodies of the LAST good build: a fatal reply carries none of its
         // own, and a failure is usually about a body that was there a moment
         // ago. `subject` covers the case where it wasn't.
-        errorMessage: featureErrorText(reply.error, this.build.result?.bodies),
+        errorMessage: featureErrorText(reply.error, this.namedBodies(this.build.result?.bodies)),
       };
     }
     const fe = reply.result.featureError;
@@ -1482,7 +1513,7 @@ export class DocumentStore {
       ...done,
       result: reply.result,
       errorFeatureId: fe?.feature_id ?? null,
-      errorMessage: fe ? featureErrorText(fe, reply.result.bodies) : null,
+      errorMessage: fe ? featureErrorText(fe, this.namedBodies(reply.result.bodies)) : null,
     };
   }
 

@@ -20,6 +20,7 @@ import { toast } from "./toast";
 import { t } from "../i18n";
 import type { Feature, PlaneDef, Selector } from "../types";
 import type { EdgeHit, FaceHit } from "../viewport/picking";
+import type { SplitSeed } from "../features/splitState";
 
 export interface ContextMenusDeps {
   store: DocumentStore;
@@ -40,7 +41,7 @@ export interface ContextMenusDeps {
   handleAction: (action: string) => void;
   getLastAction: () => string | null;
   setLastAction: (action: string) => void;
-  startCutByPlane: (planeId: string) => void | Promise<void>;
+  startSplit: (seed?: SplitSeed) => void;
   offsetPlaneFromFace: (face: PlaneDef, anchor?: Selector) => void;
 }
 
@@ -64,7 +65,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
     handleAction,
     getLastAction,
     setLastAction,
-    startCutByPlane,
+    startSplit,
     offsetPlaneFromFace,
   } = deps;
 
@@ -89,7 +90,11 @@ export function createContextMenus(deps: ContextMenusDeps) {
     );
     selectFeature(datumId); // same as clicking it — the menu acts on a visible selection
     contextMenu(x, y, [
-      { label: t("context.cutAllBodies"), onClick: unlessBusy(() => void startCutByPlane(datumId)) },
+      // Opens Split Body with this plane as the tool. It used to be "Cut all
+      // bodies", which cut every visible body the moment it was clicked, with
+      // no way to say which: on an imported assembly that is hundreds of
+      // bodies for one click.
+      { label: t("context.splitWithPlane"), onClick: unlessBusy(() => { setLastAction("split"); startSplit({ planeId: datumId }); }) },
       // enter BY ID: the def is only the cached placement, so passing the datum
       // id too is what makes the sketch follow later edits to its offset
       { label: t("context.sketchOnPlane"), disabled: !f, onClick: unlessBusy(() => { if (f) sketch.enter(datumPlaneDef(f), store, undefined, f.id); }) },
@@ -139,6 +144,9 @@ export function createContextMenus(deps: ContextMenusDeps) {
         }),
       },
       { label: t("context.offsetPlaneFromFace"), shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE_PLANE); offsetPlaneFromFace(plane, anchor ?? undefined); } }) },
+      // In Faces mode this IS the right-click on a body, so it offers the
+      // body's own Split Body, with the body the face belongs to filled in.
+      ...(bodyId ? [{ label: t("context.splitBody"), shortcut: keyHint("split"), onClick: unlessBusy(() => { setLastAction("split"); startSplit({ bodies: [bodyId] }); }) }] : []),
       { separator: true, label: "" },
       ...(owner
         ? [{ label: t(isInspectorEditable(owner.type) ? "context.editFeature" : "context.selectFeature", { name: ownerLabel }), onClick: unlessBusy(() => editFeature(owner.id)) }]
@@ -190,11 +198,27 @@ export function createContextMenus(deps: ContextMenusDeps) {
     return { label: t("context.separateBody"), onClick: unlessBusy(() => store.separateBody(bodyId)) };
   }
 
+  /** Split Body with this body in the Body field — or, when the body is part
+   *  of a multi-selection, with all of them, the way Move and Combine act on
+   *  the selection the menu was opened over. */
+  function splitItem(bodyId: string): CtxItem {
+    return {
+      label: t("context.splitBody"),
+      shortcut: keyHint("split"),
+      onClick: unlessBusy(() => {
+        setLastAction("split"); // "Repeat Split Body", like the menu items routed through handleAction
+        const sel = viewport.getSelectedBodies();
+        startSplit({ bodies: sel.includes(bodyId) ? sel : [bodyId] });
+      }),
+    };
+  }
+
   /** The body actions the Browser adds to a body row's menu (its Color, Rename
    *  and Delete are its own): export it, or single it out. */
   function bodyActions(bodyId: string): CtxItem[] {
     return [
       exportBodyItem(bodyId),
+      splitItem(bodyId),
       separateItem(bodyId),
       { separator: true, label: "" },
       { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
@@ -209,6 +233,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
       // routed through handleAction so "Repeat <command>" records them
       { label: t("tool.move"), shortcut: keyHint("move"), onClick: unlessBusy(() => handleAction("move")) },
       { label: t("context.combineWith"), shortcut: keyHint("combine"), onClick: unlessBusy(() => handleAction("combine")) },
+      splitItem(bodyId),
       { label: t("context.properties"), onClick: unlessBusy(() => handleAction("properties")) },
       exportBodyItem(bodyId),
       separateItem(bodyId),

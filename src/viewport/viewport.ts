@@ -969,6 +969,43 @@ export class Viewport {
     return dh ? (dh.object.userData.datumId as string) : null;
   }
 
+  /** pickDatumAt with the ray distance to the hit, for a caller that has to
+   *  weigh a plane against the solid behind or in front of it (Split Body's
+   *  tool pick, where a datum lying ON a face must win the tie). */
+  datumHitAt(clientX: number, clientY: number): { id: string; distance: number } | null {
+    if (!this.datumQuads.length) return null;
+    const dh = this.rayFrom(clientX, clientY).intersectObjects(this.datumQuads, false)[0];
+    return dh ? { id: dh.object.userData.datumId as string, distance: dh.distance } : null;
+  }
+
+  /** Ray distance to the visible solid under the cursor, or null over empty
+   *  space. The companion to datumHitAt. */
+  surfaceHitDistance(clientX: number, clientY: number): number | null {
+    if (!this.model) return null;
+    const hit = this.rayFrom(clientX, clientY).intersectObjects(visibleBodyMeshes(this.model), false)[0];
+    return hit ? hit.distance : null;
+  }
+
+  /** World bounding box of the given bodies' meshes, or null when none of them
+   *  is on screen. Per-body geometry boxes, so a large assembly pays for one
+   *  box per body (cached by three on the geometry), not per triangle. Hidden
+   *  bodies count: a target picked from a Browser row may be hidden. */
+  bodiesBox(ids: readonly string[]): THREE.Box3 | null {
+    if (!this.model) return null;
+    const want = new Set(ids);
+    const out = new THREE.Box3().makeEmpty();
+    const tmp = new THREE.Box3();
+    for (const b of this.model.bodies) {
+      if (!want.has(b.id)) continue;
+      const g = b.mesh.geometry;
+      if (!g.boundingBox) g.computeBoundingBox();
+      if (!g.boundingBox || g.boundingBox.isEmpty()) continue;
+      tmp.copy(g.boundingBox).applyMatrix4(b.mesh.matrixWorld);
+      out.union(tmp);
+    }
+    return out.isEmpty() ? null : out;
+  }
+
   /** pickDatumAt, but only when the solid isn't in the way — the hover-side
    *  answer to handleClick's "try the body first" rule. The quad raycast comes
    *  FIRST because it is the cheap one (it returns immediately when the
@@ -1108,6 +1145,17 @@ export class Viewport {
     if (!this.highlighter) return;
     const already = new Set(this.highlighter.getSelectedFaces());
     for (const f of faceIds) if (!already.has(f)) this.highlighter.toggleSelectFace(f);
+    this.requestRender();
+  }
+
+  /** Take these faces out of the selection and leave every other face, edge and
+   *  body selected (Split Body consumes the one face that filled its Tool
+   *  field, and nothing else the user had selected). */
+  deselectFaces(faceIds: number[]) {
+    if (!this.highlighter) return;
+    const selected = new Set(this.highlighter.getSelectedFaces());
+    for (const f of faceIds) if (selected.has(f)) this.highlighter.toggleSelectFace(f);
+    this.onSelectionChange?.();
     this.requestRender();
   }
 
@@ -1267,6 +1315,18 @@ export class Viewport {
     this.requestRender();
   }
 
+  /** Swap in the highlighter a new model view needs. It holds the body
+   *  SELECTION, so replacing it drops the selection, and that has to be said:
+   *  otherwise everything showing the selection (the "N bodies selected"
+   *  prompt, the Browser's selected rows) goes on showing bodies that are no
+   *  longer selected. Seen after undoing a Split Body: "359 bodies selected"
+   *  over an empty selection. */
+  private adoptHighlighter(next: Highlighter | null) {
+    const had = (this.highlighter?.getSelectedBodies().length ?? 0) > 0;
+    this.highlighter = next;
+    if (had) this.onBodySelectionChange?.();
+  }
+
   /** Tear down a stream that cannot finish. The caller then re-renders whatever
    *  the store still holds, which rebuilds the previous model from scratch. */
   abortProgressiveModel() {
@@ -1274,7 +1334,7 @@ export class Viewport {
     this.progressive.abort();
     this.streaming = false;
     this.model = null;
-    this.highlighter = null;
+    this.adoptHighlighter(null);
     this.lastResult = null;
     this.picker.invalidate();
     this.requestRender();
@@ -1286,7 +1346,7 @@ export class Viewport {
    *  new reply always makes a new one. */
   private adoptProgressiveView(view: ModelView) {
     this.model = view;
-    this.highlighter = new Highlighter(view);
+    this.adoptHighlighter(new Highlighter(view));
     this.picker.invalidate();
   }
 
@@ -1412,7 +1472,7 @@ export class Viewport {
     // free and closes that gap.
     for (const d of edgeObjects(this.model)) d.flush();
     this.picker.invalidate(); // edge geometry just changed — drop cached targets
-    this.highlighter = new Highlighter(this.model);
+    this.adoptHighlighter(new Highlighter(this.model));
     // A floor UNDER the model, never a lid over the origin: groundGridZ clamps
     // at 0 so a body lifted off the origin leaves the grid on the XY plane.
     this.targetGridZ = groundGridZ(this.model.box.min.z);
@@ -1655,7 +1715,7 @@ export class Viewport {
     for (const d of edgeObjects(this.model)) this.scene.modelGroup.remove(d.object);
     disposeModel(this.model);
     this.model = null;
-    this.highlighter = null;
+    this.adoptHighlighter(null);
     this.rig.setContentBounds(null); // nothing to keep the orbit target near
     this.targetGridZ = 0; // no model → grid back on the world XY plane
     this.savedMats.clear(); // materials died with the model

@@ -544,6 +544,52 @@ def test_deeper_disk_checkpoint_wins_without_losing_ram_fallback():
     print(PASS, "deeper disk wins; warm identity and RAM fallback survive")
 
 
+def test_a_ram_resume_keeps_the_mesh_keys_of_bodies_it_does_not_touch():
+    """A body's last-modifier blob key is also its `meshKey`, the name its disk
+    MESH artifact is filed under. A RAM resume used to stamp a fresh key on every
+    prefix body, so the tip checkpoint after one appended feature carried new
+    keys for bodies that feature never touched, and a later resume from that
+    checkpoint (a redo, a reopen) found none of their meshes. Field file: 340
+    bodies re-meshed on redo after a split, one of them a single 55 s BRepMesh
+    call, and the 60 s stall watchdog recycled the worker."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+    import geomstore
+
+    def box(i, x):
+        return [{"id": f"s{i}", "type": "sketch", "plane": "XY",
+                 "entities": [{"type": "rectangle", "width": 10, "height": 10, "x": x, "y": 0}]},
+                {"id": f"e{i}", "type": "extrude", "sketch": f"s{i}", "distance": 10,
+                 "operation": "new"}]
+
+    base = {"parameters": {}, "features": box(1, 0) + box(2, 40)}
+    with tempfile.TemporaryDirectory(prefix="sindri_meshkey_") as tmp, ExitStack() as stack:
+        store = geomstore.Store(root=tmp)
+        stack.callback(store.db.close)
+        stack.enter_context(patch.object(builder, "_disk_store", lambda: store))
+        stack.enter_context(patch.object(builder, "_CACHE", {
+            "feature_sigs": [], "snaps": [], "global_sig": None,
+        }))
+        _p, _e, first = builder.rebuild_cached(base)
+        k1 = {b["id"]: b.get("meshKey") for b in first}
+        assert k1.get("body1") and k1.get("body2"), k1
+        # a feature that makes a new body and touches neither box (RAM resume)
+        grown = dict(base, features=base["features"] + box(3, 80))
+        _p, _e, second = builder.rebuild_cached(grown)
+        k2 = {b["id"]: b.get("meshKey") for b in second}
+        assert k2["body1"] == k1["body1"] and k2["body2"] == k1["body2"], (k1, k2)
+        assert k2.get("body3") and k2["body3"] not in (k1["body1"], k1["body2"]), k2
+        # a body the new feature DOES change gets a new key; the other keeps its own
+        moved = dict(grown, features=grown["features"] + [
+            {"id": "mv", "type": "move", "bodies": ["body1"], "dx": 0, "dy": 0, "dz": 5,
+             "rx": 0, "ry": 0, "rz": 0}])
+        _p, _e, third = builder.rebuild_cached(moved)
+        k3 = {b["id"]: b.get("meshKey") for b in third}
+        assert k3["body1"] != k2["body1"], (k2, k3)
+        assert k3["body2"] == k2["body2"] and k3["body3"] == k2["body3"], (k2, k3)
+    print(PASS, "a RAM resume keeps the mesh keys of bodies it does not touch")
+
+
 def test_body_fingerprint_carries_topology():
     fp = builder._body_fingerprint(Box(10, 10, 10))
     assert fp["f"] == 6 and fp["e"] == 12 and fp["vx"] == 8, fp
@@ -577,6 +623,7 @@ def main():
     test_diagnostics_survive_disk_resume()
     test_textures_survive_disk_resume()
     test_deeper_disk_checkpoint_wins_without_losing_ram_fallback()
+    test_a_ram_resume_keeps_the_mesh_keys_of_bodies_it_does_not_touch()
     test_a_sketch_that_newly_fails_on_replay_is_blamed_for_it()
     test_every_diagnostic_shape_is_json_safe()
     test_body_fingerprint_carries_topology()

@@ -20,6 +20,30 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Right-clicking a construction plane no longer cuts every visible body in
+  one click.** Cut all bodies is now Split bodies with this plane…, which opens
+  the Split Body panel with that plane as the tool, so you say which bodies to
+  cut. Selecting a plane and pressing Split Body used to make the same instant
+  cut; now it fills the panel too. The list of every body by name and the
+  "keep which side?" question are gone.
+
+- **A split that only separates parts, or leaves damaged parts whole, says so.**
+  If the plane lies between the parts of a body and cuts none of them through,
+  the parts on each side still become separate bodies, and a yellow note names
+  the body and says nothing was cut through. With Above or Below it says the
+  parts on the other side were removed. If some of the parts it crosses are
+  imported parts too damaged to cut, it cuts the rest and the note says how
+  many were left whole. Damaged parts are never repaired behind your back. A
+  body you picked that the plane leaves as it was gets a note too, naming it.
+  A split across many bodies gives one note that counts them and names the
+  first few, like "2 in Skjermdeksel, 1 in Bolt, 3 in Nut, and 59 more", and
+  the split's timeline chip names every one of them.
+
+- **Keep Both gives one body per piece, and parts that touch stay one piece.**
+  A plate and the pin through it come out as one body on each side of the cut,
+  not four. On the Ender 3 assembly, splitting Skjermdeksel at its datum now
+  gives 19 bodies.
+
 - **Undo and redo on a heavy model are about eleven times faster.** On a
   100 feature plate with 49 through holes, undoing a radius change took 717 ms
   of engine time and now takes 64 ms; redo went from 722 ms to 65 ms. The engine
@@ -198,6 +222,38 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Split Body cuts an imported assembly kept as one body.** It used to hand
+  the whole body to the geometry kernel in one go. On the Ender 3 assembly's
+  Skjermdeksel (908 parts) that failed with "Null TopoDS_Shape object" or ran
+  for over 13 minutes, and a failed cut of all bodies left the bodies before
+  the failing one cut. Now each part is cut on its own (about 9 seconds for
+  Skjermdeksel), and if one body fails nothing is changed. Splits saved before
+  this build still cut the way they did, so the bodies after them keep their
+  numbers. Where that old way fails, such a split stays red and says so: edit
+  it and press OK to cut it part by part. Where it cut damaged parts and the
+  pieces do not add up to the body, a yellow note says that too.
+
+- **A split that changes nothing says so.** If the plane misses the body, lies
+  on one of its faces, or crosses only damaged parts, the split is red with a
+  message saying which, instead of looking done. Older files can have such a
+  split, saved as if it worked: it shows red now. A body the plane does not
+  reach is also no longer broken up into one body per part. And a split whose
+  bodies were removed earlier in the timeline says so, instead of cutting fewer
+  of them without a word.
+
+- **Redo after adding a feature to a large model no longer re-meshes all of
+  it.** On the Ender 3 assembly, redoing a split rebuilt the display of all 340
+  bodies (over 2 minutes, one part alone 55 seconds), long enough for the app to
+  report that the geometry engine stopped responding. It now takes 8 seconds.
+
+- **"N bodies selected" clears when the selection does.** After an undo the
+  prompt could go on counting bodies that were no longer selected.
+
+- **An error about a body calls it by the name you gave it.** Rename a body in
+  the Browser and a failed feature's message still used the name it was built
+  with, for an import the product name inside the file, which appears nowhere
+  on screen. Messages and the timeline's notes now use your name.
+
 - **A model with a few unusual imported surfaces no longer blanks the whole
   view.** On a 340 body Ender 3 assembly, seven imported parts each had a
   cone-shaped face that was never cut into triangles, and the size reported for
@@ -292,6 +348,29 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
+
+- **Split Body is a panel now, and you fill it by clicking the model.** It has
+  two fields, Body to split and Splitting tool, and the one waiting for a click
+  is lit. Click a body in the 3D view or its row in the Browser to fill the
+  first (Ctrl-click adds or removes one, or tick All visible bodies), then a
+  flat face, a construction plane or an origin plane for the second. Drag the
+  arrow or type an Offset to move the cut, pick which side to keep (Both, Above
+  or Below), and press OK or Enter. Nothing is cut before that. Once both fields
+  are filled a click in the model changes nothing, so a press that misses the
+  arrow cannot move the cut; click a field first to pick it again. If the plane
+  misses a body you picked, OK says which one. Bodies and a plane you had
+  already selected fill the fields when it opens, and Cancel gives back the
+  selection it took. The plane is drawn across the bodies it will cut, with a
+  label on the side Above means. When the tool is a face, the cut follows that
+  face if the body changes earlier in the timeline. Afterwards every piece is
+  selected, and the new pieces of a body you renamed are named after it, like
+  "Bracket (2)", through undo, redo and reopening the file. Double-click the
+  split in the timeline to change it, or edit its Offset in the inspector. If
+  the plane it used has since been deleted, suppressed or moved after it, the
+  Splitting tool field opens empty and says why.
+
+- **Right-click a body ▸ Split Body….** In the 3D view or the Browser, with
+  that body already in the Body field.
 
 - **Right-click ▸ Find in Browser.** Right-click a body, or any face or edge of
   one, and choose Find in Browser: the Browser opens the Bodies folder and every

@@ -14,7 +14,8 @@ import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { snap } from "../ui/units";
 import { axisDragDistance } from "./manipulator";
-import { HANDLE_IDLE, HANDLE_HOT } from "../viewport/colors3d";
+import { HANDLE_IDLE, HANDLE_HOT, PLANE_PREVIEW } from "../viewport/colors3d";
+import { buildOffsetArrow, disposeOffsetArrow } from "./offsetArrow";
 import { t } from "../i18n";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
@@ -241,7 +242,7 @@ export class PlaneOffsetTool {
   private buildGhost() {
     const geo = new THREE.PlaneGeometry(60, 60);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffd24a,
+      color: PLANE_PREVIEW,
       transparent: true,
       opacity: 0.16,
       side: THREE.DoubleSide,
@@ -272,19 +273,10 @@ export class PlaneOffsetTool {
   }
 
   private buildGizmo() {
-    const mat = new THREE.MeshBasicMaterial({ color: HANDLE_IDLE, depthTest: false, depthWrite: false });
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 34, 12), mat);
-    shaft.position.y = 6 + 17;
-    const head = new THREE.Mesh(new THREE.ConeGeometry(5, 13, 18), mat);
-    head.position.y = 6 + 34 + 6.5;
-    const g = new THREE.Group();
-    g.add(shaft, head);
-    g.renderOrder = 999;
-    shaft.renderOrder = 999;
-    head.renderOrder = 999;
-    this.gizmoMat = mat;
-    this.gizmo = g;
-    this.viewport.addToScene(g);
+    const arrow = buildOffsetArrow();
+    this.gizmoMat = arrow.material;
+    this.gizmo = arrow.group;
+    this.viewport.addToScene(arrow.group);
   }
 
   private hitGizmo(x: number, y: number): boolean {
@@ -338,10 +330,9 @@ export class PlaneOffsetTool {
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
     this.dim.hide();
-    if (this.gizmo) {
+    if (this.gizmo && this.gizmoMat) {
       this.viewport.removeFromScene(this.gizmo);
-      for (const c of this.gizmo.children) if (c instanceof THREE.Mesh) c.geometry.dispose();
-      this.gizmoMat?.dispose();
+      disposeOffsetArrow({ group: this.gizmo, material: this.gizmoMat });
       this.gizmo = null;
       this.gizmoMat = null;
     }

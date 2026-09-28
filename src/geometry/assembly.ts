@@ -22,6 +22,8 @@ export interface WireBodyFull {
   unchanged?: false;
   /** "<importFeatureId>/<nodeIndex>" for a body from an imported assembly tree. */
   nodeRef?: string;
+  /** a split piece: [the body it came from, its number] (types.ts) */
+  pieceOf?: [string, number];
   positions: F32Wire;
   indices: U32Wire;
   faceIds: U32Wire;
@@ -39,6 +41,7 @@ export interface WireBodyStub {
   name: string;
   etag: string;
   nodeRef?: string;
+  pieceOf?: [string, number];
   unchanged: true;
 }
 export type WireBody = WireBodyFull | WireBodyStub;
@@ -88,6 +91,7 @@ export interface WireManifestEntry {
   name: string;
   etag: string;
   nodeRef?: string;
+  pieceOf?: [string, number];
   unchanged?: true;
   faceCount?: number;
   nVerts3?: number;
@@ -124,6 +128,7 @@ export function manifestFromBodies(bodies: WireBody[]): WireManifestEntry[] {
   return bodies.map((b) => {
     const e: WireManifestEntry = { id: b.id, name: b.name, etag: b.etag };
     if (b.nodeRef !== undefined) e.nodeRef = b.nodeRef;
+    if (b.pieceOf !== undefined) e.pieceOf = b.pieceOf;
     if (b.unchanged) {
       e.unchanged = true;
       return e;
@@ -225,7 +230,7 @@ export class RebuildAssembly {
     // they CAN change while geometry does not — a new diagnostic or
     // featureError must still produce a fresh object.
     const sig = manifest.length === 0 ? null : JSON.stringify([
-      sizes.map((m) => [m.id, m.etag, m.name, m.nodeRef, m.faceCount]),
+      sizes.map((m) => [m.id, m.etag, m.name, m.nodeRef, m.pieceOf, m.faceCount]),
       head.bbox,
       head.diagnostics, head.planes, head.featureError, head.featureErrors, head.projectionUpdates,
     ]);
@@ -269,6 +274,7 @@ export class RebuildAssembly {
       faceStart: plan[i]!.faceBase, faceCount: m.faceCount ?? 0,
       ...(m.etag !== undefined ? { etag: m.etag } : {}),
       ...(m.nodeRef !== undefined ? { nodeRef: m.nodeRef } : {}),
+      ...(m.pieceOf !== undefined ? { pieceOf: m.pieceOf } : {}),
     }));
     const out: RebuildResult = {
       mesh,

@@ -111,6 +111,7 @@ from geom_select import (
 )
 import texture
 import untrusted
+import errors as errors_mod
 from errors import BODY_SLOT, GeomError
 
 PLANES = {"XY": Plane.XY, "XZ": Plane.XZ, "YZ": Plane.YZ}
@@ -5843,7 +5844,7 @@ def _handle_move(f, ctx):
 
 
 def _handle_split(f, ctx):
-    _do_split(f, ctx.bodies, ctx.find_body, ctx.active, ctx.new_body, ctx.datums)
+    _do_split(f, ctx)
 
 
 def _handle_combine(f, ctx):
@@ -6247,6 +6248,11 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
             _subject = getattr(ex, "subject", None)
             if _subject:
                 entry["subject"] = untrusted.clean(_subject, untrusted.MAX_SUBJECT)
+            # The numbers a coded sentence counts (errors.GeomError). Ours, and
+            # only ever ints, so they need no cleaning.
+            for _k in ("count", "parts"):
+                if isinstance(getattr(ex, _k, None), int):
+                    entry[_k] = getattr(ex, _k)
             errors.append(entry)
         except Exception as ex:
             # Anything NOT a hand-authored ValueError is an unexpected internal
@@ -6294,9 +6300,11 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
     if planes is not None:
         # Typed, because `face` is also textOnFace's own selector field (the same
         # name on purpose — it is what makes the shipped Re-pick repair cover
-        # both), and a text feature registers no plane.
+        # both), and a text feature registers no plane. A face-anchored split
+        # registers its face's plane BEFORE its offset (_split_plane), which is
+        # what the Split Body panel re-opens on.
         planes.update({g["id"]: dict(datums[g["id"]]) for g in features
-                       if g.get("type") in ("sketch", "datumPlane")
+                       if g.get("type") in ("sketch", "datumPlane", "split")
                        and g.get("face") and g.get("id") in datums})
 
     # A disjoint join (e.g. two bodies that don't touch) yields a ShapeList, which
@@ -6327,6 +6335,8 @@ def rebuild(document, diagnostics=None, resume=None, snapshots_out=None, persist
         # set, so a body from a non-assembly import stays byte-identical.
         if b.get("node_ref"):
             entry["node_ref"] = b["node_ref"]
+        if b.get("piece_of"):
+            entry["piece_of"] = b["piece_of"]
         out_bodies.append(entry)
 
     shapes = [b["shape"] for b in out_bodies if b["shape"] is not None]
@@ -6715,6 +6725,11 @@ def _save_checkpoint(persist, i, bodies, datums, errors, counter_n, diagnostics=
             # `_textures`, then `node_ref`, now this.
             if b.get("_intact"):
                 entry["_intact"] = True
+            # And the same again for a split piece's lineage (piece_of), which
+            # names it in the Browser: dropped here, a reopened document would
+            # show the pieces under their import's name instead.
+            if b.get("piece_of"):
+                entry["piece_of"] = b["piece_of"]
             if sh is None or _wrapped_or_none(sh) is None:
                 manifest.append(entry)
                 fps.append(None)
@@ -6791,6 +6806,8 @@ def _restore_from_disk(store, chain_keys):
                     shapeless["node_ref"] = ent["node_ref"]
                 if ent.get("_intact"):
                     shapeless["_intact"] = True
+                if ent.get("piece_of"):
+                    shapeless["piece_of"] = ent["piece_of"]
                 bodies.append(shapeless)
                 continue
             raw = store.get_blob(ent["blob_key"])
@@ -6830,6 +6847,8 @@ def _restore_from_disk(store, chain_keys):
                 body["node_ref"] = ent["node_ref"]
             if ent.get("_intact"):
                 body["_intact"] = True
+            if ent.get("piece_of"):
+                body["piece_of"] = ent["piece_of"]
             bodies.append(body)
             mod[ent["body_id"]] = (shape, ent["blob_key"])
         snap = {
@@ -6963,13 +6982,27 @@ def rebuild_cached(document, diagnostics=None, projections=None, readonly=False,
         persist = {"store": store, "keys": keys, "mod": dict(disk_mod),
                    "acc_ms": 0.0, "budget_ms": 1000.0}
         if resume is not None and not from_disk:
-            # RAM resume: last-modifier keys for prefix bodies are unknown; stamp
-            # them at the resume point. Same blob bytes under a fresh key — a
-            # small dedup loss, never a correctness one.
+            # RAM resume: a prefix body keeps the last-modifier key the previous
+            # build gave it when it is still the very same shape object (the
+            # snapshots share shapes with the build that made them); only a body
+            # that build did not know is stamped at the resume point.
+            #
+            # Stamping EVERY prefix body was "a small dedup loss" for the blobs,
+            # but the key is also the body's `meshKey`, which is what the disk
+            # MESH artifacts are filed under. Field file (Ender 3, 340 bodies):
+            # adding a split after the model was open re-keyed all 340 untouched
+            # bodies in the tip checkpoint, so a redo that resumed from that
+            # checkpoint found none of their meshes and re-meshed the whole model:
+            # one body (body112, 319 faces) is a single 55 s BRepMesh call with no
+            # heartbeat, and the 60 s stall watchdog recycled the worker.
             k0 = resume[0] - 1
+            prev = _CACHE.get("mod") or {}
             for b in resume[1]["bodies"]:
                 if b.get("shape") is not None and k0 >= 0:
-                    persist["mod"][b["id"]] = (b["shape"], _blob_key(keys[k0], b["id"]))
+                    was = prev.get(b["id"])
+                    persist["mod"][b["id"]] = (
+                        was if was is not None and was[0] is b["shape"]
+                        else (b["shape"], _blob_key(keys[k0], b["id"])))
 
     t_build = time.monotonic()
     snaps_out = []
@@ -7013,7 +7046,10 @@ def rebuild_cached(document, diagnostics=None, projections=None, readonly=False,
                   # quiet-proof for the next build's resume-cap decision (see above);
                   # missing key (worker restart, Compute All reset) reads falsy =
                   # conservative
-                  "proj_quiet": projections is not None and not projections}
+                  "proj_quiet": projections is not None and not projections,
+                  # each body's (shape, last-modifier key) at the tip, so the next
+                  # RAM resume keeps the keys of bodies it does not touch
+                  "mod": dict(persist["mod"]) if persist is not None else {}}
 
     # Tip checkpoint: make the just-built state instantly restorable by the next
     # process (app restart, worker respawn). The final snapshot carries exactly
@@ -8435,62 +8471,987 @@ def _vertex_components(solids):
     return list(groups.values())
 
 
-def _do_split(f, bodies, find_body, active, new_body, datums):
-    """Cut a body by a plane. keep=top/bottom keeps one side (replaces the body);
-    keep=both splits it into separate bodies. `bodies` cuts every listed body
-    ("cut all visible"); new pieces append to the global list, not `targets`, so
-    the loop is snapshot-safe."""
-    # cut by an existing datum plane (planeId) or an inline plane
-    plane = _plane_of(f.get("planeId") or f["plane"], datums)
+# --- split -----------------------------------------------------------------------
+
+# A part counts as CUT only when the plane leaves more than this much of it on
+# BOTH sides, measured along the plane normal; anything thinner is contact, not a
+# cut. Measured on the field file (Skjermdeksel: 908 solids and 1,155 shells, a
+# datum at z=0 on the boundary between its parts): the 8 solids that seemed to
+# cross the datum only shed 0.29 micron slivers. 1 micron is ~3x that noise, and
+# it is the resolution `_vertex_components` merges vertices at, so a piece any
+# thinner could not be told apart from contact by the grouping either.
+_SPLIT_SLIVER = 1e-3  # mm
+
+# A split solid whose pieces do not add back up to it did not split, whatever
+# the kernel said. Relative, like `_noop_eps`, with the same absolute floor. This
+# is the backstop behind the validity screen, not the screen itself: an invalid
+# solid on the field file came back as a whole copy of itself PLUS its lower
+# half (two pieces, "success", material duplicated), and it is the validity
+# screen that stops that one before the kernel ever sees it.
+_SPLIT_VOLUME_REL_TOL = 1e-4
+
+
+def _split_is_legacy(f):
+    """A split saved before the Split Body panel, which always writes `offset`
+    (splitState.buildSplitFeature) and, for a face tool, `face`. Neither was
+    ever written before it.
+
+    Such a split rebuilds through the OLD whole-body computation whenever that
+    one did something (_legacy_split). Body ids are positional, and the old
+    computation decides more than the count: the ORDER its pieces come back in
+    (the kernel's, not the parts'), which touching parts count as one lump
+    (the whole-body kernel call imprints them on each other), that free shells
+    are dropped, and that pieces are named "Split". The per-part path gets every
+    one of those differently, so an old document replayed through it keeps its
+    body count and still hands a different piece to every later feature that
+    names one (measured: three boxes cut with groupSides came back in the
+    reverse order)."""
+    return "offset" not in f and not f.get("face")
+
+
+def _split_plane(f, ctx):
+    """The plane a split cuts along.
+
+    `face` anchors the plane to a planar face and re-derives it from that face
+    on every rebuild, through the same `_face_anchored_plane` a datumPlane and a
+    face-anchored sketch use (so a moved face moves the cut). The cached plane
+    it falls back to is `plane`, or the datum `planeId` names. `offset` (mm,
+    along the normal) rides ON TOP of whichever of those resolved, the same
+    order `_handle_datum_plane` applies it in: anchoring the offset result
+    instead would compound the offset on every rebuild.
+
+    A face-anchored split registers the plane it re-derived (before the offset)
+    under its own id, so the rebuild's `planes` map carries it: re-opened in the
+    panel, the preview and the offset arrow then start from where the face IS,
+    not from the placement cached when it was picked (planeOf.ts, the same trap
+    for sketches).
+
+    An offset of 0 returns the resolved plane untouched, so every split saved
+    before `offset` existed cuts along exactly the plane it always did."""
+    ref = f.get("planeId") or f.get("plane")
+    # A datum that is not registered HERE: it comes later in the timeline, it is
+    # suppressed, or it failed to build. _plane_of's own "unknown plane
+    # reference: f12" put an internal id in front of the user.
+    if ref is None or (isinstance(ref, str) and ref not in PLANES and ref not in ctx.datums):
+        raise GeomError(
+            "Split: the plane this cut uses does not exist at this point in the "
+            "timeline. Pick the splitting plane again.",
+            errors_mod.SPLIT_NO_PLANE)
+    if f.get("face"):
+        # The face's body is not here (a removeBody upstream, an edit that now
+        # makes fewer pieces). _group_sels_by_body raises "the target body no
+        # longer exists" for that, uncoded, and on a split it reads as the body
+        # being SPLIT being gone, while that body is right there.
+        sels = f["face"] if isinstance(f["face"], list) else [f["face"]]
+        if any(isinstance(s, dict) and s.get("body") and ctx.find_body(s["body"]) is None
+               for s in sels):
+            raise GeomError(
+                "Split: the face the splitting plane was taken from is gone, "
+                "because its body does not exist at this point in the timeline. "
+                "Pick the splitting plane again.",
+                errors_mod.SPLIT_FACE_GONE)
+        cached = f.get("plane")
+        if cached is None:
+            p = _plane_of(ref, ctx.datums)
+            cached = _plane_spec(p.origin, p.x_dir, p.z_dir)
+        spec = _face_anchored_plane(
+            {"id": f.get("id"), "plane": cached, "face": f["face"]}, ctx, "Split")
+        if f.get("id"):
+            ctx.datums[f["id"]] = spec
+        base = _plane_of(spec, ctx.datums)
+    else:
+        base = _plane_of(ref, ctx.datums)
+    off = ctx.val(f.get("offset") or 0)
+    if not off:
+        return base
+    return Plane(origin=base.origin + base.z_dir * off, x_dir=base.x_dir,
+                 z_dir=base.z_dir)
+
+
+def _split_parts(w):
+    """A body's parts in document order: its solids, shells, faces (and any
+    stray wire or edge), nested compounds flattened and a COMPSOLID broken into
+    its solids. Whole, a compsolid comes back from the splitter as ONE
+    compsolid holding both halves, which then sorts to a single side and reads
+    as "the plane lies on a face" (measured: two stacked 10 mm boxes as a
+    compsolid, cut through the middle at z=2, raised splitOnFace)."""
+    from OCP.TopAbs import TopAbs_COMPOUND, TopAbs_COMPSOLID
+    from OCP.TopoDS import TopoDS_Iterator
+
+    if w is None or w.IsNull():
+        return []
+    if w.ShapeType() not in (TopAbs_COMPOUND, TopAbs_COMPSOLID):
+        return [w]
+    out = []
+    it = TopoDS_Iterator(w)
+    while it.More():
+        out.extend(_split_parts(it.Value()))
+        it.Next()
+    return out
+
+
+def _plane_frame(plane):
+    """The location that carries world coordinates into `plane`'s own frame,
+    so the Z range of a box built there IS a shape's reach along the normal.
+
+    Why not project a world box onto the normal: an axis-aligned box's corners
+    overstate the reach along any tilted normal, by millimetres. Measured on a
+    cube turned 30/20 degrees, cut on its own top face 0.5 micron in: the
+    world box made the 0.2 mm3 sliver reach far enough to count as a cut, a body
+    of its own with no word said; a 10 mm damaged part lying 4 mm clear of an
+    oblique plane read as crossing it and was kept by keep=bottom."""
+    from OCP.gp import gp_Trsf
+    from OCP.TopLoc import TopLoc_Location
+
+    tr = gp_Trsf()
+    tr.SetTransformation(plane.wrapped.Position())
+    return TopLoc_Location(tr)
+
+
+def _plane_extent(w, frame, optimal=False):
+    """(lo, hi): how far below and above the plane `w` reaches along its
+    normal, from a box built in the plane's frame (_plane_frame); None for an
+    empty shape.
+
+    NEVER from the triangulation. The loose box used to read it, and a body is
+    meshed once it has been displayed: two zero-thickness solids of the field
+    file's Skjermdeksel lie IN the plane, their loose box read
+    (-1.0000000355e-06, +1.0000000711e-06) on a cold build and
+    (-1.0000102e-06, +1.0000102e-06) after meshing, their side flipped with the
+    sign of the sum, and the same document built 359 bodies when the split was
+    made and 358 on a cold reopen, renumbering everything after it.
+
+    The loose box by default (tolerance-inflated, from the geometry): it can only
+    overstate a part's reach, so a part it puts wholly on one side really is
+    there, and one it says crosses goes to the splitter, which has the last word.
+    Measured on Skjermdeksel's 2,063 parts: 0.036 s, against 1.9 s for the
+    optimal box. `optimal` is for the few PIECES a split made, and the few
+    parts whose reach decides something, where overstating calls a sliver a cut."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    bb = Bnd_Box()
+    local = w.Moved(frame)
+    if optimal:
+        BRepBndLib.AddOptimal_s(local, bb, False, False)
+    else:
+        BRepBndLib.Add_s(local, bb, False)
+    if bb.IsVoid():
+        return None
+    _x0, _y0, z0, _x1, _y1, z1 = bb.Get()
+    return z0, z1
+
+
+def _split_side(lo, hi):
+    """+1 above, -1 below, for something reaching (lo, hi) along the normal.
+
+    A part lying IN the plane has no side of its own: its reach either way is
+    noise (the field file's zero-thickness solids: +/-3e-14 at the vertices).
+    It goes ABOVE by rule, the side build123d's centre rule gives a centre
+    exactly on the plane, so where it lands can never depend on float noise.
+    Anything else reaching past the band on one side is unambiguous: the
+    midpoint is then at least _SPLIT_SLIVER/2 from the plane."""
+    S = _SPLIT_SLIVER
+    if hi < S and lo > -S:
+        return 1
+    return 1 if (lo + hi) >= 0 else -1
+
+
+def _vertex_extent(w, n, o):
+    """(lo, hi) of `w`'s VERTICES along the normal, or None when it has none.
+    Exact where it answers, because vertices lie on the geometry, but blind to a
+    curved face bulging past them, so it can only confirm a crossing, never
+    rule one out."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    ds = []
+    exp = TopExp_Explorer(w, TopAbs_VERTEX)
+    while exp.More():
+        p = BRep_Tool.Pnt_s(TopoDS.Vertex_s(exp.Current()))
+        ds.append((p.X() - o.X) * n.X + (p.Y() - o.Y) * n.Y + (p.Z() - o.Z) * n.Z)
+        exp.Next()
+    return (min(ds), max(ds)) if ds else None
+
+
+def _run_splitter(w, tool):
+    """OCCT's splitter on ONE part, or None when it did not finish.
+
+    The raw BRepAlgoAPI_Splitter rather than build123d's `split()`: that one
+    never checks the result, so a failed split surfaced as build123d's own
+    "Null TopoDS_Shape object", which is word for word what the field report
+    showed the user.
+
+    NON-DESTRUCTIVE. By default the splitter writes into the part it is handed:
+    an edge lying in the plane gains a 2D curve on it and a grown tolerance.
+    `w` is the body's own TShape, shared with the RAM snapshots every later
+    rebuild resumes from, so each rebuild cut a body the last one had written
+    into (measured: a torus cut at z=0, its seam circle in the plane, the seam
+    tolerance 1e-07 -> 1.00000000734788e-07 in the snapshot). Non-destructive,
+    the kernel copies what it has to change; _legacy_split copies the whole
+    body for the same drift."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Splitter
+    from OCP.TopTools import TopTools_ListOfShape
+
+    try:
+        args = TopTools_ListOfShape()
+        args.Append(w)
+        tools = TopTools_ListOfShape()
+        tools.Append(tool)
+        sp = BRepAlgoAPI_Splitter()
+        sp.SetArguments(args)
+        sp.SetTools(tools)
+        sp.SetNonDestructive(True)
+        sp.Build()
+        if not sp.IsDone():
+            return None
+        res = sp.Shape()
+        return None if res.IsNull() else res
+    except Exception:
+        return None
+
+
+def _shell_sides(res, frame):
+    """A split SHELL's pieces, as (above, below) lists of shells.
+
+    The splitter does not hand a shell back in pieces: it returns ONE shell whose
+    faces have been cut along the plane (measured: all 49 shells the plane
+    crosses in Skjermdeksel at z=-50 came back as a single shell each). So the
+    faces are sorted by side and each side's edge-connected faces are rebuilt
+    into a shell of their own. The faces already share the edges the splitter
+    made, so this is bookkeeping, not a re-sew.
+
+    A face's side comes from its exact reach in the plane's frame. The midpoint
+    of its world box put a large face nearly parallel to an oblique plane on the
+    wrong side (one triangle 0.58 mm below to 1.73 mm above the plane x+y+z=0:
+    both its pieces went to one side and the cut was thrown away)."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopoDS import TopoDS_Shell
+    from OCP.TopTools import (
+        TopTools_IndexedDataMapOfShapeListOfShape,
+        TopTools_IndexedMapOfShape,
+    )
+
+    fmap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(res, TopAbs_FACE, fmap)
+    faces = [fmap.FindKey(i) for i in range(1, fmap.Extent() + 1)]
+    side = []
+    for fc in faces:
+        ext = _plane_extent(fc, frame, optimal=True)
+        side.append(ext is None or _split_side(*ext) > 0)
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(res, TopAbs_EDGE, TopAbs_FACE, emap)
+    unvisited = set(range(len(faces)))
+    above, below = [], []
+    builder = BRep_Builder()
+    while unvisited:
+        seed = min(unvisited)  # document order, so the result is deterministic
+        unvisited.discard(seed)
+        compo, queue = [seed], [seed]
+        while queue:
+            k = queue.pop()
+            eexp = TopExp_Explorer(faces[k], TopAbs_EDGE)
+            while eexp.More():
+                if emap.Contains(eexp.Current()):
+                    for other in _list_shapes(emap.FindFromKey(eexp.Current())):
+                        j = fmap.FindIndex(other) - 1
+                        if j in unvisited and side[j] == side[seed]:
+                            unvisited.discard(j)
+                            compo.append(j)
+                            queue.append(j)
+                eexp.Next()
+        sh = TopoDS_Shell()
+        builder.MakeShell(sh)
+        for k in sorted(compo):
+            builder.Add(sh, faces[k])
+        (above if side[seed] else below).append(sh)
+    return above, below
+
+
+def _solid_volume(w):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(w, props)
+    return props.Mass()
+
+
+def _split_body(shape, plane, tool):
+    """Split ONE body by `plane`, part by part. Computes only: nothing is
+    committed here (see _do_split).
+
+    WHY PART BY PART. The body used to go to the kernel as one shape, and the
+    kernel then intersects every part with every other. Measured on the field
+    file: Skjermdeksel (908 solids, 1,155 shells, 141 of the solids invalid)
+    failed at z=0 with a null result, and at z=-50 never finished (13 minutes
+    and 9.3 GB before it was stopped). Split one part at a time it takes about
+    2 to 3 s, with no failures across all 2,008 solids in the document.
+
+    Returns a dict:
+      pieces  : [(shape, side, whole)] in document order; side is +1 above,
+                -1 below; `whole` marks a crossing part left uncut because it
+                is damaged, which keep=top/bottom keep rather than delete
+      cut     : parts the plane really cut through (both sides thicker than
+                _SPLIT_SLIVER); `cut_solids` counts the solids among them
+      status  : "cut", "separated" (parts on both sides, no material cut),
+                "damaged" (only damaged parts cross) or "missed"
+      up/down : parts or pieces cleanly on each side (damaged ones not counted)
+      damaged : crossing parts left whole: invalid, or the kernel failed on them
+      touches : some part reaches the plane without being cut through it
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.TopAbs import TopAbs_SHELL, TopAbs_SOLID
+
+    frame = _plane_frame(plane)
+    n, o = plane.z_dir, plane.origin
+    S = _SPLIT_SLIVER
+    out = {"pieces": [], "cut": 0, "cut_solids": 0, "has_solid": False, "up": 0,
+           "down": 0, "damaged": 0, "touches": False}
+    pieces = out["pieces"]
+
+    def put(w, lo, hi, whole=False):
+        side = _split_side(lo, hi)
+        pieces.append((w, side, whole))
+        if not whole:
+            out["up" if side > 0 else "down"] += 1
+
+    def reaches_plane(lo, hi):
+        # Touching is what the "the plane lies on a face" wording claims, so it
+        # has to be the part's real reach, never a box that crossed on its own.
+        return hi > -S and lo < S
+
+    src = _wrapped_or_none(_as_compound(shape)) if shape is not None else None
+    for w in _split_parts(src):
+        ext = _plane_extent(w, frame)
+        if ext is None:
+            continue  # an empty part has nothing to cut or keep
+        lo, hi = ext
+        if w.ShapeType() == TopAbs_SOLID:
+            out["has_solid"] = True
+        if hi < S or lo > -S:
+            # Wholly on one side, or lying in the plane.
+            if reaches_plane(lo, hi):
+                out["touches"] = True
+            put(w, lo, hi)
+            continue
+        # A tick before EACH kernel phase of a crossing part, not one per part.
+        # The validity check, the splitter and the measures behind it can each
+        # run for seconds on one large imported part, back to back, and OCCT
+        # holds the GIL inside every call, so the gaps between them are the
+        # only places the 60 s stall watchdog can see the worker is alive.
+        progress_tick(keep_index=True)
+        valid = BRepCheck_Analyzer(w).IsValid()
+        progress_tick(keep_index=True)
+        # DAMAGED parts are left whole and never repaired (Thomas, 2026-09-26):
+        # ShapeFix measurably took split volumes to 0 or up about 100x on this
+        # file. And they must not reach the splitter either, which "succeeds" on
+        # them with duplicated material (see _SPLIT_VOLUME_REL_TOL).
+        if not valid:
+            # Only damaged if it really crosses. The loose box is inflated by the
+            # part's tolerance, and an import's damaged solids tend to carry big
+            # ones: at the field file's datum, 92 damaged parts in 76 bodies
+            # crossed on the loose box and 75 really did. Its vertices lie ON the
+            # geometry, so vertices on both sides settle it (72 of the 75, 0.2 s
+            # for all 92); only the rest pay for the optimal box, which catches a
+            # curved face bulging across between vertices (9.6 s for all 92).
+            ext = _vertex_extent(w, n, o)
+            if ext is None or ext[0] > -S or ext[1] < S:
+                ext = _plane_extent(w, frame, optimal=True) or (lo, hi)
+            lo, hi = ext
+            if hi < S or lo > -S:
+                if reaches_plane(lo, hi):
+                    out["touches"] = True
+                put(w, lo, hi)
+                continue
+            out["damaged"] += 1
+            put(w, lo, hi, whole=True)
+            continue
+        res = _run_splitter(w, tool)
+        progress_tick(keep_index=True)
+        if res is None:
+            out["damaged"] += 1
+            put(w, lo, hi, whole=True)
+            continue
+        up, down = [], []
+        if w.ShapeType() == TopAbs_SHELL:
+            up, down = _shell_sides(res, frame)
+        elif w.ShapeType() == TopAbs_SOLID:
+            for p in _split_parts(res):
+                # Centre of mass, the rule build123d's split() used, so a body
+                # that split cleanly before sorts its pieces exactly as it did.
+                c = _wrap_topods(p).center()
+                (up if (c - o).dot(n) >= 0 else down).append(p)
+        else:
+            # A free face (or a stray edge) is sided by its reach in the plane's
+            # frame, the rule a shell's faces go by (_shell_sides). Never by
+            # Face.center(): on a curved face that is the surface point at the
+            # middle of the face's UV box, which for a piece of a cylinder cut
+            # on a slant lies OFF the piece, on the far side of the plane. Both
+            # pieces then went above and the cut was thrown away as "the plane
+            # lies on a face".
+            for p in _split_parts(res):
+                reach = _plane_extent(p, frame, optimal=True)
+                (up if reach is None or _split_side(*reach) > 0 else down).append(p)
+        if w.ShapeType() == TopAbs_SOLID:
+            v_in = abs(_solid_volume(w))
+            v_out = sum(abs(_solid_volume(p)) for p in up + down)
+            if abs(v_in - v_out) > max(1e-6, _SPLIT_VOLUME_REL_TOL * v_in):
+                out["damaged"] += 1
+                put(w, lo, hi, whole=True)
+                continue
+        progress_tick(keep_index=True)
+        reach_up = max((e[1] for e in (_plane_extent(p, frame, True) for p in up) if e), default=0.0)
+        reach_down = max((-e[0] for e in (_plane_extent(p, frame, True) for p in down) if e), default=0.0)
+        if reach_up > S and reach_down > S:
+            out["cut"] += 1
+            if w.ShapeType() == TopAbs_SOLID:
+                out["cut_solids"] += 1
+            for p in up:
+                pieces.append((p, 1, False))
+            for p in down:
+                pieces.append((p, -1, False))
+            out["up"] += len(up)
+            out["down"] += len(down)
+        else:
+            # The loose box crossed but the material does not go through: keep
+            # the ORIGINAL part, not its pieces, so a sliver never becomes a
+            # body of its own. Its real reach decides whether it even touches.
+            lo, hi = _plane_extent(w, frame, optimal=True) or (lo, hi)
+            if reaches_plane(lo, hi):
+                out["touches"] = True
+            put(w, lo, hi)
+    # MATERIAL is the solids, when the body has any. On the field file the datum
+    # at z=0 cuts two free shells of Skjermdeksel (surfaces reaching z=-10..30)
+    # and no solid at all, and "the plane cut your body" would be the wrong thing
+    # to say about that: it is a separation, and it gets the separation warning.
+    # A body with no solid (a mesh landed as reference surfaces) is its surfaces.
+    if out["cut_solids"] or (out["cut"] and not out["has_solid"]):
+        out["status"] = "cut"
+    elif out["up"] and out["down"]:
+        out["status"] = "separated"
+    elif out["damaged"]:
+        out["status"] = "damaged"
+    else:
+        out["status"] = "missed"
+    return out
+
+
+def _touch_components(parts):
+    """Group one side's pieces into physically connected lumps: pieces that
+    share a vertex, or whose closest points lie within _SPLIT_SLIVER. Returns
+    lists of the pieces, each lump in document order, lumps ordered by their
+    first piece.
+
+    WHY CONTACT, NOT JUST SHARED VERTICES. The old whole-body split ran one
+    kernel call over every part at once, which imprints touching parts on each
+    other, so they came back sharing vertices and `_vertex_components` saw one
+    lump. Split part by part nothing is imprinted, and parts that only touch
+    face to face (a pin through a plate, stacked components) fell apart into
+    bodies of their own: on the field file's datum, body314 gave 45 bodies where
+    the old code gave 33, and Skjermdeksel gave 355 where its connected lumps
+    are 21.
+
+    COST. The exact distance runs only on pairs whose boxes meet and that are
+    not yet in one lump, cheapest pairs (fewest faces) first: once a chain of
+    cheap contacts has joined two parts, their expensive pair is never asked.
+    Measured on Skjermdeksel's 1,900 pieces below its datum: 5.7 s, against
+    23.5 s in box order (worst single call 3.9 s down to 0.7 s). The lumps are
+    connected components, so they do not depend on that order."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    n = len(parts)
+    if n <= 1:
+        return [list(parts)] if parts else []
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    vmap = {}
+    for i, s in enumerate(parts):
+        for v in s.vertices():
+            vmap.setdefault((round(v.X, 3), round(v.Y, 3), round(v.Z, 3)), []).append(i)
+    for idxs in vmap.values():
+        for j in idxs[1:]:
+            parent[find(idxs[0])] = find(j)
+
+    boxes, nfaces = [], []
+    for s in parts:
+        bb = Bnd_Box()
+        BRepBndLib.Add_s(s.wrapped, bb, False)  # never the triangulation: see _plane_extent
+        bb.Enlarge(_SPLIT_SLIVER)
+        boxes.append(bb)
+        fm = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(s.wrapped, TopAbs_FACE, fm)
+        nfaces.append(fm.Extent())
+    # sweep along X for the pairs whose boxes meet
+    order = sorted(range(n), key=lambda i: boxes[i].Get()[0])
+    pairs, live = [], []
+    for i in order:
+        x0 = boxes[i].Get()[0]
+        live = [j for j in live if boxes[j].Get()[3] >= x0]
+        for j in live:
+            if not boxes[i].IsOut(boxes[j]):
+                pairs.append((nfaces[i] * nfaces[j], min(i, j), max(i, j)))
+        live.append(i)
+    pairs.sort()
+    for _cost, i, j in pairs:
+        if find(i) == find(j):
+            continue
+        progress_tick(keep_index=True)  # each is an exact distance, up to 0.7 s measured
+        d = BRepExtrema_DistShapeShape(parts[i].wrapped, parts[j].wrapped)
+        if d.IsDone() and d.Value() <= _SPLIT_SLIVER:
+            parent[find(i)] = find(j)
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(parts[i])
+    return list(groups.values())
+
+
+def _legacy_split(shape, plane, keep):
+    """build123d's `split(shape, bisect_by=plane, keep=...)`, computed the way
+    it always was, for a split saved before the panel (_split_is_legacy).
+    Returns (res, above, below, parts_in, v_in, v_out): `res` is exactly what
+    that call returned for `keep`, above/below count the top-level shapes it
+    sorted to each side, which is how a caller tells a change from a no-op, and
+    v_in/v_out are the solid volume it was given and the solid volume of BOTH
+    sides it made, which is how a caller tells a cut from destroyed material
+    (None when the kernel could not measure them).
+
+    One kernel pass serves every keep mode: build123d's Shape.split computes
+    and sorts both sides whatever `keep` asks for, then hands one back, and the
+    wrapper below is operations_generic.split's own, line for line. It is
+    copied rather than called because only this way are both sides visible
+    without a second whole-body kernel call.
+
+    On a PRIVATE COPY of the body. The whole-body kernel call modifies its
+    argument in place, and the body's shape is shared with the RAM snapshots
+    every later rebuild resumes from, so the same split drifted from run to run
+    in one worker (field file, body153 cut three times: 1378.802, 1380.966,
+    1389.105 mm3). On a copy every rebuild gives the old code's FIRST-run
+    result, the one a freshly opened document got, and the body is left intact
+    for the per-part path when this one did nothing."""
+    import copy
+    from collections.abc import Iterable
+
+    from build123d import Curve, Part, Sketch
+    from build123d.build_common import flatten_sequence, validate_inputs
+    from build123d.topology.shape_core import get_top_level_topods_shapes
+
+    object_list = [copy.deepcopy(obj) for obj in flatten_sequence(shape)]
+    validate_inputs(None, "split", object_list)
+
+    def solid_volume(objs):
+        # Only ever a report (_legacy_plan): a kernel exception here must not
+        # read as the old computation raising, which would turn an old split
+        # that built into a red one. None skips the check.
+        try:
+            return sum(abs(_solid_volume(s.wrapped)) for o in objs for s in o.solids())
+        except Exception:
+            return None
+
+    # Before the split: the kernel call modifies its argument in place.
+    v_in = solid_volume(object_list)
+    sides = [obj.split(plane, Keep.BOTH) for obj in object_list]
+
+    def count(x):
+        return 0 if x is None else len(x) if isinstance(x, list) else 1
+
+    def flat(x):
+        return [] if x is None else list(x) if isinstance(x, list) else [x]
+
+    above = sum(count(t) for t, _b in sides)
+    below = sum(count(b) for _t, b in sides)
+    v_out = None if v_in is None else solid_volume([p for pair in sides for side in pair for p in flat(side)])
+    parts_in = sum(len(get_top_level_topods_shapes(obj.wrapped)) for obj in object_list)
+    want = {"both": (0, 1), "top": (0,), "bottom": (1,)}[keep]
+    new_objects = []
+    for pair in sides:
+        for k in want:
+            subpart = pair[k]
+            if isinstance(subpart, Iterable):
+                new_objects.extend(subpart)
+            elif subpart is not None:
+                new_objects.append(subpart)
+    split_compound = Compound(new_objects)
+    if all(obj._dim == 3 for obj in object_list):
+        res = Part(split_compound.wrapped)
+    elif all(obj._dim == 2 for obj in object_list):
+        res = Sketch(split_compound.wrapped)
+    elif all(obj._dim == 1 for obj in object_list):
+        res = Curve(split_compound.wrapped)
+    else:
+        res = split_compound
+    return res, above, below, parts_in, v_in, v_out
+
+
+# What `_legacy_plan` says when the OLD computation raised, and why.
+_LEGACY_RAISED = "raised"      # its whole-body kernel call failed
+_LEGACY_NO_SOLID = "noSolid"   # it found no solid in its only target
+
+
+def _legacy_plan(target, plane, keep, sole):
+    """The old computation's plan for one body of a pre-panel split.
+
+    None when the old computation did NOT change the body: it left everything
+    on one side (a silent no-op, or the body73 explosion of a body the plane
+    never reached), or found no solid in a body of a cut-all, which the old code
+    skipped without a word. Those are exactly the results the new rules may
+    change, so the caller hands them to the per-part path, which cuts what the
+    old one could not or says why not.
+
+    {"legacy_failed": why} when the old computation RAISED, which made the old
+    split red: its whole-body kernel call failed (the field file's "Null
+    TopoDS_Shape object"), or it found no solid in its ONLY target and said "the
+    plane does not intersect the body" (a body made of surfaces, which it could
+    not keep). Red is not silent, so it is not the new rules' to change: cut
+    part by part instead, such a split appended bodies, and every later body id
+    in the old document moved with no word said (measured: an open shell cut at
+    z=0 then a box, and a Move of body2 moved half the shell instead of the
+    box). The caller keeps it red, in words."""
+    try:
+        res, above, below, parts_in, v_in, v_out = _legacy_split(target.get("shape"), plane, keep)
+    except Exception as ex:
+        print(f"split: old whole-body path failed on {target['id']}: "
+              f"{type(ex).__name__}: {ex}", file=sys.stderr)
+        return {"legacy_failed": _LEGACY_RAISED}
+    # The old code tested for solids FIRST, whatever side things went to: an
+    # open shell crossing the plane comes back from that kernel call as ONE
+    # shell (its faces cut, not the shell), sorted whole to one side.
+    solids = res.solids()
+    if not solids:
+        return {"legacy_failed": _LEGACY_NO_SOLID} if sole else None
+    if not above or not below:
+        return None
+    # Nothing cut through: every part came back whole, just sorted to a side.
+    status = "separated" if above + below == parts_in else "cut"
+    # The old computation cut damaged solids as if they were whole, and on the
+    # field file that destroyed or duplicated material with no word (body36
+    # 8,349.8 to 1.4 mm3, body153 1,481.4 to 1,490.0). Committed exactly as it
+    # always was, so no id moves; only SAID now.
+    lost = (v_in is not None and v_out is not None
+            and abs(v_in - v_out) > max(1e-6, _SPLIT_VOLUME_REL_TOL * v_in))
+    return {"legacy": True, "status": status, "res": res, "solids": solids,
+            "damaged": 0, "touches": False, "volume_mismatch": lost}
+
+
+def _commit_legacy(target, plan, keep, grouped, plane, new_body):
+    """The old code's commit, unchanged: the same pieces, in the same order,
+    grouped the same way, named "Split", with no node_ref and no inherited
+    state. Anything else would renumber or relabel an old document."""
+    res, pieces = plan["res"], plan["solids"]
+    if keep == "both" and len(pieces) > 1:
+        if grouped:
+            n, o = plane.z_dir, plane.origin
+            top = [p for p in pieces if (p.center() - o).dot(n) >= 0]
+            bottom = [p for p in pieces if (p.center() - o).dot(n) < 0]
+            groups = _vertex_components(top) + _vertex_components(bottom)
+            if groups:
+                def _one(g):
+                    return g[0] if len(g) == 1 else Compound(g)
+                target["shape"] = _one(groups[0])
+                for g in groups[1:]:
+                    new_body(_one(g), "Split")
+            else:
+                target["shape"] = res
+        else:
+            target["shape"] = pieces[0]
+            for p in pieces[1:]:
+                new_body(p, "Split")
+    else:
+        target["shape"] = res
+
+
+def _legacy_failed(target):
+    """The error for a split saved before the panel whose old computation
+    raised on `target` (_legacy_plan). Raised THERE, as the old code did: it
+    never reached the bodies after this one, and the whole-body call it would
+    make on them can kill the worker (field file: body201, reached after
+    body114 raised in an old "Cut all bodies" at the datum, exit 139).
+
+    "Edit and press OK" is the way out because the panel writes such a split
+    back as a panel split, which cuts part by part (splitState.editedSplit)."""
+    return GeomError(
+        f"Split failed on {BODY_SLOT}: this split was made in an older version, "
+        "which could not cut it. Edit the split and press OK to cut it part by part.",
+        errors_mod.SPLIT_LEGACY_FAILED, body_id=target["id"], subject=target.get("name"))
+
+
+def _split_diag(diag, feature_id, code, body, reason=None, count=None):
+    """A split diagnostic. Neutral `resolved`/`confidence`/`lossy`, like
+    `_sealed_void_diag`: nothing was RESOLVED, and `lossy` must stay False (it is
+    the flag project_geometry refuses a source selection on).
+
+    With a `reason` it is a WARNING: the timeline lights the chip amber for any
+    diagnostic carrying one. Without, it is a RECORD for tooling only, which is
+    what an all-visible cut's per-body misses are: a plane through an assembly
+    misses most of its bodies, and an amber chip on every such cut would be
+    noise. The reason names the body through BODY_SLOT; the name rides in
+    `subject`, sanitised."""
+    if diag is None:
+        return
+    entry = {"feature_id": feature_id, "kind": code, "resolved": 0,
+             "confidence": 0.0, "lossy": False, "code": code, "body_id": body["id"]}
+    if reason is not None:
+        entry["reason"] = reason
+        entry["subject"] = untrusted.clean(body.get("name"), untrusted.MAX_SUBJECT)
+    if count is not None:
+        entry["count"] = count
+    diag.append(entry)
+
+
+def _do_split(f, ctx):
+    """Cut bodies by a plane. keep=top/bottom keeps one side (the body is
+    replaced); keep=both splits a body into several. `bodies` cuts every listed
+    body ("cut all visible").
+
+    COMPUTE, THEN COMMIT. Every target is split first and nothing is touched
+    until all of them have been; a body that fails raises with its name and the
+    body list is exactly as it was. Before this, a failure part way through a
+    cut-all left the bodies before it cut (65 to 69 stray pieces on the field
+    file), the failing one raising, and every body after it never processed.
+
+    NEVER SILENT. A split that changes nothing raises in words, the same rule as
+    the boolean no-op guards (`_noop_eps`): the plane misses the body, lies on a
+    face of it, or crosses only damaged parts. A split over several bodies fails
+    only when it changed nothing at all; a body it left as it was is a warning
+    naming it when the user picked it, and a quiet per-body record on an
+    all-visible cut (`allVisible`) or an old "Cut all bodies". The two saved
+    splits in the field file's Ender3.sindri were exactly this silent class and
+    are red now, deliberately.
+
+    BODIES THE PLANE DOES NOT CUT ARE LEFT EXACTLY AS THEY WERE. keep=both used
+    to break a missed multi-part body into one body per solid (body73, wholly
+    below the plane, came apart).
+
+    OLD DOCUMENTS. A split saved before the panel (_split_is_legacy) rebuilds
+    through the old whole-body computation wherever that changed its body, and
+    commits exactly what it did; only where it silently changed nothing does
+    the per-part path below take over. Where the old computation RAISED, the
+    split stays red, in words, and stops at that body as the old code did
+    (_legacy_plan). Ids are positional: any other change in how many bodies an
+    old split emits, or which piece sits behind which id, re-targets every
+    later feature that names one.
+
+    keep=both with `groupSides` (what the app writes): one body per connected
+    lump on each side, Thomas's decision of 2026-09-26. Without it (documents
+    from before 2026-07-01): one body per piece. The first piece keeps the body's
+    id and name, the rest are appended as "<name> (2)", "(3)", ... and carry the
+    body's state the way Separate's pieces do."""
     keep = f.get("keep", "both")
     if keep not in KEEP:
         raise ValueError(f"unknown split keep mode: {keep}")
+    plane = _split_plane(f, ctx)
+    gone = 0
     if f.get("bodies"):
-        targets = [t for t in (find_body(b) for b in f["bodies"]) if t is not None]
+        # Deduplicated: the commit below would otherwise cut the same body twice
+        # from one plan and append its pieces twice.
+        seen, targets, missing = set(), [], set()
+        for b in f["bodies"]:
+            t = ctx.find_body(b)
+            if t is None:
+                missing.add(b)
+            elif t["id"] not in seen:
+                seen.add(t["id"])
+                targets.append(t)
+        # Ids the split names that are not here: an upstream edit removed their
+        # bodies ("All visible" freezes its ids when OK is pressed). Dropped
+        # without a word before; said below once the rest have been cut.
+        gone = len(missing)
     else:
-        one = find_body(f["body"]) if f.get("body") else active()
+        one = ctx.find_body(f["body"]) if f.get("body") else ctx.active()
         targets = [one] if one is not None else []
     if not targets:
-        raise ValueError("Split needs an existing body")
+        # Was the raw, untranslated "Split needs an existing body". The ids are
+        # positional and internal, so the sentence names neither.
+        raise GeomError(
+            "Split: nothing it was made to cut exists at this point in the "
+            "timeline. Edit the split and pick the bodies to cut again.",
+            errors_mod.SPLIT_NO_BODY)
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+
+    tool = BRepBuilderAPI_MakeFace(plane.wrapped).Face()
+    fid = f.get("id")
+    legacy = _split_is_legacy(f)
+    grouped = bool(f.get("groupSides"))
+
+    plans = []
     for target in targets:
-        res = split(target["shape"], bisect_by=plane, keep=KEEP[keep])
-        pieces = res.solids()
-        if keep == "both" and len(pieces) > 1:
-            if f.get("groupSides"):
-                # One body per physically-SEPARATE piece. First split the solids by
-                # SIDE of the plane (the two halves touch along the cut, so pure
-                # connectivity would falsely merge them), then within each side group
-                # solids that are actually connected. So a connected half stays ONE
-                # body (a honeycomb half is dozens of solids → one piece), while
-                # genuinely disconnected lumps (separate tabs) each get their own.
-                # OPT-IN (new splits only) — body ids are positional, so changing the
-                # count would renumber downstream bodies and break older files.
-                n, o = plane.z_dir, plane.origin
-                top = [p for p in pieces if (p.center() - o).dot(n) >= 0]
-                bottom = [p for p in pieces if (p.center() - o).dot(n) < 0]
-                groups = _vertex_components(top) + _vertex_components(bottom)
-                if groups:
-                    def _one(g):
-                        return g[0] if len(g) == 1 else Compound(g)
-                    target["shape"] = _one(groups[0])
-                    for g in groups[1:]:
-                        new_body(_one(g), "Split")
-                else:
-                    target["shape"] = res
+        progress_tick(keep_index=True)  # per body: a cut-all walks every visible body
+        plan = _legacy_plan(target, plane, keep, sole=len(targets) == 1) if legacy else None
+        old_failed = plan.get("legacy_failed") if plan is not None else None
+        if old_failed == _LEGACY_RAISED:
+            raise _legacy_failed(target)
+        if plan is None or old_failed == _LEGACY_NO_SOLID:
+            try:
+                plan = _split_body(target.get("shape"), plane, tool)
+            except Exception as ex:
+                print(f"split {fid}: {target['id']} failed: {type(ex).__name__}: {ex}",
+                      file=sys.stderr)
+                raise GeomError(
+                    f"Split failed on {BODY_SLOT}: the geometry kernel could not cut "
+                    "it. Nothing was changed.",
+                    errors_mod.SPLIT_FAILED, body_id=target["id"],
+                    subject=target.get("name")) from ex
+        # The old split was red here for want of a solid. Where cutting part by
+        # part ALSO changes nothing, its own sentence is the more exact one ("does
+        # not pass through", "lies on a face"); where it would change something,
+        # it may not (_legacy_plan).
+        if old_failed == _LEGACY_NO_SOLID and plan["status"] in ("cut", "separated"):
+            raise _legacy_failed(target)
+        plans.append((target, plan))
+
+    changed = [(t, r) for t, r in plans if r["status"] in ("cut", "separated")]
+    if not changed:
+        if len(plans) == 1:
+            t, r = plans[0]
+            if r["status"] == "damaged":
+                raise GeomError(
+                    f"Split changed nothing: every part of {BODY_SLOT} that the "
+                    "plane crosses is damaged, and I leave damaged parts whole "
+                    "rather than cut them.",
+                    errors_mod.SPLIT_DAMAGED, body_id=t["id"], subject=t.get("name"))
+            if r["touches"]:
+                raise GeomError(
+                    f"Split changed nothing: the plane lies on a face of {BODY_SLOT} "
+                    "and does not pass through it. Give the cut an offset to move "
+                    "it into the body.",
+                    errors_mod.SPLIT_ON_FACE, body_id=t["id"], subject=t.get("name"))
+            raise GeomError(
+                f"Split changed nothing: the plane does not pass through {BODY_SLOT}.",
+                errors_mod.SPLIT_MISSED, body_id=t["id"], subject=t.get("name"))
+        # Damaged parts are what stopped it, so they are named with their body
+        # and counted (Q3). This red message is all the user sees: a failed
+        # feature's warnings are not shown, so the per-body notes below never
+        # reach anyone from here.
+        hurt = [(t, r["damaged"]) for t, r in plans if r["status"] == "damaged"]
+        if len(hurt) == 1:
+            t, n = hurt[0]
+            what = "the one part" if n == 1 else f"the {n} parts"
+            raise GeomError(
+                f"Split changed nothing: {what} of {BODY_SLOT} that the plane "
+                f"crosses {'is' if n == 1 else 'are'} damaged, and the plane does "
+                "not pass through the other selected bodies. I leave damaged parts "
+                "whole rather than cut them.",
+                errors_mod.SPLIT_DAMAGED_ALL, body_id=t["id"], subject=t.get("name"),
+                count=n)
+        if hurt:
+            t = hurt[0][0]
+            parts = sum(n for _t, n in hurt)
+            raise GeomError(
+                f"Split changed nothing: {len(hurt)} of the selected bodies, "
+                f"{BODY_SLOT} among them, have damaged parts crossing the plane "
+                f"({parts} in all), and the plane cuts nothing else. I leave "
+                "damaged parts whole rather than cut them.",
+                errors_mod.SPLIT_DAMAGED_ALL_MORE, body_id=t["id"],
+                subject=t.get("name"), count=len(hurt), parts=parts)
+        raise GeomError(
+            "Split changed nothing: the plane does not pass through any of the "
+            "selected bodies.",
+            errors_mod.SPLIT_MISSED_ALL)
+
+    for target, r in changed:
+        if r.get("legacy"):
+            _commit_legacy(target, r, keep, grouped, plane, ctx.new_body)
+            continue
+        pieces = r["pieces"]
+        if keep == "both":
+            above = [_wrap_topods(p) for p, side, _w in pieces if side > 0]
+            below = [_wrap_topods(p) for p, side, _w in pieces if side < 0]
+            if grouped:
+                groups = _touch_components(above) + _touch_components(below)
             else:
-                # legacy: one body per disconnected solid. Kept as the default so files
-                # saved before `groupSides` keep their exact positional body ids (any
-                # change to the body count cascades into every downstream body ref).
-                target["shape"] = pieces[0]
-                for p in pieces[1:]:
-                    new_body(p, "Split")
-        elif not pieces:
-            # a plane that misses one of several bodies shouldn't fail the whole
-            # cut — only error when the sole target wasn't intersected.
-            if len(targets) == 1:
-                raise ValueError("the plane does not intersect the body")
+                groups = [[p] for p in above + below]
+            target["shape"] = groups[0][0] if len(groups[0]) == 1 else Compound(groups[0])
+            for k, g in enumerate(groups[1:], start=2):
+                nb = ctx.new_body(g[0] if len(g) == 1 else Compound(g),
+                                  f"{target['name']} ({k})",
+                                  node_ref=target.get("node_ref"))
+                # State that lives beside the shape travels with each piece, as
+                # Separate's does. `_intact` too, unlike Separate, whose pieces
+                # are single solids the debris pass never looks at: a lump here
+                # can be many solids, and the debris pass calls anything more
+                # than 1e-7 mm apart floating. A prototype that grouped by side
+                # instead lost 21,562 mm3 of the field file to exactly that pass.
+                if target.get("_intact"):
+                    nb["_intact"] = True
+                for key in ("_textures", "_faceSlots"):
+                    if target.get(key):
+                        nb[key] = target[key]
+                # Which body this piece came from, and its number: the app shows
+                # a piece of a body the user renamed as "<rename> (k)". Derived
+                # on every build rather than written as a Browser rename, which
+                # stayed behind on whatever body later took the positional id
+                # (an edit to fewer pieces, an undo; lost on redo and reopen).
+                nb["piece_of"] = [target["id"], k]
         else:
-            target["shape"] = res
+            want = 1 if keep == "top" else -1
+            kept = [_wrap_topods(p) for p, side, whole in pieces if side == want or whole]
+            # Always a Compound, as build123d's split() returned for one side.
+            target["shape"] = Compound(kept)
+
+    diag = ctx.diagnostics
+    # Who hears about a body the plane left as it was (missed, or only lying on
+    # a face of it with nothing to separate). A body the user PICKED is said,
+    # by name: they asked for it to be cut. Quiet only where nobody picked it:
+    # "All visible bodies" (the panel writes `allVisible` for that choice and
+    # nothing else), where a plane through an assembly misses most of it, and
+    # an old "Cut all bodies", which wrote the visible ids as `bodies` in the
+    # shape of a split saved before the panel (_split_is_legacy) and was always
+    # quiet about them.
+    quiet_misses = bool(f.get("allVisible")) or (bool(f.get("bodies")) and legacy)
+    if gone and diag is not None:
+        diag.append({"feature_id": fid, "kind": errors_mod.SPLIT_BODIES_GONE, "resolved": 0,
+                     "confidence": 0.0, "lossy": False, "code": errors_mod.SPLIT_BODIES_GONE,
+                     "count": gone, "reason": (
+                         f"{gone} of the bodies this split was made on "
+                         f"{'does' if gone == 1 else 'do'} not exist at this point in "
+                         "the timeline, so I cut only the others.")})
+    for target, r in plans:
+        if r.get("volume_mismatch"):
+            _split_diag(diag, fid, errors_mod.SPLIT_LEGACY_VOLUME, target, reason=(
+                f"The pieces of {BODY_SLOT} do not add up to the body this split "
+                "cut: some of its parts are damaged, and this split was made in an "
+                "older version, which cut damaged parts anyway. Edit the split and "
+                "press OK to cut it part by part, which leaves damaged parts whole."))
+        if r["status"] == "missed":
+            if quiet_misses:
+                _split_diag(diag, fid, errors_mod.SPLIT_MISSED, target)
+            else:
+                _split_diag(diag, fid, errors_mod.SPLIT_MISSED, target, reason=(
+                    f"The plane does not pass through {BODY_SLOT}, so I left it "
+                    "as it was."))
+        if r["status"] == "separated":
+            if keep == "both":
+                _split_diag(diag, fid, errors_mod.SPLIT_SEPARATED, target, reason=(
+                    f"Nothing solid was cut through on {BODY_SLOT}: the plane only "
+                    "separated the parts on each side of it."))
+            else:
+                # keep=top/bottom DELETED the parts on the other side, and
+                # "separated" would tell the user they are still there.
+                _split_diag(diag, fid, errors_mod.SPLIT_SEPARATED_KEPT, target, reason=(
+                    f"Nothing solid was cut through on {BODY_SLOT}: I kept the parts "
+                    "on the side you chose and removed the ones on the other side."))
+        if r["damaged"]:
+            n = r["damaged"]
+            _split_diag(diag, fid, errors_mod.SPLIT_DAMAGED_PARTS, target, count=n, reason=(
+                f"{n} {'part' if n == 1 else 'parts'} of {BODY_SLOT} "
+                f"{'crosses' if n == 1 else 'cross'} the plane but "
+                f"{'is' if n == 1 else 'are'} damaged, so I left "
+                f"{'it' if n == 1 else 'them'} whole."))
 
 
 def _retarget_delete_faces(named, bodies, sels, diag, fid):
