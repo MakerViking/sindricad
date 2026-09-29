@@ -11,6 +11,7 @@ import { clearRecovery } from "./recovery";
 import { noteRecent } from "./recentFiles";
 import { localeTag, t } from "../i18n";
 import { fmtCount } from "../ui/units";
+import { exportReport } from "./exportReport";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -384,23 +385,19 @@ async function runExport(
   // Confirm what was written — list every file for "separate", the single path
   // otherwise — and NAME any features whose geometry is missing from the export
   // (export-what-built: one red feature no longer blocks the whole print loop).
+  // Notes about a file that was written in full (open edges, very dense) are
+  // listed as notes, and only a missing feature puts "with warnings" in the
+  // title: see exportReport.
   const written = res.paths?.length ? res.paths : res.path ? [res.path] : [];
-  const lines = [...written];
-  for (const w of res.warnings ?? []) {
-    lines.push(featureMissingLine(w));
-  }
+  const report = exportReport(res.warnings, "export", store.document.features, store.namedBodies(store.buildState.result?.bodies));
+  const lines = [...written, ...report.lines];
   if (lines.length) {
     const { listModal } = await import("../ui/choice");
-    const title = res.warnings?.length
+    const title = report.failed
       ? t("file.export.doneTitleWarnings", { count: written.length })
       : t("file.export.doneTitle", { count: written.length });
     await listModal(title, lines);
   }
-}
-
-/** One line of the post-export list naming a feature whose geometry is missing. */
-function featureMissingLine(w: { feature_id?: string; message: string }): string {
-  return t("file.export.featureMissing", { feature: w.feature_id ?? t("file.export.unnamedFeature"), reason: w.message });
 }
 
 export function extToFormat(path: string): ExportFormat {
@@ -480,12 +477,15 @@ export async function exportPrintProject(
     return null;
   }
   void warnPrintAssignments(store, bodies.map((b) => b.id));
-  // Only surface a modal when there are warnings (features that didn't build) —
-  // the silent-staging path (Stage D) shouldn't pop a dialog on the happy path.
+  // Only surface a modal when the sidecar had something to say (a feature that
+  // didn't build, or a note such as open edges): the silent-staging path
+  // (Stage D) shouldn't pop a dialog on the happy path. Only a missing feature
+  // earns "with warnings" in the title.
   if (res.warnings?.length) {
-    const lines = res.warnings.map(featureMissingLine);
+    const report = exportReport(res.warnings, "export", store.document.features, store.namedBodies(store.buildState.result?.bodies));
     const { listModal } = await import("../ui/choice");
-    await listModal(t("file.export.projectDoneWarnings"), [res.path ?? path, ...lines]);
+    const title = report.failed ? t("file.export.projectDoneWarnings") : t("file.export.projectDone");
+    await listModal(title, [res.path ?? path, ...report.lines]);
   }
   return res.path ?? path;
 }

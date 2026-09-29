@@ -276,6 +276,13 @@ Rebuilds (from the warm in-worker cache, not a cold rebuild) and writes one file
 Export is "export what built": a feature failure never blocks exporting the bodies that
 did build; only zero live bodies is a hard `{ "error": {...} }`.
 
+`warnings` carries two kinds of entry. One WITH a `feature_id` key (built by `_err_entry`,
+so it may also carry `code`, `body_id`, `subject`, `count`, `parts`, and the id may be
+`null`) is a feature that failed: its geometry is missing from the file. One WITHOUT is a
+note about a file that was written in full: `{ "message": "..." }` only (unmatched edges,
+a very dense mesh, texture a STEP file cannot carry). The frontend tells them apart by that
+key (`src/io/exportReport.ts`), so a note must never carry `feature_id`.
+
 ### `exportProject`
 
 Rebuilds and writes an OrcaSlicer-format project 3MF (one object per body, palette slot

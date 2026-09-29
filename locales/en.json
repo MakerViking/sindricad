@@ -732,8 +732,10 @@
         "other": "{count} files"
       },
       "needsSidecar": "Colored 3MF export needs the Python sidecar backend (run without VITE_GEOM=rust).",
+      "note": "Note: {note}",
       "nothing": "Nothing to export yet — build a body first.",
       "pickOne": "pick one",
+      "projectDone": "Exported project",
       "projectDoneWarnings": "Exported project — with warnings",
       "specificBody": "A specific body",
       "unassignedBodies": {
@@ -1703,6 +1705,7 @@
       "formatPrompt": "Publish — model format?",
       "inProgress": "Publishing to TinkerAtlas…",
       "needsNative": "Publishing needs the native app",
+      "notesTitle": "Publishing to TinkerAtlas",
       "nothing": "Nothing to publish yet — build a body first",
       "postPublicly": "Post publicly (off = private draft)",
       "published": "Published to TinkerAtlas",

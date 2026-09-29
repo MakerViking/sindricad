@@ -10,6 +10,7 @@ import { pushModal, popModal, choose, listModal } from "../ui/choice";
 import { esc } from "../ui/escape";
 import { toast } from "../ui/toast";
 import { t } from "../i18n";
+import { exportReport } from "../io/exportReport";
 import { openExternal } from "../ui/welcome";
 import { openSignInDialog } from "./account";
 import { currentAccount, taStagingPath, taPublish, asTaError } from "./client";
@@ -59,11 +60,11 @@ export async function publishToTinkerAtlas(
     }
     if (res.warnings?.length) {
       // export-what-built: failed features are missing from the upload — say so
-      // BEFORE it goes public, so the user can back out.
-      const lines = res.warnings.map(
-        (w) => t("tinkeratlas.publish.featureMissing", { feature: w.feature_id ?? t("file.export.unnamedFeature"), reason: w.message }),
-      );
-      await listModal(t("tinkeratlas.publish.warningsTitle"), lines);
+      // BEFORE it goes public, so the user can back out. A note about a model
+      // that is all there (open edges, very dense) is listed as a note, under a
+      // title that does not claim a problem: see exportReport.
+      const report = exportReport(res.warnings, "upload", store.document.features, store.namedBodies(store.buildState.result?.bodies));
+      await listModal(report.failed ? t("tinkeratlas.publish.warningsTitle") : t("tinkeratlas.publish.notesTitle"), report.lines);
     }
 
     const cover = viewport.screenshotPNG().replace(/^data:image\/png;base64,/, "");

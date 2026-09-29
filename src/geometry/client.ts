@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, GeomErrorCode, ImportFormat, ImportReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
+import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, FeatureError, GeomErrorCode, ImportFormat, ImportReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
 import { RebuildAssembly, manifestFromBodies } from "./assembly";
 import { t } from "../i18n";
 import type {
@@ -104,9 +104,12 @@ export interface GeometryBackend {
     // the user stopped it — distinct from a failure, so the caller can stay
     // silent instead of reporting their own action back to them as an error
     cancelled?: boolean;
-    // features that FAILED during the export rebuild: their bodies are absent
-    // from the written files (export-what-built, never silently)
-    warnings?: { message: string; feature_id?: string }[];
+    // Two kinds, told apart by io/exportReport.ts. An entry WITH a feature_id
+    // is a feature that FAILED during the export rebuild: its geometry is
+    // absent from the written files (export-what-built, never silently). One
+    // without is a note about a file that was written in full: unmatched
+    // edges, a very dense mesh, texture that STEP cannot carry.
+    warnings?: FeatureError[];
   }>;
   // Read an external geometry file into an embeddable BREP payload (for an
   // `import` feature). Path-based: the sidecar reads the file directly.
@@ -148,7 +151,7 @@ export interface GeometryBackend {
     path?: string;
     message?: string;
     cancelled?: boolean;
-    warnings?: { message: string; feature_id?: string }[];
+    warnings?: FeatureError[];
   }>;
   // Fetch the per-launch sidecar auth token from the Rust shell (Tauri) and
   // open the socket. Must be called once before any backend op; the store
@@ -1002,8 +1005,8 @@ export class Geometry implements GeometryBackend {
       bodyColors?: Record<string, number>;
     } = {},
     onStarted?: (id: string) => void,
-  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; cancelled?: boolean; warnings?: { message: string; feature_id?: string }[] }> {
-    const msg = await this.call<{ path?: string; paths?: string[]; warnings?: { message: string; feature_id?: string }[] }>(
+  ): Promise<{ ok: boolean; path?: string; paths?: string[]; message?: string; cancelled?: boolean; warnings?: FeatureError[] }> {
+    const msg = await this.call<{ path?: string; paths?: string[]; warnings?: FeatureError[] }>(
       "export",
       {
         document: doc, format, path, body: opts.body, separate: opts.separate,
@@ -1036,8 +1039,8 @@ export class Geometry implements GeometryBackend {
       settings?: Record<string, unknown>;
     },
     onStarted?: (id: string) => void,
-  ): Promise<{ ok: boolean; path?: string; message?: string; cancelled?: boolean; warnings?: { message: string; feature_id?: string }[] }> {
-    const msg = await this.call<{ path?: string; warnings?: { message: string; feature_id?: string }[] }>("exportProject", {
+  ): Promise<{ ok: boolean; path?: string; message?: string; cancelled?: boolean; warnings?: FeatureError[] }> {
+    const msg = await this.call<{ path?: string; warnings?: FeatureError[] }>("exportProject", {
       document: doc,
       path,
       palette: opts.palette,

@@ -222,6 +222,18 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **A note after an export no longer reads as a failed export.** The list
+  shown after an export put every note under the same line as a feature that
+  failed. So an STL written in full, with unmatched edges a slicer might
+  complain about, said a feature had failed and its result was not in the
+  export, and the title said the export had warnings. Notes now read
+  "Note: ..." and the title only says there are warnings when a feature really
+  is missing from the file. A feature that is missing is named the way the
+  timeline names it, like "12 · Extrude", instead of by an internal id, and its
+  reason is written the way the timeline writes it, with the body's name filled
+  in. The same goes for the print project export and for publishing to
+  TinkerAtlas.
+
 - **Split Body cuts an imported assembly kept as one body.** It used to hand
   the whole body to the geometry kernel in one go. On the Ender 3 assembly's
   Skjermdeksel (908 parts) that failed with "Null TopoDS_Shape object" or ran
