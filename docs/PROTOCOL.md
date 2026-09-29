@@ -85,6 +85,17 @@ and on `ResolveDiag` entries.
 | `splitDamagedParts` | warning (`ResolveDiag` with a `reason`): `count` damaged parts of `{body}` cross the plane and were left whole |
 | `splitBodiesGone` | warning (`ResolveDiag` with a `reason`, no body): `count` of the bodies a split names do not exist at its place in the timeline; the others were cut |
 | `splitLegacyVolume` | warning (`ResolveDiag` with a `reason`): an old split's pieces of `{body}` do not add up to the body it cut (damaged parts cut anyway) |
+| `mergeNothing` | a `mergeSolids` on `{body}`, which is already one sound solid with nothing loose beside it |
+| `mergeNothingApart` | a `mergeSolids` on `{body}`, which is already `count` sound solids that do not touch, with nothing loose or damaged beside them |
+| `mergeNoSolid` | a `mergeSolids` on `{body}`, which has only surfaces and no solid to merge |
+| `mergeAllDamaged` | a `mergeSolids` on `{body}`, whose every solid (`count` of them) is damaged; they are left out, never repaired, so nothing is left to merge |
+| `mergeFailed` | the fuse of `{body}` failed, or its result was invalid, held an inside-out or empty solid, held more material than went in, or does not hold all of every solid that went in; the merge changed nothing |
+| `mergeNoBody` | the body a `mergeSolids` names does not exist at its place in the timeline |
+| `mergeDroppedSurfaces` | warning (`ResolveDiag` with a `reason`): `count` loose surfaces of `{body}` were left out of the merge (no thickness); where one was the only thing forming a wall, that part is gone |
+| `mergeDamagedLeftOut` | warning (`ResolveDiag` with a `reason`): `count` damaged solids of `{body}` (invalid, inside-out or empty) were left out of the merge, not repaired; what they covered is gone from the body |
+| `mergeSeparatePieces` | warning (`ResolveDiag` with a `reason`): the merged `{body}` is `count` pieces that do not touch, all kept in the one body |
+| `separateDroppedSurfaces` | warning (`ResolveDiag` with a `reason`): `count` loose surfaces beside the solids of `{body}` have no thickness, so they are in none of Separate's pieces and were left out; where one was the only thing forming a wall, that part is gone |
+| `separateDroppedFaces` | warning (`ResolveDiag` with a `reason`): `{body}` has no solids, so Separate made its pieces from its surfaces (shells), and `count` loose faces that belong to none of them were left out; where one was the only thing forming a wall, that part is gone |
 
 **Treat an unrecognised code as unclassified, never as an error.** The set only grows, and
 a newer sidecar may emit one this client has not heard of. Codes are added freely; renaming

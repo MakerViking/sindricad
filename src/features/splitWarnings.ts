@@ -27,11 +27,27 @@
 // missing `reason` is the rule, never the code: the same `splitMissed` code
 // carries a reason when the user picked the body (the sidecar decides).
 //
+// Merge into one solid and Separate toast their warnings the same way
+// (toastsWarnings): both act on a body the user picked, and what they did that
+// was not asked for (loose surfaces dropped, damaged solids left out, pieces
+// that stayed apart) is news of the same weight as a split that only separated.
+// They are one-body features, so their notes always keep their own sentences.
+//
 // Pure, so it is tested without main.ts, which cannot be imported in a test.
 
 import { hasKey, localeTag, t } from "../i18n";
 import { BODY_SLOT, featureErrorText, type NamedBody } from "../geometry/featureErrorText";
-import type { ResolveDiag } from "../types";
+import type { FeatureType, ResolveDiag } from "../types";
+
+/** The feature types whose warnings get a toast as well as the amber chip.
+ *  Every other feature's advisory (a sealed void, a Clean Up fit) stays on its
+ *  chip: those describe a result the user can inspect, not material the
+ *  feature removed or left out. */
+const TOASTED: ReadonlySet<string> = new Set<FeatureType>(["split", "mergeSolids", "separate"]);
+
+export function toastsWarnings(type: string | undefined): boolean {
+  return type !== undefined && TOASTED.has(type);
+}
 
 export interface SplitWarning {
   featureId: string;
@@ -75,7 +91,8 @@ export function diagBodyName(d: ResolveDiag, bodies: readonly NamedBody[] | unde
 
 export function splitWarningsToShow(
   diagnostics: readonly ResolveDiag[] | undefined,
-  isSplit: (featureId: string) => boolean,
+  /** the features whose warnings are toasted (toastsWarnings on its type) */
+  toasts: (featureId: string) => boolean,
   /** features that FAILED this build: their red toast says it all */
   failed: ReadonlySet<string>,
   /** the diagnostic in the user's words (diagnosticText, Browser names) */
@@ -84,7 +101,7 @@ export function splitWarningsToShow(
   name: (d: ResolveDiag) => string,
 ): SplitWarning[] {
   const out: SplitWarning[] = [];
-  for (const [featureId, list] of reasonedByFeature(diagnostics, (fid) => !failed.has(fid) && isSplit(fid))) {
+  for (const [featureId, list] of reasonedByFeature(diagnostics, (fid) => !failed.has(fid) && toasts(fid))) {
     const said = splitNoteLines(list, text, name, TOAST_NAMES).join(" ");
     const key = [featureId, ...list.map((d) => `${d.code ?? d.kind}:${d.body_id ?? ""}:${d.count ?? ""}`)].join("\u0000");
     if (said) out.push({ featureId, text: said, key });

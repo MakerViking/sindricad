@@ -1295,6 +1295,19 @@ export class DocumentStore {
     this.addFeature(feat, this.doc.features.length);
   }
 
+  /** fuse each body's solids into one, as one `mergeSolids` feature per body
+   *  at the END of the timeline, in the order given (like separateBody, so
+   *  they act on the final body list). Each body keeps its id and its place,
+   *  so no body id moves; the merges are ONE undo step, as they were one
+   *  click. Appended past every feature, so the rollback marker (null, or
+   *  before the end) never moves, which is all addFeature would add here. */
+  mergeSolids(bodyIds: readonly string[]) {
+    if (bodyIds.length === 0) return;
+    this.mutate((d) => {
+      for (const body of bodyIds) d.features.push({ id: this.nextId(), type: "mergeSolids", body });
+    }, true);
+  }
+
   // --- color palette + per-body color (multi-color; display + export metadata) -
   /** the project's filament palette (≤4 slots map to U1 toolheads). */
   get colorPalette(): { name: string; color: string; material?: string }[] {

@@ -5878,7 +5878,15 @@ def _handle_separate(f, ctx):
     ids are positional, and renumbering them would break every later feature
     that names a body. A body with no solid falls back to its shells, so a
     surface body separates too; one that is already a single piece is refused in
-    words rather than succeeding at nothing."""
+    words rather than succeeding at nothing.
+
+    What no piece is made from is left out, and SAID: the loose shells and faces
+    of a body that has solids, and the loose faces of one that has only shells.
+    That used to happen without a word. On the field file's Skjermdeksel (11),
+    87 loose zero-thickness shells beside 50 solids vanished on Separate, and
+    one end wall exists only as two such sheets. The pieces themselves are
+    exactly what they were: ids are positional, so an existing document must
+    rebuild into the same bodies."""
     bid = f.get("body")
     b = ctx.find_body(bid) if bid else None
     if b is None:
@@ -5893,6 +5901,8 @@ def _handle_separate(f, ctx):
         raise ValueError("Separate: this body is already one piece. Parts that "
                          "touch or were joined into one solid cannot be separated; "
                          "use Split to cut them apart.")
+    has_solid = bool(whole.solids())
+    dropped = _loose_parts_left_out(whole, has_solid=has_solid)
     b["shape"] = pieces[0]
     for i, piece in enumerate(pieces[1:], start=2):
         nb = ctx.new_body(piece, f"{b['name']} ({i})", node_ref=b.get("node_ref"))
@@ -5902,6 +5912,577 @@ def _handle_separate(f, ctx):
         for key in ("_textures", "_faceSlots"):
             if b.get(key):
                 nb[key] = b[key]
+    if not dropped:
+        return
+    one = dropped == 1
+    if has_solid:
+        # The pieces are solids, and a shell or a face has no thickness.
+        code, reason = errors_mod.SEPARATE_DROPPED_SURFACES, (
+            f"I left out {dropped} loose {'surface' if one else 'surfaces'} of {BODY_SLOT}: "
+            f"{'it has' if one else 'they have'} no thickness, so {'it' if one else 'they'} "
+            f"did not become {'a body' if one else 'bodies'}. If part of the shape existed "
+            f"only as {'that surface' if one else 'those surfaces'}, it is now open or missing.")
+    else:
+        # The pieces are shells, which have no thickness either: what leaves a
+        # bare face out is that it belongs to none of them.
+        code, reason = errors_mod.SEPARATE_DROPPED_FACES, (
+            f"I left out {dropped} loose {'face' if one else 'faces'} of {BODY_SLOT}: Separate "
+            f"makes a body from each of its surfaces, and {'this face is' if one else 'these faces are'} "
+            f"not joined into any of them, so {'it' if one else 'they'} did not become "
+            f"{'a body' if one else 'bodies'}. If part of the shape existed only as "
+            f"{'that face' if one else 'those faces'}, it is now open or missing.")
+    _split_diag(ctx.diagnostics, f.get("id"), code, b, count=dropped, reason=reason)
+
+
+def _loose_parts_left_out(whole, has_solid):
+    """How many top-level parts of `whole` no piece is made from: every shell
+    and face when the pieces are its solids, every bare face when they are its
+    shells. Stray wires and edges are not counted: they have no area, so
+    nothing the user sees goes with them."""
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL
+
+    lost = (TopAbs_SHELL, TopAbs_FACE) if has_solid else (TopAbs_FACE,)
+    return sum(1 for p in _split_parts(_wrapped_or_none(whole)) if p.ShapeType() in lost)
+
+
+# Below this a solid holds no material to merge. A reversed (inside-out) solid
+# reads NEGATIVE here and BRepCheck still calls it valid; handed to a fuse it
+# stands for everything OUTSIDE itself (measured: a 1000 mm3 box fused with an
+# overlapping reversed box came back "valid" at -500 mm3).
+_MERGE_MIN_VOLUME = 1e-6  # mm3
+
+# How far the merged volume may exceed the summed volume of what went in (and
+# how far the face tidy-up may move it), as a fraction of that sum: noise in
+# the kernel's volume integration, not material. Where nothing overlaps the
+# union IS the sum (disjoint 20 mm and 1 mm cubes: 8001.000000 mm3 both ways),
+# and the tidy-up left the field file's cover at 148,532.627 mm3 to the digit.
+_MERGE_VOLUME_REL_TOL = 1e-6
+
+# Merge Solids hands the kernel at most this many solids per call, fuse or
+# lost-part CUT, with a progress tick between calls. Nothing can tick INSIDE an
+# OCCT call (see the note above IMPORT_PHASE_READ), and the server reaps a
+# worker whose heartbeat stands still for 60 s. Measured on a Ryzen 9 7900X, a
+# fast desktop:
+#   - the fuse: ONE fuse of the field file's cover before its split (767
+#     sound solids) took 46 s, three quarters of the budget; fused 32 at a time
+#     into the union so far, the longest call took 3.8 s. The cover after the
+#     split, Skjermdeksel (11) (49 sound solids, so two calls), comes out the
+#     same either way: 8 solids, 148,532.627 mm3, 278 faces, 142 tidied.
+#   - the CUTs: 625 cylinders in a grid, each overlapping its neighbours, merge
+#     into one solid. A CUT of 128 of them against it took 19.8 s, of 32 of
+#     them 6.6 s, and the whole merge 141 s against 155 s: every CUT also pays
+#     about 2 s for the result.
+_MERGE_BATCH = 32
+
+
+def _merge_fuse(solids):
+    """ONE fuse of every solid (TopoDS) in `solids`, serial and non-destructive;
+    returns (raw result, OCCT alert keys), raw None when the kernel reported an
+    error.
+
+    Serial: build123d's `+` and `fuse` hardcode SetRunParallel(True), which is
+    pathologically slow on many small solids (see _serial_bool). Non-destructive:
+    the BOP builders write into their arguments by default, and these solids are
+    the very TShapes the rebuild's snapshots hold (measured on the field file: a
+    default fuse rewrote the BREP of all 49 solids it was given, a
+    non-destructive one none of them). BOPAlgo_BOP rather than
+    BRepAlgoAPI_Fuse because the API class, as bound in OCP, has no HasErrors.
+    Fuzzy value 0: on the field file the fuse is valid without one (0.7 s, 49
+    solids), and a fuzzy value moves geometry. The handler calls it once per
+    _MERGE_BATCH solids."""
+    from OCP.BOPAlgo import BOPAlgo_BOP, BOPAlgo_Operation
+    from OCP.Message import Message_Gravity
+
+    op = BOPAlgo_BOP()
+    op.AddArgument(solids[0])
+    for s in solids[1:]:
+        op.AddTool(s)
+    op.SetOperation(BOPAlgo_Operation.BOPAlgo_FUSE)
+    op.SetRunParallel(False)
+    op.SetNonDestructive(True)
+    op.Perform()
+    alerts = []
+    try:
+        rep = op.GetReport()
+        for grav in (Message_Gravity.Message_Warning, Message_Gravity.Message_Fail):
+            alerts.extend(a.GetMessageKey() for a in rep.GetAlerts(grav))
+    except Exception:
+        pass
+    if op.HasErrors():
+        return None, alerts
+    raw = op.Shape()
+    return (None if raw is None or raw.IsNull() else raw), alerts
+
+
+def _solids_of(topods):
+    """The solids (TopoDS) inside `topods`, in exploration order."""
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out = []
+    exp = TopExp_Explorer(topods, TopAbs_SOLID)
+    while exp.More():
+        out.append(TopoDS.Solid_s(exp.Current()))
+        exp.Next()
+    return out
+
+
+def _topods_volume(topods):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    p = GProp_GProps()
+    BRepGProp.VolumeProperties_s(topods, p)
+    return p.Mass()
+
+
+def _interior_point(solid):
+    """A point strictly inside `solid` (TopoDS), or None when none turns up
+    cheaply: its centre of mass when that is inside, else a point stepped just
+    inward from one of its largest faces. Two places on a face are tried, the
+    middle of its parameter range and the point nearest its centroid, because
+    each misses a shape the other finds: on the field file 42 of the 49 solids
+    have their centre inside; 4 are tubes whose centre, and every face centroid,
+    lies on the axis in the hole, where only the parameter middle lands on
+    material; a triangle's parameter box can overhang it, where the centroid
+    cannot. With both, all 49 get a point."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.BRepGProp import BRepGProp, BRepGProp_Face
+    from OCP.Bnd import Bnd_Box
+    from OCP.GeomAPI import GeomAPI_ProjectPointOnSurf
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_IN
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    clf = BRepClass3d_SolidClassifier(solid)
+
+    def inside(p):
+        clf.Perform(p, 1e-7)
+        return clf.State() == TopAbs_IN
+
+    props = GProp_GProps()
+    BRepGProp.VolumeProperties_s(solid, props)
+    c = props.CentreOfMass()
+    if inside(c):
+        return c
+    box = Bnd_Box()
+    BRepBndLib.Add_s(solid, box)
+    x0, y0, z0, x1, y1, z1 = box.Get()
+    diag = ((x1 - x0) ** 2 + (y1 - y0) ** 2 + (z1 - z0) ** 2) ** 0.5
+    # Small enough to stay inside the cover's 2 mm walls, large enough to
+    # clear the face's own tolerance.
+    step = min(max(1e-4 * diag, 1e-4), 0.05)
+    faces = []
+    exp = TopExp_Explorer(solid, TopAbs_FACE)
+    while exp.More():
+        fc = TopoDS.Face_s(exp.Current())
+        fp = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(fc, fp)
+        faces.append((fp.Mass(), fc, fp.CentreOfMass()))
+        exp.Next()
+    faces.sort(key=lambda t: -t[0])
+
+    def stepped_in(fc, u, v):
+        on, normal = gp_Pnt(), gp_Vec()
+        # BRepGProp_Face.Normal follows the face's orientation, so this normal
+        # points OUT of the solid and the step below goes in.
+        BRepGProp_Face(fc).Normal(u, v, on, normal)
+        if normal.Magnitude() < 1e-12:
+            return None
+        normal.Normalize()
+        p = gp_Pnt(on.X() - step * normal.X(), on.Y() - step * normal.Y(),
+                   on.Z() - step * normal.Z())
+        return p if inside(p) else None
+
+    for _area, fc, centre in faces[:8]:
+        try:
+            ad = BRepAdaptor_Surface(fc)
+            p = stepped_in(fc, (ad.FirstUParameter() + ad.LastUParameter()) / 2,
+                           (ad.FirstVParameter() + ad.LastVParameter()) / 2)
+            if p is not None:
+                return p
+            proj = GeomAPI_ProjectPointOnSurf(centre, BRep_Tool.Surface_s(fc))
+            if proj.IsDone() and proj.NbPoints() > 0:
+                p = stepped_in(fc, *proj.LowerDistanceParameters())
+                if p is not None:
+                    return p
+        except Exception:
+            continue
+    return None
+
+
+def _merge_screen(solid):
+    """The volume of a solid (TopoDS) Merge Solids may fuse, or None for a
+    damaged one: BRepCheck invalid, inside-out or empty (_MERGE_MIN_VOLUME).
+    Damaged solids are left out and never repaired. Every solid the fuse hands
+    BACK must pass it too: see _handle_merge_solids for the inside-out ones it
+    makes."""
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    v = _topods_volume(solid)
+    if v > _MERGE_MIN_VOLUME and BRepCheck_Analyzer(solid).IsValid():
+        return v
+    return None
+
+
+def _merge_sound(topods):
+    """True when `topods` holds at least one solid and every solid in it passes
+    _merge_screen."""
+    lumps = _solids_of(topods)
+    return bool(lumps) and all(_merge_screen(s) is not None for s in lumps)
+
+
+def _merge_kept_faces(b, features):
+    """The faces of body `b` the merge's face tidy-up must leave as they are,
+    by fingerprint (_face_fp): each face with a colour of its own
+    (`_faceSlots`), and each face a flat text made (an `_owners` entry naming a
+    textOnFace whose operation is "flat"). A flat text IS faces imprinted into
+    the face they lie on, on the same surface, which is exactly what
+    UnifySameDomain merges back into one (see _imprint)."""
+    flat = {g.get("id") for g in features or ()
+            if g.get("type") == "textOnFace" and g.get("operation") == "flat"}
+    keep = set(b.get("_faceSlots") or ())
+    keep.update(fp for fp, owner in (b.get("_owners") or {}).items() if owner in flat)
+    return frozenset(keep)
+
+
+def _merge_unified(raw, vol_tol, keep=frozenset()):
+    """`raw` (a fuse result that is _merge_sound) with its coplanar faces
+    merged, or `raw` itself when merging them would cost anything: a solid that
+    is no longer sound (UnifySameDomain can report success and hand back an
+    invalid solid, Shroud.sindri, see _serial_bool), a solid more or fewer, a
+    change in volume, or a face in `keep` (fingerprints, _merge_kept_faces)
+    merged away. On the field file it takes the merged cover from 278 faces to
+    142 in 0.01 s. Never call it on an invalid shape: it segfaults there."""
+    from OCP.ShapeUpgrade import ShapeUpgrade_UnifySameDomain
+
+    try:
+        up = ShapeUpgrade_UnifySameDomain(raw, True, True, True)
+        up.AllowInternalEdges(False)
+        up.Build()
+        cleaned = up.Shape()
+        if (cleaned is None or cleaned.IsNull() or not _merge_sound(cleaned)
+                or len(_solids_of(cleaned)) != len(_solids_of(raw))
+                or abs(_topods_volume(cleaned) - _topods_volume(raw)) > vol_tol):
+            return raw
+        if keep:
+            kept = keep.intersection(_shape_face_fps(_wrap_topods(raw)))
+            if not kept.issubset(_shape_face_fps(_wrap_topods(cleaned))):
+                print("mergeSolids: faces left unmerged: merging them would undo a text "
+                      "or a face colour", file=sys.stderr)
+                return raw
+        return cleaned
+    except Exception as ex:
+        print(f"mergeSolids: faces left unmerged: {type(ex).__name__}: {ex}", file=sys.stderr)
+    return raw
+
+
+def _apart_groups(solids, most):
+    """Indices into `solids` (TopoDS) in groups of at most `most` whose
+    members' bounding boxes, grown by a micron, do not meet: first fit, in
+    order. Members of a group cannot touch, so one boolean over a group never
+    meets their contacts with each other (see _merge_lost_volume). The field
+    file's 49 solids make 17 groups; 300 cylinders in a grid overlapping their
+    neighbours make 4 with no cap on `most`."""
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.Bnd import Bnd_Box
+
+    boxes = []
+    for s in solids:
+        bx = Bnd_Box()
+        BRepBndLib.Add_s(s, bx)  # includes the shape's own tolerances
+        bx.Enlarge(1e-3)
+        boxes.append(bx)
+    groups = []
+    for i, bx in enumerate(boxes):
+        for g in groups:
+            if len(g) < most and all(bx.IsOut(boxes[j]) for j in g):
+                g.append(i)
+                break
+        else:
+            groups.append([i])
+    return groups
+
+
+def _merge_lost_volume(solids, result):
+    """How much of `solids` (TopoDS, one of _apart_groups) lies outside
+    `result`: the volume of their CUT by it, or None when the kernel reports
+    an error.
+
+    The union holds every solid that went into it, so for a right fuse this is
+    empty. It is the one check that sees PART of a solid go missing, which a
+    fuse can do with a BRepCheck-valid result and no error: a critic's five
+    near-coincident cylinders and boxes (test_merge_solids has them) fused into
+    2 solids of 2,263.794 mm3 against a 2,595.869 mm3 union, and this CUT of
+    the 45-degree box left 332.075 mm3. The solids are cut against the result
+    alone, never alongside a solid they touch, so their degenerate contacts
+    with EACH OTHER, which is what trips the fuse, are not in it. It means
+    nothing against a result with an inside-out solid in it, which holds
+    everything outside itself: the handler never gets here with one.
+
+    A group per CUT rather than a solid per CUT, because each CUT pays for the
+    whole result: 300 overlapping cylinders took 150 s one by one and 21 s in
+    their 4 groups (the fuse itself, 2.6 s). The field file's cover: 17 CUTs
+    in 0.5 s, every one exactly 0.0 mm3. At most _MERGE_BATCH solids a CUT,
+    so no one call grows with the body. Serial and non-destructive for
+    the reasons _merge_fuse gives.
+
+    It errs on the side of refusing. On near-coincident solids the CUT itself
+    can miss the result and hand back a WHOLE solid the fuse did keep, or
+    report an error. Two critic-style random searches (300 merges of 2 to 6
+    boxes and cylinders, offsets of 1e-7 to 1e-3 mm) refused 16 merges whose
+    fuse a 3,000-point sample found right, 14 of them that way and 2 on a CUT
+    error; 245 merged, and the sample found none of those fuses wrong. A
+    refusal says so and changes nothing; a silent loss would not."""
+    from OCP.BOPAlgo import BOPAlgo_BOP, BOPAlgo_Operation
+
+    op = BOPAlgo_BOP()
+    for s in solids:
+        op.AddArgument(s)
+    op.AddTool(result)
+    op.SetOperation(BOPAlgo_Operation.BOPAlgo_CUT)
+    op.SetRunParallel(False)
+    op.SetNonDestructive(True)
+    op.Perform()
+    if op.HasErrors():
+        return None
+    rest = op.Shape()
+    if rest is None or rest.IsNull():
+        return 0.0
+    # abs: an inside-out leftover reads negative, and is no less missing.
+    return abs(_topods_volume(rest))
+
+
+def _handle_merge_solids(f, ctx):
+    """Merge Solids: make one body's overlapping solids one solid.
+
+    For an import made of many overlapping solids, which exports as a
+    non-manifold mesh a slicer rejects. The field case is Thomas's LCD cover,
+    Skjermdeksel (11): 50 solids (one exact duplicate pair, 19 pairs where one
+    lies wholly inside the other, 268,331 mm3 summed against 148,533 mm3 of
+    material), 87 loose zero-thickness shells beside them, and 1 invalid sliver.
+
+    What goes in: the body's VALID solids, fused _MERGE_BATCH at a time
+    into the union so far (_merge_fuse), then UnifySameDomain to merge the
+    coplanar faces the fuse leaves, kept only when it leaves the result sound
+    (it can report success and hand back an invalid solid, see _serial_bool)
+    and undoes no flat text or face colour (_merge_kept_faces). What is left
+    out, each counted and said as a warning:
+      - loose shells and faces: they have no thickness, so a solid cannot hold
+        them. Where one was the only thing forming a wall, that part of the wall
+        is gone (the top 32 mm of one of the cover's end walls is only two such
+        sheets, 2 mm apart), so the warning never claims the result is complete.
+      - damaged solids (BRepCheck invalid, inside-out, or empty): left out,
+        never repaired. ShapeFix measurably took split volumes to 0 or up about
+        100x on the same file.
+    Pieces that do not touch after the fuse all stay in the body, one solid
+    each, and the warning counts them: nothing the user can see vanishes, and
+    Separate splits them afterwards. On the cover that is 8 pieces: the cover,
+    a U frame floating 8.7 mm inside it, and six small parts floating 0.4 to
+    3.6 mm off its walls (427 mm3 between them).
+
+    The body keeps its place, id, name and everything that rides beside its
+    shape: it is modified in place, so no body id moves.
+
+    Checked before anything is committed; mergeFailed names the body and
+    changes nothing when the union (after any batch) is invalid or holds an
+    inside-out or empty solid, holds more material than went in or less than
+    its biggest solid, misses a point from inside any solid that went in, or
+    leaves any part of one outside it (_merge_lost_volume). The volume bracket
+    alone cannot see a lost part, since the union is legitimately much smaller
+    than the sum. The field file's cover BEFORE its split (908 solids, 141 of
+    them damaged) is refused in 6 s: the union is damaged after 160 of its 767
+    sound solids. Every way of fusing it tried (one fuse, batches in three
+    orders, a tree of batches) came out invalid or short of material.
+
+    Refused in words, changing nothing: a body that is already one sound solid
+    and nothing else (mergeNothing), one that is already sound solids that do
+    not touch and nothing else (mergeNothingApart), and one with no sound solid
+    at all."""
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.TopAbs import TopAbs_IN, TopAbs_SOLID
+
+    fid = f.get("id")
+    bid = f.get("body")
+    b = ctx.find_body(bid) if bid else None
+    if b is None:
+        raise GeomError(
+            "Merge: the body it was made on does not exist at this point in the "
+            "timeline.", errors_mod.MERGE_NO_BODY)
+    who = {"body_id": b["id"], "subject": b.get("name")}
+    whole = _as_compound(b["shape"]) if b.get("shape") is not None else None
+    parts = _split_parts(_wrapped_or_none(whole)) if whole is not None else []
+    solids = [p for p in parts if p.ShapeType() == TopAbs_SOLID]
+    # Counted the way Separate counts what it leaves out; a stray wire or edge
+    # goes too, uncounted, as it has no area to see.
+    loose = _loose_parts_left_out(whole, has_solid=True) if whole is not None else 0
+    if not solids:
+        raise GeomError(
+            f"Merge changed nothing: {BODY_SLOT} has no solid parts, only surfaces, "
+            "so there is nothing to merge. Thicken turns a surface into a solid.",
+            errors_mod.MERGE_NO_SOLID, **who)
+
+    sound, vols, damaged = [], [], 0
+    for s in solids:
+        progress_tick(keep_index=True)  # BRepCheck can take seconds on one big import part
+        v = _merge_screen(s)
+        if v is None:
+            damaged += 1
+        else:
+            sound.append(s)
+            vols.append(v)
+    if not sound:
+        raise GeomError(
+            f"Merge changed nothing: every solid part of {BODY_SLOT} is damaged, "
+            "and I leave damaged parts out rather than repair them.",
+            errors_mod.MERGE_ALL_DAMAGED, count=damaged, **who)
+    if len(sound) == 1 and not damaged and not loose:
+        raise GeomError(
+            f"{BODY_SLOT} is already one solid, so there is nothing to merge.",
+            errors_mod.MERGE_NOTHING, **who)
+
+    def failed(why):
+        print(f"mergeSolids {fid}: {b['id']} failed: {why}", file=sys.stderr)
+        return GeomError(
+            f"Merge failed on {BODY_SLOT}: the geometry kernel could not fuse its "
+            "solids into a sound one that holds all of them. Nothing was changed.",
+            errors_mod.MERGE_FAILED, **who)
+
+    if len(sound) == 1:
+        result = sound[0]
+    else:
+        # In batches of _MERGE_BATCH, each fused into the union so far,
+        # with a tick between kernel calls: one fuse of a big body can outlast
+        # the stall watchdog with nothing able to tick inside it.
+        raw = None
+        for start in range(0, len(sound), _MERGE_BATCH):
+            progress_tick(keep_index=True)
+            batch = sound[start:start + _MERGE_BATCH]
+            try:
+                raw, alerts = _merge_fuse(([raw] if raw is not None else []) + batch)
+            except Exception as ex:
+                raise failed(f"the fuse raised {type(ex).__name__}: {ex}") from ex
+            done = f"after {start + len(batch)} of {len(sound)} solids {sorted(set(alerts))}"
+            if raw is None:
+                raise failed(f"the fuse reported an error {done}")
+            if not _merge_sound(raw):
+                # The union so far must itself be sound: never repaired, never
+                # handed to the next fuse, and never unified either, since
+                # UnifySameDomain SEGFAULTS on an invalid solid rather than
+                # raising. INSIDE-OUT counts as damaged here as it does on the
+                # way in, and it is the one no other check can see: a solid
+                # read inside-out holds everything outside itself, so every
+                # point is "inside" the result, every CUT by it is empty, and
+                # its negative volume hides under the volume bracket. Measured
+                # on the field file's cover BEFORE its split (767 sound solids
+                # in one fuse): valid to BRepCheck, 5 inside-out solids of
+                # -0.016 to -73.9 mm3, every point and CUT check passed, and a
+                # 20,000-point sample found points inside 11 of the solids that
+                # went in lying outside every solid of the result.
+                raise failed(f"the fused result is damaged (invalid, inside-out or empty) {done}")
+        progress_tick(keep_index=True)
+        result = _merge_unified(raw, _MERGE_VOLUME_REL_TOL * sum(vols),
+                                _merge_kept_faces(b, ctx.features))
+        progress_tick(keep_index=True)
+
+    lumps = _solids_of(result)
+    total = sum(_topods_volume(s) for s in lumps)
+    hi, lo = sum(vols), max(vols)
+    tol = _MERGE_VOLUME_REL_TOL * hi
+    if not lumps or not len(lumps) <= len(sound) or not lo - tol <= total <= hi + tol:
+        raise failed(f"{len(lumps)} solids, {total:.6f} mm3 outside {lo:.6f}..{hi:.6f}")
+    if not loose and not damaged and len(lumps) == len(sound) and total >= hi - tol:
+        # As many solids came out as went in, holding all of their material: a
+        # fuse never splits a solid, so none of them touched another and
+        # nothing was fused. Committing it would be a feature that changes
+        # nothing. Seen live on the field file: a second Merge on the cover (8
+        # pieces after the first) built with only an amber "is now 8 separate
+        # pieces" and the same 142 faces and volume.
+        raise GeomError(
+            f"{BODY_SLOT} is already {len(sound)} separate solids that do not touch, "
+            "so there is nothing to merge. Separate into bodies makes each of them "
+            "a body of its own.",
+            errors_mod.MERGE_NOTHING_APART, count=len(sound), **who)
+    if len(sound) > 1:
+        # Every solid that went in must still be material. First a point from
+        # strictly inside each one has to be strictly INSIDE a solid of the
+        # result: ON is not enough, since a degenerate result can classify
+        # points deep inside it as ON. The five near-coincident solids in
+        # test_merge_solids: the result that lost 12.8% of the 45-degree box
+        # reads ON at that box's own interior point, and this check used to
+        # take ON and pass it (a critic reported the same at the centres of
+        # both inputs of a result 10% short). Same tolerance as
+        # _interior_point's own test, so a point it found inside a solid is
+        # inside the union of it at that tolerance too. On the field file all
+        # 49 are IN.
+        classifiers = [BRepClass3d_SolidClassifier(s) for s in lumps]
+        for k, s in enumerate(sound):
+            if k % 16 == 0:
+                progress_tick(keep_index=True)
+            p = _interior_point(s)
+            if p is None:
+                continue  # nothing cheap to test with; the CUT below still runs
+            for clf in classifiers:
+                clf.Perform(p, 1e-7)
+                if clf.State() == TopAbs_IN:
+                    break
+            else:
+                raise failed(f"solid {k} ({vols[k]:.3f} mm3) is not in the result")
+        # Then none of it may lie outside the result: this is what sees part of
+        # a solid go missing, where a point finds only a whole one. Held to the
+        # smallest solid in the group: a right fuse leaves exactly 0.0.
+        for group in _apart_groups(sound, _MERGE_BATCH):
+            progress_tick(keep_index=True)
+            lost = _merge_lost_volume([sound[i] for i in group], result)
+            if lost is None or lost > _MERGE_VOLUME_REL_TOL * min(vols[i] for i in group):
+                raise failed(f"solids {group} are not all in the result: "
+                             f"{'the check failed' if lost is None else f'{lost:.6f} mm3 outside'}")
+
+    merged = _wrap_topods(lumps[0]) if len(lumps) == 1 else Compound(
+        [_wrap_topods(s) for s in lumps])
+    b["shape"] = merged
+    if len(lumps) > 1:
+        # Every piece is material the user's solids held, never debris a cut
+        # left behind, so the final debris pass must not touch them. It drops a
+        # floating solid under 0.1% of the BIGGEST, and the biggest after a
+        # merge is a union larger than any one solid that went in: a piece the
+        # pass kept before the merge could go after it, from the body and the
+        # export, with no word said (a critic's case: 10 mm cubes at x=0 and 9
+        # beside a 1.1 mm one, 1.331 mm3, which is over 0.1% of one cube but
+        # under 0.1% of their 1,900 mm3 union). The field file's cover is
+        # `_intact` already (an import kept whole), which is what keeps all 8 of
+        # its pieces; the pass would have dropped 6 of them, 427 mm3. The cost:
+        # a later cut on this body keeps any chip it leaves, as a cut on an
+        # import kept whole already does.
+        b["_intact"] = True
+
+    diag = ctx.diagnostics
+    if loose:
+        _split_diag(diag, fid, errors_mod.MERGE_DROPPED_SURFACES, b, count=loose, reason=(
+            f"I left out {loose} loose {'surface' if loose == 1 else 'surfaces'} of "
+            f"{BODY_SLOT}: {'it has' if loose == 1 else 'they have'} no thickness, so "
+            f"{'it' if loose == 1 else 'they'} cannot be part of a solid. Where "
+            f"{'it' if loose == 1 else 'one'} was the only thing forming a wall, that "
+            "part of the wall is now missing."))
+    if damaged:
+        _split_diag(diag, fid, errors_mod.MERGE_DAMAGED_LEFT_OUT, b, count=damaged, reason=(
+            f"{damaged} solid {'part' if damaged == 1 else 'parts'} of {BODY_SLOT} "
+            f"{'is' if damaged == 1 else 'are'} damaged, so I left "
+            f"{'it' if damaged == 1 else 'them'} out of the merge rather than repair "
+            f"{'it' if damaged == 1 else 'them'}. Whatever "
+            f"{'it' if damaged == 1 else 'they'} covered is missing from the result."))
+    if len(lumps) > 1:
+        n = len(lumps)
+        _split_diag(diag, fid, errors_mod.MERGE_SEPARATE_PIECES, b, count=n, reason=(
+            f"After merging, {BODY_SLOT} is {n} separate pieces that do not touch, so "
+            "I kept them all in the one body. Separate into bodies splits them "
+            "apart."))
 
 
 # type string -> handler. Unknown types are NOT in this dict — the rebuild loop
@@ -5939,6 +6520,7 @@ _FEATURE_HANDLERS = {
     "combine": _handle_combine,
     "removeBody": _handle_remove_body,
     "separate": _handle_separate,
+    "mergeSolids": _handle_merge_solids,
 }
 
 
@@ -9191,9 +9773,11 @@ def _legacy_failed(target):
 
 
 def _split_diag(diag, feature_id, code, body, reason=None, count=None):
-    """A split diagnostic. Neutral `resolved`/`confidence`/`lossy`, like
-    `_sealed_void_diag`: nothing was RESOLVED, and `lossy` must stay False (it is
-    the flag project_geometry refuses a source selection on).
+    """A split diagnostic; Merge Solids and Separate say theirs through it too,
+    so they surface the same way (amber chip, toast). Neutral `resolved`/
+    `confidence`/`lossy`, like `_sealed_void_diag`: nothing was RESOLVED, and
+    `lossy` must stay False (it is the flag project_geometry refuses a source
+    selection on).
 
     With a `reason` it is a WARNING: the timeline lights the chip amber for any
     diagnostic carrying one. Without, it is a RECORD for tooling only, which is

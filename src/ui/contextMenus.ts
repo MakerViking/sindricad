@@ -145,8 +145,17 @@ export function createContextMenus(deps: ContextMenusDeps) {
       },
       { label: t("context.offsetPlaneFromFace"), shortcut: keyHint("offset-plane"), disabled: !plane, onClick: unlessBusy(() => { if (plane) { noteIfUnanchored(CURVED_FACE_NOTE_PLANE); offsetPlaneFromFace(plane, anchor ?? undefined); } }) },
       // In Faces mode this IS the right-click on a body, so it offers the
-      // body's own Split Body, with the body the face belongs to filled in.
-      ...(bodyId ? [{ label: t("context.splitBody"), shortcut: keyHint("split"), onClick: unlessBusy(() => { setLastAction("split"); startSplit({ bodies: [bodyId] }); }) }] : []),
+      // body's own Split Body, with the body the face belongs to filled in, and
+      // Separate and Merge on that body, as the body menu does.
+      ...(bodyId
+        ? [
+            { label: t("context.splitBody"), shortcut: keyHint("split"), onClick: unlessBusy(() => { setLastAction("split"); startSplit({ bodies: [bodyId] }); }) },
+            separateItem(bodyId),
+            // this body alone, like the Split Body above: a face menu is not
+            // opened over a body selection
+            mergeItem([bodyId]),
+          ]
+        : []),
       { separator: true, label: "" },
       ...(owner
         ? [{ label: t(isInspectorEditable(owner.type) ? "context.editFeature" : "context.selectFeature", { name: ownerLabel }), onClick: unlessBusy(() => editFeature(owner.id)) }]
@@ -198,28 +207,47 @@ export function createContextMenus(deps: ContextMenusDeps) {
     return { label: t("context.separateBody"), onClick: unlessBusy(() => store.separateBody(bodyId)) };
   }
 
+  /** Merge into one solid: Separate's opposite, for an import made of
+   *  overlapping solids and loose surfaces that exports as a broken STL. One
+   *  merge per body in `bodies`, each body's solids into a solid of its own:
+   *  with more than one the label says so, since "Merge into one solid" over a
+   *  selection reads like Combine. */
+  function mergeItem(bodies: readonly string[]): CtxItem {
+    const label = bodies.length > 1 ? t("context.mergeSolidsEach", { count: bodies.length }) : t("context.mergeSolids");
+    return { label, onClick: unlessBusy(() => store.mergeSolids(bodies)) };
+  }
+
+  /** The bodies a body's menu acts on: the selection it was opened over when
+   *  the body is part of it, else the body alone, the way Move and Combine act
+   *  on the selection. */
+  function actedOn(bodyId: string): string[] {
+    const sel = viewport.getSelectedBodies();
+    return sel.includes(bodyId) ? sel : [bodyId];
+  }
+
   /** Split Body with this body in the Body field — or, when the body is part
-   *  of a multi-selection, with all of them, the way Move and Combine act on
-   *  the selection the menu was opened over. */
+   *  of a multi-selection, with all of them (actedOn). */
   function splitItem(bodyId: string): CtxItem {
     return {
       label: t("context.splitBody"),
       shortcut: keyHint("split"),
       onClick: unlessBusy(() => {
         setLastAction("split"); // "Repeat Split Body", like the menu items routed through handleAction
-        const sel = viewport.getSelectedBodies();
-        startSplit({ bodies: sel.includes(bodyId) ? sel : [bodyId] });
+        startSplit({ bodies: actedOn(bodyId) });
       }),
     };
   }
 
   /** The body actions the Browser adds to a body row's menu (its Color, Rename
-   *  and Delete are its own): export it, or single it out. */
+   *  and Delete are its own): export it, or single it out. Built when the row
+   *  renders, and the Browser re-renders on every change of the body selection
+   *  (onBodySelectionChange), so the selection read here is the current one. */
   function bodyActions(bodyId: string): CtxItem[] {
     return [
       exportBodyItem(bodyId),
       splitItem(bodyId),
       separateItem(bodyId),
+      mergeItem(actedOn(bodyId)),
       { separator: true, label: "" },
       { label: t("context.isolateBody"), onClick: () => isolateBody(bodyId) },
       { label: t("context.showAllBodies"), shortcut: keyHint("show-all-bodies"), onClick: () => handleAction("show-all-bodies") },
@@ -237,6 +265,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
       { label: t("context.properties"), onClick: unlessBusy(() => handleAction("properties")) },
       exportBodyItem(bodyId),
       separateItem(bodyId),
+      mergeItem(actedOn(bodyId)),
       { label: t("context.findInBrowser"), onClick: () => findInBrowser(bodyId) },
       { separator: true, label: "" },
       { label: t("context.hideBody"), onClick: () => hideBody(bodyId) },

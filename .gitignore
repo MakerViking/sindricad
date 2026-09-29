@@ -17,8 +17,9 @@ __pycache__/
 fission-*.png
 green-select.png
 
-# python venv (any location)
-.venv/
+# python venv (any location). No trailing slash: a worktree's venv is often a
+# SYMLINK to the main checkout's, and `.venv/` matches only a directory.
+.venv
 
 # os
 .DS_Store

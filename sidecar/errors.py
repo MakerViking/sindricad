@@ -64,6 +64,20 @@ SPLIT_SEPARATED_KEPT = "splitSeparatedKept"  # same, with keep=top/bottom: the o
 SPLIT_DAMAGED_PARTS = "splitDamagedParts"   # `count` damaged parts of {body} cross the plane and were left whole
 SPLIT_BODIES_GONE = "splitBodiesGone"       # `count` of the bodies it names do not exist here; the rest were cut
 SPLIT_LEGACY_VOLUME = "splitLegacyVolume"   # an older version's split of {body} does not add up to the body it cut
+# Merge Solids. Errors (the feature changed nothing, so it is red):
+MERGE_NOTHING = "mergeNothing"              # {body} is already one sound solid and nothing else
+MERGE_NOTHING_APART = "mergeNothingApart"   # {body} is already `count` sound solids that do not touch, and nothing else
+MERGE_NO_SOLID = "mergeNoSolid"             # {body} has only surfaces, no solid to merge
+MERGE_ALL_DAMAGED = "mergeAllDamaged"       # every solid of {body} (`count` of them) is damaged
+MERGE_FAILED = "mergeFailed"                # the fuse of {body} failed or failed its checks; nothing was changed
+MERGE_NO_BODY = "mergeNoBody"               # the body it names does not exist at its place in the timeline
+# Merge Solids warnings (diagnostics on a merge that DID change something):
+MERGE_DROPPED_SURFACES = "mergeDroppedSurfaces"  # `count` loose surfaces of {body} were left out
+MERGE_DAMAGED_LEFT_OUT = "mergeDamagedLeftOut"   # `count` damaged solids of {body} were left out, not repaired
+MERGE_SEPARATE_PIECES = "mergeSeparatePieces"    # the merged {body} is `count` pieces that do not touch, all kept
+# Separate warnings:
+SEPARATE_DROPPED_SURFACES = "separateDroppedSurfaces"  # `count` loose surfaces beside {body}'s solids have no thickness and were left out
+SEPARATE_DROPPED_FACES = "separateDroppedFaces"  # `count` loose faces of the surface body {body} are in none of its shells and were left out
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
@@ -74,6 +88,9 @@ ALL = frozenset({
     SPLIT_DAMAGED_ALL, SPLIT_FAILED, SPLIT_NO_PLANE, SPLIT_CRASHED, SPLIT_SEPARATED,
     SPLIT_SEPARATED_KEPT, SPLIT_DAMAGED_PARTS, SPLIT_NO_BODY, SPLIT_LEGACY_FAILED,
     SPLIT_BODIES_GONE, SPLIT_LEGACY_VOLUME, SPLIT_DAMAGED_ALL_MORE, SPLIT_FACE_GONE,
+    MERGE_NOTHING, MERGE_NOTHING_APART, MERGE_NO_SOLID, MERGE_ALL_DAMAGED, MERGE_FAILED, MERGE_NO_BODY,
+    MERGE_DROPPED_SURFACES, MERGE_DAMAGED_LEFT_OUT, MERGE_SEPARATE_PIECES,
+    SEPARATE_DROPPED_SURFACES, SEPARATE_DROPPED_FACES,
 })
 
 # --- the body slot -----------------------------------------------------------

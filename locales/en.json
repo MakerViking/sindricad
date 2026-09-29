@@ -195,6 +195,10 @@
     "isolateBody": "Isolate body",
     "look": "Look",
     "measureFromHere": "Measure from here",
+    "mergeSolids": "Merge into one solid",
+    "mergeSolidsEach": {
+      "other": "Merge each of the {count} bodies into one solid of its own"
+    },
     "offsetPlane": "Offset plane",
     "offsetPlaneFromFace": "Offset plane from face",
     "pressPullFace": "Press/Pull face",
@@ -241,10 +245,40 @@
       "importCancelled": "import cancelled",
       "importFailed": "import failed",
       "kernelCrashed": "the geometry kernel crashed on this operation",
+      "mergeAllDamaged": {
+        "one": "Merge changed nothing: the only solid part of {body} is damaged, and I leave damaged parts out rather than repair them.",
+        "other": "Merge changed nothing: all {count} solid parts of {body} are damaged, and I leave damaged parts out rather than repair them."
+      },
+      "mergeDamagedLeftOut": {
+        "one": "{count} solid part of {body} is damaged, so I left it out of the merge rather than repair it. Whatever it covered is missing from the result.",
+        "other": "{count} solid parts of {body} are damaged, so I left them out of the merge rather than repair them. Whatever they covered is missing from the result."
+      },
+      "mergeDroppedSurfaces": {
+        "one": "I dropped {count} loose surface from {body}. It had no thickness, so it cannot be printed; if part of the shape existed only as that surface, it is now open or missing.",
+        "other": "I dropped {count} loose surfaces from {body}. They had no thickness, so they cannot be printed; if part of the shape existed only as those surfaces, it is now open or missing."
+      },
+      "mergeFailed": "Merge failed on {body}: the geometry kernel could not fuse its solids into a sound one that holds all of them. Nothing was changed.",
+      "mergeNoBody": "Merge: the body it was made on does not exist at this point in the timeline.",
+      "mergeNoSolid": "Merge changed nothing: {body} has no solid parts, only surfaces, so there is nothing to merge. Thicken turns a surface into a solid.",
+      "mergeNothing": "{body} is already one solid, so there is nothing to merge.",
+      "mergeNothingApart": {
+        "other": "{body} is already {count} separate solids that do not touch, so there is nothing to merge. Separate into bodies makes each of them a body of its own."
+      },
+      "mergeSeparatePieces": {
+        "other": "{body} is now {count} separate pieces that do not touch. Separate into bodies splits them apart."
+      },
       "noMesh": "geometry engine returned no mesh",
       "replyTooLarge": "the result is too large to display",
       "rustImportUnsupported": "geometry import isn't supported by the Rust backend yet — run without VITE_GEOM=rust",
       "rustInterferenceUnsupported": "interference check isn't supported by the Rust backend yet — run without VITE_GEOM=rust",
+      "separateDroppedFaces": {
+        "one": "I left out {count} loose face of {body}: Separate makes a body from each of its surfaces, and this face is not joined into any of them, so it did not become a body. If part of the shape existed only as that face, it is now open or missing.",
+        "other": "I left out {count} loose faces of {body}: Separate makes a body from each of its surfaces, and these faces are not joined into any of them, so they did not become bodies. If part of the shape existed only as those faces, it is now open or missing."
+      },
+      "separateDroppedSurfaces": {
+        "one": "I left out {count} loose surface of {body}: it has no thickness, so it did not become a body. If part of the shape existed only as that surface, it is now open or missing.",
+        "other": "I left out {count} loose surfaces of {body}: they have no thickness, so they did not become bodies. If part of the shape existed only as those surfaces, it is now open or missing."
+      },
       "splitBodiesGone": {
         "one": "{count} of the bodies this split was made on does not exist at this point in the timeline, so I cut only the others.",
         "other": "{count} of the bodies this split was made on do not exist at this point in the timeline, so I cut only the others."
@@ -1786,6 +1820,7 @@
     "line": "Line",
     "loft": "Loft",
     "measure": "Measure",
+    "mergeSolids": "Merge into one solid",
     "midpoint": "Midpoint",
     "mirror": "Mirror",
     "move": "Move",

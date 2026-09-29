@@ -60,7 +60,7 @@ import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
 import { SplitTool } from "./features/splitTool";
-import { diagBodyName, diagnosticText, splitWarningsToShow } from "./features/splitWarnings";
+import { diagBodyName, diagnosticText, splitWarningsToShow, toastsWarnings } from "./features/splitWarnings";
 import { createFeatureStarters, TOOL_BUSY_MESSAGE } from "./features/featureStarters";
 import { repairableDiagFor } from "./features/repickReference";
 import { planeOf, activeDatumPlanes, datumPlaneDef as datumPlaneDefOf } from "./document/planeOf";
@@ -1000,9 +1000,10 @@ function computeTexturePaint(): Record<number, string> {
 // toast every NEW failure; if it's the feature the user JUST committed from an
 // interactive tool, select it immediately (red chip scrolls into view).
 let prevErrorIds = new Set<string>();
-// The split warnings already toasted, by what they are about (feature, and per
-// note its code, body and count; SplitWarning.key), so each is said once rather
-// than on every rebuild that repeats it, a rename of the body included.
+// The split, merge and separate warnings already toasted (toastsWarnings in
+// splitWarnings.ts), by what they are about (feature, and per note its code,
+// body and count; SplitWarning.key), so each is said once rather than on every
+// rebuild that repeats it, a rename of the body included.
 let prevSplitWarnings = new Set<string>();
 // Failed fillet/chamfer edges (midpoints per feature id) — survives sidecar
 // cache-hit rebuilds that re-emit the error without its diagnostics.
@@ -1126,15 +1127,17 @@ store.onBuild((s) => {
     if (!store.hasPreview) {
       const errs = s.result.featureErrors ?? [];
       const ids = new Set(errs.map((e) => e.feature_id).filter(Boolean) as string[]);
-      // A split that BUILT but has something to say (splitWarnings.ts has the
-      // rule): one toast per split, said once, not again on every rebuild that
-      // repeats it. BEFORE the errors: the stack keeps 3 and drops the oldest,
-      // so a warning toasted after an error would be what pushes it out.
+      // A split, merge or separate that BUILT but has something to say
+      // (splitWarnings.ts has the rule): one toast per feature, said once, not
+      // again on every rebuild that repeats it. BEFORE the errors: the stack
+      // keeps 3 and drops the oldest, so a warning toasted after an error would
+      // be what pushes it out.
       const named = store.namedBodies(s.result.bodies);
       const warned = new Set<string>();
+      const typeOf = (fid: string) => store.document.features.find((x) => x.id === fid)?.type;
       const warnings = splitWarningsToShow(
         s.result.diagnostics,
-        (fid) => store.document.features.find((x) => x.id === fid)?.type === "split",
+        (fid) => toastsWarnings(typeOf(fid)),
         ids,
         (d) => diagnosticText(d, named),
         (d) => diagBodyName(d, named),
@@ -1143,7 +1146,9 @@ store.onBuild((s) => {
         warned.add(w.key);
         if (prevSplitWarnings.has(w.key)) continue;
         const fid = w.featureId;
-        toast(t("feature.warned", { name: FEATURE_META.split.label, reason: w.text }), {
+        const type = typeOf(fid);
+        const label = type ? (FEATURE_META[type]?.label ?? type) : fid;
+        toast(t("feature.warned", { name: label, reason: w.text }), {
           kind: "warning",
           action: { label: t("common.show"), onClick: () => selectFeature(fid) },
         });

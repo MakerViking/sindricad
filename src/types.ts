@@ -759,6 +759,11 @@ export type Feature =
   // One body per disjoint solid: the first piece stays in `body` (same id), the
   // rest are appended as new bodies, so no existing body id moves.
   | { id: string; type: "separate"; body: string }
+  // Fuse a body's solids into one (an import made of overlapping solids and
+  // loose zero-thickness surfaces exports as a non-manifold STL). Appended at
+  // the END like separate, and the body keeps its id, so no existing body id
+  // moves. Pieces that do not touch stay in the body, and the build says so.
+  | { id: string; type: "mergeSolids"; body: string }
   // Printed surface texture: real mesh displacement (not appearance-only), computed
   // by the sidecar at tessellation time. `faces` absent = whole body (then `body`
   // names the target, required); present = the operated face set (mirrors
@@ -932,7 +937,20 @@ export interface ResolveDiag {
   // the rest were cut. "splitLegacyVolume": a split saved before the Split Body
   // panel cut damaged parts of a body and its pieces do not add up. Both are
   // warnings. Kind and code are the same string for all.
-  kind: "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted" | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume";
+  // "mergeDroppedSurfaces" / "mergeDamagedLeftOut" / "mergeSeparatePieces" = a
+  // Merge into one solid BUILT and dropped `count` loose zero-thickness
+  // surfaces, left `count` damaged solids out of the fuse (never repaired), or
+  // left the body as `count` pieces that do not touch. "separateDroppedSurfaces"
+  // = a Separate of a body with solids dropped `count` loose surfaces beside
+  // them (no thickness, so they did not become bodies); "separateDroppedFaces"
+  // = a Separate of a surface body dropped `count` loose faces that belong to
+  // none of its surfaces. All five are warnings with a `reason`, toasted like
+  // a split's (splitWarnings.toastsWarnings); kind and code are the same string.
+  kind:
+    | "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted"
+    | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume"
+    | "mergeDroppedSurfaces" | "mergeDamagedLeftOut" | "mergeSeparatePieces"
+    | "separateDroppedSurfaces" | "separateDroppedFaces";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
@@ -945,7 +963,11 @@ export interface ResolveDiag {
   body_id?: string;
   subject?: string;
   /** splitDamagedParts: how many damaged parts were left whole;
-   *  splitBodiesGone: how many of the named bodies are not there */
+   *  splitBodiesGone: how many of the named bodies are not there;
+   *  mergeDroppedSurfaces / separateDroppedSurfaces: loose surfaces dropped;
+   *  separateDroppedFaces: loose faces dropped;
+   *  mergeDamagedLeftOut: damaged solids left out; mergeSeparatePieces: the
+   *  pieces the merged body is now */
   count?: number;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
   // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the

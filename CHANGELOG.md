@@ -222,6 +222,14 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Separate says when it drops loose surfaces.** A surface with no thickness
+  cannot become a body, and Separate dropped every one it found without a
+  word. A yellow note now says how many it dropped and from which body, and
+  that any part of the shape made only of those surfaces is now open or
+  missing. On a body made only of surfaces, Separate makes a body from each
+  of them, and the note is about the loose faces that belong to none. The
+  bodies it makes are the same as before.
+
 - **A note after an export no longer reads as a failed export.** The list
   shown after an export put every note under the same line as a feature that
   failed. So an STL written in full, with unmatched edges a slicer might
@@ -360,6 +368,31 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
+
+- **Merge into one solid fuses the solids of a body into one.** Right-click a
+  body in the 3D view (a face of it, in Faces selection mode), or its row in
+  the Browser, and choose Merge into one solid, next to Separate into bodies.
+  With several bodies selected it merges each of them into a solid of its
+  own, and says so; Combine is what joins bodies. It is for imported parts built from
+  solids that overlap, with loose surfaces lying on or between them, which
+  export as an STL a slicer calls broken: Skjermdeksel on the Ender 3 file is 50
+  solids, most of them overlapping, and 87 loose surfaces. The body keeps its
+  name and its place in the Browser. Surfaces with no thickness cannot be
+  printed, so the merge drops them and a yellow note says how many; if part of
+  the shape existed only as those surfaces, that part is now open or missing,
+  and the note says so rather than calling the result complete. Damaged solids
+  are left out, never repaired behind your back, and a note counts them and
+  says what they covered is missing. Pieces that do not touch all stay in the
+  body, and a note says Separate into bodies splits them apart. Merging a body
+  that is already one solid, or already solids that do not touch, fails in
+  words: it says there is nothing to merge. Before anything is changed I check
+  that the merged solid holds every solid that went in; when the geometry
+  kernel loses part of one, which it can on solids that nearly coincide, the
+  merge fails in words and the body stays as it was. Parts imported from a mesh
+  (STL, 3MF) whose solids overlap usually fail that way today, and so does a
+  very large body: the Ender 3 case as one body, 908 solids, fails within
+  seconds, while Skjermdeksel, cut out of it with Split, merges. A flat text
+  or a face colour on the body survives the merge.
 
 - **Split Body is a panel now, and you fill it by clicking the model.** It has
   two fields, Body to split and Splitting tool, and the one waiting for a click
