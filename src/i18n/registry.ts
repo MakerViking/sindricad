@@ -4,6 +4,7 @@
 // every other locale, so a partial translation is fine to ship.
 
 import en from "../../locales/en.json";
+import zhCN from "../../locales/zh-CN.json";
 
 /** A nested catalogue as it sits in a locales/*.json file. A leaf is either a
  *  string or a plural-forms object keyed by CLDR category (`other` required). */
@@ -21,6 +22,8 @@ export interface LocaleDef {
 
 export const LOCALES = {
   en: { name: "English", tag: "en", data: en as Catalogue },
+  // i18n-ignore a locale's own name is never translated
+  "zh-CN": { name: "简体中文", tag: "zh-CN", data: zhCN as Catalogue },
   // Generated from English at load time (see pseudo.ts). Listed last in the
   // picker and labelled as a test, because it is one.
   // i18n-ignore a locale's own name is never translated
