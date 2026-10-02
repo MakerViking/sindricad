@@ -505,11 +505,19 @@ export async function compileAndSolve(
       // perfectly fine drew an amber glyph (field report 356b2693). It stays in
       // the document and compiles again the moment the two points separate.
       const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
+      // Handing planegcs p2p_coincident(P, P) anyway made it report the
+      // constraint redundant, which drew every snapped join (and every manual
+      // Coincident on touching ends) amber. Same reasoning as the inert
+      // classifier's self-coincident arm below.
       if (a && b && a !== b) cons.push({ id, type: "coincident", a, b });
       // Not compiled is not inert: the merge still ties a rectangle corner to
       // whatever it joins, so it scopes the mirror guard exactly as before. A
       // satisfied coincident is ALWAYS merged on the next compile, so without
-      // this a corner joined to a line end mirrored past it silently.
+      // this a corner joined to a line end mirrored past it silently: the join
+      // names a corner BY INDEX, a mirror relabels the corners, so it would
+      // name the opposite one and every later solve fail with no conflict to
+      // show. The check at the bottom of this callback cannot see it, because
+      // nothing was pushed.
       else if (a && b) noteRectScope(c);
     }
     else if (c.type === "concentric") {

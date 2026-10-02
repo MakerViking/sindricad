@@ -97,6 +97,16 @@ describe("locale detection and narrowing", () => {
     expect(detectLocale("qps-ploc")).toBe("en"); // never auto-selected
   });
 
+  it("sees the test host as English, whatever the OS language is", () => {
+    // src/test/pinLocale.ts, via vitest setupFiles. index.ts chooses the UI
+    // language at import from navigator.language, which Node takes from LANG.
+    // Without the pin, a run on a Chinese system goes Chinese the moment a
+    // Chinese catalogue is registered, and every English assertion fails there
+    // while CI stays green.
+    expect(navigator.language).toBe("en");
+    expect(detectLocale()).toBe("en");
+  });
+
   it("asLocale refuses anything not registered", () => {
     expect(asLocale("en")).toBe("en");
     expect(asLocale("qps-ploc")).toBe("qps-ploc");

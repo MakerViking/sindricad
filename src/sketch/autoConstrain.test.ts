@@ -20,10 +20,10 @@
 // large enough for OCCT to refuse the profile.
 //
 // SCOPE, stated so a green file does not imply more than it covers: this stops
-// auto-H/V from breaking a join. It does NOT emit the coincident CONSTRAINT that
-// would make a join survive later edits — snapping still only copies
-// coordinates, so two points that coincide today can still be driven apart by a
-// subsequent solve. That half is unfixed.
+// auto-H/V from breaking a join. The coincident CONSTRAINT that makes a snapped
+// join survive later edits, and the chained-segment joint, are pinned at the
+// gesture in snapCoincidentGesture.test.ts. A chain joint is pinned, not
+// constrained: no coincident is emitted for it.
 import { describe, it, expect } from "vitest";
 import { inferHorizontalVertical, isGeometrySnap, type LineEnds } from "./autoConstrain";
 import sketchModeSrc from "./sketchMode.ts?raw";

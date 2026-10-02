@@ -6,7 +6,7 @@ import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
-import { asRound, dimRefPoints, lineOperand } from "./entityDims";
+import { asRound, dimRefPoints, lineOperand, refPoint } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
@@ -813,6 +813,44 @@ function remapTrimmed(
   return { constraints, dropped: dropped + lostLinks };
 }
 
+/** `l` cut back to `to` at its corner end, the end that is not being kept.
+ *  `keepStart` says which end that is.
+ *
+ *  Moved in place, never rebuilt as kept-end → `to`. Constraints name a line's
+ *  ends by INDEX (0 = x1/y1), so reversing a line that started at the corner
+ *  handed every coincident and dimension on it the other end: a join at the
+ *  far corner then dragged the far end onto the fillet. */
+function cutBack(l: LineE, keepStart: boolean, to: THREE.Vector2): LineE {
+  return keepStart ? { ...l, x2: to.x, y2: to.y } : { ...l, x1: to.x, y1: to.y };
+}
+
+/** `constraints` without the coincidents that name a point a corner operation
+ *  (Fillet, Chamfer) moved.
+ *
+ *  Those operations keep both line ids and move both corner ends off the
+ *  corner on purpose: there is no corner afterwards. A coincident that joined
+ *  either end to anything at the corner (every snapped corner has one, and so
+ *  does the closing corner of every line chain) then names a point that is not
+ *  there, and the next solve pulls the lines back onto it: the profile folded
+ *  up, or never solved again. So the join goes with the corner, which is what
+ *  happened before snaps emitted joins. Joins on the ends the operation did not
+ *  move, the far corners, stay; cutBack is what keeps their indices right.
+ *
+ *  Whether a fillet should instead carry a corner's joins onto the arc is a
+ *  design question this does not answer. */
+export function dropMovedJoins(
+  constraints: SketchConstraint[],
+  before: readonly ResolvedEntity[],
+  after: readonly ResolvedEntity[],
+): SketchConstraint[] {
+  const moved = (id: string, p: number) => {
+    const was = before.find((e) => e.id === id), now = after.find((e) => e.id === id);
+    const a = was && refPoint(was, p), b = now && refPoint(now, p);
+    return !!a && !!b && coincKey(a.x, a.y) !== coincKey(b.x, b.y);
+  };
+  return constraints.filter((c) => c.type !== "coincident" || !(moved(c.e1, c.p1) || moved(c.e2, c.p2)));
+}
+
 /**
  * Fillet the corner where two line entities meet: shorten both to the tangent
  * points and insert a tangent arc of the given radius. Returns null if it can't.
@@ -858,8 +896,8 @@ export function filletCorner(
   const through = center.clone().add(corner.clone().sub(center).normalize().multiplyScalar(radius));
 
   // A and B survive (just shortened) → keep their ids + constraints; the arc is new
-  const newA: ResolvedEntity = { ...A, x1: aFar.x, y1: aFar.y, x2: T1.x, y2: T1.y };
-  const newB: ResolvedEntity = { ...B, x1: bFar.x, y1: bFar.y, x2: T2.x, y2: T2.y };
+  const newA = cutBack(A, aFar === a1, T1);
+  const newB = cutBack(B, bFar === b1, T2);
   const arc: ResolvedEntity = { type: "arc", id: newEntityId(), x1: T1.x, y1: T1.y, x2: T2.x, y2: T2.y, mx: through.x, my: through.y };
 
   const out = ents.map((o, i) => (i === iA ? newA : i === iB ? newB : o));
@@ -1565,8 +1603,8 @@ export function chamferCorner(
   const T1 = corner.clone().add(d1.clone().multiplyScalar(dist));
   const T2 = corner.clone().add(d2.clone().multiplyScalar(dist));
 
-  const newA: ResolvedEntity = { ...A, x1: aFar.x, y1: aFar.y, x2: T1.x, y2: T1.y };
-  const newB: ResolvedEntity = { ...B, x1: bFar.x, y1: bFar.y, x2: T2.x, y2: T2.y };
+  const newA = cutBack(A, aFar === a1, T1);
+  const newB = cutBack(B, bFar === b1, T2);
   const bevel: ResolvedEntity = { type: "line", id: newEntityId(), x1: T1.x, y1: T1.y, x2: T2.x, y2: T2.y };
 
   const out = ents.map((o, i) => (i === iA ? newA : i === iB ? newB : o));

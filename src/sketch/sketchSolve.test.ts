@@ -165,12 +165,16 @@ describe("projected geometry compiles as fixed solver primitives", () => {
     // line to the reference; the coincident on top of it is vacuous. It must
     // never read as a CONFLICT, and since 356b2693 not as over-defined either:
     // it is not compiled at all while both ends are one point, so its glyph is
-    // not drawn amber over a join that is fine.
+    // not drawn amber over a join that is fine. That was harmless while a
+    // coincident was something only the Coincident tool made; once a snap
+    // emits one at every join, it drew every join amber.
     const ents = [projected("pl", { kind: "line", x1: 0, y1: 0, x2: 40, y2: 0 }), line("u", 40, 0, 55, 5)];
     const r = await compileAndSolve(ents, [{ type: "coincident", e1: "u", p1: 0, e2: "pl", p2: 1 }]);
     expect(r.ok).toBe(true);
     expect(r.conflicts).toEqual([]);
     expect(r.overDefined.map(constraintIndexOf)).not.toContain(0);
+    expect(r.overDefined).toEqual([]);
+    expect(r.entities.find((e) => e.id === "u")).toMatchObject({ x1: 40, y1: 0 });
   });
 
   it("dragging a user endpoint merged onto a projected point is refused (no fighting)", async () => {

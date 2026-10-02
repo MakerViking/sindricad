@@ -83,6 +83,18 @@ function customProp(name: string, from: string = css): string | null {
   return last;
 }
 
+/** The custom properties declared in the block whose selector is exactly
+ *  `selector`, comments stripped. customProp() over the whole sheet takes the
+ *  LAST declaration, and since a `:root:lang(zh)` block redefines the font
+ *  stacks, that is the Chinese one. The stack English and Japanese get lives in
+ *  `:root` itself and is read from there. */
+const declaredIn = (selector: string): string => {
+  const b = blocks().find((x) => x.selector === selector);
+  if (!b) throw new Error(`no \`${selector} {}\` block in styles.css — this test's anchor is stale`);
+  return b.body;
+};
+const ROOT = declaredIn(":root");
+
 /** The one @font-face block in the stylesheet. Matched on the brace, not the
  *  bare at-rule name: the comments above it discuss `@font-face` by name. */
 const fontFace = (() => {
@@ -194,7 +206,7 @@ describe("bundling the font cannot change English", () => {
   }
 
   it("keeps the Latin families ahead of the Japanese ones in the UI stack", () => {
-    const stack = customProp("font-ui");
+    const stack = customProp("font-ui", ROOT);
     expect(stack, "no --font-ui in styles.css").toBeTruthy();
     const at = (family: string) => stack!.indexOf(family);
     expect(at("Inter"), "--font-ui no longer leads with Inter — English rendering has moved")
@@ -254,7 +266,7 @@ describe("bundling the font cannot change English", () => {
   it("falls through to the platform's own Japanese faces for what the subset lacks", () => {
     // The subset is jōyō + kana. A rare kanji in a body name, or hanzi, or
     // hangul, has to land somewhere legible rather than on `sans-serif`.
-    const stack = customProp("font-ui")!;
+    const stack = customProp("font-ui", ROOT)!;
     for (const family of ["Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP"]) {
       expect(stack, `--font-ui no longer names ${family}`).toContain(family);
     }
@@ -263,7 +275,7 @@ describe("bundling the font cannot change English", () => {
   });
 
   it("the monospace surfaces get the same fallback without losing their mono face", () => {
-    const mono = customProp("font-mono");
+    const mono = customProp("font-mono", ROOT);
     expect(mono, "no --font-mono in styles.css").toBeTruthy();
     expect(mono!.indexOf("ui-monospace"), "--font-mono no longer leads with ui-monospace — Latin in the "
       + "body lists and diagnostics would stop being monospaced").toBe(0);
@@ -281,7 +293,7 @@ describe("bundling the font cannot change English", () => {
     // file list in listModal render proportional — in ENGLISH, on the primary
     // Linux target. Fallback is per character, so the generic first costs
     // Japanese nothing: `monospace` has no kana, and a kana walks on.
-    const list = families(customProp("font-mono")!);
+    const list = families(customProp("font-mono", ROOT)!);
     const generic = list.indexOf("monospace");
     expect(generic, "--font-mono has no `monospace` generic at all; if no named face resolves there is "
       + "nothing to fall through to").toBeGreaterThanOrEqual(0);
@@ -293,6 +305,67 @@ describe("bundling the font cannot change English", () => {
         `--font-mono puts ${cjk} (a PROPORTIONAL face) ahead of the monospace generic. On any engine `
           + `where ui-monospace does not resolve, that is the face Latin text gets.`,
       ).toBeLessThan(at);
+    }
+  });
+});
+
+// Simplified Chinese shares codepoints with Japanese but not glyph forms, and
+// every CJK face in the root stack is Japanese. Before the `:root:lang(zh)`
+// block, a Chinese UI drew each hanzi the jōyō subset carries from that subset
+// and the rest (about 40% of the zh-CN catalogue's hanzi) from Noto Sans CJK JP:
+// measured in headless Chromium, with Noto Sans CJK SC installed and unused.
+describe("a Simplified Chinese UI draws hanzi in Chinese forms", () => {
+  const SC = ["PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC"];
+  const JP = ["Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP"];
+  const zh = (prop: string) => families(customProp(prop, declaredIn(":root:lang(zh)")) ?? "");
+  const first = (list: string[], names: string[]) =>
+    Math.min(...names.map((n) => list.indexOf(n)).filter((i) => i >= 0));
+
+  it("puts a Chinese face ahead of every Japanese one, in both stacks", () => {
+    for (const prop of ["font-ui", "font-mono"]) {
+      const list = zh(prop);
+      expect(list.length, `no --${prop} under :root:lang(zh)`).toBeGreaterThan(0);
+      expect(
+        first(list, SC),
+        `--${prop} under lang(zh) reaches a Japanese face before a Chinese one, so a hanzi both `
+          + "fonts carry is drawn in its Japanese form",
+      ).toBeLessThan(first(list, JP));
+    }
+  });
+
+  it("names a Chinese face for each platform", () => {
+    const list = zh("font-ui");
+    for (const [platform, family] of [["macOS", "PingFang SC"], ["Windows", "Microsoft YaHei"], ["Linux", "Noto Sans CJK SC"]]) {
+      expect(list, `--font-ui under lang(zh) has no ${platform} Chinese face (${family})`).toContain(family);
+    }
+  });
+
+  it("keeps Latin on the faces English uses", () => {
+    // The SC faces are whole fonts with Latin of their own. Ahead of system-ui
+    // they would redraw every Latin letter in a Chinese UI.
+    const list = zh("font-ui");
+    expect(list[0], "--font-ui under lang(zh) no longer leads with Inter").toBe("Inter");
+    expect(list.indexOf("system-ui"), "system-ui comes after a Chinese face, so Latin text changes face")
+      .toBeLessThan(first(list, SC));
+    const mono = zh("font-mono");
+    expect(mono.slice(0, 2), "--font-mono under lang(zh) does not start ui-monospace, monospace")
+      .toEqual(["ui-monospace", "monospace"]);
+  });
+
+  it("keeps the bundled subset as the last resort, before the generic", () => {
+    // Japanese forms beat tofu on a machine with no Chinese font at all.
+    const list = zh("font-ui");
+    expect(list, "--font-ui under lang(zh) dropped the bundled subset").toContain("Noto Sans JP");
+    expect(list.at(-1)).toBe("sans-serif");
+  });
+
+  it("changes nothing for English or Japanese", () => {
+    for (const prop of ["font-ui", "font-mono"]) {
+      const root = families(customProp(prop, ROOT)!);
+      for (const family of SC) {
+        expect(root, `the root --${prop} now names ${family}, which English and Japanese also get`)
+          .not.toContain(family);
+      }
     }
   });
 });
@@ -369,7 +442,7 @@ describe("the view cube's labels", () => {
   it("uses the same stack as the rest of the chrome", () => {
     // Two copies of a font stack drift. The runtime reads --font-ui; the literal
     // in viewCube.ts is only the pre-stylesheet fallback, and it has to agree.
-    const declared = customProp("font-ui")!;
+    const declared = customProp("font-ui", ROOT)!;
     const families = cubeLabelFont().replace(/^\d+ \d+px /, "");
     expect(families, "viewCube's fallback family list has drifted from --font-ui in styles.css")
       .toBe(declared);

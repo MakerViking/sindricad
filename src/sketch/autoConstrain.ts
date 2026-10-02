@@ -26,9 +26,11 @@
 // round off.
 //
 // NOTE, because a green test file should not imply more than it covers: this
-// stops auto-H/V from BREAKING a join. It does not create the coincident
-// constraint that would make the join survive later edits — snapping still only
-// copies coordinates. That remains open.
+// stops auto-H/V from BREAKING a join. Making a SNAPPED join survive later
+// edits is the coincident a snap now emits (snapCoincidences in snap.ts). A
+// chained segment's start counts as pinned (commitFromCursor), since it is the
+// end of the segment just committed, but a chain joint carries no coincident:
+// it survives auto-H/V, not a later edit that moves one side of it.
 
 /** A line's two endpoints, as plain numbers. */
 export interface LineEnds {

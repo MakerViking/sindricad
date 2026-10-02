@@ -4,9 +4,9 @@
 // fallback.
 
 import * as THREE from "three";
-import type { DimPlace, ProjectedCurve, ProjectedSource } from "../types";
-import { asRound } from "./entityDims";
-import { polygonPoints } from "./region";
+import type { DimPlace, ProjectedCurve, ProjectedSource, SketchConstraint } from "../types";
+import { asRound, dimRefPoints, refPoint } from "./entityDims";
+import { polygonPoints, rectCorners } from "./region";
 
 export type SnapKind =
   | "free"
@@ -17,15 +17,108 @@ export type SnapKind =
   | "on-x"
   | "on-y";
 
+/** WHICH solver point a snap candidate IS, when the solver can address it.
+ *
+ *  Snapping has always copied the coordinate and stopped there, so two points
+ *  that coincided the moment you drew them could be driven apart by any later
+ *  solve — the deeper half of field report ecc3e0d6 ("the lines should
+ *  automatically be constrained"). Carrying the identity is what lets the commit
+ *  emit a real `coincident` constraint instead.
+ *
+ *  `idx` is the `p` that entityDims' `dimRefPoints` gives the point, and
+ *  nothing else: that one list is what the dimension picker, the label renderer
+ *  and sketchSolve's `endpointPoint` all agree on (line ends 0/1, arc ends 0/1
+ *  and centre 2, a circle's or point's single point 0, rectangle corners 0..3 in
+ *  `rectCorners` order, spline and projected-poly ends 0/1). A wrong index still
+ *  SOLVES, it just joins the wrong point, so candidatesFromEntities looks every
+ *  index up there instead of writing the convention out a second time.
+ *
+ *  Use the entity's OWN id with a corner index, NEVER the `R~k` edge spelling:
+ *  `endpointPoint` consults `rectMap` first, `dimPoint` agrees, and every
+ *  dimension and `fix` already record it that way. `R~k` also solves and prunes
+ *  identically, but nothing emits it deliberately and it historically rendered
+ *  no glyph. */
+export interface PointRef {
+  id: string;
+  idx: number;
+}
+
 export interface SnapCandidate {
   p: THREE.Vector2;
   kind: SnapKind;
   priority: number; // higher wins
+  /** absent when the solver cannot address this point. A line's MIDPOINT, an
+   *  arc's through-point and a rectangle's centre are real snap targets but not
+   *  points `dimRefPoints` lists, so they snap the coordinate and emit nothing. */
+  ref?: PointRef;
 }
 
 export interface SnapResult {
   point: THREE.Vector2;
   kind: SnapKind;
+  ref?: PointRef;
+}
+
+/** How far a drawn end may sit from the point it snapped to and still count as
+ *  ON it. A snap copies the coordinate exactly; what is left is the float noise
+ *  of rebuilding the end from a length and an angle (computeGeometry), around
+ *  1e-13 mm. Anything the user could see is far above this, and so is the
+ *  solver's own 0.001 mm merge bucket (sketchSolve's coincKey). */
+const JOIN_TOL = 1e-6;
+
+/** The `coincident` constraints a freshly drawn entity owes to the snaps that
+ *  PLACED it — `startRef`/`endRef` being whatever its first and second clicks
+ *  landed on, or null where they landed on nothing.
+ *
+ *  Only LINES and ARCS are emitted for, because only their two ends are both
+ *  addressable by `endpointPoint` (idx 0 = start, 1 = end) AND actually placed by
+ *  the gesture. A rectangle or circle is excluded deliberately: its "ends" are
+ *  not the points the user snapped, so a constraint there would join something
+ *  they never aimed at. SPLINES are excluded for a duller reason — their ends
+ *  carry refs (see candidatesFromEntities) but `finishSpline` commits them by a
+ *  path that never reaches here. Revisit if a user reports a spline micro-gap.
+ *
+ *  Refuses the three ways a coincident can be nonsense, matching what the manual
+ *  Coincident tool already refuses: the same entity on both sides (it would
+ *  collapse the shape), a reference to an entity that no longer exists, and a
+ *  duplicate of a constraint already present.
+ *
+ *  And refuses a ref the end did not actually land on. The refs are what the
+ *  CURSOR snapped to, which is the entity's end only when nothing else placed
+ *  it: a typed length or angle puts the end somewhere along the cursor's ray,
+ *  and the hovered point's ref then names a point the line never reached. A
+ *  coincident there makes the next solve drag the end onto it (a typed 10 mm
+ *  line solved to 20 mm). So the join is emitted only where the end sits on
+ *  the ref's point, within JOIN_TOL.
+ *
+ *  Pure, and separate from SketchMode, because constructing a real SketchMode
+ *  boots the viewport and solver — which is how arcs came to have an emission
+ *  branch that nothing could reach and no test could see. */
+export function snapCoincidences(
+  entity: ResolvedEntity,
+  startRef: PointRef | null,
+  endRef: PointRef | null,
+  entities: ResolvedEntity[],
+  constraints: SketchConstraint[],
+): SketchConstraint[] {
+  if (entity.type !== "line" && entity.type !== "arc") return [];
+  const out: SketchConstraint[] = [];
+  for (const [ref, idx] of [[startRef, 0], [endRef, 1]] as const) {
+    if (!ref) continue;
+    if (ref.id === entity.id) continue; // cannot join a thing to itself
+    const target = entities.find((e) => e.id === ref.id);
+    if (!target) continue; // target is gone
+    const there = refPoint(target, ref.idx);
+    const here = refPoint(entity, idx);
+    if (!there || !here || there.distanceTo(here) > JOIN_TOL) continue; // the end landed elsewhere
+    const joins = (c: SketchConstraint) =>
+      c.type === "coincident"
+      && ((c.e1 === ref.id && c.p1 === ref.idx && c.e2 === entity.id && c.p2 === idx)
+        || (c.e2 === ref.id && c.p2 === ref.idx && c.e1 === entity.id && c.p1 === idx));
+    if (constraints.some(joins)) continue;
+    out.push({ type: "coincident", e1: ref.id, p1: ref.idx, e2: entity.id, p2: idx });
+  }
+  return out;
 }
 
 export function snap(
@@ -55,7 +148,7 @@ export function snap(
     }
   }
 
-  if (best) return { point: best.p.clone(), kind: best.kind };
+  if (best) return { point: best.p.clone(), kind: best.kind, ...(best.ref ? { ref: best.ref } : {}) };
 
   if (gridStep <= 0) return { point: raw.clone(), kind: "free" }; // grid snap off
 
@@ -76,10 +169,19 @@ export function candidatesFromEntities(
   entities: ResolvedEntity[],
 ): SnapCandidate[] {
   const out: SnapCandidate[] = [];
-  const add = (x: number, y: number, kind: SnapKind, priority: number) =>
-    out.push({ p: new THREE.Vector2(x, y), kind, priority });
 
   for (const e of entities) {
+    // A candidate's solver index is looked up, never written out here: it is
+    // the `p` of whichever of the entity's dimRefPoints sits on it, and a
+    // candidate none of them sits on (a midpoint, a rectangle's centre) gets no
+    // ref. Hand-written indices covered lines, arcs, points and rectangle
+    // corners and silently left circle centres and projected endpoints out,
+    // though the solver resolves both.
+    const refs = dimRefPoints(e);
+    const add = (x: number, y: number, kind: SnapKind, priority: number) => {
+      const r = refs.find((q) => Math.abs(q.pos.x - x) <= JOIN_TOL && Math.abs(q.pos.y - y) <= JOIN_TOL);
+      out.push({ p: new THREE.Vector2(x, y), kind, priority, ...(r ? { ref: { id: e.id, idx: r.p } } : {}) });
+    };
     if (e.type === "line") {
       add(e.x1, e.y1, "endpoint", 100);
       add(e.x2, e.y2, "endpoint", 100);
@@ -87,8 +189,11 @@ export function candidatesFromEntities(
     } else if (e.type === "rectangle") {
       const hw = e.width / 2;
       const hh = e.height / 2;
-      for (const sx of [-1, 1])
-        for (const sy of [-1, 1]) add(e.x + sx * hw, e.y + sy * hh, "endpoint", 100);
+      // rectCorners, NOT a nested sx/sy loop. The loop this replaces walked
+      // bl, tl, br, tr while the solver indexes corners bl, br, tr, tl. The
+      // index now comes from dimRefPoints whatever order these are added in,
+      // but one corner order in the file is still the one to keep.
+      for (const c of rectCorners(e.x, e.y, e.width, e.height)) add(c.x, c.y, "endpoint", 100);
       add(e.x, e.y, "center", 90);
       // edge midpoints
       add(e.x, e.y + hh, "midpoint", 80);
@@ -114,9 +219,14 @@ export function candidatesFromEntities(
     } else if (e.type === "arc") {
       add(e.x1, e.y1, "endpoint", 100);
       add(e.x2, e.y2, "endpoint", 100);
-      add(e.mx, e.my, "midpoint", 80);
+      add(e.mx, e.my, "midpoint", 80); // the through-point is not a solver point
     } else if (e.type === "spline") {
-      for (const p of e.points) add(p.x, p.y, "endpoint", 100); // fit points snap
+      // Only the ENDS get a ref: endpointPoint maps idx 0 to the first fit
+      // point and anything else to the LAST, so an interior fit point has no
+      // index of its own. Interior points still snap, silently.
+      // NOTE: nothing consumes spline refs yet. finishSpline commits by a path
+      // that never reaches snapCoincidences.
+      for (const p of e.points) add(p.x, p.y, "endpoint", 100);
     } else if (e.type === "point") {
       add(e.x, e.y, "endpoint", 110); // a placed point is a strong snap target
     } else if (e.type === "projected") {

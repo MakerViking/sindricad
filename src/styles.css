@@ -108,7 +108,8 @@
 
      The platform faces after it are the fallback for anything the subset does
      not carry (a rare kanji, hanzi, hangul): Hiragino Sans is macOS, Yu Gothic
-     UI and Meiryo are Windows, Noto Sans CJK JP is the usual Linux package. */
+     UI and Meiryo are Windows, Noto Sans CJK JP is the usual Linux package.
+     A Chinese UI does not use this stack; see :root:lang(zh) below. */
   --font-ui: "Inter", "Noto Sans JP", system-ui, "Hiragino Sans", "Yu Gothic UI", "Meiryo",
     "Noto Sans CJK JP", sans-serif;
   /* Same idea for the monospace surfaces (body lists, diagnostics, the fps
@@ -150,6 +151,33 @@
 :root:lang(zh),
 :root:lang(ko) {
   --lh-label: 1.32;
+}
+
+/* Simplified Chinese gets its own family stack. Every CJK face named in :root
+   is JAPANESE, and Chinese shares codepoints with Japanese but not glyph
+   forms: under the root stack a Chinese UI drew each hanzi the jōyō subset
+   carries in Japanese forms, and the rest (about 40% of the zh-CN catalogue's
+   hanzi) from Noto Sans CJK JP or whatever the platform found, so one label
+   could mix both. Measured in headless Chromium on a machine that HAS Noto
+   Sans CJK SC: not one hanzi was drawn from it.
+
+   The SC faces sit AFTER system-ui, where the bundled subset sits before it.
+   They are whole fonts with Latin glyphs of their own, so ahead of system-ui
+   they would redraw every Latin letter in a Chinese UI; the subset can go
+   early only because its unicode-range has no Latin. PingFang SC is macOS,
+   Microsoft YaHei (UI) is Windows, Noto Sans CJK SC and Source Han Sans SC are
+   the Linux packages. The bundled Noto Sans JP subset stays as the last resort
+   before the generic: Japanese forms beat tofu on a machine with no Chinese
+   font at all.
+
+   :lang(zh) matches zh-TW and zh-HK too. A Traditional Chinese locale needs
+   its own block with TC/HK faces after this one. */
+:root:lang(zh) {
+  --font-ui: "Inter", system-ui, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Source Han Sans SC", "Noto Sans JP", sans-serif;
+  /* the monospace generic before every CJK face, for the reason on --font-mono above */
+  --font-mono: ui-monospace, monospace, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "Noto Sans CJK SC", "Source Han Sans SC", "Noto Sans JP";
 }
 
 /* ============================================================================

@@ -24,7 +24,10 @@ describe("chamferCorner", () => {
     expect(lines.length).toBe(3); // A, B, bevel
     const A = out.find((e) => e.id === "A") as any, B = out.find((e) => e.id === "B") as any;
     expect(A.x2).toBeCloseTo(8); expect(A.y2).toBeCloseTo(0);          // shortened to setback
-    expect(B.x2).toBeCloseTo(10); expect(B.y2).toBeCloseTo(2);
+    // B STARTS at the corner, so its start is what moves; it is not reversed,
+    // because constraints name its ends by index
+    expect(B.x1).toBeCloseTo(10); expect(B.y1).toBeCloseTo(2);
+    expect(B.x2).toBe(10); expect(B.y2).toBe(10);
     const bevel = lines.find((e) => e.id !== "A" && e.id !== "B") as any;
     expect(bevel.x1).toBeCloseTo(8); expect(bevel.y1).toBeCloseTo(0);
     expect(bevel.x2).toBeCloseTo(10); expect(bevel.y2).toBeCloseTo(2);

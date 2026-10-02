@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, dropMovedJoins, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal } from "../ui/units";
@@ -36,7 +36,7 @@ import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
 import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
-import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
+import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
 import { detectRegions, entityPolyline, EPS } from "./region";
@@ -220,10 +220,24 @@ export class SketchMode {
    *  user snapped onto existing geometry (field report ecc3e0d6). */
   private lastSnapKind: SnapKind = "free";
   private basePinned = false;
+  /** The solver point the current base / last cursor was SNAPPED ONTO, when
+   *  there is one. Snapping used to copy the coordinate and stop, so a join
+   *  survived only until the next solve moved either side (field ecc3e0d6).
+   *  Carried here so commitFromCursor can emit a real coincident constraint. */
+  private baseRef: PointRef | null = null;
+  private lastSnapRef: PointRef | null = null;
   /** the constraint the next click would add, drawn muted (field report 636afdcb) */
   private pendingGlyph: ConstraintGlyph | null = null;
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
   private arcEnd: THREE.Vector2 | null = null;
+  /** what the arc's first and second clicks were SNAPPED ONTO, captured at the
+   *  click because pointer MOVES overwrite lastSnapRef between them.
+   *
+   *  Deliberately not cleared alongside arcStart/arcEnd at the four cancel sites:
+   *  a commit requires both points to be set, and each is set together with its
+   *  ref by this arc's own clicks, so a stale ref can never be read. */
+  private arcStartRef: PointRef | null = null;
+  private arcEndRef: PointRef | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
   private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants, centre arc)
   /** centre-point arc: the running signed sweep (radians) from the start, kept
@@ -1839,6 +1853,7 @@ export class SketchMode {
     e.preventDefault();
     const p = hit.p;
     this.lastSnapKind = hit.kind;
+    this.lastSnapRef = hit.ref ?? null;
 
     if (this.tool === "select") {
       // a Disconnect armed from the right-click menu lasts exactly one press
@@ -2009,6 +2024,7 @@ export class SketchMode {
     if (!this.base) {
       this.base = p.clone();
       this.basePinned = isGeometrySnap(hit.kind);
+      this.baseRef = hit.ref ?? null;
       if (this.tool === "line") this.chainStart = p.clone(); // remember loop start
       this.showDimFields();
       return;
@@ -2021,8 +2037,10 @@ export class SketchMode {
   private arcClick(p: THREE.Vector2) {
     if (!this.arcStart) {
       this.arcStart = p.clone();
+      this.arcStartRef = this.lastSnapRef;
     } else if (!this.arcEnd) {
       this.arcEnd = p.clone();
+      this.arcEndRef = this.lastSnapRef;
     } else {
       const a = this.arcStart;
       const b = this.arcEnd;
@@ -2038,6 +2056,11 @@ export class SketchMode {
       };
       if (this.constructionMode) ent.construction = true;
       this.entities.push(ent);
+      // same join the line tool gets: the arc's ends were placed by snaps, so
+      // they must be CONSTRAINED to what they landed on, not merely copied from
+      // it (field report ecc3e0d6). The third click is the through-point, which
+      // is not a solver point and so is never emitted for.
+      this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef);
       this.arcStart = null;
       this.arcEnd = null;
       this.refreshActive();
@@ -3384,6 +3407,7 @@ export class SketchMode {
     if (!hit) return;
     this.lastCursor.copy(hit.p);
     this.lastSnapKind = hit.kind; // kept in step with lastCursor: the Enter-key commit reads both
+    this.lastSnapRef = hit.ref ?? null;
     this.showSnap(hit);
 
     if (this.tool === "arc") {
@@ -3635,6 +3659,14 @@ export class SketchMode {
     if (this.constructionMode) entity.construction = true;
     entity.id = newEntityId(); // stamp a stable id (computeGeometry left it "")
     this.entities.push(entity);
+    // Turn the snaps that PLACED this entity into real coincident constraints,
+    // before anything else can move either side. Snapping used to copy the
+    // coordinate and stop, so the join lasted exactly until the next solve —
+    // "the tool creates a very small gap of a few hundredths of a millimetre...
+    // these micro-gaps prevent the lines from being truly joined and can
+    // subsequently cause cracks during extrusion, as well as undetected or
+    // missing regions" (field report ecc3e0d6).
+    this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef);
     if (this.tool === "line" && entity.type === "line") {
       const end = new THREE.Vector2(entity.x2, entity.y2);
       // clicked back on the start point → close the loop and end the chain
@@ -3651,9 +3683,17 @@ export class SketchMode {
         this.dim.hide();
       } else {
         this.base = new THREE.Vector2(entity.x2, entity.y2); // snapped endpoint
-        // the next segment starts where this one ended; that point is pinned iff
-        // this one's end was, or iff auto-H/V has now fixed it in place
-        this.basePinned = isGeometrySnap(this.lastSnapKind);
+        // The next segment starts ON this one's end, so that start is pinned
+        // whether or not this end was snapped: it is committed geometry now.
+        // Pinning it only after a snap let auto-V make the next segment exact
+        // by moving its START, 0.26 mm off this end at 1.5 degrees, and nothing
+        // joined the two segments to pull them back together.
+        this.basePinned = true;
+        // Only a SNAPPED end hands its ref on, so the joint between two chained
+        // segments is pinned here but gets no coincident of its own, and a later
+        // Move of one segment still tears it. Emitting one (and a join glyph at
+        // every corner of a polyline) is an open decision, not an oversight.
+        this.baseRef = this.lastSnapRef;
         this.showDimFields();
       }
     } else {
@@ -3664,6 +3704,20 @@ export class SketchMode {
     this.overlay.setPreview([]);
     this.requestSolve(); // re-solve if any constraints exist (updates DOF colour)
     this.onState?.();
+  }
+
+  /** Record the `coincident` constraints a freshly drawn entity owes to the
+   *  snaps that placed it. The decision lives in `snapCoincidences` (snap.ts),
+   *  which is pure and therefore testable without booting a viewport; this only
+   *  hands it the current state and appends what comes back. */
+  private emitSnapCoincidences(
+    entity: ResolvedEntity,
+    startRef: PointRef | null,
+    endRef: PointRef | null,
+  ) {
+    this.constraints.push(
+      ...snapCoincidences(entity, startRef, endRef, this.entities, this.constraints),
+    );
   }
 
   /** If a freshly drawn line sits within a few degrees of horizontal/vertical,
@@ -3707,14 +3761,14 @@ export class SketchMode {
     if (!world) return null;
     const p2d = this.plane.to2D(world);
     // Hold Ctrl to suppress snapping for fine placement (raw cursor position).
-    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world };
+    if (noSnap) return { p: p2d, kind: "free" as SnapKind, world, ref: undefined as PointRef | undefined };
     const res = snap(
       p2d,
       this.candidates, // cached; rebuilt only when entities change
       (q) => this.viewport.projectToScreen(this.plane.to3D(q.x, q.y)),
       this.gridSnap ? this.gridCell : 0,
     );
-    return { p: res.point, kind: res.kind, world: this.plane.to3D(res.point.x, res.point.y) };
+    return { p: res.point, kind: res.kind, ref: res.ref, world: this.plane.to3D(res.point.x, res.point.y) };
   }
 
   private showSnap(hit: { kind: SnapKind; world: THREE.Vector3 } | null) {
@@ -4179,6 +4233,7 @@ export class SketchMode {
     this.filletFirst = null;
     this.dim.hide();
     if (res) {
+      this.constraints = dropMovedJoins(this.constraints, this.entities, res.entities); // the corner is gone
       this.entities = res.entities;
       this.constraints.push(...res.constraints);
       this.trial = {
@@ -4208,7 +4263,10 @@ export class SketchMode {
     if (this.badTypedField({ name: "distance" })) return; // before ANY mutation: the pick and the box stay live
     const d = this.dim.getValue("distance") ?? 2;
     const res = chamferCorner(this.entities, iA, iB, d);
-    if (res) this.entities = res;
+    if (res) {
+      this.constraints = dropMovedJoins(this.constraints, this.entities, res); // as applyFillet
+      this.entities = res;
+    }
     this.filletFirst = null;
     this.dim.hide();
     this.afterModify();

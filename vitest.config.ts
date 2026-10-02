@@ -6,6 +6,9 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     globals: false,
+    // Pins navigator.language to "en" before any test file imports i18n, so
+    // the result of a run does not depend on the OS language (see the file).
+    setupFiles: ["src/test/pinLocale.ts"],
     // Vitest stubs CSS out by default, and the stub for `styles.css?raw` is an
     // EMPTY STRING, not an error. A test that reads the stylesheet as text then
     // asserts against "" — every toContain fails and, far worse, every

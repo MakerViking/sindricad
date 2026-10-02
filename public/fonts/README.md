@@ -32,6 +32,13 @@ falls through to the next family in `--font-ui` — the platform's Hiragino Sans
 Yu Gothic UI / Meiryo / Noto Sans CJK JP. That is why the fallback list is still
 there and must stay there.
 
+A Simplified Chinese UI is the exception. Chinese shares codepoints with
+Japanese but not glyph forms, so `:root:lang(zh)` in `src/styles.css` gives it
+its own stack: the platform's SC faces (PingFang SC, Microsoft YaHei, Noto Sans
+CJK SC, Source Han Sans SC) come first, and this subset is only the last resort
+before the generic, for a machine with no Chinese font at all. No Chinese font
+is bundled.
+
 ## If this file is missing
 
 The app still works and Japanese still renders, on any machine that has a system
