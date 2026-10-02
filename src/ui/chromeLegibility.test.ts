@@ -135,3 +135,20 @@ describe("the small control arrows can be seen", () => {
       .toBeLessThan(contrast(cssVar("text-dim"), cssVar("panel")));
   });
 });
+
+// 8c510bd3 / 5c73a8a9: the floating bug-report button sat on the timeline's
+// Cancel, so a click on Cancel opened the bug report and the import kept
+// running. Whether a click reaches Cancel is a hit test, which needs a layout
+// engine: e2e/bug_button_cancel_e2e.cjs asks it for real. This pins the rule
+// that test depends on, so a plain unit run catches the two drifting apart.
+describe("the bug button keeps off the timeline's controls", () => {
+  it("the timeline reserves the button's footprint, from the button's own variables", () => {
+    const btn = rule(".bug-report-btn");
+    const strip = rule("#timeline");
+    expect(btn, "no .bug-report-btn rule").not.toBeNull();
+    expect(strip, "no #timeline rule").not.toBeNull();
+    expect(btn).toContain("right: var(--bug-btn-inset)");
+    expect(btn).toContain("width: var(--bug-btn-size)");
+    expect(strip).toContain("padding: 0 calc(var(--bug-btn-inset) + var(--bug-btn-size) + var(--s-3)) 0 var(--s-3)");
+  });
+});

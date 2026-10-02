@@ -39,7 +39,7 @@ import { openSignInDialog, signOutFlow } from "./tinkeratlas/account";
 import { publishToTinkerAtlas } from "./tinkeratlas/publish";
 import { currentAccount } from "./tinkeratlas/client";
 import { Menubar, dismissContextMenu } from "./ui/menu";
-import { choose, isChoiceOpen } from "./ui/choice";
+import { choose, isChoiceOpen, type ChoiceOption } from "./ui/choice";
 import { toast } from "./ui/toast";
 import { hiddenBodiesCue } from "./ui/hiddenBodiesCue";
 import { LoadDebts } from "./viewport/loadDebts";
@@ -55,7 +55,7 @@ import { FaceOffsetTool } from "./features/faceOffsetTool";
 import { LoftTool } from "./features/loftTool";
 import { MoveTool } from "./features/moveTool";
 import { MeasureTool } from "./features/measureTool";
-import { SectionTool } from "./features/sectionTool";
+import { SectionTool, type SectionAxis } from "./features/sectionTool";
 import { PlaneOffsetTool } from "./features/planeOffsetTool";
 import { TextureTool } from "./features/textureTool";
 import { TextOnFaceTool } from "./features/textOnFaceTool";
@@ -609,6 +609,14 @@ function selectFeature(id: string | null) {
   inspector.select(id);
   viewport.highlightDatum(id); // brighten the matching construction plane (if any)
 }
+/** A failure or warning toast's Show: select the feature, which puts its
+ *  failure in the Inspector as text you can select and copy, and bring its
+ *  chip into view with a flash. Selecting alone changed nothing on screen for a
+ *  feature the commit had already selected, so Show looked dead (4875dacc). */
+function showFeature(id: string) {
+  selectFeature(id);
+  timeline.reveal(id);
+}
 timeline.onSelect = selectFeature;
 timeline.onEdit = (id) => editFeature(id);
 // Read the diagnostics off the LATEST build each time rather than caching: the
@@ -989,6 +997,11 @@ store.onReplace((how) => {
   owed.replaced(how);
   hiddenCue?.dismiss();
   hiddenCue = null;
+  // The section cut and its arrow belong to the document they were opened on.
+  // Here rather than in newDocument/openDoc because this is the one place every
+  // replace passes through: the menubar, Ctrl+N/O/W, the ribbon, the palette,
+  // the recent list and Recover (f36c1c7a).
+  section.documentReplaced();
 });
 
 // resolve each body's assigned palette slot to a hex color for the viewport.
@@ -1025,6 +1038,18 @@ function computeTexturePaint(): Record<number, string> {
 // toast every NEW failure; if it's the feature the user JUST committed from an
 // interactive tool, select it immediately (red chip scrolls into view).
 let prevErrorIds = new Set<string>();
+// The failure toasts on screen, by feature. The one for the feature the user
+// just committed stays up until they close it ("I suggest letting the user
+// close the dialogue rather than timeout", 4875dacc). The rest (a document
+// opening with failures, an upstream edit that breaks several) get reading
+// time for their length and then go, so they cannot park a stack of red over
+// the viewport. Either kind also goes by itself once it stops being true: when
+// its feature builds again, and with its document, whose feature its Show selects.
+const failureToasts = new Map<string, () => void>();
+store.onReplace(() => {
+  for (const dismiss of failureToasts.values()) dismiss();
+  failureToasts.clear();
+});
 // The split, merge and separate warnings already toasted (toastsWarnings in
 // splitWarnings.ts), by what they are about (feature, and per note its code,
 // body and count; SplitWarning.key), so each is said once rather than on every
@@ -1175,10 +1200,16 @@ store.onBuild((s) => {
         const label = type ? (FEATURE_META[type]?.label ?? type) : fid;
         toast(t("feature.warned", { name: label, reason: w.text }), {
           kind: "warning",
-          action: { label: t("common.show"), onClick: () => selectFeature(fid) },
+          action: { label: t("common.show"), onClick: () => showFeature(fid) },
+          keepOnAction: true,
         });
       }
       prevSplitWarnings = warned;
+      for (const [id, dismiss] of failureToasts) {
+        if (ids.has(id)) continue;
+        dismiss();
+        failureToasts.delete(id);
+      }
       for (const e of errs) {
         if (!e.feature_id || prevErrorIds.has(e.feature_id)) continue;
         const f = store.document.features.find((x) => x.id === e.feature_id);
@@ -1192,8 +1223,20 @@ store.onBuild((s) => {
         const repairable = repairableDiagFor(s.result?.diagnostics, id);
         const action = repairable?.at
           ? { label: t("feature.repickFace"), onClick: () => starters.repickReference(id, repairable.at!) }
-          : { label: t("common.show"), onClick: () => selectFeature(id) };
-        toast(t("feature.failed", { name: label, reason: featureErrorText(e, store.namedBodies(s.result.bodies)) }), { kind: "error", action });
+          : { label: t("common.show"), onClick: () => showFeature(id) };
+        failureToasts.get(id)?.();
+        failureToasts.set(
+          id,
+          toast(t("feature.failed", { name: label, reason: featureErrorText(e, store.namedBodies(s.result.bodies)) }), {
+            kind: "error",
+            action,
+            // sticky (0) only for the user's own commit; the rest get toastTimeout's
+            // reading time. See failureToasts.
+            ...(id === lastCommittedId ? { timeout: 0 } : {}),
+            // Show leaves the message up; a repick starts the tool that settles it
+            keepOnAction: !repairable?.at,
+          }),
+        );
         if (id === lastCommittedId) selectFeature(id);
       }
       prevErrorIds = ids;
@@ -1732,11 +1775,14 @@ function handleAction(action: string) {
         break;
       }
       void (async () => {
-        const ax = await choose<"X" | "Y" | "Z">(t("feature.section.axisTitle"), [
-          { value: "Z", label: "Z", hint: t("feature.section.horizontalHint") },
-          { value: "X", label: "X" },
-          { value: "Y", label: "Y" },
-        ]);
+        const options: Record<SectionAxis, ChoiceOption<SectionAxis>> = {
+          Z: { value: "Z", label: "Z", hint: t("feature.section.horizontalHint") },
+          X: { value: "X", label: "X" },
+          Y: { value: "Y", label: "Y" },
+        };
+        // The last cut's axis comes first, and choose() focuses the first
+        // option: one Enter reopens the section where it was left.
+        const ax = await choose(t("feature.section.axisTitle"), section.axisOrder().map((a) => options[a]));
         if (ax) section.start(ax);
       })();
       break;

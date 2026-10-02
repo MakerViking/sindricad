@@ -17,6 +17,7 @@ import type { FieldKind } from "../document/numFields";
 import { icon } from "./icons";
 import { t, setText, setTitle } from "../i18n";
 import { isLegacySplit } from "../features/splitState";
+import { featureErrorMessages } from "../geometry/featureErrorText";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
@@ -52,6 +53,8 @@ export class Inspector {
   private selectedId: string | null = null;
   /** the FEATURE editor's own container (see render) — null until first render */
   private featureBox: HTMLElement | null = null;
+  /** the selected feature's failure text (see renderFailure) */
+  private failureBox: HTMLElement | null = null;
 
   /** Why the panel is read-only right now, or null when it is not. main.ts
    *  points it at "a modeling tool is running": every value on screen then
@@ -70,6 +73,13 @@ export class Inspector {
     // params dialog (keystrokeGuard)
     store.onDocChange(keystrokeGuard(container, () => this.render()));
     onUnitChange(() => this.render());
+    // A build can start or stop the selected feature failing without touching
+    // the document. Only the failure text follows it, never the editor rows: a
+    // build must not take the caret out of a field. Optional-called, like the
+    // timeline's namedBodies: a stub store in a test need not carry it.
+    store.onBuild?.((b) => {
+      if (!b.building) this.renderFailure();
+    });
   }
 
   /** `focus` is passed ONLY by the edit gesture (double-click / edit-feature),
@@ -113,6 +123,7 @@ export class Inspector {
     const unit = getUnit();
     this.el.innerHTML = "";
     this.featureBox = null;
+    this.failureBox = null;
 
     // Said once, at the top, rather than per row: the rows below are disabled
     // and this is the only place that says why.
@@ -172,6 +183,7 @@ export class Inspector {
     // gesture (field report 8b49c06e).
     if (f.type === "sketch") {
       box.appendChild(title(t("inspector.featureTitle", { label: t("tool.sketch"), id: f.id }), true));
+      box.appendChild(this.failureBlock());
       const resolved = resolveEntities(f, doc.parameters);
       resolved.forEach((e, i) => {
         for (const d of entityDims(e)) {
@@ -194,6 +206,7 @@ export class Inspector {
     // to double-click the row (field report c8531ceb). Name the feature and say
     // there is nothing to edit.
     box.appendChild(title(t("inspector.featureTitle", { label: labelOf(f.type), id: f.id }), true));
+    box.appendChild(this.failureBlock());
     if (!fields) {
       const hint = document.createElement("div");
       hint.className = "empty-state";
@@ -256,6 +269,39 @@ export class Inspector {
         ),
       );
     }
+  }
+
+  /** The block under the selected feature's title that says why it failed. */
+  private failureBlock(): HTMLElement {
+    const el = document.createElement("div");
+    el.className = "inspector-failure";
+    this.failureBox = el;
+    this.renderFailure();
+    return el;
+  }
+
+  /** The selected feature's failure, as TEXT: the same sentence its toast
+   *  showed, where it can be read at leisure, selected and copied. Its only
+   *  other home was the red chip's tooltip, and the toast went after 8 s ("I
+   *  don't get time to read and understand it or copy it", 4875dacc). The
+   *  toast's Show selects the feature, which is what brings it here. */
+  private renderFailure() {
+    const el = this.failureBox;
+    if (!el) return;
+    const build = this.store.buildState;
+    const f = this.store.document.features.find((x) => x.id === this.selectedId);
+    const bodies = build?.result?.bodies;
+    const reason = f && build ? featureErrorMessages(build, this.store.namedBodies?.(bodies) ?? bodies).get(f.id) : undefined;
+    if (!f || !reason) {
+      el.textContent = "";
+      el.classList.add("hidden");
+      return;
+    }
+    // Unchanged text is left alone: every build lands here, and rewriting the
+    // node would drop a selection the user is making in it.
+    const text = t("feature.failed", { name: labelOf(f.type), reason });
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.remove("hidden");
   }
 
   /** Route raw field input: plain number → display-unit value write (keeps a

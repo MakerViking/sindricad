@@ -8,7 +8,7 @@
 
 import type { DocumentStore } from "../document/store";
 import type { ResolveDiag } from "../types";
-import { featureErrorText } from "../geometry/featureErrorText";
+import { featureErrorMessages } from "../geometry/featureErrorText";
 import { FEATURE_META } from "./featureMeta";
 import { isInspectorEditable } from "./inspector";
 import { icon, type IconName } from "./icons";
@@ -236,16 +236,7 @@ export class Timeline {
    *  `{body}` slot is filled from the bodies in the same reply — see
    *  featureErrorText. */
   private errorMap(): Map<string, string> {
-    const b = this.store.buildState;
-    const m = new Map<string, string>();
-    const bodies = this.namedBodies();
-    for (const e of b.result?.featureErrors ?? []) {
-      if (e.feature_id) m.set(e.feature_id, featureErrorText(e, bodies));
-    }
-    if (b.errorFeatureId && !m.has(b.errorFeatureId)) {
-      m.set(b.errorFeatureId, b.errorMessage ?? t("timeline.failed"));
-    }
-    return m;
+    return featureErrorMessages(this.store.buildState, this.namedBodies());
   }
 
   /** every feature that BUILT but reported something worth saying: id -> reason.

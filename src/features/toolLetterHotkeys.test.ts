@@ -75,7 +75,8 @@ function focusedDim() {
 describe("SectionTool F while the offset box has focus", () => {
   /** The tool mid-section: the clip plane built, the offset box up. */
   function harness() {
-    const tool = new SectionTool({} as never);
+    // the plane moves in place, so the tool asks the viewport for a frame
+    const tool = new SectionTool({ requestRender() {} } as never);
     const t = tool as unknown as {
       active: boolean;
       plane: { normal: { z: number } };

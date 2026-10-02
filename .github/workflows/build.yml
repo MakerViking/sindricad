@@ -1000,6 +1000,16 @@ jobs:
           SC_TOKEN: citoken
           SC_CHROME: /usr/bin/google-chrome
         run: node e2e/grid_start_offset_e2e.cjs
+      # Field reports 8c510bd3 and 5c73a8a9: the floating bug-report button sat
+      # on the timeline's Cancel, so clicking Cancel opened the bug report and
+      # the import kept running. A hit-testing question ("what does a click on
+      # this pixel reach"), so it needs a real layout engine. SC_TOKEN because
+      # it also loads a document with a failing feature for the red badge.
+      - name: Bug button vs timeline Cancel end-to-end
+        env:
+          SC_TOKEN: citoken
+          SC_CHROME: /usr/bin/google-chrome
+        run: node e2e/bug_button_cancel_e2e.cjs
 
       - name: Sidecar log on failure
         if: failure()

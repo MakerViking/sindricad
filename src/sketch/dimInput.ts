@@ -284,6 +284,18 @@ export class DimInput {
     this.root.style.top = `${screenY + 16}px`;
   }
 
+  /** Put the box's top-left corner exactly here: for a tool that keeps the box
+   *  AWAY from what it measures (the section cut) instead of beside a cursor. */
+  placeAt(left: number, top: number) {
+    this.root.style.left = `${left}px`;
+    this.root.style.top = `${top}px`;
+  }
+
+  /** The box's size on screen, for a caller placing it with placeAt. */
+  get size(): { width: number; height: number } {
+    return { width: this.root.offsetWidth, height: this.root.offsetHeight };
+  }
+
   private commit() {
     const out: Record<string, number> = {};
     for (const f of this.fields) {

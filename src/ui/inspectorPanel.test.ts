@@ -520,3 +520,81 @@ describe("main.ts locks the inspector while a modeling tool runs", () => {
     expect(body.indexOf("selectFeature(null)", start), "the selection is not cleared after the tool starts").toBeGreaterThan(start);
   });
 });
+
+// Field report 4875dacc: a refused Press/Pull's toast "disappears far too
+// quickly, I don't get time to read and understand it or copy it. There is a
+// 'SHOW' button ... but the 'SHOW' does not seem to do anything." Show selects
+// the failing feature, and the Inspector had nothing to say about a failure:
+// its only other home was the red chip's native tooltip. Driven through the
+// real DocumentStore, so the failure arrives the way a build delivers it.
+describe("inspector: why the selected feature failed", () => {
+  const REASON =
+    "This face meets its neighbour at the shallow angle of a tessellation facet, so I cannot tell it from one piece of a curved surface I did not recognise, and moving it on its own would dent the body rather than resize the curve.";
+  const pressPull = { id: "p1", type: "press-pull", face: {}, distance: 3, operation: "join" } as unknown as Feature;
+
+  /** A store whose builds fail p1 until `fixed` is set. */
+  function mountFailing() {
+    const state = { fixed: false };
+    const backend = {
+      async rebuild(): Promise<RebuildReply> {
+        return {
+          ok: true,
+          result: {
+            mesh: { positions: [], indices: [], faceIds: [] },
+            edges: [],
+            bbox: { min: [0, 0, 0], max: [1, 1, 1] },
+            bodies: [],
+            featureErrors: state.fixed ? [] : [{ feature_id: "p1", message: REASON }],
+          },
+        } as unknown as RebuildReply;
+      },
+      async init() {},
+      onStatus: () => () => {},
+      connected: true,
+    } as unknown as GeometryBackend;
+    const store = new DocumentStore(backend, { parameters: {}, features: [pressPull] } as unknown as CadDocument);
+    const root = new FakeEl("div");
+    const inspector = new Inspector(root as unknown as HTMLElement, store);
+    return { root, inspector, store, state };
+  }
+  const failure = (root: FakeEl) => {
+    let hit: FakeEl | undefined;
+    const walk = (el: FakeEl) => {
+      if (el.className === "inspector-failure") hit ??= el;
+      el.children.forEach(walk);
+    };
+    walk(root);
+    return hit;
+  };
+  const shown = (el: FakeEl | undefined) => (el && !el.classList.contains("hidden") ? el.textContent : null);
+
+  it("Show (selecting the feature) puts the whole message in the panel", async () => {
+    const { root, inspector, store } = mountFailing();
+    await store.rebuildNow();
+    inspector.select("p1"); // what the toast's Show reaches, through selectFeature
+    expect(shown(failure(root))).toBe(`⚠ Press/Pull failed: ${REASON}`);
+  });
+
+  it("follows the build: it goes when the feature builds, comes back when it fails", async () => {
+    const { root, inspector, store, state } = mountFailing();
+    await store.rebuildNow();
+    inspector.select("p1");
+    const field = rows(root).find((r) => r.label === "Distance mm")!.input;
+    state.fixed = true;
+    await store.rebuildNow();
+    expect(shown(failure(root)), "a fixed feature still reads as failed").toBeNull();
+    state.fixed = false;
+    await store.rebuildNow();
+    expect(shown(failure(root))).toContain(REASON);
+    // and a build never rebuilt the rows under the caret
+    expect(rows(root).find((r) => r.label === "Distance mm")!.input).toBe(field);
+  });
+
+  it("a feature that built says nothing", async () => {
+    const { root, inspector, store, state } = mountFailing();
+    state.fixed = true;
+    await store.rebuildNow();
+    inspector.select("p1");
+    expect(shown(failure(root))).toBeNull();
+  });
+});

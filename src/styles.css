@@ -76,6 +76,13 @@
   --s-5: 16px;
   --s-6: 20px;
 
+  /* --- the floating bug-report button, bottom-right over the timeline ---
+     #timeline reserves this footprint at its right end. One definition for
+     both, so the button can never again be moved or grown over the strip's
+     Cancel without the strip making room for it. */
+  --bug-btn-inset: 14px;
+  --bug-btn-size: 36px;
+
   /* --- elevation (soft, layered, low-spread) --- */
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.5);
@@ -1109,7 +1116,11 @@ button.active {
 #timeline {
   background: linear-gradient(180deg, var(--panel-lo) 0%, var(--panel) 100%);
   border-top: 1px solid var(--line);
-  padding: 0 var(--s-3);
+  /* The right end is kept clear of the fixed bug-report button. Cancel, the
+     busy label and the failing-features badge are the strip's last children,
+     and with only the 8px padding they sat under the button: a click on Cancel
+     opened the bug report and the import kept running (8c510bd3, 5c73a8a9). */
+  padding: 0 calc(var(--bug-btn-inset) + var(--bug-btn-size) + var(--s-3)) 0 var(--s-3);
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -1558,6 +1569,26 @@ button.active {
   border-color: var(--warn);
   box-shadow: 0 0 0 3px rgba(224, 160, 32, 0.15);
 }
+/* The selected feature's failure, under its title in the Inspector. Text to
+   read at leisure and copy into a message, so it is selectable on purpose
+   (4875dacc: "I don't get time to read and understand it or copy it"). */
+.inspector-failure {
+  margin: 0 0 var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  background: var(--error-tint);
+  border: 1px solid var(--error);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+.inspector-failure.hidden {
+  display: none;
+}
 
 /* --- Change Parameters dialog (Modify → Parameters) --- */
 .params-dialog {
@@ -1864,6 +1895,7 @@ button.finish:hover {
 .toast-msg {
   overflow: hidden;
   text-overflow: ellipsis;
+  user-select: text; /* a failure is something to copy into a message */
 }
 .toast-action {
   flex: 0 0 auto;
@@ -2653,11 +2685,11 @@ button.finish:hover {
 }
 .bug-report-btn {
   position: fixed;
-  right: 14px;
-  bottom: 14px;
+  right: var(--bug-btn-inset);
+  bottom: var(--bug-btn-inset);
   z-index: 2200; /* above panels, below modal backdrops (2600 band) */
-  width: 36px;
-  height: 36px;
+  width: var(--bug-btn-size);
+  height: var(--bug-btn-size);
   border-radius: 50%;
   border: 1px solid var(--line-strong);
   background: var(--panel-2);

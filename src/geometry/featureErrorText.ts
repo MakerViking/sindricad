@@ -89,3 +89,32 @@ export function featureErrorText(
   // format string.
   return msg.replaceAll(BODY_SLOT, () => name);
 }
+
+/** What featureErrorMessages reads off a build: the reply's failing features
+ *  and the legacy single-error fields (DocumentStore's RebuildState). */
+export interface BuildErrorsLike {
+  result: { featureErrors?: readonly (FeatureErrorLike & { feature_id?: string })[] } | null;
+  errorFeatureId: string | null;
+  errorMessage: string | null;
+}
+
+/**
+ * Every failing feature in a build: id -> the sentence to show for it.
+ *
+ * Continue-past-errors can fail several; a reply that only carries the legacy
+ * single error falls back to that. One source for the timeline's red chips and
+ * the Inspector, so the two can never tell the user different things.
+ */
+export function featureErrorMessages(
+  build: BuildErrorsLike,
+  bodies: readonly NamedBody[] | undefined,
+): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const e of build.result?.featureErrors ?? []) {
+    if (e.feature_id) m.set(e.feature_id, featureErrorText(e, bodies));
+  }
+  if (build.errorFeatureId && !m.has(build.errorFeatureId)) {
+    m.set(build.errorFeatureId, build.errorMessage ?? t("timeline.failed"));
+  }
+  return m;
+}

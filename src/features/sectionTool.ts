@@ -8,6 +8,12 @@
 // starting another tool takes this gizmo down via stop(true) while leaving the
 // cut on screen. That is what lets you sketch inside a section (#17). Toggling
 // Inspect ▸ Section again, or Esc while the gizmo is up, puts the model back.
+//
+// The tool also remembers the last cut (axis, where along it, which half) for
+// as long as the document stays open, so reopening on the same axis puts the
+// cut back where you left it (field reports 5effc008, 724df0f3). Both the cut
+// and that memory belong to ONE document: documentReplaced() drops them on
+// New, Open, Close and Recover (f36c1c7a).
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
@@ -20,12 +26,50 @@ import { t } from "../i18n";
 import { isImeComposing } from "../ui/focus";
 
 const Y_AXIS = new THREE.Vector3(0, 1, 0);
-const AXES: Record<string, THREE.Vector3> = {
+export type SectionAxis = "X" | "Y" | "Z";
+const AXES: Record<SectionAxis, THREE.Vector3> = {
   X: new THREE.Vector3(1, 0, 0),
   Y: new THREE.Vector3(0, 1, 0),
   Z: new THREE.Vector3(0, 0, 1),
 };
+/** The axis chooser's order when there is no last cut: Z (a horizontal cut)
+ *  is the default, so it goes first. */
+const AXIS_ORDER: SectionAxis[] = ["Z", "X", "Y"];
 const IDLE = 0x6fc3ff;
+/** Screen gap between the model and the offset box beside it. */
+const BOX_GAP = 16;
+
+interface ScreenRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Top-left corner for the offset box: BESIDE the model on screen, never on it.
+ *
+ *  The box used to follow the plane's centre (+16 px), and the plane's centre is
+ *  the middle of the cut, the one spot a section exists to show: "the onscreen
+ *  dimension and tickboxes cover a lot of detail of the section" (5effc008).
+ *  Right of the model's projected box first, left of it if that runs off the
+ *  canvas, and only when the model fills the view either way is it pinned to the
+ *  canvas's right edge, where covering something cannot be helped. Vertically it
+ *  stays level with the arrow, so the number still reads as the arrow's. */
+export function besideModel(
+  model: ScreenRect,
+  arrowY: number,
+  box: { width: number; height: number },
+  view: ScreenRect,
+): { x: number; y: number } {
+  const right = model.right + BOX_GAP;
+  const left = model.left - BOX_GAP - box.width;
+  let x: number;
+  if (right + box.width <= view.right) x = right;
+  else if (left >= view.left) x = left;
+  else x = view.right - box.width;
+  const y = Math.min(Math.max(arrowY - box.height / 2, view.top), view.bottom - box.height);
+  return { x: Math.max(x, view.left), y };
+}
 
 export class SectionTool {
   active = false;
@@ -42,6 +86,11 @@ export class SectionTool {
   private grabProj = 0;
   private raf = 0;
   private onDone: (() => void) | null = null;
+  private axisName: SectionAxis = "Z";
+  /** The last cut this document, kept across close and reopen. `at` is the
+   *  plane's ABSOLUTE position along the axis rather than an offset from the
+   *  model's centre, so an edit that grows the model does not move the cut. */
+  private last: { axis: SectionAxis; at: number; side: number } | null = null;
 
   private dim = new DimInput();
 
@@ -59,17 +108,39 @@ export class SectionTool {
     this.boundTick = () => this.tick();
   }
 
-  start(axisName: "X" | "Y" | "Z", onDone?: () => void) {
+  /** The axis chooser's order: the last cut's axis first, because choose()
+   *  focuses its first option and one Enter should put the last cut back. */
+  axisOrder(): SectionAxis[] {
+    const last = this.last?.axis;
+    return last ? [last, ...AXIS_ORDER.filter((a) => a !== last)] : [...AXIS_ORDER];
+  }
+
+  /** The document was replaced (New, Open, Close, the recent list, Recover).
+   *  The cut, its arrow and the remembered position all described the OLD
+   *  model: left in place, the arrow stayed live over an empty document and the
+   *  plane, anchored on the old model, cut the next one (f36c1c7a). */
+  documentReplaced() {
+    if (this.active) this.stop();
+    else if (this.viewport.clipped) this.viewport.setClipPlane(null);
+    this.last = null;
+  }
+
+  start(axisName: SectionAxis, onDone?: () => void) {
     if (this.active) return;
     const box = this.viewport.modelBox();
     if (!box) return;
     this.active = true;
     this.onDone = onDone ?? null;
-    const ax = AXES[axisName];
-    if (ax) this.axis.copy(ax);
+    this.axisName = axisName;
+    this.axis.copy(AXES[axisName]);
     box.getCenter(this.anchor);
-    this.offset = 0;
-    this.side = 1;
+    // Same axis as the last cut: put it back. Only while it still falls inside
+    // the model, though: an edit since then can leave it beyond the end, where
+    // it cuts nothing, or everything, and the model just vanishes.
+    const last = this.last?.axis === axisName ? this.last : null;
+    const inside = !!last && last.at >= box.min.dot(this.axis) && last.at <= box.max.dot(this.axis);
+    this.offset = last && inside ? last.at - this.anchor.dot(this.axis) : 0;
+    this.side = last && inside ? last.side : 1;
     this.updatePlane();
     this.viewport.setClipPlane(this.plane);
     const el = this.viewport.domElement;
@@ -83,8 +154,10 @@ export class SectionTool {
       () => this.applyTypedOffset(),
       () => this.stop(),
     );
-    const s = this.viewport.projectToScreen(this.center());
-    this.dim.position(s.x, s.y);
+    this.placeBox();
+    // A restored offset goes in as a cursor value, never seed(): seeding marks
+    // the field user-driven, and Enter would then read back the |value| shown
+    // and strip a negative offset's sign (the abs-display trap).
     this.dim.updateFromCursor({ offset: Math.abs(this.offset) });
     setPrompt(t("feature.section.prompt"));
     this.raf = requestAnimationFrame(this.boundTick);
@@ -109,6 +182,32 @@ export class SectionTool {
   private updatePlane() {
     const n = this.axis.clone().multiplyScalar(this.side);
     this.plane.setFromNormalAndCoplanarPoint(n, this.center());
+    // The plane is moved in place, which the viewport cannot see. Without this
+    // a flip (F) or a typed offset did not show until the mouse next moved:
+    // only a pointermove over the canvas asks for a frame.
+    this.viewport.requestRender();
+  }
+
+  /** Put the offset box beside the model (see besideModel). */
+  private placeBox() {
+    const arrow = this.viewport.projectToScreen(this.center());
+    const box = this.viewport.modelBox();
+    if (!box) {
+      this.dim.position(arrow.x, arrow.y);
+      return;
+    }
+    const model = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+    const corner = new THREE.Vector3();
+    for (let i = 0; i < 8; i++) {
+      corner.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z);
+      const p = this.viewport.projectToScreen(corner);
+      model.left = Math.min(model.left, p.x);
+      model.right = Math.max(model.right, p.x);
+      model.top = Math.min(model.top, p.y);
+      model.bottom = Math.max(model.bottom, p.y);
+    }
+    const at = besideModel(model, arrow.y, this.dim.size, this.viewport.domElement.getBoundingClientRect());
+    this.dim.placeAt(at.x, at.y);
   }
 
   private onMove(e: PointerEvent) {
@@ -161,8 +260,7 @@ export class SectionTool {
     this.gizmo.quaternion.setFromUnitVectors(Y_AXIS, this.axis.clone().multiplyScalar(this.side));
     this.gizmo.scale.setScalar(k);
     this.gizmoMat?.color.set(this.hovering || this.grabbing ? HOT : IDLE);
-    const s = this.viewport.projectToScreen(c);
-    this.dim.position(s.x, s.y);
+    this.placeBox();
     if (!this.grabbing && this.dim.isUserDriven("offset")) {
       const v = this.dim.getValue("offset");
       // typed sign wins; only read back through isUserDriven (never the |value| shown)
@@ -208,6 +306,7 @@ export class SectionTool {
    *  would be worse than no feature at all. */
   stop(keepClip = false) {
     if (!this.active) return;
+    this.last = { axis: this.axisName, at: this.center().dot(this.axis), side: this.side };
     const el = this.viewport.domElement;
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerdown", this.boundDown, true);
