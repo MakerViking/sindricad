@@ -15,6 +15,7 @@ import { diagnosisOf, type ConstraintGlyph } from "./glyphs";
 interface GlyphEl {
   el: HTMLDivElement;
   pos: THREE.Vector2;
+  cIndex: number; // which constraint it names, so follow() can tell its list from another
 }
 
 export class SketchGlyphs {
@@ -85,7 +86,7 @@ export class SketchGlyphs {
         el.textContent = g.label;
         setTitle(el, "sketch.constraint.glyphPending");
         this.root.appendChild(el);
-        this.items.push({ el, pos: g.pos });
+        this.items.push({ el, pos: g.pos, cIndex: g.cIndex });
         continue;
       }
       const st = diagnosisOf(g.cIndex, conflicts, over);
@@ -130,10 +131,22 @@ export class SketchGlyphs {
         this.onMenu?.(e, g.cIndex);
       });
       this.root.appendChild(el);
-      this.items.push({ el, pos: g.pos });
+      this.items.push({ el, pos: g.pos, cIndex: g.cIndex });
     }
     this.lastCamHash = ""; // force a reposition next frame
     if (!this.raf) this.loop();
+  }
+
+  /** Move the glyphs on screen to new positions of the SAME constraints without
+   *  rebuilding them: a drag frame (GH #17), where show() would recreate every
+   *  element and its listeners. Returns false, and changes nothing, when `glyphs`
+   *  is not the list on screen; the caller falls back to show(). */
+  follow(glyphs: ConstraintGlyph[]): boolean {
+    if (glyphs.length !== this.items.length) return false;
+    if (glyphs.some((g, k) => g.cIndex !== this.items[k]!.cIndex)) return false;
+    glyphs.forEach((g, k) => { this.items[k]!.pos = g.pos; });
+    this.lastCamHash = ""; // the camera didn't move; force the reposition pass
+    return true;
   }
 
   hide() {

@@ -268,6 +268,15 @@ export class SketchMode {
    *  land while one solve is in flight, and a position captured at queue time
    *  would anchor the entity where the cursor USED to be. */
   private pendingPinIdx: number | null = null;
+  /** This frame has had its drag step; later moves wait on the viewport's next
+   *  pre-draw (see queueDragFrame). */
+  private dragFrameQueued = false;
+  /** A body drag that the solver holds nothing of moved its entity, and the
+   *  screen has not caught up yet (see queueBodyDrag). */
+  private bodyDragUndrawn = false;
+  /** The button came up while the gesture's last move was still waiting for its
+   *  frame. pump() finishes the release once that move is solved (see endDrag). */
+  private dragRelease: { pointerId: number | undefined } | null = null;
   // whole-entity body drag (select tool, no grab point under the cursor):
   // armed cheaply on pointerdown over an entity body; the revert snapshot is
   // built only when the move actually starts (past a small screen-space
@@ -659,6 +668,7 @@ export class SketchMode {
     this.dragSnapshot = null;
     this.pendingDrag = null;
     this.pendingPinIdx = null;
+    this.dragRelease = null;
     this.moveDrag = null;
     this.dim.hide();
     this.dims.hide();
@@ -720,6 +730,7 @@ export class SketchMode {
     this.dragFrom = null;
     this.pendingDrag = null;
     this.pendingPinIdx = null;
+    this.dragRelease = null;
     this.moveDrag = null;
     this.resetDimPicks();
     this.moveBase = null;
@@ -789,14 +800,27 @@ export class SketchMode {
     this.viewport.requestRender();
   }
 
-  /** Lightweight per-frame refresh for dragging: only the curve geometry moves,
-   * so skip the snap-candidate array (snapping is off mid-drag) and the
-   * dimension-label DOM teardown/rebuild. refreshActive() restores both on end. */
+  /** Lightweight per-frame refresh for dragging: the curves are rebuilt, and the
+   * dimension badges, their annotation lines and the constraint glyphs are
+   * MOVED with them rather than rebuilt (dims.follow / glyphs.follow). The
+   * snap-candidate array (snapping is off mid-drag) and the region fills wait
+   * for refreshActive() on release. The badges used to wait too: they froze for
+   * the whole gesture and jumped on release, and their lines vanished (GH #17). */
   private refreshDragGeometry() {
     this.entityVersion++;
-    this.overlay.setActiveSketch(
-      curveObjects(this.entities, this.plane, this.activeColor(), false, this.endpointDotRadius()),
-    );
+    this.bodyDragUndrawn = false;
+    const objs = curveObjects(this.entities, this.plane, this.activeColor(), false, this.endpointDotRadius());
+    if (this.dimsVisible) {
+      this.cdims = constraintDims(this.entities, this.constraints);
+      objs.push(...dimensionLineObjects(this.entities, this.plane, this.cdims.flatMap((d) => d.lines)));
+      const extras = this.constraintDimExtras();
+      if (!this.dims.follow(this.entities, extras)) this.dims.show(this.entities, this.plane, extras);
+    }
+    this.overlay.setActiveSketch(objs);
+    if (this.glyphsVisible && !this.glyphs.follow(constraintGlyphs(this.entities, this.constraints))) {
+      this.redrawGlyphs();
+    }
+    this.viewport.requestRender();
   }
 
   // --- Sketch Palette options ---
@@ -3029,8 +3053,9 @@ export class SketchMode {
         // release. Grabbing a filleted side used to tear every joint open until
         // the button came up (report c0bf7020): the frame moved the line and its
         // neighbours' endpoints arithmetically and the first solve was endDrag's.
+        // The redraw rides the same drag step (queueBodyDrag): at most twice a
+        // frame, not once per move.
         this.queueBodyDrag(md.idx);
-        this.refreshDragGeometry(); // curves only; dims/regions/candidates rebuilt on endDrag
         return;
       }
       const hit = this.snapAt(e.clientX, e.clientY);
@@ -3188,6 +3213,7 @@ export class SketchMode {
         this.moveDrag = null;
         this.pendingDrag = null;
         this.pendingPinIdx = null;
+        this.dragRelease = null;
         this.conflict = false;
         this.refreshActive();
         this.onState?.();
@@ -4528,7 +4554,7 @@ export class SketchMode {
           } else if (d && this.dragFrom) {
             this.dragFrom.set(d.toX, d.toY); // track grabbed pt
           }
-          this.refreshDragGeometry(); // curves only; dims/candidates rebuilt on endDrag
+          this.refreshDragGeometry(); // curves, badges, glyphs; candidates rebuilt on endDrag
         } else {
           this.solveDirty = false;
           // Consume the "what you picked moves" bias here and nowhere else. A
@@ -4602,8 +4628,23 @@ export class SketchMode {
     // Settled: re-arm the pre-mutation snapshot so the NEXT edit is diffed
     // against post-solve geometry. Without this, a later no-op requestSolve
     // would see the solver's own movement and bank a phantom undo step.
-    if (!this.dragFrom && !this.moveDrag) this.armPreEdit();
-    this.onState?.();
+    //
+    // onState waits for the end of a drag too. Nothing it reports (tool, undo
+    // buttons, ribbon, prompt) can change mid-gesture, and on every drag frame it
+    // re-laid-out the ribbon: 1.6 ms of each frame on the GH #17 reporter's
+    // sketch. endDrag fires it once, on release.
+    if (!this.dragFrom && !this.moveDrag) {
+      this.armPreEdit();
+      this.onState?.();
+    }
+    // A release that arrived with its last move still unsolved (see endDrag):
+    // that move has now landed, so finish the release.
+    const release = this.dragRelease;
+    if (release) {
+      this.dragRelease = null;
+      this.pendingDrag = null; // consumed, or the solver died: never wait on it twice
+      this.endDrag(release.pointerId);
+    }
   }
 
   // --- interactive drag: grab a point, geometry follows, constraints hold ---
@@ -4615,11 +4656,18 @@ export class SketchMode {
     return g ? { p: new THREE.Vector2(g.x, g.y), idx: g.idx } : null;
   }
 
-  /** Queue a drag target; pump serializes solves (latest target wins). */
+  /** Queue a drag target; the latest target wins.
+   *
+   *  Solving EVERY pointermove ran a full planegcs solve plus the UI update per
+   *  move: 7-12 ms each on the GH #17 reporter's 15-constraint sketch, and WebKit
+   *  hands a fast hand several moves per frame. Only the frame's last solve ever
+   *  reached the screen, and each one before it delayed the frame that would
+   *  show it. So a frame gets one drag step in the event that starts it, and one
+   *  more, of the newest target, for whatever lands after (queueDragFrame). */
   private queueDrag(to: THREE.Vector2) {
-    if (!this.dragFrom) return;
+    if (!this.dragFrom || this.dragRelease) return;
     this.pendingDrag = { fromX: this.dragFrom.x, fromY: this.dragFrom.y, toX: to.x, toY: to.y };
-    void this.pump();
+    this.queueDragFrame();
   }
 
   /** Queue the BODY drag's settle for this frame: re-satisfy the constraints
@@ -4628,15 +4676,49 @@ export class SketchMode {
    *  requestSolve() — that banks an undo step, and a drag is ONE step (banked by
    *  endDrag), not one per pointermove.
    *
-   *  A body with no attachment points (text, polygon, slot) is skipped: it owns
-   *  no solver point, so nothing rides along with it and nothing can be pinned —
-   *  the solve would re-satisfy constraints that never went out of agreement, at
-   *  the price of a full solve on every pointermove frame. */
+   *  A body with no attachment points (text, polygon, slot) gets the frame's
+   *  redraw and no solve: it owns no solver point, so nothing rides along with
+   *  it and nothing can be pinned — the solve would re-satisfy constraints that
+   *  never went out of agreement, at the price of a full solve every frame.
+   *  So does every body once the solver is gone (solverDead): pump() would
+   *  return at once, and the frame would draw nothing until the release. */
   private queueBodyDrag(idx: number) {
     const e = this.entities[idx];
-    if (!e || attachmentPoints(e).length === 0) return;
-    this.pendingPinIdx = idx;
-    void this.pump();
+    if (e && attachmentPoints(e).length > 0 && !this.solverDead) this.pendingPinIdx = idx;
+    else this.bodyDragUndrawn = true;
+    this.queueDragFrame();
+  }
+
+  /** Bring the screen up to the newest move: at once, when this frame has had
+   *  no drag step yet, and for the moves that land after that, once more at the
+   *  start of the next frame, ahead of its draw (Viewport.beforeNextDraw).
+   *
+   *  The first step runs in the move's own event, as every move did before
+   *  GH #17. Deferring it to the frame measured slower on WebKitGTK: where the
+   *  webview has to wait for the compositor before its next frame, the event
+   *  uses that wait to solve, and a solve in the frame adds its whole time to
+   *  every move (16-19 ms from a move to the screen, against 21-24 with every
+   *  solve in the frame). Through a plain requestAnimationFrame the second step
+   *  would land after the frame's draw, one frame behind the pointer. */
+  private queueDragFrame() {
+    if (this.dragFrameQueued) return;
+    this.dragFrameQueued = true;
+    this.viewport.beforeNextDraw(() => this.runDragFrame());
+    this.dragStep();
+  }
+
+  /** The frame's second drag step (see queueDragFrame). */
+  private runDragFrame() {
+    this.dragFrameQueued = false;
+    this.dragStep();
+  }
+
+  /** One drag step: the newest queued solve, which redraws when it lands, or
+   *  only the redraw for a body drag the solver holds nothing of. */
+  private dragStep() {
+    if (!this.active) return;
+    if (this.pendingDrag || this.pendingPinIdx !== null) void this.pump();
+    else if (this.bodyDragUndrawn && this.moveDrag?.started) this.refreshDragGeometry();
   }
 
   /** The marquee rectangle as preview geometry. A WINDOW box (drag rightwards)
@@ -4741,6 +4823,16 @@ export class SketchMode {
       return;
     }
     if (!this.dragFrom) return;
+    // The gesture's last move can still be waiting for its frame (queueDrag).
+    // Releasing on top of it would drop it, and the point would stop one frame
+    // short of where the button came up. Solve it now; pump() finishes the
+    // release when it lands. With the solver loaded that is still inside this
+    // event's microtasks, so no other input sees the half-released state.
+    if (this.pendingDrag && !this.solverDead) {
+      this.dragRelease = { pointerId };
+      void this.pump();
+      return;
+    }
     this.dragFrom = null;
     this.pendingDrag = null;
     this.pendingPinIdx = null;

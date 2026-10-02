@@ -204,10 +204,13 @@ describe("the origin is visible reference, not clutter or a dead click", () => {
     // stand-in. Labelling it put two "20000 mm" badges over the origin of every
     // sketch. dimensionSegments already skipped them via its construction
     // filter — this is the other half of the same rule.
-    const at = sketchDimsSrc.indexOf("show(entities: ResolvedEntity[]");
-    expect(at, "sketchDimensions.show moved").toBeGreaterThan(-1);
+    // entityLabels is the one list both show() and follow() lay badges out from
+    const at = sketchDimsSrc.indexOf("function entityLabels(entities: ResolvedEntity[]");
+    expect(at, "sketchDimensions' entityLabels moved").toBeGreaterThan(-1);
     const body = sketchDimsSrc.slice(at, at + 1400);
     expect(body).toMatch(/if \(isOriginGeometry\(e\.id\)\) return;/);
+    const show = sketchDimsSrc.indexOf("show(entities: ResolvedEntity[]");
+    expect(sketchDimsSrc.slice(show, show + 400)).toContain("entityLabels(entities)");
   });
 
   it("offers no drag handle, so a click can SELECT it", () => {

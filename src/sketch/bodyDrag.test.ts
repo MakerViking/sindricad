@@ -253,7 +253,11 @@ describe("a body-drag frame is solved with the dragged entity pinned (c0bf7020)"
   it("the pointermove branch runs the frame through the solve pump", () => {
     const mv = sketchModeSrc.indexOf("if (this.moveDrag) {");
     expect(mv).toBeGreaterThan(-1);
-    const end = sketchModeSrc.indexOf("this.refreshDragGeometry();", mv);
+    // The branch ends at the frame request: the redraw now runs once per frame
+    // with the solve (queueDragFrame, GH #17), not once per pointermove here.
+    const call = "this.queueBodyDrag(md.idx);";
+    const end = sketchModeSrc.indexOf(call, mv) + call.length;
+    expect(end).toBeGreaterThan(call.length);
     const body = sketchModeSrc.slice(mv, end);
     expect(body).toContain("bodyDragFrame(");
     expect(body).toContain("this.queueBodyDrag(");

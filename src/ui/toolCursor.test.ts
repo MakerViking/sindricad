@@ -7,8 +7,9 @@
 // listener, and "unmount leaks no global handler" is a behaviour worth holding.
 import { describe, it, expect, beforeEach } from "vitest";
 import { FakeEl, installFakeDocument } from "./fakeDom.testkit";
-import { mountToolCursor } from "./toolCursor";
+import { cursorSvg, mountToolCursor, type CursorRasteriser } from "./toolCursor";
 import { icon, type IconName } from "./icons";
+import { ViewCube } from "../viewport/viewCube";
 
 installFakeDocument();
 
@@ -146,6 +147,127 @@ describe("tool cursor badge", () => {
 
     cursor.unmount();
     expect(host.listenerCount()).toBe(0);
+  });
+});
+
+// The badge is a DOM element chasing the pointer, so it trails it by the
+// webview's whole input-to-screen pipeline; the #17 reporter saw it lag "as if
+// it were attached to the cursor with an elastic connection". Drawn INTO the
+// pointer as a CSS cursor image, the OS moves it with the pointer itself. The
+// image is rasterised in the browser (verified by hand in Chromium and in
+// WebKitGTK 2.52); these hold what this module does with the result.
+describe("the tool rides the OS pointer as a cursor image (GH #17)", () => {
+  const IMAGE = 'url("data:image/png;base64,AAAA") 9 9, crosshair';
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  function mountWith(rasterise: CursorRasteriser) {
+    const h = new HostStub();
+    const canvas = new FakeEl("canvas");
+    const c = mountToolCursor(h as unknown as HTMLElement, canvas as unknown as HTMLElement, rasterise);
+    const b = h.children[0]!;
+    return {
+      c,
+      canvas,
+      move: (x: number, y: number) => h.dispatch("pointermove", { clientX: x, clientY: y, target: canvas }),
+      showing: () => !b.classList.contains("hidden"),
+    };
+  }
+
+  it("puts the armed tool's icon into the canvas cursor, and the DOM badge steps aside", async () => {
+    const asked: string[] = [];
+    const m = mountWith(async (name) => { asked.push(name); return IMAGE; });
+    m.c.setTool("line");
+    m.move(100, 100);
+    expect(m.showing(), "the badge stands in while the image is built").toBe(true);
+    await settle();
+    // RED on 83ecd3d: no cursor image at all, only the chasing badge
+    expect(m.canvas.style.cursor).toBe(IMAGE);
+    expect(m.showing()).toBe(false);
+    m.move(140, 120);
+    expect(m.showing(), "moving does not bring the badge back").toBe(false);
+    // built once per icon, then reused
+    m.c.setTool("circle");
+    await settle();
+    m.c.setTool("line");
+    await settle();
+    expect(asked).toEqual(["line", "circle"]);
+    expect(m.canvas.style.cursor).toBe(IMAGE);
+  });
+
+  it("gives the canvas its own cursor back when the tool is put away, or on unmount", async () => {
+    const m = mountWith(async () => IMAGE);
+    m.c.setTool("line");
+    await settle();
+    m.c.setTool("select");
+    expect(m.canvas.style.cursor).toBe("");
+    m.c.setTool("line");
+    expect(m.canvas.style.cursor).toBe(IMAGE); // cached: no wait the second time
+    m.c.unmount();
+    expect(m.canvas.style.cursor).toBe("");
+  });
+
+  it("keeps the DOM badge where the engine cannot have the image", async () => {
+    const m = mountWith(async () => null);
+    m.c.setTool("line");
+    m.move(100, 100);
+    await settle();
+    expect(m.canvas.style.cursor ?? "").toBe("");
+    expect(m.showing()).toBe(true);
+  });
+
+  it("never takes back a cursor another tool set on the same canvas", async () => {
+    const m = mountWith(async () => IMAGE);
+    m.c.setTool("line");
+    await settle();
+    m.canvas.style.cursor = "grab"; // a modeling tool's handle hover
+    m.c.setTool(null);
+    expect(m.canvas.style.cursor).toBe("grab");
+  });
+
+  // The ViewCube writes the same canvas's cursor from its own pointermove
+  // listener, which runs before this module's (canvas, then body). Driven
+  // through its real setHover: over a corner nub, then off the cube.
+  it("gets the image back after the ViewCube borrows the cursor, and shows the badge meanwhile", async () => {
+    const m = mountWith(async () => IMAGE);
+    m.c.setTool("line");
+    await settle();
+    m.move(400, 300);
+    expect(m.canvas.style.cursor).toBe(IMAGE);
+    const setHover = (ViewCube.prototype as unknown as { setHover: (part: unknown) => void }).setHover;
+    const cube = { canvas: m.canvas, hovered: null, repaintFace() {} };
+    const nub = { kind: "corner", mesh: { material: { color: { setHex() {} }, opacity: 1 } }, baseColor: 0, hoverColor: 0 };
+
+    setHover.call(cube, nub);
+    m.move(1500, 60);
+    expect(m.canvas.style.cursor, "the cube's own cursor wins over its corner").toBe("pointer");
+    expect(m.showing(), "...and the DOM badge still says which tool is armed").toBe(true);
+
+    setHover.call(cube, null);
+    m.move(400, 300);
+    // RED before this was fixed: the cube's "" had wiped the image, and the
+    // badge stayed hidden because the module still thought its image was up.
+    // No sign of the armed tool at all, until the next tool change.
+    expect(m.canvas.style.cursor).toBe(IMAGE);
+    expect(m.showing()).toBe(false);
+  });
+
+  it("lets any other non-empty cursor on the canvas win, and the DOM badge stands in", async () => {
+    const m = mountWith(async () => IMAGE);
+    m.c.setTool("line");
+    await settle();
+    expect(m.canvas.style.cursor).toBe(IMAGE);
+    m.canvas.style.cursor = "grab"; // the canvas is shared: the modeling tools write grab/pointer/default
+    m.move(100, 100);
+    expect(m.canvas.style.cursor).toBe("grab");
+    expect(m.showing()).toBe(true);
+  });
+
+  it("draws the crosshair on the hotspot it declares, in the stylesheet's colours only", () => {
+    const svg = cursorSvg("line", { line: "L", halo: "H", chip: "C", edge: "E", glyph: "G", radius: 3 });
+    // the declared hotspot is 9 9 (see rasteriseCursor): the arms meet on pixel 9's centre
+    expect(svg).toContain("M1.5 9.5H7.5M11.5 9.5H17.5M9.5 1.5V7.5M9.5 11.5V17.5");
+    expect(svg).toContain(icon("line").slice("<svg ".length, 40)); // the ribbon's own glyph
+    expect(svg).not.toMatch(/#[0-9a-f]{3,8}\b/i); // no colour of its own
   });
 });
 

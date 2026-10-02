@@ -257,8 +257,9 @@ interface GroupMeta {
   priority: number;
   pinned: boolean;
   // per split-button: swap the primary when the given action is one of its
-  // children (keeps the active sketch constraint visible on the button face)
-  splitSync: ((action: string) => void)[];
+  // children (keeps the active sketch constraint visible on the button face).
+  // True when the face changed, which can change the group's width.
+  splitSync: ((action: string) => boolean)[];
 }
 interface Ctx {
   el: HTMLElement;
@@ -278,6 +279,7 @@ export class Ribbon {
   private model: Ctx;
   private sketch: Ctx;
   private current: Ctx;
+  private currentName: RibbonContext | null = null; // null until the constructor's first setContext
   private collapsed: GroupMeta[] = [];
   private overflowPopup: HTMLDivElement | null = null; // the ONE open popup (overflow or split ▾)
   private popupAnchor: HTMLElement | null = null; // which button owns it (for toggle)
@@ -294,20 +296,33 @@ export class Ribbon {
   }
 
   setContext(ctx: RibbonContext) {
+    // An open popup still closes on every call. Inside a sketch that is how
+    // Escape and a tool change dismiss it (main.ts calls this from onState).
+    this.closePopup();
+    // The re-pack does not run on every call. onState fires after every sketch
+    // solve, and reflow() reads clientWidth/offsetWidth: a forced layout of the
+    // whole ribbon for a context that had not changed (GH #17). The width has
+    // its own trigger (the ResizeObserver) and so does a button face
+    // (setActiveSketchTool, the split ▾ pick).
+    if (ctx === this.currentName) return;
+    this.currentName = ctx;
     this.model.el.classList.toggle("hidden", ctx !== "model");
     this.sketch.el.classList.toggle("hidden", ctx !== "sketch");
     this.current = ctx === "model" ? this.model : this.sketch;
-    this.closePopup();
     this.reflow();
   }
 
   setActiveSketchTool(tool: string) {
     // a constraint/tool living inside a split button becomes its primary first,
     // so the .active highlight below has a button face to land on
-    for (const g of this.sketch.groups) for (const sync of g.splitSync) sync(tool);
+    let faceChanged = false;
+    for (const g of this.sketch.groups) {
+      for (const sync of g.splitSync) if (sync(tool)) faceChanged = true;
+    }
     this.sketch.el.querySelectorAll<HTMLElement>("[data-action]").forEach((b) => {
       b.classList.toggle("active", b.dataset.action === tool);
     });
+    if (faceChanged) this.reflow(); // the new face may not be the old one's width
   }
 
   private buildContext(groups: Group[], isSketch: boolean): Ctx {
@@ -358,7 +373,7 @@ export class Ribbon {
     group.className = "ribbon-group";
     const tools = document.createElement("div");
     tools.className = "ribbon-tools";
-    const splitSync: ((action: string) => void)[] = [];
+    const splitSync: ((action: string) => boolean)[] = [];
     for (const it of g.items) {
       tools.appendChild("children" in it ? this.buildSplit(it, splitSync) : this.buildBtn(it));
     }
@@ -391,7 +406,7 @@ export class Ribbon {
 
   /** Split button: a one-click primary tool + a ▾ dropdown of its siblings.
    *  Picking a sibling runs it AND makes it the primary (last-used-wins). */
-  private buildSplit(it: SplitItem, splitSync: ((action: string) => void)[]): HTMLElement {
+  private buildSplit(it: SplitItem, splitSync: ((action: string) => boolean)[]): HTMLElement {
     const children = it.children;
     const wrap = document.createElement("div");
     wrap.className = "ribbon-split";
@@ -433,18 +448,20 @@ export class Ribbon {
       if (wasMine) return; // second click on the same arrow just closes
       arrow.setAttribute("aria-expanded", "true");
       this.openDropdown(arrow, children, (picked) => {
+        const changed = picked !== primary;
         primary = picked;
         apply();
+        if (changed) this.reflow(); // a new face, a new width (setContext no longer re-packs)
         this.onAction?.(picked.action);
       });
     });
 
     splitSync.push((action) => {
       const child = children.find((c) => c.action === action);
-      if (child && child !== primary) {
-        primary = child;
-        apply();
-      }
+      if (!child || child === primary) return false;
+      primary = child;
+      apply();
+      return true;
     });
     wrap.append(btn, arrow);
     return wrap;

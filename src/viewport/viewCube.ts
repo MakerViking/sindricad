@@ -364,14 +364,16 @@ export class ViewCube {
 
   // ---- per-frame render ----------------------------------------------------
 
-  /** Sync cube orientation to the main camera and draw it into the corner. */
-  render(mainCamera: THREE.Camera) {
+  /** Sync cube orientation to the main camera and draw it into the corner.
+   *  `rect` is the canvas's CSS size, handed in by the viewport's render loop
+   *  from its cached copy: a getBoundingClientRect here forced a layout on every
+   *  drawn frame, mid sketch drag included (GH #17). */
+  render(mainCamera: THREE.Camera, rect: { width: number; height: number }) {
     // the cube should mirror the camera's orientation: rotate the cube by the
     // INVERSE of the camera's world rotation so "looking from +Y" shows the BACK
     // face, etc. Equivalent: cube.quaternion = inverse(camera.quaternion).
     this.group.quaternion.copy(mainCamera.quaternion).invert();
 
-    const rect = this.canvas.getBoundingClientRect();
     // NOTE: renderer.setViewport/setScissor take CSS pixels and apply the
     // renderer's pixelRatio internally — so we must NOT pre-multiply by it here.
     // (Doing so applied pixelRatio twice, leaving a dpr²-sized viewport set for

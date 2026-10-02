@@ -276,6 +276,18 @@ export class Viewport {
   // dirty so the very first frame after construction paints.
   private needsRender = true;
   private lingerFrames = 3;
+  /** The canvas's CSS size as of the last resize(). pixelWorldSize and
+   *  projectToOverlay run every frame (the render loop, every sketch badge and
+   *  glyph), and reading getBoundingClientRect there forced a synchronous layout
+   *  of whatever the pointermove before it had just dirtied: 0.65 ms of every
+   *  drag frame on a real sketch (GH #17). resize() is already driven by a
+   *  ResizeObserver on the canvas, so this is the same size the renderer and
+   *  the camera aspect are using. */
+  private viewSize = { width: 1, height: 1 };
+  /** One-shot callbacks for the start of the next frame, ahead of its draw. See
+   *  beforeNextDraw. */
+  private preDraw: (() => void)[] = [];
+  private wakeFlip = false; // see wakeNextFrame
 
   /** Which point the view swings around when you orbit (GitHub #17). Persisted,
    *  and re-resolved at every drag start — "under the cursor" only means
@@ -411,6 +423,43 @@ export class Viewport {
   requestRender() {
     this.needsRender = true;
     this.lingerFrames = 3;
+  }
+
+  /** Run `fn` once at the start of the next frame, BEFORE that frame draws.
+   *
+   *  For work that should happen at most once per frame but must still land in
+   *  the frame it was asked for: a sketch drag solves the moves that land after
+   *  a frame's first one here, once, instead of in every pointermove (GH #17).
+   *  A plain requestAnimationFrame cannot promise that.
+   *  Its callback is queued behind the render loop's own, which was queued a
+   *  frame earlier, so whatever it changes is drawn one frame late. That frame is
+   *  exactly the trailing a user reads as "elastic".
+   *
+   *  `fn` may start async work. The loop queues this callback and the draw as
+   *  two separate animation-frame callbacks, and the browser drains microtasks
+   *  between callbacks, so a solve that finishes in microtasks (planegcs, once
+   *  its module is loaded) is applied before the draw. */
+  beforeNextDraw(fn: () => void) {
+    this.preDraw.push(fn);
+    if (this.preDraw.length === 1) this.wakeNextFrame();
+  }
+
+  /** Ask for the next frame now rather than at the engine's next display tick.
+   *
+   *  WebKitGTK, the Linux webview, starts a rendering update straight after an
+   *  event that changed something it has to repaint, and otherwise waits for its
+   *  tick. A sketch drag move changes nothing it repaints: the render loop draws
+   *  the result in WebGL, at that tick. The ribbon re-layout that used to run on
+   *  every move did this by accident; without it a move sat out the wait
+   *  (GH #17). Two different, fully transparent backgrounds on the canvas are a
+   *  repaint nobody can see: the value has to change for the engine to act on
+   *  it, and the canvas covers its own background with opaque WebGL pixels
+   *  anyway. A custom property on the canvas was measured doing nothing there.
+   *  Chromium already runs its frames off the display and times them the same
+   *  either way. */
+  private wakeNextFrame() {
+    this.wakeFlip = !this.wakeFlip;
+    this.canvas.style.backgroundColor = this.wakeFlip ? "rgba(0, 0, 1, 0)" : "rgba(0, 0, 0, 0)";
   }
 
   // The document store is wired lazily (the Viewport is constructed before the
@@ -2570,7 +2619,7 @@ export class Viewport {
   /** the shared core: a world point in pixels measured from the canvas's own
    *  top-left corner. Both public projections go through it so they can never
    *  drift apart. */
-  private projectInRect(world: THREE.Vector3, rect: DOMRect): { x: number; y: number } {
+  private projectInRect(world: THREE.Vector3, rect: { width: number; height: number }): { x: number; y: number } {
     return ndcToRect(this.projScratch.copy(world).project(this.rig.active), rect);
   }
 
@@ -2586,9 +2635,11 @@ export class Viewport {
    *  the point still falls on it. projectToScreen's client coords would place
    *  such a child relative to the window, i.e. offset by the panel widths. */
   projectToOverlay(world: THREE.Vector3): { x: number; y: number; width: number; height: number } {
-    const rect = this.canvas.getBoundingClientRect();
-    const p = this.projectInRect(world, rect);
-    return { x: p.x, y: p.y, width: rect.width, height: rect.height };
+    // Canvas-local, so only the SIZE matters, and the cached one (see viewSize)
+    // spares every badge and glyph a forced layout on every frame.
+    const size = this.viewSize;
+    const p = this.projectInRect(world, size);
+    return { x: p.x, y: p.y, width: size.width, height: size.height };
   }
 
   /** unproject screen (client) coords onto a plane; null if no hit */
@@ -2663,15 +2714,15 @@ export class Viewport {
 
   /** world-space size of one screen pixel at a given world point (for glyphs) */
   pixelWorldSize(at: THREE.Vector3): number {
-    const rect = this.canvas.getBoundingClientRect();
+    const height = this.viewSize.height; // never a live rect read: see viewSize
     const cam = this.rig.active;
     if ((cam as THREE.OrthographicCamera).isOrthographicCamera) {
       const oc = cam as THREE.OrthographicCamera;
-      return (oc.top - oc.bottom) / oc.zoom / rect.height;
+      return (oc.top - oc.bottom) / oc.zoom / height;
     }
     const pc = cam as THREE.PerspectiveCamera;
     const dist = pc.position.distanceTo(at);
-    return (2 * Math.tan((pc.fov * Math.PI) / 180 / 2) * dist) / rect.height;
+    return (2 * Math.tan((pc.fov * Math.PI) / 180 / 2) * dist) / height;
   }
 
   /** A clean drag/cursor snap step (nice 1/2/5 mm) for the current zoom at a world
@@ -2694,6 +2745,7 @@ export class Viewport {
     const rect = this.canvas.getBoundingClientRect();
     const w = Math.max(1, rect.width);
     const h = Math.max(1, rect.height);
+    this.viewSize = { width: w, height: h };
     this.scene.renderer.setSize(w, h, false);
     this.rig.resize(w, h);
     // LineMaterial.resolution must be in CSS pixels: that's the space its
@@ -2772,7 +2824,7 @@ export class Viewport {
         // AdaptiveGrid) and must never call requestRender — this IS the frame.
         this.onZoomScale?.(this.pixelWorldSize(t), t.x, t.y, t.z);
         this.scene.renderer.render(this.scene.scene, this.rig.active);
-        this.cube.render(this.rig.active); // draw the ViewCube overlay in the corner
+        this.cube.render(this.rig.active, this.viewSize); // draw the ViewCube overlay in the corner
         this.fps.frame();
         this.needsRender = false;
         if (this.lingerFrames > 0) this.lingerFrames--;
@@ -2780,6 +2832,24 @@ export class Viewport {
     } catch (e) {
       console.error("[viewport] render loop frame error (continuing):", e);
     }
+    // Two callbacks, in this order, for beforeNextDraw: the pre-draw work runs
+    // first, the browser drains its microtasks, then the draw.
+    requestAnimationFrame(() => this.runPreDraw());
     requestAnimationFrame(this.loop);
   };
+
+  /** Drain beforeNextDraw's queue. A callback queued from inside one waits for
+   *  the next frame, and one that throws does not cost the others theirs. */
+  private runPreDraw() {
+    const fns = this.preDraw;
+    if (!fns.length) return;
+    this.preDraw = [];
+    for (const fn of fns) {
+      try {
+        fn();
+      } catch (e) {
+        console.error("[viewport] pre-draw callback error (continuing):", e);
+      }
+    }
+  }
 }

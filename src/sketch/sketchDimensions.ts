@@ -15,7 +15,7 @@ import { camHash } from "../viewport/camHash";
 import { overlayHost, outsideRect, clampIntoRect } from "../viewport/overlayHost";
 import type { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
-import { entityDims, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, staggeredDefaults, type DimField, type ConstraintDim, type EntityDim } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { isImeComposing } from "../ui/focus";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
@@ -101,6 +101,26 @@ export function dimBadgeFields(d: ConstraintDim): Pick<ExtraDim, "anchor" | "val
     ...(d.driven ? { driven: true } : {}),
     ...(d.signed ? { signed: true } : {}),
   };
+}
+
+/** Every entity badge show() builds, in the order it builds them, so follow()
+ *  can match a new layout to the labels already on screen one for one. */
+function entityLabels(entities: ResolvedEntity[]): { i: number; d: EntityDim }[] {
+  // neighbour-aware default placements (concentric circles fan their diameter
+  // badges out instead of stacking) — the same call dimensionSegments makes,
+  // so a label and its own annotation lines never disagree
+  const defaults = staggeredDefaults(entities);
+  const out: { i: number; d: EntityDim }[] = [];
+  entities.forEach((e, i) => {
+    // The origin carries no dimensions. Its axes are conceptually INFINITE and
+    // their 20 m length is an implementation stand-in, so labelling it put two
+    // "20000 mm" badges over the origin of every sketch. dimensionSegments
+    // already skips these (via its construction filter); this is the other
+    // half of the same rule.
+    if (isOriginGeometry(e.id)) return;
+    for (const d of entityDims(e, defaults.get(e.id))) out.push({ i, d });
+  });
+  return out;
 }
 
 export class SketchDimensions {
@@ -204,39 +224,51 @@ export class SketchDimensions {
   show(entities: ResolvedEntity[], plane: SketchPlane, extras: ExtraDim[] = []) {
     this.clear();
     this.plane = plane;
-    // neighbour-aware default placements (concentric circles fan their diameter
-    // badges out instead of stacking) — the same call dimensionSegments makes,
-    // so a label and its own annotation lines never disagree
-    const defaults = staggeredDefaults(entities);
-    entities.forEach((e, i) => {
-      // The origin carries no dimensions. Its axes are conceptually INFINITE and
-      // their 20 m length is an implementation stand-in, so labelling it put two
-      // "20000 mm" badges over the origin of every sketch. dimensionSegments
-      // already skips these (via its construction filter); this is the other
-      // half of the same rule.
-      if (isOriginGeometry(e.id)) return;
-      for (const d of entityDims(e, defaults.get(e.id))) {
-        const expr = this.entityExprOf?.(i, d.field);
-        const field = d.field;
-        const backing = this.onEntityConstraint?.(i, field) ?? null;
-        const lock = backing === "free" ? (this.onEntityLock?.(i, field) ?? null) : null;
-        this.addLabel({
-          anchor: d.labelPos,
-          valueMm: d.valueMm,
-          commit: (mm) => this.onEdit(i, field, mm),
-          place: d.place,
-          placeCommit: (ox, oy, done) => this.onEntityPlace?.(i, field, ox, oy, done) ?? null,
-          ...(this.onEditExpr ? { commitExpr: (raw: string) => this.onEditExpr!(i, field, raw) } : {}),
-          ...(expr ? { expr } : {}),
-          ...(typeof backing === "function" ? { onDelete: backing } : {}),
-          ...(backing === "free" ? { measured: true } : {}),
-          ...(lock ? { onLock: lock } : {}),
-        });
-      }
-    });
+    for (const { i, d } of entityLabels(entities)) {
+      const expr = this.entityExprOf?.(i, d.field);
+      const field = d.field;
+      const backing = this.onEntityConstraint?.(i, field) ?? null;
+      const lock = backing === "free" ? (this.onEntityLock?.(i, field) ?? null) : null;
+      this.addLabel({
+        anchor: d.labelPos,
+        valueMm: d.valueMm,
+        commit: (mm) => this.onEdit(i, field, mm),
+        place: d.place,
+        placeCommit: (ox, oy, done) => this.onEntityPlace?.(i, field, ox, oy, done) ?? null,
+        ...(this.onEditExpr ? { commitExpr: (raw: string) => this.onEditExpr!(i, field, raw) } : {}),
+        ...(expr ? { expr } : {}),
+        ...(typeof backing === "function" ? { onDelete: backing } : {}),
+        ...(backing === "free" ? { measured: true } : {}),
+        ...(lock ? { onLock: lock } : {}),
+      });
+    }
     for (const x of extras) this.addLabel(x);
     this.lastCamHash = ""; // force a reposition on the next frame
     if (!this.raf) this.loop();
+  }
+
+  /** Move the labels on screen to where the SAME dimensions sit on new geometry,
+   *  and update their values, without rebuilding them. A drag needs this every
+   *  frame (GH #17): show() tears down and recreates every element, which is why
+   *  the badges used to stay frozen until the button came up. Returns false, and
+   *  changes nothing, when the list of dimensions is not the one on screen; the
+   *  caller falls back to show(). */
+  follow(entities: ResolvedEntity[], extras: ExtraDim[] = []): boolean {
+    const next: Pick<DimLabel, "anchor" | "valueMm" | "place">[] = [];
+    for (const { d } of entityLabels(entities)) next.push({ anchor: d.labelPos, valueMm: d.valueMm, place: d.place });
+    for (const x of extras) next.push({ anchor: x.anchor, valueMm: x.valueMm, ...(x.place ? { place: x.place } : {}) });
+    if (next.length !== this.labels.length) return false;
+    this.labels.forEach((l, k) => {
+      const n = next[k]!;
+      l.anchor = n.anchor;
+      l.valueMm = n.valueMm;
+      if (n.place) l.place = n.place;
+      if (l.el.querySelector("input")) return; // being typed into: the editor owns the text
+      const text = fmtDim(l.valueMm, l.kind, l.driven, !!l.expr && !isPlainNumber(l.expr));
+      if (l.el.textContent !== text) l.el.textContent = text;
+    });
+    this.lastCamHash = ""; // the camera didn't move; force the reposition pass
+    return true;
   }
 
   hide() {
