@@ -190,6 +190,21 @@ describe("what committing an edit writes", () => {
     expect(patches[0]!.patch, "opening and confirming a plane moved it").toEqual({ offset: 12 });
   });
 
+  it("keeps the offset EXACTLY when opened and committed untouched in inches", async () => {
+    // The field shows the offset rounded for display (1/32" reads "0.0313"),
+    // and committing the parse of that text moved the plane by the rounding.
+    const { setUnit } = await import("../ui/units");
+    setUnit("in");
+    try {
+      const { tool, patches } = make([datum(25.4 / 32)]);
+      tool.startEdit("d1", () => {});
+      commit(tool);
+      expect(patches[0]!.patch, "opening and confirming a plane moved it by the display rounding").toEqual({ offset: 25.4 / 32 });
+    } finally {
+      setUnit("mm");
+    }
+  });
+
   it("writes nothing on cancel", () => {
     const { tool, patches } = make([datum(12)]);
     tool.startEdit("d1", (id) => done.push(id));

@@ -20,6 +20,17 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Inch values show four decimals.** A length in inches now reads to
+  0.0001", so 1/16" reads 0.0625 and 1/32" reads 0.0313, where they used to
+  read 0.063 and 0.031. Millimetres and centimetres still show three.
+
+- **Dimensioning one slanted line follows the cursor, like two points do.**
+  Pick a slanted line with Dimension and drag the label: above or below the
+  line gives its horizontal extent (DX), beside it gives its vertical extent
+  (DY), and off to its side gives its length. A horizontal or vertical line
+  always gives its length. Pick, type a value and Enter still sets the length,
+  and once you have typed a value, placing the label anywhere keeps it a length.
+
 - **Right-clicking a construction plane no longer cuts every visible body in
   one click.** Cut all bodies is now Split bodies with this plane…, which opens
   the Split Body panel with that plane as the tool, so you say which bodies to
@@ -222,6 +233,15 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Pressing Enter on a value you did not change no longer changes it.** Values
+  are shown rounded, and opening one and pressing Enter used to save the
+  rounded number: in inches a 1/16" sketch dimension became 0.063" (1.6002 mm
+  instead of 1.5875 mm), and re-opening an extrude, a fillet, a chamfer or an
+  offset plane moved it slightly the same way. Now an untouched value keeps
+  its exact number, and so does a new dimension you accept without typing, so
+  accepting the measured length of a line does not move it. A number you type
+  is taken as typed, even when it is the number already shown.
+
 - **Separate says when it drops loose surfaces.** A surface with no thickness
   cannot become a body, and Separate dropped every one it found without a
   word. A yellow note now says how many it dropped and from which body, and
@@ -368,6 +388,17 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
+
+- **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
+  the center, click the start (that sets the radius), then sweep to the end
+  and click. The arc goes the way you swept, so it can be longer than half a
+  circle. The 3-point Arc is still the default and still on A.
+
+- **The arrow keys turn the view in 15° steps.** Left and Right turn it
+  around, Up and Down tilt it, the same way a drag would. Lock to Plane in a
+  sketch still holds the view, and the keys do nothing while you are typing in
+  a field. They are listed under `?`, and Help > Customize Shortcuts can move
+  them to other keys.
 
 - **Merge into one solid fuses the solids of a body into one.** Right-click a
   body in the 3D view (a face of it, in Faces selection mode), or its row in

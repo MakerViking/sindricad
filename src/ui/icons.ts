@@ -20,6 +20,8 @@ const PATHS = {
   rectangle: `<rect x="4" y="6" width="16" height="12" rx="0.5"/>`,
   circle: `<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1" fill="currentColor"/>`,
   arc: `<path d="M4 19 A 14 14 0 0 1 20 11"/><circle cx="4" cy="19" r="1.5" fill="currentColor"/><circle cx="20" cy="11" r="1.5" fill="currentColor"/>`,
+  // the centre dot and a dashed radius are what set it apart from the 3-point arc
+  arcCenter: `<path d="M18 18 A 12 12 0 0 0 6 6"/><line x1="6" y1="18" x2="18" y2="18" stroke-dasharray="2 2"/><circle cx="6" cy="18" r="1.5" fill="currentColor"/><circle cx="6" cy="6" r="1.5" fill="currentColor"/>`,
   spline: `<path d="M3 17 C 7 5, 11 5, 13 12 S 19 19, 21 7" fill="none"/><circle cx="3" cy="17" r="1.5" fill="currentColor"/><circle cx="13" cy="12" r="1.5" fill="currentColor"/><circle cx="21" cy="7" r="1.5" fill="currentColor"/>`,
   polygon: `<polygon points="12,3 20,9 17,19 7,19 4,9"/>`,
   point: `<circle cx="12" cy="12" r="2.2" fill="currentColor"/>`,

@@ -29,7 +29,7 @@ import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
-import { circumcenter } from "./arc";
+import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
 import { compileAndSolve, constraintIndexOf, soleDimEntity } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
@@ -66,6 +66,7 @@ export type SketchTool =
   | "circle2"
   | "circle3"
   | "arc"
+  | "arcCenter"
   | "spline"
   | "polygon"
   | "slot"
@@ -210,7 +211,10 @@ export class SketchMode {
   private arcStart: THREE.Vector2 | null = null; // 3-point arc: start, end, then bulge
   private arcEnd: THREE.Vector2 | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
-  private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants)
+  private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants, centre arc)
+  /** centre-point arc: the running signed sweep (radians) from the start, kept
+   *  as the cursor moves so the arc follows it the long way round (arc.ts) */
+  private arcSweep = 0;
   private polygonSides = 6; // n for the polygon tool
   private filletFirst: number | null = null; // first line picked for a sketch fillet
   /** world position of the endpoint a constraint flow is holding, if any */
@@ -709,6 +713,9 @@ export class SketchMode {
     this.arcStart = null;
     this.arcEnd = null;
     this.splinePts = [];
+    // a half-clicked polygon/slot/circle/centre arc dies with its tool; carried
+    // over, its points became the next tool's first clicks
+    this.clickPts = [];
     this.filletFirst = null;
     this.dragFrom = null;
     this.pendingDrag = null;
@@ -1737,6 +1744,7 @@ export class SketchMode {
     }
     if (PATTERN_TOOLS.has(this.tool)) return this.patternClick(p);
     if (this.tool === "arc") return this.arcClick(p);
+    if (this.tool === "arcCenter") return this.arcCenterClick(p);
     if (this.tool === "spline") return this.splineClick(p);
     if (this.tool === "point") return this.pointClick(p);
     if (this.tool === "text") {
@@ -1816,6 +1824,35 @@ export class SketchMode {
       this.requestSolve(); // include the arc in the solve (updates DOF colour)
       this.onState?.();
     }
+  }
+
+  // Centre-point arc: click the centre, click the start (that sets the radius),
+  // then click the end. The end only chooses the ANGLE — it lands on the radius
+  // — and the arc goes the way the cursor swept, which is how the user says
+  // which of the two arcs between those points they mean.
+  private arcCenterClick(p: THREE.Vector2) {
+    const [center, start] = this.clickPts;
+    if (!center) {
+      this.clickPts = [p.clone()];
+      return;
+    }
+    if (!start) {
+      if (center.distanceTo(p) < 1e-4) return; // no radius yet: wait for a real one
+      this.clickPts.push(p.clone());
+      this.arcSweep = 0;
+      return;
+    }
+    this.arcSweep = advanceCenterArcSweep(this.arcSweep, center, start, p);
+    // no sweep: the end sits on the start, and there is no arc to make yet
+    if (Math.abs(this.arcSweep) * center.distanceTo(start) < 1e-4) return;
+    const ent: ResolvedEntity = { type: "arc", id: newEntityId(), ...centerArcEntity(center, start, this.arcSweep) };
+    if (this.constructionMode) ent.construction = true;
+    this.entities.push(ent);
+    this.clickPts = [];
+    this.refreshActive();
+    this.overlay.setPreview([]);
+    this.requestSolve(); // include the arc in the solve (updates DOF colour)
+    this.onState?.();
   }
 
   // MCAD-style fit-point spline: click to drop points; click the last point
@@ -2443,6 +2480,13 @@ export class SketchMode {
       if (!e) return;
       picks.push({ kind: "entity", e });
     }
+    // A lone LINE reads the cursor for its extents (resolveSingle), but the key
+    // that armed this tool carries no cursor and the select tool's hover never
+    // writes lastCursor, so it is wherever an earlier tool left it. Planned off
+    // that, "click a line, press D, type 25, Enter" could come out a DX/DY.
+    // Sit the cursor on the line until the mouse moves: the length, as before.
+    const only = picks.length === 1 ? picks[0]!.e : null;
+    if (only?.type === "line") this.lastCursor.set((only.x1 + only.x2) / 2, (only.y1 + only.y2) / 2);
     const r = resolveDim(picks, this.dimOptions());
     if (isDimError(r)) {
       if (r.message) toast(r.message);
@@ -2500,6 +2544,7 @@ export class SketchMode {
     return {
       ...(this.dimRoundPref ? { roundPref: this.dimRoundPref } : {}),
       cursor: this.lastCursor.clone(),
+      onLineTol: this.pickTol(),
     };
   }
 
@@ -2551,6 +2596,11 @@ export class SketchMode {
    *  The candidate is recomputed HERE, never read from hover state — a
    *  synthetic pointerdown arrives with no preceding pointermove. */
   private dimensionClick(p: THREE.Vector2, ev: PointerEvent) {
+    // The plan reads the cursor (dimOptions), and the cursor is HERE. A tap or a
+    // synthetic press arrives with no move first, and planning off wherever the
+    // last move left it turned "pick a line, type, Enter" into a horizontal or
+    // vertical extent instead of the length.
+    this.lastCursor.copy(p);
     const cand = pickDimTarget(this.entities, p, this.pickTol());
     // Text has no entitySegments, so pickDimTarget can never return it — without
     // this its "can't be dimensioned yet" message would be unreachable and a
@@ -2673,8 +2723,12 @@ export class SketchMode {
         this.dim.focus(); // leave the box open on the bad value
         return;
       }
-      value = r.value;
-      typed = r;
+      // Text nobody typed is the measurement as the box rounded it for display.
+      // Committing the parse of it moved the geometry by the rounding (a 1/32"
+      // line dimensioned in inches came out 0.0313"), so accept the measurement.
+      // Typed digits are the user's number, even when they match the readout.
+      value = this.dim.isEdited(plan.field) ? r.value : plan.measure();
+      typed = { ...r, value };
     }
     const c = this.dimPlace ? plan.make(value, this.dimPlace) : plan.make(value);
     const forceDriven = plan.forceDriven === true;
@@ -2825,7 +2879,11 @@ export class SketchMode {
     //
     // Gated on `!dimPlaced`: once the label is placed the dimension is settled,
     // and re-planning then would re-show the box and destroy anything typed.
-    if (this.dimPicks.length === 2 && !this.dimPlaced && this.dimPlan) this.refreshDimPlan();
+    // A lone whole-entity pick re-plans too (a LINE's extents, resolveSingle),
+    // until a value is typed: "pick, type 25, place, Enter" gave a 25 length.
+    const typed = this.dimPlan != null && this.dim.isUserDriven(this.dimPlan.field);
+    const lonePick = this.dimPicks.length === 1 && this.dimPicks[0]?.kind === "entity" && !typed;
+    if ((this.dimPicks.length === 2 || lonePick) && !this.dimPlaced && this.dimPlan) this.refreshDimPlan();
     const preview: THREE.Object3D[] = [];
     for (const t of this.dimPicks) preview.push(...this.dimTargetObjects(t, 0x33aaff));
     const cand = this.dimPicks.length < 2 ? pickDimTarget(this.entities, p, this.pickTol()) : null;
@@ -2991,6 +3049,10 @@ export class SketchMode {
 
     if (this.tool === "arc") {
       this.arcPreview(hit.p);
+      return;
+    }
+    if (this.tool === "arcCenter") {
+      this.arcCenterPreview(hit.p);
       return;
     }
     if (this.tool === "spline") {
@@ -4757,6 +4819,22 @@ export class SketchMode {
       this.overlay.setPreview([
         this.entityCurve({ type: "arc", id: "", x1: a.x, y1: a.y, x2: b.x, y2: b.y, mx: cursor.x, my: cursor.y }),
       ]);
+    } else {
+      this.overlay.setPreview([]);
+    }
+  }
+
+  /** preview while drawing a centre-point arc: the radius after the centre
+   *  click, then the arc itself, swept the way the cursor has gone */
+  private arcCenterPreview(cursor: THREE.Vector2) {
+    const [center, start] = this.clickPts;
+    if (center && !start) {
+      this.overlay.setPreview([
+        this.entityCurve({ type: "line", id: "", x1: center.x, y1: center.y, x2: cursor.x, y2: cursor.y }),
+      ]);
+    } else if (center && start) {
+      this.arcSweep = advanceCenterArcSweep(this.arcSweep, center, start, cursor);
+      this.overlay.setPreview([this.entityCurve({ type: "arc", id: "", ...centerArcEntity(center, start, this.arcSweep) })]);
     } else {
       this.overlay.setPreview([]);
     }

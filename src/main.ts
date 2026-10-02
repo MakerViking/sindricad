@@ -1312,6 +1312,7 @@ const SKETCH_PROMPTS: Record<string, string> = {
   rectangle: "sketch.prompt.rectangle",
   circle: "sketch.prompt.circle",
   arc: "sketch.prompt.arc",
+  arcCenter: "sketch.prompt.arcCenter",
   spline: "sketch.prompt.spline",
   point: "sketch.prompt.point",
   polygon: "sketch.prompt.polygon",
@@ -1517,7 +1518,7 @@ function editFeature(id: string) {
 // --- ribbon / keymap actions ---
 const SKETCH_TOOLS = new Set([
   "line", "rectangle", "centerRectangle", "circle", "circle2", "circle3",
-  "arc", "polygon", "slot", "spline", "point", "text", "project",
+  "arc", "arcCenter", "polygon", "slot", "spline", "point", "text", "project",
   "boltCircle", "hexHoles", "gridHoles", "patternRect", "patternCircular", "honeycomb",
 ]);
 // sketch MODIFY tools (ribbon action -> sketch tool name)
@@ -1895,8 +1896,25 @@ function handleAction(action: string) {
 }
 
 // --- keymap (MCAD defaults) ---
+/** the arrow-key view steps (shortcuts.ts), as Viewport.stepView's right/down */
+const VIEW_STEP_DIRS: Record<string, { right: number; down: number }> = {
+  "view-step-left": { right: -1, down: 0 },
+  "view-step-right": { right: 1, down: 0 },
+  "view-step-up": { right: 0, down: -1 },
+  "view-step-down": { right: 0, down: 1 },
+};
 installKeymap(
   (a) => {
+    // An arrow-key view step is camera motion, the keyboard's mouse orbit, not a
+    // command: it must not reach handleAction, which would take a section cut's
+    // gizmo down and record "Repeat". Not under a modal either — the chooser and
+    // the settings panels let the arrows through to move focus between buttons.
+    const step = VIEW_STEP_DIRS[a];
+    if (step) {
+      if (isChoiceOpen()) return false; // the arrow is the modal's
+      viewport.stepView(step.right, step.down);
+      return;
+    }
     // while sketching, the sketch tool owns its tool keys + Esc/Enter
     if (sketch.active && SKETCH_TOOLS.has(a)) return;
     if (a === "escape") {

@@ -94,6 +94,10 @@ export interface CameraRig {
    *  along with the camera, so vertical orbit passes straight over the top —
    *  3Dconnexion-style free rotation, upside down included. */
   tumble(az: number, pol: number): void;
+  /** One discrete orbit step (the arrow keys): `tumble`, unless orbit is locked
+   *  — a sketch's Lock to Plane holds against a key exactly as it does against
+   *  the mouse. Returns whether the view turned. */
+  orbitStep(az: number, pol: number): boolean;
   /** Lock out mouse orbit (sketch "lock to plane"); middle-drag pans instead. */
   setOrbitLocked(locked: boolean): void;
   /** True while the gesture in progress is an ORBIT, as opposed to a pan or a
@@ -131,6 +135,12 @@ export type StandardView =
   | "iso";
 
 export type ProjectionMode = "persp" | "ortho" | "auto";
+
+/** How far one arrow-key press turns the view: 15 degrees, the SolidWorks
+ *  default. The ViewCube only offers its fixed 45/90 degree targets, and a tester
+ *  asked for something finer. The arrow keys' labels (shortcut.g.view* in
+ *  locales/en.json) state this number; change them with it. */
+export const VIEW_STEP = (15 * Math.PI) / 180;
 
 /** What the LEFT mouse button should do for one press, given the modifiers held
  *  at that instant.
@@ -954,6 +964,12 @@ export function createCameraRig(
       // clear it — the pivot is the whole point of that drag.
       clearOrbitPivot();
       tumbleBy(az, pol);
+    },
+    orbitStep(az, pol) {
+      if (orbitLocked) return false;
+      clearOrbitPivot(); // a key press has no pivot of its own, same as the SpaceMouse
+      tumbleBy(az, pol);
+      return true;
     },
     isOrbiting() {
       // A MOUSE orbit no longer goes through camera-controls at all — the press

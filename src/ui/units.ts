@@ -58,15 +58,34 @@ export function fromDisplay(v: number): number {
   return v * FACTOR[current];
 }
 
+/** How many decimals a LENGTH is rounded and shown to, per display unit.
+ *
+ *  Three decimals of a millimetre is 1 um. Three decimals of an INCH is 0.001"
+ *  (25.4 um), which cannot even hold the fractions an inch user types: 1/16"
+ *  (0.0625) read "0.063" and 1/32" read "0.031", and because a field reads its
+ *  own text back, that rounded figure was what got written. Four decimals is
+ *  0.0001" (2.5 um) and holds every sixteenth exactly. cm keeps the three it
+ *  always had. */
+const DECIMALS: Record<Unit, number> = { mm: 3, cm: 3, in: 4 };
+
+/** Decimals a length in the CURRENT display unit is shown to. */
+export function lengthDecimals(): number {
+  return DECIMALS[current];
+}
+
 /** mm -> rounded display string with the unit suffix (e.g. "40 mm").
  *  The unit abbreviation is NOT translated (docs/I18N.md); only the number
  *  follows the locale. */
 export function fmtLength(mm: number): string {
-  return `${fmtNumber(round(toDisplay(mm)))} ${current}`;
+  return `${fieldText(mm)} ${current}`;
 }
 
-export function round(v: number): number {
-  return Math.round(v * 1000) / 1000;
+/** Round to `decimals` places (three unless told otherwise — angles, counts,
+ *  and anything already in mm). A length in the display unit wants
+ *  `lengthDecimals()`, which is what displayValue/fieldText/fmtLength pass. */
+export function round(v: number, decimals = 3): number {
+  const k = 10 ** decimals;
+  return Math.round(v * k) / k;
 }
 
 /** Nearest "nice" step (1/2/5 × 10ⁿ) to a rough magnitude — used for the adaptive
@@ -94,15 +113,23 @@ export type { FieldKind };
 
 /** numeric value to show in a field: angles stay in degrees, lengths convert */
 export function displayValue(mm: number, kind: FieldKind = "length"): number {
-  return kind === "length" ? round(toDisplay(mm)) : round(mm); // angle/count: raw
+  return kind === "length" ? round(toDisplay(mm), lengthDecimals()) : round(mm); // angle/count: raw
 }
 
 /** The text to PUT IN AN INPUT for a value in mm — `displayValue` written the
  *  way the active locale writes numbers. Always paired with `parseField` on the
- *  way back, and the pair round-trips (see fmtNumber). */
+ *  way back, and the pair round-trips to the display precision (see fmtNumber).
+ *
+ *  To the display precision, NOT exactly: a 1/32" reads "0.0313" and parses
+ *  back 1.3 um long. So an editor that prefilled this text must not write the
+ *  text back when the user left it alone — it commits the value it was given
+ *  instead (the dimension label editor, DimInput, the inspector). */
 export function fieldText(mm: number, kind: FieldKind = "length"): string {
-  return fmtNumber(displayValue(mm, kind));
+  return fmtNumber(displayValue(mm, kind), kind === "length" ? lengthDecimals() : 3);
 }
+
+/** Arrow-key steps round to this many places — only enough to strip float fuzz. */
+const STEP_DECIMALS = 9;
 
 /** Turn an `<input>` into the app's numeric field.
  *
@@ -128,7 +155,9 @@ export function numericInput(el: HTMLInputElement, step = 1): HTMLInputElement {
     const v = parseNumber(el.value);
     if (v === null) return;
     e.preventDefault();
-    el.value = fmtNumber(round(v + dir * step));
+    // Rounded only to strip float fuzz (0.1 + 0.2), never to three places: that
+    // turned an inch field's 0.0625 into 1.063 on a single press.
+    el.value = fmtNumber(round(v + dir * step, STEP_DECIMALS), STEP_DECIMALS);
     // The panels drive their live preview off these; a stepped value that never
     // announced itself would show one number and model another.
     el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -151,32 +180,38 @@ export function numericInput(el: HTMLInputElement, step = 1): HTMLInputElement {
 //     the digit shapes do not. A field shows a value the user edits with an
 //     ordinary keypad, and `parseNumber` reads Latin digits — printing
 //     Arabic-Indic digits into it would break the round-trip.
-//   - THREE DECIMALS, the same tolerance `round()` uses everywhere else.
+//   - THREE DECIMALS by default, the same tolerance `round()` uses everywhere
+//     else. A length in inches asks for four (see DECIMALS) by passing them.
 //
 // Formatters are cached: constructing an Intl.NumberFormat costs far more than
 // using one, and these run per label per frame on the dimension overlay.
 
 let fmtTag: string | null = null;
-let plainFmt: Intl.NumberFormat | null = null;
+const plainFmts = new Map<number, Intl.NumberFormat>(); // keyed by max decimals
 let countFmt: Intl.NumberFormat | null = null;
 
-function formats(): { plain: Intl.NumberFormat; count: Intl.NumberFormat } {
+function formats(decimals = 3): { plain: Intl.NumberFormat; count: Intl.NumberFormat } {
   const tag = localeTag();
-  if (tag !== fmtTag || !plainFmt || !countFmt) {
+  if (tag !== fmtTag || !countFmt) {
     fmtTag = tag;
-    plainFmt = new Intl.NumberFormat(tag, { useGrouping: false, maximumFractionDigits: 3, numberingSystem: "latn" });
+    plainFmts.clear();
     countFmt = new Intl.NumberFormat(tag, { maximumFractionDigits: 3 });
   }
-  return { plain: plainFmt, count: countFmt };
+  let plain = plainFmts.get(decimals);
+  if (!plain) {
+    plain = new Intl.NumberFormat(tag, { useGrouping: false, maximumFractionDigits: decimals, numberingSystem: "latn" });
+    plainFmts.set(decimals, plain);
+  }
+  return { plain, count: countFmt };
 }
 
 /** A measurement/dimension as the active locale writes it: no grouping, Latin
- *  digits, up to three decimals. Use this for anything the user might type back
- *  — a field, a dimension badge, a measured length. */
-export function fmtNumber(v: number): string {
+ *  digits, up to `decimals` decimals (three by default). Use this for anything
+ *  the user might type back — a field, a dimension badge, a measured length. */
+export function fmtNumber(v: number, decimals = 3): string {
   if (!Number.isFinite(v)) return String(v); // NaN/Infinity: a diagnostic, not a number
   // -0 formats as "-0"; a dimension of minus nothing is not a thing.
-  return formats().plain.format(v === 0 ? 0 : v);
+  return formats(decimals).plain.format(v === 0 ? 0 : v);
 }
 
 /** A COUNT in a sentence — bodies, minutes, triangles. Grouped, because it is

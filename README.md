@@ -111,6 +111,7 @@ Press `?` in the app for the full keyboard shortcut list.
 | Pan | right-drag, or Shift + middle-drag |
 | Zoom | scroll wheel, toward the cursor |
 | Snap to a view | click a face, edge or corner of the ViewCube |
+| Turn in 15° steps | the arrow keys |
 
 Option/Alt + left-drag does exactly what middle-drag does, Shift-to-pan included,
 so plenty of trackballs and low-profile mice with no middle button can still

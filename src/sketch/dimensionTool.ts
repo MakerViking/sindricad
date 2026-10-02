@@ -54,6 +54,11 @@ export interface DimOptions {
    *  drag the label decides WHICH point-to-point dimension you are creating.
    *  Absent ⇒ the aligned distance, which is what every caller got before. */
   cursor?: THREE.Vector2;
+  /** How close (sketch mm) the cursor may sit to a lone line and still be ON
+   *  it — which is where it is at the instant the line is picked. There is no
+   *  label offset to read a direction from there, so it is the plain length:
+   *  pick a line, type, Enter must keep giving the length. */
+  onLineTol?: number;
 }
 
 /** Which point-to-point dimension the cursor is asking for. */
@@ -693,12 +698,33 @@ function resolveSingle(target: DimTarget, opts: DimOptions): DimResolution {
     if (len < MEASURE_EPS) return degenerate("line");
     const a = v(ls.x1, ls.y1), b = v(ls.x2, ls.y2);
     const eid = e.id;
+    // SMART DIMENSIONING on a lone line (GH #17): a slanted line has a
+    // horizontal and a vertical extent as well as a length, chosen by where the
+    // label is dragged exactly as for two points — the line's own endpoints ARE
+    // the two points. The aligned zone keeps the plain length dimension.
+    //
+    // SLANTED only. A horizontal line has no vertical extent, and scored like a
+    // pair the label beside it still asks for one: it offered "DY 0", which
+    // Enter refuses, where it used to give the length. Its other extent IS its
+    // length, so an axis-aligned line (solver noise included) stays the length.
+    const slanted = Math.abs(b.x - a.x) > MEASURE_EPS && Math.abs(b.y - a.y) > MEASURE_EPS;
+    const off = slanted && opts.cursor && distToSeg(a, b, opts.cursor) > (opts.onLineTol ?? 0) ? opts.cursor : null;
+    const kind = off ? p2pDimKind(a, b, off) : "aligned";
+    if (off && kind !== "aligned") {
+      // A picked PAIR signs its X/Y gap by pick order (types.ts). A line has no
+      // pick order to say anything with, so the extent starts out positive.
+      const flip = kind === "horizontal" ? b.x < a.x : b.y < a.y;
+      const start: PointOp = { kind: "point", eid, p: 0, pos: a, round: false, fixed: false };
+      const end: PointOp = { kind: "point", eid, p: 1, pos: b, round: false, fixed: false };
+      return p2pPlan(flip ? end : start, flip ? start : end, false, t("sketch.dimension.hint.line"), off);
+    }
     return buildPlan({
       kind: "length", field: "length", label: t("sketch.dimension.label.length"), fieldKind: "length",
       value: len,
       anchors: { a, b },
       labelAnchor: null, // `distance` renders through entityDims — no place slot
-      hint: t("sketch.dimension.hint.line"),
+      // a flat or upright line has no extent to offer, so its hint names none
+      hint: t(slanted ? "sketch.dimension.hint.line" : "sketch.dimension.hint.lineAxis"),
       make: (value) => ({ type: "distance", line: eid, value }),
     });
   }

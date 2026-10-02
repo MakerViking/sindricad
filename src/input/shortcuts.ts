@@ -81,6 +81,13 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "g.fit", key: "home", action: "fit", context: "global", label: t("shortcut.g.fit") },
   { id: "g.fit2", key: "f6", action: "fit", context: "global", label: t("shortcut.g.fit2") },
   { id: "g.help", key: "?", action: "shortcut-help", context: "global", label: t("shortcut.g.help") },
+  // The arrows turn the view a fixed step (cameras.VIEW_STEP, 15 degrees), each
+  // the way a drag in that direction would. The ViewCube's edges and corners are
+  // 45 degree targets, which a tester found too coarse to work with.
+  { id: "g.viewLeft", key: "arrowleft", action: "view-step-left", context: "global", label: t("shortcut.g.viewLeft") },
+  { id: "g.viewRight", key: "arrowright", action: "view-step-right", context: "global", label: t("shortcut.g.viewRight") },
+  { id: "g.viewUp", key: "arrowup", action: "view-step-up", context: "global", label: t("shortcut.g.viewUp") },
+  { id: "g.viewDown", key: "arrowdown", action: "view-step-down", context: "global", label: t("shortcut.g.viewDown") },
 ];
 
 export const CONTEXT_LABELS: Record<Shortcut["context"], string> = {
@@ -229,9 +236,11 @@ export function resetAllShortcuts() {
   persist();
 }
 
-/** "Shift+H", "Home", "F6" — the one place a binding turns into display text. */
+const ARROW_GLYPHS: Record<string, string> = { arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓" };
+
+/** "Shift+H", "Home", "F6", "←" — the one place a binding turns into display text. */
 export function formatBinding(b: Binding): string {
-  const k = b.key.length === 1 ? b.key.toUpperCase() : b.key.charAt(0).toUpperCase() + b.key.slice(1);
+  const k = ARROW_GLYPHS[b.key] ?? (b.key.length === 1 ? b.key.toUpperCase() : b.key.charAt(0).toUpperCase() + b.key.slice(1));
   return b.shift ? `Shift+${k}` : k;
 }
 

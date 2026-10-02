@@ -22,6 +22,10 @@ interface Field {
   input: HTMLInputElement;
   // false = follows the cursor; true = holds the user's typed/locked value
   userDriven: boolean;
+  /** The last value the APP put in this field (cursor tracking or a seed) and
+   *  the text it wrote for it. That text is rounded for display, so until the
+   *  user types, the value is `mm`, not the parse of it. Typing clears it. */
+  wrote?: { text: string; mm: number } | undefined;
 }
 
 export class DimInput {
@@ -131,6 +135,9 @@ export class DimInput {
       input.addEventListener("keydown", (e) => this.onKey(e, field));
       input.addEventListener("input", () => {
         field.userDriven = true; // typing freezes the field from cursor tracking
+        // Anything typed is the user's number, even the very digits the app
+        // showed: "50" typed over a 49.99999 measurement means 50.
+        field.wrote = undefined;
         markUndoTarget();
       });
       return field;
@@ -226,6 +233,7 @@ export class DimInput {
       const v = values[f.def.name];
       if (!f.userDriven && v != null) {
         f.input.value = fieldText(v, f.def.kind);
+        f.wrote = { text: f.input.value, mm: v };
         // Keep the live value SELECTED while it tracks the cursor (Fusion-style), so
         // typing a number at any moment replaces it instead of appending.
         if (document.activeElement === f.input) f.input.select();
@@ -240,6 +248,7 @@ export class DimInput {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return;
     f.input.value = fieldText(value, f.def.kind);
+    f.wrote = { text: f.input.value, mm: value };
     f.userDriven = true;
   }
 
@@ -264,11 +273,25 @@ export class DimInput {
    *  "12.5" (ui/units), so this box — extrude, press/pull, fillet, chamfer,
    *  move, offset, section and every sketch primitive — needs no rule of its
    *  own. null for text that is not a bare number; commit() drops such a field
-   *  rather than committing a truncated number. */
+   *  rather than committing a truncated number.
+   *
+   *  Text the user has not typed into since the app wrote it returns the value
+   *  it was written FOR. Re-opening an extrude 1/32" deep in inches seeds
+   *  "0.0313"; parsing that back on Enter re-cut the feature 1.3 um deeper than
+   *  it was. */
   getValue(name: string): number | null {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return null;
+    if (f.wrote && f.input.value === f.wrote.text) return f.wrote.mm;
     return parseField(f.input.value, f.def.kind);
+  }
+
+  /** True when the field holds text the user TYPED, as opposed to the text the
+   *  app last wrote — for callers that read `getRaw`. Keyed on typing, not on
+   *  the text: typing the digits already shown is still the user's number. */
+  isEdited(name: string): boolean {
+    const f = this.fields.find((x) => x.def.name === name);
+    return !!f && (!f.wrote || f.input.value !== f.wrote.text);
   }
 
   /** the field's RAW text, untouched — for callers that route input through the

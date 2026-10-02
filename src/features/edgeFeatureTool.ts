@@ -66,6 +66,7 @@ export class EdgeFeatureTool {
 
   // --- edit mode (re-opening a committed fillet/chamfer) ---
   private editId: string | null = null; // committed feature id being edited
+  private editValue: number | null = null; // the value it was saved with
   private awaitingRollback = false; // waiting for the rolled-back model build
   private unsubBuild: (() => void) | null = null;
 
@@ -194,6 +195,7 @@ export class EdgeFeatureTool {
     this.editId = featureId;
     this.previewId = featureId; // keep the SAME id through preview and commit
     this.value = value;
+    this.editValue = value;
     this.unmatchedSels = [];
     this.awaitingRollback = true;
 
@@ -647,7 +649,9 @@ export class EdgeFeatureTool {
   }
 
   private buildFeature(): Feature {
-    const v = Math.round(this.value * 1000) / 1000;
+    // 1 um rounding drops drag noise; an edit that left the value alone keeps
+    // the saved number (a 1/32" radius re-opened in inches came back 0.794)
+    const v = this.value === this.editValue ? this.value : Math.round(this.value * 1000) / 1000;
     const sels = this.currentSelectors();
     const edges = sels.length === 1 && sels[0] ? sels[0] : sels;
     return this.kind === "fillet"
@@ -699,6 +703,7 @@ export class EdgeFeatureTool {
     this.unsubBuild?.();
     this.unsubBuild = null;
     this.editId = null;
+    this.editValue = null;
     this.awaitingRollback = false;
     this.basePrompt = "";
     this.failureText = null;

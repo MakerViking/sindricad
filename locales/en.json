@@ -1240,7 +1240,11 @@
     "g": {
       "fit": "Fit view",
       "fit2": "Fit view (alt)",
-      "help": "Shortcut help"
+      "help": "Shortcut help",
+      "viewDown": "Turn the view down 15°",
+      "viewLeft": "Turn the view left 15°",
+      "viewRight": "Turn the view right 15°",
+      "viewUp": "Turn the view up 15°"
     },
     "hud": {
       "always": "Always",
@@ -1465,7 +1469,8 @@
         "driven": "{hint} · reference geometry — created as a driven dimension",
         "edgeToEdge": "Edge-to-edge clearance: type a value · click to place",
         "edgeToLine": "Edge-to-line distance: type a value · click to place",
-        "line": "Line: type a length, or pick a second entity · click to place",
+        "line": "Line: type a length, or pick a second entity · move above or beside the line for its horizontal or vertical extent · click to place",
+        "lineAxis": "Line: type a length, or pick a second entity · click to place",
         "minRadialClearance": "Minimum radial clearance: type a value · click to place",
         "parallelLines": "Parallel lines: type the distance · click to place",
         "pointToEdge": "Point-to-edge distance: type a value · click to place",
@@ -1578,6 +1583,7 @@
     },
     "prompt": {
       "arc": "Arc: click start, click end, then click a point it passes through · Esc",
+      "arcCenter": "Center Arc: click the center, then the start (that sets the radius), then sweep to the end and click · Esc",
       "break": "Break: click a line or arc to split it (a circle opens into an arc) · Esc",
       "centerRectangle": "Center Rectangle: click the center, then a corner · Esc",
       "chamfer": "Chamfer: click two lines, then type a setback distance + Enter · Esc",
@@ -1783,6 +1789,7 @@
   "tool": {
     "analyze": "Analyze",
     "arc": "Arc",
+    "arcCenter": "Center Arc",
     "bodyColors": "Body Colors",
     "boltCircle": "Bolt Circle",
     "box": "Box",

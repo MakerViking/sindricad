@@ -9,7 +9,7 @@ import { icon } from "./icons";
 import type { CadDocument, ParamDef, ParamTarget, ParamUnit } from "../types";
 import { FloatingPanel } from "./panels";
 import { FEATURE_META } from "./featureMeta";
-import { getUnit, toDisplay, round } from "./units";
+import { getUnit, toDisplay, round, lengthDecimals } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { t, setText, setTitle } from "../i18n";
 import { esc } from "./escape";
@@ -168,7 +168,7 @@ export function addRow(store: DocumentStore): HTMLElement {
 }
 
 function formatValue(def: ParamDef): string {
-  if (def.unit === "mm") return `${round(toDisplay(def.value))} ${getUnit()}`;
+  if (def.unit === "mm") return `${round(toDisplay(def.value), lengthDecimals())} ${getUnit()}`;
   if (def.unit === "deg") return `${round(def.value)}°`;
   return String(round(def.value));
 }

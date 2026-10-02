@@ -12,7 +12,7 @@ import { t } from "../i18n";
 // fmtNumber: the numbers below are shown to a person, so they follow the
 // locale (Intl) — ungrouped, because a measurement is a value the user may
 // type back into a field. The unit abbreviations are never translated.
-import { getUnit, toDisplay, fmtNumber } from "./units";
+import { getUnit, toDisplay, fmtNumber, fieldText } from "./units";
 import { printerCameraStart, printerCameraStop, onPrinterCameraFrame, onPrinterCameraOffline } from "../print/printerClient";
 
 /** One floating "measure-panel" element with optional Esc-to-dismiss. Only one
@@ -92,7 +92,7 @@ export function exactPropsRows(total: MassPropertiesResult["total"]): [string, s
     ["mass", `${fmtNumber(total.volume / 1000)} g`],
   ];
   if (total.com) {
-    rows.push(["com", `${fmtNumber(toDisplay(total.com[0]))}, ${fmtNumber(toDisplay(total.com[1]))}, ${fmtNumber(toDisplay(total.com[2]))}`]);
+    rows.push(["com", `${fieldText(total.com[0])}, ${fieldText(total.com[1])}, ${fieldText(total.com[2])}`]);
   }
   return rows;
 }
@@ -144,11 +144,11 @@ export function createPanels(deps: PanelsDeps) {
       ["volume", t("measure.properties.volume"), `${fmtNumber(p.volume * f * f * f)} ${unit}³`],
       ["area", t("measure.properties.surfaceArea"), `${fmtNumber(p.area * f * f)} ${unit}²`],
       ["mass", t("measure.properties.mass"), `${fmtNumber(cm3)} g`],
-      ["com", t("measure.properties.centerOfMass"), `${fmtNumber(toDisplay(p.com.x))}, ${fmtNumber(toDisplay(p.com.y))}, ${fmtNumber(toDisplay(p.com.z))}`],
+      ["com", t("measure.properties.centerOfMass"), `${fieldText(p.com.x)}, ${fieldText(p.com.y)}, ${fieldText(p.com.z)}`],
       [
         "bbox",
         t("measure.properties.boundingBox"),
-        `${fmtNumber(toDisplay(p.bbox.max.x - p.bbox.min.x))} × ${fmtNumber(toDisplay(p.bbox.max.y - p.bbox.min.y))} × ${fmtNumber(toDisplay(p.bbox.max.z - p.bbox.min.z))} ${unit}`,
+        `${fieldText(p.bbox.max.x - p.bbox.min.x)} × ${fieldText(p.bbox.max.y - p.bbox.min.y)} × ${fieldText(p.bbox.max.z - p.bbox.min.z)} ${unit}`,
       ],
     ] as [string, string, string][];
   }

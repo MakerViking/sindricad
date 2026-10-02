@@ -164,7 +164,13 @@ export const SKETCH: Group[] = [
       { action: "circle", label: t("tool.circle"), iconName: "circle", key: "C" },
       { action: "circle2", label: t("tool.circle2"), iconName: "circle2" },
       { action: "circle3", label: t("tool.circle3"), iconName: "circle3" },
-      { action: "arc", label: t("tool.arc"), iconName: "arc", key: "A" },
+      {
+        label: t("tool.arc"),
+        children: [
+          { action: "arc", label: t("tool.arc"), iconName: "arc", key: "A" },
+          { action: "arcCenter", label: t("tool.arcCenter"), iconName: "arcCenter" },
+        ],
+      },
       { action: "polygon", label: t("tool.polygon"), iconName: "polygon" },
       { action: "slot", label: t("tool.slot"), iconName: "slot" },
       { action: "spline", label: t("tool.spline"), iconName: "spline" },

@@ -6,6 +6,7 @@ import * as THREE from "three";
 import { createScene, groundGridZ, type SceneBundle } from "./scene";
 import {
   createCameraRig,
+  VIEW_STEP,
   type CameraRig,
   type StandardView,
   type ProjectionMode,
@@ -1776,6 +1777,15 @@ export class Viewport {
   noteCameraDriven() {
     this.userMovedCamera = true;
     this.cameraDriven = true;
+  }
+
+  /** Turn the view one arrow-key step (VIEW_STEP). `right` / `down` are -1, 0
+   *  or 1, and each turns the view the way a drag in that direction does — the
+   *  signs are the ones moveOrbit hands tumbleBy. A locked sketch view stays put. */
+  stepView(right: number, down: number) {
+    if (!this.rig.orbitStep(-right * VIEW_STEP, -down * VIEW_STEP)) return;
+    this.noteCameraDriven(); // a key, like the SpaceMouse, is a path the rig never reports
+    this.requestRender();
   }
 
   /** Back to the startup view: iso orientation, framed on whatever exists — or

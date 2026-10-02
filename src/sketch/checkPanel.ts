@@ -16,7 +16,7 @@ import { t } from "../i18n";
 import { esc } from "../ui/escape";
 import { isImeComposing } from "../ui/focus";
 import { icon, type IconName } from "../ui/icons";
-import { fmtNumber, getUnit, toDisplay } from "../ui/units";
+import { fmtLength, fmtNumber, getUnit, lengthDecimals, toDisplay } from "../ui/units";
 import type { SketchIssue } from "./check";
 
 export interface CheckPanelDeps {
@@ -31,18 +31,19 @@ export interface CheckPanelDeps {
 
 /** A measured gap / overlap / length as a display string.
  *
- *  Not ui/units' fmtLength: that rounds to three decimals, and a "tiny" issue
- *  is raised for anything under 1e-3 mm — so every single one of them would
- *  render as "0 mm", a number that says the segment is fine. Exported and pure
- *  because with no jsdom in this repo it is the only part of this file a test
- *  can reach. */
+ *  Not ui/units' fmtLength alone: that rounds to the unit's decimals, and a
+ *  "tiny" issue is raised for anything under 1e-3 mm — so every single one of
+ *  them would render as "0 mm", a number that says the segment is fine. Above
+ *  that it IS fmtLength, so a gap reads to the same precision as every other
+ *  length in the unit (four decimals in inches). Exported and pure because with
+ *  no jsdom in this repo it is the only part of this file a test can reach. */
 export function formatMeasurement(mm: number): string {
   const v = toDisplay(mm);
   const mag = Math.abs(v);
   // The tiny branch keeps the exponent form; only the mantissa is localised, so
   // a comma-decimal reader sees "1,2e-5" rather than a dot they cannot type.
-  const text = mag > 0 && mag < 0.001 ? localiseExponent(v.toExponential(1)) : fmtNumber(Math.round(v * 1000) / 1000);
-  return `${text} ${getUnit()}`;
+  if (mag > 0 && mag < 10 ** -lengthDecimals()) return `${localiseExponent(v.toExponential(1))} ${getUnit()}`;
+  return fmtLength(mm);
 }
 
 function localiseExponent(sci: string): string {

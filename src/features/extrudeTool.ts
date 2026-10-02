@@ -130,6 +130,8 @@ export class ExtrudeTool {
   private editStartOffset: Num | undefined;
   private editTaper: Num | undefined;
   private editUpToOffset: Num | undefined;
+  /** the depth the edited feature was saved with; null on a fresh extrude */
+  private editDistance: number | null = null;
   /** Areas of the feature being edited that this tool could NOT resolve, held
    *  exactly as the document has them and written straight back on commit. See
    *  startEdit: without this, editing the depth of a feature whose sketch has
@@ -181,6 +183,7 @@ export class ExtrudeTool {
     this.editStartOffset = undefined;
     this.editTaper = undefined;
     this.editUpToOffset = undefined;
+    this.editDistance = null;
     this.pickingTarget = false;
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
@@ -232,6 +235,7 @@ export class ExtrudeTool {
     this.editUpToOffset = f.upToOffset;
     this.pickingTarget = false;
     this.distance = f.distance;
+    this.editDistance = f.distance;
     this.forcedSketchId = f.sketch;
 
     this.viewport.suspendPicking = true;
@@ -1039,7 +1043,10 @@ export class ExtrudeTool {
       // on a depth change. Fence and field move together; do not derive this
       // from a selection that is not fenced.
       sketch: sketchId,
-      distance: Math.round(this.distance * 1000) / 1000,
+      // Rounded to 1 um to drop drag and typing noise, but an edit that left the
+      // depth alone keeps the saved number: a 1/32" (0.79375 mm) extrude
+      // re-opened and accepted came back 0.794.
+      distance: this.distance === this.editDistance ? this.distance : Math.round(this.distance * 1000) / 1000,
       operation: op,
       // The entities that bound each area, recorded so the reference survives the
       // user moving the geometry it was picked on. `regions` alone is a world

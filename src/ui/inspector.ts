@@ -8,7 +8,7 @@
 import type { DocumentStore } from "../document/store";
 import type { Feature, Num, ParamTarget } from "../types";
 import { FEATURE_META } from "./featureMeta";
-import { getUnit, onUnitChange, toDisplay, round, displayValue, isPlainNumber, parseField, parseNumber, fmtNumber, canonicalDecimal, fromDisplay } from "./units";
+import { getUnit, onUnitChange, round, fieldText, isPlainNumber, parseField, fmtNumber, canonicalDecimal } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
@@ -142,12 +142,7 @@ export class Inspector {
     for (const [name, value] of Object.entries(doc.parameters)) {
       if (defs[name]?.target) continue; // model param — edited via its field/dim
       const issue = this.store.paramIssues[name];
-      const row = numberRow(
-        name,
-        round(toDisplay(value)),
-        (v) => this.whenUnlocked(() => this.store.setParam(name, fromDisplay(v))),
-        locked,
-      );
+      const row = numberRow(name, value, (mm) => this.whenUnlocked(() => this.store.setParam(name, mm)), locked);
       if (issue) {
         row.classList.add("param-stale");
         row.title = issue;
@@ -190,8 +185,8 @@ export class Inspector {
           box.appendChild(
             numberRow(
               `${d.label} ${unit}`,
-              displayValue(d.valueMm),
-              (v) => this.whenUnlocked(() => this.store.setSketchDimension(f.id, i, d.field, fromDisplay(v))),
+              d.valueMm,
+              (mm) => this.whenUnlocked(() => this.store.setSketchDimension(f.id, i, d.field, mm)),
               locked,
             ),
           );
@@ -226,15 +221,25 @@ export class Inspector {
       const suffix = kind === "length" ? ` ${unit}` : kind === "angle" ? "°" : "";
       // a bound field edits its EXPRESSION (canonical units); a plain field
       // shows its number in display units (lengths convert, angles/counts raw)
-      const shown = bound
-        ? bound.expr
-        : typeof cur === "number"
-          ? fmtNumber(kind === "length" ? round(toDisplay(cur)) : cur)
-          : (cur ?? "");
+      const shown = String(
+        bound
+          ? bound.expr
+          : typeof cur === "number"
+            ? fieldText(cur, kind)
+            : (cur ?? ""),
+      );
       const row = textRow(
         `${label}${suffix}`,
-        String(shown),
+        shown,
         (raw) => {
+          // A lock answers first, so a refused row always says why, even when
+          // its text is unchanged (commitField asks again).
+          const lock = this.lockReason();
+          if (lock) return lock;
+          // The text this row was GIVEN is the stored value rounded for display;
+          // committing it would write the rounding into the feature (a 1/32" depth
+          // came back 0.0313"). Unchanged text means nothing was edited.
+          if (raw === shown) return null;
           const err = this.commitField(target, kind, raw);
           if (!err) this.render(); // re-read: fx badge, computed value, canonical rounding
           return err;
@@ -357,9 +362,10 @@ function title(text: string, spaced = false): HTMLElement {
   return t;
 }
 
-/** `onChange` answers like validatedInput's commit: an error message to show
+/** A length row: shows `mm` in the display unit, reports an edit back in mm.
+ *  `onChange` answers like validatedInput's commit: an error message to show
  *  (the row turns red and says it), or null when the value was taken. */
-function numberRow(label: string, value: number, onChange: (v: number) => string | null, locked: boolean): HTMLElement {
+function numberRow(label: string, mm: number, onChange: (mm: number) => string | null, locked: boolean): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row";
   const lab = document.createElement("label");
@@ -372,11 +378,15 @@ function numberRow(label: string, value: number, onChange: (v: number) => string
   // the numeric keypad on touch and lets parseNumber apply the app's one rule.
   input.type = "text";
   input.inputMode = "decimal";
-  input.value = fmtNumber(value);
+  const shown = fieldText(mm);
+  input.value = shown;
   input.disabled = locked;
   input.addEventListener("input", () => input.classList.remove("input-error"));
   input.addEventListener("change", () => {
-    const v = parseNumber(input.value);
+    // unchanged text is the display rounding of `mm`, not an edit — the same
+    // rule as the feature rows in render()
+    if (input.value === shown) return;
+    const v = parseField(input.value);
     if (v === null) return;
     const err = onChange(v);
     if (err) {

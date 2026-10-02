@@ -458,7 +458,8 @@ export class SketchDimensions {
     // a param-driven dim reopens its EXPRESSION (Fusion behavior); a plain dim
     // opens its value in display units
     const fx = !!label.expr && !isPlainNumber(label.expr);
-    input.value = fx ? label.expr! : fieldText(label.valueMm, label.kind);
+    const prefilled = fx ? label.expr! : fieldText(label.valueMm, label.kind);
+    input.value = prefilled;
     label.el.textContent = "";
     label.el.appendChild(input);
     input.focus();
@@ -501,6 +502,20 @@ export class SketchDimensions {
       }
       if (e.key === "Enter") {
         const raw = input.value.trim();
+        // Enter with nothing typed, on the text this editor PREFILLED. That text
+        // is the value rounded for display, so parsing it back writes the
+        // rounding into the sketch: in inches a 1/32" line reads "0.0313", and
+        // Enter alone made it 1.3 um longer (at three decimals a 1/16" became
+        // 0.063"). Unedited means "this value": a plain dim commits the EXACT
+        // number it was opened with (Enter on a measured badge still locks it),
+        // and a bound one keeps the binding it already has. Typing counts even
+        // when it lands back on the same text: "50" typed over a 49.99999 that
+        // reads "50" means 50.
+        const unedited = !fx && pristine && raw === prefilled;
+        if (unedited && label.expr !== undefined) {
+          revert();
+          return;
+        }
         if (label.commitExpr && (!isPlainNumber(raw) || label.expr !== undefined)) {
           // formulas — and any edit to an already-bound dim — go through the
           // expression path so the binding stays consistent
@@ -514,7 +529,7 @@ export class SketchDimensions {
           }
           return; // success: refreshActive() rebuilds the labels
         }
-        const val = parseField(raw, label.kind ?? "length");
+        const val = unedited ? label.valueMm : parseField(raw, label.kind ?? "length");
         // lengths are magnitudes and must be positive; angles may be any finite
         // (signed) value; a signed distance may be either way round but not zero
         if (dimValueOk(val, label.kind ?? "length", label.signed)) label.commit(val);

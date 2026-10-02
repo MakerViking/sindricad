@@ -25,8 +25,11 @@ function undoBelongsToTheApp(e: KeyboardEvent): boolean {
   );
 }
 
+/** `onAction` returns `false` to DECLINE a key it has a binding for, which leaves
+ *  the keystroke's default alone (an arrow key moving focus in a modal). Any
+ *  other return, undefined included, takes it. */
 export function installKeymap(
-  onAction: (a: string) => void,
+  onAction: (a: string) => unknown,
   context: () => "model" | "sketch",
 ) {
   window.addEventListener("keydown", (e) => {
@@ -42,6 +45,9 @@ export function installKeymap(
     ) {
       return;
     }
+    // A focused <select> (the unit picker) steps its options with the arrows;
+    // the view-step shortcuts on those keys must not take them from it.
+    if (e.key.startsWith("Arrow") && e.target instanceof HTMLSelectElement) return;
     const k = e.key.toLowerCase();
 
     if (e.ctrlKey || e.metaKey) {
@@ -62,8 +68,8 @@ export function installKeymap(
     if (action) {
       // Stop the keystroke from also landing in any input a tool focuses in
       // response (e.g. Press/Pull's dimension box) — otherwise "q" types into it.
-      e.preventDefault();
-      onAction(action);
+      // Calling it after onAction is still in time: both run inside this keydown.
+      if (onAction(action) !== false) e.preventDefault();
     }
   });
 }

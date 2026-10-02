@@ -13,7 +13,7 @@
 
 import { icon, type IconName } from "../ui/icons";
 import { t, setText, setTitle } from "../i18n";
-import { badNumberField, fmtNumber, numericInput, parseNumber, round, toDisplay, fromDisplay, getUnit } from "../ui/units";
+import { badNumberField, fieldText, numericInput, parseNumber, fromDisplay, getUnit } from "../ui/units";
 import type { SplitField, SplitKeep } from "./splitState";
 
 export interface SplitPanelView {
@@ -131,7 +131,7 @@ export class SplitPanel {
     setText(offLabel, "inspector.field.offset");
     const off = numericInput(document.createElement("input"), 1);
     off.style.width = "80px";
-    off.value = fmtNumber(round(toDisplay(offsetMm)));
+    off.value = fieldText(offsetMm);
     const unit = document.createElement("span");
     unit.className = "tool-panel-hint";
     unit.textContent = getUnit(); // unit abbreviations are not translated (docs/I18N.md)
@@ -246,7 +246,7 @@ export class SplitPanel {
   setOffset(mm: number) {
     const off = this.offset;
     if (!off) return;
-    off.value = fmtNumber(round(toDisplay(mm)));
+    off.value = fieldText(mm);
     off.classList.remove("invalid");
   }
 

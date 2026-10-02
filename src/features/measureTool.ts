@@ -11,7 +11,7 @@ import type { EdgeRef } from "../viewport/edgeLines";
 import type { Viewport } from "../viewport/viewport";
 import type { Hit } from "../viewport/picking";
 import { setPrompt } from "../ui/prompt";
-import { getUnit, toDisplay, fmtNumber } from "../ui/units";
+import { getUnit, toDisplay, fmtNumber, fmtLength, fieldText } from "../ui/units";
 import { esc } from "../ui/escape";
 import { isImeComposing } from "../ui/focus";
 import { polylineMid } from "../viewport/edgeMatch";
@@ -201,9 +201,9 @@ export class MeasureTool {
     // Measurements are read by a person, so the number follows the locale
     // (fmtNumber) while the unit abbreviation never does. Ungrouped: a measured
     // length is a value the user goes on to type into a field.
-    const L = (mm: number) => `${fmtNumber(toDisplay(mm))} ${unit}`;
+    const L = fmtLength; // to the unit's own precision: four decimals in inches
     const A = (mm2: number) => `${fmtNumber(mm2 * f * f)} ${unit}²`;
-    const xyz = (v: THREE.Vector3) => `${fmtNumber(toDisplay(v.x))}, ${fmtNumber(toDisplay(v.y))}, ${fmtNumber(toDisplay(v.z))}`;
+    const xyz = (v: THREE.Vector3) => `${fieldText(v.x)}, ${fieldText(v.y)}, ${fieldText(v.z)}`;
 
     const rows: [string, string][] = [];
     const [a, b] = this.probes;
