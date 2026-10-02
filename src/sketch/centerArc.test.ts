@@ -99,6 +99,7 @@ function makeMode() {
     active: true,
     tool: "arcCenter",
     entities: [] as ResolvedEntity[],
+    constraints: [], // the joins a snapped click emits (none here: every snap below is free)
     clickPts: [],
     arcSweep: 0,
     constructionMode: false,

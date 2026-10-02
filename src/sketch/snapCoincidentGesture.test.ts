@@ -79,7 +79,7 @@ interface Handlers {
 /** A SketchMode with the given entities on the sketch and `tool` armed.
  *  `typed` is what the user has typed into the dim box, by field name. */
 function drawing(
-  tool: "line" | "arc" | "select" | "rectangle" | "centerRectangle",
+  tool: "line" | "arc" | "select" | "rectangle" | "centerRectangle" | "arcCenter",
   entities: ResolvedEntity[],
   typed: Record<string, number> = {},
 ) {
@@ -94,7 +94,7 @@ function drawing(
     candidates: candidatesFromEntities(entities),
     base: null, chainStart: null, basePinned: false, baseRef: null,
     lastSnapKind: "free", lastSnapRef: null, lastCursor: new THREE.Vector2(),
-    arcStart: null, arcEnd: null, arcStartRef: null, arcEndRef: null, clickPts: [],
+    arcStart: null, arcEnd: null, arcStartRef: null, arcEndRef: null, arcCenterRef: null, clickPts: [], arcSweep: 0,
     constructionMode: false, gridSnap: false, glyphsVisible: false, pendingGlyph: null,
     dim: {
       isActive: false,
@@ -585,5 +585,66 @@ describe("a rectangle is joined at the corners its clicks snapped onto", () => {
       .toBeLessThan(1e-6);
     expect(gap(cornerOf(byId<Rect>(res.control.entities, r!.id), 2), start(byId<Line>(res.control.entities, "a"))))
       .toBeGreaterThan(1);
+  });
+});
+
+// --- 8. the centre-point arc ----------------------------------------------
+//
+// Integration check 2b: a centre arc whose centre click snapped onto the origin
+// and whose start click snapped onto a line's end was created with no
+// constraint at all, so the next solve could leave it 5.8 mm off the line. Its
+// clicks place the centre (solver point 2), the start (0) and, when the end
+// lands on the point it snapped to, the end (1).
+
+describe("a centre-point arc is joined to what its clicks snapped onto", () => {
+  // a pie: two radii from the origin, then the arc between their ends
+  const pie = () => [...originGeometry(), line("a", 0, 0, 25, 0), line("b", 0, 0, 0, 25)];
+
+  it("joins the centre to the origin, the start to one radius and the end to the other", async () => {
+    const d = drawing("arcCenter", pie());
+    d.click(0, 0); // centre, on the origin
+    d.click(25, 0); // start, on a's end
+    d.click(0, 25); // end, on b's end: a quarter turn lands it exactly there
+    const [arc] = d.drawn() as Arc[];
+    expect(arc?.type, "the third click committed no arc").toBe("arc");
+    expect(coincidents(d.h.constraints)).toEqual([
+      { type: "coincident", e1: "a", p1: 1, e2: arc!.id, p2: 0 },
+      { type: "coincident", e1: "b", p1: 1, e2: arc!.id, p2: 1 },
+      { type: "coincident", e1: "__origin__", p1: 0, e2: arc!.id, p2: 2 },
+    ]);
+
+    const quiet = console.log;
+    console.log = () => {};
+    const asDrawn = await compileAndSolve(d.h.entities, d.h.constraints).finally(() => { console.log = quiet; });
+    expect(asDrawn.ok).toBe(true);
+    expect(asDrawn.overDefined, "a snapped join is drawn amber").toEqual([]);
+
+    // pull the arc off all three, then solve
+    const shift = { x1: arc!.x1 + 3, y1: arc!.y1 + 2, x2: arc!.x2 + 3, y2: arc!.y2 + 2, mx: arc!.mx + 3, my: arc!.my + 2 };
+    const r = await displaced(d.h.entities, d.h.constraints, arc!.id, shift);
+    const centre = (es: ResolvedEntity[]) => {
+      const q = byId<Arc>(es, arc!.id);
+      return circumcenter({ x: q.x1, y: q.y1 }, { x: q.mx, y: q.my }, { x: q.x2, y: q.y2 })!;
+    };
+    const fixedArc = byId<Arc>(r.fixed.entities, arc!.id);
+    expect(gap(centre(r.fixed.entities), { x: 0, y: 0 }), "the centre left the origin").toBeLessThan(1e-6);
+    expect(gap({ x: fixedArc.x1, y: fixedArc.y1 }, end(byId<Line>(r.fixed.entities, "a")))).toBeLessThan(1e-6);
+    expect(gap({ x: fixedArc.x2, y: fixedArc.y2 }, end(byId<Line>(r.fixed.entities, "b")))).toBeLessThan(1e-6);
+    expect(gap(centre(r.control.entities), { x: 0, y: 0 }), "the control closed the gap too: this oracle measures nothing")
+      .toBeGreaterThan(3);
+  });
+
+  it("does not join the end to a point it only pointed at", () => {
+    // b now ends 5 mm past the radius: the end click picks the angle, and the
+    // arc ends ON the radius, not on b's end
+    const d = drawing("arcCenter", [...originGeometry(), line("a", 0, 0, 25, 0), line("b", 0, 0, 0, 30)]);
+    d.click(0, 0);
+    d.click(25, 0);
+    d.click(0, 30);
+    const [arc] = d.drawn() as Arc[];
+    expect(arc).toBeDefined();
+    expect(coincidents(d.h.constraints).filter((c) => c.type === "coincident" && c.e1 === "b"),
+      "the end was joined to a point it never reached").toEqual([]);
+    expect(coincidents(d.h.constraints)).toHaveLength(2);
   });
 });

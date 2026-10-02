@@ -220,6 +220,14 @@ describe("which drawn entities owe a coincident", () => {
     ]);
   });
 
+  it("an arc's CENTRE gets one from the centre ref, as solver point 2", () => {
+    // centred on t's end (10,0), radius 5, from (15,0) round to (10,5)
+    const a: ResolvedEntity = { type: "arc", id: "a1", x1: 15, y1: 0, x2: 10, y2: 5, mx: 10 + 5 * Math.SQRT1_2, my: 5 * Math.SQRT1_2 };
+    expect(snapCoincidences(a, null, null, [target, a], [], { id: "t", idx: 1 })).toEqual([
+      { type: "coincident", e1: "t", p1: 1, e2: "a1", p2: 2 },
+    ]);
+  });
+
   it("a LINE still gets one", () => {
     const l = line("l1", 10, 0, 20, 8);
     expect(emit(l, { id: "t", idx: 1 }, null)).toEqual([
@@ -321,6 +329,8 @@ describe("every commit path that can owe a coincident calls the emitter", () => 
     // the corner click commits, so its own ref is still lastSnapRef; the centre
     // click placed no solver point, hence null
     ["centerRectClick", "private centerRectClick(", "this.emitSnapCoincidences(ent, null, this.lastSnapRef)"],
+    // the centre and start were captured at their clicks; the end click commits
+    ["arcCenterClick", "private arcCenterClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef)"],
   ] as const;
 
   for (const [name, marker, call] of commits) {
@@ -341,9 +351,16 @@ describe("every commit path that can owe a coincident calls the emitter", () => 
     expect(body).toContain("this.arcEndRef = this.lastSnapRef");
   });
 
+  it("arcCenterClick captures a ref at its centre AND its start click", () => {
+    const at = sketchSrc.indexOf("private arcCenterClick(");
+    const body = sketchSrc.slice(at, at + 1600);
+    expect(body).toContain("this.arcCenterRef = this.lastSnapRef");
+    expect(body).toContain("this.arcStartRef = this.lastSnapRef");
+  });
+
   it("the emitter takes its refs as arguments, not off `this`", () => {
     // the arc path cannot use baseRef/lastSnapRef, so a signature that reads
     // them internally is what made a second call site impossible to add safely
-    expect(sketchSrc).toContain("private emitSnapCoincidences(\n    entity: ResolvedEntity,\n    startRef: PointRef | null,\n    endRef: PointRef | null,\n  )");
+    expect(sketchSrc).toContain("private emitSnapCoincidences(\n    entity: ResolvedEntity,\n    startRef: PointRef | null,\n    endRef: PointRef | null,\n    centerRef: PointRef | null = null,\n  )");
   });
 });

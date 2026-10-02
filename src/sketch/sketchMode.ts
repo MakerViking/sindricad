@@ -235,9 +235,14 @@ export class SketchMode {
    *
    *  Deliberately not cleared alongside arcStart/arcEnd at the four cancel sites:
    *  a commit requires both points to be set, and each is set together with its
-   *  ref by this arc's own clicks, so a stale ref can never be read. */
+   *  ref by this arc's own clicks, so a stale ref can never be read.
+   *
+   *  The centre-point arc uses arcStartRef for its START click and arcCenterRef
+   *  for its centre click, each set together with its `clickPts` entry, for the
+   *  same reason. */
   private arcStartRef: PointRef | null = null;
   private arcEndRef: PointRef | null = null;
+  private arcCenterRef: PointRef | null = null;
   private splinePts: THREE.Vector2[] = []; // in-progress spline fit points
   private clickPts: THREE.Vector2[] = []; // accumulated clicks for multi-point primitives (polygon/slot/circle variants, centre arc)
   /** centre-point arc: the running signed sweep (radians) from the start, kept
@@ -2078,11 +2083,13 @@ export class SketchMode {
     const [center, start] = this.clickPts;
     if (!center) {
       this.clickPts = [p.clone()];
+      this.arcCenterRef = this.lastSnapRef;
       return;
     }
     if (!start) {
       if (center.distanceTo(p) < 1e-4) return; // no radius yet: wait for a real one
       this.clickPts.push(p.clone());
+      this.arcStartRef = this.lastSnapRef;
       this.arcSweep = 0;
       return;
     }
@@ -2092,6 +2099,10 @@ export class SketchMode {
     const ent: ResolvedEntity = { type: "arc", id: newEntityId(), ...centerArcEntity(center, start, this.arcSweep) };
     if (this.constructionMode) ent.construction = true;
     this.entities.push(ent);
+    // The same joins the 3-point arc gets, plus the centre, which this tool's
+    // first click placed (solver point 2). The end click only chose an angle, so
+    // its ref joins only where the end landed on that point (snapCoincidences).
+    this.emitSnapCoincidences(ent, this.arcStartRef, this.lastSnapRef, this.arcCenterRef);
     this.clickPts = [];
     this.refreshActive();
     this.overlay.setPreview([]);
@@ -3718,9 +3729,10 @@ export class SketchMode {
     entity: ResolvedEntity,
     startRef: PointRef | null,
     endRef: PointRef | null,
+    centerRef: PointRef | null = null,
   ) {
     this.constraints.push(
-      ...snapCoincidences(entity, startRef, endRef, this.entities, this.constraints),
+      ...snapCoincidences(entity, startRef, endRef, this.entities, this.constraints, centerRef),
     );
   }
 

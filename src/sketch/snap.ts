@@ -72,6 +72,10 @@ const JOIN_TOL = 1e-6;
  *
  *  Emitted only for the solver points a click actually PUTS somewhere:
  *   - a LINE or ARC: its start (idx 0) and end (idx 1);
+ *   - an ARC's centre (idx 2) too, from `centerRef`, which only the centre-point
+ *     arc passes: its first click places the centre. (The end click of that
+ *     tool only picks an angle, so its ref joins only where the end really
+ *     landed on the point, like a typed length below.)
  *   - a RECTANGLE's corners. Corner to corner, both clicks are corners; drawn
  *     from the centre, only the second is (the centre is no solver point, so
  *     the caller passes null for it). WHICH corner a click is depends on the
@@ -105,11 +109,13 @@ export function snapCoincidences(
   endRef: PointRef | null,
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
+  centerRef: PointRef | null = null,
 ): SketchConstraint[] {
   const corners = [0, 1, 2, 3];
   /** each click's ref, and the solver points of `entity` that click can have placed */
   const placed: [PointRef | null, number[]][] =
-    entity.type === "line" || entity.type === "arc" ? [[startRef, [0]], [endRef, [1]]]
+    entity.type === "line" ? [[startRef, [0]], [endRef, [1]]]
+    : entity.type === "arc" ? [[startRef, [0]], [endRef, [1]], [centerRef, [2]]]
     : entity.type === "rectangle" ? [[startRef, corners], [endRef, corners]]
     : [];
   const out: SketchConstraint[] = [];
