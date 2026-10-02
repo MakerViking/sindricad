@@ -143,8 +143,9 @@ export class MoveTool {
     }
     const moved =
       Math.abs(e.clientX - this.downPos.x) > 3 || Math.abs(e.clientY - this.downPos.y) > 3;
-    // a clean click in empty space (not on an arrow) commits
-    if (!moved && this.hitAxis(e.clientX, e.clientY) < 0) this.commit();
+    // a clean click in empty space (not on an arrow) commits, or with nothing
+    // to commit closes the tool
+    if (!moved && this.hitAxis(e.clientX, e.clientY) < 0) this.commit(true);
   }
 
   private onKey(e: KeyboardEvent) {
@@ -240,13 +241,39 @@ export class MoveTool {
     return o ? (o.userData.axis as number) : -1;
   }
 
-  private commit() {
+  /** `clickAway`: reached by a clean click in empty canvas rather than Enter or
+   *  the check button. */
+  private commit(clickAway = false) {
     if (!this.active) return;
-    if (this.grabAxis < 0 && this.lastAxis >= 0 && this.dim.isUserDriven("move")) {
+    if (this.grabAxis < 0 && this.dim.isUserDriven("move")) {
       const v = this.dim.getValue("move");
-      if (v != null) this.setComp(this.lastAxis, v); // typed sign wins
+      if (v == null) {
+        // unparseable text: committing the last good value instead would be a
+        // silent wrong-number surprise
+        setPrompt(t("feature.badNumber"));
+        return;
+      }
+      if (this.lastAxis < 0) {
+        // A distance typed before any arrow was touched has no direction. It
+        // used to be dropped and the tool closed with nothing said, although
+        // the prompt invites typing a value. Keep it; clicking an arrow gives it
+        // the direction (tick applies it to that axis).
+        if (Math.abs(v) > 1e-9) {
+          setPrompt(t("feature.move.pickAxis"));
+          return;
+        }
+      } else {
+        this.setComp(this.lastAxis, v); // typed sign wins
+      }
     }
-    if (this.t.lengthSq() < 1e-9) return this.cancel(); // nothing moved
+    if (this.t.lengthSq() < 1e-9) {
+      // A click away from an untouched gizmo has always meant "never mind", and
+      // there is nothing to lose. An Enter is a request to commit: closing on it
+      // silently read as "nothing happened", so stay and say why.
+      if (clickAway) return this.cancel();
+      setPrompt(t("feature.move.nothingToCommit"));
+      return;
+    }
     const feature = this.buildFeature();
     this.viewport.endBodyMoveGhost(false); // keep the ghost position; the rebuild replaces it
     this.store.addFeature(feature);

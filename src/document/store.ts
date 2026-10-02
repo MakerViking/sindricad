@@ -4,7 +4,6 @@
 // listeners (viewport, timeline, tree).
 
 import type { CadDocument, DimField, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
-import { applyProjectionUpdate } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
@@ -15,6 +14,7 @@ import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
+import { p2lSideFlipped, refreshStep, refreshSteps } from "./projectionWalk";
 import { t } from "../i18n";
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
@@ -51,6 +51,11 @@ export interface RebuildState {
    *  body list. */
   streamed: number | null;
   streamTotal: number | null;
+  /** The last round-trip ended because the user pressed Cancel. Nothing
+   *  failed and nothing new was built: `result` and the error fields are still
+   *  those of the last build that finished, so a stop the user asked for is not
+   *  painted as a fault. */
+  cancelled: boolean;
 }
 
 /** One installment of a chunked reply on its way to the VIEWPORT.
@@ -214,7 +219,11 @@ export class DocumentStore {
     progress: null,
     meshed: null,
     meshTotal: null,
+    cancelled: false,
   };
+  /** The busy label for the rebuild that will build a feature just added by
+   *  addFeatureAndBuild, in place of "Rebuilding". */
+  private buildLabel: string | null = null;
 
   private busy: BusyState = { active: false, label: "", id: null, pct: null };
 
@@ -326,6 +335,82 @@ export class DocumentStore {
     // documents for callers that never learned an id. Imports/exports still
     // pass their own id and are unaffected.
     return (await this.geometry.cancel?.(this.busy.id ?? undefined)) ?? false;
+  }
+
+  /** Rename the busy op in flight, e.g. a rebuild loop iteration that is now
+   *  building a different document than the one it started on. */
+  private relabelBusy(label: string) {
+    if (!this.busy.active || this.busy.label === label) return;
+    this.busy = { ...this.busy, label };
+    this.emitBusy();
+  }
+
+  /** Add `feature` and wait for the build that includes it, as ONE operation
+   *  under `busyLabel`, so a Cancel during that build takes the feature back
+   *  out (withdrawFeature) instead of leaving it in the document.
+   *
+   *  Field report 464987ad: an import's own read was cancellable, but the build
+   *  that followed was a separate "Rebuilding" op. A Cancel there stopped the
+   *  build and left the imported feature in the timeline, marked failed, to be
+   *  built again on the next edit, undo or reopen: from the user's side, the
+   *  import never stopped. Resolves "built" once that build finished, "cancelled"
+   *  when the user stopped it, and "gone" when the feature was no longer in the
+   *  document by then (undone, or the document replaced). */
+  async addFeatureAndBuild(feature: Feature, busyLabel: string): Promise<"built" | "cancelled" | "gone"> {
+    // The first build to settle that STARTED after this point built the
+    // document with the feature in it; a rebuild already in flight settles
+    // first with the older document and is skipped. Armed BEFORE the add,
+    // because the add starts its rebuild synchronously.
+    const from = this.buildEpoch;
+    let addedAt: CadDocument | undefined;
+    const settled = new Promise<RebuildState>((resolve) => {
+      // onBuild replays the current state at once; buildEpoch still equals
+      // `from` then, so `off` is never reached before it is assigned
+      const off = this.onBuild((s) => {
+        if (s.building || this.buildEpoch === from) return;
+        off();
+        // Both HERE, synchronously, inside the settle: a rebuild queued behind
+        // this one (an edit made while it built) reads the document the moment
+        // this returns. Withdrawn any later, it builds the cancelled feature all
+        // over again, and under this label it would look like part of the add.
+        if (this.buildLabel === busyLabel) this.buildLabel = null;
+        if (s.cancelled && addedAt) this.withdrawFeature(feature.id, addedAt);
+        resolve(s);
+      });
+    });
+    this.buildLabel = busyLabel;
+    this.addFeature(feature);
+    addedAt = this.undoStack[this.undoStack.length - 1];
+    const s = await settled;
+    if (s.cancelled) return "cancelled";
+    return this.doc.features.some((f) => f.id === feature.id) ? "built" : "gone";
+  }
+
+  /** Take back a feature this session just added, as if it had never been
+   *  added: out of the document with no undo step of its own, and out of every
+   *  undo and redo snapshot taken since. NOT a blind undo(): the document stays
+   *  editable while it builds, so other edits may sit on top of it.
+   *
+   *  Only while `addedAt`, the snapshot its add pushed, is still on the undo
+   *  stack and the feature is still in the document. Otherwise the user has
+   *  moved on (undid it, replaced the document, or made fifty edits since) and
+   *  it is not this method's to touch. */
+  private withdrawFeature(id: string, addedAt: CadDocument): boolean {
+    const at = this.undoStack.indexOf(addedAt);
+    const idx = this.doc.features.findIndex((f) => f.id === id);
+    if (at < 0 || idx < 0) return false;
+    if (this.rollback !== null && idx < this.rollback) this.rollback -= 1;
+    this.suppressed.delete(id);
+    const strip = (d: CadDocument) => {
+      d.features = d.features.filter((f) => f.id !== id);
+    };
+    this.undoStack.splice(at, 1);
+    for (const d of this.undoStack.slice(at)) strip(d);
+    for (const d of this.redoStack) strip(d);
+    // Debounced, not immediate: this runs inside the cancelled rebuild's
+    // settle, with its rebuild loop and runBusy still to unwind.
+    this.applyDerived(strip, false);
+    return true;
   }
 
   onBuild(fn: BuildListener): () => void {
@@ -640,15 +725,7 @@ export class DocumentStore {
     for (const [sid, list] of bySketch) {
       const f = sketchOf.get(sid)!;
       const byEntity = new Map(list.map((u) => [u.entity, u]));
-      const entities = f.entities.map((e) => {
-        if (e.type !== "projected" || e.id === undefined) return e;
-        const u = byEntity.get(e.id);
-        return u ? applyProjectionUpdate(e, u) : e;
-      });
-      let nf: Extract<Feature, { type: "sketch" }> = { ...f, entities };
-      const solved = await this.solveConstrainedSketch(nf, this.doc.parameters);
-      if (solved) nf = { ...nf, entities: solved };
-      replacements.set(sid, nf);
+      replacements.set(sid, await this.solveRefreshedSketch(f, byEntity, this.doc.parameters));
     }
     // Drop sketches whose LIVE feature object changed while we awaited the
     // solves (plain mutate() is not serialized on paramChain — e.g. an entity
@@ -668,6 +745,65 @@ export class DocumentStore {
         if (i >= 0) d.features[i] = nf;
       }
     });
+  }
+
+  /** The refreshed copy of closed sketch `f`: its projected curves moved to
+   *  `updates`, its constrained geometry re-solved to follow them.
+   *
+   *  The solve is WALKED first (projectionWalk.ts): one solve from the old
+   *  coordinates against the new curves landed a rectangle 5 mm outside the
+   *  square it was dimensioned inside (field report 6124e4a7), because the
+   *  distances are unsigned and the far side was the nearer solution.
+   *
+   *  A walk is not rigid, though: an edge that turns shrinks part-way along, and
+   *  geometry held to its ends can be unsolvable in the middle steps of a
+   *  refresh whose end state is fine. So when the walk cannot finish on the
+   *  right side, the single solve straight onto the new curves gets its turn, as
+   *  it always had. Whichever lands is checked the same way: a point on the far
+   *  side of its line is refused rather than written, because its numbers read
+   *  "satisfied" over the wrong geometry. Refused or unsolvable keeps the
+   *  coordinates (the curves still land) and reports the sketch, the param
+   *  cascade's failure semantics. */
+  private async solveRefreshedSketch(
+    f: Extract<Feature, { type: "sketch" }>,
+    updates: Map<string, ProjectionUpdate>,
+    parameters: CadDocument["parameters"],
+  ): Promise<Extract<Feature, { type: "sketch" }>> {
+    const steps = refreshSteps(f, updates);
+    if (steps > 1) {
+      const walked = await this.walkRefresh(f, updates, parameters, steps);
+      if (walked && !p2lSideFlipped(f, walked, parameters)) return walked;
+    }
+    const unsolved = refreshStep(f, f, updates, 1);
+    const solved = await this.solveConstrainedSketch(unsolved, parameters);
+    // null is also "no constraints", where the curves alone are the whole job
+    if (!solved) return unsolved;
+    const once = { ...unsolved, entities: solved };
+    if (p2lSideFlipped(f, once, parameters)) {
+      this.onParamSolveIssue?.(f.id);
+      return unsolved;
+    }
+    return once;
+  }
+
+  /** `f` re-solved at each of `steps` fractions of the refresh in turn, each
+   *  solve starting from the last one's coordinates; null as soon as a step
+   *  cannot be solved. Silent: a step the walk cannot take is not yet a failure
+   *  to report, because the single solve still gets its turn. */
+  private async walkRefresh(
+    f: Extract<Feature, { type: "sketch" }>,
+    updates: Map<string, ProjectionUpdate>,
+    parameters: CadDocument["parameters"],
+    steps: number,
+  ): Promise<Extract<Feature, { type: "sketch" }> | null> {
+    let cur = f;
+    for (let k = 1; k <= steps; k++) {
+      const next = refreshStep(cur, f, updates, k / steps);
+      const r = await this.solveSketchOutcome(next, parameters);
+      if (r.status !== "solved") return null;
+      cur = { ...next, entities: r.entities };
+    }
+    return cur;
   }
 
   /** Headless re-solve of one CONSTRAINED closed sketch — the param cascade and
@@ -1508,8 +1644,18 @@ export class DocumentStore {
   private settledBuild(reply: RebuildReply): RebuildState {
     const done = {
       building: false, progress: null, meshed: null, meshTotal: null,
-      streamed: null, streamTotal: null,
+      streamed: null, streamTotal: null, cancelled: false,
     };
+    if (!reply.ok && reply.error.code === "cancelled") {
+      // The user stopped it. Settled as a failure, this replaced what was said
+      // about the model on screen with an error whose whole text was
+      // "cancelled", and the status bar went red (field reports 464987ad,
+      // 8c510bd3) for a stop the user asked for.
+      return {
+        ...done, cancelled: true, result: this.build.result,
+        errorFeatureId: this.build.errorFeatureId, errorMessage: this.build.errorMessage,
+      };
+    }
     if (!reply.ok) {
       return {
         ...done,
@@ -1547,11 +1693,12 @@ export class DocumentStore {
       // that runs for minutes on a large assembly (measured 138.7 s on the
       // reference file). Short rebuilds are unaffected: the button only appears
       // after CANCEL_DELAY_MS (700 ms).
-      await this.runBusy(t("status.rebuilding"), async () => {
+      await this.runBusy(this.buildLabel ?? t("status.rebuilding"), async () => {
         try {
           do {
             this.rebuildQueued = false;
             this.emitBuildStarted();
+            this.relabelBusy(this.buildLabel ?? t("status.rebuilding"));
             const reply = await this.geometry.rebuild(this.effectiveDoc());
             // A stream that was in flight but never completed has left a PARTIAL
             // model on screen. Tell the viewport to drop it before this result —

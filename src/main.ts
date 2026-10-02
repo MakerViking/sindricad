@@ -1250,7 +1250,10 @@ store.onBuild((s) => {
   // always runs against the PREVIOUS build's planes, and a face-anchored sketch
   // would stay one edit behind the cut it drives until something else changed.
   if (s.result && !s.building && !sketch.active) overlay.update(store.document);
-  if (s.errorMessage) {
+  if (s.cancelled && !s.building) {
+    // the user stopped it: not a fault, so not red
+    setStatus(t("status.rebuildCancelled"), "");
+  } else if (s.errorMessage) {
     setStatus(t("status.buildError", { id: s.errorFeatureId ?? "", message: s.errorMessage }), "error");
   } else if (!s.building) {
     setStatus(t("status.ready"), "connected");

@@ -3,10 +3,19 @@
 // chained on the param queue, guarded against preview timelines, with a
 // stale-transition warning and a 5-strike oscillation valve. Driven against a
 // scripted stub backend (the sidecar side is covered by sidecar/test_refresh.py).
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+
+declare const process: { cwd(): string };
+// the wasm `?url` import resolves root-relative under vitest (see
+// sketch/sketchSolve.test.ts) — point the loader at the file on disk
+vi.mock("@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm?url", () => ({
+  default: process.cwd() + "/node_modules/@salusoft89/planegcs/dist/planegcs_dist/planegcs.wasm",
+}));
+
 import { DocumentStore } from "./store";
-import type { CadDocument, Feature, ProjectedCurve, ProjectionUpdate, RebuildReply, RebuildResult, SketchEntity } from "../types";
+import type { CadDocument, Feature, ProjectedCurve, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, SketchEntity } from "../types";
 import type { GeometryBackend } from "../geometry/client";
+import { solveSketchFeature } from "../sketch/headlessSolve";
 
 const CURVE0: ProjectedCurve = { kind: "line", x1: 0, y1: 0, x2: 10, y2: 0 };
 const CURVE1: ProjectedCurve = { kind: "line", x1: 5, y1: 0, x2: 15, y2: 0 };
@@ -237,5 +246,172 @@ describe("projection refresh (derived commit loop)", () => {
     expect(calls.length).toBe(8); // no commit -> no follow-up rebuild
     expect(p1Of(store)?.curve).toEqual(curveAtTrip);
     expect(warnings.filter((w) => w.includes("paused automatic refresh"))).toHaveLength(1); // warned once, stayed shut
+  });
+});
+
+// --- following a projected edge that moved FAR (6124e4a7, 66d7eb71) ----------
+//
+// These run the REAL planegcs solve, the one main.ts injects. The distances are
+// unsigned: one solve from the old coordinates against the new curves lands on
+// the mirror image whenever a reference moves further than the dimension, and
+// every dimension still reads "satisfied". So each test checks WHERE the
+// geometry ended up, not that a solve happened.
+
+type SketchF = Extract<Feature, { type: "sketch" }>;
+
+const src = { kind: "edge" as const, body: "body1", sel: { kind: "edge" as const, by: "match" as const, fp: { mid: [0, 0, 0] as [number, number, number], dir: [1, 0, 0] as [number, number, number] } } };
+const proj = (id: string, x1: number, y1: number, x2: number, y2: number): SketchEntity =>
+  ({ id, type: "projected", source: src, curve: { kind: "line", x1, y1, x2, y2 } });
+const upd = (entity: string, x1: number, y1: number, x2: number, y2: number): ProjectionUpdate =>
+  ({ sketch: "s1", entity, curve: { kind: "line", x1, y1, x2, y2 }, stale: false });
+
+const sketchIn = (store: DocumentStore) =>
+  store.document.features.find((f): f is SketchF => f.type === "sketch" && f.id === "s1")!;
+const entityIn = (store: DocumentStore, id: string) =>
+  sketchIn(store).entities.find((e) => e.id === id) as unknown as { x: number; y: number; width: number; height: number; curve: ProjectedCurve };
+
+describe("projection refresh: dimensioned geometry follows a far move", () => {
+  let calls: CadDocument[];
+  let issues: string[];
+  beforeEach(() => {
+    calls = [];
+    issues = [];
+  });
+
+  /** The store as main.ts wires it, the sidecar reporting `updates` once. */
+  function refreshed(doc: CadDocument, updates: ProjectionUpdate[]) {
+    const store = new DocumentStore(scriptedBackend((n) => (n === 1 ? updates : undefined), calls), doc);
+    store.headlessSolve = solveSketchFeature;
+    store.onParamSolveIssue = (id) => void issues.push(id);
+    return store;
+  }
+  /** the derived commit landed and its own rebuild came back quiet */
+  const landed = () => vi.waitFor(() => expect(calls.length).toBe(2), { timeout: 5000 });
+
+  // 6124e4a7: a 40x40 rectangle held 5 mm inside a projected 50x50 square, the
+  // way the field document ties it (projected corner -> rectangle edge). The
+  // square becomes 40x40, its right and top edges moving 7 mm, further than 5.
+  const square = (l: number, r: number, b: number, t: number) => [
+    proj("left", l, t, l, b), proj("top", r, t, l, t), proj("right", r, b, r, t), proj("bottom", l, b, r, b),
+  ];
+  const insetDoc = (): CadDocument => ({
+    parameters: {},
+    features: [{
+      id: "s1", type: "sketch", plane: "XY", name: "Sketch1",
+      entities: [...square(-25, 25, -25, 25), { id: "r", type: "rectangle", x: 0, y: 0, width: 40, height: 40 }],
+      constraints: [
+        ["right", "r~1"], ["top", "r~2"], ["left", "r~3"], ["bottom", "r~0"],
+      ].flatMap(([p, edge]) => [
+        { type: "parallel", l1: p, l2: edge },
+        { type: "p2lDistance", e: p, p: 0, line: edge, value: 5 },
+      ]) as SketchConstraint[],
+    }] as Feature[],
+  });
+
+  it("keeps a rectangle 5 mm inside a projected square that shrinks by more than 5", async () => {
+    const store = refreshed(insetDoc(), [
+      upd("left", -22, 18, -22, -22), upd("top", 18, 18, -22, 18),
+      upd("right", 18, -22, 18, 18), upd("bottom", -22, -22, 18, -22),
+    ]);
+    edit(store);
+    await landed();
+    expect(entityIn(store, "right").curve).toEqual({ kind: "line", x1: 18, y1: -22, x2: 18, y2: 18 });
+    const r = entityIn(store, "r");
+    // 5 mm in from every side of the new -22..18 square: 30x30, centred on -2
+    expect(r.width).toBeCloseTo(30, 6);
+    expect(r.height).toBeCloseTo(30, 6);
+    expect(r.x).toBeCloseTo(-2, 6);
+    expect(r.y).toBeCloseTo(-2, 6);
+    expect(issues).toEqual([]);
+  });
+
+  // 66d7eb71's front-end half: a hole dimensioned 10 mm from a plate's left and
+  // bottom edges. The left edge moves 16 mm inward. (Its sidecar half, the edge
+  // rebinding to the hole's circle, is not covered here and not fixed.)
+  const holeDoc = (): CadDocument => ({
+    parameters: {},
+    features: [{
+      id: "s1", type: "sketch", plane: "XY", name: "Sketch1",
+      entities: [
+        proj("bottom", 30, -20, -30, -20), proj("left", -30, -20, -30, 40),
+        { id: "hole", type: "circle", x: -20, y: -10, radius: 5 },
+      ],
+      constraints: [
+        { type: "p2lDistance", e: "hole", p: 0, line: "bottom", value: 10 },
+        { type: "p2lDistance", e: "hole", p: 0, line: "left", value: 10 },
+        { type: "diameter", circle: "hole", value: 10 },
+      ],
+    }] as Feature[],
+  });
+
+  for (const reversed of [false, true]) {
+    it(`keeps a hole 10 mm from a plate edge that moves 16 mm${reversed ? " (edge handed back end for end)" : ""}`, async () => {
+      const left = reversed ? upd("left", -14, 40, -14, -20) : upd("left", -14, -20, -14, 40);
+      const store = refreshed(holeDoc(), [upd("bottom", 30, -20, -14, -20), left]);
+      edit(store);
+      await landed();
+      const h = entityIn(store, "hole");
+      // inside the plate, 10 mm from the moved edge; the mirror is (-24, -10)
+      expect(h.x).toBeCloseTo(-4, 6);
+      expect(h.y).toBeCloseTo(-10, 6);
+      expect(issues).toEqual([]);
+    });
+  }
+
+  // A walk is not rigid: a projected edge that TURNS shrinks part-way along,
+  // and a sketch line held to both its ends at a fixed length cannot follow it
+  // through the middle steps. The single solve gets this one right and keeps
+  // the point on its side, so a walk that cannot finish must fall back to it
+  // rather than refuse a refresh that never needed walking.
+  it("follows a projected edge that turns 90 degrees, which the walk cannot solve part-way", async () => {
+    const doc: CadDocument = {
+      parameters: {},
+      features: [{
+        id: "s1", type: "sketch", plane: "XY", name: "Sketch1",
+        entities: [
+          proj("edge", -20, 0, 20, 0),
+          { id: "ln", type: "line", x1: -20, y1: 0, x2: 20, y2: 0 },
+          { id: "pt", type: "point", x: 0, y: 3 },
+        ],
+        constraints: [
+          { type: "coincident", e1: "ln", p1: 0, e2: "edge", p2: 0 },
+          { type: "coincident", e1: "ln", p1: 1, e2: "edge", p2: 1 },
+          { type: "distance", line: "ln", value: 40 },
+          { type: "p2lDistance", e: "pt", p: 0, line: "edge", value: 3 },
+        ],
+      }] as Feature[],
+    };
+    const store = refreshed(doc, [upd("edge", 0, -20, 0, 20)]);
+    edit(store);
+    await landed();
+    const ln = entityIn(store, "ln") as unknown as { x1: number; y1: number; x2: number; y2: number };
+    expect(ln.x1).toBeCloseTo(0, 6);
+    expect(ln.y1).toBeCloseTo(-20, 6);
+    expect(ln.x2).toBeCloseTo(0, 6);
+    expect(ln.y2).toBeCloseTo(20, 6);
+    // 3 mm off the turned edge, on the same side of it as before
+    const pt = entityIn(store, "pt");
+    expect(pt.x).toBeCloseTo(-3, 6);
+    expect(issues).toEqual([]);
+  });
+
+  it("refuses a solve that still lands on the far side: curves land, coordinates stay, the sketch is reported", async () => {
+    const store = refreshed(holeDoc(), [upd("bottom", 30, -20, -14, -20), upd("left", -14, -20, -14, 40)]);
+    // a solver that satisfies every number on the mirror branch once the edge
+    // has arrived: exactly what a single unsigned solve did
+    store.headlessSolve = async (sk, p) => {
+      const out = await solveSketchFeature(sk, p);
+      const left = sk.entities.find((e) => e.id === "left");
+      const arrived = left?.type === "projected" && left.curve.kind === "line" && left.curve.x1 === -14;
+      if (!out || !arrived) return out;
+      return { entities: out.entities.map((e) => (e.id === "hole" ? { ...e, x: -24 } : e)) };
+    };
+    edit(store);
+    await landed();
+    expect(entityIn(store, "left").curve).toEqual({ kind: "line", x1: -14, y1: -20, x2: -14, y2: 40 });
+    const h = entityIn(store, "hole");
+    expect(h.x).toBe(-20); // left where it was, not written on the wrong side
+    expect(h.y).toBe(-10);
+    expect(issues).toEqual(["s1"]);
   });
 });

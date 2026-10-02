@@ -832,7 +832,12 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
   }
   lastCancelledImport = null;
   const id = store.nextId();
-  store.addFeature({
+  // The build that brings the file in is part of the import, not a separate
+  // "Rebuilding" after it: it carries the import's label, and a Cancel during it
+  // takes the feature back out, as a Cancel during the read does (field report
+  // 464987ad, where the build was the minute-long part and Cancel left the
+  // import behind to load again on the next edit).
+  const built = store.addFeatureAndBuild({
     id,
     type: "import",
     format: fmt,
@@ -845,7 +850,7 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     // so an import with no tree produces exactly the feature it always did.
     ...(res.nodes !== undefined ? { nodes: res.nodes } : {}),
     ...(res.parts !== undefined ? { parts: res.parts } : {}),
-  });
+  }, t("file.import.busy", { name: baseName(path) }));
 
   // Say what the document will be like while the user is still deciding what to
   // do with it, rather than letting them discover it as a freeze and conclude
@@ -868,14 +873,23 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
     if (reference) toast(reference, { kind: "warning" });
   }
 
+  const outcome = await built;
+  if (outcome === "cancelled") {
+    // Same answer as a Cancel during the read: nothing stays in the document,
+    // and the path is remembered for a retry.
+    lastCancelledImport = path;
+    return;
+  }
+  if (outcome === "gone") return;
+
   // Carry the file's own colour onto the body it produced. The body doesn't
-  // exist until the rebuild runs, and its id is positional, so wait for the
-  // build and find the bodies this feature owns via faceOwners. setBodyColorSlot
-  // is a display-only overlay write, so this adds no second undo step.
+  // exist until the rebuild runs, and its id is positional, so find the bodies
+  // this feature owns via faceOwners in the build that just finished.
+  // setBodyColorSlot is a display-only overlay write, so this adds no second
+  // undo step.
   if (res.color === undefined) return;
   const slot = nearestPaletteSlot(res.color, store.colorPalette);
   if (slot === null) return;
-  await store.rebuildNow();
   for (const b of store.buildState.result?.bodies ?? []) {
     if (b.faceOwners?.some((owner) => owner === id)) store.setBodyColorSlot(b.id, slot);
   }

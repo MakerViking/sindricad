@@ -1905,6 +1905,12 @@ def _drop_debris(shape, debug=False):
         main, kept = parts[0], [parts[0]]
         for s in parts[1:]:
             tiny = abs(s.volume) < 1e-3 * abs(main.volume)
+            if tiny:
+                # Each distance is about 1.1 s against a detailed body, and a
+                # Combine of many small tools runs one per piece: 66 of them
+                # went 93 s without a heartbeat and the watchdog recycled the
+                # worker on every retry (field report 9728490b).
+                progress_tick(keep_index=True)
             if tiny and BRepExtrema_DistShapeShape(
                 s.wrapped, main.wrapped
             ).Value() > 1e-7:
@@ -4778,7 +4784,7 @@ def _handle_loft(f, ctx):
     if len(sections) < 2:
         raise ValueError("loft needs at least two profiles")
     try:
-        solid = loft(sections)
+        solid = loft([_clean_section(s) for s in sections])
     except Exception as ex:
         # OCCT reports "blend these two profiles" failures as a bare
         # StdFail_NotDone. The usual causes are profiles that are identical and
@@ -4802,6 +4808,67 @@ def _handle_loft(f, ctx):
 # RIGHT is the stricter of the two: with the profile plane containing the path
 # tangent, RIGHT raises StdFail_NotDone where TRANSFORMED still returns something.
 _SWEEP_TRANSITIONS = (Transition.RIGHT, Transition.TRANSFORMED)
+
+# A profile face below this area (mm²) is an artefact of the arrangement, not a
+# section anyone drew: two line ends a few microns apart enclose one.
+_SECTION_MIN_AREA = 1e-6
+
+
+def _clean_section(shape):
+    """`shape`'s faces as a sweep or loft can read them: each face keeps its
+    outer wire and only the inner wires that are real closed loops, and faces
+    with no area are dropped.
+
+    A sketch that only closes by its lines crossing is profiled from the
+    arrangement cells (`_subdivide_faces`), and a line that overshoots into the
+    profile leaves its loose end inside the cell as an extra wire holding one
+    INTERNAL edge. MakePipeShell walks each wire with BRepTools_WireExplorer,
+    finds no edge in it and raises Standard_OutOfRange, which reached the user
+    as "the profile may be too large for the path's corners" (field report
+    2a872e90); a loft counts the same wires as holes and refuses.
+
+    Sweep and loft sections only. A region extrude of the same cell builds,
+    but measured on that report's profile it builds an INVALID solid (11 faces
+    where the clean cell gives 9); cleaning every cell in `_subdivide_faces`
+    would fix that too and changes the cells of every sketch with a loose line
+    end, so it waits for a decision. Returns `shape` itself when there is
+    nothing to drop, and when nothing would be left (the caller's own error is
+    the better message)."""
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
+    from OCP.TopAbs import TopAbs_WIRE
+    from OCP.TopoDS import TopoDS, TopoDS_Iterator
+
+    def real_loop(wire):
+        return BRep_Tool.IsClosed_s(wire) and BRepTools_WireExplorer(wire).More()
+
+    kept, changed = [], False
+    for fc in shape.faces():
+        if abs(fc.area) <= _SECTION_MIN_AREA:
+            changed = True
+            continue
+        outer = BRepTools.OuterWire_s(fc.wrapped)
+        # Composed with the face's location and orientation, which is what
+        # BRep_Builder.Add expects back: it applies the inverse of both when it
+        # puts a wire into the copy below. The outer wire always stays.
+        wires, it = [], TopoDS_Iterator(fc.wrapped)
+        while it.More():
+            if it.Value().ShapeType() == TopAbs_WIRE:
+                wires.append(TopoDS.Wire_s(it.Value()))
+            it.Next()
+        good = [w for w in wires if w.IsSame(outer) or real_loop(w)]
+        if len(good) == len(wires):
+            kept.append(fc)
+            continue
+        changed = True
+        bare = TopoDS.Face_s(fc.wrapped.EmptyCopied())
+        bb = BRep_Builder()
+        for w in good:
+            bb.Add(bare, w)
+        kept.append(Face(bare))
+    if not changed or not kept:
+        return shape
+    return kept[0] if len(kept) == 1 else Compound(kept)
 
 
 def _sweep_solid(prof, path):
@@ -4892,7 +4959,7 @@ def _handle_sweep(f, ctx):
             f"{pieces_label} in {len(dropped) + 1} disconnected pieces; the "
             f"sweep followed the longest ({path.length:.3f} mm of {whole:.3f} mm)",
         )
-    solid = _sweep_solid(prof, path)
+    solid = _sweep_solid(_clean_section(prof), path)
     # Same New/Join/Cut boolean path as extrude/revolve/loft: booleans against
     # every visible overlapping body, with the loud no-op guards. (Sweep used to
     # inline `act["shape"] + solid` / `- solid` against only the active body —

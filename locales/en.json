@@ -464,6 +464,8 @@
       "promptSecond": "Measure: click a second face or edge for the distance · Esc to exit"
     },
     "move": {
+      "nothingToCommit": "Nothing moved yet: drag an axis arrow, or type a distance and click an arrow · Esc to cancel",
+      "pickAxis": "Click an axis arrow to choose the direction for that distance, then press Enter · Esc to cancel",
       "prompt": "Drag an axis arrow to move the selected bodies · type a value · Enter to commit · Esc to cancel"
     },
     "nothingToCommit": "Nothing to commit — drag the arrow or type a distance first",
@@ -1675,6 +1677,7 @@
     },
     "overhang": "Overhang: red = unsupported below {threshold}° from horizontal (build {dir})",
     "ready": "ready",
+    "rebuildCancelled": "Rebuild cancelled. The model shows the last build that finished",
     "rebuilding": "Rebuilding",
     "regionsSelected": {
       "one": "{count} profile area selected — Extrude (E) · Ctrl-click adds · Esc clears",

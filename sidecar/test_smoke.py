@@ -1495,6 +1495,62 @@ def test_sweep():
     print(f"  sweep OK: arc pipe vol {part.volume:.0f}, {len(part.faces())} faces")
 
 
+def test_sweep_and_loft_ignore_loose_line_ends_in_the_profile():
+    """Field report 2a872e90: after an edit left one profile line overshooting
+    the others, Sweep failed with Standard_OutOfRange on both transitions and
+    told the user the profile was "too large for the path's corners".
+
+    A profile that only closes by its lines crossing comes from the arrangement
+    cells, and every line end poking INTO the cell stays in it as an extra wire
+    holding one INTERNAL edge. MakePipeShell finds no edge to walk in that wire;
+    a loft counts it as a hole. Both must build the profile the user sees: the
+    swept volume has to equal the same square drawn clean, not merely exist."""
+    def L(i, x1, y1, x2, y2):
+        return {"id": i, "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+    # a 4x4 square whose sides all overshoot by 0.3, plus two stubs poking 0.5
+    # into it from the top and the bottom
+    messy = [L("a", -0.3, 0, 4.3, 0), L("b", 4, -0.3, 4, 4.3), L("c", 4.3, 4, -0.3, 4),
+             L("d", 0, 4.3, 0, -0.3), L("s", 2, 4.5, 2, 3.5), L("t", 2, -0.5, 2, 0.5)]
+    clean = [{"type": "rectangle", "width": 4, "height": 4, "x": 2, "y": 2}]
+    path = {"id": "p", "type": "sketch", "plane": "XY", "entities": [
+        L("p1", -50, -30, 50, -30), L("p2", 50, -30, 50, 30),
+        L("p3", 50, 30, -50, 30), L("p4", -50, 30, -50, -30)]}
+    upright = {"origin": [50, 0, 0], "normal": [0, 1, 0], "xdir": [1, 0, 0]}
+
+    def swept(ents):
+        doc = {"parameters": {}, "features": [
+            path, {"id": "pr", "type": "sketch", "plane": upright, "entities": ents},
+            {"id": "sw", "type": "sweep", "profile": "pr", "path": "p", "operation": "new"}]}
+        _p, err, bodies = rebuild(doc)
+        return err, bodies
+
+    err, bodies = swept(clean)
+    assert not err and len(bodies) == 1, f"control: the clean square must sweep, got {err}"
+    want = bodies[0]["shape"].volume
+    err, bodies = swept(messy)
+    assert not err, f"loose line ends broke the sweep: {err}"
+    assert len(bodies) == 1 and bodies[0]["shape"].is_valid, "sweep must give one valid body"
+    got = bodies[0]["shape"].volume
+    assert abs(got - want) < 1e-6 * want, f"swept {got:.3f}, the clean square sweeps {want:.3f}"
+
+    s1 = {"id": "s1", "type": "sketch", "plane": "XY", "entities": messy}
+    s2 = {"id": "s2", "type": "sketch",
+          "plane": {"origin": [0, 0, 10], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+          "entities": messy}
+    for how, lf in (
+        ("profiles", {"id": "lf", "type": "loft", "operation": "new", "profiles": [
+            {"sketch": "s1", "region": [3, 3, 0]}, {"sketch": "s2", "region": [3, 3, 10]}]}),
+        ("sketches", {"id": "lf", "type": "loft", "operation": "new", "sketches": ["s1", "s2"]}),
+    ):
+        _p, err, bodies = rebuild({"parameters": {}, "features": [s1, s2, lf]})
+        assert not err, f"loose line ends broke the {how} loft: {err}"
+        vol = bodies[0]["shape"].volume
+        assert abs(vol - 160) < 1e-6, f"{how} loft of a 4x4 square over 10 mm gave {vol:.3f}"
+    print(f"  sweep/loft OK: loose line ends ignored, swept {got:.1f} = clean {want:.1f}, "
+          f"lofts 160")
+
+
 def test_revolve_loft_operation():
     """Revolve/Loft used to always do `act["shape"] = solid` onto the active body
     when one existed -- silently DISCARDING it, no boolean, no warning. They now
@@ -5345,6 +5401,7 @@ if __name__ == "__main__":
     test_face_selector_on_concentric_cylinders()
     test_simplify_mesh()
     test_sweep()
+    test_sweep_and_loft_ignore_loose_line_ends_in_the_profile()
     test_sweep_along_body_edge()
     test_sweep_edge_path_reports_disconnected_edges()
     test_sweep_along_non_planar_edge_chain()

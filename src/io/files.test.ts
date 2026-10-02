@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
+import type { CadDocument, Feature, RebuildReply, RebuildResult } from "../types";
+import { t } from "../i18n";
 
 import { describeImportCapability, describeReferenceImport, describeSurfaceFit, extToFormat, extToImportFormat, importedBodyCount, looksLikeContainer, nearestPaletteSlot, needsUnassignedConfirm } from "./files";
 
@@ -213,6 +215,143 @@ describe("export runs as a cancellable busy op", () => {
     const { exportModel } = await import("./files");
     await expect(exportModel(store, backend)).rejects.toThrow("socket died");
     expect(store.busyState.active).toBe(false);
+  });
+});
+
+// --- an import and its build are ONE cancellable operation (464987ad) ---------
+//
+// Field report 464987ad: "Cancelling a mesh import does nothing; it keeps
+// loading". The read was cancellable, but the minute-long part was the build
+// that followed, a separate "Rebuilding" op: Cancel stopped it and left the
+// import in the timeline, red ": cancelled" in the status, to be built again by
+// the next edit, undo or reopen. These go in through importModel (File >
+// Import) and stop it the way the timeline's Cancel button does, through
+// store.cancelBusy().
+describe("an import is one cancellable operation, its build included", () => {
+  const path = "/tmp/head.stl";
+  let reported: string[];
+
+  beforeEach(() => {
+    reported = [];
+    (globalThis as unknown as Record<string, unknown>).window = {
+      __TAURI_INTERNALS__: {},
+      addEventListener() {},
+      removeEventListener() {},
+      setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms),
+    };
+    vi.doMock("@tauri-apps/plugin-dialog", () => ({
+      open: async () => path,
+      message: async (m: string) => void reported.push(m),
+    }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock("@tauri-apps/plugin-dialog");
+    vi.resetModules();
+    delete (globalThis as unknown as Record<string, unknown>).window;
+  });
+
+  const okReply = (): RebuildReply => ({
+    ok: true,
+    result: {
+      mesh: { positions: new Float32Array(0), indices: new Uint32Array(0), faceIds: new Uint32Array(0) },
+      edges: [], bbox: { min: [0, 0, 0], max: [1, 1, 1] },
+    } as unknown as RebuildResult,
+  });
+
+  /** A sidecar whose rebuilds of a document holding an import wait until
+   *  cancelled, the way a minute-long mesh build does; any other rebuild
+   *  answers at once. */
+  function slowBuild() {
+    const built: CadDocument[] = [];
+    let release: ((r: RebuildReply) => void) | null = null;
+    const backend = {
+      async init() {}, onStatus() { return () => {}; }, connected: true,
+      async importGeometry(_p: string, _f: string, onStarted?: (id: string) => void) {
+        onStarted?.("imp-1");
+        return { ok: true, name: "head", geom: "blob:head", solid: true };
+      },
+      rebuild(doc: CadDocument): Promise<RebuildReply> {
+        built.push(doc);
+        if (!doc.features.some((f) => f.type === "import")) return Promise.resolve(okReply());
+        return new Promise((r) => { release = r; });
+      },
+      async cancel() {
+        if (!release) return false;
+        release({ ok: false, error: { message: "cancelled", code: "cancelled" } });
+        release = null;
+        return true;
+      },
+    } as unknown as GeometryBackend;
+    return { backend, built, building: () => release !== null };
+  }
+
+  it("a Cancel during the build takes the import back out, as one", async () => {
+    const { backend, built, building } = slowBuild();
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    const { importModel, cancelledImportPath } = await import("./files");
+    const running = importModel(store, backend);
+    await vi.waitFor(() => expect(building()).toBe(true));
+    // one operation: the build carries the import's name, not "Rebuilding"
+    expect(store.busyState.label).toBe(t("file.import.busy", { name: "head.stl" }));
+    expect(await store.cancelBusy()).toBe(true);
+    await running;
+
+    expect(store.document.features, "the cancelled import stayed in the document").toEqual([]);
+    expect(store.canUndo, "the withdrawn import left an undo step behind").toBe(false);
+    expect(cancelledImportPath()).toBe(path);
+    expect(reported).toEqual([]); // the user stopped it; nothing to report
+    // the next build is of the document WITHOUT the import, so nothing loads it again
+    await vi.waitFor(() => expect(built.at(-1)?.features ?? null).toEqual([]));
+    await vi.waitFor(() => expect(store.buildState.building).toBe(false));
+    expect(store.buildState.errorMessage).toBeNull();
+  });
+
+  it("an edit made while it built survives the withdrawal, and its undo no longer brings the import back", async () => {
+    const { backend, built, building } = slowBuild();
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    const { importModel } = await import("./files");
+    const running = importModel(store, backend);
+    await vi.waitFor(() => expect(building()).toBe(true));
+    // queues a rebuild behind the import's: it must not build the import again
+    store.addFeature({ id: "box1", type: "box", length: 1, width: 1, height: 1 } as Feature);
+    const sent = built.length;
+    await store.cancelBusy();
+    await running;
+    await vi.waitFor(() => expect(store.buildState.building || store.busyState.active).toBe(false));
+    expect(built.length).toBeGreaterThan(sent); // the box was built...
+    expect(built.slice(sent).some((d) => d.features.some((f) => f.type === "import")),
+      "a rebuild after the Cancel built the cancelled import again").toBe(false);
+
+    expect(store.document.features.map((f) => f.id)).toEqual(["box1"]);
+    store.undo(); // undoes the box, and must not resurrect the import with it
+    expect(store.document.features).toEqual([]);
+    expect(store.canUndo).toBe(false);
+  });
+});
+
+describe("a cancelled rebuild is not a failure", () => {
+  it("keeps the last model and what was said about it, and changes no feature", async () => {
+    let release: ((r: RebuildReply) => void) | null = null;
+    const backend = {
+      async init() {}, onStatus() { return () => {}; }, connected: true,
+      rebuild: () => new Promise<RebuildReply>((r) => { release = r; }),
+      async cancel() {
+        release?.({ ok: false, error: { message: "cancelled", code: "cancelled" } });
+        return true;
+      },
+    } as unknown as GeometryBackend;
+    const box = { id: "box1", type: "box", length: 1, width: 1, height: 1 } as Feature;
+    const store = new DocumentStore(backend, { parameters: {}, features: [] });
+    store.addFeature(box);
+    await vi.waitFor(() => expect(release).not.toBeNull());
+    await store.cancelBusy();
+    await vi.waitFor(() => expect(store.buildState.building).toBe(false));
+
+    expect(store.buildState.cancelled).toBe(true);
+    // it used to settle as an error reading "cancelled" (the red status line)
+    expect(store.buildState.errorMessage).toBeNull();
+    expect(store.document.features).toEqual([box]); // not an import: left alone
   });
 });
 
