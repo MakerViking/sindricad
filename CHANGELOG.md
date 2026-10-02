@@ -20,6 +20,24 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Section remembers where you left it.** While the document stays open,
+  Section keeps the last axis, the cut's position and which side was flipped,
+  and offers that axis first, so one Enter puts the cut back where it was. A new
+  or reopened document starts fresh.
+
+- **Error messages stay up long enough to read.** An error or a warning now
+  stays up longer the longer it is, up to 30 seconds, and any message stays
+  while your pointer is on it. When a feature you just made fails, its message
+  stays until you close it. Show now selects the failing feature, flashes it in
+  the timeline and leaves the message up, and the Inspector shows the full
+  message for the selected feature, where you can select and copy it.
+
+- **Dragging in a sketch keeps up with the pointer better.** Each mouse move
+  does less work and reaches the screen sooner. Dimension badges and constraint
+  glyphs now move with the geometry instead of jumping when you let go, and the
+  armed tool's icon is part of the mouse pointer, so it no longer trails behind
+  it. Reported in [#17](https://github.com/MakerViking/sindricad/issues/17).
+
 - **Inch values show four decimals.** A length in inches now reads to
   0.0001", so 1/16" reads 0.0625 and 1/32" reads 0.0313, where they used to
   read 0.063 and 0.031. Millimetres and centimetres still show three.
@@ -30,6 +48,23 @@ This file starts on 2026-08-03. For anything before that, see the
   (DY), and off to its side gives its length. A horizontal or vertical line
   always gives its length. Pick, type a value and Enter still sets the length,
   and once you have typed a value, placing the label anywhere keeps it a length.
+
+- **Selected construction geometry shows that it is selected.** A selected
+  construction line, arc or circle draws solid in the selection colour instead
+  of staying dashed orange, and a selected construction point gets a square
+  around it.
+
+- **The hint at the top of the view no longer blocks clicks.** It is text only,
+  and a click on it now reaches whatever it covers, such as a dimension or a
+  line drawn under it.
+
+- **Snapping a line or arc end onto a point joins them.** When you snap an end
+  onto an existing point, I now add a real Coincident constraint, so the join
+  holds when you move, dimension or re-solve either side. This works on line and
+  arc ends, circle centres and projected edges, and on the closing corner of a
+  closed line chain. The other corners inside one chain of lines are placed on
+  each other but not constrained yet, so moving a single segment of a polyline
+  can still open those corners.
 
 - **Right-clicking a construction plane no longer cuts every visible body in
   one click.** Cut all bodies is now Split bodies with this plane…, which opens
@@ -233,6 +268,52 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Typing in the parameters panel while a tool is open no longer changes an
+  earlier feature.** The panel kept showing the last feature you clicked, so a
+  Start offset typed there while extruding a side face changed your first
+  extrude instead of the new one. While a modeling tool or a pick is running,
+  the panel is now read-only and says why, and starting a tool takes the last
+  feature out of it.
+
+- **The extrude preview no longer hides which areas you picked.** The selected
+  areas get an orange outline drawn on top, and the preview is fainter, with its
+  edges drawn, both when you create an extrude and when you edit one.
+
+- **Section closes with its document.** New, Open, Close and Recover now take
+  down the cut and its arrow, so the next document is never cut by a plane you
+  cannot see.
+
+- **Section's offset box sits beside the model instead of on the cut.** Its
+  buttons go with it, and flipping the side with F or typing an offset now shows
+  straight away instead of waiting for the mouse to move.
+
+- **The bug report button no longer covers Cancel.** It sat over Cancel, the
+  busy label and the failing-features badge in the bottom right corner, so a
+  click on Cancel could open a bug report instead of stopping the work.
+
+- **Sweeps and lofts no longer fail with "Standard_OutOfRange" when a line in
+  the profile overshoots the closed shape.** I ignore the loose ends now.
+
+- **Sketch geometry dimensioned to projected edges follows the body when it
+  changes size.** It used to jump to a mirror image on the far side of the edge.
+  If I cannot find a solution on the same side, I keep the sketch where it was
+  and say so, instead of moving it to the wrong side.
+
+- **A Combine of many small pieces no longer makes the engine look stopped.**
+  Checking each piece against the body could run for a minute and a half without
+  a sign of life, so the engine was restarted as if it had hung, on every retry.
+  It now reports progress through that check. As before, very small pieces that
+  do not touch the body, even by a few microns, are left out of the result.
+
+- **Cancel stops an import.** Cancelling while an imported file is still being
+  built now takes the import back out, and a cancelled rebuild is no longer
+  shown as an error.
+
+- **Move keeps a distance you type before picking an arrow.** It asks which
+  direction you mean, and pressing Enter with nothing moved now says so instead
+  of closing without a word. A click in empty space with nothing moved still
+  closes Move.
+
 - **Pressing Enter on a value you did not change no longer changes it.** Values
   are shown rounded, and opening one and pressing Enter used to save the
   rounded number: in inches a 1/16" sketch dimension became 0.063" (1.6002 mm
@@ -241,6 +322,81 @@ This file starts on 2026-08-03. For anything before that, see the
   its exact number, and so does a new dimension you accept without typing, so
   accepting the measured length of a line does not move it. A number you type
   is taken as typed, even when it is the number already shown.
+
+- **Dragging a rectangle that is constrained to the origin no longer drags the
+  origin along.** The origin slid away with the rectangle and could not be
+  picked at 0,0 again until the sketch was reopened. Now a fully dimensioned
+  rectangle stays put, and one with free sides stretches, with its corner held
+  on the origin.
+
+- **Trim lights up the piece it will remove, not the whole curve.** With Trim
+  picked, hovering a line lit the whole line red, which said the whole line was
+  about to go. Trim removes only the part between the nearest crossings, and
+  now only that part lights up, on lines, arcs, circles and the sides of a
+  rectangle. A curve nothing crosses still lights up whole, because Trim
+  deletes it whole.
+
+- **Trim cuts where a curve touches another one.** A tangent touch, like a belt
+  line meeting a pulley, was never a cut point, so Trim deleted the whole curve
+  instead of trimming it to the touch. A touch now counts as a crossing for Trim
+  and Extend. A line trimmed against an arc also ends exactly on the arc; it
+  could end up to 0.009 mm off it before.
+
+- **Trim keeps the constraints that still apply to what is left.** Trim treated
+  every piece it kept as a new curve, so every constraint on the old one was
+  deleted without a word: an offset link, a tangency, a horizontal. The pieces
+  now keep them. A constraint that can no longer apply, like a length on a line
+  that just got shorter or a Fix on an end that was cut off, is removed, and a
+  note says how many.
+
+- **The two halves of a Break can be pulled apart.** Break left the halves
+  joined at the cut, with nothing on screen to show the join or to delete, so
+  dragging the cut always moved both. In Select, Shift-drag from the cut toward
+  the half you want to move, or right-click the cut, pick Disconnect and drag,
+  and only that half's end leaves. Break now says how when it splits a curve.
+  Shift-drag does this anywhere the end of a line, arc or spline, or a sketch
+  point, shares a spot with another curve's end and no constraint holds it
+  there, not only at a cut: Shift-dragging a polyline corner now opens it. A
+  rectangle, polygon or slot corner, a centre or projected geometry is never the
+  part that moves. An end a Coincident constraint or a Fix holds stays put, and
+  that includes a line or arc end you snapped onto a point, which snapping now
+  joins with a Coincident: delete that constraint first (right-click its badge).
+
+- **Offset with Chain Selection takes the whole outline when construction lines
+  run to its corners.** They counted as part of the outline, so every corner
+  they reached stopped the chain. If three real curves meet and the chain has to
+  stop, I now say where, instead of quietly offsetting only the curve you
+  picked. Double-click chain select no longer picks up construction lines
+  either, unless you double-click a construction line.
+
+- **The distance you type after using the Offset right-click menu goes into the
+  box again.** Before, the menu took the typing away from the box, so the
+  distance went nowhere and Enter did nothing.
+
+- **Coincident can join two ends that sit a hair apart**, for example after a
+  trim: click the spot twice.
+
+- **Joins between points that already touch are no longer drawn amber.** A
+  Coincident between two ends at the same spot showed as if the sketch had too
+  many constraints.
+
+- **Fillet and Chamfer say why they can't use a rectangle, polygon or slot.**
+  These shapes are one piece, not separate lines, so the tools lit the whole
+  outline red and then ignored the click. Now they light only lines, and a click
+  on one of these shapes says what to do instead: draw the sides with the Line
+  tool. A click right next to a corner now also takes the line that is
+  highlighted, instead of doing nothing.
+
+- **A polygon's side count shows in the preview as you type it**, before you
+  click the tick. Typed radius, width and diameter values redraw straight away
+  too.
+
+- **Chaining a line that snaps almost vertical or horizontal no longer opens a
+  tiny gap at the joint behind it.**
+
+- **Fillet and Chamfer no longer flip the line they shorten**, so constraints on
+  its far end stay on the right point. A coincident on the corner you round off
+  goes away with the corner instead of pulling the profile out of shape.
 
 - **Separate says when it drops loose surfaces.** A surface with no thickness
   cannot become a body, and Separate dropped every one it found without a
@@ -399,6 +555,32 @@ This file starts on 2026-08-03. For anything before that, see the
   sketch still holds the view, and the keys do nothing while you are typing in
   a field. They are listed under `?`, and Help > Customize Shortcuts can move
   them to other keys.
+
+- **Drag several sketch entities at once.** Shift-click or drag a box to select
+  them, then drag any one of them and the whole selection moves together, as one
+  undo step. Geometry joined to the selection stretches along. If one of them is
+  held by a Fix, I refuse the whole drag and say why.
+
+- **Switch existing geometry between construction and normal.** Right-click a
+  selection and choose Make construction or Make normal, press X, or tick the
+  Construction switch in the Sketch Palette while geometry is selected. A note
+  says what changed. Making a closed outline construction removes its profile,
+  and making it normal brings the profile back.
+
+- **Lock Dimension is in the Constraints menu.** With geometry selected it locks
+  every measured dimension on it at its current value; with nothing selected it
+  waits for you to click geometry. It is also on the selection's right-click
+  menu, and a dimension's own right-click still has Lock. I skip any dimension
+  the sketch already implies, so a hand-drawn rectangle gets one width and one
+  height, not four lengths that over-define it.
+
+- **Edit a polygon after drawing it.** Double-click a polygon, or right-click it
+  and choose Edit polygon, to change its radius, number of sides and rotation. A
+  value driven by a parameter shows its formula there and stays bound unless you
+  change it.
+
+- **A polygon's centre and corners, and a slot's two end centres, are snap
+  points**, so Rotate and Move can pivot exactly on them.
 
 - **Merge into one solid fuses the solids of a body into one.** Right-click a
   body in the 3D view (a face of it, in Faces selection mode), or its row in
@@ -779,8 +961,8 @@ This file starts on 2026-08-03. For anything before that, see the
   pointing at.** Hovering a rectangle side with Collinear or Parallel lit all
   four sides red while the distance tool lit just the one, so a rectangle looked
   like a single indivisible thing. The click was always per side; only the
-  highlight was not. Fillet and Move still highlight the whole shape, because
-  that is what they act on.
+  highlight was not. Move still highlights the whole shape, because that is
+  what it acts on.
 
 - **Constraints on a rectangle's sides and corners are no longer refused as
   conflicts.** Midpoint, Symmetric and Collinear on a rectangle mostly came back
