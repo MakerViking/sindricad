@@ -1798,6 +1798,10 @@ button.finish:hover {
   z-index: 20;
   max-width: min(80%, 720px);
   animation: prompt-in var(--t-med) var(--ease);
+  /* Text only, over the canvas: a click on it belongs to whatever it covers.
+     A longer prompt wraps to more lines, and the select prompt's third line sat
+     on a dimension badge and swallowed the click meant for it. */
+  pointer-events: none;
 }
 .prompt::before {
   content: "";

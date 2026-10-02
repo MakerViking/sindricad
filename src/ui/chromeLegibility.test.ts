@@ -152,3 +152,16 @@ describe("the bug button keeps off the timeline's controls", () => {
     expect(strip).toContain("padding: 0 calc(var(--bug-btn-inset) + var(--bug-btn-size) + var(--s-3)) 0 var(--s-3)");
   });
 });
+
+// The prompt banner is text over the canvas. The select prompt grew a line
+// (Shift-click and box select) and that line sat on a dimension badge, so a
+// press on the badge landed on the banner and the line under the badge was
+// never selected (e2e/centre_rect_dim_e2e.cjs). A click on the banner belongs
+// to whatever it covers; the e2e is the hit test, this pins the rule.
+describe("the prompt banner never takes a click", () => {
+  it("lets pointer events through to what it covers", () => {
+    const prompt = rule(".prompt");
+    expect(prompt, "no .prompt rule").not.toBeNull();
+    expect(prompt).toMatch(/pointer-events:\s*none/);
+  });
+});
