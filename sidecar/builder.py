@@ -1905,12 +1905,6 @@ def _drop_debris(shape, debug=False):
         main, kept = parts[0], [parts[0]]
         for s in parts[1:]:
             tiny = abs(s.volume) < 1e-3 * abs(main.volume)
-            if tiny:
-                # Each distance is about 1.1 s against a detailed body, and a
-                # Combine of many small tools runs one per piece: 66 of them
-                # went 93 s without a heartbeat and the watchdog recycled the
-                # worker on every retry (field report 9728490b).
-                progress_tick(keep_index=True)
             if tiny and BRepExtrema_DistShapeShape(
                 s.wrapped, main.wrapped
             ).Value() > 1e-7:

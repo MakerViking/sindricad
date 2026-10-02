@@ -61,8 +61,9 @@ This file starts on 2026-08-03. For anything before that, see the
 - **Snapping a line or arc end onto a point joins them.** When you snap an end
   onto an existing point, I now add a real Coincident constraint, so the join
   holds when you move, dimension or re-solve either side. This works on line and
-  arc ends, circle centres and projected edges, and on the closing corner of a
-  closed line chain. The other corners inside one chain of lines are placed on
+  arc ends, circle centres and projected edges, a rectangle corner started on a
+  point, the start of a centre-point arc, and the closing corner of a closed line
+  chain. Pressing on a join's Coincident badge still drags the join. The other corners inside one chain of lines are placed on
   each other but not constrained yet, so moving a single segment of a polyline
   can still open those corners.
 
@@ -268,6 +269,14 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Fixed
 
+- **Break keeps the constraints of the curve it splits.** A Coincident at either
+  end, and Horizontal or Vertical, now carry over to the two halves instead of
+  disappearing. Length and Equal no longer apply to a half, so those are removed,
+  and I say how many.
+
+- **Pressing X in the middle of a drag no longer leaves an undo step that does
+  nothing.**
+
 - **Typing in the parameters panel while a tool is open no longer changes an
   earlier feature.** The panel kept showing the last feature you clicked, so a
   Start offset typed there while extruding a side face changed your first
@@ -298,12 +307,6 @@ This file starts on 2026-08-03. For anything before that, see the
   changes size.** It used to jump to a mirror image on the far side of the edge.
   If I cannot find a solution on the same side, I keep the sketch where it was
   and say so, instead of moving it to the wrong side.
-
-- **A Combine of many small pieces no longer makes the engine look stopped.**
-  Checking each piece against the body could run for a minute and a half without
-  a sign of life, so the engine was restarted as if it had hung, on every retry.
-  It now reports progress through that check. As before, very small pieces that
-  do not touch the body, even by a few microns, are left out of the result.
 
 - **Cancel stops an import.** Cancelling while an imported file is still being
   built now takes the import back out, and a cancelled rebuild is no longer
