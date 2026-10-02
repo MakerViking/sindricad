@@ -192,3 +192,47 @@ describe("X toggles the selection (2fc27cf1)", () => {
     expect(live.ent("a")?.construction).toBeUndefined();
   });
 });
+
+// Integration check 6b: X pressed while a drag is still held left an EMPTY undo
+// step. The toggle banked the pre-drag state at once (requestSolve), and the
+// release banked the very same pre-drag state again (bankDrag), so the second
+// undo changed nothing. The gesture is now one step whichever moment X lands in.
+describe("X pressed in the middle of a drag (integration 6b)", () => {
+  /** a selected line, then a drag of its end with X pressed at `xAt` */
+  async function dragWithX(xAt: "before the first move" | "mid-drag") {
+    const live = liveSketch([line("a", 0, 0, 20, 0), line("b", 0, 10, 20, 10)]);
+    live.click(10, 0); // select a
+    await live.settle();
+    // an earlier, unrelated step, so "one undo too many" has something to land on
+    live.s.entities = live.s.entities.map((e) => (e.id === "b" ? { ...e, y1: 12, y2: 12 } as ResolvedEntity : e));
+    live.s.requestSolve();
+    await live.settle();
+    const depth = live.s.history.depth;
+    live.press(20, 0); // a's end, button held from here
+    if (xAt === "before the first move") { live.s.setSelectedConstruction(); await live.settle(); }
+    live.move(22, 2);
+    await live.settle();
+    if (xAt === "mid-drag") { live.s.setSelectedConstruction(); await live.settle(); }
+    live.move(25, 5);
+    await live.settle();
+    live.release();
+    await live.settle();
+    return { live, depth };
+  }
+
+  for (const when of ["mid-drag", "before the first move"] as const) {
+    it(`${when}: the drag and the toggle land, as ONE undo step, and the next undo is the step before`, async () => {
+      const { live, depth } = await dragWithX(when);
+      expect(live.ent("a")).toMatchObject({ x1: 0, y1: 0, x2: expect.closeTo(25, 6), y2: expect.closeTo(5, 6), construction: true });
+      expect(live.s.history.depth, "the gesture banked an extra, empty undo step").toBe(depth + 1);
+
+      live.s.undoEdit();
+      await live.settle();
+      expect(live.ent("a"), "undo did not restore the line as it was before the gesture").toEqual(line("a", 0, 0, 20, 0));
+      // the NEXT undo reverts the step before the gesture, not nothing
+      live.s.undoEdit();
+      await live.settle();
+      expect(live.ent("b")).toEqual(line("b", 0, 10, 20, 10));
+    });
+  }
+});

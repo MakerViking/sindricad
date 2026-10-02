@@ -67,10 +67,20 @@ export class SketchHistory {
     return true;
   }
 
+  /** Record `s` as the state the next undo restores.
+   *
+   *  The same state twice in a row is an undo that changes nothing, so it is
+   *  recorded once. Two banks of one state happen when a gesture banks itself on
+   *  release (bankBefore, from the snapshot taken when it began) after an edit
+   *  made while it was held had already banked that same starting state:
+   *  pressing X mid-drag gave the drag an empty second undo (integration 6b).
+   *  The redo stack still goes either way: the sketch has changed. */
   private push(s: SketchSnapshot) {
+    this.redoStack.length = 0;
+    const top = this.undoStack[this.undoStack.length - 1];
+    if (top && same(top, s)) return;
     this.undoStack.push(s);
     if (this.undoStack.length > this.cap) this.undoStack.shift();
-    this.redoStack.length = 0;
   }
 
   /** The state to restore, or null when there is nothing to undo. Re-arms the
