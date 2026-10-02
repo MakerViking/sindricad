@@ -92,7 +92,7 @@ function mount(opts: { badges?: boolean; more?: SketchConstraint[] } = {}) {
     conflictIdx: new Set<number>(),
     overIdx: new Set<number>(),
     pendingDrag: null,
-    pendingPinIdx: null,
+    pendingPinIdxs: null,
     moveDrag: null,
     dragFrom: null,
     boxSel: null,

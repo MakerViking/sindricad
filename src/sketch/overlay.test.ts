@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import { curveObjects, SketchOverlay, ENDPOINT_COLOR, SELECT_COLOR, ORIGIN_COLOR } from "./overlay";
+import { SketchMode } from "./sketchMode";
 import { originAxisEntities } from "./origin";
 import { SketchPlane } from "./plane";
 import type { ResolvedEntity } from "./snap";
@@ -165,5 +166,82 @@ describe("curveObjects — a selected origin axis reads as a selection", () => {
     const objs = curveObjects([axis], plane, 0xffffff);
     expect(matColor(objs[0]!)).toBe(ORIGIN_COLOR);
     expect(dashedOf(objs[0]!)).toBe(false);
+  });
+});
+
+// Report 3f16187e: "A construction line appears as a brown dashed line, when I
+// click on it there is no visual indication that it has been selected." Two
+// causes, both needed for the symptom: constructionLine() ignored the pass
+// colour, and the selection orange (ff9d3b) is a few shades from the
+// construction orange (ffa64d) anyway, so passing the colour through alone
+// would still have looked like nothing happened. A selected construction curve
+// therefore draws SOLID; a construction point, which has no dash to lose, gets
+// the endpoint square around its "+".
+describe("curveObjects — a selected construction entity reads as a selection (3f16187e)", () => {
+  const plane = new SketchPlane("XY");
+  const CONSTRUCTION_COLOR = 0xffa64d; // overlay.ts
+  const dashedOf = (o: THREE.Object3D): boolean => {
+    const line = (o as THREE.Group).isGroup ? (o as THREE.Group).children[0]! : o;
+    return !!((line as THREE.Line).material as unknown as { dashed?: boolean }).dashed;
+  };
+  const cLine: ResolvedEntity = { type: "line", id: "c1", x1: 0, y1: 0, x2: 10, y2: 0, construction: true };
+  const cCircle: ResolvedEntity = { type: "circle", id: "c2", x: 20, y: 0, radius: 5, construction: true };
+  const cPoint: ResolvedEntity = { type: "point", id: "c3", x: 1, y: 1, construction: true };
+
+  it("a construction line is dashed construction orange at rest, SOLID in the pass colour selected", () => {
+    const rest = curveObjects([cLine], plane, 0xffffff)[0]!;
+    expect(matColor(rest)).toBe(CONSTRUCTION_COLOR);
+    expect(dashedOf(rest)).toBe(true);
+    const sel = curveObjects([cLine], plane, SELECT_COLOR, true)[0]!;
+    expect(matColor(sel)).toBe(SELECT_COLOR);
+    expect(dashedOf(sel), "a selected construction line still draws dashed, exactly as at rest").toBe(false);
+  });
+
+  it("a construction circle's curve and its centre mark both take the pass", () => {
+    const sel = curveObjects([cCircle], plane, SELECT_COLOR, true)[0] as THREE.Group;
+    expect(dashedOf(sel)).toBe(false);
+    expect(matColor(sel)).toBe(SELECT_COLOR);
+    const centre = sel.children[1] as THREE.LineSegments;
+    expect((centre.material as THREE.LineBasicMaterial).color.getHex()).toBe(SELECT_COLOR);
+  });
+
+  it("a construction point gains a frame when selected, since a + has no dash to lose", () => {
+    const rest = curveObjects([cPoint], plane, 0xffffff)[0]!;
+    expect((rest as THREE.Group).isGroup ?? false).toBe(false);
+    expect(matColor(rest)).toBe(CONSTRUCTION_COLOR);
+    const sel = curveObjects([cPoint], plane, SELECT_COLOR, true)[0] as THREE.Group;
+    expect(sel.isGroup, "a selected construction point draws exactly as it does at rest").toBe(true);
+    expect(sel.children).toHaveLength(2);
+    for (const c of sel.children) {
+      expect(((c as THREE.Line).material as THREE.LineBasicMaterial).color.getHex()).toBe(SELECT_COLOR);
+    }
+  });
+
+  it("the other emphasis passes show on construction too (modify hover red, first-pick blue)", () => {
+    for (const pass of [0xff5555, 0x33aaff]) {
+      const o = curveObjects([cLine], plane, pass, true)[0]!;
+      expect(matColor(o)).toBe(pass);
+      expect(dashedOf(o)).toBe(false);
+    }
+  });
+
+  it("the sketch's own selection pass draws it that way", () => {
+    // activeCurves is the call refreshActive makes after a click selects
+    // something; this is the colour the user actually gets.
+    const s = Object.create(SketchMode.prototype) as unknown as {
+      entities: ResolvedEntity[]; selected: Set<string>; plane: SketchPlane; dimsVisible: boolean;
+      conflict: boolean; lastDof: number; endpointDotRadius(): number;
+      activeCurves(derived: ResolvedEntity[]): THREE.Object3D[];
+    };
+    Object.assign(s, {
+      entities: [cLine], selected: new Set<string>(), plane, dimsVisible: false,
+      conflict: false, lastDof: -1, endpointDotRadius: () => 0.3,
+    });
+    // the entity's LAST object is its curve; the resting pass puts endpoint dots first
+    const curveOf = () => s.activeCurves([]).filter((o) => o.userData.entityId === "c1").at(-1)!;
+    expect(dashedOf(curveOf())).toBe(true);
+    s.selected.add("c1");
+    expect(matColor(curveOf())).toBe(SELECT_COLOR);
+    expect(dashedOf(curveOf())).toBe(false);
   });
 });

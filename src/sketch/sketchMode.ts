@@ -30,10 +30,10 @@ import { isPlainNumber, parseField, dimValueOk } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
-import { compileAndSolve, constraintIndexOf, soleDimEntity } from "./sketchSolve";
+import { compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
-import { applyDrivingDimsDirect, governingDimAt, lockDimFor, planDimEdit } from "./directDims";
+import { applyDrivingDimsDirect, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
 import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
 import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, type SnapKind, type SnapCandidate } from "./snap";
@@ -42,6 +42,7 @@ import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
 import { detectRegions, entityPolyline, EPS } from "./region";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
+import { keyHint } from "../input/shortcuts";
 import { setPrompt } from "../ui/prompt";
 import { t } from "../i18n";
 import { toast } from "../ui/toast";
@@ -95,6 +96,7 @@ export type SketchTool =
   | "midpoint"
   | "collinear"
   | "fix"
+  | "lockDimension"
   | "patternRect"
   | "patternCircular"
   | "hexHoles"
@@ -119,6 +121,7 @@ const MODIFY_TOOLS = new Set<SketchTool>([
   "break",
   "mirror",
   "dimension",
+  "lockDimension",
   ...CONSTRAINT_TOOLS,
 ]);
 
@@ -263,11 +266,12 @@ export class SketchMode {
   private history = new SketchHistory();
   private dragRefusedToast = false; // one refusal toast per drag gesture (fixed point, or refused geometry)
   private pendingDrag: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
-  /** A BODY drag has a solve waiting for this entity index. Its pins are read
-   *  from the entity in pump(), not stored here: several pointermove frames can
-   *  land while one solve is in flight, and a position captured at queue time
-   *  would anchor the entity where the cursor USED to be. */
-  private pendingPinIdx: number | null = null;
+  /** A BODY drag has a solve waiting for these entity indices (one, or a whole
+   *  dragged selection). Their pins are read from the entities in pump(), not
+   *  stored here: several pointermove frames can land while one solve is in
+   *  flight, and a position captured at queue time would anchor the entities
+   *  where the cursor USED to be. */
+  private pendingPinIdxs: number[] | null = null;
   /** This frame has had its drag step; later moves wait on the viewport's next
    *  pre-draw (see queueDragFrame). */
   private dragFrameQueued = false;
@@ -283,6 +287,8 @@ export class SketchMode {
   // threshold) — a plain click stays free and falls through to selection on up.
   private moveDrag: {
     idx: number;
+    /** what the drag moves: [idx], or the whole selection idx belongs to */
+    group: number[];
     startClient: { x: number; y: number };
     last: THREE.Vector2;
     started: boolean;
@@ -667,7 +673,7 @@ export class SketchMode {
     this.dragFrom = null;
     this.dragSnapshot = null;
     this.pendingDrag = null;
-    this.pendingPinIdx = null;
+    this.pendingPinIdxs = null;
     this.dragRelease = null;
     this.moveDrag = null;
     this.dim.hide();
@@ -729,7 +735,7 @@ export class SketchMode {
     this.filletFirst = null;
     this.dragFrom = null;
     this.pendingDrag = null;
-    this.pendingPinIdx = null;
+    this.pendingPinIdxs = null;
     this.dragRelease = null;
     this.moveDrag = null;
     this.resetDimPicks();
@@ -833,6 +839,58 @@ export class SketchMode {
   }
   setConstruction(on: boolean) {
     this.constructionMode = on;
+    // With geometry selected the switch converts it as well, the way the
+    // Construction toggle does in mainstream MCAD (report 2fc27cf1: "I cannot
+    // see how to switch a line from construction to line"). It still sets the
+    // mode too, so the box never disagrees with what the next line will be.
+    if (this.active && this.selected.size) this.setSelectedConstruction(on);
+  }
+
+  /** Make the selection construction geometry, or make it normal again. The
+   *  flag has always been stored on every entity type, but only the creation
+   *  sites ever set it, so a line drawn the wrong way could only be deleted
+   *  and redrawn. `on` omitted flips the selection's majority state, which is
+   *  what the right-click item and the shortcut offer.
+   *
+   *  Origin geometry is skipped: it is reference, and always construction.
+   *  Normal drops the key rather than writing `false` (byte stability, like
+   *  every optional entity field). afterModify re-detects the profile regions,
+   *  which is the point: construction never forms one.
+   *
+   *  Returns false when nothing was selected that could change, so the caller
+   *  can say why instead of appearing to do nothing. */
+  setSelectedConstruction(on?: boolean): boolean {
+    if (!this.active || !this.constructionTargets().length) return false;
+    const make = on ?? !this.selectionMostlyConstruction();
+    let changed = 0;
+    this.entities = this.entities.map((e) => {
+      if (!this.selected.has(e.id) || isOriginGeometry(e.id) || !!e.construction === make) return e;
+      changed++;
+      if (make) return { ...e, construction: true };
+      const { construction: _dropped, ...rest } = e;
+      return rest as ResolvedEntity;
+    });
+    if (!changed) return true;
+    this.afterModify();
+    // Said, because it is not seen: the selection stays, and a selected entity
+    // draws solid in the selection colour whichever kind it is, so the dashes
+    // only come or go once it is deselected.
+    toast(make
+      ? t("sketch.constructionToggle.construction", { count: changed })
+      : t("sketch.constructionToggle.normal", { count: changed }));
+    return true;
+  }
+
+  /** The selected entities whose construction flag can change. */
+  private constructionTargets(): ResolvedEntity[] {
+    return this.entities.filter((e) => this.selected.has(e.id) && !isOriginGeometry(e.id));
+  }
+
+  /** Is most of the selection construction already? Decides which way the
+   *  toggle goes, and so what the right-click item calls itself. */
+  private selectionMostlyConstruction(): boolean {
+    const sel = this.constructionTargets();
+    return sel.filter((e) => e.construction).length * 2 > sel.length;
   }
   setReferenceDim(on: boolean) {
     this.referenceMode = on;
@@ -1039,6 +1097,77 @@ export class SketchMode {
       this.refreshActive();
       this.onState?.();
     };
+  }
+
+  /** Constraints > Lock Dimension (report d3338e3a: "lock dimension should
+   *  possibly be in the constraints dropdown as well ... keep it on the right
+   *  click as well but it is such an important constraint it should be
+   *  obvious"). Selection first: with geometry selected it locks that
+   *  geometry's measured dimensions and is done. With nothing selected it arms,
+   *  and every entity clicked has its measured dimensions locked. */
+  lockDimensionCommand() {
+    if (!this.active) return;
+    if (this.selected.size) {
+      this.lockMeasuredDims(this.selected);
+      return;
+    }
+    this.setTool("lockDimension");
+  }
+
+  /** The armed Lock Dimension tool's click: lock the measured dimensions of the
+   *  entity under the cursor. */
+  private lockDimensionClick(p: THREE.Vector2) {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    const e = idx >= 0 ? this.entities[idx] : undefined;
+    if (!e || isOriginGeometry(e.id)) return;
+    this.lockMeasuredDims(new Set([e.id]));
+  }
+
+  private toastLocked(n: number) {
+    toast(n ? t("sketch.lockDims.locked", { count: n }) : t("sketch.lockDims.nothing"));
+  }
+
+  /** Lock every measured dimension on these entities, as ONE undo step. The
+   *  same act as a badge's own Lock (entityDimLock), sized to a selection,
+   *  through the same rule (directDims.measuredLocks): the values are what the
+   *  geometry already measures, so nothing should move, which is also why no
+   *  mover bias is armed. On trial as a set, the way a fillet's constraints
+   *  are, so a sketch something else already holds gets them all withdrawn
+   *  with a reason rather than painted red; and the ones the rest of the sketch
+   *  already implies are dropped (SketchTrial.dropRedundant), so the toast that
+   *  counts them is only said once the solve has judged them. */
+  private lockMeasuredDims(ids: ReadonlySet<string>) {
+    const locks = this.entities
+      .filter((e) => ids.has(e.id) && !isOriginGeometry(e.id))
+      .flatMap((e) => measuredLocks(this.constraints, e));
+    if (!locks.length) {
+      this.toastLocked(0);
+      return;
+    }
+    for (const c of locks) if (isDimConstraint(c) && !c.id) c.id = newConstraintId();
+    const before = this.constraints;
+    this.constraints = [...before, ...locks];
+    // A Lock still waiting for its solve (a second click landed while the first
+    // was being solved) is folded into this one, so both are judged and the
+    // toast counts both.
+    const waiting = this.trial?.dropRedundant ? this.trial : null;
+    const cons = [...(waiting?.cons ?? []), ...locks];
+    this.trial = {
+      cons,
+      restore: waiting?.restore ?? before,
+      msg: (blamed, solved) => dimConflictMsg(cons[0]!, blamed, solved),
+      dropRedundant: (kept) => this.toastLocked(kept.length),
+    };
+    this.requestSolve();
+    if (this.solverDead) {
+      // see setDrivingDimension; and with no solve to judge them, all of them
+      // are what was locked
+      this.trial = null;
+      this.applyDrivingDimsDirectly();
+      this.toastLocked(cons.length);
+    }
+    this.refreshActive();
+    this.onState?.();
   }
 
   /** "Lock dimension" on a reference (driven) dim: keep the same dimension, at
@@ -1653,6 +1782,15 @@ export class SketchMode {
       this.trimClick(raw);
       return;
     }
+    // Lock Dimension picks an entity, so it takes the raw cursor for the same
+    // reason: a grid snap can pull the point off the curve it was aimed at.
+    if (this.tool === "lockDimension") {
+      const raw = this.planePoint(e);
+      if (!raw) return;
+      e.preventDefault();
+      this.lockDimensionClick(raw);
+      return;
+    }
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     e.preventDefault();
@@ -1729,6 +1867,7 @@ export class SketchMode {
           last: raw.clone(),
           started: false,
           shift: e.shiftKey,
+          group: this.dragGroup(teIdx),
         };
         this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
@@ -1745,6 +1884,7 @@ export class SketchMode {
           last: raw.clone(),
           started: false,
           shift: e.shiftKey,
+          group: this.dragGroup(idx),
         };
         this.dragRefusedToast = false; // one refusal toast per GESTURE, not per session
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
@@ -3019,9 +3159,10 @@ export class SketchMode {
         if (!md.started) {
           const dx = e.clientX - md.startClient.x, dy = e.clientY - md.startClient.y;
           if (dx * dx + dy * dy < 16) return; // <4px: still a click, not a move
-          // projected geometry never body-drags (fixed reference); disarm so a
-          // plain click still selects it in endDrag()
-          if (this.guardProjected(this.entities[md.idx])) {
+          // projected geometry never body-drags (fixed reference), and neither
+          // does a selection holding some; disarm so a plain click still
+          // selects it in endDrag()
+          if (md.group.some((i) => this.guardProjected(this.entities[i]))) {
             this.moveDrag = null;
             return;
           }
@@ -3032,7 +3173,7 @@ export class SketchMode {
           // `fix` is positionless, so the settle re-pins the point at wherever
           // the drag left it and reports success (report d0b008cb). Refuse in
           // the arming branch, before anything has moved.
-          if (bodyDragBlocked(this.entities, md.idx, this.constraints)) {
+          if (bodyDragBlocked(this.entities, md.group, this.constraints)) {
             this.moveDrag = null;
             if (!this.dragRefusedToast) {
               this.dragRefusedToast = true;
@@ -3046,7 +3187,7 @@ export class SketchMode {
         }
         const dx = raw.x - md.last.x, dy = raw.y - md.last.y;
         md.last.copy(raw);
-        const next = bodyDragFrame(this.entities, md.idx, dx, dy, this.constraints);
+        const next = bodyDragFrame(this.entities, md.group, dx, dy, this.constraints);
         if (!next) { this.moveDrag = null; return; } // constraints changed mid-gesture
         this.entities = next;
         // ...and re-satisfy the constraints AROUND it on this frame, not on
@@ -3055,7 +3196,7 @@ export class SketchMode {
         // neighbours' endpoints arithmetically and the first solve was endDrag's.
         // The redraw rides the same drag step (queueBodyDrag): at most twice a
         // frame, not once per move.
-        this.queueBodyDrag(md.idx);
+        this.queueBodyDrag(md.group);
         return;
       }
       const hit = this.snapAt(e.clientX, e.clientY);
@@ -3212,7 +3353,7 @@ export class SketchMode {
         this.dragFrom = null;
         this.moveDrag = null;
         this.pendingDrag = null;
-        this.pendingPinIdx = null;
+        this.pendingPinIdxs = null;
         this.dragRelease = null;
         this.conflict = false;
         this.refreshActive();
@@ -3651,12 +3792,29 @@ export class SketchMode {
     // independently failed to find them.
     const selEnts = this.entities.filter((e) => this.selected.has(e.id));
     const cons = applicableConstraints(selEnts);
+    // Lock and the construction toggle are offered here for the same reason the
+    // constraints are: this menu is where a selection's actions get found
+    // (reports d3338e3a and 2fc27cf1).
+    const lockable = selEnts.some((e) => !isOriginGeometry(e.id) && measuredLocks(this.constraints, e).length > 0);
+    const convertible = this.constructionTargets().length > 0;
+    const toNormal = convertible && this.selectionMostlyConstruction();
+    const constructionKey = keyHint("toggle-construction");
     const items: CtxItem[] = [
       ...cons.map((tool) => ({
         label: constraintLabel(tool),
         onClick: () => this.applyConstraintToSelection(tool, selEnts),
       })),
-      ...(cons.length ? [{ separator: true, label: "" } as CtxItem] : []),
+      ...(lockable
+        ? [{ label: t("sketch.menu.lockDimensions"), onClick: () => this.lockMeasuredDims(this.selected) }]
+        : []),
+      ...(cons.length || lockable ? [{ separator: true, label: "" } as CtxItem] : []),
+      ...(convertible
+        ? [{
+          label: toNormal ? t("sketch.menu.makeNormal") : t("sketch.menu.makeConstruction"),
+          ...(constructionKey ? { shortcut: constructionKey } : {}),
+          onClick: () => { this.setSelectedConstruction(!toNormal); },
+        }]
+        : []),
       ...(linked
         ? [{ label: linked > 1 ? t("sketch.menu.breakLinkCount", { count: linked }) : t("sketch.menu.breakLink"), onClick: () => this.breakSelectedLinks() }]
         : []),
@@ -4500,21 +4658,23 @@ export class SketchMode {
     if (this.solveBusy || this.solverDead) return;
     this.solveBusy = true;
     try {
-      while (this.active && (this.pendingDrag || this.pendingPinIdx !== null || this.solveDirty)) {
-        if (this.pendingDrag || this.pendingPinIdx !== null) {
+      while (this.active && (this.pendingDrag || this.pendingPinIdxs !== null || this.solveDirty)) {
+        if (this.pendingDrag || this.pendingPinIdxs !== null) {
           // no entityVersion guard here: a drag never adds/removes entities, so
           // the entity list can't change underneath this solve (unlike a draw).
           const d = this.pendingDrag;
-          // A BODY drag has already moved its entity; what it needs from the
-          // solver is everything AROUND that entity brought back into
-          // agreement, with the entity itself held where the cursor put it. Its
-          // pins are read HERE so they are the entity's current corners — more
+          // A BODY drag has already moved its entities; what it needs from the
+          // solver is everything AROUND them brought back into agreement, with
+          // the entities themselves held where the cursor put them. Their pins
+          // are read HERE so they are the entities' current corners — more
           // pointermove frames may have landed while the previous solve ran.
-          const forBody = this.pendingPinIdx !== null;
-          const pinEnt = this.pendingPinIdx === null ? undefined : this.entities[this.pendingPinIdx];
+          const forBody = this.pendingPinIdxs !== null;
+          const pinEnts = (this.pendingPinIdxs ?? []).flatMap((i) => this.entities[i] ?? []);
           this.pendingDrag = null;
-          this.pendingPinIdx = null;
-          const pins = pinEnt ? attachmentPoints(pinEnt).map((q) => ({ x: q.x, y: q.y })) : undefined;
+          this.pendingPinIdxs = null;
+          const pins = pinEnts.length
+            ? pinEnts.flatMap((e) => attachmentPoints(e).map((q) => ({ x: q.x, y: q.y })))
+            : undefined;
           const r = await compileAndSolve(this.entities, this.constraints, d ?? undefined, undefined, pins);
           // The gesture this result belongs to ended, was cancelled, or was
           // replaced mid-solve: drop the result (and its toast) rather than
@@ -4565,7 +4725,10 @@ export class SketchMode {
           this.pendingBias = null;
           if (this.constraints.length === 0) { this.lastDof = -1; this.conflict = false; continue; }
           const ver = this.entityVersion;
-          const r = await compileAndSolve(this.entities, this.constraints, undefined, bias ?? undefined);
+          // a copy, so the indices the solve reports still name the constraints
+          // it saw if the live list is edited while it runs
+          const solved = [...this.constraints];
+          const r = await compileAndSolve(this.entities, solved, undefined, bias ?? undefined);
           if (!this.active) break;
           // geometry changed mid-solve (a draw committed): discard, re-solve.
           // Re-arm the bias with it — this result never reached the document, so
@@ -4591,7 +4754,31 @@ export class SketchMode {
             this.solveDirty = true; // re-solve without them, back to the last good state
             continue;
           }
-          this.trial = null;
+          // A bulk Lock keeps only what is not already implied. On a hand-drawn
+          // rectangle (four lines, H/V on each) the far sides' lengths follow
+          // from the near sides', and locking all four left two amber while
+          // the toast said four were locked. Judged only by a solve that SAW
+          // every member: one set while this solve ran is the next one's. And
+          // judged until a solve names none of them, because planegcs can name
+          // only part of a redundant set at a time (a parallelogram's two
+          // implied sides came back one per solve).
+          const trial = this.trial;
+          if (!trial?.dropRedundant) {
+            this.trial = null;
+          } else if (trial.cons.every((c) => solved.includes(c))) {
+            const over = parseConflictIdx(r.overDefined);
+            const implied = new Set(trial.cons.filter((c) => over.has(solved.indexOf(c))));
+            if (implied.size) {
+              const rest = trial.cons.filter((c) => !implied.has(c));
+              this.constraints = this.constraints.filter((c) => !implied.has(c));
+              this.trial = rest.length ? { ...trial, cons: rest } : null;
+              if (!rest.length) trial.dropRedundant([]);
+              this.solveDirty = true; // re-solve without them
+              continue;
+            }
+            this.trial = null;
+            trial.dropRedundant(trial.cons);
+          }
           this.conflictIdx = parseConflictIdx(r.conflicts);
           this.overIdx = parseConflictIdx(r.overDefined);
           if (!this.conflict) this.entities = r.entities; // keep last good on conflict
@@ -4671,8 +4858,8 @@ export class SketchMode {
   }
 
   /** Queue the BODY drag's settle for this frame: re-satisfy the constraints
-   *  with the dragged entity held where the translate just put it. Through the
-   *  same in-flight lock as queueDrag, and deliberately NOT through
+   *  with the dragged entities held where the translate just put them. Through
+   *  the same in-flight lock as queueDrag, and deliberately NOT through
    *  requestSolve() — that banks an undo step, and a drag is ONE step (banked by
    *  endDrag), not one per pointermove.
    *
@@ -4681,10 +4868,20 @@ export class SketchMode {
    *  it and nothing can be pinned — the solve would re-satisfy constraints that
    *  never went out of agreement, at the price of a full solve every frame.
    *  So does every body once the solver is gone (solverDead): pump() would
-   *  return at once, and the frame would draw nothing until the release. */
-  private queueBodyDrag(idx: number) {
-    const e = this.entities[idx];
-    if (e && attachmentPoints(e).length > 0 && !this.solverDead) this.pendingPinIdx = idx;
+   *  return at once, and the frame would draw nothing until the release.
+   *
+   *  So does a selection with more pins than the solver's anchor budget: every
+   *  pin is an anchor, and past a few hundred of them the wasm heap can abort,
+   *  which pump() reads as a dead solver for the rest of the session (measured:
+   *  200 lines parallel to one, all dragged, 402 pins, Aborted(OOM); see
+   *  MAX_BIAS_ANCHORS). Such a drag translates frame by frame and settles once,
+   *  on release. */
+  private queueBodyDrag(group: number[]) {
+    const pins = group.reduce((n, i) => {
+      const e = this.entities[i];
+      return n + (e ? attachmentPoints(e).length : 0);
+    }, 0);
+    if (pins > 0 && pins <= MAX_BIAS_ANCHORS && !this.solverDead) this.pendingPinIdxs = group;
     else this.bodyDragUndrawn = true;
     this.queueDragFrame();
   }
@@ -4717,8 +4914,26 @@ export class SketchMode {
    *  only the redraw for a body drag the solver holds nothing of. */
   private dragStep() {
     if (!this.active) return;
-    if (this.pendingDrag || this.pendingPinIdx !== null) void this.pump();
+    if (this.pendingDrag || this.pendingPinIdxs !== null) void this.pump();
     else if (this.bodyDragUndrawn && this.moveDrag?.started) this.refreshDragGeometry();
+  }
+
+  /** What a body drag grabbed at `idx` moves: the whole selection when the
+   *  grabbed entity is part of a multi-selection (report 3f16187e: "select
+   *  multiple sketch lines / shapes and drag them somewhere together"), and
+   *  that one entity otherwise. The origin is not the user's geometry and never
+   *  moves, so a selection that includes it drags without it. GRABBING the
+   *  origin stays a drag of the origin alone, which the arming branch refuses
+   *  with its toast: a Shift-clicked axis is still the thing under the cursor,
+   *  and dragging it must not quietly move the rest of the selection. */
+  private dragGroup(idx: number): number[] {
+    const grabbed = this.entities[idx];
+    if (!grabbed || isOriginGeometry(grabbed.id) || this.selected.size < 2 || !this.selected.has(grabbed.id)) return [idx];
+    const out: number[] = [];
+    this.entities.forEach((e, i) => {
+      if (this.selected.has(e.id) && !isOriginGeometry(e.id)) out.push(i);
+    });
+    return out.length ? out : [idx];
   }
 
   /** The marquee rectangle as preview geometry. A WINDOW box (drag rightwards)
@@ -4798,7 +5013,7 @@ export class SketchMode {
     if (this.moveDrag) {
       const md = this.moveDrag;
       this.moveDrag = null;
-      this.pendingPinIdx = null; // the release solve below supersedes any queued frame
+      this.pendingPinIdxs = null; // the release solve below supersedes any queued frame
       if (pointerId != null) {
         try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
       }
@@ -4835,7 +5050,7 @@ export class SketchMode {
     }
     this.dragFrom = null;
     this.pendingDrag = null;
-    this.pendingPinIdx = null;
+    this.pendingPinIdxs = null;
     if (pointerId != null) {
       try { this.viewport.domElement.releasePointerCapture(pointerId); } catch { /* not captured */ }
     }

@@ -166,6 +166,11 @@ export interface SketchTrial {
   cons: SketchConstraint[];
   msg: string | ((blamed: Set<number>, cons: SketchConstraint[]) => string);
   restore?: SketchConstraint[];
+  /** Set for constraints the user did not ask for one by one (Lock Dimension
+   *  on a selection adds one per measured badge): the members the solve reports
+   *  REDUNDANT, already implied by the rest of the sketch, are dropped instead
+   *  of staying in it painted amber, and this hears which ones were kept. */
+  dropRedundant?: (kept: SketchConstraint[]) => void;
 }
 
 /** Undo a refused trial: the constraint list to go back to, and the one thing

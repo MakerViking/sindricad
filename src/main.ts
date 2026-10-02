@@ -1344,6 +1344,7 @@ const SKETCH_PROMPTS: Record<string, string> = {
   collinear: "sketch.prompt.collinear",
   symmetric: "sketch.prompt.symmetric",
   fix: "sketch.prompt.fix",
+  lockDimension: "sketch.prompt.lockDimension",
 };
 
 // --- sketch mode state -> UI (ribbon context, palette, prompt) ---
@@ -1601,6 +1602,20 @@ function handleAction(action: string) {
   if (action === "select-chain") {
     if (!sketch.active) setStatus(t("status.enterSketchToSelect"), "");
     else if (!sketch.growSelectionToChains()) setStatus(t("status.chainNothingToGrow"), "");
+    return;
+  }
+  // Construction <-> normal for the selection (X, report 2fc27cf1). Its own line
+  // for the same reason as select-chain: it sets no tool.
+  if (action === "toggle-construction") {
+    if (!sketch.active) setStatus(t("status.enterSketchToModify"), "");
+    else if (!sketch.setSelectedConstruction()) setStatus(t("status.constructionNothingSelected"), "");
+    return;
+  }
+  // Lock Dimension (report d3338e3a) acts on the selection when there is one,
+  // which the SKETCH_MODIFY route below would clear before it got there.
+  if (action === "lockDimension") {
+    if (sketch.active) sketch.lockDimensionCommand();
+    else setStatus(t("status.enterSketchToModify"), "");
     return;
   }
   // "Rect Pattern" / "Circular Pat." sit in the SKETCH ribbon's PATTERN group and

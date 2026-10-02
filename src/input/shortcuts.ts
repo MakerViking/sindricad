@@ -67,6 +67,9 @@ export const SHORTCUTS: Shortcut[] = [
   // this is double-clicking an entity; this row is how anyone finds out it
   // exists (field report #15).
   { id: "s.chain", key: "g", action: "select-chain", context: "sketch", label: t("shortcut.s.chain") },
+  // X flips the selection between construction and normal geometry (report
+  // 2fc27cf1), the key mainstream MCAD uses for it. Free in both contexts.
+  { id: "s.construction", key: "x", action: "toggle-construction", context: "sketch", label: t("shortcut.s.construction") },
   // finish-and-go: E/Q inside a sketch commit it and start the 3D tool
   // (handleAction already finishes an active sketch before any 3D command)
   { id: "s.extrude", key: "e", action: "extrude", context: "sketch", label: t("shortcut.s.extrude") },

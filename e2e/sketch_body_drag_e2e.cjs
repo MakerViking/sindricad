@@ -11,6 +11,10 @@
 //  c0bf7020 "Tangency is ignored while I drag a side": the fillet joints tore
 //           open for the whole gesture and snapped back on release.
 //  41dc3246 the same, plus: an arc's centre could not be grabbed.
+//  69d5231f a rectangle made coincident with the origin slid away when an edge
+//           was dragged, and the origin could not be picked afterwards: the
+//           drag had carried the ORIGIN along with it.
+//  3f16187e "select multiple sketch lines / shapes and drag them together".
 //
 // The mid-drag assertion is why this is done in a browser at all. Everything
 // here is observable AFTER the button comes up in either version of the code,
@@ -79,6 +83,35 @@ const PROFILE = {
       { type: "tangent2", a: "e10", b: "e13" },
       { type: "tangent2", a: "e13", b: "e8" },
     ],
+  }],
+};
+
+// 69d5231f's own sketch, as saved: a 60x50 rectangle, both sides dimensioned,
+// its top-left corner coincident with the origin. Saved off the origin (the
+// drag had moved it); opening the sketch puts it back.
+const ORIGIN_RECT = {
+  version: 5, units: "mm", parameters: {},
+  features: [{
+    id: "f1", type: "sketch", plane: "XY",
+    entities: [{ x: 66.26166937919658, y: -34.80045118356664, id: "e0", type: "rectangle", width: 60, height: 50 }],
+    constraints: [
+      { id: "c1", line: "e0~3", type: "distance", value: 50 },
+      { id: "c2", line: "e0~0", type: "distance", value: 60 },
+      { e1: "__origin__", e2: "e0", p1: 0, p2: 3, type: "coincident" },
+    ],
+  }],
+};
+
+// Two lines that share nothing, for dragging a selection.
+const TWO_LINES = {
+  version: 5, units: "mm", parameters: {},
+  features: [{
+    id: "f1", type: "sketch", plane: "XY",
+    entities: [
+      { type: "line", id: "a", x1: 10, y1: 10, x2: 40, y2: 10 },
+      { type: "line", id: "b", x1: 10, y1: 30, x2: 40, y2: 45 },
+    ],
+    constraints: [],
   }],
 };
 
@@ -358,6 +391,93 @@ const WORST_TANGENCY = `(() => {
   check(centreDrag.out !== null && Math.hypot(centreDrag.out.x - cc.x, centreDrag.out.y - cc.y) < 5,
     "...from the centre itself",
     `grabbed=${JSON.stringify(centreDrag.out)} centre=(${cc.x.toFixed(3)}, ${cc.y.toFixed(3)})`);
+
+  // ===== 69d5231f: the origin stays put ================================
+  console.log("\n=== an edge drag never carries the origin (69d5231f) ===");
+  await openSketch(ORIGIN_RECT);
+  const where = () => page.evaluate(() => {
+    const s = window.__sindri.sketch;
+    const r = s.entities.find((e) => e.id === "e0"), o = s.entities.find((e) => e.id === "__origin__");
+    return { tl: { x: r.x - r.width / 2, y: r.y + r.height / 2 }, w: r.width, h: r.height, o: { x: o.x, y: o.y } };
+  });
+  const opened = await where();
+  check(Math.hypot(opened.tl.x, opened.tl.y) < 1e-4, "opening the sketch puts the corner back on the origin",
+    JSON.stringify(opened.tl));
+  // the RIGHT edge, dragged in and down: at this framing the bottom edge sits
+  // under the timeline and the Sketch Palette covers the canvas up and left
+  const edge = await drag(await screenOf(60, -10), await screenOf(48, -16));
+  check(edge.reachable && edge.armed.body, "the edge press armed a BODY drag", JSON.stringify(edge.armed));
+  const dragged = await where();
+  check(Math.hypot(dragged.o.x, dragged.o.y) < 1e-9, "the origin is still at 0,0", JSON.stringify(dragged.o));
+  check(Math.hypot(dragged.tl.x, dragged.tl.y) < 1e-3 && Math.abs(dragged.w - 60) < 1e-3 && Math.abs(dragged.h - 50) < 1e-3,
+    "...and so is the dimensioned rectangle's corner, at 60 x 50",
+    `tl=(${dragged.tl.x.toFixed(4)}, ${dragged.tl.y.toFixed(4)}) ${dragged.w.toFixed(3)} x ${dragged.h.toFixed(3)}`);
+  // the report's second half: Coincident's first click on the origin
+  await page.evaluate(() => window.__sindri.sketch.setTool("coincident"));
+  const o0 = await screenOf(0, 0);
+  await page.mouse.click(o0.x, o0.y);
+  await page.waitForTimeout(300);
+  const heldN = await page.evaluate(() => window.__sindri.overlay.visiblePendingCount());
+  check(heldN === 1, "Coincident can still pick the origin at 0,0 afterwards", `held markers=${heldN}`);
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => window.__sindri.sketch.setTool("select"));
+
+  // ===== 3f16187e: a selection drags as one =============================
+  console.log("\n=== a Shift-selected pair drags together (3f16187e) ===");
+  await openSketch(TWO_LINES);
+  const picked = await page.evaluate(([a, b]) => {
+    const s = window.__sindri, sk = s.sketch, cv = s.viewport.domElement;
+    const click = (p, shift) => {
+      for (const type of ["pointerdown", "pointerup"])
+        cv.dispatchEvent(new PointerEvent(type, {
+          pointerId: 1, pointerType: "mouse", bubbles: true, cancelable: true,
+          clientX: p.x, clientY: p.y, buttons: type === "pointerdown" ? 1 : 0, button: 0, shiftKey: !!shift,
+        }));
+    };
+    click(a, false);
+    click(b, true); // shift: playwright's own modifiers never reach pointerdown
+    return [...sk.selected].sort();
+  }, [await screenOf(17.5, 10), await screenOf(17.5, 33.75)]);
+  check(JSON.stringify(picked) === '["a","b"]', "both lines are selected", JSON.stringify(picked));
+  const [a0, b0] = [await ent("a"), await ent("b")];
+  // down and right, away from the length badge that sits above line a's middle
+  const [pairFrom, pairTo] = [await screenOf(17.5, 10), await screenOf(27.5, 4)];
+  const pair = await drag(pairFrom, pairTo);
+  check(pair.reachable && pair.armed.body, "the press on one of them armed a body drag",
+    `${JSON.stringify(pair.armed)} from=${JSON.stringify(pairFrom)} to=${JSON.stringify(pairTo)}`);
+  const [a1, b1] = [await ent("a"), await ent("b")];
+  const da = { x: a1.x1 - a0.x1, y: a1.y1 - a0.y1 }, db = { x: b1.x1 - b0.x1, y: b1.y1 - b0.y1 };
+  check(Math.hypot(da.x, da.y) > 5, "the grabbed line followed the cursor", JSON.stringify(da));
+  check(Math.hypot(db.x - da.x, db.y - da.y) < 1e-6, "...and the other selected line moved WITH it",
+    `grabbed=${JSON.stringify(da)} other=${JSON.stringify(db)}`);
+
+  // Shift-click can put an origin axis in the selection (the marquee leaves it
+  // out). Grabbing that axis must still be refused, not move the rest of the
+  // selection while the axis stays put.
+  console.log("\n=== grabbing a selected origin axis moves nothing (3f16187e) ===");
+  await openSketch(TWO_LINES);
+  const withAxis = await page.evaluate(([a, axis]) => {
+    const s = window.__sindri, sk = s.sketch, cv = s.viewport.domElement;
+    const click = (p, shift) => {
+      for (const type of ["pointerdown", "pointerup"])
+        cv.dispatchEvent(new PointerEvent(type, {
+          pointerId: 1, pointerType: "mouse", bubbles: true, cancelable: true,
+          clientX: p.x, clientY: p.y, buttons: type === "pointerdown" ? 1 : 0, button: 0, shiftKey: !!shift,
+        }));
+    };
+    click(a, false);
+    click(axis, true);
+    return [...sk.selected].sort();
+  }, [await screenOf(17.5, 10), await screenOf(25, 0)]);
+  check(JSON.stringify(withAxis) === '["__originX__","a"]', "line a and the X axis are selected", JSON.stringify(withAxis));
+  const aBefore = await ent("a");
+  const axisDrag = await drag(await screenOf(25, 0), await screenOf(25, -8));
+  const aAfter = await ent("a");
+  const said = await page.evaluate(() => [...document.querySelectorAll(".toast-msg")].map((e) => e.textContent));
+  check(axisDrag.reachable && axisDrag.armed.body, "the press on the axis armed a body drag", JSON.stringify(axisDrag.armed));
+  check(Math.hypot(aAfter.x1 - aBefore.x1, aAfter.y1 - aBefore.y1) < 1e-9, "line a did not move",
+    `(${aBefore.x1}, ${aBefore.y1}) -> (${aAfter.x1}, ${aAfter.y1})`);
+  check(said.some((m) => m.includes("origin is fixed")), "...and the refusal was said", JSON.stringify(said));
 
   await browser.close();
   console.log(fails ? `\n${fails} check(s) failed` : "\nall checks passed");

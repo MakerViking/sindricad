@@ -25,6 +25,7 @@
 import type { ResolvedEntity } from "./snap";
 import type { DimField, SketchConstraint } from "../types";
 import { isDimConstraint, newConstraintId } from "./id";
+import { entityDims } from "./entityDims";
 
 const EPS = 1e-9;
 
@@ -169,6 +170,20 @@ export function governingDimAt(
   if (!governs) return null;
   const at = constraints.findIndex(governs);
   return at < 0 ? "free" : at;
+}
+
+/** The lock for every MEASURED badge on an entity: each badge a driving
+ *  constraint could govern and none does (governingDimAt's "free"), spelled the
+ *  way Lock spells it (lockDimFor), at the value the badge reads now. A badge's
+ *  own right-click locks one of these; Constraints > Lock Dimension and the
+ *  selection's right-click lock all of them (report d3338e3a). Empty when there
+ *  is nothing left to lock. */
+export function measuredLocks(constraints: SketchConstraint[], e: ResolvedEntity): SketchConstraint[] {
+  return entityDims(e).flatMap((d) => {
+    if (governingDimAt(constraints, e, d.field) !== "free") return [];
+    const c = lockDimFor(e, d.field, d.valueMm);
+    return c ? [c] : [];
+  });
 }
 
 /** What typing a value into an entity badge should do. One decision, in one

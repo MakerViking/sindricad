@@ -97,8 +97,10 @@ const ccwDelta = (from: number, to: number) => ((to - from) % TAU + TAU) % TAU;
  *  planegcs wasm heap, and an exhausted heap answers with `Aborted(OOM)` — a
  *  throw that cannot be recovered from once made (see the cap's own note). The
  *  measured cliff is ~400 in a fresh worker and ~300 once a session has been
- *  running; this leaves room for the pressure to move. */
-const MAX_BIAS_ANCHORS = 120;
+ *  running; this leaves room for the pressure to move. The body drag's pins
+ *  are anchors too, and a dragged selection holds its pin count to this same
+ *  budget (SketchMode.queueBodyDrag). */
+export const MAX_BIAS_ANCHORS = 120;
 
 /** THE position-coincidence key: two points merge into one solver point iff
  *  their keys match (0.001mm buckets). Anything else that needs "are these
@@ -876,8 +878,10 @@ export async function compileAndSolve(
   // primitives share it.
   //
   // Deliberately AFTER the bias budget above, so a pin can never be dropped by
-  // an anchor allowance it did not spend: a drag pins at most a rectangle's four
-  // corners, and nothing pairs a drag frame with a bias.
+  // an anchor allowance it did not spend: nothing pairs a drag frame with a
+  // bias, and a dragged SELECTION, the one caller that can pin more than a
+  // rectangle's four corners, skips its frame solves rather than pass more pins
+  // than that budget (SketchMode.queueBodyDrag).
   if (pins?.length) {
     const wanted = new Set(pins.map((q) => key(q.x, q.y)));
     const taken = new Set(anchors.map((a) => a.point));

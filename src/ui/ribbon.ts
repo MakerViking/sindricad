@@ -229,6 +229,10 @@ export const SKETCH: Group[] = [
           { action: "collinear", label: t("tool.collinear"), iconName: "collinear" },
           { action: "symmetric", label: t("tool.symmetric"), iconName: "symmetric" },
           { action: "fix", label: t("tool.fix"), iconName: "fix" },
+          // Also on a measured badge's right-click, where it started; here as
+          // well because "it is such an important constraint it should be
+          // obvious" (report d3338e3a).
+          { action: "lockDimension", label: t("tool.lockDimension"), iconName: "lockDimension" },
         ],
       },
     ],

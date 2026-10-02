@@ -1272,6 +1272,7 @@
     },
     "s": {
       "chain": "Select Chain",
+      "construction": "Toggle Construction",
       "extrude": "Finish & Extrude",
       "fillet": "Sketch Fillet",
       "presspull": "Finish & Press/Pull"
@@ -1389,6 +1390,16 @@
         "symmetric": "two points, endpoints or centres, then the axis line",
         "tangent": "a circle or arc, then the line or curve it should touch",
         "vertical": "a line, or a rectangle edge"
+      }
+    },
+    "constructionToggle": {
+      "construction": {
+        "one": "Made 1 entity construction geometry: it shows dashed once deselected",
+        "other": "Made {count} entities construction geometry: they show dashed once deselected"
+      },
+      "normal": {
+        "one": "Made 1 entity normal geometry: it shows solid once deselected",
+        "other": "Made {count} entities normal geometry: they show solid once deselected"
       }
     },
     "dimConflict": {
@@ -1532,13 +1543,23 @@
       "nothingToRedo": "Nothing to redo in this sketch",
       "nothingToUndo": "Nothing left to undo in this sketch"
     },
+    "lockDims": {
+      "locked": {
+        "one": "Locked 1 dimension at its current value",
+        "other": "Locked {count} dimensions at their current values"
+      },
+      "nothing": "Nothing to lock: every dimension on that geometry is already held, or it has none"
+    },
     "menu": {
       "breakLink": "Break Link",
       "breakLinkCount": "Break Link ({count})",
       "deleteEntities": {
         "one": "Delete",
         "other": "Delete {count} entities"
-      }
+      },
+      "lockDimensions": "Lock dimensions",
+      "makeConstruction": "Make construction",
+      "makeNormal": "Make normal"
     },
     "offset": {
       "chainOff": "Chain Selection off — only the clicked curve offsets",
@@ -1601,6 +1622,7 @@
       "fix": "Fix: click a point, endpoint or circle/arc center to lock it in place · Esc",
       "horizontal": "Horizontal: click a line to make it horizontal · Esc",
       "line": "Line: click points · type length + Tab + angle · Enter to commit · click the start to close · Esc",
+      "lockDimension": "Lock Dimension: click geometry to lock its measured dimensions at their current values · Esc",
       "midpoint": "Midpoint: click a point/endpoint, then a line — the point sits at its midpoint · Esc",
       "mirror": "Mirror: with entities selected, click a line to mirror across · Esc",
       "move": "Move: select entities first, then click a base point and a destination · Esc",
@@ -1612,7 +1634,7 @@
       "rectangle": "Rectangle: click two corners · type W, Tab, H · Enter · Esc",
       "rotate": "Rotate: select entities, click a center, then type an angle + Enter · Esc",
       "scale": "Scale: select entities, click a base point, then type a factor + Enter · Esc",
-      "select": "Select: click geometry to pick it · drag to move · Delete to remove · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
+      "select": "Select: click geometry to pick it · Shift-click or drag a box to select several · drag to move them · Delete to remove · or pick a tool: Line (L) · Rectangle (R) · Circle (C) · Arc (A)",
       "slot": "Slot: click the two arc centers, then a point for the width · Esc",
       "spline": "Spline: click to place fit points · click the last point or press Enter to finish · Esc to cancel",
       "symmetric": "Symmetric: click two endpoints, then the symmetry axis line · Esc",
@@ -1659,6 +1681,7 @@
     "componentColorsOn": "Component colors on",
     "computeAll": "Compute All — rebuilding everything from scratch…",
     "connecting": "connecting to sidecar…",
+    "constructionNothingSelected": "Select sketch geometry first: this switches the selection between construction and normal",
     "curvatureOff": "Curvature combs off",
     "curvatureOn": "Curvature combs on (edge bend visualization)",
     "deletingFace": "Deleting face…",
@@ -1829,6 +1852,7 @@
     "importMesh": "Import Mesh",
     "interference": "Interference",
     "line": "Line",
+    "lockDimension": "Lock Dimension",
     "loft": "Loft",
     "measure": "Measure",
     "mergeSolids": "Merge into one solid",

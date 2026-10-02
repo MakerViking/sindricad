@@ -757,17 +757,27 @@ export function curveObjects(
       // is the RESTING look, and an emphasis pass (selection, hover) must still
       // win — the origin is selectable precisely so you can constrain to it, and
       // a selection you cannot see reads as a selection that did not happen.
-      add(pointMarker(
+      const marker = pointMarker(
         plane,
         e.x,
         e.y,
-        isOriginId(e.id) && !highlight ? ORIGIN_COLOR : e.construction ? 0xffa64d : color,
-      ));
+        isOriginId(e.id) && !highlight ? ORIGIN_COLOR : e.construction && !highlight ? CONSTRUCTION_COLOR : color,
+      );
+      // A "+" has no dash to flip (see constructionLine below), and the
+      // selection orange is within a few shades of the construction orange, so
+      // a selected construction point also gets the endpoint square around it.
+      if (highlight && e.construction && !isOriginId(e.id)) {
+        const g = new THREE.Group();
+        g.add(marker, endpointDot(plane, e.x, e.y, color, POINT_MARKER_HALF));
+        add(g);
+      } else {
+        add(marker);
+      }
       continue;
     }
     if (e.type === "text") {
       const faces = getCachedText(e);
-      if (faces && faces.length) add(textObjects(faces, plane, color, !!e.construction));
+      if (faces && faces.length) add(textObjects(faces, plane, color, !!e.construction && !highlight));
       continue;
     }
     if (endpointR > 0 && !highlight) {
@@ -815,9 +825,16 @@ export function curveObjects(
     // what "make this line collinear with the X axis" needs), and falling
     // through to constructionLine() made a deliberate selection look like the
     // axis had gone dotted by itself.
+    //
+    // Construction lines follow the same rule, for the same reason (report
+    // 3f16187e: "when I click on it there is no visual indication that it has
+    // been selected"). constructionLine() ignored the pass colour, and the
+    // selection orange is within a few shades of the construction orange
+    // anyway, so an emphasis pass draws them SOLID: the dashes going away is
+    // the change you can see.
     const curve = isOriginGeometry(e.id)
       ? polyline(pts, highlight ? drawColor : ORIGIN_COLOR)
-      : !projected && e.construction
+      : !projected && e.construction && !highlight
         ? constructionLine(pts)
         : polyline(pts, drawColor);
     // Circles/arcs (native or projected) get a visible center "+": the center is
@@ -827,7 +844,7 @@ export function curveObjects(
     const center = asRound(e);
     if (center) {
       const g = new THREE.Group();
-      const markerColor = projected ? drawColor : e.construction ? 0xffa64d : color;
+      const markerColor = projected ? drawColor : e.construction && !highlight ? CONSTRUCTION_COLOR : color;
       g.add(curve, pointMarker(plane, center.x, center.y, markerColor));
       g.renderOrder = 12;
       add(g);
@@ -899,8 +916,11 @@ export function pointHighlight(
   return o;
 }
 
+/** half-size of a sketch point's "+" marker, in plane mm */
+const POINT_MARKER_HALF = 0.9;
+
 function pointMarker(plane: SketchPlane, x: number, y: number, color: number): THREE.Object3D {
-  const s = 0.9;
+  const s = POINT_MARKER_HALF;
   const pts = [
     plane.to3D(x - s, y), plane.to3D(x + s, y),
     plane.to3D(x, y - s), plane.to3D(x, y + s),

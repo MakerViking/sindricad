@@ -75,33 +75,45 @@ export function attachmentPoints(e: ResolvedEntity): THREE.Vector2[] {
   return [];
 }
 
-/** Would a body drag of ents[idx] move a point a `fix` pins?
+/** What a body drag moves: the one grabbed entity, or a whole selection. */
+const dragIdxs = (idx: number | readonly number[]): readonly number[] =>
+  typeof idx === "number" ? [idx] : idx;
+
+/** Would a body drag of ents[idx] (or of every entity in a selection) move a
+ *  point a `fix` pins?
  *
  *  Two ways it can, and the second is why this is not just an id test: the
  *  dragged entity itself is pinned, or it shares a corner with a neighbour whose
  *  endpoint is pinned and which the drag would therefore carry along. Dropping
  *  only that one neighbour mutator would silently TEAR the joint instead —
  *  merged-by-position points have nothing pulling them back together — so the
- *  whole gesture is refused. */
+ *  whole gesture is refused. For a selection, one pinned member refuses it all,
+ *  for the same reason. */
 export function bodyDragBlocked(
   ents: readonly ResolvedEntity[],
-  idx: number,
+  idx: number | readonly number[],
   cons: readonly SketchConstraint[],
 ): boolean {
-  const ent = ents[idx];
-  if (!ent) return true;
+  const moved: ResolvedEntity[] = [];
+  for (const i of dragIdxs(idx)) {
+    const e = ents[i];
+    if (!e) return true;
+    moved.push(e);
+  }
+  if (moved.length === 0) return true;
   const pinnedIds = fixPinnedIds(cons);
   if (pinnedIds.size === 0) return false;
-  if (pinnedIds.has(ent.id)) return true;
+  if (moved.some((e) => pinnedIds.has(e.id))) return true;
   const pinnedAt = fixPinnedKeys(ents, cons);
   if (pinnedAt.size === 0) return false;
-  return attachmentPoints(ent).some((q) => pinnedAt.has(coincKey(q.x, q.y)));
+  return moved.some((e) => attachmentPoints(e).some((q) => pinnedAt.has(coincKey(q.x, q.y))));
 }
 
 /** ONE frame of the select tool's whole-entity body drag: the grabbed entity
- *  translated by (dx,dy), plus every OTHER entity's endpoint that coincides with
- *  one of its attachment points carried along with it. Returns null when the
- *  gesture is refused (see bodyDragBlocked).
+ *  (or every entity of a dragged selection, report 3f16187e) translated by
+ *  (dx,dy), plus every OTHER entity's endpoint that coincides with one of their
+ *  attachment points carried along with them. Returns null when the gesture is
+ *  refused (see bodyDragBlocked).
  *
  *  Neighbour attachment is decided with `coincKey`, the same position merge the
  *  solver does, so "rides along during the drag" and "one merged solver point in
@@ -109,23 +121,38 @@ export function bodyDragBlocked(
  *  shape cannot follow a single corner); an arc's through-point is deliberately
  *  left alone, as the per-frame solve is what re-forms the arc.
  *
+ *  The ORIGIN is never carried, nor moved (report 69d5231f). It is a `point`
+ *  sitting on whatever was drawn from it, so the carry rule below picked it up
+ *  like any neighbour, and the solver pins the origin at its INPUT position: once
+ *  a frame had moved it, the "fixed" origin was fixed at the new spot, a
+ *  rectangle made coincident with it slid away rigidly with the coincident still
+ *  satisfied, and the origin stayed off 0,0 until the sketch was reopened (which
+ *  is also why it could no longer be picked there). Left where it is, the
+ *  coincident holds the corner against the drag's soft pins: a fully dimensioned
+ *  rectangle stays put and a free one stretches. A corner that only SITS on the
+ *  origin, with no coincident, has nothing holding it and moves off with the
+ *  drag; whether that should stretch or be refused instead is still open.
+ *
  *  Pure, and returning a fresh list rather than mutating in place, because the
  *  drag now hands the result to the solver every frame and the solver hands back
  *  new objects — a set of closures captured once at press time would be writing
  *  into entities the document no longer holds. */
 export function bodyDragFrame(
   ents: readonly ResolvedEntity[],
-  idx: number,
+  idx: number | readonly number[],
   dx: number,
   dy: number,
   cons: readonly SketchConstraint[],
 ): ResolvedEntity[] | null {
-  const ent = ents[idx];
-  if (!ent || bodyDragBlocked(ents, idx, cons)) return null;
-  const keys = new Set(attachmentPoints(ent).map((q) => coincKey(q.x, q.y)));
+  const moved = new Set(dragIdxs(idx));
+  if (bodyDragBlocked(ents, [...moved], cons)) return null;
+  const keys = new Set(
+    [...moved].flatMap((i) => attachmentPoints(ents[i]!).map((q) => coincKey(q.x, q.y))),
+  );
   const near = (x: number, y: number) => keys.has(coincKey(x, y));
   return ents.map((e, i) => {
-    if (i === idx) return translated(e, dx, dy, e.id);
+    if (isOriginGeometry(e.id)) return e;
+    if (moved.has(i)) return translated(e, dx, dy, e.id);
     if (e.type === "line" || e.type === "arc") {
       const s = near(e.x1, e.y1), t = near(e.x2, e.y2);
       if (!s && !t) return e;
