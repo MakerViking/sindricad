@@ -1565,6 +1565,10 @@
       "makeNormal": "Make normal"
     },
     "modify": {
+      "breakDropped": {
+        "one": "Break removed a constraint that no longer applies once the curve is split",
+        "other": "Break removed {count} constraints that no longer apply once the curve is split"
+      },
       "breakJoined": "Split in two. The halves stay joined at the cut. To pull them apart, switch to Select and Shift-drag from the cut toward the half that should move",
       "shapeNotLines": "{tool} works on two lines that meet at a corner, and this {shape} is one piece, not separate lines, so I can't pick its sides one at a time. {wayOut}",
       "shapeWayOut": {

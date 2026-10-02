@@ -23,7 +23,7 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, dropMovedJoins, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, dropMovedJoins, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal } from "../ui/units";
@@ -4565,13 +4565,20 @@ export class SketchMode {
    *  says they are joined, and an ordinary drag moves both. So the toast says
    *  so, and how to pull them apart (detachFrame). It is also the only sign the
    *  break happened at all: the curve looks the same afterwards. */
+  /** Break the clicked curve, carrying its constraints onto the pieces the way
+   *  Trim does (breakWithConstraints), and say what could not come along. */
   private breakClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
     const before = this.entities.length;
-    this.entities = breakAt(this.entities, idx, p);
-    this.afterModify();
+    const res = breakWithConstraints(this.entities, idx, p, this.constraints);
+    this.entities = res.entities;
+    this.constraints = res.constraints;
+    const kept = this.constraints.length;
+    this.afterModify(); // prunes too: anything it still finds dangling counts
+    const dropped = res.dropped + kept - this.constraints.length;
     if (this.entities.length > before) toast(t("sketch.modify.breakJoined"));
+    if (dropped > 0) toast(t("sketch.modify.breakDropped", { count: dropped }));
   }
   /** add a persistent geometric constraint and re-solve (the solver maintains
    *  all constraints together, not just the one you applied). Delegates to

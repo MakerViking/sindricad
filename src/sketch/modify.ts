@@ -1362,6 +1362,36 @@ export function breakAt(
   return ents;
 }
 
+/** Break, keeping every constraint that still applies to the pieces.
+ *
+ *  breakAt gives every piece a NEW id, as Trim does (and for the same reason:
+ *  an extrude trusts a unique id match before its stored point), and the
+ *  caller then pruned whatever named the old one. So a snapped join on either
+ *  end, a horizontal, a tangency all went without a word, and the join opened
+ *  on the next solve. The rewrite is Trim's, remapTrimmed: a point constraint
+ *  follows its point to the piece that still has it (the start's to the first
+ *  half, the end's to the second), a direction such as horizontal or parallel
+ *  goes to every piece, a dimension of the carrier stays once on the piece
+ *  holding the start, and a constraint on the curve's EXTENT (a length, an
+ *  equal length, a midpoint) holds for no piece and is counted in `dropped`
+ *  for the caller to say so. No constraint is added at the cut: the halves
+ *  stay free to pull apart there (breakJoined). */
+export function breakWithConstraints(
+  ents: ResolvedEntity[],
+  index: number,
+  click: THREE.Vector2,
+  cons: SketchConstraint[],
+): TrimResult {
+  const e = ents[index];
+  const entities = breakAt(ents, index, click);
+  if (!e || entities === ents) return { entities: ents, constraints: cons, dropped: 0 };
+  const made = entities.slice(index, index + 1 + entities.length - ents.length);
+  const start = dimRefPoints(e).find((r) => r.p === 0)?.pos;
+  const lead = made.find((g) => start && endsAt(g, start)) ?? made[0];
+  const pieces = made.map((geom) => ({ from: e.id, geom, whole: false, lead: geom === lead }));
+  return { entities, ...remapTrimmed(e, pieces, cons, entities) };
+}
+
 /** What a detach did: pulled one end off a shared point, or refused because a
  *  constraint holds that very end there. */
 export type Detach =
