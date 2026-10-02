@@ -1559,12 +1559,19 @@
         "other": "Delete {count} entities"
       },
       "disconnect": "Disconnect",
+      "editPolygon": "Edit polygon",
       "lockDimensions": "Lock dimensions",
       "makeConstruction": "Make construction",
       "makeNormal": "Make normal"
     },
     "modify": {
       "breakJoined": "Split in two. The halves stay joined at the cut. To pull them apart, switch to Select and Shift-drag from the cut toward the half that should move",
+      "shapeNotLines": "{tool} works on two lines that meet at a corner, and this {shape} is one piece, not separate lines, so I can't pick its sides one at a time. {wayOut}",
+      "shapeWayOut": {
+        "polygon": "To round or bevel its corners, draw its sides with the Line tool instead.",
+        "rectangle": "To round or bevel its corners, draw its four sides with the Line tool instead.",
+        "slot": "A slot has no corners to work on: its ends are already round."
+      },
       "trimDropped": {
         "one": "Trim removed a constraint that no longer applies to what is left",
         "other": "Trim removed {count} constraints that no longer apply to what is left"
@@ -1590,6 +1597,10 @@
         "other": "{count} patterns were removed: their source entities no longer exist"
       },
       "selectFirst": "Select entities first, then choose a pattern tool"
+    },
+    "polygonEdit": {
+      "badValue": "I can't use that value ({error}). Fix it, or press Esc to leave the polygon as it was.",
+      "sidesRange": "a polygon has 3 to 64 sides"
     },
     "project": {
       "curveDup": "That curve is already projected into this sketch",

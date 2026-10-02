@@ -55,6 +55,19 @@ describe("candidatesFromEntities", () => {
     const sp = candidatesFromEntities([{ type: "spline", id: "s", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }] }]);
     expect(sp).toHaveLength(3);
   });
+  it("emits a polygon's centre and every corner, at the stored DEGREE angle", () => {
+    const c = candidatesFromEntities([{ type: "polygon", id: "p", x: 1, y: 2, radius: 10, sides: 5, angle: 90 }]);
+    expect(c.filter((x) => x.kind === "center").map((x) => [x.p.x, x.p.y])).toEqual([[1, 2]]);
+    const corners = c.filter((x) => x.kind === "endpoint");
+    expect(corners).toHaveLength(5);
+    // the first corner points straight up: 90 is degrees, not radians
+    expect(corners[0]!.p.x).toBeCloseTo(1, 9);
+    expect(corners[0]!.p.y).toBeCloseTo(12, 9);
+  });
+  it("emits a slot's two arc centres", () => {
+    const c = candidatesFromEntities([{ type: "slot", id: "s", x1: 0, y1: 0, x2: 30, y2: 4, width: 6 }]);
+    expect(c.map((x) => [x.kind, x.p.x, x.p.y])).toEqual([["center", 0, 0], ["center", 30, 4]]);
+  });
 });
 
 describe("candidatesFromEntities — projected reference geometry", () => {

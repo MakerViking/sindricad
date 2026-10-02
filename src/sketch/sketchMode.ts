@@ -26,7 +26,7 @@ import {
 import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField, dimValueOk, fmtLength } from "../ui/units";
+import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
@@ -164,6 +164,17 @@ function parseConflictIdx(ids: string[]): Set<number> {
     if (i !== null) s.add(i);
   }
   return s;
+}
+
+/** The polygon fields its edit box offers, in box order (see editPolygon). */
+type PolygonEditField = "radius" | "sides" | "angle";
+const POLYGON_EDIT_FIELDS: [PolygonEditField, FieldKind][] = [["radius", "length"], ["sides", "count"], ["angle", "angle"]];
+
+/** A polygon side count the tool can build: 3 to 64 once rounded (the entity
+ *  caps at 64). One rule for the commit guard, the live preview and the edit
+ *  box, so none of them can accept a count another refuses. */
+function sideCountOk(n: number | null): n is number {
+  return n != null && Number.isFinite(n) && Math.round(n) >= 3 && Math.round(n) <= 64;
 }
 
 // Tools that operate on the current multi-selection, so setTool must keep it.
@@ -750,6 +761,7 @@ export class SketchMode {
     this.resetDimPicks();
     this.moveBase = null;
     this.offsetPick = null; // an in-progress offset dies with its tool
+    this.polygonEdit = null; // and so does an open polygon edit box
     this.dim.hide();
     this.textPanel.hide();
     // Project tool: chips only while it's active; leaving it drops any 3D hover
@@ -1808,6 +1820,20 @@ export class SketchMode {
       this.lockDimensionClick(raw);
       return;
     }
+    // FILLET and CHAMFER pick on the raw cursor too, for a third reason: the
+    // click must take what the hover lit, and modifyHover picks at the raw
+    // cursor (with no snap marker shown). The snapped point fed nothing but the
+    // pick. A click half a millimetre along a line that starts on a polygon's
+    // corner snapped ONTO the corner, where the pick's tie went to whichever was
+    // drawn first: the hover lit the line and the click blamed the polygon.
+    if (this.tool === "fillet" || this.tool === "chamfer") {
+      const raw = this.planePoint(e);
+      if (!raw) return;
+      e.preventDefault();
+      if (this.tool === "fillet") this.filletClick(raw);
+      else this.chamferClick(raw);
+      return;
+    }
     const hit = this.snapAt(e.clientX, e.clientY, e.ctrlKey);
     if (!hit) return;
     e.preventDefault();
@@ -1864,9 +1890,17 @@ export class SketchMode {
       // Ctrl keeps what was already selected, matching the single-click
       // modifiers below. Handled before the body-drag arm, because a
       // double-click must not start a drag.
+      //
+      // A POLYGON opens its edit box instead (radius, sides, rotation): its
+      // chain is only itself (a closed entity has no free ends, entityChain),
+      // so the chain select had nothing to add for one.
       if (doubleClick) {
         const ci = pickEntity(this.entities, raw, this.pickTol());
         const ce = ci >= 0 ? this.entities[ci] : undefined;
+        if (ce?.type === "polygon") {
+          this.editPolygon(ce.id, { x: e.clientX, y: e.clientY });
+          return;
+        }
         if (ce && !isOriginGeometry(ce.id)) {
           if (!(e.shiftKey || e.ctrlKey || e.metaKey)) this.selected.clear();
           for (const id of this.entityChain(ce.id)) this.selected.add(id);
@@ -1962,9 +1996,8 @@ export class SketchMode {
     }
     if (this.tool === "circle3") return this.circle3Click(p); // no typed field, nothing to guard
     if (this.tool === "mirror") return this.mirrorClick(p);
-    // (trim is handled above, on the RAW cursor — see the carve-out there)
-    if (this.tool === "fillet") return this.filletClick(p);
-    if (this.tool === "chamfer") return this.chamferClick(p);
+    // (trim, fillet and chamfer are handled above, on the RAW cursor — see the
+    // carve-out there)
     if (this.tool === "move" || this.tool === "copy") return this.moveClick(p);
     if (this.tool === "rotate") return this.rotateClick(p);
     if (this.tool === "scale") return this.scaleClick(p);
@@ -2085,7 +2118,7 @@ export class SketchMode {
       const a = this.clickPts[0];
       if (a) {
         const vertex = this.polygonVertex(a, cursor);
-        pv.push({ type: "polygon", id: "", x: a.x, y: a.y, radius: a.distanceTo(vertex), sides: Math.max(3, Math.round(this.polygonSides)), angle: (Math.atan2(vertex.y - a.y, vertex.x - a.x) * 180) / Math.PI });
+        pv.push({ type: "polygon", id: "", x: a.x, y: a.y, radius: a.distanceTo(vertex), sides: this.previewSides(), angle: (Math.atan2(vertex.y - a.y, vertex.x - a.x) * 180) / Math.PI });
         dims = { radius: a.distanceTo(vertex) };
       }
     } else if (this.tool === "slot") {
@@ -2183,10 +2216,19 @@ export class SketchMode {
    *  than what makes a quantity valid; the refusal and the message are shared. */
   private badSideCount(): boolean {
     if (!this.dim.isUserDriven("sides")) return false;
-    const n = this.dim.getValue("sides");
-    if (n != null && Number.isFinite(n) && Math.round(n) >= 3 && Math.round(n) <= 64) return false;
+    if (sideCountOk(this.dim.getValue("sides"))) return false;
     setPrompt(t("feature.badNumber"));
     return true;
+  }
+
+  /** The side count the polygon preview draws: the typed one while it is a
+   *  count the tool can build, otherwise the last committed one. polygonSides
+   *  is only written at commit, so the preview drew 6 under a typed 8 until the
+   *  tick (report be869d55). A count on its way to valid ("1" on the way to
+   *  "12") keeps the last committed shape rather than flickering. */
+  private previewSides(): number {
+    const typed = this.dim.isUserDriven("sides") ? this.dim.getValue("sides") : null;
+    return sideCountOk(typed) ? Math.round(typed) : Math.max(3, Math.round(this.polygonSides));
   }
 
   /** The dim fields a multi-click tool shows in its current phase — one list,
@@ -2207,11 +2249,18 @@ export class SketchMode {
             : null;
   }
 
-  /** dim fields per multi-click tool (and phase, for slot); Enter commits at the cursor */
+  /** dim fields per multi-click tool (and phase, for slot); Enter commits at the
+   *  cursor. Typing redraws the preview at the last cursor position, so a typed
+   *  side count, radius, width or diameter shows before the mouse moves again. */
   private showMultiDimFields() {
     const defs = this.multiDimDefs();
     if (!defs) return;
-    this.dim.show(defs, () => this.multiClickAt(this.lastCursor.clone()));
+    this.dim.show(
+      defs,
+      () => this.multiClickAt(this.lastCursor.clone()),
+      undefined,
+      () => this.multiClickPreview(this.lastCursor),
+    );
   }
 
   private multiClickAt(p: THREE.Vector2) {
@@ -2483,6 +2532,104 @@ export class SketchMode {
     this.refreshActive();
     this.requestSolve();
     this.onState?.();
+  }
+
+  /** The polygon whose edit box is open, and the text each field was seeded
+   *  with: a field still showing that text was not touched, so its value and
+   *  any parameter binding it carries are left alone. */
+  private polygonEdit: { id: string; seeded: Record<string, string> } | null = null;
+
+  /** Edit a polygon after it is made: its radius, side count and rotation, in
+   *  the same on-canvas box that drew it (report ffae1a6e, "I cannot modify a
+   *  polygon's rotation after it has been created"). Nothing new is stored: the
+   *  three are the polygon's own fields, and the angle is the stored one, the
+   *  first corner's direction from +X in degrees. Reached by double-clicking a
+   *  polygon or from its right-click menu; `at` is where that happened. */
+  private editPolygon(id: string, at: { x: number; y: number }) {
+    const e = this.entities.find((x) => x.id === id);
+    if (e?.type !== "polygon") return;
+    const defs: DimFieldDef[] = POLYGON_EDIT_FIELDS.map(([name, kind]) => ({
+      name,
+      label: name === "radius" ? t("sketch.dimension.label.radius")
+        : name === "sides" ? t("sketch.dimension.label.count")
+          : "∠",
+      kind,
+    }));
+    this.dim.show(
+      defs,
+      () => this.commitPolygonEdit(),
+      () => this.cancelPolygonEdit(),
+      () => this.previewPolygonEdit(),
+    );
+    // A parameter-bound field reopens its FORMULA, the rule the radius badge
+    // follows (see pendingBindings): seeded as its number, the formula was
+    // invisible, and any number typed over it replaced the binding unseen.
+    const seeded: Record<string, string> = {};
+    for (const [name, kind] of POLYGON_EDIT_FIELDS) {
+      const expr = this.exprFor(`e:${id}:${name}`);
+      seeded[name] = expr && !isPlainNumber(expr) ? expr : fieldText(e[name], kind);
+      this.dim.seed(name, seeded[name]);
+    }
+    this.polygonEdit = { id, seeded };
+    this.dim.position(at.x, at.y);
+  }
+
+  /** Draw the polygon as typed so far. A field that does not hold a usable
+   *  number yet (half-typed, or a formula, which only resolves on commit) draws
+   *  at its current value. */
+  private previewPolygonEdit() {
+    const e = this.polygonEdit && this.entities.find((x) => x.id === this.polygonEdit?.id);
+    if (e?.type !== "polygon") return;
+    const radius = this.dim.getValue("radius");
+    const sides = this.dim.getValue("sides");
+    const angle = this.dim.getValue("angle");
+    this.overlay.setPreview([this.entityCurve({
+      ...e,
+      radius: dimValueOk(radius, "length") ? radius : e.radius,
+      sides: sideCountOk(sides) ? Math.round(sides) : e.sides,
+      angle: dimValueOk(angle, "angle") ? angle : e.angle,
+    })]);
+  }
+
+  /** Enter / ✓ on the polygon edit box. Every changed field is evaluated before
+   *  ANY is written, so a refusal leaves the polygon and the box exactly as they
+   *  were. A changed field goes through the `e:<id>:<field>` binding slot the
+   *  radius badge already uses: a formula binds, and a number typed over a bound
+   *  field rewrites that binding instead of being overwritten by it on the next
+   *  parameter sync. */
+  private commitPolygonEdit() {
+    const edit = this.polygonEdit;
+    const e = edit && this.entities.find((x) => x.id === edit.id);
+    if (!edit || e?.type !== "polygon") { this.cancelPolygonEdit(); return; }
+    const writes: { field: PolygonEditField; key: string; kind: FieldKind; r: { value: number; expr: string | null; name?: string } }[] = [];
+    for (const [field, kind] of POLYGON_EDIT_FIELDS) {
+      const raw = this.dim.getRaw(field).trim();
+      if (raw === edit.seeded[field]) continue;
+      const key = `e:${e.id}:${field}`;
+      const r = this.evalDimInput(canonicalDecimal(raw), kind, key);
+      if ("error" in r || (field === "sides" && !sideCountOk(r.value))) {
+        const error = "error" in r ? r.error : t("sketch.polygonEdit.sidesRange");
+        setPrompt(t("sketch.polygonEdit.badValue", { error }));
+        this.dim.focus();
+        return;
+      }
+      writes.push({ field, key, kind, r });
+    }
+    for (const w of writes) {
+      this.recordBinding(w.key, w.r, w.kind);
+      e[w.field] = coerceForField(w.field, w.r.value);
+    }
+    this.cancelPolygonEdit();
+    if (!writes.length) return;
+    this.refreshActive();
+    this.requestSolve(); // banks the undo step, like every other sketch edit
+    this.onState?.();
+  }
+
+  private cancelPolygonEdit() {
+    this.polygonEdit = null;
+    this.dim.hide();
+    this.overlay.setPreview([]);
   }
 
   // --- slot: two center points, then a width point → rounded slot --------
@@ -3373,6 +3520,7 @@ export class SketchMode {
       e.preventDefault();
       this.detachArmed = null;
       if (this.offsetPick) { this.cancelOffset(); return; }
+      if (this.polygonEdit) { this.cancelPolygonEdit(); return; }
       if (this.dragFrom || this.moveDrag) {
         // cancel an in-progress drag: revert geometry to its pre-drag positions
         if (this.dragSnapshot) this.entities = this.dragSnapshot;
@@ -3693,9 +3841,15 @@ export class SketchMode {
     // rectangle is one entity, not lines" (hoverOperandCurve). Trim removes a
     // SPAN, so it highlights exactly the piece the click would take away, from
     // the same plan the click uses (trimSpan) and the same raw cursor: lighting
-    // the whole line told a reporter the whole line was about to go. Fillet,
-    // move and the rest act on the whole entity and keep the whole highlight.
-    if (hit) {
+    // the whole line told a reporter the whole line was about to go. Move and
+    // the rest act on the whole entity and keep the whole highlight.
+    //
+    // Fillet and Chamfer take a LINE and nothing else (filletClick). They lit a
+    // rectangle's whole outline red, inviting a click that was then dropped
+    // without a word (reports 5650b766, be869d55), so they light only what they
+    // can take; a click on anything else says why instead (refuseShapeCorner).
+    const cornerTool = this.tool === "fillet" || this.tool === "chamfer";
+    if (hit && (!cornerTool || hit.type === "line")) {
       const curve = this.tool === "trim" ? this.trimPreview(idx, hit, p)
         : CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p)
         : hit;
@@ -3843,7 +3997,15 @@ export class SketchMode {
     // it there. It arms the same pull a Shift-drag makes (detachFrame).
     const joint = raw ? pickDragPoint(this.entities, raw, this.pickTol()) : null;
     const canDetach = !!(raw && joint && detachableEnd(this.entities, joint, raw));
+    const lone = selEnts.length === 1 ? selEnts[0] : undefined;
+    const at = { x: e.clientX, y: e.clientY };
     const items: CtxItem[] = [
+      ...(lone?.type === "polygon"
+        ? [
+          { label: t("sketch.menu.editPolygon"), onClick: () => this.editPolygon(lone.id, at) },
+          { separator: true, label: "" } as CtxItem,
+        ]
+        : []),
       ...cons.map((tool) => ({
         label: constraintLabel(tool),
         onClick: () => this.applyConstraintToSelection(tool, selEnts),
@@ -3988,6 +4150,7 @@ export class SketchMode {
   private filletClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (this.guardProjected(idx >= 0 ? this.entities[idx] : undefined)) return;
+    if (this.refuseShapeCorner(idx >= 0 ? this.entities[idx] : undefined)) return;
     if (idx < 0 || this.entities[idx]?.type !== "line") return;
     if (this.filletFirst == null) {
       this.filletFirst = idx;
@@ -4028,6 +4191,7 @@ export class SketchMode {
   private chamferClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (this.guardProjected(idx >= 0 ? this.entities[idx] : undefined)) return;
+    if (this.refuseShapeCorner(idx >= 0 ? this.entities[idx] : undefined)) return;
     if (idx < 0 || this.entities[idx]?.type !== "line") return;
     if (this.filletFirst == null) {
       this.filletFirst = idx;
@@ -4048,6 +4212,29 @@ export class SketchMode {
     this.filletFirst = null;
     this.dim.hide();
     this.afterModify();
+  }
+
+  /** Fillet and Chamfer join two LINES at a corner. A rectangle, polygon or slot
+   *  is ONE entity with no line of its own to pick (types.ts), and filletCorner
+   *  only knows lines, so a click on one used to vanish: no radius box and no
+   *  word (reports 5650b766, be869d55). Say what the shape is and the way out.
+   *  The pick already armed, if any, stays armed: the user can still click a
+   *  real line second. */
+  private refuseShapeCorner(e: ResolvedEntity | undefined): boolean {
+    if (e?.type !== "rectangle" && e?.type !== "polygon" && e?.type !== "slot") return false;
+    const wayOut =
+      e.type === "rectangle" ? t("sketch.modify.shapeWayOut.rectangle")
+        : e.type === "polygon" ? t("sketch.modify.shapeWayOut.polygon")
+          : t("sketch.modify.shapeWayOut.slot");
+    toast(
+      t("sketch.modify.shapeNotLines", {
+        tool: this.tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet"),
+        shape: t(`sketch.entity.${e.type}`),
+        wayOut,
+      }),
+      { timeout: 8000 },
+    );
+    return true;
   }
 
   /** Projected geometry is FIXED reference geometry: every modify/transform seam
@@ -4725,6 +4912,7 @@ export class SketchMode {
     this.splinePts = [];
     this.clickPts = [];
     this.offsetPick = null;
+    this.polygonEdit = null;
     this.dim.hide();
     this.overlay.setPreview([]);
     this.refreshActive();

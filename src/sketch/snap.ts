@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import type { DimPlace, ProjectedCurve, ProjectedSource } from "../types";
 import { asRound } from "./entityDims";
+import { polygonPoints } from "./region";
 
 export type SnapKind =
   | "free"
@@ -96,6 +97,20 @@ export function candidatesFromEntities(
       add(e.x - hw, e.y, "midpoint", 80);
     } else if (e.type === "circle") {
       add(e.x, e.y, "center", 90);
+    } else if (e.type === "polygon") {
+      // A polygon's centre and corners, and a slot's two arc centres, are where
+      // a Rotate or Move wants its pivot, and none of them was offered: rotating
+      // a polygon in place meant guessing its centre (reports a237de6b,
+      // ffae1a6e). Copy-only, like every snap here: the solver treats both
+      // shapes as rigid and names none of these points, so snapping to one
+      // copies the coordinate and records no join.
+      add(e.x, e.y, "center", 90);
+      for (const v of polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180)) {
+        add(v.x, v.y, "endpoint", 100);
+      }
+    } else if (e.type === "slot") {
+      add(e.x1, e.y1, "center", 90);
+      add(e.x2, e.y2, "center", 90);
     } else if (e.type === "arc") {
       add(e.x1, e.y1, "endpoint", 100);
       add(e.x2, e.y2, "endpoint", 100);

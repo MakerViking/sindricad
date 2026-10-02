@@ -33,6 +33,7 @@ export class DimInput {
   private fields: Field[] = [];
   private onCommit: ((values: Record<string, number>) => void) | null = null;
   private onCancel: (() => void) | null = null;
+  private onInput: (() => void) | null = null;
   private active = false;
 
   constructor() {
@@ -91,15 +92,22 @@ export class DimInput {
     this.root.style.pointerEvents = on ? "none" : "";
   }
 
+  /** `onInput` runs after every keystroke that changes a field, once the field
+   *  has frozen to the typed text. A tool previews from the cursor on pointer
+   *  moves, so without it a typed value reached the preview only when the mouse
+   *  next moved (report be869d55: a polygon's typed side count showed nothing
+   *  until the tick). */
   show(
     defs: DimFieldDef[],
     onCommit: (values: Record<string, number>) => void,
     onCancel?: () => void,
+    onInput?: () => void,
   ) {
     this.hide();
     this.setClickThrough(false); // every other tool wants a clickable box
     this.onCommit = onCommit;
     this.onCancel = onCancel ?? null;
+    this.onInput = onInput ?? null;
     this.active = true;
     this.root.style.display = "flex";
     this.fields = defs.map((def) => {
@@ -139,6 +147,7 @@ export class DimInput {
         // showed: "50" typed over a 49.99999 measurement means 50.
         field.wrote = undefined;
         markUndoTarget();
+        this.onInput?.();
       });
       return field;
     });
@@ -243,12 +252,19 @@ export class DimInput {
 
   /** Pre-fill a field AND lock it (userDriven) so cursor tracking can't clobber
    *  the value — used when re-opening a feature for editing, where the saved
-   *  value must hold until the user deliberately retypes or drags a handle. */
-  seed(name: string, value: number) {
+   *  value must hold until the user deliberately retypes or drags a handle.
+   *  Text goes in verbatim: a parameter-bound field reopens its formula. */
+  seed(name: string, value: number | string) {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return;
-    f.input.value = fieldText(value, f.def.kind);
-    f.wrote = { text: f.input.value, mm: value };
+    if (typeof value === "string") {
+      // a text seed has no number behind it: read back as shown, like typing
+      f.input.value = value;
+      f.wrote = undefined;
+    } else {
+      f.input.value = fieldText(value, f.def.kind);
+      f.wrote = { text: f.input.value, mm: value };
+    }
     f.userDriven = true;
   }
 
@@ -335,5 +351,6 @@ export class DimInput {
     this.fields = [];
     this.onCommit = null;
     this.onCancel = null;
+    this.onInput = null;
   }
 }
