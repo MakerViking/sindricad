@@ -1737,6 +1737,19 @@ export class SketchMode {
     if (this.tool !== "select") return false;
     const raw = this.planePoint(e);
     if (!raw) return false;
+    // A drag handle under the press: hand the whole press to the canvas. A
+    // coincident's ⊙ or a fix's anchor is drawn ON its point, about 18 px
+    // across against a 9 px pick radius, so it covered the very handle it
+    // marks: a press on a snapped join (and every snap makes one now) only
+    // selected, and neither a point drag nor the Shift-drag Break's toast
+    // describes could start from the dot. onPointerDown does what a press on
+    // the bare canvas does there, pointer capture included, so the drag's
+    // moves and release reach the canvas. Double-click delete is unaffected:
+    // the badge recognises its second press before asking this.
+    if (pickDragPoint(this.entities, raw, this.pickTol())) {
+      this.onPointerDown(e);
+      return true;
+    }
     const own = this.ownEntities();
     const idx = pickEntity(own, raw, this.pickTol());
     const ent = idx >= 0 ? own[idx] : undefined;

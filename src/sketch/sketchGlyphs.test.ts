@@ -48,8 +48,10 @@ const TOL = 9 * 0.05;
 
 /** A live glyph layer over `ents` + `cons`, wired the way SketchMode wires it:
  *  onDelete splices the constraint and REBUILDS (which destroys the badge), and
- *  onOverlapPick is a faithful copy of SketchMode.labelOverlapSelect — real
- *  pickEntity, and a rebuild when geometry claims the pick. */
+ *  onOverlapPick is a faithful copy of SketchMode.labelOverlapSelect's SELECT
+ *  branch — real pickEntity, and a rebuild when geometry claims the pick. (A
+ *  press on a point's drag handle takes its other branch and starts the point
+ *  drag; glyphPointDrag.test.ts drives the real method for that.) */
 function mount(ents: ResolvedEntity[], cons: SketchConstraint[]) {
   body().innerHTML = "";
   const glyphs = new SketchGlyphs(viewport);

@@ -181,9 +181,9 @@ describe("Break, then pull the halves apart", () => {
   });
 
   // Pressed through onPointerDown directly. In the app the ⊙ badge covers the
-  // joint and takes a press within about 8 px of it, so this toast is reached
-  // only by a press further out along the curve; the badge itself is the
-  // visible way to the join.
+  // joint, and a press on it is handed to onPointerDown the same way
+  // (labelOverlapSelect; glyphPointDrag.test.ts), so this toast is what a
+  // Shift-drag from the badge says too.
   it("refuses when an explicit Coincident holds the ends, and says how to delete it", async () => {
     const sk = sketch();
     sk.breakAt(10);
