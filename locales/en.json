@@ -1571,6 +1571,7 @@
       }
     },
     "offset": {
+      "chainJunction": "Chain Selection stops at ({x}, {y}), where more than two curves meet, so I will offset only the curve you picked.",
       "chainOff": "Chain Selection off — only the clicked curve offsets",
       "chainOn": "Chain Selection on — the whole connected profile offsets as a unit",
       "chainSelection": "Chain Selection",

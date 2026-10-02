@@ -499,8 +499,18 @@ export async function compileAndSolve(
     }
     else if (c.type === "tangent") { if (isLine(c.line) && isCircle(c.circle)) cons.push({ id, type: "tangentLC", line: c.line, circle: c.circle }); }
     else if (c.type === "coincident") {
+      // Both operands already ONE solver point (their positions merged in
+      // coincKey's bucket): the merge IS the join, and compiling a coincident
+      // on top of it is what planegcs flags as redundant, so a join that is
+      // perfectly fine drew an amber glyph (field report 356b2693). It stays in
+      // the document and compiles again the moment the two points separate.
       const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
-      if (a && b) cons.push({ id, type: "coincident", a, b });
+      if (a && b && a !== b) cons.push({ id, type: "coincident", a, b });
+      // Not compiled is not inert: the merge still ties a rectangle corner to
+      // whatever it joins, so it scopes the mirror guard exactly as before. A
+      // satisfied coincident is ALWAYS merged on the next compile, so without
+      // this a corner joined to a line end mirrored past it silently.
+      else if (a && b) noteRectScope(c);
     }
     else if (c.type === "concentric") {
       const a = centerPoint(c.c1), b = centerPoint(c.c2);

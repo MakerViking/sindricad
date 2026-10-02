@@ -1507,6 +1507,35 @@ describe("dragging a rectangle corner cannot silently relabel it", () => {
     expectStillRectangular(dragged.entities, "R", "after the ordinary drag", ents);
   });
 
+  it.each([
+    ["the corner spelling R.2", { type: "coincident", e1: "A", p1: 0, e2: "R", p2: 2 }],
+    ["the edge spelling R~1 p1", { type: "coincident", e1: "A", p1: 0, e2: "R~1", p2: 1 }],
+  ] as [string, SketchConstraint][])("a SATISFIED coincident on a corner still vetoes the mirror (%s)", async (_label, join) => {
+    // A coincident whose two ends already share one solver point is not
+    // compiled (356b2693: planegcs drew that vacuous join amber), and once a
+    // coincident is satisfied its ends are ALWAYS merged on the next compile. It
+    // still ties the corner to a line end the mirror does not move, so it must
+    // keep scoping the guard. Measured with the scope riding on the compile: the
+    // drag came back ok:true as a 5 x 5 rectangle, corner 2 sat 7.07 mm from the
+    // line end, and every later pump returned ok:false with an EMPTY conflict
+    // list, so the user's constraint was violated with no red chip anywhere.
+    const start = [RECT("R", 0, 0, 40, 20), L("A", 20, 10, 60, 40)];
+    const cons = [join];
+    const settled = await compileAndSolve(start, cons);
+    expect(settled.ok, "the fixture must settle before the drag means anything").toBe(true);
+    expect(settled.overDefined.map(constraintIndexOf), "and the join it already holds is not amber").not.toContain(0);
+
+    const dragged = await compileAndSolve(settled.entities, cons, { fromX: -20, fromY: -10, toX: 25, toY: 15 });
+    expect(dragged.ok, "a mirror the coincident CAN observe is refused").toBe(false);
+    expect(dragged.dragRefused, "and the caller is told to keep its anchor").toBe("geometry");
+    expect(dragged.entities, "and the geometry is handed back untouched").toEqual(settled.entities);
+
+    const pumped = await compileAndSolve(dragged.entities, cons);
+    expect(pumped.ok, "the next pump still solves").toBe(true);
+    expect(dist(pt(pumped.entities, "R", 2), pt(pumped.entities, "A", 0)),
+      "and the corner is still on the line end").toBeLessThanOrEqual(TOL);
+  });
+
   it("CONTROL: an UNCONSTRAINED corner drag past the opposite corner still works", async () => {
     // This is what stops the guard being a blanket "refuse every sign flip".
     // With nothing addressing the rectangle by corner or edge, a mirror is a

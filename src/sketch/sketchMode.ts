@@ -23,10 +23,10 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField, dimValueOk } from "../ui/units";
+import { isPlainNumber, parseField, dimValueOk, fmtLength } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
@@ -1637,11 +1637,19 @@ export class SketchMode {
    *  ends are at ±10 000 mm while the origin point collapses to a single vertex
    *  (so it reads as closed). Neither is reachable from a real sketch. The
    *  exclusion stays because it is what makes that safety a property of the
-   *  code rather than of the axis length. */
+   *  code rather than of the axis length.
+   *
+   *  Construction geometry chains only from a construction pick, the rule
+   *  offsetChain follows too. Construction lines drawn out to a profile's
+   *  corners are not part of its contour, and a double-click on the profile
+   *  used to select them along with it (field report 356b2693). */
   private entityChain(startId: string): string[] {
+    const own = this.ownEntities();
+    const withConstruction = !!own.find((e) => e.id === startId)?.construction;
     // id → its two free ends. Absent = closed, or too degenerate to walk.
     const ends = new Map<string, [THREE.Vector2, THREE.Vector2]>();
-    for (const e of this.ownEntities()) {
+    for (const e of own) {
+      if (e.construction && !withConstruction) continue;
       const pts = entityPolyline(e);
       const a = pts[0];
       const b = pts[pts.length - 1];
@@ -3916,6 +3924,11 @@ export class SketchMode {
   private openOffsetMenu(e: MouseEvent) {
     e.preventDefault();
     const pick = this.offsetPick;
+    // The right-click that opened this menu blurred the distance box, and a menu
+    // item cannot hand focus back. After an item that leaves the pick open, the
+    // distance typed next went nowhere and Enter did nothing, with no message
+    // (field report 356b2693's right-click path), so give the box focus again.
+    const keepTyping = () => { if (this.offsetPick) this.dim.focus(); };
     contextMenu(e.clientX, e.clientY, [
       {
         label: `${this.offsetChainMode ? "✓ " : "    "}${t("sketch.offset.chainSelection")}`,
@@ -3924,11 +3937,13 @@ export class SketchMode {
           setPrompt(this.offsetChainMode
             ? t("sketch.offset.chainOn")
             : t("sketch.offset.chainOff"));
+          if (pick) this.noteChainJunction(pick.idx);
+          keepTyping();
         },
       },
       {
         label: t("common.flip"), disabled: !pick,
-        onClick: () => { if (pick) pick.side = -pick.side; },
+        onClick: () => { if (pick) pick.side = -pick.side; keepTyping(); },
       },
       { separator: true, label: "" },
       { label: t("common.ok"), disabled: !pick, onClick: () => { if (pick) this.commitOffset(); } },
@@ -4188,6 +4203,18 @@ export class SketchMode {
       () => this.cancelOffset(),
     );
     setPrompt(t("sketch.offset.prompt"));
+    this.noteChainJunction(idx);
+  }
+
+  /** Say so when Chain Selection cannot take the whole chain. At a vertex where
+   *  three or more curves meet, offsetChain gives up and the tool offsets the
+   *  picked curve alone: correct, but it used to happen in silence, and with
+   *  the toggle visibly on that reads as "Chain Selection does not work" (field
+   *  report 356b2693). Once per pick, never per preview frame. */
+  private noteChainJunction(idx: number) {
+    if (!this.offsetChainMode) return;
+    const at = offsetChainJunction(this.entities, idx);
+    if (at) toast(t("sketch.offset.chainJunction", { x: fmtLength(at.x), y: fmtLength(at.y) }));
   }
 
   /** The offset result for the current pick, honouring Chain Selection. Chain

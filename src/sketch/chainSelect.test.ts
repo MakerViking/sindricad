@@ -118,3 +118,31 @@ describe("chain select walks connected endpoints", () => {
     expect(chain("a")).toEqual(["a", "b", "t"]);
   });
 });
+
+// Field report 356b2693: construction lines drawn from the origin out to two
+// corners of a profile. A double-click on the profile took them as well, and
+// through the origin the third construction line too, so "select this outline"
+// selected reference geometry the user never meant. Construction geometry is not
+// part of a contour (regions ignore it), so it chains only from a construction
+// pick — the same rule the Offset tool's Chain Selection follows.
+describe("chain select and construction geometry", () => {
+  const cline = (id: string, x1: number, y1: number, x2: number, y2: number): ResolvedEntity =>
+    ({ type: "line", id, x1, y1, x2, y2, construction: true }) as ResolvedEntity;
+  // a closed square, with construction lines from (50,50) to two of its corners
+  const sketch = () => withEntities([
+    line("s0", 0, 0, 10, 0),
+    line("s1", 10, 0, 10, 10),
+    line("s2", 10, 10, 0, 10),
+    line("s3", 0, 10, 0, 0),
+    cline("k1", 50, 50, 10, 10),
+    cline("k2", 50, 50, 0, 10),
+  ]);
+
+  it("a double-click on the profile takes the profile and nothing else", () => {
+    expect(sketch()("s0")).toEqual(["s0", "s1", "s2", "s3"]);
+  });
+
+  it("a double-click on a construction line still walks everything it touches", () => {
+    expect(sketch()("k1")).toEqual(["k1", "k2", "s0", "s1", "s2", "s3"]);
+  });
+});

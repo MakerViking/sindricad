@@ -1063,6 +1063,64 @@ function arcFromEnds(
   return ccw ? arcFromSpan(C, R, aS, delta, src) : arcFromSpan(C, R, aE, delta, src);
 }
 
+/** The connected curves (lines and arcs) a chain offset from `index` would
+ *  take, plus the endpoint map offsetChain orders them by. Or, when the walk
+ *  reaches a vertex that three or more of those curves share, that vertex: it
+ *  is not a simple chain, and where it stopped is what the caller tells the
+ *  user. Null when the pick is not a line or an arc.
+ *
+ *  Construction geometry takes part only when the pick is itself
+ *  construction. Construction lines drawn out to a profile's corners are not
+ *  part of its contour, and counting them turned every corner they reached
+ *  into a three-curve junction, so the profile stopped being a chain at all
+ *  (field report 356b2693: "Chain select no longer works on offset"). */
+function chainComponent(
+  ents: ResolvedEntity[],
+  index: number,
+): { comp: Set<number>; touch: Map<string, number[]> } | { junction: THREE.Vector2 } | null {
+  const withConstruction = !!ents[index]?.construction;
+  const isChain = (e: ResolvedEntity | undefined): e is ChainE =>
+    (e?.type === "line" || e?.type === "arc") && (withConstruction || !e.construction);
+  if (!isChain(ents[index])) return null;
+
+  // endpoint key -> chain-entity indices touching it. coincKey is the solver's
+  // canonical coincidence key, so "connected" here matches what the solver merges.
+  const touch = new Map<string, number[]>();
+  ents.forEach((e, i) => {
+    if (!isChain(e)) return;
+    for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
+      const arr = touch.get(k);
+      if (arr) arr.push(i); else touch.set(k, [i]);
+    }
+  });
+
+  // connected component containing `index`; stop at any junction (a shared
+  // vertex touched by >2 curves) — not a simple chain
+  const comp = new Set<number>();
+  const stack = [index];
+  while (stack.length) {
+    const i = stack.pop();
+    if (i === undefined || comp.has(i)) continue;
+    const e = ents[i];
+    if (!isChain(e)) continue;
+    comp.add(i);
+    for (const p of [v(e.x1, e.y1), v(e.x2, e.y2)]) {
+      const arr = touch.get(coincKey(p.x, p.y));
+      if (!arr) continue;
+      if (arr.length > 2) return { junction: p };
+      for (const j of arr) if (j !== i) stack.push(j);
+    }
+  }
+  return { comp, touch };
+}
+
+/** Where Chain Selection stops for this pick: the vertex at which three or
+ *  more curves meet, or null when there is no such vertex in its chain. */
+export function offsetChainJunction(ents: ResolvedEntity[], index: number): THREE.Vector2 | null {
+  const walk = chainComponent(ents, index);
+  return walk && "junction" in walk ? walk.junction : null;
+}
+
 /**
  * Offset a connected chain of LINE and ARC entities as a unit, joining the
  * corners — the common "offset this profile in/out" case (polylines, a
@@ -1082,38 +1140,9 @@ export function offsetChain(
   index: number,
   dist: number,
 ): OffsetResult | null {
-  const isChain = (e: ResolvedEntity | undefined): e is ChainE =>
-    e?.type === "line" || e?.type === "arc";
-  if (!isChain(ents[index])) return null;
-
-  // endpoint key -> chain-entity indices touching it. coincKey is the solver's
-  // canonical coincidence key, so "connected" here matches what the solver merges.
-  const touch = new Map<string, number[]>();
-  ents.forEach((e, i) => {
-    if (!isChain(e)) return;
-    for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
-      const arr = touch.get(k);
-      if (arr) arr.push(i); else touch.set(k, [i]);
-    }
-  });
-
-  // connected component containing `index`; bail on any junction (a shared
-  // vertex touched by >2 curves) — not a simple chain
-  const comp = new Set<number>();
-  const stack = [index];
-  while (stack.length) {
-    const i = stack.pop();
-    if (i === undefined || comp.has(i)) continue;
-    const e = ents[i];
-    if (!isChain(e)) continue;
-    comp.add(i);
-    for (const k of [coincKey(e.x1, e.y1), coincKey(e.x2, e.y2)]) {
-      const arr = touch.get(k);
-      if (!arr) continue;
-      if (arr.length > 2) return null; // junction
-      for (const j of arr) if (j !== i) stack.push(j);
-    }
-  }
+  const walk = chainComponent(ents, index);
+  if (!walk || "junction" in walk) return null; // not a line/arc, or a junction
+  const { comp, touch } = walk;
   if (comp.size < 2) return null; // a lone curve — caller handles it
 
   // pick a start: a free end for an open chain, else any member (closed loop)

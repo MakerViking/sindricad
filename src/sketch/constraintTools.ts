@@ -10,6 +10,7 @@ import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
+import { coincKey } from "./sketchSolve";
 import { curveKind, dimRefPoints, lineOperandAt, refPoint } from "./entityDims";
 import type { SketchTool } from "./sketchMode";
 
@@ -252,18 +253,33 @@ export class ConstraintTools {
    *  the rectangle's own id with `idx` = the corner index 0..3 — and not the
    *  edge form `R~k` p0/p1: that reaches the same solver point, but nothing that
    *  renders a point operand (glyphs.refPos) can decode it, so such a constraint
-   *  would be invisible and undeletable. */
-  private pickEndpoint(p: THREE.Vector2): { id: string; idx: number } | null {
+   *  would be invisible and undeletable.
+   *
+   *  `held` is the point a flow is already holding. Any OTHER point under the
+   *  cursor beats it, however much nearer the held one is: two ends a few
+   *  hundredths of a millimetre apart are exactly the gap Coincident exists to
+   *  close, and the second click, landing where the first did, used to resolve
+   *  to the first pick again and be refused as the same point twice (field
+   *  report 356b2693, a 0.02 mm gap that kept an offset outline open). The held
+   *  point is still returned when it is the only one there, so a genuine
+   *  repeat click keeps its own message. */
+  private pickEndpoint(
+    p: THREE.Vector2,
+    held: { id: string; idx: number } | null = null,
+  ): { id: string; idx: number } | null {
     const tol = this.host.pickTol();
     let best: { id: string; idx: number } | null = null;
     let bestD = tol * tol;
+    let heldHere: { id: string; idx: number } | null = null;
     for (const e of this.host.entities()) {
       for (const r of dimRefPoints(e)) {
         const dx = r.pos.x - p.x, dy = r.pos.y - p.y, d = dx * dx + dy * dy;
+        if (d > tol * tol) continue;
+        if (held && e.id === held.id && r.p === held.idx) { heldHere = held; continue; }
         if (d <= bestD) { bestD = d; best = { id: e.id, idx: r.p }; }
       }
     }
-    return best;
+    return best ?? heldHere;
   }
 
   /** Plane coords of the addressable point under `p`, or null. For the hover
@@ -273,7 +289,7 @@ export class ConstraintTools {
    *  but not hit is the GH #17 shape, and one you can hit but not see is what
    *  rectangle corners were until this release). */
   hoverPoint(p: THREE.Vector2): { x: number; y: number } | null {
-    const ep = this.pickEndpoint(p);
+    const ep = this.pickEndpoint(p, this.pendingEndpoint);
     return ep ? this.endpointXY(ep) : null;
   }
 
@@ -312,7 +328,7 @@ export class ConstraintTools {
       return;
     }
     if (tool === "coincident") {
-      const ep = this.pickEndpoint(p);
+      const ep = this.pickEndpoint(p, this.pendingEndpoint);
       if (ep) {
         // An endpoint pick is the primary flow and wins over any line held for
         // the collinear fallback below.
@@ -388,13 +404,21 @@ export class ConstraintTools {
       return;
     }
     if (!this.pendingEndpoint2) {
-      const ep = this.pickEndpoint(p);
+      const ep = this.pickEndpoint(p, this.pendingEndpoint);
       if (!ep) return this.missed();
       // Two corners of the SAME rectangle is the useful symmetric pick (that is
       // what "centre this rectangle on the axis" means), so the distinctness
       // test is per POINT here, not per entity — two picks of one line's two
       // ends stay legal for the same reason.
-      if (ep.id === this.pendingEndpoint.id && ep.idx === this.pendingEndpoint.idx) {
+      //
+      // Per solver point, though, not per id: pickEndpoint now passes over the
+      // held point to the other curve's end beside it, and at a shared corner
+      // that end is the SAME solver point. Mirroring a point onto itself pins
+      // it to the axis, which nobody asked for by clicking a corner twice.
+      const held = this.endpointXY(this.pendingEndpoint), at = this.endpointXY(ep);
+      const samePoint = (ep.id === this.pendingEndpoint.id && ep.idx === this.pendingEndpoint.idx)
+        || (!!held && !!at && coincKey(held.x, held.y) === coincKey(at.x, at.y));
+      if (samePoint) {
         // Clicking the SAME point twice used to fall out of here having done and
         // said nothing, holding a pick the user could not tell was still held.
         this.host.warn(t("sketch.constraint.alreadyPicked"));

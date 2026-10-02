@@ -4,6 +4,7 @@ import { ConstraintTools, type ConstraintHost } from "./constraintTools";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import type { SketchTool } from "./sketchMode";
+import { t } from "../i18n";
 
 // Minimal live-accessor host mirroring what SketchMode provides. pickEntity
 // (from modify.ts) is the real implementation, so clicks are aimed at geometry.
@@ -237,6 +238,80 @@ describe("coincident: the silent-miss fixes", () => {
     expect(h.pending).toEqual({ x: 0, y: 0 }); // still held
     ct.click(v(0, 5));      // second endpoint still completes it
     expect(h._cons).toEqual([{ type: "coincident", e1: "l1", p1: 0, e2: "l2", p2: 0 }]);
+  });
+});
+
+// Field report 356b2693: an outline left 0.0196 mm open by a trim. Both ends are
+// far inside any pick tolerance, so the user cannot aim at one or the other:
+// both clicks land on the same spot. The nearest-point pick resolved the second
+// click to the point already held and refused it as "the same point twice", so
+// the one tool that closes such a gap could not be used on it.
+describe("joining two ends closer together than the pick tolerance", () => {
+  const nearGap = (): ResolvedEntity[] => [
+    { type: "line", id: "a", x1: 0, y1: 0, x2: 10, y2: 0 },
+    { type: "line", id: "b", x1: 10.0196, y1: 0.0005, x2: 20, y2: 8 },
+  ];
+
+  it("coincident: the second click on the same spot takes the OTHER end", () => {
+    const h = new MockHost();
+    h._ents = nearGap();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(10, 0));
+    ct.click(v(10, 0));
+    expect(h.warnings).toEqual([]);
+    expect(h._cons).toEqual([{ type: "coincident", e1: "a", p1: 1, e2: "b", p2: 0 }]);
+  });
+
+  it("the hover after the first pick shows the end the second click will take", () => {
+    const h = new MockHost();
+    h._ents = nearGap();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    expect(ct.hoverPoint(v(10, 0))).toEqual({ x: 10, y: 0 }); // nothing held yet
+    ct.click(v(10, 0));
+    expect(ct.hoverPoint(v(10, 0))).toEqual({ x: 10.0196, y: 0.0005 });
+  });
+
+  it("a lone end clicked twice is still the same point twice, and says so", () => {
+    const h = new MockHost();
+    h._ents = nearGap();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    ct.click(v(0, 0));
+    ct.click(v(0, 0));
+    expect(h._cons).toEqual([]);
+    expect(h.warnings).toEqual([t("sketch.constraint.samePointTwice")]);
+  });
+
+  it("symmetric: the second pick takes the other end too", () => {
+    const h = new MockHost();
+    h._ents = [...nearGap(), { type: "line", id: "ax", x1: 10, y1: -20, x2: 10, y2: 20 }];
+    h._tool = "symmetric";
+    const ct = new ConstraintTools(h);
+    ct.click(v(10, 0));
+    ct.click(v(10, 0));
+    ct.click(v(10, 15)); // the axis
+    expect(h.warnings).toEqual([]);
+    expect(h._cons).toEqual([{ type: "symmetric", e1: "a", p1: 1, e2: "b", p2: 0, line: "ax" }]);
+  });
+
+  it("symmetric: a shared corner clicked twice is still the same point", () => {
+    // the other line's end sits EXACTLY on the held one: one solver point, and
+    // mirroring it onto itself would pin the corner to the axis
+    const h = new MockHost();
+    h._ents = [
+      { type: "line", id: "a", x1: 0, y1: 0, x2: 10, y2: 0 },
+      { type: "line", id: "b", x1: 10, y1: 0, x2: 20, y2: 8 },
+      { type: "line", id: "ax", x1: 15, y1: -20, x2: 15, y2: 20 },
+    ];
+    h._tool = "symmetric";
+    const ct = new ConstraintTools(h);
+    ct.click(v(10, 0));
+    ct.click(v(10, 0));
+    expect(h.warnings).toEqual([t("sketch.constraint.alreadyPicked")]);
+    ct.click(v(15, 10)); // what would have been the axis
+    expect(h._cons).toEqual([]);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as THREE from "three";
-import { trimEntity, breakAt, extendLine, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakLink } from "./modify";
+import { trimEntity, breakAt, extendLine, chamferCorner, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakLink } from "./modify";
 import type { ResolvedEntity } from "./snap";
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -312,6 +312,34 @@ describe("offsetChain", () => {
     ];
     const out = offsetChain(ents, 0, 2)!;
     for (const e of out.entities.slice(2)) expect(e.construction).toBe(true);
+  });
+
+  // Field report 356b2693: construction lines from the origin to a profile's
+  // corners made each of those corners a three-curve junction, so the profile
+  // never offset as a chain. Construction joins a chain only from a construction pick.
+  it("walks past construction lines that end on the profile's corners", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "L0", x1: 0, y1: 0, x2: 10, y2: 0 },
+      { type: "line", id: "L1", x1: 10, y1: 0, x2: 10, y2: 10 },
+      { type: "line", id: "L2", x1: 10, y1: 10, x2: 0, y2: 10 },
+      { type: "line", id: "L3", x1: 0, y1: 10, x2: 0, y2: 0 },
+      { type: "line", id: "K", x1: 50, y1: 50, x2: 10, y2: 10, construction: true },
+    ];
+    expect(offsetChainJunction(ents, 0)).toBeNull();
+    const out = offsetChain(ents, 0, 2)!;
+    expect(out.pairs.map((p) => p.src).sort()).toEqual(["L0", "L1", "L2", "L3"]);
+    // from the construction line itself, the corner IS a junction
+    expect(offsetChainJunction(ents, 4)).toEqual(v(10, 10));
+    expect(offsetChain(ents, 4, 2)).toBeNull();
+  });
+
+  it("offsetChainJunction says where a real junction stops the chain", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "A", x1: 0, y1: 0, x2: 10, y2: 0 },
+      { type: "line", id: "B", x1: 10, y1: 0, x2: 10, y2: 10 },
+      { type: "line", id: "C", x1: 10, y1: 0, x2: 20, y2: 0 },
+    ];
+    expect(offsetChainJunction(ents, 0)).toEqual(v(10, 0));
   });
 });
 

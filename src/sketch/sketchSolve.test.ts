@@ -161,15 +161,16 @@ describe("projected geometry compiles as fixed solver primitives", () => {
 
   it("coincident on an exactly-snapped projected endpoint: merged, no conflict", async () => {
     // user line starts EXACTLY on the projected endpoint → position-merge into
-    // one (fixed) solver point. planegcs flags the now-vacuous coincident as
-    // removable (same as native snapped+coincident endpoints — pre-existing,
-    // uniform behavior); it must never read as a CONFLICT, and the merge is
-    // what anchors the line to the reference.
+    // one (fixed) solver point. The merge is the join and is what anchors the
+    // line to the reference; the coincident on top of it is vacuous. It must
+    // never read as a CONFLICT, and since 356b2693 not as over-defined either:
+    // it is not compiled at all while both ends are one point, so its glyph is
+    // not drawn amber over a join that is fine.
     const ents = [projected("pl", { kind: "line", x1: 0, y1: 0, x2: 40, y2: 0 }), line("u", 40, 0, 55, 5)];
     const r = await compileAndSolve(ents, [{ type: "coincident", e1: "u", p1: 0, e2: "pl", p2: 1 }]);
     expect(r.ok).toBe(true);
     expect(r.conflicts).toEqual([]);
-    expect(r.overDefined.map(constraintIndexOf)).toContain(0); // removable, amber like native
+    expect(r.overDefined.map(constraintIndexOf)).not.toContain(0);
   });
 
   it("dragging a user endpoint merged onto a projected point is refused (no fighting)", async () => {
