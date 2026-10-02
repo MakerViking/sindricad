@@ -14,7 +14,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { drawOnTop } from "../viewport/gizmos";
-import type { RegionRef, SketchOverlay, WorldRegion } from "../sketch/overlay";
+import { selectionOutline, type RegionRef, type SketchOverlay, type WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
 import type { Feature, Num, Selector } from "../types";
 import { pointInRegion } from "../sketch/region";
@@ -86,6 +86,7 @@ export class ExtrudeTool {
   private distance = DEFAULT_EXTRUDE_DISTANCE;
   private preview: THREE.Group | null = null;
   private previewMat: THREE.MeshStandardMaterial | null = null;
+  private previewEdgeMat: THREE.LineBasicMaterial | null = null;
   private previewKey = ""; // depth+sign+selection of the built preview geometry
   private arrow: THREE.ArrowHelper | null = null;
   private dim = new DimInput();
@@ -863,14 +864,24 @@ export class ExtrudeTool {
     if (key !== this.previewKey) {
       this.previewKey = key;
       this.disposePreviewGeom();
+      // The ghost must not hide the profile it grows from (field ed91af03).
+      // It used to write depth at opacity 0.5 and sort BEFORE the sketch
+      // overlay, so once beginDrag tilted the camera its cap stood in front of
+      // the fills at the base and every one of them failed the depth test: the
+      // selected areas' orange vanished, and what was left was a blue volume
+      // beside blue unselected fills. Without depth writes the fills (and the
+      // sketch curves) draw over it, the lower opacity keeps them readable,
+      // and the edges keep the volume legible now that it is fainter.
       if (!this.previewMat) {
         this.previewMat = new THREE.MeshStandardMaterial({
           transparent: true,
-          opacity: 0.5,
+          opacity: 0.3,
+          depthWrite: false,
           metalness: 0.1,
           roughness: 0.6,
         });
       }
+      this.previewEdgeMat ??= new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false });
       this.preview = new THREE.Group();
       for (const wr of this.selected) {
         const shape = new THREE.Shape(wr.region.loop.map((p) => p.clone()));
@@ -880,10 +891,20 @@ export class ExtrudeTool {
         const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, steps: 1 });
         geo.applyMatrix4(wr.plane.basisMatrix(sign)); // local +Z -> plane normal (flipped on cut)
         this.preview.add(new THREE.Mesh(geo, this.previewMat));
+        // 40°: a tessellated circle's facets meet at a few degrees, and a line
+        // down every one of them would hatch a cylinder instead of outlining it
+        this.preview.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 40), this.previewEdgeMat));
       }
+      // And the selection itself, on top of all of it: with depth writes gone
+      // the fills show through, but a translucent orange under a translucent
+      // blue is still a guess, and this is the one thing the user must not
+      // have to guess at. Same areas as the ghost, so it is rebuilt with it.
+      this.preview.add(selectionOutline(this.selected));
       this.viewport.addToScene(this.preview);
     }
-    this.previewMat?.color.set(cut ? 0xff5c5c : 0x5b9bff);
+    const ghostColor = cut ? 0xff5c5c : 0x5b9bff;
+    this.previewMat?.color.set(ghostColor);
+    this.previewEdgeMat?.color.set(ghostColor);
 
     // arrow manipulator along the (shared) normal, anchored at the selection center
     const first = this.selected[0];
@@ -998,6 +1019,7 @@ export class ExtrudeTool {
     const sketchId = first ? first.sketchId : this.forcedSketchId;
     if (!sketchId) return;
     const hiddenBodies = this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds();
+    const kept = this.inspectorOnlyValues();
     const areas: CarriedRegion[] = [
       ...this.selected.map((wr) => ({
         point: [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z] as [number, number, number],
@@ -1057,10 +1079,10 @@ export class ExtrudeTool {
       // `upToOffset` is written ONLY while a target survives the edit: the
       // sidecar refuses an offset with nothing to offset FROM, so carrying it
       // past a cleared target would turn an edit into a rebuild error.
-      ...(this.editStartOffset !== undefined ? { startOffset: this.editStartOffset } : {}),
-      ...(this.editTaper !== undefined ? { taper: this.editTaper } : {}),
-      ...(this.editUpToOffset !== undefined && (this.upTo || this.upToPlane)
-        ? { upToOffset: this.editUpToOffset }
+      ...(kept.startOffset !== undefined ? { startOffset: kept.startOffset } : {}),
+      ...(kept.taper !== undefined ? { taper: kept.taper } : {}),
+      ...(kept.upToOffset !== undefined && (this.upTo || this.upToPlane)
+        ? { upToOffset: kept.upToOffset }
         : {}),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
@@ -1088,6 +1110,22 @@ export class ExtrudeTool {
     this.onDone?.(id);
   }
 
+  /** The inspector-only values an edit writes back: the document's CURRENT
+   *  ones, not the startEdit snapshot, whenever the feature is still there.
+   *  Writing the snapshot put back whatever had been typed into the inspector
+   *  while the tool was open (found triaging field 637278a9: a Start offset of
+   *  10 typed mid-edit was committed as the 3 the edit had opened on). The
+   *  inspector is read-only during a tool now; this keeps the commit honest
+   *  whoever wrote. The raw fields are read, so a parameter binding survives as
+   *  the name it is rather than as its value. */
+  private inspectorOnlyValues(): { startOffset: Num | undefined; taper: Num | undefined; upToOffset: Num | undefined } {
+    const live = this.editId ? this.store.document.features.find((f) => f.id === this.editId) : undefined;
+    if (live?.type !== "extrude") {
+      return { startOffset: this.editStartOffset, taper: this.editTaper, upToOffset: this.editUpToOffset };
+    }
+    return { startOffset: live.startOffset, taper: live.taper, upToOffset: live.upToOffset };
+  }
+
   cancel() {
     if (this.editId) {
       this.store.endEditPreview();
@@ -1111,6 +1149,8 @@ export class ExtrudeTool {
     this.disposePreviewGeom();
     this.previewMat?.dispose();
     this.previewMat = null;
+    this.previewEdgeMat?.dispose();
+    this.previewEdgeMat = null;
     this.previewKey = "";
     if (this.arrow) {
       this.viewport.removeFromScene(this.arrow);
@@ -1134,13 +1174,16 @@ export class ExtrudeTool {
     setPrompt(null);
   }
 
-  /** remove + dispose the preview group's geometries (the material is reused) */
+  /** remove + dispose the preview group's geometries (the materials are
+   *  reused; the selection outline's is shared with the sketch overlay) */
   private disposePreviewGeom() {
     if (!this.preview) return;
     this.viewport.removeFromScene(this.preview);
-    for (const child of this.preview.children) {
-      if (child instanceof THREE.Mesh) child.geometry.dispose();
-    }
+    // traverse, not children: the outline is a group of its own. Line2 is a
+    // Mesh, so the one test covers the ghost and the outline.
+    this.preview.traverse((o) => {
+      if (o instanceof THREE.Mesh || o instanceof THREE.LineSegments) o.geometry.dispose();
+    });
     this.preview = null;
   }
 }

@@ -893,6 +893,7 @@
       "up": "Up",
       "width": "Width"
     },
+    "lockedDuringTool": "Finish or cancel the current tool (Esc) to change these values.",
     "noFields": "No editable values on this feature.",
     "parametersTitle": "Parameters ({unit})",
     "upTo": {

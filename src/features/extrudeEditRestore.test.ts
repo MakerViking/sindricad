@@ -974,6 +974,36 @@ describe("an edit carries the inspector-only values through", () => {
     expect(carried.editTaper, "a fresh extrude inherited a taper").toBeUndefined();
     expect(carried.editUpToOffset, "a fresh extrude inherited a target offset").toBeUndefined();
   });
+
+  // Found triaging field 637278a9. The inspector stayed editable while an
+  // extrude was open for editing, and commit wrote back the values startEdit
+  // had LOADED, so a Start offset typed into the inspector mid-edit was put
+  // back without a word. The inspector is read-only during a tool now
+  // (inspectorPanel.test.ts); this is the tool's half: commit writes what the
+  // document holds when it commits.
+  it("writes back what the document holds at commit, not what the edit opened on", async () => {
+    const d = withValues();
+    const { tool, written, commit } = harness(d);
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    // a write while the tool is open, shaped the way the store makes one: a
+    // new feature object in the document, not the old one mutated
+    d.features[1] = { ...d.features[1]!, startOffset: 10 } as Feature;
+    await commit();
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.startOffset, "the edit put back the start offset it opened on").toBe(10);
+    expect(f.taper, "a value nobody touched must still ride along").toBe(7);
+  });
+
+  it("keeps a parameter binding as the binding, not as its number", async () => {
+    const d = withValues({ startOffset: "lift" });
+    const { tool, written, commit } = harness(d);
+    expect(tool.startEdit("ex1", () => {})).toBe(true);
+    d.features[1] = { ...d.features[1]!, taper: "draft" } as Feature;
+    await commit();
+    const f = written.feature as unknown as Record<string, unknown>;
+    expect(f.startOffset).toBe("lift");
+    expect(f.taper).toBe("draft");
+  });
 });
 
 // GH #41: an up-to target was permanent once committed. `commit` writes what

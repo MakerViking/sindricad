@@ -105,6 +105,59 @@ export function setSketchLineResolution(w: number, h: number) {
   for (const m of fatMats.values()) m.resolution.set(w, h);
 }
 
+/** Wider than a sketch curve, so the outline reads as a mark ON the profile
+ *  rather than as one more curve of it. */
+const SELECTION_OUTLINE_WIDTH = 3.5;
+/** A three.js GROUP order, compared before any object's own renderOrder: above
+ *  this overlay's group (10) and the extrude ghost's (0), so the outline is
+ *  drawn after both and neither blends over it. */
+const SELECTION_OUTLINE_ORDER = 20;
+
+/** Every selected area's boundary (outer loop and holes) in the selection
+ *  orange, drawn over everything: what the extrude tool shows on top of its
+ *  ghost. Field ed91af03: once the ghost appeared, the orange fills of the
+ *  selected areas sat behind a blue translucent volume beside the blue fills
+ *  of the unselected ones, and which areas were being extruded could no longer
+ *  be told, creating or editing.
+ *
+ *  A mesh line (Line2) with depthTest off, as edgeFeatureTool's edge ghosts
+ *  are, and not a LineBasicMaterial: WebKitGTK drops GL lines drawn with
+ *  depthTest off (see lineMat). The material lives in `fatMats`, so the
+ *  viewport's resize keeps its width right. The caller owns the geometry. */
+export function selectionOutline(regions: readonly WorldRegion[]): THREE.Group {
+  let mat = fatMats.get("selectionOutline");
+  if (!mat) {
+    mat = new LineMaterial({
+      color: SELECT_COLOR,
+      linewidth: SELECTION_OUTLINE_WIDTH,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+    });
+    mat.resolution.copy(fatResolution);
+    fatMats.set("selectionOutline", mat);
+  }
+  const g = new THREE.Group();
+  g.renderOrder = SELECTION_OUTLINE_ORDER;
+  for (const wr of regions) {
+    for (const loop of [wr.region.loop, ...wr.region.holes]) {
+      const first = loop[0];
+      if (!first || loop.length < 2) continue;
+      // Region loops are stored open (no repeated last point); a line is not
+      // closed by anything else.
+      const flat: number[] = [];
+      for (const p of [...loop, first]) {
+        const w = wr.plane.to3D(p.x, p.y);
+        flat.push(w.x, w.y, w.z);
+      }
+      const geo = new LineGeometry();
+      geo.setPositions(flat);
+      g.add(new Line2(geo, mat));
+    }
+  }
+  return g;
+}
+
 const lineMats = new Map<number, THREE.LineBasicMaterial>();
 function lineMat(color: number): THREE.LineBasicMaterial {
   let m = lineMats.get(color);

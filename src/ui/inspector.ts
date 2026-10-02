@@ -53,6 +53,17 @@ export class Inspector {
   /** the FEATURE editor's own container (see render) — null until first render */
   private featureBox: HTMLElement | null = null;
 
+  /** Why the panel is read-only right now, or null when it is not. main.ts
+   *  points it at "a modeling tool is running": every value on screen then
+   *  belongs to some OTHER feature than the one being made or re-opened. Field
+   *  637278a9 typed a Start offset while extruding a side face, and it rewrote
+   *  the FIRST extrude, because the face click had put that extrude here; during
+   *  an extrude edit the same kind of write was undone by the tool's commit.
+   *
+   *  Read again at every write, not only at render: a panel drawn just before a
+   *  tool started must still refuse. */
+  lockReason: () => string | null = () => null;
+
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
     // async param commits can land mid-edit — same re-render guard as the
@@ -68,6 +79,21 @@ export class Inspector {
     this.selectedId = id;
     this.render();
     if (focus) this.focusFeatureEditor();
+  }
+
+  /** Draw again with the same selection: a tool started or stopped, so
+   *  lockReason may have changed. */
+  refresh() {
+    this.render();
+  }
+
+  /** Run one write from this panel, unless it is locked. Returns the lock's
+   *  reason for the row to show, so a refusal is never silent. */
+  private whenUnlocked(write: () => void): string | null {
+    const lock = this.lockReason();
+    if (lock) return lock;
+    write();
+    return null;
   }
 
   /** Put the caret on the selected feature's first field, so the double-click
@@ -88,14 +114,28 @@ export class Inspector {
     this.el.innerHTML = "";
     this.featureBox = null;
 
+    // Said once, at the top, rather than per row: the rows below are disabled
+    // and this is the only place that says why.
+    const lock = this.lockReason();
+    const locked = lock !== null;
+    if (lock) {
+      const hint = document.createElement("div");
+      hint.className = "empty-state";
+      hint.textContent = lock;
+      this.el.appendChild(hint);
+    }
+
     // --- parameters (user params only; model params dN live in the dialog) ---
     this.el.appendChild(title(t("inspector.parametersTitle", { unit })));
     const defs = doc.paramDefs ?? {};
     for (const [name, value] of Object.entries(doc.parameters)) {
       if (defs[name]?.target) continue; // model param — edited via its field/dim
       const issue = this.store.paramIssues[name];
-      const row = numberRow(name, round(toDisplay(value)), (v) =>
-        this.store.setParam(name, fromDisplay(v)),
+      const row = numberRow(
+        name,
+        round(toDisplay(value)),
+        (v) => this.whenUnlocked(() => this.store.setParam(name, fromDisplay(v))),
+        locked,
       );
       if (issue) {
         row.classList.add("param-stale");
@@ -106,6 +146,9 @@ export class Inspector {
 
     // --- selected feature editor ---
     if (!this.selectedId) {
+      // "Select a feature to edit its values" would contradict the lock hint
+      // above, which is the one that is true while a tool runs.
+      if (locked) return;
       const hint = document.createElement("div");
       hint.className = "empty-state";
       setText(hint, "inspector.emptyHint");
@@ -133,9 +176,12 @@ export class Inspector {
       resolved.forEach((e, i) => {
         for (const d of entityDims(e)) {
           box.appendChild(
-            numberRow(`${d.label} ${unit}`, displayValue(d.valueMm), (v) => {
-              this.store.setSketchDimension(f.id, i, d.field, fromDisplay(v));
-            }),
+            numberRow(
+              `${d.label} ${unit}`,
+              displayValue(d.valueMm),
+              (v) => this.whenUnlocked(() => this.store.setSketchDimension(f.id, i, d.field, fromDisplay(v))),
+              locked,
+            ),
           );
         }
       });
@@ -172,11 +218,16 @@ export class Inspector {
         : typeof cur === "number"
           ? fmtNumber(kind === "length" ? round(toDisplay(cur)) : cur)
           : (cur ?? "");
-      const row = textRow(`${label}${suffix}`, String(shown), (raw) => {
-        const err = this.commitField(target, kind, raw);
-        if (!err) this.render(); // re-read: fx badge, computed value, canonical rounding
-        return err;
-      });
+      const row = textRow(
+        `${label}${suffix}`,
+        String(shown),
+        (raw) => {
+          const err = this.commitField(target, kind, raw);
+          if (!err) this.render(); // re-read: fx badge, computed value, canonical rounding
+          return err;
+        },
+        locked,
+      );
       if (bound && this.store.isParamBound(target)) {
         row.classList.add("fx-row");
         row.title = `${bound.name} = ${bound.expr} = ${fmtNumber(round(bound.value))}`;
@@ -193,10 +244,16 @@ export class Inspector {
       const planeId = (f as { upToPlane?: string }).upToPlane;
       const target = planeId === undefined ? t("inspector.upTo.pickedFace") : planeLabel(this.store.document.features, planeId);
       box.appendChild(
-        targetRow(target, () => {
-          this.store.clearUpToTarget(f.id);
-          this.render();
-        }),
+        targetRow(
+          target,
+          () => {
+            // Drawn again either way: a button has no error state of its own, so
+            // a refused clear is answered by the lock hint at the top.
+            this.whenUnlocked(() => this.store.clearUpToTarget(f.id));
+            this.render();
+          },
+          locked,
+        ),
       );
     }
   }
@@ -208,6 +265,8 @@ export class Inspector {
    *  file evaluates identically on every machine — unit suffixes (0.5 in) are
    *  the display-unit spelling inside expressions. */
   private commitField(target: ParamTarget, kind: FieldKind, raw: string): string | null {
+    const lock = this.lockReason();
+    if (lock) return lock;
     if (isPlainNumber(raw)) {
       const value = parseField(raw, kind)!;
       if (value === 0 && this.isOldSplitOffset(target)) return null;
@@ -252,7 +311,9 @@ function title(text: string, spaced = false): HTMLElement {
   return t;
 }
 
-function numberRow(label: string, value: number, onChange: (v: number) => void): HTMLElement {
+/** `onChange` answers like validatedInput's commit: an error message to show
+ *  (the row turns red and says it), or null when the value was taken. */
+function numberRow(label: string, value: number, onChange: (v: number) => string | null, locked: boolean): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row";
   const lab = document.createElement("label");
@@ -266,21 +327,29 @@ function numberRow(label: string, value: number, onChange: (v: number) => void):
   input.type = "text";
   input.inputMode = "decimal";
   input.value = fmtNumber(value);
+  input.disabled = locked;
+  input.addEventListener("input", () => input.classList.remove("input-error"));
   input.addEventListener("change", () => {
     const v = parseNumber(input.value);
-    if (v !== null) onChange(v);
+    if (v === null) return;
+    const err = onChange(v);
+    if (err) {
+      input.classList.add("input-error");
+      input.title = err;
+    }
   });
   row.append(lab, input);
   return row;
 }
 
-function textRow(label: string, value: string, commit: (raw: string) => string | null): HTMLElement {
+function textRow(label: string, value: string, commit: (raw: string) => string | null, locked: boolean): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row";
   const lab = document.createElement("label");
   lab.textContent = label;
   // text input so an expression / parameter name is allowed
   const input = validatedInput(value, commit, t("inspector.exprInputHint"));
+  input.disabled = locked;
   row.append(lab, input);
   return row;
 }
@@ -293,7 +362,7 @@ function textRow(label: string, value: string, commit: (raw: string) => string |
  *  left 58px for the text, and "Picked face" needs 68.5px — measured, the
  *  button wrapped onto a second line under the name and the row rendered 38px
  *  tall against its neighbours' 29px. */
-function targetRow(value: string, onClear: () => void): HTMLElement {
+function targetRow(value: string, onClear: () => void, locked: boolean): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row param-row-target";
   const lab = document.createElement("label");
@@ -310,6 +379,7 @@ function targetRow(value: string, onClear: () => void): HTMLElement {
   // icon-only control: the accessible name has to come from the button itself
   clear.setAttribute("aria-label", t("inspector.upTo.clearAria"));
   clear.innerHTML = icon("close");
+  clear.disabled = locked;
   clear.addEventListener("click", onClear);
   cell.append(name, clear);
   row.append(lab, cell);

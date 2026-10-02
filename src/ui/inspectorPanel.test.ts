@@ -14,6 +14,9 @@ import { Inspector } from "./inspector";
 import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { CadDocument, Feature, RebuildReply } from "../types";
+import { t } from "../i18n";
+// TEXT, not an import: importing main.ts boots the whole app (ribbonActions.test.ts).
+import mainSrc from "../main.ts?raw";
 
 // --- the element stub -------------------------------------------------------
 // Lives in fakeDom.testkit.ts so the timeline's chip test renders against the
@@ -350,5 +353,170 @@ describe("inspector: clearing an up-to target", () => {
     const f = store.document.features[0] as unknown as Record<string, unknown>;
     expect("upTo" in f, "the picked face survived the clear").toBe(false);
     expect(rows(root).map((r) => r.label)).toEqual(["Distance mm"]);
+  });
+});
+
+// --- read-only while a modeling tool runs (field 637278a9) -------------------
+//
+// "click/select a side face, parameters panel is populated with the previous
+// extrude dimensions which are editable ... I select extrude to extrude the side
+// face, the previous extrude dimension is still there ... if I put in a start
+// offset it adjusts my first extrude instead of the one I am currently working
+// on." Replayed on his document: the write landed on f2, the first extrude. The
+// tool has no Start offset of its own, so the only one on screen was f2's.
+//
+// main.ts points lockReason at "a modeling tool is running"; these pin what the
+// panel does with it. The text is the real locale string.
+
+const LOCKED = t("inspector.lockedDuringTool");
+/** f2 as saved in the reporter's document. */
+const firstExtrude = {
+  id: "f2",
+  type: "extrude",
+  sketch: "f1",
+  distance: 20,
+  operation: "new",
+  startOffset: 10,
+} as unknown as Feature;
+
+describe("inspector: read-only while a tool runs", () => {
+  it("says why, and offers no input to type into", () => {
+    const { root, inspector, writes } = mount([firstExtrude]);
+    inspector.lockReason = () => LOCKED;
+    inspector.select("f2");
+
+    expect(texts(root)[0], "the reason is not the first thing the panel says").toBe(LOCKED);
+    const all = rows(root);
+    expect(all.map((r) => r.label)).toContain("Start offset mm");
+    expect(all.filter((r) => !r.input.disabled).map((r) => r.label), "rows still editable during a tool").toEqual([]);
+    expect(writes).toEqual([]);
+  });
+
+  it("refuses a write from a panel drawn BEFORE the tool started, and says why", () => {
+    // The exact sequence of the report: the face click draws f2's rows
+    // editable, then Extrude starts. Whatever re-renders the panel, the write
+    // itself has to ask, or one missed refresh is the bug again.
+    const { root, inspector, writes } = mount([firstExtrude]);
+    inspector.select("f2");
+    let lock: string | null = null;
+    inspector.lockReason = () => lock;
+    lock = LOCKED; // the tool starts; nothing has re-rendered yet
+
+    const start = rows(root).find((r) => r.label === "Start offset mm")!.input;
+    expect(start.disabled, "fixture: this panel was drawn before the lock").toBe(false);
+    start.value = "10";
+    start.dispatch("change");
+    const width = rows(root).find((r) => r.label === "width")!.input;
+    width.value = "55";
+    width.dispatch("change");
+
+    expect(writes, "the old extrude (or a parameter) was rewritten mid-tool").toEqual([]);
+    for (const input of [start, width]) {
+      expect(input.classList.contains("input-error"), "refused without a sign").toBe(true);
+      expect(input.title).toBe(LOCKED);
+    }
+  });
+
+  it("is editable again once the tool ends", () => {
+    const { root, inspector, writes } = mount([firstExtrude]);
+    let lock: string | null = LOCKED;
+    inspector.lockReason = () => lock;
+    inspector.select("f2");
+    lock = null;
+    inspector.refresh();
+
+    expect(texts(root)).not.toContain(LOCKED);
+    const start = rows(root).find((r) => r.label === "Start offset mm")!.input;
+    expect(start.disabled).toBe(false);
+    start.value = "4";
+    start.dispatch("change");
+    expect(writes).toEqual(["field startOffset=4"]);
+  });
+
+  it("will not clear an up-to target mid-tool either", () => {
+    vi.useFakeTimers();
+    try {
+      const { root, inspector, store } = mountReal(savedExtrude);
+      inspector.select("e1"); // drawn unlocked: the button is live
+      inspector.lockReason = () => LOCKED;
+      buttons(root)[0]!.dispatch("click");
+
+      const f = store.document.features[0] as unknown as Record<string, unknown>;
+      expect(f.upToPlane, "the target was cleared while a tool was open").toBe("d1");
+      expect(texts(root)[0], "the refused click did not say why").toBe(LOCKED);
+      expect(buttons(root)[0]!.disabled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// --- ...and main.ts actually turns it on ------------------------------------
+//
+// Every test above sets lockReason by hand, so all of them stay green if the
+// app never sets it. A review deleted main.ts's one assignment and 300 tests
+// passed while the extrude edit was writable again: type a Start offset into
+// the open edit, commit, and the value is silently put back. So the wiring is
+// read off main.ts as text, the way ambientSelection.test.ts pins its handlers.
+
+/** A top-level function in main.ts, from its signature to the `}` at column 0. */
+function mainFunction(name: string): string {
+  const at = mainSrc.indexOf(`\nfunction ${name}(`);
+  expect(at, `main.ts has no top-level function ${name}(): renamed, and this can no longer check it`).toBeGreaterThan(-1);
+  return mainSrc.slice(at, mainSrc.indexOf("\n}\n", at) + 2);
+}
+
+/** Tools main.ts constructs that may run with the panel writable, and why. */
+const UNLOCKED_BY_DESIGN: Record<string, string> = {
+  MeasureTool: "reads distances and writes nothing to the document",
+  SectionTool: "a view clip; it writes nothing to the document",
+};
+
+describe("main.ts locks the inspector while a modeling tool runs", () => {
+  it("points lockReason at featureToolActive, once, and below planePick", () => {
+    const assigns = [...mainSrc.matchAll(/^inspector\.lockReason = (.*)$/gm)];
+    expect(assigns.length, "lockReason is not assigned exactly once: the panel is never read-only").toBe(1);
+    const [assign] = assigns;
+    expect(assign![1]).toContain("featureToolActive()");
+    expect(assign![1]).toContain('t("inspector.lockedDuringTool")');
+    // featureToolActive() reads planePick: a render reaching it any earlier
+    // throws in planePick's temporal dead zone at startup.
+    expect(assign!.index!).toBeGreaterThan(mainSrc.indexOf("\nlet planePick"));
+  });
+
+  it("asks the same question toolBusy does", () => {
+    // one list, so "a tool is running" cannot mean two things
+    expect(mainFunction("toolBusy")).toContain("featureToolActive()");
+  });
+
+  it("counts every tool main.ts constructs, apart from the named read-only ones", () => {
+    // Enumerated off the constructors, so a tool added later is held to this
+    // the day it lands instead of quietly leaving the panel writable.
+    const active = mainFunction("featureToolActive");
+    const tools = [...mainSrc.matchAll(/^const (\w+) = new (\w+Tool)\(/gm)].map((m) => ({ name: m[1]!, cls: m[2]! }));
+    expect(tools.length, "found no tool constructors: the pattern is stale").toBeGreaterThanOrEqual(10);
+    const missing = tools.filter((x) => !(x.cls in UNLOCKED_BY_DESIGN) && !active.includes(`${x.name}.active`));
+    expect(missing.map((x) => x.cls), "these tools leave the inspector writable while they run").toEqual([]);
+    const stale = Object.keys(UNLOCKED_BY_DESIGN).filter((cls) => !tools.some((x) => x.cls === cls));
+    expect(stale, "UNLOCKED_BY_DESIGN names tools main.ts no longer builds").toEqual([]);
+    // a pick (Shell, Draft, sketch plane) is a tool too
+    expect(active).toContain("planePick");
+  });
+
+  it("redraws the panel read-only once an edit has opened its tool", () => {
+    // editFeature puts the feature in the panel BEFORE the tool opens, so
+    // without this redraw its rows stay editable for the whole edit.
+    const edit = mainFunction("editFeature");
+    const lastOpen = edit.lastIndexOf(".startEdit(");
+    expect(lastOpen, "editFeature opens no tool: the slice is stale").toBeGreaterThan(-1);
+    expect(edit.indexOf("if (featureToolActive()) inspector.refresh();", lastOpen)).toBeGreaterThan(lastOpen);
+  });
+
+  it("takes the last feature out of the panel when Offset Face or Thicken starts", () => {
+    // the create path main.ts wires itself; featureStarters.test.ts holds the rest
+    const body = mainFunction("startFaceOffset");
+    const start = body.indexOf("faceOffset.start(");
+    expect(start).toBeGreaterThan(-1);
+    expect(body.indexOf("selectFeature(null)", start), "the selection is not cleared after the tool starts").toBeGreaterThan(start);
   });
 });

@@ -65,6 +65,9 @@ export interface FeatureStartersDeps {
   hasBody: () => boolean;
   setStatus: (text: string, cls: "" | "connected" | "error") => void;
   selectFeature: (id: string | null) => void;
+  /** Draw the inspector again without changing what it shows: a tool stopped,
+   *  so it is no longer read-only (Inspector.lockReason). */
+  refreshInspector: () => void;
   noteCommitted: (id: string | null) => void;
   isSketchConsumed: (id: string) => boolean;
   getSelectedFeature: () => string | null;
@@ -91,6 +94,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     hasBody,
     setStatus,
     selectFeature,
+    refreshInspector,
     noteCommitted,
     getSelectedFeature,
     setPlanePick,
@@ -126,15 +130,35 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     return true;
   };
 
+  /** The done callback of every tool below that CREATES a feature: remember
+   *  the commit and select what it made. A cancel selects nothing, but the
+   *  inspector still has to be drawn again, out of the read-only state the
+   *  running tool put it in. */
+  const created = (id: string | null) => {
+    noteCommitted(id);
+    if (id) selectFeature(id);
+    else refreshInspector();
+  };
+
+  /** A create tool has just started, so the inspector stops offering whatever
+   *  feature was selected before. Field 637278a9: a click on a side face selects
+   *  the extrude that made it, that extrude stayed in the panel through Extrude,
+   *  and its Start offset was the only one on screen, so typing one rewrote the
+   *  OLD extrude. Called after start(): the one render this triggers then
+   *  already sees the tool running, and draws the panel read-only. */
+  const clearSelectionForCreate = () => selectFeature(null);
+
   // Interactive Fillet / Chamfer: pick an edge (or use a Ctrl-click pre-selection),
   // then drag an arrow to scrub the radius/distance with a live sidecar preview.
   const startFillet = () => {
     if (busy()) return;
-    edgeFeature.start("fillet", (id) => { noteCommitted(id); if (id) selectFeature(id); });
+    edgeFeature.start("fillet", created);
+    clearSelectionForCreate();
   };
   const startChamfer = () => {
     if (busy()) return;
-    edgeFeature.start("chamfer", (id) => { noteCommitted(id); if (id) selectFeature(id); });
+    edgeFeature.start("chamfer", created);
+    clearSelectionForCreate();
   };
   // Interactive Press/Pull: pick a solid face, then drag an arrow along its normal
   // to add/cut material (planar) or offset a curved face — with a live preview.
@@ -147,7 +171,6 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // `active` cannot start another, since every start() self-guards on it.
   const startPressPull = () => {
     if (busy()) return;
-    const done = (id: string | null) => { noteCommitted(id); if (id) selectFeature(id); };
     // A selected FACE is Press/Pull's own job and wins. The right-click
     // "Press/Pull face" menu selects a face and then dispatches through here,
     // and viewport.selectOnlyFace clears only the highlighter — NOT the
@@ -155,11 +178,13 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     // for anyone with a sketch profile still selected.
     if (!viewport.selectedFacesForPressPull()) {
       if (viewport.selectedEdgeSelectors().length) {
-        edgeFeature.start("fillet", done);
+        edgeFeature.start("fillet", created);
+        clearSelectionForCreate();
         return;
       }
       if (overlay.selectedRegions().length) {
-        extrude.start(done);
+        extrude.start(created);
+        clearSelectionForCreate();
         return;
       }
     }
@@ -167,15 +192,16 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     // if what the user clicks turns out to be an edge or a sketch profile.
     // Region picking cannot cover for this — viewport.regionPickAt bails on
     // toolBusy(), which includes pressPull.active.
-    pressPull.start(done, (h) => {
+    pressPull.start(created, (h) => {
       if (h.kind === "region") {
         overlay.toggleRegionSelection(h.region, false);
-        extrude.start(done);
+        extrude.start(created);
       } else {
         viewport.selectOnlyEdge(h.edge);
-        edgeFeature.start("fillet", done);
+        edgeFeature.start("fillet", created);
       }
     });
+    clearSelectionForCreate();
   };
 
   /** Abort an in-flight interactive plane pick, if any.
@@ -296,13 +322,14 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     pickPlaneInteractive(t("feature.starters.pickOffsetSource"), (spec, face) => {
       const src = new SketchPlane(spec);
       planeOffset.start(src, (def) => {
-        if (!def) return;
+        if (!def) { refreshInspector(); return; }
         const id = store.nextId();
         // `face` rides on the DATUM, not the sketch: the datum is what owns the
         // source plane here, and the sketch follows it by id.
         store.addFeature({ id, type: "datumPlane", plane: spec, ...(face ? { face } : {}), offset: offsetAlong(def, src) } as Feature);
         sketch.enter(def, store, undefined, id);
       });
+      clearSelectionForCreate();
     });
   }
 
@@ -314,11 +341,12 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     pickPlaneInteractive(t("feature.starters.pickDatumSource"), (spec, face) => {
       const src = new SketchPlane(spec);
       planeOffset.start(src, (def) => {
-        if (!def) return;
+        if (!def) { refreshInspector(); return; }
         const id = store.nextId();
         store.addFeature({ id, type: "datumPlane", plane: spec, ...(face ? { face } : {}), offset: offsetAlong(def, src) } as Feature);
         selectFeature(id);
       });
+      clearSelectionForCreate();
     }, CURVED_FACE_NOTE_PLANE);
   }
 
@@ -329,11 +357,12 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     if (busy()) return;
     const src = new SketchPlane(face);
     planeOffset.start(src, (def) => {
-      if (!def) return;
+      if (!def) { refreshInspector(); return; }
       const id = store.nextId();
       store.addFeature({ id, type: "datumPlane", plane: face, ...(anchor ? { face: anchor } : {}), offset: offsetAlong(def, src) } as Feature);
       selectFeature(id);
     });
+    clearSelectionForCreate();
   }
 
   // signed distance of an offset-tool result from its source plane, along the
@@ -363,10 +392,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     if (needsBody(t("tool.split"))) return;
     const selId = getSelectedFeature();
     const sel = selId ? store.document.features.find((f) => f.id === selId) : null;
-    split.start(
-      { seed, selectedDatum: sel?.type === "datumPlane" ? sel.id : null },
-      (id) => { noteCommitted(id); if (id) selectFeature(id); },
-    );
+    split.start({ seed, selectedDatum: sel?.type === "datumPlane" ? sel.id : null }, created);
+    clearSelectionForCreate();
   }
 
   // Combine: boolean-join/cut/intersect bodies. With exactly two bodies the first
@@ -494,7 +521,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       setStatus(t("feature.starters.move.selectBody"), "");
       return;
     }
-    moveTool.start(ids, (id) => { noteCommitted(id); if (id) selectFeature(id); });
+    moveTool.start(ids, created);
+    clearSelectionForCreate();
   }
 
   // Mirror: choose the symmetry plane (the backend honors XY/XZ/YZ; the old tool
@@ -554,7 +582,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   // selected in the model view seed the tool.
   function startLoft() {
     if (busy()) return;
-    loftTool.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+    loftTool.start(created);
+    clearSelectionForCreate();
   }
 
   // Sweep: select a closed profile region, then pick a second (open) sketch as the
@@ -780,7 +809,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   function startTexture() {
     if (busy()) return;
     if (needsBody(t("tool.texture"))) return;
-    texture.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+    texture.start(created);
+    clearSelectionForCreate();
   }
 
   // Text on Face: click a face, type, and the text is embossed or engraved into
@@ -790,7 +820,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   function startTextOnFace() {
     if (busy()) return;
     if (needsBody(t("tool.textOnFace"))) return;
-    textOnFace.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+    textOnFace.start(created);
+    clearSelectionForCreate();
   }
 
   // Pattern: replicate the active body — rectangular grid or circular array. Edit
@@ -843,7 +874,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
         return wr.plane.plane.distanceToPoint(sel.anchor) <= 0.01; // face on/behind the sketch plane
       });
       if (!underSketch) {
-        pressPull.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+        pressPull.start(created);
+        clearSelectionForCreate();
         return;
       }
     }
@@ -851,7 +883,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       setStatus(t("feature.extrude.needsProfile"), "");
       return;
     }
-    extrude.start((id) => { noteCommitted(id); if (id) selectFeature(id); });
+    extrude.start(created);
+    clearSelectionForCreate();
   }
 
   return {

@@ -672,13 +672,28 @@ function startFaceOffset(mode: "offsetFace" | "thicken") {
     setStatus(t("status.needBody.generic"), "");
     return;
   }
-  faceOffset.start(mode, (id) => { if (id) selectFeature(id); });
+  // A create path, shaped like featureStarters' `created` and
+  // `clearSelectionForCreate`: the inspector stops showing the last feature
+  // once the tool runs, and is drawn again (unlocked) when it ends either way.
+  faceOffset.start(mode, (id) => {
+    if (id) selectFeature(id);
+    else inspector.refresh();
+  });
+  selectFeature(null);
+}
+
+// The tools that make or re-open a FEATURE. While one runs, the inspector is
+// read-only (Inspector.lockReason). Sketch mode is not one of them: the
+// inspector edits the OPEN sketch's dimensions through the session on purpose
+// (store.onSketchDimEdit). Neither are Measure and Section, which write nothing.
+function featureToolActive(): boolean {
+  return extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || textureTool.active || textOnFaceTool.active || splitTool.active || planePick;
 }
 
 // Guard predicates checked at the top of every start* tool + interactive helper:
 // they can't fire mid-sketch / mid-drag.
 function toolBusy(): boolean {
-  return sketch.active || extrude.active || edgeFeature.active || pressPull.active || faceOffset.active || loftTool.active || planeOffset.active || moveTool.active || measure.active || section.active || textureTool.active || textOnFaceTool.active || splitTool.active || planePick || isChoiceOpen();
+  return sketch.active || featureToolActive() || measure.active || section.active || isChoiceOpen();
 }
 // True when the current rebuild produced a solid body (something to modify).
 function hasBody(): boolean {
@@ -687,6 +702,11 @@ function hasBody(): boolean {
 
 // --- interactive plane pick (base plane quad or a planar body face) ---
 let planePick = false;
+
+// Wired HERE, below planePick, and not where the inspector is constructed:
+// lockReason runs inside every render, and featureToolActive() reads planePick,
+// so a render reaching it any earlier would hit planePick's temporal dead zone.
+inspector.lockReason = () => (featureToolActive() ? t("inspector.lockedDuringTool") : null);
 
 // "Repeat <last command>" (Onshape-style): the empty-space menu re-runs the last
 // real command. Navigation / view / file actions aren't commands you repeat, so
@@ -721,10 +741,15 @@ const starters = createFeatureStarters({
   hasBody,
   setStatus,
   selectFeature,
+  refreshInspector: () => inspector.refresh(),
   noteCommitted,
   isSketchConsumed,
   getSelectedFeature: () => selectedFeature,
-  setPlanePick: (v) => { planePick = v; },
+  // a pick is a tool too (featureToolActive), so the inspector follows it
+  setPlanePick: (v) => {
+    planePick = v;
+    inspector.refresh();
+  },
 });
 
 /** A datum plane's world placement, against the LAST build's resolved planes.
@@ -1375,9 +1400,12 @@ function editFeature(id: string) {
     setStatus(t("status.rollForwardToEdit"), "");
     return;
   }
+  // A cancel changes no selection, but it ends the tool, so the inspector is
+  // drawn again out of its read-only state.
   const done = (cid: string | null) => {
     noteCommitted(cid);
     if (cid) selectFeature(cid);
+    else inspector.refresh();
   };
   // Where every arm lands when the gesture cannot open an interactive tool: the
   // inspector IS the edit surface, so name the feature and put the caret in its
@@ -1433,6 +1461,11 @@ function editFeature(id: string) {
       toInspector();
       break;
   }
+  // The feature was put in the inspector BEFORE its tool opened, so draw it
+  // again read-only: whatever is typed there mid-edit, the tool's commit would
+  // otherwise write over. Only when a tool did open: the toInspector arms want
+  // the caret they just placed, and a redraw would take it away.
+  if (featureToolActive()) inspector.refresh();
 }
 
 // --- ribbon / keymap actions ---

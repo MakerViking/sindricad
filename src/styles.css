@@ -1538,6 +1538,13 @@ button.active {
   border-color: var(--error);
   box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.18);
 }
+/* read-only while a modeling tool runs (Inspector.lockReason); the panel's top
+   line says why */
+.param-row input:disabled,
+.param-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 /* field driven by a non-literal expression (Fusion's fx: convention) */
 .fx-row label::before {
   content: "fx:";

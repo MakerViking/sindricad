@@ -213,6 +213,7 @@ function harness(world: World) {
     // this harness scored it as a pass.
     setStatus: (t: string) => { if (t.trim()) act(`status(${t})`); },
     selectFeature: () => {},
+    refreshInspector: () => {},
     noteCommitted: () => {},
     isSketchConsumed: () => false,
     getSelectedFeature: () => null,
@@ -444,5 +445,93 @@ describe("Move with a datum plane selected", () => {
       h.log.join("\n"),
       "an explicit body selection must win — the plane selection is incidental there",
     ).toContain("moveTool.start");
+  });
+});
+
+// Field 637278a9: "click/select a side face, parameters panel is populated with
+// the previous extrude dimensions which are editable ... I select extrude to
+// extrude the side face, the previous extrude dimension is still there ... if I
+// put in a start offset it adjusts my first extrude instead of the one I am
+// currently working on."
+//
+// A face click selects the feature that made the face (main.ts viewport.onHit,
+// deliberate), and nothing took it out of the inspector when a tool started, so
+// the old extrude's Start offset was the only one on screen. The inspector is
+// read-only while a tool runs now (inspectorPanel.test.ts); this pins the other
+// half: a tool that CREATES a feature takes the last one out of the panel, AFTER
+// it has started, so the single render that causes already sees the tool
+// running and draws the panel locked.
+describe("a create tool takes the last feature out of the inspector", () => {
+  /** The reporter's state: f2, the first extrude, is the selected feature.
+   *  Tool starts and selection calls land in one ordered log, and each tool
+   *  keeps the done callback it was started with. */
+  function reporterWorld(over: { regions?: number } = {}) {
+    const h = harness({
+      busy: false,
+      bodies: [{ id: "b1", name: "Body1" }],
+      features: [{ id: "f1", type: "sketch" }, { id: "f2", type: "extrude" }],
+      regions: over.regions ?? 0,
+    });
+    const events: string[] = [];
+    const dones: ((id: string | null) => void)[] = [];
+    const deps = h.deps as unknown as Record<string, unknown>;
+    for (const name of ["extrude", "edgeFeature", "pressPull", "loftTool", "moveTool", "planeOffset", "texture", "textOnFace", "split"]) {
+      deps[name] = {
+        start: (...a: unknown[]) => {
+          events.push(`${name}.start`);
+          const done = a.find((x) => typeof x === "function") as ((id: string | null) => void) | undefined;
+          if (done) dones.push(done);
+        },
+      };
+    }
+    deps.selectFeature = (id: string | null) => events.push(`select(${id})`);
+    deps.refreshInspector = () => events.push("refresh");
+    deps.getSelectedFeature = () => "f2";
+    return { deps, events, dones, starters: () => createFeatureStarters(deps as never) };
+  }
+
+  it("Extrude on a selected side face: Press/Pull starts, then f2 leaves the panel", () => {
+    const w = reporterWorld();
+    // a face IS selected and no sketch area lies under it, so startExtrude
+    // dispatches to Press/Pull, which is what the reporter got
+    (w.deps.viewport as { selectedFacesForPressPull: () => unknown }).selectedFacesForPressPull = () => ({});
+    w.starters().startExtrude();
+    expect(w.events).toEqual(["pressPull.start", "select(null)"]);
+  });
+
+  it("holds for every starter that opens a create tool", () => {
+    // Enumerated off the returned object, like the ratchet above: a create
+    // tool added later is held to this the day it lands.
+    const opened: string[] = [];
+    for (const name of NAMES) {
+      const w = reporterWorld({ regions: 1 });
+      const fn = (w.starters() as unknown as Record<string, (...a: unknown[]) => unknown>)[name]!;
+      void fn(...(ARGS[name] ?? []));
+      const lastStart = w.events.map((e) => e.endsWith(".start")).lastIndexOf(true);
+      if (lastStart < 0) continue; // armed a pick, opened a dialog, or added a feature outright
+      opened.push(name);
+      expect(
+        w.events.slice(lastStart + 1),
+        `${name}() opened a tool and left f2 in the inspector, or cleared it BEFORE the tool ran`,
+      ).toEqual(["select(null)"]);
+    }
+    // the floor: if the fakes stop catching the starts, the loop above passes on nothing
+    expect(opened.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it("a cancelled tool draws the panel again; a committed one selects what it made", () => {
+    const w = reporterWorld({ regions: 1 });
+    const s = w.starters();
+    s.startExtrude();
+    s.offsetPlaneFromFace(PLANE);
+    expect(w.dones.length).toBe(2);
+    for (const done of w.dones) {
+      w.events.length = 0;
+      done(null);
+      expect(w.events, "a cancel left the panel locked: nothing redrew it").toEqual(["refresh"]);
+    }
+    w.events.length = 0;
+    w.dones[0]!("f9");
+    expect(w.events).toEqual(["select(f9)"]);
   });
 });
