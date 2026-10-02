@@ -2753,6 +2753,10 @@ export class SketchMode {
     const ent: ResolvedEntity = { type: "rectangle", id: newEntityId(), width: w, height: h, x: center.x, y: center.y };
     if (this.constructionMode) ent.construction = true;
     this.entities.push(ent);
+    // This click placed a CORNER, so a corner snapped onto a point is joined to
+    // it, as the corner-to-corner rectangle's are. The centre click placed no
+    // solver point (a rectangle's centre is not one), so it has nothing to join.
+    this.emitSnapCoincidences(ent, null, this.lastSnapRef);
     this.refreshActive();
     this.requestSolve();
     this.onState?.();

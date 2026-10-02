@@ -227,13 +227,21 @@ describe("which drawn entities owe a coincident", () => {
     ]);
   });
 
-  it("a rectangle and a circle get NOTHING, deliberately", () => {
-    // their "ends" are not the points the gesture snapped, so a constraint
-    // there would join something the user never aimed at
-    const r: ResolvedEntity = { type: "rectangle", id: "r1", x: 5, y: 5, width: 10, height: 4 };
-    const c: ResolvedEntity = { type: "circle", id: "c1", x: 10, y: 0, radius: 3 };
-    expect(emit(r, { id: "t", idx: 1 }, null)).toEqual([]);
-    expect(emit(c, { id: "t", idx: 1 }, null)).toEqual([]);
+  it("a RECTANGLE gets one on the corner that sits on the snapped point, by position", () => {
+    // corners bl(0) br(1) tr(2) tl(3): t's end (10,0) is this one's TOP-RIGHT,
+    // the corner a click from t's end dragged down-left would make
+    const r: ResolvedEntity = { type: "rectangle", id: "r1", x: 5, y: -2, width: 10, height: 4 };
+    expect(emit(r, { id: "t", idx: 1 }, null)).toEqual([
+      { type: "coincident", e1: "t", p1: 1, e2: "r1", p2: 2 },
+    ]);
+    // ...and nothing when no corner is there (a typed size moved it)
+    const off: ResolvedEntity = { type: "rectangle", id: "r2", x: 5, y: 5, width: 10, height: 4 };
+    expect(emit(off, { id: "t", idx: 1 }, null)).toEqual([]);
+  });
+
+  it("a circle gets NOTHING: its second click lands on the rim, which is no solver point", () => {
+    const c: ResolvedEntity = { type: "circle", id: "c1", x: 10, y: 3, radius: 3 };
+    expect(emit(c, null, { id: "t", idx: 1 })).toEqual([]);
   });
 
   it("a spline gets nothing, and that is a known deferral not an oversight", () => {
@@ -310,6 +318,9 @@ describe("every commit path that can owe a coincident calls the emitter", () => 
     // [what commits it, the source marker for its body, the refs it must pass]
     ["arcClick", "private arcClick(", "this.emitSnapCoincidences(ent, this.arcStartRef, this.arcEndRef)"],
     ["commitFromCursor", "private commitFromCursor(", "this.emitSnapCoincidences(entity, this.baseRef, this.lastSnapRef)"],
+    // the corner click commits, so its own ref is still lastSnapRef; the centre
+    // click placed no solver point, hence null
+    ["centerRectClick", "private centerRectClick(", "this.emitSnapCoincidences(ent, null, this.lastSnapRef)"],
   ] as const;
 
   for (const [name, marker, call] of commits) {

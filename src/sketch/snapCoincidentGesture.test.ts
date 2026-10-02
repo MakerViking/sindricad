@@ -51,6 +51,8 @@ import { circumcenter } from "./arc";
 import { t } from "../i18n";
 import { compileAndSolve } from "./sketchSolve";
 import { candidatesFromEntities, type ResolvedEntity } from "./snap";
+import { rectCorners } from "./region";
+import { originGeometry } from "./origin";
 import type { SketchConstraint } from "../types";
 
 const PX = 100; // screen px per sketch mm
@@ -76,7 +78,11 @@ interface Handlers {
 
 /** A SketchMode with the given entities on the sketch and `tool` armed.
  *  `typed` is what the user has typed into the dim box, by field name. */
-function drawing(tool: "line" | "arc" | "select", entities: ResolvedEntity[], typed: Record<string, number> = {}) {
+function drawing(
+  tool: "line" | "arc" | "select" | "rectangle" | "centerRectangle",
+  entities: ResolvedEntity[],
+  typed: Record<string, number> = {},
+) {
   const s = Object.create(SketchMode.prototype) as Record<string, unknown>;
   let commitDimBox: (() => void) | null = null;
   /** what the viewport would run at the start of its next frame
@@ -88,7 +94,7 @@ function drawing(tool: "line" | "arc" | "select", entities: ResolvedEntity[], ty
     candidates: candidatesFromEntities(entities),
     base: null, chainStart: null, basePinned: false, baseRef: null,
     lastSnapKind: "free", lastSnapRef: null, lastCursor: new THREE.Vector2(),
-    arcStart: null, arcEnd: null, arcStartRef: null, arcEndRef: null,
+    arcStart: null, arcEnd: null, arcStartRef: null, arcEndRef: null, clickPts: [],
     constructionMode: false, gridSnap: false, glyphsVisible: false, pendingGlyph: null,
     dim: {
       isActive: false,
@@ -497,5 +503,87 @@ describe("a rectangle with a line snapped onto its corner", () => {
     console.log = () => {};
     const after = await compileAndSolve(d.h.entities, d.h.constraints).finally(() => { console.log = quiet; });
     expect(after.ok, "the mirrored corner left the join naming the wrong corner").toBe(true);
+  });
+});
+
+// --- 7. a rectangle's snapped corner -------------------------------------
+//
+// Integration check 2a: a rectangle started on the origin snap carried no
+// constraint, so a body drag of one edge tore its corner off the origin. The
+// first click of a corner-to-corner rectangle IS a corner, the one the user
+// aimed at. WHICH corner depends on the way the drag went, so these draw away
+// from corner 0 on purpose: the two corner orders in the codebase agree there
+// and nowhere else, so a test on corner 0 would pass with the wrong index.
+
+type Rect = Extract<ResolvedEntity, { type: "rectangle" }>;
+const cornerOf = (r: Rect, k: number) => rectCorners(r.x, r.y, r.width, r.height)[k]!;
+
+describe("a rectangle is joined at the corners its clicks snapped onto", () => {
+  it("started on the origin and drawn down-left: the TOP-RIGHT corner (2) is held on the origin", async () => {
+    const d = drawing("rectangle", originGeometry());
+    d.click(0, 0); // the origin
+    d.click(-40, -25);
+    const [r] = d.drawn() as Rect[];
+    expect(r?.type, "the second click committed no rectangle").toBe("rectangle");
+    expect(coincidents(d.h.constraints)).toEqual([{ type: "coincident", e1: "__origin__", p1: 0, e2: r!.id, p2: 2 }]);
+
+    // as drawn, the join solves clean: no conflict, and no amber
+    const quiet = console.log;
+    console.log = () => {};
+    const asDrawn = await compileAndSolve(d.h.entities, d.h.constraints).finally(() => { console.log = quiet; });
+    expect(asDrawn.ok).toBe(true);
+    expect(asDrawn.conflicts).toEqual([]);
+    expect(asDrawn.overDefined, "the snapped corner is drawn amber").toEqual([]);
+
+    // move the rectangle off the origin in the model, then solve
+    const res = await displaced(d.h.entities, d.h.constraints, r!.id, { x: r!.x + 12, y: r!.y + 8 });
+    expect(res.fixed.ok).toBe(true);
+    expect(gap(cornerOf(byId<Rect>(res.fixed.entities, r!.id), 2), { x: 0, y: 0 })).toBeLessThan(1e-6);
+    expect(gap(cornerOf(byId<Rect>(res.control.entities, r!.id), 2), { x: 0, y: 0 }),
+      "the control closed the gap too: this oracle measures nothing").toBeGreaterThan(10);
+  });
+
+  it("snapped at both clicks: each click's own corner, and both joins hold", async () => {
+    const d = drawing("rectangle", [line("a", 30, -10, 30, 0), line("b", 0, 20, -10, 30)]);
+    d.click(30, 0); // a's end: the bottom-right corner (1) of what is drawn
+    d.click(0, 20); // b's start: the top-left corner (3)
+    const [r] = d.drawn() as Rect[];
+    expect(coincidents(d.h.constraints)).toEqual([
+      { type: "coincident", e1: "a", p1: 1, e2: r!.id, p2: 1 },
+      { type: "coincident", e1: "b", p1: 0, e2: r!.id, p2: 3 },
+    ]);
+
+    const res = await displaced(d.h.entities, d.h.constraints, r!.id, { x: r!.x + 3, y: r!.y - 2 });
+    const fixedR = byId<Rect>(res.fixed.entities, r!.id), controlR = byId<Rect>(res.control.entities, r!.id);
+    expect(gap(cornerOf(fixedR, 1), end(byId<Line>(res.fixed.entities, "a")))).toBeLessThan(1e-6);
+    expect(gap(cornerOf(fixedR, 3), start(byId<Line>(res.fixed.entities, "b")))).toBeLessThan(1e-6);
+    expect(gap(cornerOf(controlR, 1), end(byId<Line>(res.control.entities, "a")))).toBeGreaterThan(1);
+  });
+
+  it("a TYPED size that moves the far corner off the hovered point joins only the first", () => {
+    const d = drawing("rectangle", [...originGeometry(), line("b", 40, 25, 50, 25)], { width: 30, height: 20 });
+    d.click(0, 0); // the origin: the bottom-left corner (0)
+    d.hover(40, 25); // resting on b's start, 10 mm past the typed corner
+    d.enter();
+    const [r] = d.drawn() as Rect[];
+    expect(r, "Enter in the dim box committed nothing").toBeDefined();
+    expect(cornerOf(r!, 2)).toEqual(new THREE.Vector2(30, 20));
+    expect(coincidents(d.h.constraints), "a corner was joined to a point it never reached")
+      .toEqual([{ type: "coincident", e1: "__origin__", p1: 0, e2: r!.id, p2: 0 }]);
+  });
+
+  it("a CENTRE rectangle joins the corner its second click snapped onto", async () => {
+    const d = drawing("centerRectangle", [line("a", 20, 10, 40, 10)]);
+    d.click(10, 5); // the centre, on nothing
+    d.click(20, 10); // a's start: the top-right corner (2)
+    const [r] = d.drawn() as Rect[];
+    expect(r?.type, "the corner click committed no rectangle").toBe("rectangle");
+    expect(coincidents(d.h.constraints)).toEqual([{ type: "coincident", e1: "a", p1: 0, e2: r!.id, p2: 2 }]);
+
+    const res = await displaced(d.h.entities, d.h.constraints, r!.id, { x: r!.x - 4, y: r!.y + 3 });
+    expect(gap(cornerOf(byId<Rect>(res.fixed.entities, r!.id), 2), start(byId<Line>(res.fixed.entities, "a"))))
+      .toBeLessThan(1e-6);
+    expect(gap(cornerOf(byId<Rect>(res.control.entities, r!.id), 2), start(byId<Line>(res.control.entities, "a"))))
+      .toBeGreaterThan(1);
   });
 });

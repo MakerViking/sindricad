@@ -70,13 +70,18 @@ const JOIN_TOL = 1e-6;
  *  PLACED it — `startRef`/`endRef` being whatever its first and second clicks
  *  landed on, or null where they landed on nothing.
  *
- *  Only LINES and ARCS are emitted for, because only their two ends are both
- *  addressable by `endpointPoint` (idx 0 = start, 1 = end) AND actually placed by
- *  the gesture. A rectangle or circle is excluded deliberately: its "ends" are
- *  not the points the user snapped, so a constraint there would join something
- *  they never aimed at. SPLINES are excluded for a duller reason — their ends
- *  carry refs (see candidatesFromEntities) but `finishSpline` commits them by a
- *  path that never reaches here. Revisit if a user reports a spline micro-gap.
+ *  Emitted only for the solver points a click actually PUTS somewhere:
+ *   - a LINE or ARC: its start (idx 0) and end (idx 1);
+ *   - a RECTANGLE's corners. Corner to corner, both clicks are corners; drawn
+ *     from the centre, only the second is (the centre is no solver point, so
+ *     the caller passes null for it). WHICH corner a click is depends on the
+ *     way the drag went, so it is the one of `dimRefPoints` that sits on the
+ *     snapped point, never an assumed 0: the two corner orders in this codebase
+ *     agree on corner 0 and nowhere else.
+ *  A CIRCLE is not emitted for: its second click lands on the rim, which is no
+ *  solver point. SPLINES are excluded for a duller reason — their ends carry
+ *  refs (see candidatesFromEntities) but `finishSpline` commits them by a path
+ *  that never reaches here. Revisit if a user reports a spline micro-gap.
  *
  *  Refuses the three ways a coincident can be nonsense, matching what the manual
  *  Coincident tool already refuses: the same entity on both sides (it would
@@ -101,16 +106,25 @@ export function snapCoincidences(
   entities: ResolvedEntity[],
   constraints: SketchConstraint[],
 ): SketchConstraint[] {
-  if (entity.type !== "line" && entity.type !== "arc") return [];
+  const corners = [0, 1, 2, 3];
+  /** each click's ref, and the solver points of `entity` that click can have placed */
+  const placed: [PointRef | null, number[]][] =
+    entity.type === "line" || entity.type === "arc" ? [[startRef, [0]], [endRef, [1]]]
+    : entity.type === "rectangle" ? [[startRef, corners], [endRef, corners]]
+    : [];
   const out: SketchConstraint[] = [];
-  for (const [ref, idx] of [[startRef, 0], [endRef, 1]] as const) {
+  for (const [ref, candidates] of placed) {
     if (!ref) continue;
     if (ref.id === entity.id) continue; // cannot join a thing to itself
     const target = entities.find((e) => e.id === ref.id);
     if (!target) continue; // target is gone
     const there = refPoint(target, ref.idx);
-    const here = refPoint(entity, idx);
-    if (!there || !here || there.distanceTo(here) > JOIN_TOL) continue; // the end landed elsewhere
+    if (!there) continue;
+    const idx = candidates.find((k) => {
+      const here = refPoint(entity, k);
+      return !!here && there.distanceTo(here) <= JOIN_TOL;
+    });
+    if (idx === undefined) continue; // the point landed elsewhere
     const joins = (c: SketchConstraint) =>
       c.type === "coincident"
       && ((c.e1 === ref.id && c.p1 === ref.idx && c.e2 === entity.id && c.p2 === idx)
