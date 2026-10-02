@@ -166,15 +166,20 @@ describe("the origin AXES", () => {
 });
 
 describe("origin geometry is reference, not a modify boundary", () => {
-  it("is skipped by every crossing collector in modify.ts", () => {
+  it("is skipped by the one crossing collector in modify.ts", () => {
     // trim (lines), trim (circles/arcs) and extend all scan the other entities
     // for crossings. The axes are in EVERY sketch and span it, so counting them
     // would change what trim and extend do to any line crossing y=0 or x=0, in
-    // every document ever made. There are three collectors and all three must
-    // skip — one missed is a silent behaviour change in one tool only.
+    // every document ever made. There used to be three collectors, and all three
+    // had to skip — one missed was a silent behaviour change in one tool only.
+    // They are one now (crossingsOn), and all three searches go through it.
     const hits = modifySrc.match(/if \(i === index \|\| isOriginGeometry\(o\.id\)\) return;/g);
-    expect(hits?.length, "a crossing collector is not skipping origin geometry").toBe(3);
+    expect(hits?.length, "the crossing collector is not skipping origin geometry").toBe(1);
     expect(modifySrc).not.toMatch(/if \(i === index\) return;/);
+    // circleCrossAngles (trim and extend on a circle or arc), trim on a line,
+    // extend on a line: a fourth search written without it would not skip
+    expect(modifySrc.match(/crossingsOn\(ents, index, /g)?.length).toBe(3);
+    expect(modifySrc.match(/entityCurves\(o\)/g)?.length, "a second collector walks the entities").toBe(1);
   });
 
   it("loses a pick to the user's own geometry", () => {

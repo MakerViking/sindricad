@@ -6,20 +6,21 @@ import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
-import { dimRefPoints } from "./entityDims";
+import { asRound, dimRefPoints, lineOperand } from "./entityDims";
 import { isOriginGeometry } from "./origin";
 import { newEntityId } from "./id";
 import { arcCenterRadius } from "./arc";
 import { translated } from "./pattern";
 import { coincKey } from "./sketchSolve";
 import {
-  segIntersect,
-  segCircleIntersect,
   circleLineIntersect,
   circleCircleIntersect,
+  curveCrossings,
   lineIntersect,
   paramOnSeg,
   distToSeg,
+  type Carrier2,
+  type Curve2,
 } from "./geom2d";
 
 const v = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -261,19 +262,22 @@ const TAU = Math.PI * 2;
 /** CCW angular distance from `from` to `to`, always in [0, TAU) */
 const ccwDelta = (from: number, to: number) => (((to - from) % TAU) + TAU) % TAU;
 
-/** Build an arc entity from a center, radius and a CCW angular span (start + delta>0). */
+/** Build an arc entity from a center, radius and a CCW angular span (start + delta>0).
+ *  `id` defaults to a fresh one; trim's planner passes its own so the hover,
+ *  which plans on every pointer move, never burns ids. */
 function arcFromSpan(
   C: THREE.Vector2,
   R: number,
   aStart: number,
   delta: number,
   src: { construction?: boolean },
+  id = newEntityId(),
 ): ResolvedEntity {
   const aEnd = aStart + delta;
   const aMid = aStart + delta / 2;
   return {
     type: "arc",
-    id: newEntityId(),
+    id,
     x1: C.x + Math.cos(aStart) * R, y1: C.y + Math.sin(aStart) * R,
     x2: C.x + Math.cos(aEnd) * R, y2: C.y + Math.sin(aEnd) * R,
     mx: C.x + Math.cos(aMid) * R, my: C.y + Math.sin(aMid) * R,
@@ -298,9 +302,31 @@ function arcGeom(e: { x1: number; y1: number; x2: number; y2: number; mx: number
     : { C, R, aStart: aE, delta: ccwDelta(aE, aS) };
 }
 
-/** angles (atan2, unbounded) at which other entities cross the circle (C,R) */
-function circleCrossAngles(ents: ResolvedEntity[], index: number, C: THREE.Vector2, R: number): number[] {
-  const out: number[] = [];
+/** `o` as the crossing search sees it: exact for a line, circle or arc, native
+ *  or projected, and the shared tessellation for everything else (a spline
+ *  has no closed form here; rectangle and polygon edges are straight anyway). */
+function entityCurves(o: ResolvedEntity): Curve2[] {
+  const seg = (x1: number, y1: number, x2: number, y2: number): Curve2 =>
+    ({ kind: "seg", a: v(x1, y1), b: v(x2, y2) });
+  const round = (x: number, y: number, r: number): Curve2 =>
+    ({ kind: "round", c: v(x, y), r, a0: 0, sweep: TAU });
+  const arc = (a: { x1: number; y1: number; x2: number; y2: number; mx: number; my: number }): Curve2[] | null => {
+    const g = arcGeom(a);
+    return g ? [{ kind: "round", c: g.C, r: g.R, a0: g.aStart, sweep: g.delta }] : null;
+  };
+  const cv = o.type === "projected" ? o.curve : null;
+  if (o.type === "line") return [seg(o.x1, o.y1, o.x2, o.y2)];
+  if (cv?.kind === "line") return [seg(cv.x1, cv.y1, cv.x2, cv.y2)];
+  if (o.type === "circle") return [round(o.x, o.y, o.radius)];
+  if (cv?.kind === "circle") return [round(cv.x, cv.y, cv.r)];
+  // a degenerate (collinear) arc keeps its polyline, as before
+  const exact = o.type === "arc" ? arc(o) : cv?.kind === "arc" ? arc(cv) : null;
+  return exact ?? entitySegments(o).map(([a, b]) => ({ kind: "seg", a, b }));
+}
+
+/** every point where another entity crosses or touches the carrier `on` */
+function crossingsOn(ents: ResolvedEntity[], index: number, on: Carrier2): THREE.Vector2[] {
+  const out: THREE.Vector2[] = [];
   ents.forEach((o, i) => {
     // The origin axes are REFERENCE, not a modify boundary. They exist in every
     // sketch and span it, so counting them as crossings would silently change
@@ -308,11 +334,14 @@ function circleCrossAngles(ents: ResolvedEntity[], index: number, C: THREE.Vecto
     // every document ever made. Snap to them, constrain to them, do not cut on
     // them.
     if (i === index || isOriginGeometry(o.id)) return;
-    for (const [a, b] of entitySegments(o)) {
-      for (const h of segCircleIntersect(a, b, C, R)) out.push(Math.atan2(h.y - C.y, h.x - C.x));
-    }
+    for (const c of entityCurves(o)) out.push(...curveCrossings(on, c));
   });
   return out;
+}
+
+/** angles (atan2, unbounded) at which other entities cross the circle (C,R) */
+function circleCrossAngles(ents: ResolvedEntity[], index: number, C: THREE.Vector2, R: number): number[] {
+  return crossingsOn(ents, index, { kind: "circle", c: C, r: R }).map((h) => Math.atan2(h.y - C.y, h.x - C.x));
 }
 
 /** spread that copies a construction flag only when set — avoids emitting an
@@ -359,25 +388,50 @@ function distToEntity(e: ResolvedEntity, p: THREE.Vector2): number {
   return d;
 }
 
-/**
- * Trim: remove the clicked portion of a curve up to its nearest intersections.
- * Lines split into the outer segments; arcs into the outer sub-arcs; a circle
- * becomes the complementary arc. A curve with no usable crossing is deleted whole.
- */
-export function trimEntity(
-  ents: ResolvedEntity[],
-  index: number,
-  click: THREE.Vector2,
-): ResolvedEntity[] {
+/** One piece a trim leaves: its geometry, and the OPERAND it was cut from —
+ *  the trimmed entity's own id, or `<rectId>~<k>` for a rectangle edge.
+ *  `whole` marks a rectangle edge the trim did not touch, which keeps its
+ *  full extent. `lead` marks the piece that takes over a dimension on the whole
+ *  curve, which must land on one piece only (trimWithConstraints sets it). */
+type TrimPiece = { from: string; geom: ResolvedEntity; whole: boolean; lead?: boolean };
+
+/** What a trim at `click` does to ents[index]: the piece it removes, and the
+ *  pieces it keeps, in order along the curve. Decided ONCE for both the click
+ *  (trimWithConstraints) and the hover (trimSpan), so the red piece under the
+ *  cursor is exactly what the click takes away. Geometry only: every piece
+ *  carries a placeholder id, because the hover plans on every pointer move and
+ *  minting ids there would burn one per frame. */
+type TrimPlan = { removed: ResolvedEntity; kept: TrimPiece[] };
+
+/** The span [lo,hi] of `sorted` (crossing parameters, 0 and 1 included) that
+ *  holds the click parameter `tc`. */
+function spanAround(sorted: number[], tc: number): [number, number] {
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i]!, b = sorted[i + 1]!;
+    if (tc >= a && tc <= b) return [a, b];
+  }
+  return [0, 1];
+}
+
+function planTrim(ents: ResolvedEntity[], index: number, click: THREE.Vector2): TrimPlan | null {
   const e = ents[index];
-  if (!e) return ents;
-  const del = () => ents.filter((_, i) => i !== index);
+  if (!e) return null;
+  const whole: TrimPlan = { removed: e, kept: [] }; // a curve with no usable crossing goes whole
+  const piece = (geom: ResolvedEntity): TrimPiece => ({ from: e.id, geom, whole: false });
+  /** Trim [lo,hi] out of a curve parametrised over [0,1]. An outer piece
+   *  shorter than 1e-3 is a sliver and is not kept; the removed piece is
+   *  whatever the kept ones leave, so a sliver goes WITH it on screen too. */
+  const cut = (lo: number, hi: number, sub: (ta: number, tb: number) => ResolvedEntity): TrimPlan => {
+    const left = lo >= 1e-3, right = 1 - hi >= 1e-3;
+    const kept = [...(left ? [piece(sub(0, lo))] : []), ...(right ? [piece(sub(hi, 1))] : [])];
+    return kept.length ? { removed: sub(left ? lo : 0, right ? hi : 1), kept } : whole;
+  };
 
   if (e.type === "circle") {
     const C = v(e.x, e.y), R = e.radius;
     const norm = (a: number) => ((a % TAU) + TAU) % TAU;
     const angs = [...new Set(circleCrossAngles(ents, index, C, R).map(norm))].sort((a, b) => a - b);
-    if (angs.length < 2) return del(); // nothing to trim against
+    if (angs.length < 2) return whole; // nothing to trim against
     const tc = norm(Math.atan2(click.y - C.y, click.x - C.x));
     // the CCW span [lo,hi] between adjacent crossings that contains the click
     let lo = angs[angs.length - 1]!, hi = angs[0]!;
@@ -386,13 +440,16 @@ export function trimEntity(
       if (ccwDelta(a, tc) <= ccwDelta(a, b)) { lo = a; hi = b; break; }
     }
     const keep = ccwDelta(hi, lo); // complement of the removed span
-    if (keep < 1e-3) return del();
-    return ents.flatMap((o, i) => (i === index ? [arcFromSpan(C, R, hi, keep, e)] : [o]));
+    if (keep < 1e-3) return whole;
+    return {
+      removed: arcFromSpan(C, R, lo, ccwDelta(lo, hi), e, e.id),
+      kept: [piece(arcFromSpan(C, R, hi, keep, e, e.id))],
+    };
   }
 
   if (e.type === "arc") {
     const g = arcGeom(e);
-    if (!g) return del();
+    if (!g) return whole;
     const { C, R, aStart, delta } = g;
     const params = new Set<number>([0, 1]);
     for (const ang of circleCrossAngles(ents, index, C, R)) {
@@ -400,19 +457,10 @@ export function trimEntity(
       if (t > 1e-4 && t < 1 - 1e-4) params.add(t);
     }
     const sorted = [...params].sort((a, b) => a - b);
-    if (sorted.length <= 2) return del();
+    if (sorted.length <= 2) return whole;
     const tc = Math.max(0, Math.min(1, ccwDelta(aStart, Math.atan2(click.y - C.y, click.x - C.x)) / delta));
-    let lo = 0, hi = 1;
-    for (let i = 0; i < sorted.length - 1; i++) {
-      const a = sorted[i]!, b = sorted[i + 1]!;
-      if (tc >= a && tc <= b) { lo = a; hi = b; break; }
-    }
-    const pieces: ResolvedEntity[] = [];
-    const keep = (ta: number, tb: number) => {
-      if (tb - ta > 1e-3) pieces.push(arcFromSpan(C, R, aStart + ta * delta, (tb - ta) * delta, e));
-    };
-    keep(0, lo); keep(hi, 1);
-    return ents.flatMap((o, i) => (i === index ? pieces : [o]));
+    const [lo, hi] = spanAround(sorted, tc);
+    return cut(lo, hi, (ta, tb) => arcFromSpan(C, R, aStart + ta * delta, (tb - ta) * delta, e, e.id));
   }
 
   // A RECTANGLE is one entity, so trimming it used to delete all four edges —
@@ -425,13 +473,14 @@ export function trimEntity(
   //
   // Exploding drops the rectangle's id, and with it the implicit `~h0`/`~v0`
   // constraints the solver derives from the entity — they are generated at
-  // compile time, so nothing dangles. User constraints that named the rectangle
-  // are cleaned by the caller: afterModify() runs pruneConstraints().
+  // compile time, so nothing dangles. The edges are planned under their operand
+  // ids (`<rectId>~<k>`), which is how trimWithConstraints carries a user
+  // constraint on an edge or a corner over to the line that edge became.
   if (e.type === "rectangle") {
     const corners = rectCorners(e.x, e.y, e.width, e.height);
     const edges: ResolvedEntity[] = corners.map((a, k) => {
       const b = corners[(k + 1) % corners.length]!;
-      return { type: "line", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) };
+      return { type: "line", id: `${e.id}~${k}`, x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) };
     });
     // which edge was clicked — measured on the exploded lines, not guessed
     let hit = 0;
@@ -441,33 +490,23 @@ export function trimEntity(
       if (d < hitD) { hitD = d; hit = k; }
     });
     const exploded = ents.flatMap((o, i) => (i === index ? edges : [o]));
-    return trimEntity(exploded, index + hit, click);
+    const sub = planTrim(exploded, index + hit, click);
+    if (!sub) return whole;
+    return {
+      removed: sub.removed,
+      kept: edges.flatMap((ed, k) => (k === hit ? sub.kept : [{ from: ed.id, geom: ed, whole: true }])),
+    };
   }
-  if (e.type !== "line") return del(); // spline + rigid polygon/slot: deleted whole
+  if (e.type !== "line") return whole; // spline + rigid polygon/slot: deleted whole
 
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const params = new Set<number>([0, 1]);
-  ents.forEach((o, i) => {
-    // The origin axes are REFERENCE, not a modify boundary. They exist in every
-    // sketch and span it, so counting them as crossings would silently change
-    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
-    // every document ever made. Snap to them, constrain to them, do not cut on
-    // them.
-    if (i === index || isOriginGeometry(o.id)) return;
-    const hits: THREE.Vector2[] = [];
-    if (o.type === "circle") hits.push(...segCircleIntersect(p1, p2, v(o.x, o.y), o.radius));
-    else for (const [a, b] of entitySegments(o)) {
-      const x = segIntersect(p1, p2, a, b);
-      if (x) hits.push(x);
-    }
-    for (const h of hits) {
-      const t = paramOnSeg(p1, p2, h);
-      if (t > 1e-4 && t < 1 - 1e-4) params.add(t);
-    }
-  });
-
+  for (const h of crossingsOn(ents, index, { kind: "line", a: p1, b: p2 })) {
+    const t = paramOnSeg(p1, p2, h);
+    if (t > 1e-4 && t < 1 - 1e-4) params.add(t);
+  }
   const sorted = [...params].sort((a, b) => a - b);
-  if (sorted.length <= 2) return ents.filter((_, i) => i !== index); // no crossing → delete
+  if (sorted.length <= 2) return whole; // no crossing → delete
 
   const tc = Math.max(0, Math.min(1, paramOnSeg(p1, p2, click)));
   // The caller passes the RAW cursor, never a snapped point. That matters here
@@ -476,22 +515,302 @@ export function trimEntity(
   // deleting the piece NEXT TO the one under the cursor. Snapping aimed clicks
   // straight at the crossings, which is precisely the input this cannot resolve.
   // See sketchMode's trim carve-out.
-  let lo = 0, hi = 1;
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const a = sorted[i], b = sorted[i + 1];
-    if (a === undefined || b === undefined) continue;
-    if (tc >= a && tc <= b) { lo = a; hi = b; break; }
-  }
-  const at = (t: number) => v(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t);
-  const pieces: ResolvedEntity[] = [];
-  const keep = (ta: number, tb: number) => {
-    if (tb - ta < 1e-3) return;
+  const [lo, hi] = spanAround(sorted, tc);
+  // the ends that survive stay EXACTLY where they were, so a neighbour that
+  // shares one stays merged with it in the solver's position buckets
+  const at = (t: number) => (t === 0 ? p1 : t === 1 ? p2 : v(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t));
+  return cut(lo, hi, (ta, tb) => {
     const a = at(ta), b = at(tb);
-    pieces.push({ type: "line", id: newEntityId(), x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) });
+    return { type: "line", id: e.id, x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...constr(e) };
+  });
+}
+
+/** The piece a trim at `click` would remove from ents[index] — what the Trim
+ *  hover draws in red: a line segment, a sub-arc, the span of a circle, the span
+ *  of the clicked rectangle edge, or the whole entity when nothing crosses it
+ *  (and always for a spline, polygon or slot). Null when there is no entity.
+ *
+ *  The hover used to light the WHOLE entity, which told the user the whole line
+ *  was about to go when trim removes only the span between crossings — one
+ *  reporter filed a bug on the trim it predicted, not the trim it did. */
+export function trimSpan(ents: ResolvedEntity[], index: number, click: THREE.Vector2): ResolvedEntity | null {
+  return planTrim(ents, index, click)?.removed ?? null;
+}
+
+/**
+ * Trim: remove the clicked portion of a curve up to its nearest intersections.
+ * Lines split into the outer segments; arcs into the outer sub-arcs; a circle
+ * becomes the complementary arc. A curve with no usable crossing is deleted whole.
+ * A tangential touch is a crossing like any other.
+ */
+export function trimEntity(
+  ents: ResolvedEntity[],
+  index: number,
+  click: THREE.Vector2,
+): ResolvedEntity[] {
+  return trimWithConstraints(ents, index, click, []).entities;
+}
+
+/** A trim's entities, the constraints rewritten for what it left, and how many
+ *  constraints could no longer apply and were removed (the caller says so). */
+export type TrimResult = { entities: ResolvedEntity[]; constraints: SketchConstraint[]; dropped: number };
+
+/** Trim, keeping every constraint that still applies to what is left.
+ *
+ *  Trim mints a new id for every piece it keeps, and used to let the caller
+ *  prune whatever named the old one, which silently deleted constraints that
+ *  still held: an offset link on a trimmed copy, a tangency on the kept arc
+ *  (report 356b2693). remapTrimmed now rewrites each of them for the new ids.
+ *
+ *  The ids stay NEW, never the trimmed entity's. An extrude remembers the ids
+ *  bounding the area it picked and trusts a unique id match before its stored
+ *  point, so an old id left on a piece that now bounds a DIFFERENT area moved
+ *  the extrude there without a word (measured: a quadrant extrude jumped to the
+ *  quadrant beside it). With every id new, the stale ids match nothing and the
+ *  point decides, as it always has. The piece holding the entity's start (or
+ *  the only piece) leads, for remapTrimmed's dimensions. */
+export function trimWithConstraints(
+  ents: ResolvedEntity[],
+  index: number,
+  click: THREE.Vector2,
+  cons: SketchConstraint[],
+): TrimResult {
+  const e = ents[index];
+  const plan = planTrim(ents, index, click);
+  if (!e || !plan) return { entities: ents, constraints: cons, dropped: 0 };
+  const start = dimRefPoints(e).find((r) => r.p === 0)?.pos;
+  const lead = e.type === "rectangle"
+    ? null
+    : plan.kept.find((pc) => start && endsAt(pc.geom, start)) ?? plan.kept[0];
+  const pieces = plan.kept.map((pc) => ({ ...pc, lead: pc === lead, geom: { ...pc.geom, id: newEntityId() } }));
+  const entities = ents.flatMap((o, i) => (i === index ? pieces.map((pc) => pc.geom) : [o]));
+  return { entities, ...remapTrimmed(e, pieces, cons, entities) };
+}
+
+/** does a line or arc end at `p`? */
+function endsAt(g: ResolvedEntity, p: THREE.Vector2): boolean {
+  if (g.type !== "line" && g.type !== "arc") return false;
+  return Math.hypot(g.x1 - p.x, g.y1 - p.y) < 1e-6 || Math.hypot(g.x2 - p.x, g.y2 - p.y) < 1e-6;
+}
+
+/** Where point operand (`id`, `p`) sat on the entity `e` before it was trimmed:
+ *  `id` is the entity itself, or a rectangle edge spelling of one of its
+ *  corners (edge k runs from corner k to corner k+1, as in glyphs.ts). */
+function pointBefore(e: ResolvedEntity, id: string, p: number): THREE.Vector2 | null {
+  if (e.type === "circle") return v(e.x, e.y); // a circle resolves to its centre at any index
+  if (id === e.id) return dimRefPoints(e).find((r) => r.p === p)?.pos ?? null;
+  const k = Number(id.slice(id.lastIndexOf("~") + 1));
+  if (e.type !== "rectangle" || !Number.isInteger(k)) return null;
+  return rectCorners(e.x, e.y, e.width, e.height)[(k + (p === 1 ? 1 : 0)) % 4] ?? null;
+}
+
+/** Where a tangency between `carrier` (the trimmed curve, as it was) and `other`
+ *  touches — the point on the carrier nearest the other curve. Null when the
+ *  pair has no single touch point (two lines, concentric rounds). */
+function touchPoint(
+  carrier: { x1: number; y1: number; x2: number; y2: number } | { x: number; y: number; r: number },
+  other: { x1: number; y1: number; x2: number; y2: number } | { x: number; y: number; r: number },
+): THREE.Vector2 | null {
+  const foot = (l: { x1: number; y1: number; x2: number; y2: number }, q: THREE.Vector2) => {
+    const a = v(l.x1, l.y1), b = v(l.x2, l.y2);
+    return a.clone().lerp(b, paramOnSeg(a, b, q));
   };
-  keep(0, lo);
-  keep(hi, 1);
-  return ents.flatMap((o, i) => (i === index ? pieces : [o]));
+  if ("x1" in carrier) return "r" in other ? foot(carrier, v(other.x, other.y)) : null;
+  const C = v(carrier.x, carrier.y);
+  if ("x1" in other) {
+    const dir = foot(other, C).sub(C);
+    return dir.lengthSq() < 1e-18 ? null : C.clone().add(dir.normalize().multiplyScalar(carrier.r));
+  }
+  const c2 = v(other.x, other.y);
+  const u = c2.clone().sub(C);
+  if (u.lengthSq() < 1e-18) return null;
+  u.normalize().multiplyScalar(carrier.r);
+  const near = C.clone().add(u), far = C.clone().sub(u);
+  const miss = (q: THREE.Vector2) => Math.abs(q.distanceTo(c2) - other.r);
+  return miss(near) <= miss(far) ? near : far;
+}
+
+/** Rewrite the constraints that named a trimmed entity for the pieces it left.
+ *
+ *  Trim shortens a curve; it does not change what the curve IS. So a constraint
+ *  about the CARRIER (the infinite line, the full circle) still holds and stays:
+ *  horizontal, parallel, a radius, a tangency, an offset link. The ones that
+ *  carry no number hold for every piece and are given to every piece; a
+ *  dimension stays once, on the lead piece, rather than appearing twice. A
+ *  tangency goes to the piece that actually touches.
+ *
+ *  A constraint about the curve's EXTENT does not hold (a length, an equal
+ *  length, a midpoint): kept, it would pull the piece straight back out to the
+ *  old length. A constraint on a POINT follows that point to whichever piece
+ *  still has it, and goes when the point was trimmed away. Both of those are
+ *  counted in `dropped`, so the caller can say what went. */
+function remapTrimmed(
+  e: ResolvedEntity,
+  pieces: TrimPiece[],
+  cons: SketchConstraint[],
+  after: ResolvedEntity[],
+): { constraints: SketchConstraint[]; dropped: number } {
+  const names = (id: string) => id === e.id || (e.type === "rectangle" && id.startsWith(`${e.id}~`));
+  const byId = new Map(after.map((x) => [x.id, x]));
+  const cutFrom = (id: string) => pieces.filter((pc) => pc.from === id);
+  /** the piece that takes over operand `id`: the lead, else the first piece of
+   *  that rectangle edge */
+  const keeper = (id: string) => { const ps = cutFrom(id); return ps.find((pc) => pc.lead) ?? ps[0]; };
+  /** a curve operand, rewritten to its keeper; null when nothing of it is left */
+  const curve = (id: string): string | null => (names(id) ? keeper(id)?.geom.id ?? null : id);
+  /** the other pieces cut from a curve operand */
+  const others = (id: string): string[] =>
+    names(id) ? cutFrom(id).filter((pc) => pc !== keeper(id)).map((pc) => pc.geom.id) : [];
+  /** an operand whose EXTENT matters: only an untouched rectangle edge still has it */
+  const extent = (id: string): string | null => {
+    if (!names(id)) return id;
+    const k = keeper(id);
+    return k?.whole ? k.geom.id : null;
+  };
+  /** a point operand, followed to whichever piece still has that point */
+  const point = (id: string, p: number): { e: string; p: number } | null => {
+    if (!names(id)) return { e: id, p };
+    const at = pointBefore(e, id, p);
+    if (!at) return null;
+    for (const pc of [...pieces.filter((x) => x.lead), ...pieces.filter((x) => !x.lead)]) {
+      const hit = dimRefPoints(pc.geom).find((r) => r.pos.distanceTo(at) < 1e-6);
+      if (hit) return { e: pc.geom.id, p: hit.p };
+    }
+    return null;
+  };
+  /** a tangency operand: the piece nearest the touch point, when there is a choice */
+  const touching = (id: string, otherId: string): string | null => {
+    const ps = names(id) ? cutFrom(id) : [];
+    if (ps.length < 2) return curve(id);
+    const carrier = lineOperand(new Map([[e.id, e]]), id) ?? asRound(e);
+    const other = lineOperand(byId, otherId) ?? (byId.has(otherId) ? asRound(byId.get(otherId)!) : null);
+    const at = carrier && other ? touchPoint(carrier, other) : null;
+    if (!at) return curve(id);
+    return ps.reduce((a, b) => (distToEntity(b.geom, at) < distToEntity(a.geom, at) ? b : a)).geom.id;
+  };
+  const mentions = (c: SketchConstraint) =>
+    c.type === "offset"
+      ? c.pairs.some((pr) => names(pr.src) || names(pr.cpy))
+      : Object.entries(c).some(([k, val]) => k !== "type" && k !== "id" && typeof val === "string" && names(val));
+
+  let lostLinks = 0;
+  const remap = (c: SketchConstraint): SketchConstraint[] | null => {
+    switch (c.type) {
+      // the carrier's direction or centre, and no number: true of every piece
+      case "horizontal": case "vertical": {
+        const line = curve(c.line);
+        return line ? [{ ...c, line }, ...others(c.line).map((l) => ({ ...c, line: l }))] : null;
+      }
+      case "parallel": case "perpendicular": case "collinear": {
+        const l1 = curve(c.l1), l2 = curve(c.l2);
+        if (!l1 || !l2) return null;
+        return [
+          { ...c, l1, l2 },
+          ...others(c.l1).map((l) => ({ ...c, l1: l, l2 })),
+          ...others(c.l2).map((l) => ({ ...c, l1, l2: l })),
+        ];
+      }
+      case "concentric": {
+        const c1 = curve(c.c1), c2 = curve(c.c2);
+        if (!c1 || !c2) return null;
+        return [
+          { ...c, c1, c2 },
+          ...others(c.c1).map((r) => ({ ...c, c1: r, c2 })),
+          ...others(c.c2).map((r) => ({ ...c, c1, c2: r })),
+        ];
+      }
+      case "equalRadius": {
+        const a = curve(c.a), b = curve(c.b);
+        if (!a || !b) return null;
+        return [
+          { ...c, a, b },
+          ...others(c.a).map((r) => ({ ...c, a: r, b })),
+          ...others(c.b).map((r) => ({ ...c, a, b: r })),
+        ];
+      }
+      // a dimension on the carrier: once, on the keeper
+      case "angle": {
+        const l1 = curve(c.l1), l2 = curve(c.l2);
+        return l1 && l2 ? [{ ...c, l1, l2 }] : null;
+      }
+      case "diameter": { const circle = curve(c.circle); return circle ? [{ ...c, circle }] : null; }
+      case "radius": { const r = curve(c.e); return r ? [{ ...c, e: r }] : null; }
+      case "radialGap": {
+        const inner = curve(c.inner), outer = curve(c.outer);
+        return inner && outer ? [{ ...c, inner, outer }] : null;
+      }
+      case "c2cDistance": {
+        const c1 = curve(c.c1), c2 = curve(c.c2);
+        return c1 && c2 ? [{ ...c, c1, c2 }] : null;
+      }
+      case "c2lDistance": {
+        const circle = curve(c.circle), line = curve(c.line);
+        return circle && line ? [{ ...c, circle, line }] : null;
+      }
+      // the curve's extent
+      case "distance": { const line = extent(c.line); return line ? [{ ...c, line }] : null; }
+      case "equal": {
+        const l1 = extent(c.l1), l2 = extent(c.l2);
+        return l1 && l2 ? [{ ...c, l1, l2 }] : null;
+      }
+      case "tangent": {
+        const line = touching(c.line, c.circle), circle = touching(c.circle, c.line);
+        if (!line || !circle) return null;
+        // a trimmed circle is an ARC now, and `tangent` takes circles only
+        return [e.type === "circle" && c.circle === e.id ? { type: "tangent2", a: line, b: circle } : { ...c, line, circle }];
+      }
+      case "tangent2": {
+        const a = touching(c.a, c.b), b = touching(c.b, c.a);
+        return a && b ? [{ ...c, a, b }] : null;
+      }
+      // points
+      case "coincident": case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
+        const a = point(c.e1, c.p1), b = point(c.e2, c.p2);
+        return a && b ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p }] : null;
+      }
+      case "fix": { const q = point(c.e, c.p); return q ? [{ ...c, e: q.e, p: q.p }] : null; }
+      case "midpoint": {
+        const q = point(c.e, c.p), line = extent(c.line);
+        return q && line ? [{ ...c, e: q.e, p: q.p, line }] : null;
+      }
+      case "symmetric": {
+        const a = point(c.e1, c.p1), b = point(c.e2, c.p2), line = curve(c.line);
+        return a && b && line ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p, line }] : null;
+      }
+      case "p2lDistance": {
+        const q = point(c.e, c.p), line = curve(c.line);
+        return q && line ? [{ ...c, e: q.e, p: q.p, line }] : null;
+      }
+      case "p2cDistance": {
+        const q = point(c.e, c.p), circle = curve(c.circle);
+        return q && circle ? [{ ...c, e: q.e, p: q.p, circle }] : null;
+      }
+      // Every piece of a trimmed COPY is still an offset of its source; a
+      // trimmed SOURCE keeps the link on its keeper only, because two sources
+      // would govern the one copy twice.
+      case "offset": {
+        let lost = 0;
+        const pairs = c.pairs.flatMap((pr) => {
+          const src = curve(pr.src), cpy = curve(pr.cpy);
+          if (!src || !cpy) { lost++; return []; }
+          return [{ src, cpy }, ...others(pr.cpy).map((o) => ({ src, cpy: o }))];
+        });
+        if (!pairs.length) return null;
+        lostLinks += lost;
+        return [{ ...c, pairs }];
+      }
+      default: return [c satisfies never];
+    }
+  };
+
+  const constraints: SketchConstraint[] = [];
+  let dropped = 0;
+  for (const c of cons) {
+    const next = mentions(c) ? remap(c) : [c];
+    if (next) constraints.push(...next);
+    else dropped++;
+  }
+  return { constraints, dropped: dropped + lostLinks };
 }
 
 /**
@@ -976,6 +1295,111 @@ export function breakAt(
   return ents;
 }
 
+/** What a detach did: pulled one end off a shared point, or refused because a
+ *  constraint holds that very end there. */
+export type Detach =
+  | { kind: "detached"; entities: ResolvedEntity[]; idx: number }
+  | { kind: "coincident" }
+  | { kind: "fixed" };
+
+/** Which end a detach at the shared point `at` would pull away: of the ends
+ *  that sit there, the one whose curve is nearest `press` (where the user
+ *  pressed, so the curve they were pointing at). `end` is the point index
+ *  constraints use: 0/1 for a line, arc or spline, 0 for a sketch point.
+ *
+ *  A press ON the point (within `drag.onPoint` of it) names no curve: every
+ *  curve there is about as near as any other, and the nearest was whichever
+ *  came first in the list, so the same half left whichever way the user
+ *  dragged. There `drag.to` decides: the end that leaves is the one whose curve
+ *  heads the way the cursor went, so dragging from a Break's cut toward one
+ *  half pulls that half's end.
+ *
+ *  Only a line, arc or spline end, or a sketch point, can leave: a rectangle
+ *  corner cannot move without its rectangle, and the origin is fixed. Null
+ *  when the point is not shared, or nothing of the user's can leave it. */
+export function detachableEnd(
+  ents: readonly ResolvedEntity[],
+  at: { x: number; y: number },
+  press: THREE.Vector2,
+  drag?: { to: { x: number; y: number }; onPoint: number },
+): { idx: number; end: number } | null {
+  const key = coincKey(at.x, at.y);
+  const ends = (e: ResolvedEntity): { end: number; x: number; y: number }[] => {
+    if (e.type === "line" || e.type === "arc") return [{ end: 0, x: e.x1, y: e.y1 }, { end: 1, x: e.x2, y: e.y2 }];
+    if (e.type === "spline") {
+      const a = e.points[0], b = e.points[e.points.length - 1];
+      return a && b && e.points.length > 1 ? [{ end: 0, ...a }, { end: 1, ...b }] : [];
+    }
+    if (e.type === "point") return [{ end: 0, x: e.x, y: e.y }];
+    if (e.type === "rectangle") return rectCorners(e.x, e.y, e.width, e.height).map((q, k) => ({ end: k, x: q.x, y: q.y }));
+    return [];
+  };
+  const owners = ents.flatMap((e, idx) =>
+    ends(e).filter((q) => coincKey(q.x, q.y) === key).map((q) => ({ idx, end: q.end })));
+  if (owners.length < 2) return null;
+  const movable = owners.filter(({ idx }) => {
+    const e = ents[idx]!;
+    return (e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "point") && !isOriginGeometry(e.id);
+  });
+  const dist = ({ idx }: { idx: number }) => {
+    const e = ents[idx]!;
+    return e.type === "point" ? press.distanceTo(v(e.x, e.y)) : distToEntity(e, press);
+  };
+  const nearest = movable.reduce<{ idx: number; end: number } | null>((b, o) => (!b || dist(o) < dist(b) ? o : b), null);
+  if (!drag || press.distanceTo(v(at.x, at.y)) > drag.onPoint) return nearest;
+  const way = v(drag.to.x - press.x, drag.to.y - press.y);
+  if (way.lengthSq() < 1e-18) return nearest;
+  way.normalize();
+  /** how much a curve heads the way the cursor went, leaving `at` from this
+   *  end: along its first (or last) tessellated segment. A sketch point heads
+   *  nowhere (0), so it leaves only when every curve there points away. */
+  const heading = ({ idx, end }: { idx: number; end: number }) => {
+    const segs = entitySegments(ents[idx]!);
+    const s = end === 0 ? segs[0] : segs[segs.length - 1];
+    if (!s) return 0;
+    const into = end === 0 ? s[1].clone().sub(s[0]) : s[0].clone().sub(s[1]);
+    return into.lengthSq() < 1e-18 ? 0 : into.normalize().dot(way);
+  };
+  return movable.reduce<{ idx: number; end: number } | null>(
+    (b, o) => (!b || heading(o) > heading(b) + 1e-9 ? o : b), nearest);
+}
+
+/** Pull ONE curve's end off a point it shares with others, to `to`.
+ *
+ *  Endpoints at the same spot are joined by position alone: the solver merges
+ *  them into one point (coincKey), nothing draws that join, and every drag
+ *  keeps it on purpose (bodyDragFrame). So after Break the two halves could not
+ *  be pulled apart at all, and there was no glyph to delete (report 3b97b35d).
+ *  This is the way out: the end detachableEnd picks moves to `to`, out of the
+ *  shared bucket, and from then on it is a point of its own. A press within
+ *  `onPoint` of the shared point is ON it, and the drag toward `to` picks.
+ *
+ *  Null when there is nothing to pull apart, so the caller carries on with an
+ *  ordinary drag. Refused when an explicit `coincident` (which HAS a glyph to
+ *  delete) or a `fix` names that very end. */
+export function detachEndpoint(
+  ents: ResolvedEntity[],
+  at: { x: number; y: number },
+  press: THREE.Vector2,
+  to: { x: number; y: number },
+  cons: readonly SketchConstraint[],
+  onPoint = 0,
+): Detach | null {
+  const pick = detachableEnd(ents, at, press, { to, onPoint });
+  if (!pick) return null;
+  const ent = ents[pick.idx]!;
+  // a sketch point names itself at any index, so any constraint on it is on this end
+  const isEnd = (id: string, p: number) => id === ent.id && (ent.type === "point" || p === pick.end);
+  if (cons.some((c) => c.type === "coincident" && (isEnd(c.e1, c.p1) || isEnd(c.e2, c.p2)))) return { kind: "coincident" };
+  if (cons.some((c) => c.type === "fix" && isEnd(c.e, c.p))) return { kind: "fixed" };
+  const moved: ResolvedEntity =
+    ent.type === "point" ? { ...ent, x: to.x, y: to.y }
+    : ent.type === "spline" ? { ...ent, points: ent.points.map((q, k) => (k === (pick.end === 0 ? 0 : ent.points.length - 1) ? { x: to.x, y: to.y } : q)) }
+    : ent.type === "line" || ent.type === "arc" ? (pick.end === 0 ? { ...ent, x1: to.x, y1: to.y } : { ...ent, x2: to.x, y2: to.y })
+    : ent;
+  return { kind: "detached", entities: ents.map((e, i) => (i === pick.idx ? moved : e)), idx: pick.idx };
+}
+
 // --- geometric constraints (applied once; a full solver maintains them) ---
 const lineDir = (e: { x1: number; y1: number; x2: number; y2: number }) =>
   v(e.x2 - e.x1, e.y2 - e.y1).normalize();
@@ -1033,31 +1457,16 @@ export function extendLine(
   if (e.type !== "line") return null;
   const p1 = v(e.x1, e.y1), p2 = v(e.x2, e.y2);
   const extendEnd2 = paramOnSeg(p1, p2, click) >= 0.5; // which end is near the click
-  const dir = p2.clone().sub(p1).normalize();
-  const far = p1.clone().sub(dir.clone().multiplyScalar(1e5)); // a ray well past both ends
-  const farEnd = p2.clone().add(dir.clone().multiplyScalar(1e5));
 
   let bestT = extendEnd2 ? 1 : 0;
   let found = false;
-  ents.forEach((o, i) => {
-    // The origin axes are REFERENCE, not a modify boundary. They exist in every
-    // sketch and span it, so counting them as crossings would silently change
-    // what trim/extend do to any line that happens to cross y=0 or x=0 — in
-    // every document ever made. Snap to them, constrain to them, do not cut on
-    // them.
-    if (i === index || isOriginGeometry(o.id)) return;
-    const hits: THREE.Vector2[] = [];
-    if (o.type === "circle") hits.push(...segCircleIntersect(far, farEnd, v(o.x, o.y), o.radius));
-    else for (const [a, b] of entitySegments(o)) {
-      const x = segIntersect(far, farEnd, a, b);
-      if (x) hits.push(x);
-    }
-    for (const h of hits) {
-      const t = paramOnSeg(p1, p2, h);
-      if (extendEnd2 && t > 1 + 1e-4 && (!found || t < bestT)) { bestT = t; found = true; }
-      if (!extendEnd2 && t < -1e-4 && (!found || t > bestT)) { bestT = t; found = true; }
-    }
-  });
+  // along the line's whole INFINITE carrier: a crossing past either end is a
+  // candidate, and a circle the extension only touches is one too
+  for (const h of crossingsOn(ents, index, { kind: "line", a: p1, b: p2 })) {
+    const t = paramOnSeg(p1, p2, h);
+    if (extendEnd2 && t > 1 + 1e-4 && (!found || t < bestT)) { bestT = t; found = true; }
+    if (!extendEnd2 && t < -1e-4 && (!found || t > bestT)) { bestT = t; found = true; }
+  }
   if (!found) return null;
   const np = p1.clone().add(p2.clone().sub(p1).multiplyScalar(bestT));
   const out = ents.map((o, i) => {

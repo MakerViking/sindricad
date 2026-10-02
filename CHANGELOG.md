@@ -779,8 +779,8 @@ This file starts on 2026-08-03. For anything before that, see the
   pointing at.** Hovering a rectangle side with Collinear or Parallel lit all
   four sides red while the distance tool lit just the one, so a rectangle looked
   like a single indivisible thing. The click was always per side; only the
-  highlight was not. Trim, Fillet and Move still highlight the whole shape,
-  because that is what they act on.
+  highlight was not. Fillet and Move still highlight the whole shape, because
+  that is what they act on.
 
 - **Constraints on a rectangle's sides and corners are no longer refused as
   conflicts.** Midpoint, Symmetric and Collinear on a rectangle mostly came back

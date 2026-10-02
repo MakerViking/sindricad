@@ -23,14 +23,14 @@ import {
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimEntity, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, offsetEntity, offsetChain, signedOffsetAt, breakAt, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk } from "../ui/units";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
-import { compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
+import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
@@ -256,6 +256,13 @@ export class SketchMode {
   private dragStartClient = { x: 0, y: 0 };
   private dragMoved = false;
   private dragShift = false;
+  /** Set for a press that may PULL APART a shared end (Shift, or a right-click
+   *  Disconnect armed on that point): where the press landed, which names the
+   *  curve whose end leaves. Spent on the first frame that moves. */
+  private dragDetach: THREE.Vector2 | null = null;
+  /** The shared point a right-click Disconnect armed (its coincKey bucket);
+   *  the next press on it pulls an end away without Shift. */
+  private detachArmed: string | null = null;
   private dragSnapshot: ResolvedEntity[] | null = null; // entities at drag start (Esc reverts)
 
   // --- in-sketch undo -------------------------------------------------------
@@ -734,6 +741,8 @@ export class SketchMode {
     this.clickPts = [];
     this.filletFirst = null;
     this.dragFrom = null;
+    this.dragDetach = null;
+    this.detachArmed = null;
     this.pendingDrag = null;
     this.pendingPinIdxs = null;
     this.dragRelease = null;
@@ -1798,6 +1807,9 @@ export class SketchMode {
     this.lastSnapKind = hit.kind;
 
     if (this.tool === "select") {
+      // a Disconnect armed from the right-click menu lasts exactly one press
+      const armed = this.detachArmed;
+      this.detachArmed = null;
       // grab a point to drag it — connected/constrained geometry follows
       const gp = this.pickPoint(p);
       if (gp) {
@@ -1806,6 +1818,10 @@ export class SketchMode {
         this.dragStartClient = { x: e.clientX, y: e.clientY };
         this.dragMoved = false;
         this.dragShift = e.shiftKey;
+        // Shift pulls this end AWAY from whatever shares the point (see
+        // detachFrame); a stationary Shift-click still toggles the selection
+        const detach = e.shiftKey || armed === coincKey(gp.p.x, gp.p.y);
+        this.dragDetach = detach ? (this.planePoint(e) ?? p).clone() : null;
         this.dragRefusedToast = false;
         this.dragSnapshot = JSON.parse(JSON.stringify(this.entities)); // for Esc-cancel revert
         try { this.viewport.domElement.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
@@ -3149,7 +3165,9 @@ export class SketchMode {
           this.dragMoved = true;
         }
         const w = this.planePoint(e); // raw cursor; snapping off for smooth drag
-        if (w) this.queueDrag(w);
+        if (!w) return;
+        if (this.dragDetach && !this.detachFrame(w)) return;
+        this.queueDrag(w);
         return;
       }
       if (this.moveDrag) {
@@ -3345,6 +3363,7 @@ export class SketchMode {
     }
     if (e.key === "Escape") {
       e.preventDefault();
+      this.detachArmed = null;
       if (this.offsetPick) { this.cancelOffset(); return; }
       if (this.dragFrom || this.moveDrag) {
         // cancel an in-progress drag: revert geometry to its pre-drag positions
@@ -3663,12 +3682,16 @@ export class SketchMode {
     // A constraint tool takes a rectangle's EDGE, never the rectangle, so it
     // highlights the edge under the cursor and not all four sides — the
     // difference a reporter saw against the dimension tool and read as "the
-    // rectangle is one entity, not lines" (hoverOperandCurve). Every other tool
-    // here (trim, fillet, move...) really does act on the whole entity, so it
-    // keeps the whole-entity highlight.
+    // rectangle is one entity, not lines" (hoverOperandCurve). Trim removes a
+    // SPAN, so it highlights exactly the piece the click would take away, from
+    // the same plan the click uses (trimSpan) and the same raw cursor: lighting
+    // the whole line told a reporter the whole line was about to go. Fillet,
+    // move and the rest act on the whole entity and keep the whole highlight.
     if (hit) {
-      const curve = CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p) : hit;
-      preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
+      const curve = this.tool === "trim" ? this.trimPreview(idx, hit, p)
+        : CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p)
+        : hit;
+      if (curve) preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
     }
     // The point under the cursor, for the tools that consume one. It goes on
     // AFTER the entity highlight so it paints on top: an endpoint and the curve
@@ -3683,12 +3706,20 @@ export class SketchMode {
     this.overlay.setPreview(preview);
   }
 
+  /** What the Trim hover lights: the piece the click would remove, or nothing
+   *  when the click would refuse (the origin, projected geometry), because red
+   *  there would promise a trim that cannot happen. */
+  private trimPreview(idx: number, hit: ResolvedEntity, p: THREE.Vector2): ResolvedEntity | null {
+    if (isOriginGeometry(hit.id) || hit.type === "projected") return null;
+    return trimSpan(this.entities, idx, p);
+  }
+
   /** The addressable point under the cursor FOR THE ACTIVE TOOL, or null when
    *  the tool does not take one.
    *
    *  Scoped rather than universal on purpose. Trim, fillet, move and the rest of
-   *  MODIFY_TOOLS act on whole entities, so lighting up a point while one of
-   *  them is armed would promise a target the tool cannot use — the same class
+   *  MODIFY_TOOLS act on curves, not on points, so lighting up a point while one
+   *  of them is armed would promise a target the tool cannot use — the same class
    *  of lie as a target you can hit but cannot see, which is what rectangle
    *  corners were until this release. */
   private hoverablePoint(p: THREE.Vector2): { x: number; y: number } | null {
@@ -3799,6 +3830,11 @@ export class SketchMode {
     const convertible = this.constructionTargets().length > 0;
     const toNormal = convertible && this.selectionMostlyConstruction();
     const constructionKey = keyHint("toggle-construction");
+    // A right-click on a point several curves share: the place a user stuck
+    // with Break's joined halves looks for a way to pull them apart, so offer
+    // it there. It arms the same pull a Shift-drag makes (detachFrame).
+    const joint = raw ? pickDragPoint(this.entities, raw, this.pickTol()) : null;
+    const canDetach = !!(raw && joint && detachableEnd(this.entities, joint, raw));
     const items: CtxItem[] = [
       ...cons.map((tool) => ({
         label: constraintLabel(tool),
@@ -3817,6 +3853,15 @@ export class SketchMode {
         : []),
       ...(linked
         ? [{ label: linked > 1 ? t("sketch.menu.breakLinkCount", { count: linked }) : t("sketch.menu.breakLink"), onClick: () => this.breakSelectedLinks() }]
+        : []),
+      ...(canDetach && joint
+        ? [{
+            label: t("sketch.menu.disconnect"),
+            onClick: () => {
+              this.detachArmed = coincKey(joint.x, joint.y);
+              setPrompt(t("sketch.prompt.disconnect"));
+            },
+          }]
         : []),
       { label: t("sketch.menu.deleteEntities", { count: n }), danger: true, onClick: () => this.deleteSelected() },
     ];
@@ -3909,11 +3954,21 @@ export class SketchMode {
     this.entities = breakLink(this.entities, ids);
     this.afterModify(); // selection stays: the entities still exist, now native
   }
+  /** Trim the span under the cursor, carrying over every constraint that still
+   *  applies to what is left (trimWithConstraints). What can no longer apply is
+   *  removed, and said: a length on a shortened line, a Fix on an end that is
+   *  gone. Trim used to drop those, and constraints that still held, without a
+   *  word (report 356b2693). */
   private trimClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
-    this.entities = trimEntity(this.entities, idx, p);
-    this.afterModify();
+    const res = trimWithConstraints(this.entities, idx, p, this.constraints);
+    this.entities = res.entities;
+    this.constraints = res.constraints;
+    const before = this.constraints.length;
+    this.afterModify(); // prunes too: anything it still finds dangling counts
+    const dropped = res.dropped + before - this.constraints.length;
+    if (dropped > 0) toast(t("sketch.modify.trimDropped", { count: dropped }));
   }
   private filletClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
@@ -4217,11 +4272,18 @@ export class SketchMode {
     if (res) this.entities = res;
     this.afterModify();
   }
+  /** Break. The halves of a line or arc share the cut point, and the solver
+   *  joins ends at one spot by position alone, with no glyph: nothing on screen
+   *  says they are joined, and an ordinary drag moves both. So the toast says
+   *  so, and how to pull them apart (detachFrame). It is also the only sign the
+   *  break happened at all: the curve looks the same afterwards. */
   private breakClick(p: THREE.Vector2) {
     const idx = pickEntity(this.entities, p, this.pickTol());
     if (idx < 0 || this.guardProjected(this.entities[idx])) return;
+    const before = this.entities.length;
     this.entities = breakAt(this.entities, idx, p);
     this.afterModify();
+    if (this.entities.length > before) toast(t("sketch.modify.breakJoined"));
   }
   /** add a persistent geometric constraint and re-solve (the solver maintains
    *  all constraints together, not just the one you applied). Delegates to
@@ -4855,6 +4917,39 @@ export class SketchMode {
     if (!this.dragFrom || this.dragRelease) return;
     this.pendingDrag = { fromX: this.dragFrom.x, fromY: this.dragFrom.y, toX: to.x, toY: to.y };
     this.queueDragFrame();
+  }
+
+  /** The first moving frame of a Shift-drag (or of a press a right-click
+   *  Disconnect armed) on a point several curves share: pull ONE end off it,
+   *  and drag that end alone for the rest of the gesture. Which end: the one of
+   *  the curve the press landed on, or, for a press on the point's dot itself
+   *  (the one place the user is sent to), the one whose curve heads the way the
+   *  drag goes (detachableEnd). Without this, two ends at one spot are joined
+   *  for good (detachEndpoint says why), which is what made Break's halves
+   *  inseparable.
+   *
+   *  False when this frame must not drag: the cursor is still inside the shared
+   *  point's position bucket (an end put there would merge straight back), or
+   *  the pull was refused, which ends the gesture with the geometry untouched. */
+  private detachFrame(w: THREE.Vector2): boolean {
+    const press = this.dragDetach, from = this.dragFrom;
+    if (!press || !from) return true;
+    if (coincKey(w.x, w.y) === coincKey(from.x, from.y)) return false;
+    this.dragDetach = null;
+    // "on the dot": its drawn radius, doubled for the aim of a hand on a mouse
+    const r = detachEndpoint(this.entities, from, press, w, this.constraints, this.endpointDotRadius() * 2);
+    if (!r) return true; // nothing shares this point: an ordinary drag
+    if (r.kind !== "detached") {
+      toast(r.kind === "coincident" ? t("sketch.guard.coincidentHolds") : FIXED_POINT_MSG);
+      this.dragFrom = null;
+      this.dragSnapshot = null;
+      this.dragEntIdx = -1;
+      return false;
+    }
+    this.entities = r.entities;
+    this.dragEntIdx = r.idx;
+    from.copy(w); // the pulled end sits under the cursor: the drag pins it from here
+    return true;
   }
 
   /** Queue the BODY drag's settle for this frame: re-satisfy the constraints

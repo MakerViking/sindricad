@@ -1534,6 +1534,7 @@
       "text": "text"
     },
     "guard": {
+      "coincidentHolds": "A Coincident constraint holds this end there. Right-click its ⊙ badge to delete it, then pull the end away",
       "dragFlattens": "That move would flatten or flip constrained geometry, so it was not applied",
       "originFixed": "The sketch origin is fixed reference geometry — snap and constrain to it, but it can't be edited",
       "pointFixed": "That point is fixed — delete its Fix constraint to move it",
@@ -1557,9 +1558,17 @@
         "one": "Delete",
         "other": "Delete {count} entities"
       },
+      "disconnect": "Disconnect",
       "lockDimensions": "Lock dimensions",
       "makeConstruction": "Make construction",
       "makeNormal": "Make normal"
+    },
+    "modify": {
+      "breakJoined": "Split in two. The halves stay joined at the cut. To pull them apart, switch to Select and Shift-drag from the cut toward the half that should move",
+      "trimDropped": {
+        "one": "Trim removed a constraint that no longer applies to what is left",
+        "other": "Trim removed {count} constraints that no longer apply to what is left"
+      }
     },
     "offset": {
       "chainOff": "Chain Selection off — only the clicked curve offsets",
@@ -1616,6 +1625,7 @@
       "concentric": "Concentric: click two circles/arcs to share a center · Esc",
       "copy": "Copy: select entities, then click a base point and a destination (originals kept) · Esc",
       "dimension": "Dimension: click a line (length) or circle (⌀), type a value + Enter · Esc",
+      "disconnect": "Disconnect: drag from the point toward the curve whose end should come away · Esc",
       "equal": "Equal: click two lines (equal length) or two circles/arcs (equal radius) · Esc",
       "extend": "Extend: click a line or arc near an end to lengthen it to the nearest crossing · Esc",
       "fillet": "Fillet: click two lines, then type a radius + Enter · Esc",
