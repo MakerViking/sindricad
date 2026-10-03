@@ -300,6 +300,10 @@ This file starts on 2026-08-03. For anything before that, see the
   made, but the sketch's own lines stayed drawn at the old height, and opening
   the sketch to edit it put you on the old plane. Both follow the plane now.
 
+- **`1/16` typed into a sketch dimension in inches is 1/16 inch.** It used to be
+  a sixteenth of a millimetre, and `1/16 in` came out as one divided by 16
+  inches.
+
 - **Break keeps the constraints of the curve it splits.** A Coincident at either
   end, and Horizontal or Vertical, now carry over to the two halves instead of
   disappearing. Length and Equal no longer apply to a half, so those are removed,

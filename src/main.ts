@@ -69,7 +69,7 @@ import { createPanels } from "./ui/panels";
 import { openParamsDialog } from "./ui/paramsDialog";
 import { solveSketchFeature } from "./sketch/headlessSolve";
 import { setPrompt } from "./ui/prompt";
-import { getUnit, setUnit, asUnit } from "./ui/units";
+import { getUnit, setUnit, asUnit, setFieldParams } from "./ui/units";
 import { gpuFatalShown, showGpuFatal } from "./ui/gpuFatal";
 import { mountWindowControls } from "./ui/windowControls";
 import type { Feature, PlaneDef } from "./types";
@@ -395,6 +395,9 @@ const tree = new BrowserTree(document.getElementById("browser")!, store);
 // exposed here): lets a perf harness time a tree render directly.
 if (import.meta.env.DEV) (window as any).tree = tree;
 const inspector = new Inspector(document.getElementById("inspector")!, store);
+// On-canvas dimension boxes and tool panels accept expressions (`31.53+2*1.62`,
+// `wall*2`), so they need the document's parameters to resolve names.
+setFieldParams(() => store.document.parameters);
 
 // WebKitGTK quirk: wheel events over overflow panels don't reliably reach the
 // native scroller (GTK kinetic scrolling eats them — measured fine in Chromium,

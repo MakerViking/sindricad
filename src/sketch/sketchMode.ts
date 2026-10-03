@@ -26,7 +26,8 @@ import {
 import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, dropMovedJoins, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
-import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal } from "../ui/units";
+import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
+import { splitNameValue } from "../params/engine";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
 import type { SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
@@ -176,6 +177,19 @@ const POLYGON_EDIT_FIELDS: [PolygonEditField, FieldKind][] = [["radius", "length
  *  box, so none of them can accept a count another refuses. */
 function sideCountOk(n: number | null): n is number {
   return n != null && Number.isFinite(n) && Math.round(n) >= 3 && Math.round(n) <= 64;
+}
+
+/** Typed dimension text as the expression the sketch STORES for it: what the
+ *  user meant, spelled so the parameters engine evaluates it the same on every
+ *  rebuild (ui/units.fieldExpr). In inches `1/16` was a sixteenth of a
+ *  MILLIMETRE, because the engine reads a bare literal in mm, and `1/16 in` was
+ *  1/(16 in). A `name=` prefix is kept; text that does not parse goes through
+ *  untouched, so the engine's own message is the one shown. */
+function storedDimExpr(raw: string, kind: FieldKind): string {
+  const nv = splitNameValue(raw);
+  const expr = fieldExpr(nv ? nv.expr : raw, kind);
+  if (expr === null) return raw;
+  return nv ? `${nv.name}=${expr}` : expr;
 }
 
 // Tools that operate on the current multi-selection, so setTool must keep it.
@@ -1484,7 +1498,7 @@ export class SketchMode {
     if (!this.store) return { error: t("sketch.dimension.error.noDocument") };
     const bound = key ? (this.docBinding(key)?.name ?? null) : null;
     const pending = key ? (this.pendingBindings.get(key)?.name ?? null) : null;
-    const c = this.store.classifyTargetExpr(bound, pending, raw, kind);
+    const c = this.store.classifyTargetExpr(bound, pending, storedDimExpr(raw, kind), kind);
     if (!c.ok) return { error: c.error };
     if (!dimValueOk(c.value, kind, signed)) {
       return { error: t(signed ? "sketch.dimension.error.mustBeNonZero" : "sketch.dimension.error.mustBePositive") };

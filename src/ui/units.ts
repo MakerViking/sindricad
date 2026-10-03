@@ -109,6 +109,8 @@ export function snap(v: number, step: number): number {
 // the input-side consumers that historically import it from units.
 import type { FieldKind } from "../document/numFields";
 import { isImeComposing } from "./focus";
+import { UNITS, parseExpr, refsOfNode, tokenize, type ExprNode } from "../params/parse";
+import { evalExpr, evalNode } from "../params/eval";
 export type { FieldKind };
 
 /** numeric value to show in a field: angles stay in degrees, lengths convert */
@@ -308,6 +310,143 @@ export function parseField(raw: string, kind: FieldKind = "length"): number | nu
   const v = parseNumber(raw);
   if (v == null) return null;
   return kind === "length" ? fromDisplay(v) : v; // angle/count: raw number
+}
+
+/** The document's parameters, for expressions typed into a field (`wall*2`).
+ *  Set once from main.ts rather than threaded through the dozen tools that
+ *  open a dimension box or a panel; unset means "no names", so bare arithmetic
+ *  still works and a named expression is refused. */
+let paramsProvider: () => Record<string, number> = () => ({});
+export function setFieldParams(fn: () => Record<string, number>) {
+  paramsProvider = fn;
+}
+export function fieldParams(): Record<string, number> {
+  return paramsProvider();
+}
+
+/** A typed field that may be an EXPRESSION (`31.53+2*1.62`, `1/16`,
+ *  `wall*2`), back to mm/deg. Null when it is not a number the app can read.
+ *
+ *  This exists because a dimension box used to read only a bare number: an
+ *  expression was refused (or, before parseNumber, silently truncated to its
+ *  leading number, so `31.53+2*1.62` became 31.53). A wrong dimension is worse
+ *  than a refused one, so anything this cannot evaluate is null, never a guess.
+ *
+ *  The unit rule is fieldExpr's; see there. */
+export function parseFieldExpr(
+  raw: string,
+  kind: FieldKind = "length",
+  params: Record<string, number> = {},
+): number | null {
+  const s = raw.trim();
+  if (!s) return null;
+  if (isPlainNumber(s)) return parseField(s, kind);
+  const expr = fieldExpr(s, kind);
+  if (expr === null) return null;
+  try {
+    const v = evalExpr(expr, params);
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null; // unknown name, bad arity: "not a number", like any other typo
+  }
+}
+
+/** Typed field text as the expression the parameters engine must evaluate to
+ *  get what the user MEANT. Null for text that does not parse at all. A comma
+ *  decimal is normalised first (canonicalDecimal).
+ *
+ *  THE UNIT RULE. The parameters engine is canonical: a bare literal is mm or
+ *  degrees, so a saved expression means the same on every machine. A field the
+ *  user types into is not: a plain `2` there is 2 of the DISPLAY unit. Arithmetic
+ *  has to agree with the plain number typed into the same box a moment earlier,
+ *  or an inch user typing `1/16` gets a sixteenth of a MILLIMETRE (0.0625 mm,
+ *  found in the sketch dimension editor 2026-10-02). So:
+ *
+ *   - Arithmetic that names no parameter reads in the DISPLAY unit: `1/16` in
+ *     inches is 1/16 inch, `2+3` in cm is 5 cm. Functions and PI are arithmetic.
+ *   - A unit written once at the END applies to the WHOLE of that arithmetic:
+ *     `1/16 in` is a sixteenth of an inch. The engine binds a suffix to the
+ *     literal before it, which made that 1/(16 in), a reciprocal length.
+ *   - Anything naming a parameter (`wall*2`) reads CANONICAL, as the engine
+ *     does: a parameter's value is already in mm, and converting the literals
+ *     around it would scale half the expression and not the other half. So
+ *     does arithmetic whose literals carry their own units (`1 in + 2 mm`).
+ *
+ *  What comes back is always something the ENGINE evaluates to that reading,
+ *  because a sketch dimension STORES what is typed as a parameter expression
+ *  and re-evaluates it on every rebuild. Where the engine already reads the typed
+ *  text the same way (every millimetre case, `5 in`) the text is kept as
+ *  typed; otherwise it is rewritten with the unit made explicit, `1/16` in
+ *  inches becoming `(1/16)*1 in`. */
+export function fieldExpr(raw: string, kind: FieldKind = "length"): string | null {
+  const s = canonicalDecimal(raw.trim());
+  const bare = bareArithmetic(s, kind);
+  if (!bare) {
+    try {
+      parseExpr(s);
+    } catch {
+      return null;
+    }
+    return s;
+  }
+  const unit = bare.unit ?? (kind === "length" ? current : null);
+  if (unit === null) return s; // an angle or count: nothing to convert
+  const factor = UNITS[unit]!.factor;
+  const meant = evalNode(bare.ast, {}) * factor;
+  let asTyped = NaN;
+  try {
+    asTyped = evalExpr(s, {});
+  } catch {
+    /* the engine cannot read it as typed, `(1+1) in` say: rewrite */
+  }
+  // The engine computes (body) * (1 * factor), which is the same two IEEE
+  // operations as `meant`, so the rewrite evaluates to `meant` exactly.
+  if (asTyped === meant) return s;
+  return `(${bare.body})*1 ${unit}`;
+}
+
+/** `s` as arithmetic that names no parameter: the AST of everything before an
+ *  optional trailing unit suffix, that suffix, and the text it applies to. Null
+ *  when `s` names a parameter, carries a unit anywhere but the end, carries a
+ *  unit of the wrong kind for the field, or does not parse. */
+function bareArithmetic(s: string, kind: FieldKind): { ast: ExprNode; body: string; unit: string | null } | null {
+  let toks;
+  try {
+    toks = tokenize(s);
+  } catch {
+    return null;
+  }
+  const last = toks[toks.length - 1];
+  let body = s;
+  let unit: string | null = null;
+  if (last?.kind === "ident" && last.name in UNITS && toks.length > 1) {
+    const before = toks[toks.length - 2]!;
+    // `2*in` is not a sixteenth of anything; only a suffix directly after a
+    // number or a closing bracket is one
+    if (before.kind === "op" && before.op !== ")") return null;
+    unit = last.name;
+    body = s.slice(0, last.start).trim();
+    const want = kind === "angle" ? "angle" : kind === "length" ? "length" : null;
+    if (UNITS[unit]!.dim !== want) return null;
+  }
+  let ast: ExprNode;
+  try {
+    ast = parseExpr(body);
+  } catch {
+    return null;
+  }
+  if (refsOfNode(ast).length || hasUnitTag(ast)) return null;
+  return { ast, body, unit };
+}
+
+function hasUnitTag(n: ExprNode): boolean {
+  switch (n.t) {
+    case "num": return n.unit !== undefined;
+    case "ref": return false;
+    case "call": return n.args.some(hasUnitTag);
+    case "bin": return hasUnitTag(n.l) || hasUnitTag(n.r);
+    case "neg": return hasUnitTag(n.e);
+  }
 }
 
 /** Is a typed dimension value one this dim can hold? A length is a magnitude

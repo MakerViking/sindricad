@@ -7,7 +7,7 @@
 // fields are shown/parsed in the user's display unit, angles always in degrees.
 
 import { setTitle, t } from "../i18n";
-import { getUnit, fieldText, parseField } from "../ui/units";
+import { getUnit, fieldParams, fieldText, parseFieldExpr } from "../ui/units";
 import { icon } from "../ui/icons";
 import { isImeComposing } from "../ui/focus";
 
@@ -65,7 +65,9 @@ export class DimInput {
    *  UNCHANGED since it took focus there is nothing being typed for the letter
    *  to interrupt, so it belongs to the tool — and the keystroke is swallowed
    *  here so the letter does not ALSO land in the field. Once the user has
-   *  typed a value, letters stay text (the numeric parse rejects them anyway).
+   *  typed, letters stay text. The box reads parameter names and functions
+   *  (`wall*2`), so a letter claimed here is one no value can START with in
+   *  this box: claim as few as the tool can.
    *  A key aimed anywhere else — another editor, the canvas — is not mine to
    *  arbitrate and passes straight through. `ownsTarget` is what keeps this
    *  from claiming e.g. a dimension label's inline value input. */
@@ -285,11 +287,12 @@ export class DimInput {
   }
 
   /** returns the field value in MM (length fields converted from display unit).
-   *  `parseField` is the ONE numeric entry point: it takes "12,5" as readily as
-   *  "12.5" (ui/units), so this box — extrude, press/pull, fillet, chamfer,
-   *  move, offset, section and every sketch primitive — needs no rule of its
-   *  own. null for text that is not a bare number; commit() drops such a field
-   *  rather than committing a truncated number.
+   *  `parseFieldExpr` is the ONE numeric entry point: it takes "12,5" as readily
+   *  as "12.5", and arithmetic as readily as a number (`31.53+2*1.62`, `1/16`,
+   *  `wall*2`; the unit rule is ui/units.fieldExpr's), so this box — extrude,
+   *  press/pull, fillet, chamfer, move, offset, section and every sketch
+   *  primitive — needs no rule of its own. null for text it cannot evaluate;
+   *  commit() drops such a field rather than committing a guess.
    *
    *  Text the user has not typed into since the app wrote it returns the value
    *  it was written FOR. Re-opening an extrude 1/32" deep in inches seeds
@@ -299,7 +302,7 @@ export class DimInput {
     const f = this.fields.find((x) => x.def.name === name);
     if (!f) return null;
     if (f.wrote && f.input.value === f.wrote.text) return f.wrote.mm;
-    return parseField(f.input.value, f.def.kind);
+    return parseFieldExpr(f.input.value, f.def.kind, fieldParams());
   }
 
   /** True when the field holds text the user TYPED, as opposed to the text the
