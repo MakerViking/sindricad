@@ -1664,6 +1664,18 @@ def _import_job(path, fmt):
         return _error_from(ex)
 
 
+def _insert_document_job(document, name):
+    """Worker: another document's visible bodies as an `import` payload (Insert >
+    Part from File). Read-only on the open document's cache; see
+    builder.insert_document."""
+    from builder import insert_document
+
+    try:
+        return insert_document(document, name)
+    except Exception as ex:
+        return _error_from(ex)
+
+
 def _list_fonts_job():
     """Worker: enumerate system font families (read-only)."""
     from builder import list_fonts
@@ -2797,6 +2809,7 @@ _REQUIRED_FIELDS = {
     # PlaneSpec is Plane3 | PlaneDef (types.ts), so a bare "XY" is legal here
     "projectGeometry": (("document", dict, True), ("plane", (dict, str), True)),
     "import": (("path", str, True), ("format", str, True)),
+    "insertDocument": (("document", dict, True), ("name", str, False)),
     "migrateGeometry": (("items", list, False),),
     "tessellateText": (("entity", dict, True),),
     "listFonts": (),
@@ -3448,6 +3461,14 @@ async def _dispatch(ws, loop, req, req_id, op):
             loop, _import_job, req["path"], req["format"],
             stall=budget, on_progress=_importing,
         )
+        await ws.send(_reply_for(req_id, res))
+
+    elif op == "insertDocument":
+        # A whole rebuild of ANOTHER document, then one BREP write: the same
+        # shape of work as an export, so the same body-count-scaled budget.
+        res = await _run_stall(loop, _insert_document_job, req["document"],
+                               req.get("name"),
+                               stall=_export_stall_budget(req["document"]))
         await ws.send(_reply_for(req_id, res))
 
     elif op == "listFonts":

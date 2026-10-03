@@ -244,6 +244,8 @@
       "exportCancelled": "export cancelled",
       "importCancelled": "import cancelled",
       "importFailed": "import failed",
+      "insertNoBodies": "That document has no visible bodies to insert. Bodies hidden there are left out.",
+      "insertNothingBuilt": "Nothing in that document built, so there is nothing to insert. Open it to see what failed.",
       "kernelCrashed": "the geometry kernel crashed on this operation",
       "mergeAllDamaged": {
         "one": "Merge changed nothing: the only solid part of {body} is damaged, and I leave damaged parts out rather than repair them.",
@@ -734,6 +736,7 @@
       "couldNotRead": "could not read document: {reason}",
       "export": "Export failed: {reason}",
       "import": "Couldn't import {name}: {reason}",
+      "insert": "Couldn't insert {name}: {reason}",
       "newerFormat": "{name} was saved by a newer version of SindriCAD, which stores geometry in a packaged document this build can't read. Update SindriCAD to open it.",
       "open": "Couldn't open {name}: {reason}",
       "openDocument": "Couldn't open document: {reason}",
@@ -824,6 +827,23 @@
         "one": "Imported {n} body. Expect the 3D view to be slow: measured 27-37 fps at {slow} bodies against 60 at {smooth}. Modelling, export and printing are unaffected.",
         "other": "Imported {n} bodies. Expect the 3D view to be slow: measured 27-37 fps at {slow} bodies against 60 at {smooth}. Modelling, export and printing are unaffected."
       }
+    },
+    "insert": {
+      "appearanceLost": {
+        "one": "{n} body from {name} had a texture or colored text. Its shape came across, but the texture and text colors did not.",
+        "other": "{n} bodies from {name} had a texture or colored text. Their shapes came across, but the textures and text colors did not."
+      },
+      "busy": "Inserting {name}",
+      "colorPair": "{from} became {to}",
+      "colorsMatched": {
+        "one": "{n} color from {name} is not in this document's palette, so I used the nearest one here: {pairs}.",
+        "other": "{n} colors from {name} are not in this document's palette, so I used the nearest ones here: {pairs}."
+      },
+      "failed": {
+        "one": "{n} feature of {name} did not build, so the part I inserted may be missing pieces. Open that file to see what failed.",
+        "other": "{n} features of {name} did not build, so the part I inserted may be missing pieces. Open that file to see what failed."
+      },
+      "self": "I can't insert the document you have open into itself. To repeat bodies inside it, use Pattern or Mirror."
     },
     "newDocument": "New Document",
     "warning": {
@@ -965,7 +985,8 @@
       "close": "Close",
       "export": "Export…",
       "exportPrint": "Export for Print (3MF)…",
-      "importMesh": "Import Mesh…",
+      "importMesh": "Import…",
+      "insertPart": "Insert Part from File…",
       "new": "New",
       "open": "Open…",
       "openInOrca": "Open in OrcaSlicer…",
@@ -1177,6 +1198,8 @@
     "hint": {
       "cancelSketch": "Leave the sketch and discard it. An offset plane you just made stays.",
       "datumPlane": "Creates the plane only — no sketch.",
+      "import": "Brings in a STEP, STL, 3MF, OBJ or GLB file as a body.",
+      "insertPart": "Copies the visible bodies of another SindriCAD document into this one. Later changes to that file do not follow.",
       "offsetPlane": "Creates the plane AND starts a sketch on it."
     },
     "moreFamilyTools": "More {name} tools",
@@ -1879,7 +1902,8 @@
     "honeycomb": "Honeycomb",
     "horizontal": "Horizontal",
     "import": "Import",
-    "importMesh": "Import Mesh",
+    "importMesh": "Import",
+    "insertPart": "Part from File",
     "interference": "Interference",
     "line": "Line",
     "lockDimension": "Lock Dimension",

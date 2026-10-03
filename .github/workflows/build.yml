@@ -134,6 +134,9 @@ jobs:
           uv run python test_cancel.py
           uv run python test_blobstore.py
           uv run python test_import_blob.py
+          # Insert > Part from File: the reply rebuilt as the import it lands
+          # as, and the open document's cache left alone.
+          uv run python test_insert_document.py
           uv run python test_blob_rebuild.py
           uv run python test_open_bbox.py
           uv run python test_separate.py

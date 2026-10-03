@@ -96,6 +96,8 @@ and on `ResolveDiag` entries.
 | `mergeSeparatePieces` | warning (`ResolveDiag` with a `reason`): the merged `{body}` is `count` pieces that do not touch, all kept in the one body |
 | `separateDroppedSurfaces` | warning (`ResolveDiag` with a `reason`): `count` loose surfaces beside the solids of `{body}` have no thickness, so they are in none of Separate's pieces and were left out; where one was the only thing forming a wall, that part is gone |
 | `separateDroppedFaces` | warning (`ResolveDiag` with a `reason`): `{body}` has no solids, so Separate made its pieces from its surfaces (shells), and `count` loose faces that belong to none of them were left out; where one was the only thing forming a wall, that part is gone |
+| `insertNoBodies` | `insertDocument`: the other document has no visible bodies to insert |
+| `insertNothingBuilt` | `insertDocument`: nothing in the other document built |
 
 **Treat an unrecognised code as unclassified, never as an error.** The set only grows, and
 a newer sidecar may emit one this client has not heard of. Codes are added freely; renaming
@@ -344,6 +346,42 @@ frontend never ships file bytes over the socket.
 Reply: `{ "brep": "...", "name": "...", "solid": true, "faces": [...] }` (the exact
 fields the frontend embeds as an `import` feature), or `{ "error": { "message": "..." } }`.
 Given a longer budget than a normal rebuild (mesh read + B-rep build can run longer).
+
+### `insertDocument`
+
+Insert > Part from File: builds ANOTHER document and packs its visible bodies as the
+payload for an ordinary `import` feature, exactly the shape an assembly STEP import
+produces (a flat blob whose top-level child i is part i, plus `nodes`/`parts`).
+
+```jsonc
+{ "op": "insertDocument", "id": "...",
+  "document": { /* the OTHER document as the app builds it: rollback, suppression
+                   and bodyVisibility applied (store.ts savedBuildDocument) */ },
+  "name": "M3 standoff" }   // optional: labels the tree root (or the one body)
+```
+
+Reply:
+```jsonc
+{ "geom": "<blob hash>", "name": "M3 standoff", "solid": true, "faces": 12,
+  "nodes": [ { "name": "M3 standoff", "parent": null },
+             { "name": "Body1", "parent": 0 }, { "name": "Body2", "parent": 0 } ],
+  "parts": [ { "node": 1, "faces": 6, "intact": true }, { "node": 2, "faces": 6 } ],
+  "bodies": ["body1", "body2"],          // the source body behind each part, NOT persisted
+  "pieceOf": { "body2": ["body1", 2] },  // split lineage of every body built, NOT persisted
+  "failed": 1,                           // features of that document that did not build
+  "appearanceLost": 1 }                  // bodies whose texture / text colour stays behind
+```
+`intact: true` (persisted on the part row) builds the part without a second debris pass:
+it is the other document's body exactly as that document showed it, and the pass would
+delete the small pieces of an assembly kept whole there. Written only on a part of
+several solids (the pass cannot change a one-solid part, and the flag would exempt it
+from later cuts' chip clean-up for good). Absent on every other import.
+A single visible body is its own root (one node, named `name`). Hidden bodies
+(`bodyVisibility[id] === false`) are left out. `failed` and `appearanceLost` are omitted
+when zero. Built with `readonly=True`, so the open document's warm cache is untouched.
+Refuses with `insertNoBodies` (nothing visible) or `insertNothingBuilt` (nothing built);
+neither carries a `feature_id`, since one would name a feature of the other document.
+`nodes[].name` is untrusted text, as on any import. Budgeted like `export`.
 
 ### `massProperties`
 

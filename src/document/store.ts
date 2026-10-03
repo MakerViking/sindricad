@@ -134,6 +134,70 @@ const DEFAULT_PALETTE: { name: string; color: string }[] = [
   { name: "Blue", color: "#3050c8" },
 ];
 
+/** The palette a saved document carries, or the default when it carries none
+ *  (an untouched palette with no assignments is not written). Fresh copies. */
+export function savedPalette(parsed: CadDocument): { name: string; color: string; material?: string }[] {
+  return Array.isArray(parsed.palette) && parsed.palette.length
+    ? parsed.palette.map((s) => ({ ...s }))
+    : DEFAULT_PALETTE.map((s) => ({ ...s }));
+}
+
+/** Migrate boolean features to captured-visibility semantics: an extrude
+ *  without `hiddenBodies` is gated by the LIVE eye states on every rebuild
+ *  (display retroactively rewriting geometry — the recurring red-features
+ *  trap). Stamping "nothing hidden" locks in the all-visible behavior every
+ *  saved document was verified against, and makes the file eye-proof. */
+function stampCapturedVisibility(features: Feature[]) {
+  for (const f of features) {
+    if (f.type === "extrude" && !("hiddenBodies" in f)) {
+      (f as { hiddenBodies?: string[] }).hiddenBodies = [];
+    }
+  }
+}
+
+/** A SAVED document exactly as the app builds it once it is opened: migrated,
+ *  stamped as load() stamps it, cut at its rollback marker, its suppressed
+ *  features dropped, carrying its parameters and its body visibility. That is
+ *  load() followed by buildDocument(), without replacing the open document —
+ *  Insert > Part from File builds another file this way. Body ids are
+ *  positional, so building anything else would name a different body list than
+ *  the one that file's renames and colours were made against.
+ *
+ *  Migrates `parsed` in place, as load() does. `warnings` are migrateDocument's
+ *  (a file from a newer version is read best-effort). */
+export function savedBuildDocument(parsed: CadDocument): { document: CadDocument; warnings: string[] } {
+  const warnings = migrateDocument(parsed);
+  const features = parsed.features ?? [];
+  stampCapturedVisibility(features);
+  const document: CadDocument = {
+    parameters: parsed.parameters ?? {},
+    features: prefixFeatures(features, parsed.rollback ?? features.length, new Set(parsed.suppressed ?? [])),
+  };
+  if (parsed.bodyVisibility && Object.keys(parsed.bodyVisibility).length) {
+    document.bodyVisibility = { ...parsed.bodyVisibility };
+  }
+  return { document, warnings };
+}
+
+/** The name a body is shown by when it is not its built name, or undefined.
+ *  The user's own rename wins. Failing that, a piece a split made of a body the
+ *  user renamed is shown as "<that rename> (n)", derived afresh from the
+ *  build's `pieceOf` lineage. Pure so the Browser and Insert > Part from File
+ *  (which names parts from ANOTHER document's renames) cannot disagree; see
+ *  DocumentStore.bodyName for why piece names are derived, never written. */
+export function displayBodyName(
+  id: string,
+  own: (id: string) => string | undefined,
+  pieceOf: (id: string) => [string, number] | undefined,
+  depth = 0,
+): string | undefined {
+  const mine = own(id);
+  if (mine !== undefined) return mine;
+  const piece = depth < 8 ? pieceOf(id) : undefined;
+  const base = piece ? displayBodyName(piece[0], own, pieceOf, depth + 1) : undefined;
+  return piece && base ? t("feature.split.pieceName", { name: base, n: piece[1] }) : undefined;
+}
+
 /** A persisted display-only override map (id -> value): sketch/body/plane
  *  visibility, body names, and body colors all hand-rolled the same shape —
  *  a private Map plus a toJSON/load round-trip keyed by one CadDocument field.
@@ -505,6 +569,7 @@ export class DocumentStore {
   }
 
   newDocument() {
+    this.carried.clear(); // before the overlay goes: see `carried`
     this.undoStack = [];
     this.redoStack = [];
     this.doc = clone(EMPTY_DOCUMENT);
@@ -527,6 +592,9 @@ export class DocumentStore {
   }
 
   private emitDoc() {
+    // No repaint of its own: every document change that moves a carried colour
+    // schedules a rebuild, and that build's emit repaints.
+    if (this.placeCarriedColors()) this.markDirty();
     for (const fn of this.docListeners) fn(this.doc);
   }
   private emitBuild() {
@@ -1381,12 +1449,9 @@ export class DocumentStore {
    *  made fewer pieces, or an undo, left "Skjermdeksel (2)" on whatever body
    *  took the id next, a redo lost them, and after a reopen nothing knew to
    *  take them off. */
-  bodyName(id: string, depth = 0): string | undefined {
-    const own = this.bodyNames.get(id);
-    if (own !== undefined) return own;
-    const piece = depth < 8 ? this.pieceIndex().get(id) : undefined;
-    const base = piece ? this.bodyName(piece[0], depth + 1) : undefined;
-    return piece && base ? t("feature.split.pieceName", { name: base, n: piece[1] }) : undefined;
+  bodyName(id: string): string | undefined {
+    const pieces = this.pieceIndex();
+    return displayBodyName(id, (b) => this.bodyNames.get(b), (b) => pieces.get(b));
   }
   private pieceMemo: { result: RebuildResult | null; map: Map<string, [string, number]> } = { result: null, map: new Map() };
   /** id → pieceOf for the last build, rebuilt only when the result changes:
@@ -1494,6 +1559,74 @@ export class DocumentStore {
     this.markDirty();
     this.emitBuild();
   }
+  /** Give the bodies an inserted part builds the colours it brought: `slots`
+   *  is tree node → palette slot, for the `import` feature `featureId` with
+   *  geometry `geom`. Placed at once on the build on screen, in ONE emit, and
+   *  kept in line with every build after; see `carried`. */
+  carryBodyColors(featureId: string, geom: string, slots: ReadonlyMap<number, number>) {
+    if (!slots.size) return;
+    this.carried.set(featureId, { geom, slots: new Map(slots), placed: new Map() });
+    if (!this.placeCarriedColors()) return;
+    this.markDirty();
+    this.emitBuild();
+  }
+  /** Colours an inserted part brought (Insert > Part from File), held by the
+   *  feature that brought them instead of written once and left behind. Body
+   *  ids are positional, so a slot written on "body2" stays on whatever body is
+   *  body2 next: undoing an insert put its colours on the next bodies the user
+   *  made, on screen and in a colored 3MF. These go on the bodies the feature
+   *  builds, found by tree node (a body's nodeRef), and come off whenever it no
+   *  longer builds them (undone, deleted, suppressed, rolled past, or its bodies
+   *  renumbered). Coming off keeps whatever the user had changed each one to,
+   *  None included, so a redo brings that back. Matched on the feature's
+   *  geometry as well as its id, because a freed feature id is handed out again.
+   *
+   *  Session state: a reopened document holds them as ordinary colours, and
+   *  load() and newDocument() forget them before the overlay is replaced. */
+  private carried = new Map<string, { geom: string; slots: Map<number, number>; placed: Map<string, number> }>();
+  /** Bring every carried colour in line with the build on screen (placed: body
+   *  id → node). True when the overlay changed. Runs on every document change
+   *  (emitDoc), so an undo takes them off before anything can save them, and on
+   *  every settled build, which is when renumbered or returning bodies are
+   *  known. Everything is taken off before anything is put down, so two bodies
+   *  that traded ids cannot overwrite each other. */
+  private placeCarriedColors(): boolean {
+    if (!this.carried.size) return false;
+    let changed = false;
+    const wanted = new Map<string, Map<string, number>>();
+    for (const [featureId, c] of this.carried) {
+      const want = new Map<string, number>();
+      const f = this.doc.features.find((x) => x.id === featureId);
+      if (f?.type === "import" && f.geom === c.geom) {
+        const prefix = `${featureId}/`;
+        for (const b of this.build.result?.bodies ?? []) {
+          if (!b.nodeRef?.startsWith(prefix)) continue;
+          const node = Number(b.nodeRef.slice(prefix.length));
+          if (c.slots.has(node)) want.set(b.id, node);
+        }
+      }
+      wanted.set(featureId, want);
+      for (const [body, node] of c.placed) {
+        if (want.get(body) === node) continue;
+        const now = this.bodyColors.get(body);
+        if (now === undefined) c.slots.delete(node);
+        else c.slots.set(node, now);
+        this.bodyColors.delete(body);
+        c.placed.delete(body);
+        changed = true;
+      }
+    }
+    for (const [featureId, c] of this.carried) {
+      for (const [body, node] of wanted.get(featureId) ?? []) {
+        const slot = c.slots.get(node);
+        if (c.placed.has(body) || slot === undefined) continue;
+        this.bodyColors.set(body, slot);
+        c.placed.set(body, node);
+        changed = true;
+      }
+    }
+    return changed;
+  }
   /** body id → palette-slot index, as a plain object. For the colored-3MF export
    *  call, which must thread these side-maps explicitly (they never travel inside
    *  `document`). */
@@ -1543,24 +1676,16 @@ export class DocumentStore {
     // pure geometry (+ viewOverrides) so undo/rebuild stay unaffected by it.
     this.suppressed = new Set(parsed.suppressed ?? []);
     this.rollback = parsed.rollback ?? null;
+    this.carried.clear(); // before the overlay is replaced: see `carried`
     for (const { overlay, mapValue } of this.overlays) overlay.loadFrom(parsed as unknown as Record<string, unknown>, mapValue);
-    this.palette = parsed.palette?.length ? parsed.palette.map((s) => ({ ...s })) : DEFAULT_PALETTE.map((s) => ({ ...s }));
+    this.palette = savedPalette(parsed);
     this.doc = {
       parameters: parsed.parameters ?? {},
       ...(parsed.paramDefs ? { paramDefs: parsed.paramDefs } : {}),
       features: parsed.features ?? [],
       ...(parsed.viewOverrides ? { viewOverrides: parsed.viewOverrides } : {}),
     };
-    // Migrate boolean features to captured-visibility semantics: an extrude
-    // without `hiddenBodies` is gated by the LIVE eye states on every rebuild
-    // (display retroactively rewriting geometry — the recurring red-features
-    // trap). Stamping "nothing hidden" locks in the all-visible behavior every
-    // saved document was verified against, and makes the file eye-proof.
-    for (const f of this.doc.features) {
-      if (f.type === "extrude" && !("hiddenBodies" in f)) {
-        (f as { hiddenBodies?: string[] }).hiddenBodies = [];
-      }
-    }
+    stampCapturedVisibility(this.doc.features);
     this.markDirty(); // openDocument clears this via markSaved() once the path is known
     this.discardModelForReplacement();
     for (const fn of this.replaceListeners) fn("load");
@@ -1705,6 +1830,7 @@ export class DocumentStore {
             // which on a failure is the PREVIOUS document — renders over the top.
             if (this.build.streamed !== null && !reply.ok) this.emitBuildAbort();
             this.build = this.settledBuild(reply);
+            if (this.placeCarriedColors()) this.markDirty();
             this.emitBuild();
             // associative projection refresh: decide AFTER the result is published
             // (a queued commit lands via paramChain and triggers its own rebuild).
@@ -1744,6 +1870,7 @@ export class DocumentStore {
       const reply = await ca(this.effectiveDoc());
       if (this.build.streamed !== null && !reply.ok) this.emitBuildAbort();
       this.build = this.settledBuild(reply);
+      if (this.placeCarriedColors()) this.markDirty();
       this.emitBuild();
       // Compute All is the explicit retry gesture the valve toast promises:
       // re-arm the valve and route the (freshly recomputed) projection updates

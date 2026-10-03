@@ -618,8 +618,13 @@ export type Feature =
       // whole tree and falls back to unnamed bodies if it disagrees, because a
       // wrong tree still builds and would just label parts with each other's
       // names. Rows are objects so a later phase can add fields to them.
+      //
+      // `intact: true` is written only by Insert > Part from File, on a part of
+      // several solids: the part is another document's body exactly as that
+      // document showed it, so it is built without a second debris pass, which
+      // would delete the small pieces of an assembly that document kept whole.
       nodes?: { name: string; parent: number | null; color?: string }[];
-      parts?: { node: number; faces: number }[];
+      parts?: { node: number; faces: number; intact?: boolean }[];
     }
   // Cut a body by a plane. keep=top/bottom keeps one side; keep=both splits it
   // into separate bodies. `body` targets a specific body (default: the active one);
@@ -1173,3 +1178,21 @@ export type ImportReply =
   // `cancelled` = the user stopped it. Distinct from a failure so the UI can
   // dismiss quietly instead of showing an error the user already knows about.
   | { ok: false; cancelled?: boolean; message: string };
+
+/** What the sidecar's `insertDocument` sends back (Insert > Part from File):
+ *  the same embeddable payload an assembly import produces, one part per
+ *  visible body of the other document, so it lands as an ordinary `import`
+ *  feature. `bodies` (the other document's body id behind each part, in part
+ *  order) and `pieceOf` (its split lineage) are for naming the parts the way
+ *  that document did and are never persisted. `failed` counts features of the
+ *  other document that did not build; `appearanceLost` counts bodies whose
+ *  texture or text colour does not come across. Both absent when zero. */
+export type InsertReply =
+  | { ok: true; geom: string; name: string; solid: boolean; faces: number;
+      nodes: { name: string; parent: number | null; color?: string }[];
+      parts: { node: number; faces: number; intact?: boolean }[];
+      bodies: string[];
+      pieceOf: Record<string, [string, number]>;
+      failed?: number;
+      appearanceLost?: number }
+  | { ok: false; cancelled?: boolean; message: string; code?: GeomErrorCode };

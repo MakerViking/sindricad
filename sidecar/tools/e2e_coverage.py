@@ -74,6 +74,10 @@ DELTA_UNITS = H.DELTA_UNITS
 # measuring something; do not do it to make a floor reachable.
 EXCLUDED_OPS = {
     "rebuild", "ping", "exportProject", "import",
+    # Builds ANOTHER document and hands back a blob; what it is worth is the
+    # rebuild of the document that embeds it, which test_insert_document.py
+    # judges (volumes, placement, names, the untouched cache).
+    "insertDocument",
     # A race, not a shape. test_cancel.py drives it over a real socket.
     "cancel",
     # Best-effort BY DESIGN: "a body that can't confidently be cleaned stays

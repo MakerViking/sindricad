@@ -26,7 +26,7 @@ import { TUTORIALS_URL, GUIDE_URL, openHelp } from "./ui/help";
 import { initSpaceMouse, setSpaceMouseConfig, getSpaceMouseMode, setSpaceMouseMode, setSpaceMouseDevice } from "./input/spacemouse";
 import { SpaceMouseSettings } from "./ui/spaceMouseSettings";
 import { openShortcutSettings } from "./ui/shortcutSettings";
-import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportBody, exportPrintProject, importModel, confirmDiscardChanges } from "./io/files";
+import { saveDocument, saveDocumentAs, openDocument, openDocumentAtPath, exportModel, exportBody, exportPrintProject, importModel, insertPartFromFile, confirmDiscardChanges } from "./io/files";
 import { openInOrca, sendToPrinter } from "./print/printFlow";
 import { activePrinterId } from "./print/printerClient";
 import { setPrinterPillClick } from "./print/printStatusLine";
@@ -428,9 +428,13 @@ async function newDocument() {
 async function openDoc() {
   // Open had NO unsaved-changes guard at all: it replaced the document in
   // place, and the abandoned autosave then offered itself back on next launch.
-  if (!(await confirmDiscardChanges(store, t("file.close.confirmOpen")))) return;
-  if (sketch.active) sketch.cancel();
-  await openDocument(store, geometry);
+  // The guard runs once a DOCUMENT is picked: a STEP or mesh picked here is
+  // added to this document, so there is nothing to save first (see openDocument).
+  await openDocument(store, geometry, async () => {
+    if (!(await confirmDiscardChanges(store, t("file.close.confirmOpen")))) return false;
+    if (sketch.active) sketch.cancel();
+    return true;
+  });
 }
 /** File ▸ Close: hand back an empty document, after offering to save. The
  *  thing Doug asked for by name — a deliberate end to a model, so the next
@@ -441,6 +445,15 @@ async function closeDoc() {
   await clearRecovery(store.filePath); // a closed document is not a crashed one
   store.newDocument();
   viewport.resetView();
+}
+/** Insert ▸ Part from File, from the ribbon, the command palette and the File
+ *  menu. Refused while a tool is open, as the tools refuse each other: the open
+ *  tool took its feature id when it started (store.nextId), so a part added
+ *  under it got the same id, and the tool's commit then put a second feature
+ *  with that id in the document. */
+function insertPart() {
+  if (toolBusy()) { setStatus(TOOL_BUSY_MESSAGE, ""); return; }
+  void insertPartFromFile(store, geometry);
 }
 const spaceMouseSettings = new SpaceMouseSettings();
 const welcome = new WelcomeScreen({
@@ -467,6 +480,7 @@ new Menubar(document.getElementById("menubar")!, [
       { label: t("menu.file.close"), shortcut: "Ctrl+W", onClick: () => void closeDoc() },
       { separator: true, label: "" },
       { label: t("menu.file.importMesh"), onClick: () => void importModel(store, geometry) },
+      { label: t("menu.file.insertPart"), onClick: () => insertPart() },
       { separator: true, label: "" },
       { label: t("menu.file.save"), shortcut: "Ctrl+S", onClick: () => void saveDocument(store) },
       { label: t("menu.file.saveAs"), shortcut: "Ctrl+Shift+S", onClick: () => void saveDocumentAs(store) },
@@ -1703,6 +1717,9 @@ function handleAction(action: string) {
       break;
     case "import":
       void importModel(store, geometry);
+      break;
+    case "insert-part":
+      insertPart();
       break;
     case "save":
       void saveDocument(store);

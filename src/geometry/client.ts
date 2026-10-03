@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, FeatureError, GeomErrorCode, ImportFormat, ImportReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
+import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, FeatureError, GeomErrorCode, ImportFormat, ImportReply, InsertReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
 import { RebuildAssembly, manifestFromBodies } from "./assembly";
 import { t } from "../i18n";
 import type {
@@ -116,6 +116,12 @@ export interface GeometryBackend {
   // `onStarted` receives the request id, so a caller that may later cancel
   // can target THIS op rather than whatever ran most recently.
   importGeometry(path: string, format: ImportFormat, onStarted?: (id: string) => void): Promise<ImportReply>;
+  /** Insert > Part from File: build ANOTHER document and pack its visible
+   *  bodies as an `import` payload, without touching the open document's warm
+   *  cache. `doc` is that document as the app would build it after opening it
+   *  (savedBuildDocument), `name` labels the part. Optional: only the Python
+   *  sidecar implements it, as with massProperties. */
+  insertDocument?(doc: CadDocument, name: string, onStarted?: (id: string) => void): Promise<InsertReply>;
   // Pairwise interference (clash) check among the document's bodies.
   interference(doc: CadDocument): Promise<{ ok: boolean; pairs?: ClashPair[]; message?: string }>;
   /** Exact kernel mass properties per body plus a document total. OPTIONAL, and
@@ -1089,6 +1095,31 @@ export class Geometry implements GeometryBackend {
     }
     if (!msg.ok && msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.importCancelled") };
     return { ok: false, message: msg.error?.message ?? t("engine.error.importFailed") };
+  }
+
+  async insertDocument(doc: CadDocument, name: string, onStarted?: (id: string) => void): Promise<InsertReply> {
+    const msg = await this.call<{
+      geom: string; name: string; solid: boolean; faces: number;
+      nodes: { name: string; parent: number | null; color?: string }[];
+      parts: { node: number; faces: number; intact?: boolean }[];
+      bodies?: string[]; pieceOf?: Record<string, [string, number]>;
+      failed?: number; appearanceLost?: number;
+    }>("insertDocument", { document: doc, name }, onStarted);
+    if (msg.ok) {
+      const r = msg.result;
+      return {
+        ok: true, geom: r.geom, name: r.name, solid: r.solid, faces: r.faces,
+        nodes: r.nodes, parts: r.parts, bodies: r.bodies ?? [], pieceOf: r.pieceOf ?? {},
+        ...(r.failed !== undefined ? { failed: r.failed } : {}),
+        ...(r.appearanceLost !== undefined ? { appearanceLost: r.appearanceLost } : {}),
+      };
+    }
+    if (msg.cancelled) return { ok: false, cancelled: true, message: t("engine.error.importCancelled") };
+    return {
+      ok: false,
+      message: msg.error?.message ?? t("engine.error.importFailed"),
+      ...(msg.error?.code ? { code: msg.error.code } : {}),
+    };
   }
 
   /** Stop the geometry op in flight. Answered on the sidecar's READ path, so it

@@ -78,6 +78,9 @@ MERGE_SEPARATE_PIECES = "mergeSeparatePieces"    # the merged {body} is `count` 
 # Separate warnings:
 SEPARATE_DROPPED_SURFACES = "separateDroppedSurfaces"  # `count` loose surfaces beside {body}'s solids have no thickness and were left out
 SEPARATE_DROPPED_FACES = "separateDroppedFaces"  # `count` loose faces of the surface body {body} are in none of its shells and were left out
+# Insert > Part from File (the other document, not the open one):
+INSERT_NOTHING_BUILT = "insertNothingBuilt"  # none of the other document's bodies built
+INSERT_NO_BODIES = "insertNoBodies"         # the other document has no visible bodies
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
@@ -91,6 +94,7 @@ ALL = frozenset({
     MERGE_NOTHING, MERGE_NOTHING_APART, MERGE_NO_SOLID, MERGE_ALL_DAMAGED, MERGE_FAILED, MERGE_NO_BODY,
     MERGE_DROPPED_SURFACES, MERGE_DAMAGED_LEFT_OUT, MERGE_SEPARATE_PIECES,
     SEPARATE_DROPPED_SURFACES, SEPARATE_DROPPED_FACES,
+    INSERT_NOTHING_BUILT, INSERT_NO_BODIES,
 })
 
 # --- the body slot -----------------------------------------------------------

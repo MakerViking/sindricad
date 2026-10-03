@@ -20,6 +20,9 @@ This file starts on 2026-08-03. For anything before that, see the
 
 ### Changed
 
+- **Import Mesh is now just Import.** It has always taken STEP files as well as
+  meshes, and the old name hid that. Its tooltip lists the formats it reads.
+
 - **Section remembers where you left it.** While the document stays open,
   Section keeps the last axis, the cut's position and which side was flipped,
   and offers that axis first, so one Enter puts the cut back where it was. A new
@@ -281,6 +284,12 @@ This file starts on 2026-08-03. For anything before that, see the
   it that explained the failure.
 
 ### Fixed
+
+- **Opening a STEP or mesh file no longer asks you to save first.** File > Open
+  adds those to the document you have open, so it now asks "Save your changes
+  before opening another document?" only when you pick a SindriCAD document,
+  the one thing Open replaces. Before, answering Discard also threw away the
+  recovery copy of a document that was never closed.
 
 - **Break keeps the constraints of the curve it splits.** A Coincident at either
   end, and Horizontal or Vertical, now carry over to the two halves instead of
@@ -560,6 +569,18 @@ This file starts on 2026-08-03. For anything before that, see the
   for are unchanged. Panning still moves the centre freely, and Fit resets it.
 
 ### Added
+
+- **Insert > Part from File.** Copies the visible bodies of another SindriCAD
+  document into the one you have open, so a screw, standoff or insert you
+  modelled once can be checked for fit in every project that uses it. Several
+  bodies sit together under the file's name in the Browser, and a single body
+  takes the file's name. Each keeps a name you gave it there, and its colour,
+  matched to the nearest filament in this document's palette; when this palette
+  has no such colour, I say which colour became which. They move like any other
+  body, and one undo takes the part out, colours included. It is a copy: later
+  changes to that file do not follow it in. If some of that file did not build,
+  or a body had a texture or coloured text, which does not come across, I say
+  so. It is in the INSERT group of the ribbon and in the File menu.
 
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end

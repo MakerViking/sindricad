@@ -3687,6 +3687,101 @@ def import_geometry(path, fmt):
     return out
 
 
+def insert_document(document, name=None):
+    """Another document's visible bodies as the payload for an `import` feature
+    (Insert > Part from File). COPIED, not linked: the result is an ordinary
+    embedded import, so later edits to the other file do not reach it.
+
+    The bodies are packed exactly the way a STEP assembly import packs its leaves
+    (see _assembly_payload): a FLAT compound whose top-level child i is body i,
+    world-placed, plus a manifest whose row i names it. So it rebuilds through
+    _bind_assembly with no new feature type; the one new field is `intact` on
+    the manifest row of a part of several solids (see _bind_assembly for why). With several bodies the
+    tree gets a root named `name` (the file) so they sit under it in the
+    Browser; a single body is its own root.
+
+    `document` is the other file as the app BUILDS it (rollback, suppression and
+    visibility already applied by the frontend), so the hidden bodies are left
+    out here by the same `bodyVisibility` the build carries.
+
+    readonly=True is what makes this free for the open document: `_CACHE`
+    describes the last document built, and building a DIFFERENT one through it
+    would leave the human's next rebuild starting from nothing.
+
+    `bodies` and `pieceOf` are for the caller only, never persisted: the source
+    ids the parts came from, and the split lineage of every body that built, so
+    the frontend can name each part the way the other document's Browser did
+    (a rename lives in the frontend, keyed on these ids). Raises when nothing
+    visible built, rather than inserting an empty part."""
+    from OCP.BRep import BRep_Builder
+    from OCP.TopoDS import TopoDS_Compound
+
+    _part, errors, bodies = rebuild_cached(document, readonly=True)
+    vis = document.get("bodyVisibility") or {}
+    live = [b for b in bodies
+            if b.get("shape") is not None and vis.get(b["id"]) is not False]
+    if not live:
+        from errors import GeomError
+
+        if errors:
+            raise GeomError(
+                "nothing in that document built, so there is nothing to insert. "
+                "Open it to see what failed.", errors_mod.INSERT_NOTHING_BUILT)
+        raise GeomError("that document has no visible bodies to insert",
+                        errors_mod.INSERT_NO_BODIES)
+
+    # Built with OCP rather than Compound(children=...): build123d reparents
+    # every child it is given, and these shapes can be the SAME objects the
+    # open document's cached snapshots hold (a shared timeline prefix resumes
+    # from them).
+    bld = BRep_Builder()
+    flat = TopoDS_Compound()
+    bld.MakeCompound(flat)
+    label = untrusted.clean(name, untrusted.MAX_SUBJECT) or "Inserted"
+    nodes = [{"name": label, "parent": None}] if len(live) > 1 else []
+    parts = []
+    for b in live:
+        progress_tick()
+        bld.Add(flat, b["shape"].wrapped)
+        if len(live) > 1:
+            nodes.append({"name": b["name"], "parent": 0})
+        else:
+            nodes.append({"name": label, "parent": None})
+        part = {"node": len(nodes) - 1, "faces": len(b["shape"].faces())}
+        # `intact`: build this part as it is, without the debris pass the
+        # other document already ran (or skipped on purpose); see _bind_assembly.
+        # Only on a part of several solids, the one case the pass could change
+        # (it returns early below two). The flag is persisted and exempts the
+        # body for good, so on a one-solid part it would change nothing now and
+        # later keep the floating chip a cut leaves on it, as Merge's comment
+        # on `_intact` describes.
+        if len(b["shape"].solids()) > 1:
+            part["intact"] = True
+        parts.append(part)
+    shape = Compound(flat)
+
+    out = {
+        "geom": _shape_to_blob(shape),
+        "solid": any(len(b["shape"].solids()) > 0 for b in live),
+        "faces": len(shape.faces()),
+        "name": label,
+        "nodes": nodes,
+        "parts": parts,
+        "bodies": [b["id"] for b in live],
+        "pieceOf": {b["id"]: list(b["piece_of"]) for b in bodies if b.get("piece_of")},
+    }
+    # What did not come across, so the frontend can say so rather than let the
+    # user find out: features of the other file that failed (their geometry is
+    # missing from the part), and bodies whose texture or text colour lives
+    # outside the B-rep (the shape comes across, the look does not).
+    if errors:
+        out["failed"] = len(errors)
+    lost = sum(1 for b in live if b.get("_textures") or b.get("_faceSlots"))
+    if lost:
+        out["appearanceLost"] = lost
+    return out
+
+
 # --- rebuild -----------------------------------------------------------------
 
 
@@ -5028,12 +5123,19 @@ def _bind_assembly(f, ctx, shape, nodes, parts):
     base = f.get("name") or "Imported"
     feature_id = f.get("id")
     seen = {}
-    for w, node_index in wrapped:
+    for (w, node_index), part in zip(wrapped, parts):
         label = (nodes[node_index] or {}).get("name") or base
         if owned[node_index] > 1:
             seen[node_index] = seen.get(node_index, 0) + 1
             label = f"{label} {seen[node_index]}"
-        ctx.new_body(w, label, node_ref=f"{feature_id}/{node_index}")
+        body = ctx.new_body(w, label, node_ref=f"{feature_id}/{node_index}")
+        # A part copied out of another document (insert_document) is that
+        # document's body exactly as it showed it, debris pass already applied
+        # or deliberately skipped. Running the pass again here deleted the small
+        # parts of an assembly kept whole there. Absent on every other import,
+        # so those build as before.
+        if isinstance(part, dict) and part.get("intact") is True:
+            body["_intact"] = True
     return True
 
 

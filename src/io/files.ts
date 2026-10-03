@@ -6,7 +6,9 @@
 
 import type { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
-import type { CadDocument, ExportFormat, Feature, ImportFormat } from "../types";
+import type { CadDocument, ExportFormat, Feature, ImportFormat, InsertReply } from "../types";
+import { displayBodyName, savedBuildDocument, savedPalette } from "../document/store";
+import { featureErrorText } from "../geometry/featureErrorText";
 import { clearRecovery } from "./recovery";
 import { noteRecent } from "./recentFiles";
 import { localeTag, sourceOf, t } from "../i18n";
@@ -132,7 +134,18 @@ export async function confirmDiscardChanges(store: DocumentStore, title: string)
   return false; // Esc / dismissed
 }
 
-export async function openDocument(store: DocumentStore, geometry: GeometryBackend) {
+/** File ▸ Open. `confirmReplace` is the unsaved-changes guard, and it runs
+ *  AFTER the pick and only when the pick is a document that will replace this
+ *  one. Open also takes mesh and STEP files, which are ADDED to this document;
+ *  asking "save before opening another document?" in front of those offered a
+ *  Discard (which clears the recovery slot) for a document that was never
+ *  going to be replaced, and told a user bringing a STEP into their model that
+ *  the model was about to go away (Doug 29). */
+export async function openDocument(
+  store: DocumentStore,
+  geometry: GeometryBackend,
+  confirmReplace: () => Promise<boolean> = async () => true,
+) {
   if (isTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const path = await open({
@@ -148,6 +161,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
     if (typeof path !== "string") return;
     const ext = path.split(".").pop()?.toLowerCase();
     if (ext === "sindri" || ext === "json") {
+      if (!(await confirmReplace())) return;
       await openDocumentAtPath(store, path, geometry);
     } else {
       await importPath(store, geometry, path); // a mesh / CAD file → import as a body
@@ -155,6 +169,7 @@ export async function openDocument(store: DocumentStore, geometry: GeometryBacke
   } else {
     const text = await uploadText();
     if (text) {
+      if (!(await confirmReplace())) return;
       try {
         store.load(text);
       } catch (e) {
@@ -239,14 +254,10 @@ export async function openDocumentAtPath(
   geometry?: GeometryBackend,
 ): Promise<OpenOutcome> {
   const base = baseName(path);
-  const { invoke } = await import("@tauri-apps/api/core");
   let text: string;
   let wasContainer = false;
   try {
-    wasContainer = await invoke<boolean>("container_is_container", { path });
-    text = wasContainer
-      ? await invoke<string>("container_open", { path })
-      : await (await import("@tauri-apps/plugin-fs")).readTextFile(path);
+    ({ text, wasContainer } = await readDocumentText(path));
   } catch (e) {
     // Rust's container errors are already user-facing sentences (a newer
     // container format, a damaged archive, geometry that does not match its
@@ -276,6 +287,21 @@ export async function openDocumentAtPath(
   store.markSaved(path); // freshly opened == clean, with a known path
   noteRecent(path);
   return "ok";
+}
+
+/** A .sindri/.json document's JSON text, read without touching the open
+ *  document. A v5 container is read by Rust, which also extracts its geometry
+ *  into the blob store before returning, so a build can resolve it at once; a
+ *  pre-v5 document is plain JSON. Throws Rust's own user-facing sentence for a
+ *  damaged archive or a newer container format. Shared by Open and Insert >
+ *  Part from File. */
+async function readDocumentText(path: string): Promise<{ text: string; wasContainer: boolean }> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const wasContainer = await invoke<boolean>("container_is_container", { path });
+  const text = wasContainer
+    ? await invoke<string>("container_open", { path })
+    : await (await import("@tauri-apps/plugin-fs")).readTextFile(path);
+  return { text, wasContainer };
 }
 
 export async function exportModel(store: DocumentStore, geometry: GeometryBackend) {
@@ -894,6 +920,193 @@ async function importPath(store: DocumentStore, geometry: GeometryBackend, path:
   for (const b of store.buildState.result?.bodies ?? []) {
     if (b.faceOwners?.some((owner) => owner === id)) store.setBodyColorSlot(b.id, slot);
   }
+}
+
+/** The assembly tree an inserted part is stored with: the sidecar's, with each
+ *  part named and coloured the way the OTHER document showed it. Renames and
+ *  palette slots live in that document's overlays, keyed on its positional
+ *  body ids, which is why the sidecar reports the source id behind each part.
+ *
+ *  A rename the user gave a body there wins, including the "<rename> (n)" a
+ *  split piece of a renamed body is shown by. Otherwise a part of several
+ *  keeps its built name, and a part of ONE body keeps the file's name: for a
+ *  screw saved as "M3x10.sindri" that says more than "Body1".
+ *
+ *  `color` is the '#RRGGBB' of the body's slot in THAT document's palette. It
+ *  is matched against this document's palette after the build (the palette is
+ *  the printer's filament list, so a slot number from another file means
+ *  nothing here), and absent for a body that had no slot. Pure, so it is
+ *  testable without a file, a dialog or a backend. */
+export function insertedNodes(
+  res: Pick<Extract<InsertReply, { ok: true }>, "nodes" | "parts" | "bodies" | "pieceOf">,
+  source: Pick<CadDocument, "bodyNames" | "palette" | "bodyColors">,
+): { name: string; parent: number | null; color?: string }[] {
+  // The other file is untrusted input: only a string is a name or a colour,
+  // only a number a slot, whatever shape the maps around them arrived in.
+  const field = <T>(map: unknown, id: string, type: "string" | "number"): T | undefined => {
+    const v = map && typeof map === "object" ? (map as Record<string, unknown>)[id] : undefined;
+    return typeof v === type ? (v as T) : undefined;
+  };
+  const own = (id: string) => field<string>(source.bodyNames, id, "string");
+  const palette = savedPalette(source as CadDocument);
+  const nodes = res.nodes.map((n) => ({ ...n }));
+  res.parts.forEach((part, i) => {
+    const id = res.bodies[i];
+    const node = nodes[part.node];
+    if (id === undefined || !node) return;
+    const shown = displayBodyName(id, own, (b) => res.pieceOf[b]);
+    if (shown !== undefined) node.name = shown;
+    const slot = field<number>(source.bodyColors, id, "number");
+    const color = slot === undefined ? undefined : field<string>(palette[slot], "color", "string");
+    if (color) node.color = color;
+  });
+  return nodes;
+}
+
+/** Same file, as far as a path can tell: separators normalised, and case
+ *  folded on a drive-letter path (Windows paths are case-insensitive). */
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => {
+    const s = p.replace(/\\/g, "/");
+    return /^[a-z]:\//i.test(s) ? s.toLowerCase() : s;
+  };
+  return norm(a) === norm(b);
+}
+
+/** Insert ▸ Part from File: bring the visible bodies of another SindriCAD
+ *  document into this one, to check how parts fit (Doug 29: fasteners,
+ *  standoffs and inserts shared across projects).
+ *
+ *  COPIED, not linked. The bodies land as ONE ordinary `import` feature, the
+ *  same shape an assembly STEP import makes (format "brep", a flat blob plus an
+ *  assembly tree), so saving, undo, Move and the Browser's grouping all work
+ *  unchanged. The one addition is `intact` on the rows of its parts of several
+ *  solids (see the `import` feature in types.ts). Later edits to the other file
+ *  do not follow it in.
+ *
+ *  The other file is built exactly as Open would build it (savedBuildDocument),
+ *  because its renames and colours are keyed on positional body ids and only
+ *  that build numbers the bodies the same way. The sidecar builds it without
+ *  touching this document's warm cache. */
+export async function insertPartFromFile(store: DocumentStore, geometry: GeometryBackend) {
+  if (!isTauri() || !geometry.insertDocument) {
+    console.warn("insert needs the native app and the Python geometry engine");
+    return;
+  }
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const path = await open({
+    multiple: false,
+    filters: [{ name: t("file.filter.document"), extensions: ["sindri", "json"] }],
+  });
+  if (typeof path !== "string") return;
+  const base = baseName(path);
+  // What is copied is the file ON DISK, so this would bring in the last save of
+  // the open document rather than what is on screen. Pattern and Mirror are the
+  // tools for repeating bodies within one document.
+  if (store.filePath && samePath(store.filePath, path)) {
+    await reportError(t("file.insert.self"));
+    return;
+  }
+
+  // Everything that reads the other file sits inside this try: it is someone's
+  // file, and a malformed one must come back as a sentence, not a stack trace.
+  let source: CadDocument;
+  let document: CadDocument;
+  let warnings: string[];
+  try {
+    const parsed: unknown = JSON.parse((await readDocumentText(path)).text);
+    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as CadDocument).features)) {
+      throw new Error(t("file.error.unreadableFile"));
+    }
+    source = parsed as CadDocument;
+    ({ document, warnings } = savedBuildDocument(source));
+  } catch (e) {
+    await reportError(t("file.error.insert", { name: base, reason: errMsg(e) }));
+    return;
+  }
+  const name = base.replace(/\.(sindri|json)$/i, "") || base;
+  const label = t("file.insert.busy", { name: base });
+  const insertDocument = geometry.insertDocument.bind(geometry);
+  const res = await store.runBusy(label, (onStarted) => insertDocument(document, name, onStarted));
+  if (!res.ok) {
+    if (res.cancelled) return; // the user stopped it: they know
+    await reportError(t("file.error.insert", { name: base, reason: featureErrorText(res, []) }));
+    return;
+  }
+
+  const nodes = insertedNodes(res, source);
+  const id = store.nextId();
+  const built = store.addFeatureAndBuild({
+    id,
+    type: "import",
+    format: "brep",
+    name,
+    geom: res.geom,
+    source: path,
+    solid: res.solid,
+    nodes,
+    parts: res.parts,
+  }, label);
+
+  // What did not come across, said while the part is arriving rather than left
+  // for the user to find. A file from a newer version is read best-effort.
+  const notes: { text: string; kind: "info" | "warning" }[] = warnings.map((w) => ({ text: w, kind: "warning" }));
+  const capability = describeImportCapability(importedBodyCount(res));
+  if (capability) notes.push({ text: capability, kind: "info" });
+  if (res.failed) {
+    notes.push({ text: t("file.insert.failed", { count: res.failed, n: formatCount(res.failed), name: base }), kind: "warning" });
+  }
+  if (res.appearanceLost) {
+    notes.push({
+      text: t("file.insert.appearanceLost", { count: res.appearanceLost, n: formatCount(res.appearanceLost), name: base }),
+      kind: "info",
+    });
+  }
+  if (notes.length) {
+    const { toast } = await import("../ui/toast");
+    for (const n of notes) toast(n.text, { kind: n.kind });
+  }
+
+  if ((await built) !== "built") return;
+  // Colours, by tree node: matched into THIS palette by colour, as an import's
+  // file colour is (nearestPaletteSlot says why it matches rather than
+  // extends). The store puts them on the bodies this feature builds and takes
+  // them off again when it stops building them, as on an undo: body ids are
+  // positional, so a colour written once would stay for the next body to take
+  // the id. A display-only overlay write: no second undo step.
+  const palette = store.colorPalette;
+  const slots = new Map<number, number>();
+  // A colour this palette does not hold is changed to another, and the user is
+  // told which became which: they asked for the part's colours.
+  const swaps = new Set<string>();
+  nodes.forEach((n, i) => {
+    if (!n.color) return;
+    const slot = nearestPaletteSlot(n.color, palette);
+    const here = slot === null ? undefined : palette[slot];
+    if (slot === null || !here) return;
+    slots.set(i, slot);
+    if (here.color.toLowerCase() === n.color.toLowerCase()) return;
+    const from = theirColorName(source, n.color);
+    swaps.add(t("file.insert.colorPair", { from, to: here.name }));
+  });
+  store.carryBodyColors(id, res.geom, slots);
+  if (swaps.size) {
+    const { toast } = await import("../ui/toast");
+    toast(t("file.insert.colorsMatched", {
+      count: swaps.size, n: formatCount(swaps.size), name: base,
+      pairs: new Intl.ListFormat(localeTag()).format([...swaps]),
+    }), { kind: "info" });
+  }
+}
+
+/** What the other document's palette calls `hex` (the first slot holding it),
+ *  or the hex itself when no slot there has a usable name. */
+function theirColorName(source: Pick<CadDocument, "palette">, hex: string): string {
+  for (const s of savedPalette(source as CadDocument)) {
+    if (s.color !== hex) continue;
+    if (typeof s.name === "string" && s.name.trim()) return s.name.trim();
+  }
+  return hex;
 }
 
 /** Surface an error to the user — a native dialog in the app, console otherwise.

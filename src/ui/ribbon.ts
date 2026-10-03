@@ -129,7 +129,8 @@ export const MODEL: Group[] = [
   {
     id: "INSERT", label: t("ribbon.group.insert"),
     items: [
-      { action: "import", label: t("tool.importMesh"), iconName: "import" },
+      { action: "import", label: t("tool.importMesh"), iconName: "import", hint: t("ribbon.hint.import") },
+      { action: "insert-part", label: t("tool.insertPart"), iconName: "assembly", hint: t("ribbon.hint.insertPart") },
       { action: "simplify-mesh", label: t("tool.simplifyMesh"), iconName: "simplifyMesh" },
       { action: "clean-up", label: t("tool.cleanUp"), iconName: "cleanUp", key: "U" },
       { action: "compute-all", label: t("tool.computeAll"), iconName: "computeAll" },

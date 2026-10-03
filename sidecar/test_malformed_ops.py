@@ -510,6 +510,7 @@ async def test_r6_a_well_formed_request_is_still_served(ops):
             "rebuild": {"document": GOOD_DOC, "revision": 1},
             "export": {"document": GOOD_DOC, "format": "stl", "path": stl},
             "exportProject": {"document": GOOD_DOC, "path": proj},
+            "insertDocument": {"document": GOOD_DOC, "name": "Good"},
             "listFonts": {},
             "ping": {},
         }
