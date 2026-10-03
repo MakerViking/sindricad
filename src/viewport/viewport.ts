@@ -2027,6 +2027,54 @@ export class Viewport {
     return this.model ? this.picker.visibleEdges(this.model) : [];
   }
 
+  /** A body CORNER under the cursor within `maxPx` screen pixels, with every
+   *  visible edge that ends there (Picker.pickVertex). There was no corner
+   *  picking anywhere before Extrude's start and end objects (GH #41).
+   *  `behind`: behindSurfaceAt's test for this pixel, if the caller has it. */
+  pickVertexAt(
+    clientX: number,
+    clientY: number,
+    maxPx = 8,
+    behind?: (world: THREE.Vector3) => boolean,
+  ): { point: THREE.Vector3; edges: EdgeRef[] } | null {
+    if (!this.model) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return this.picker.pickVertex(clientX, clientY, rect, this.rig.active, this.model, maxPx, behind);
+  }
+
+  /** A test for "this world point is hidden behind a body at this pixel"
+   *  (Picker.occluderAt), for a pick that weighs things the ray cannot hit: a
+   *  sketch point or a sketch curve, which would otherwise take a click aimed
+   *  at the body in front of them. */
+  behindSurfaceAt(clientX: number, clientY: number): (world: THREE.Vector3) => boolean {
+    if (!this.model) return () => false;
+    const rect = this.canvas.getBoundingClientRect();
+    return this.picker.occluderAt(clientX, clientY, rect, this.rig.active, this.model);
+  }
+
+  /** Every plane under the cursor, nearest first, with its ray distance: the
+   *  construction planes drawn, and with `origin` the XY, XZ and YZ planes too
+   *  (whether or not they are shown; the caller knows). pickDatumAt then
+   *  pickPlane would rank any construction plane over an origin plane in front
+   *  of it, and a caller cannot skip one plane (its own sketch's) to reach the
+   *  next. */
+  planeHitsAt(clientX: number, clientY: number, origin: boolean): { id: string; datum: boolean; distance: number }[] {
+    const bases = origin ? (["XY", "XZ", "YZ"] as Plane3[]).map((k) => this.scene.planes[k]) : [];
+    if (!this.datumQuads.length && !bases.length) return [];
+    return this.rayFrom(clientX, clientY)
+      .intersectObjects([...this.datumQuads, ...bases], false)
+      .map((h) => {
+        const datum = h.object.userData.datumId as string | undefined;
+        return { id: datum ?? (h.object.userData.plane as string), datum: datum !== undefined, distance: h.distance };
+      });
+  }
+
+  /** A construction plane the viewport draws, by feature id: its origin and
+   *  normal as last set (setDatumPlanes). Null for an id it does not draw. */
+  datumPlaneOf(id: string): DatumPlaneQuad | null {
+    return this.datumPlaneDefs.find((d) => d.id === id) ?? null;
+  }
+
   // --- Measure (Inspect): pick a face/edge and read its size ----------------
 
   /** Pick the face or edge under the cursor (face-vs-edge gated like selection). */

@@ -771,6 +771,27 @@ This file starts on 2026-08-03. For anything before that, see the
   extrude reopens the panel on its saved values. Asked for in
   [#41](https://github.com/MakerViking/sindricad/issues/41).
 
+- **Start an extrude from a face, a plane, a point or a line, and extrude up to
+  a point or a line.** In the Extrude panel, Start now has Object: click a flat
+  face, a construction plane, a corner of a body, a point in a sketch, or a
+  line, and the extrude starts there instead of on its sketch, with any start
+  offset measured from it. Up to now takes a corner, a sketch point, an edge or
+  a sketch line as well as a face or a plane, and the XY, XZ and YZ planes show
+  while you pick so you can click them too. A line or a face has to be parallel
+  to the sketch; a tilted or curved one is refused with the reason. A sketch
+  line here is one drawn with the Line tool: a side of a rectangle, polygon or
+  slot can't be picked yet, but a rectangle's corners can. The extrude follows
+  what you picked: make the box taller and the lid you started from its top
+  face moves up with it. After a change like that the timeline may mark the
+  extrude amber, saying it used the closest match to what you picked; the
+  extrude is in the right place, and picking the face again in the extrude's
+  panel clears it. Selecting a flat face and pressing Extrude now starts the
+  extrude from that face, once you pick a shown sketch profile parallel to it;
+  with no such profile, Extrude on a face still pushes the face as before. The
+  inspector shows where an extrude starts, with a button that puts it back on
+  its sketch. Asked for in
+  [#41](https://github.com/MakerViking/sindricad/issues/41).
+
 - **Symmetric extrude.** Choose Symmetric in the Extrude panel and the sketch
   sits in the middle: 25 mm symmetric is 12.5 mm each side. It stays symmetric
   when you change the distance later, and the inspector shows it, with a switch

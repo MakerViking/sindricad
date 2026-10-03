@@ -3,8 +3,8 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
-import type { GeometryBackend, ProjectionResult } from "../geometry/client";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, Selector, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
+import type { GeometryBackend, ProjectionResult, QueryResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
 import { applyDrivingDimsDirect, planDimEdit, upsertDrivingDim } from "../sketch/directDims";
@@ -13,7 +13,7 @@ import { isDimConstraint } from "../sketch/id";
 import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
-import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
+import { DEFAULT_EXTRUDE_DISTANCE, hasUpToTarget, writeTarget } from "./numFields";
 import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from "./projectionWalk";
 import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
@@ -1298,14 +1298,15 @@ export class DocumentStore {
    *  offset from), and leaving the def in place means the recompute inside this
    *  very mutate writes the orphan straight back. */
   clearUpToTarget(id: string) {
-    const f = this.doc.features.find((x) => x.id === id) as (Feature & { upTo?: unknown; upToPlane?: unknown }) | undefined;
-    if (!f || (f.upTo === undefined && f.upToPlane === undefined)) return;
+    const f = this.doc.features.find((x) => x.id === id);
+    if (!f || !hasUpToTarget(f)) return;
     this.mutate((d) => {
       const i = d.features.findIndex((x) => x.id === id);
       if (i < 0) return;
-      const next = { ...d.features[i] } as Feature & { upTo?: unknown; upToPlane?: unknown; upToOffset?: unknown; distance?: unknown };
+      const next = { ...d.features[i] } as Feature & { upTo?: unknown; upToPlane?: unknown; upToRef?: unknown; upToOffset?: unknown; distance?: unknown };
       delete next.upTo;
       delete next.upToPlane;
+      delete next.upToRef; // a point or line target (GH #41), the third kind
       delete next.upToOffset;
       // An up-to feature never read its distance, so it can legitimately be 0 —
       // and a plain extrude of 0 is refused by the sidecar. Give the user the
@@ -1327,7 +1328,7 @@ export class DocumentStore {
    *  sidecar refuses alongside it. */
   setExtrudeSymmetric(id: string, on: boolean) {
     const f = this.doc.features.find((x) => x.id === id);
-    if (f?.type !== "extrude" || f.upTo !== undefined || f.upToPlane !== undefined) return;
+    if (f?.type !== "extrude" || hasUpToTarget(f)) return;
     if ((f.symmetric === true) === on) return;
     this.mutate((d) => {
       const i = d.features.findIndex((x) => x.id === id);
@@ -1335,6 +1336,22 @@ export class DocumentStore {
       const next = { ...d.features[i] } as Extract<Feature, { type: "extrude" }>;
       if (on) next.symmetric = true;
       else delete next.symmetric;
+      d.features[i] = next;
+    }, true);
+  }
+
+  /** Start an extrude on its sketch plane again: drop the object it starts from
+   *  (GH #41). The start offset stays, measured from the sketch from now on,
+   *  which is what it meant before an object was picked. The key is DELETED,
+   *  like an up-to target's, so the feature goes back to its exact bytes. */
+  clearExtrudeStart(id: string) {
+    const f = this.doc.features.find((x) => x.id === id);
+    if (f?.type !== "extrude" || f.startFrom === undefined) return;
+    this.mutate((d) => {
+      const i = d.features.findIndex((x) => x.id === id);
+      if (i < 0) return;
+      const next = { ...d.features[i] } as Extract<Feature, { type: "extrude" }>;
+      delete next.startFrom;
       d.features[i] = next;
     }, true);
   }
@@ -1869,6 +1886,30 @@ export class DocumentStore {
       features: prefixFeatures(this.doc.features, this.rollbackIndex, this.suppressed, editingId),
     };
     return this.geometry.projectGeometry(doc, plane, sources);
+  }
+
+  /** Turn picks on the model into STORABLE references (by:"match" fingerprints
+   *  authored by the sidecar off the real kernel entity), against the timeline
+   *  a feature at `editingId` sees, or the whole model for a new one. Without
+   *  this a pick could only be stored as a point, and a point re-binds to the
+   *  wrong edge in silence (selector corpus: 26 of 187). Resolves to null when
+   *  this backend cannot author references at all, so the caller can say so;
+   *  to [] when the sidecar could not be reached. */
+  queryReferences(
+    items: { kind: "edge" | "face"; body: string; sel: Selector }[],
+    editingId: string | null,
+  ): Promise<QueryResult[]> | null {
+    if (!this.geometry.query) return null;
+    // Visibility rides along as it does on every rebuild (effectiveDoc): an
+    // older extrude reads it to decide what it joined, so leaving it out could
+    // fingerprint a model other than the one on screen.
+    const bodyVisibility = this.bodyVis.size ? Object.fromEntries(this.bodyVis.entries()) : undefined;
+    const doc: CadDocument = {
+      parameters: this.doc.parameters,
+      features: prefixFeatures(this.doc.features, this.rollbackIndex, this.suppressed, editingId),
+      ...(bodyVisibility ? { bodyVisibility } : {}),
+    };
+    return this.geometry.query(doc, items, true);
   }
 
   /** Publish "a rebuild round-trip has started": keep whatever is on screen,

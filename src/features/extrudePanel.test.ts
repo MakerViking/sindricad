@@ -75,7 +75,14 @@ function harness(opts: { saved?: Record<string, unknown>; hasSolid?: boolean } =
     tiltOffAxis: () => true,
     pointInSolid: () => false,
     pickFaceForPressPull: () => null,
-    pickDatumAt: (): string | null => "d1",
+    pickEntity: () => null,
+    pickVertexAt: () => null,
+    // the construction plane under the cursor, wherever the click is
+    planeHitsAt: (): { id: string; datum: boolean; distance: number }[] => [{ id: "d1", datum: true, distance: 30 }],
+    datumPlaneOf: (id: string) => ({ id, origin: [0, 0, id === "d2" ? 40 : 20], normal: [0, 0, 1] }),
+    showAllPlanes() {},
+    hoverPlane() {},
+    behindSurfaceAt: () => () => false,
     hoverFaceAt: () => null,
     // straight down onto area A, wherever the click is
     rayFrom: () => ({ ray: new THREE.Ray(new THREE.Vector3(-30, 0, 50), new THREE.Vector3(0, 0, -1)) }),
@@ -327,12 +334,12 @@ describe("creating an extrude from the panel", () => {
     h.create();
     h.internals.onKey(h.keyAt("t"));
     h.click(); // Plane1
-    h.viewport.pickDatumAt = () => "d2";
+    h.viewport.planeHitsAt = () => [{ id: "d2", datum: true, distance: 10 }];
     h.click(); // the plane the user meant
     expect(h.added, "the second click committed the first target").toEqual([]);
     expect(h.rowOf("Up to").children[1]!.children[0]!.textContent).toBe("Plane2");
     // a click on nothing still commits, on the release
-    h.viewport.pickDatumAt = () => null;
+    h.viewport.planeHitsAt = () => [];
     h.click();
     expect(h.added).toHaveLength(1);
     expect(h.added[0]).toMatchObject({ upToPlane: "d2" });

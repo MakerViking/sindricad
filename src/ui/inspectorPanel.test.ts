@@ -440,6 +440,54 @@ describe("inspector: a sweep around a helix", () => {
   });
 });
 
+// --- an extrude's start object, and a point or line target (GH #41) ----------
+//
+// Neither is a number, so like the up-to target each gets a named row with the
+// one control that removes it. Real store: what is asserted is the document.
+
+describe("inspector: where an extrude starts, and a point or line target", () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => void vi.useRealTimers());
+
+  const corner = {
+    kind: "vertex",
+    edge: { kind: "edge", by: "match", fp: { mid: [0, 0, 5], dir: [0, 0, 1], length: 10, curve: "line" }, body: "body1" },
+    end: 1,
+  };
+  const saved = {
+    id: "e1", type: "extrude", sketch: "s1", distance: 5, operation: "new",
+    startFrom: { kind: "sketchPoint", sketch: "s2", entity: "p1", pointIndex: 0 }, startOffset: 2,
+    upToRef: corner, upToOffset: 1,
+  } as unknown as Feature;
+
+  it("names both, and clearing the start keeps the start offset", () => {
+    const { root, inspector, store } = mountReal(saved);
+    inspector.select("e1");
+    expect(texts(root)).toContain("Start from");
+    expect(texts(root)).toContain("Sketch point");
+    expect(texts(root), "a corner target was not named").toContain("Corner");
+
+    const clear = buttons(root).find((b) => b.title.toLowerCase().includes("sketch plane"));
+    expect(clear, "no control clears where it starts").toBeTruthy();
+    clear!.dispatch("click");
+    const f = store.document.features[0] as unknown as Record<string, unknown>;
+    expect("startFrom" in f, "the start object survived the clear").toBe(false);
+    expect(f.startOffset, "the start offset went with it").toBe(2);
+    expect(texts(root)).not.toContain("Start from");
+  });
+
+  it("clearing a point or line target drops it and its offset, and brings Taper back", () => {
+    const { root, inspector, store } = mountReal(saved);
+    inspector.select("e1");
+    expect(rows(root).map((r) => r.label), "Taper was offered beside a target").not.toContain("Taper°");
+    buttons(root).find((b) => b.title.toLowerCase().includes("up-to"))!.dispatch("click");
+    const f = store.document.features[0] as unknown as Record<string, unknown>;
+    expect("upToRef" in f, "the corner target survived the clear").toBe(false);
+    expect("upToOffset" in f).toBe(false);
+    expect(rows(root).map((r) => r.label)).toContain("Taper°");
+  });
+});
+
 // --- an extrude's Symmetric --------------------------------------------------
 //
 // Symmetric is a flag, not a number, so it had no row: a symmetric extrude

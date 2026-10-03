@@ -2,7 +2,7 @@
 // One request/response per message, matched by `id`. Calls made before the
 // socket opens are queued and flushed on connect; the socket auto-reconnects.
 
-import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, FeatureError, GeomErrorCode, ImportFormat, ImportReply, InsertReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, U32Wire } from "../types";
+import type { CadDocument, EdgeFingerprint, ExportFormat, F32Wire, Feature, FeatureError, GeomErrorCode, ImportFormat, ImportReply, InsertReply, MassPropertiesResult, PlaneSpec, ProjectedCurve, ProjectedSource, RebuildReply, RebuildResult, Selector, U32Wire } from "../types";
 import { RebuildAssembly, manifestFromBodies } from "./assembly";
 import { t } from "../i18n";
 import type {
@@ -47,6 +47,18 @@ export interface ProjectionResult {
   error?: string;
 }
 
+/** One answer of the `query` op (sidecar builder.query_geometry): the entities a
+ *  selector resolved to, each as a STORABLE by:"match" reference on its body.
+ *  `ok: false` + `error` = refused (an ambiguous by:"nearest" pick, a missing
+ *  body), per item: one bad item never fails the call. */
+export interface QueryResult {
+  index: number;
+  ok: boolean;
+  count: number;
+  entities: { body: string; sel: Selector }[];
+  error?: string;
+}
+
 // One overlapping body pair from an interference check.
 export interface ClashPair {
   a: string;
@@ -75,6 +87,17 @@ export interface GeometryBackend {
   projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]>;
   /** System font family names for the text tool's font picker. */
   listFonts(): Promise<string[]>;
+  /** Turn picks into storable references: each item `{kind, body, sel}` comes
+   *  back as the by:"match" fingerprint of what `sel` resolved to on `body`.
+   *  `prefix` = `doc` is a truncated timeline (the sidecar then leaves its
+   *  rebuild cache alone). OPTIONAL like massProperties: the in-process Rust
+   *  backend has no selector resolver, and a caller says so instead. Transport
+   *  failure resolves to []. */
+  query?(
+    doc: CadDocument,
+    items: { kind: "edge" | "face"; body: string; sel: Selector }[],
+    prefix: boolean,
+  ): Promise<QueryResult[]>;
   /** One-way v4 -> v5: turn a pre-container document's inline base64 BREP into
    *  blobs in the durable store, returning the content hash for each feature.
    *  Best-effort by design — the document keeps its inline copy, so a failure
@@ -1186,6 +1209,15 @@ export class Geometry implements GeometryBackend {
       plane,
       sources,
     });
+    return msg.ok ? (msg.result.results ?? []) : [];
+  }
+
+  async query(
+    doc: CadDocument,
+    items: { kind: "edge" | "face"; body: string; sel: Selector }[],
+    prefix: boolean,
+  ): Promise<QueryResult[]> {
+    const msg = await this.call<{ results: QueryResult[] }>("query", { document: doc, items, prefix });
     return msg.ok ? (msg.result.results ?? []) : [];
   }
 

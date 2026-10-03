@@ -499,3 +499,86 @@ describe("pick() gates on the measured band, not on EDGE_NEAR_PX", () => {
     expect(pickInsideLeftBorder(big(), 200, 6)?.kind).toBe("face");
   });
 });
+
+// --- Corners (Extrude's start and end objects, GH #41) ----------------------
+//
+// pickVertex looks only at the edges the edge raycast reports near the cursor
+// (on a large model, projecting both ends of every visible edge on every
+// pointer move was the cost), and skips a corner hidden behind a surface, as
+// pick() skips an edge there. Driven through a real Picker over real
+// buildBodyMesh/BodyEdges bodies.
+
+/** A flat square body `sizePx` across at depth `z` (0 = the face camera's
+ *  focus), centred `dxPx` right of the screen centre, with its four edges. */
+function squareBody(id: string, sizePx: number, z: number, dxPx = 0) {
+  const h = worldMm(sizePx) / 2;
+  const cx = worldMm(dxPx);
+  const c = (x: number, y: number): [number, number, number] => [cx + x, y, z];
+  const meta = { id, name: id, faceStart: 0, faceCount: 1 };
+  const edges: RebuildResult["edges"] = [
+    { id: `${id}L`, points: [c(-h, -h), c(-h, h)], body: id },
+    { id: `${id}R`, points: [c(h, -h), c(h, h)], body: id },
+    { id: `${id}B`, points: [c(-h, -h), c(h, -h)], body: id },
+    { id: `${id}T`, points: [c(-h, h), c(h, h)], body: id },
+  ];
+  const result = {
+    mesh: { positions: [...c(-h, -h), ...c(h, -h), ...c(h, h), ...c(-h, h)], indices: [0, 1, 2, 0, 2, 3], faceIds: [0, 0] },
+    edges,
+    bbox: { min: c(-h, -h), max: c(h, h) },
+    bodies: [meta],
+  } as RebuildResult;
+  return buildBodyMesh(result, meta, edges, new THREE.Vector2(VIEW_W, VIEW_H), undefined);
+}
+
+const viewOf = (...bodies: ReturnType<typeof squareBody>[]): ModelView => ({
+  bodies,
+  edges: bodies.flatMap((b) => b.edges.refs),
+  orphanEdges: null,
+  box: new THREE.Box3(),
+});
+
+/** Where a world point lands on the face camera's screen. */
+const onScreen = (p: [number, number, number]) => {
+  const v = new THREE.Vector3(...p).project(faceCam());
+  return { x: (v.x * 0.5 + 0.5) * VIEW_W, y: (-v.y * 0.5 + 0.5) * VIEW_H };
+};
+
+describe("pickVertex", () => {
+  it("names the corner within reach, with the edges that end there", () => {
+    const view = viewOf(squareBody("a", 200, 0));
+    const corner = view.bodies[0]!.edges.refs[0]!.points[0]!; // a's bottom-left
+    const s = onScreen(corner);
+    const hit = new Picker().pickVertex(s.x + 3, s.y - 2, RECT, faceCam(), view, 8);
+    expect(hit, "no corner 3.6 px from one").not.toBeNull();
+    expect(hit!.point.distanceTo(new THREE.Vector3(...corner))).toBeLessThan(1e-9);
+    expect(hit!.edges.map((e) => e.id).sort()).toEqual(["aB", "aL"]);
+  });
+
+  it("names nothing in the middle of an edge, or past the reach", () => {
+    const view = viewOf(squareBody("a", 200, 0));
+    const left = onScreen(view.bodies[0]!.edges.refs[0]!.points[0]!);
+    expect(new Picker().pickVertex(left.x, VIEW_H / 2, RECT, faceCam(), view, 8)).toBeNull();
+    expect(new Picker().pickVertex(left.x + 9, left.y, RECT, faceCam(), view, 8)).toBeNull();
+  });
+
+  it("skips a corner hidden behind another body's face", () => {
+    // b's corners sit 20 mm behind a, under its face, at b's top-left
+    const back = squareBody("b", 100, -20, 0);
+    const corner = back.edges.refs.find((e) => e.id === "bT")!.points[0]!;
+    const s = onScreen(corner);
+    expect(new Picker().pickVertex(s.x, s.y, RECT, faceCam(), viewOf(back), 8), "precondition: b's corner alone is picked").not.toBeNull();
+    expect(new Picker().pickVertex(s.x, s.y, RECT, faceCam(), viewOf(squareBody("a", 400, 0), back), 8)).toBeNull();
+  });
+});
+
+describe("occluderAt", () => {
+  it("is true only for a point behind the first surface under the cursor", () => {
+    const view = viewOf(squareBody("a", 200, 0));
+    const behind = new Picker().occluderAt(VIEW_W / 2, VIEW_H / 2, RECT, faceCam(), view);
+    expect(behind(new THREE.Vector3(0, 0, 0)), "a point ON the face").toBe(false);
+    expect(behind(new THREE.Vector3(0, 0, 5)), "a point in front of it").toBe(false);
+    expect(behind(new THREE.Vector3(0, 0, -2)), "a point 2 mm behind it").toBe(true);
+    const off = new Picker().occluderAt(10, 10, RECT, faceCam(), view);
+    expect(off(new THREE.Vector3(0, 0, -50)), "no body under the cursor hides nothing").toBe(false);
+  });
+});

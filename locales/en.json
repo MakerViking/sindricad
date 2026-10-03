@@ -394,14 +394,14 @@
       }
     },
     "extrude": {
-      "dragPrompt": "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · negative = cut · T = up to a face or plane, Shift-T clears it · click or OK to extrude · Esc to cancel",
-      "dragPromptAfterTarget": "Drag the arrow or type a value + Enter · T = extrude up to a face or plane · click or OK to extrude · Esc to cancel",
+      "dragPrompt": "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · negative = cut · T = up to a face, plane, point or line, Shift-T clears it · click or OK to extrude · Esc to cancel",
+      "dragPromptAfterTarget": "Drag the arrow or type a value + Enter · T = extrude up to a face, plane, point or line · click or OK to extrude · Esc to cancel",
       "edit": {
         "cannotShow": {
           "one": "Editing extrude: its area cannot be shown · it is kept as saved · what you pick replaces it · select a profile · Esc to cancel",
           "other": "Editing extrude: its {count} areas cannot be shown · they are kept as saved · what you pick replaces them · select a profile · Esc to cancel"
         },
-        "dragPrompt": "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to add/remove · T = up to a face or plane, Shift-T clears it · click or OK to extrude · Esc to cancel (later features are hidden while editing)",
+        "dragPrompt": "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to add/remove · T = up to a face, plane, point or line, Shift-T clears it · click or OK to extrude · Esc to cancel (later features are hidden while editing)",
         "droppedNewSet": {
           "one": "Editing extrude: {count} area that could not be shown is no longer kept · what you pick is the new set",
           "other": "Editing extrude: {count} areas that could not be shown are no longer kept · what you pick is the new set"
@@ -424,6 +424,7 @@
           "other": "Editing extrude: {count} of {total} areas no longer match the sketch and are kept unchanged · changing the area set drops them · drag the arrow or type a value + Enter · click to commit · Esc to cancel"
         }
       },
+      "fromFacePrompt": "Extruding from the selected face: select the profile to extrude · Ctrl-click adds areas · Enter to confirm · Esc to cancel (Press/Pull pushes the face itself)",
       "needsProfile": "Extrude: select a face, or create a sketch with a closed profile first",
       "op": {
         "cutHint": "remove",
@@ -440,26 +441,51 @@
         "distanceTitle": "Extrude by a distance",
         "extent": "Extent",
         "joinNoEffect": "Join will likely change nothing: the extrude goes into the body. Cut removes material instead.",
-        "needsTarget": "Click a face or a plane to extrude up to, or choose Distance.",
+        "needsStart": "Click the face, plane, point or line to start from, or choose Profile plane.",
+        "needsTarget": "Click what to extrude up to: a face, a plane, a corner, a point or a line. Or choose Distance.",
         "oneSide": "One side",
         "oneSideTitle": "The whole distance in one direction",
         "operation": "Operation",
+        "reading": "Reading the pick",
         "start": "Start",
         "startBound": "The start offset is set by a parameter, so it stays. Change it in Parameters.",
+        "startClearTitle": "Start on the sketch again",
+        "startFrom": "Start from",
+        "startObject": "Object",
+        "startObjectTitle": "Start the extrude from a face, a plane, a point or a line parallel to the sketch",
         "startOffset": "Offset",
         "startOffsetTitle": "Start the extrude a distance away from the sketch",
+        "startPick": "Click a face, plane, point or line",
         "startProfile": "Profile plane",
         "startProfileTitle": "Start the extrude on the sketch",
+        "stillReading": "I'm still reading the edge or face you picked. Press OK again in a moment.",
         "symmetric": "Symmetric",
         "symmetricTitle": "Half the distance each side of the start (S)",
-        "targetPick": "Click a face or a plane",
+        "targetPick": "Click a face, plane, point or line",
         "upTo": "Up to",
-        "upToTitle": "Stop at a face or a plane (T)",
-        "zeroDistance": "The distance can't be 0. Type a distance, or extrude up to a face or a plane."
+        "upToTitle": "Stop at a face, a plane, a point or a line (T)",
+        "zeroDistance": "The distance can't be 0. Type a distance, or extrude up to a face, a plane, a point or a line."
       },
       "pickPrompt": "Select a profile to extrude · Ctrl-click adds areas · Enter to confirm",
-      "targetCleared": "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · T = up to a face or plane · click or OK to extrude · Esc to cancel",
-      "targetSet": "Extruding up to the target · click another face or plane to aim there instead · type a target offset in the panel if you want one · Enter or OK to extrude · Shift-T goes back to a distance · Esc to cancel"
+      "ref": {
+        "edgeNotStraight": "That edge isn't straight. Pick a straight edge, a corner or a face.",
+        "faceCurved": "That face is curved. An extrude can only start from a flat face parallel to its sketch.",
+        "faceTilted": "That face is tilted to the sketch. For now an extrude can only start from a face parallel to its sketch. Pick a parallel face, or a corner of this one.",
+        "failed": "I couldn't read that pick: {why}",
+        "lineNotParallel": "That line isn't parallel to the sketch, so it doesn't say where to start or stop. Pick a line parallel to the sketch, a point, or a face.",
+        "noBody": "I can't tell which body that belongs to. Pick it again, or pick a face or a plane.",
+        "noProfile": "Pick the profile to extrude first.",
+        "noReply": "I couldn't read that pick. Is the geometry engine running? Try the click again.",
+        "notStraight": "That sketch curve isn't a straight line. Pick a straight line or a point.",
+        "planeTilted": "That plane is tilted to the sketch. For now an extrude can only start from a plane parallel to its sketch.",
+        "rectSide": "I can't use one side of a rectangle yet. Pick one of its corners, a line drawn with the Line tool, or a face.",
+        "shapeSide": "I can't use one side of a polygon or a slot yet. Pick a line drawn with the Line tool, a sketch point or a face.",
+        "unsupported": "This geometry engine can't store a pick on a body. Pick a sketch point, a sketch line or a plane instead."
+      },
+      "startPrompt": "Click where the extrude STARTS: a flat face or a plane parallel to the sketch, a corner, a sketch point, or a line parallel to the sketch · Esc to go back",
+      "targetCleared": "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · T = up to a face, plane, point or line · click or OK to extrude · Esc to cancel",
+      "targetPrompt": "Click what to extrude UP TO: a face, a plane, a corner, a sketch point, or a line parallel to the sketch · Esc to go back",
+      "targetSet": "Extruding up to the target · click another face, plane, point or line to aim there instead · type a target offset in the panel if you want one · Enter or OK to extrude · Shift-T goes back to a distance · Esc to cancel"
     },
     "faceOffset": {
       "drag": {
@@ -976,6 +1002,17 @@
     "lockedDuringTool": "Finish or cancel the current tool (Esc) to change these values.",
     "noFields": "No editable values on this feature.",
     "parametersTitle": "Parameters ({unit})",
+    "ref": {
+      "edge": "Edge",
+      "sketchLine": "Sketch line",
+      "sketchPoint": "Sketch point",
+      "vertex": "Corner"
+    },
+    "startFrom": {
+      "clearAria": "Clear where the extrude starts",
+      "clearTitle": "Start on the sketch plane instead",
+      "label": "Start from"
+    },
     "upTo": {
       "clearAria": "Clear the up-to target",
       "clearTitle": "Clear the up-to target and extrude by distance instead",

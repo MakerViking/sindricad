@@ -200,23 +200,7 @@ export class Picker {
     maxDepth?: number,
     clip: PickClip | null = null,
   ): EdgeHit | null {
-    this.ndc.set(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1,
-    );
-    this.raycaster.setFromCamera(this.ndc, camera);
-    // Wide candidate threshold (three.js Line2 threshold is ~0.5× screen px, so
-    // this is a forgiving grab radius). We then choose the edge nearest the
-    // cursor IN SCREEN SPACE — the raycaster sorts by camera depth, which would
-    // otherwise grab a front edge that's visually farther from the cursor.
-    this.raycaster.params.Line2 = { threshold: EDGE_PICK_THRESHOLD };
-    (this.raycaster as any).camera = camera;
-    // NOTE: each LineMaterial's .resolution is kept in sync by
-    // setEdgeResolution() on resize, and set at creation time in buildBodyMesh()
-    // (render.ts) — no per-move sync needed here.
-    // skip hidden lines (flush-seam-hidden contact rims, hidden bodies) — the
-    // raycaster tests invisible objects too, which would give ghost edge picks
-    const eHits = this.raycaster.intersectObjects(this.edgeTargets(view), false);
+    const eHits = this.castEdges(clientX, clientY, rect, camera, view);
     if (!eHits.length) return null;
 
     let best = eHits[0];
@@ -245,6 +229,99 @@ export class Picker {
     const selector = edgeSelectorFrom({ points: edge.points, body: edge.body });
     if (!selector) return null;
     return { kind: "edge", edge, selector };
+  }
+
+  /** Every edge line within the edge-pick radius of the cursor, as the
+   *  raycaster reports them (sorted by depth, not by screen distance). */
+  private castEdges(clientX: number, clientY: number, rect: DOMRect, camera: THREE.Camera, view: ModelView) {
+    this.ndc.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.ndc, camera);
+    // Wide candidate threshold (three.js Line2 threshold is ~0.5× screen px, so
+    // this is a forgiving grab radius). We then choose the edge nearest the
+    // cursor IN SCREEN SPACE — the raycaster sorts by camera depth, which would
+    // otherwise grab a front edge that's visually farther from the cursor.
+    this.raycaster.params.Line2 = { threshold: EDGE_PICK_THRESHOLD };
+    (this.raycaster as any).camera = camera;
+    // NOTE: each LineMaterial's .resolution is kept in sync by
+    // setEdgeResolution() on resize, and set at creation time in buildBodyMesh()
+    // (render.ts) — no per-move sync needed here.
+    // skip hidden lines (flush-seam-hidden contact rims, hidden bodies) — the
+    // raycaster tests invisible objects too, which would give ghost edge picks
+    return this.raycaster.intersectObjects(this.edgeTargets(view), false);
+  }
+
+  /** A test for "this world point lies BEHIND the first visible body surface
+   *  at this pixel", by more than the two-pixel allowance pick() gives an
+   *  edge: such a point is not drawn there, so it must not be pickable there.
+   *  With no body under the cursor nothing is behind anything. */
+  occluderAt(clientX: number, clientY: number, rect: DOMRect, camera: THREE.Camera, view: ModelView): (world: THREE.Vector3) => boolean {
+    flushRaycastIndex();
+    this.ndc.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(this.ndc, camera);
+    const hit = this.raycaster.intersectObjects(visibleBodyMeshes(view), false)[0];
+    if (!hit) return () => false;
+    const limit = hit.distance + 2 * worldPerPixel(camera, hit.distance, rect.height);
+    const ray = this.raycaster.ray.clone();
+    const v = new THREE.Vector3();
+    return (world) => v.copy(world).sub(ray.origin).dot(ray.direction) > limit;
+  }
+
+  /** A body CORNER under the cursor: an end of a visible edge within `maxPx`
+   *  screen pixels, the nearest one not hidden behind the surface, with every
+   *  edge that ends there (straight ones first: a corner is stored as an END
+   *  of one of them, and a straight edge's fingerprint is the least
+   *  ambiguous).
+   *
+   *  Only the edges the edge raycast reports near the cursor are looked at.
+   *  Every edge ending within `maxPx` of the cursor passes within `maxPx` of
+   *  it, inside the raycast's grab radius, and on a large model the other way
+   *  (projecting both ends of every visible edge, on every pointer move) was
+   *  the cost the merged edge targets above exist to avoid. `behind` is
+   *  occluderAt's test, when the caller already has it for this pixel. */
+  pickVertex(
+    clientX: number,
+    clientY: number,
+    rect: DOMRect,
+    camera: THREE.Camera,
+    view: ModelView,
+    maxPx: number,
+    behind = this.occluderAt(clientX, clientY, rect, camera, view),
+  ): { point: THREE.Vector3; edges: EdgeRef[] } | null {
+    const near = new Set<EdgeRef>();
+    for (const h of this.castEdges(clientX, clientY, rect, camera, view)) {
+      const ref = (h.object.userData.edges as BodyEdges | undefined)?.refAtSegment(h.faceIndex ?? -1);
+      if (ref) near.add(ref);
+    }
+    const w = new THREE.Vector3();
+    let best: THREE.Vector3 | null = null;
+    let bestD = maxPx;
+    for (const e of near) {
+      for (const p of [e.points[0], e.points[e.points.length - 1]]) {
+        if (!p) continue;
+        w.set(p[0], p[1], p[2]);
+        this.scratch.copy(w).project(camera);
+        const sx = (this.scratch.x * 0.5 + 0.5) * rect.width + rect.left;
+        const sy = (-this.scratch.y * 0.5 + 0.5) * rect.height + rect.top;
+        const d = Math.hypot(sx - clientX, sy - clientY);
+        if (d > bestD || behind(w)) continue;
+        best = w.clone();
+        bestD = d;
+      }
+    }
+    if (!best) return null;
+    const at = best;
+    const tol = 1e-4 * Math.max(1, at.length());
+    const onCorner = (p: EdgeRef["points"][number] | undefined) =>
+      !!p && Math.hypot(p[0] - at.x, p[1] - at.y, p[2] - at.z) <= tol;
+    const ending = [...near].filter((e) => onCorner(e.points[0]) || onCorner(e.points[e.points.length - 1]));
+    ending.sort((a, b) => Number(a.points.length !== 2) - Number(b.points.length !== 2));
+    return { point: at, edges: ending };
   }
 }
 

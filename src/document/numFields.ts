@@ -36,10 +36,8 @@ export const DEFAULT_EXTRUDE_DISTANCE = 10;
  *  Exported because the inspector also decides from it whether to offer the
  *  "Up to" row and its clear button (GH #41). */
 export function hasUpToTarget(f: Feature): boolean {
-  return (
-    (f.type === "press-pull" || f.type === "extrude") &&
-    (f.upTo !== undefined || f.upToPlane !== undefined)
-  );
+  if (f.type === "extrude") return f.upTo !== undefined || f.upToPlane !== undefined || f.upToRef !== undefined;
+  return f.type === "press-pull" && (f.upTo !== undefined || f.upToPlane !== undefined);
 }
 
 /** A taper is only swept when the extrude goes a DISTANCE. With an up-to target
@@ -47,7 +45,7 @@ export function hasUpToTarget(f: Feature): boolean {
  *  input that swallows a number and changes nothing is the defect this file's
  *  `applies` predicate exists to prevent. */
 function isBlindExtrude(f: Feature): boolean {
-  return f.type === "extrude" && f.upTo === undefined && f.upToPlane === undefined;
+  return f.type === "extrude" && !hasUpToTarget(f);
 }
 
 /** A sweep whose path is a helix around a circle (`helixCircle`). Its pitch and

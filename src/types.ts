@@ -405,6 +405,33 @@ export type PlaneDef = {
 };
 export type PlaneSpec = Plane3 | PlaneDef;
 
+/** A point or a straight line an extrude starts from or runs up to (GH #41).
+ *  Only the plane PARALLEL TO THE SKETCH through it is used, so a line has to
+ *  be parallel to the sketch itself; the sidecar refuses one that is not.
+ *
+ *  Every form names live geometry and follows it: a sketch point or line by
+ *  its stable entity id (`pointIndex` is the dimRefPoints index: 0/1 the ends of a
+ *  line, arc or spline, 2 an arc's centre, 0..3 a rectangle's corners, 0 a
+ *  circle's centre or a sketch point), a body edge by its by:"match"
+ *  fingerprint with its body, and a body corner as one END of such an edge:
+ *  end 1 is the end further along the fingerprint's sign-normalised direction
+ *  (`EdgeFingerprint.dir`), so the index means the same corner however the
+ *  kernel orients the rebuilt edge. Never by:"nearest", which binds the wrong
+ *  edge in silence (26 of 187 in the selector corpus). */
+export type ExtrudeRef =
+  | { kind: "sketchPoint"; sketch: string; entity: string; pointIndex: number }
+  | { kind: "sketchLine"; sketch: string; entity: string }
+  | { kind: "edge"; edge: Selector }
+  | { kind: "vertex"; edge: Selector; end: 0 | 1 };
+
+/** Where an extrude starts: a point or line (ExtrudeRef), a construction plane
+ *  by id ("XY"/"XZ"/"YZ" or a datumPlane feature), or a FLAT body face by its
+ *  by:"match" fingerprint with its body. Each has to be parallel to the sketch. */
+export type ExtrudeStart =
+  | ExtrudeRef
+  | { kind: "plane"; plane: string }
+  | { kind: "face"; face: Selector };
+
 export type Feature =
   // `planeId` (optional) is a by-id reference to a datumPlane feature, and takes
   // precedence over `plane` on rebuild. It follows the `split` precedent rather
@@ -510,6 +537,19 @@ export type Feature =
       // ordinary extrude, so old documents keep their exact shape; a beta from
       // before this existed ignores it and builds one-sided.
       symmetric?: boolean;
+      // "Up to" a POINT or a straight LINE (GH #41): it stops on the plane
+      // parallel to the sketch through that point or line. A third target kind
+      // beside `upTo` and `upToPlane`, and like them exclusive: the sidecar
+      // refuses a feature carrying two. `upToOffset` applies to it the same way.
+      upToRef?: ExtrudeRef;
+      // Where the extrude STARTS when it is not the sketch plane (GH #41): a
+      // face, a plane, a point or a line, all of them PARALLEL to the sketch
+      // (the sidecar refuses a tilted or curved one rather than guess). The
+      // profile is moved onto that plane before the sweep, and `startOffset`
+      // is then measured from it rather than from the sketch. Absent on every
+      // document written before it existed, which therefore builds exactly as
+      // before.
+      startFrom?: ExtrudeStart;
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display

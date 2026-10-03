@@ -2,7 +2,7 @@
 // `label` is read by the timeline, inspector, params dialog, context menus and the
 // rebuild-failure toasts; `iconName` is drawn by the timeline. Both resolve through
 // the shared icon set in ./icons, so a feature looks the same everywhere it appears.
-import type { Feature, FeatureType } from "../types";
+import type { ExtrudeStart, Feature, FeatureType } from "../types";
 import type { IconName } from "./icons";
 import { t } from "../i18n";
 
@@ -52,4 +52,25 @@ export function planeLabel(features: readonly Feature[], id: string): string {
   const i = datums.findIndex((f) => f.id === id);
   if (i < 0) return id;
   return (datums[i] as { name?: string }).name || t("common.planeName", { n: i + 1 });
+}
+
+/** What an extrude starts from or runs up to when that is an OBJECT (GH #41),
+ *  in a word or two: a plane by planeLabel's name, anything else by its kind.
+ *  Shared by the inspector's rows and the Extrude panel's boxes, like
+ *  planeLabel, so the two name it alike. */
+export function refLabel(ref: ExtrudeStart, features: readonly Feature[]): string {
+  switch (ref.kind) {
+    case "plane":
+      return planeLabel(features, ref.plane);
+    case "face":
+      return t("inspector.upTo.pickedFace");
+    case "sketchPoint":
+      return t("inspector.ref.sketchPoint");
+    case "sketchLine":
+      return t("inspector.ref.sketchLine");
+    case "edge":
+      return t("inspector.ref.edge");
+    case "vertex":
+      return t("inspector.ref.vertex");
+  }
 }

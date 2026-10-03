@@ -26,7 +26,7 @@ import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { isOriginId, isOriginGeometry } from "./origin";
-import { distToSeg } from "./geom2d";
+import { distToSeg, paramOnSeg } from "./geom2d";
 import { getCachedText, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
 import type { SnapKind } from "./snap";
@@ -202,6 +202,13 @@ const FILL_SELECTED_MAT = new THREE.MeshBasicMaterial({
 // filled glyph interior is drawn by the region fill layer (fillMesh) so it can
 // show hover/selection and be picked for extrude — see SketchOverlay.glyphWorldRegions.
 
+/** The point `t` of the way from `a` to `b` (clamped to the segment): a
+ *  segment's nearest point to the cursor in the world, read off its SCREEN
+ *  parameter, which is near enough for a two-pixel depth allowance. */
+function nearestOn(a: THREE.Vector3, b: THREE.Vector3, t: number): THREE.Vector3 {
+  return a.clone().lerp(b, Math.max(0, Math.min(1, t)));
+}
+
 export class SketchOverlay {
   readonly group = new THREE.Group();
   private committed = new THREE.Group();
@@ -217,6 +224,10 @@ export class SketchOverlay {
   private pendingMarkers: THREE.Mesh[] = [];
   private planeCache = new Map<string, SketchPlane>();
   regions: WorldRegion[] = []; // committed-sketch regions
+  /** Each visible committed sketch's resolved entities and the plane they are
+   *  drawn on, kept from update() so a pick can name a sketch POINT or LINE
+   *  (Extrude's start and end objects, GH #41) without resolving it again. */
+  private committedSketches: { sketchId: string; plane: SketchPlane; ents: ResolvedEntity[] }[] = [];
   private activeRegions: WorldRegion[] = []; // active-sketch regions (sketch mode)
   // selection is a set of world interior points (parametric: re-resolved each rebuild
   // against region material, so it survives sketch edits and the sketch→model swap)
@@ -295,6 +306,7 @@ export class SketchOverlay {
     this.clearGroup(this.committed);
     this.clearGroup(this.fills);
     this.regions = [];
+    this.committedSketches = [];
 
     for (const f of doc.features) {
       if (f.type !== "sketch") continue;
@@ -302,6 +314,7 @@ export class SketchOverlay {
       if (!this.sketchVisible(f.id)) continue; // hidden (e.g. consumed by a feature)
       const plane = this.planeFor(planeOf(f, resolved, doc.features));
       const ents = resolveEntities(f, doc.parameters);
+      this.committedSketches.push({ sketchId: f.id, plane, ents });
 
       for (const obj of curveObjects(ents, plane, CURVE_COLOR)) {
         obj.userData.sketchId = f.id; // + entityId from curveObjects → Project-tool picking
@@ -622,19 +635,25 @@ export class SketchOverlay {
    *  tagged with {sketchId, entityId} in update()/curveObjects — and measures
    *  screen-space distance to each polyline segment via `project` (the
    *  viewport's world→client projection). The active sketch's own curves are
-   *  never here (update() hides them), and only VISIBLE sketches are pickable. */
+   *  never here (update() hides them), and only VISIBLE sketches are pickable.
+   *  `hidden` (optional) says a world point is behind a body at this pixel: the
+   *  part of a curve there is not drawn, so it does not count as near. */
   committedCurveAt(
     clientX: number,
     clientY: number,
     project: (world: THREE.Vector3) => { x: number; y: number },
     maxPx = 9,
+    skipSketch?: string,
+    hidden?: (world: THREE.Vector3) => boolean,
   ): { sketchId: string; entityId: string } | null {
     let best: { sketchId: string; entityId: string } | null = null;
     let bestD = maxPx;
     const w = new THREE.Vector3();
+    const prevW = new THREE.Vector3();
+    const q = { x: clientX, y: clientY };
     for (const obj of this.committed.children) {
       const tag = obj.userData as { sketchId?: string; entityId?: string };
-      if (!tag.sketchId || !tag.entityId) continue;
+      if (!tag.sketchId || !tag.entityId || tag.sketchId === skipSketch) continue;
       obj.traverse((o) => {
         // Fat sketch curves (Line2) carry their world points on userData: a
         // LineGeometry has no `position` attribute and a Line2 is a Mesh, so the
@@ -654,17 +673,64 @@ export class SketchOverlay {
           // geometry points are world coordinates (plane.to3D baked in)
           const s = project(stashed ? w.copy(stashed[i]!) : w.fromBufferAttribute(pos!, i));
           if (prev) {
-            const d = distToSeg(prev, s, { x: clientX, y: clientY });
-            if (d < bestD) {
+            const d = distToSeg(prev, s, q);
+            if (d < bestD && !(hidden && hidden(nearestOn(prevW, w, paramOnSeg(prev, s, q))))) {
               bestD = d;
               best = { sketchId: tag.sketchId!, entityId: tag.entityId! };
             }
           }
           prev = paired && i % 2 === 1 ? null : s;
+          prevW.copy(w);
         }
       });
     }
     return best;
+  }
+
+  /** The committed sketch POINT nearest the cursor within `maxPx` screen
+   *  pixels: an end, a centre, a corner or a sketch point of a VISIBLE sketch,
+   *  numbered the way dimRefPoints numbers them (the index a start or end
+   *  object stores, GH #41). The sketch's own origin is not one: it is drawn,
+   *  but it is not an entity the document can name. `skipSketch` leaves one
+   *  sketch out (the profile's own, which is level with the profile), and
+   *  `hidden` the points behind a body at this pixel (committedCurveAt). */
+  committedPointAt(
+    clientX: number,
+    clientY: number,
+    project: (world: THREE.Vector3) => { x: number; y: number },
+    maxPx = 8,
+    skipSketch?: string,
+    hidden?: (world: THREE.Vector3) => boolean,
+  ): { sketchId: string; entityId: string; point: number; world: THREE.Vector3 } | null {
+    let best: { sketchId: string; entityId: string; point: number; world: THREE.Vector3 } | null = null;
+    let bestD = maxPx;
+    for (const { sketchId, plane, ents } of this.committedSketches) {
+      if (sketchId === skipSketch) continue;
+      for (const e of ents) {
+        if (!e.id || isOriginId(e.id)) continue;
+        for (const { p, pos } of dimRefPoints(e)) {
+          const world = plane.to3D(pos.x, pos.y);
+          const s = project(world);
+          const d = Math.hypot(s.x - clientX, s.y - clientY);
+          if (d < bestD && !hidden?.(world)) {
+            bestD = d;
+            best = { sketchId, entityId: e.id, point: p, world };
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  /** A sketch's entity, resolved, with the plane it is drawn on, read off the
+   *  document whether or not the sketch is shown (an edit measures a saved
+   *  start object off a sketch that may be hidden); null when there is no
+   *  such sketch or entity. */
+  sketchEntity(doc: CadDocument, sketchId: string, entityId: string): { entity: ResolvedEntity; plane: SketchPlane } | null {
+    const f = doc.features.find((x) => x.id === sketchId);
+    if (f?.type !== "sketch") return null;
+    const entity = resolveEntities(f, doc.parameters).find((e) => e.id === entityId);
+    return entity ? { entity, plane: this.planeFor(planeOf(f, this.resolvedPlanes())) } : null;
   }
 
   /** The active sketch's committed curves (rebuilt only when entities change). */

@@ -7,7 +7,7 @@
 
 import type { DocumentStore } from "../document/store";
 import type { Feature, Num, ParamTarget } from "../types";
-import { FEATURE_META, planeLabel } from "./featureMeta";
+import { FEATURE_META, planeLabel, refLabel } from "./featureMeta";
 import { getUnit, onUnitChange, round, fieldText, isPlainNumber, parseField, fmtNumber, canonicalDecimal } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities } from "../sketch/resolve";
@@ -284,6 +284,22 @@ export class Inspector {
         }, locked),
       );
     }
+    // Where it starts, when that is an object (GH #41 a): named, and cleared
+    // here like the Up-to row, which puts the extrude back on its sketch plane
+    // with any start offset kept.
+    if (f.type === "extrude" && f.startFrom) {
+      box.appendChild(
+        targetRow(
+          refLabel(f.startFrom, this.store.document.features),
+          () => {
+            this.whenUnlocked(() => this.store.clearExtrudeStart(f.id));
+            this.render();
+          },
+          locked,
+          START_ROW,
+        ),
+      );
+    }
     // The up-to target is not a number, so it cannot live in FEATURE_NUM_FIELDS
     // with the rows above — and until this row existed nothing in the app could
     // delete one. An extrude or press/pull committed with "up to that face" was
@@ -291,7 +307,12 @@ export class Inspector {
     // was out of reach forever. GH #41.
     if (hasUpToTarget(f)) {
       const planeId = (f as { upToPlane?: string }).upToPlane;
-      const target = planeId === undefined ? t("inspector.upTo.pickedFace") : planeLabel(this.store.document.features, planeId);
+      const ref = f.type === "extrude" ? f.upToRef : undefined;
+      const target = ref
+        ? refLabel(ref, this.store.document.features)
+        : planeId === undefined
+          ? t("inspector.upTo.pickedFace")
+          : planeLabel(this.store.document.features, planeId);
       box.appendChild(
         targetRow(
           target,
@@ -468,6 +489,24 @@ function toggleRow(key: string, checked: boolean, onChange: (on: boolean) => str
   return row;
 }
 
+/** The words of a target row: the Up-to row's by default, the Start-from
+ *  row's for where an extrude starts. */
+interface TargetRowKeys {
+  label: string;
+  clearTitle: string;
+  clearAria: string;
+}
+const UP_TO_ROW: TargetRowKeys = {
+  label: "inspector.upTo.label",
+  clearTitle: "inspector.upTo.clearTitle",
+  clearAria: "inspector.upTo.clearAria",
+};
+const START_ROW: TargetRowKeys = {
+  label: "inspector.startFrom.label",
+  clearTitle: "inspector.startFrom.clearTitle",
+  clearAria: "inspector.startFrom.clearAria",
+};
+
 /** The "Up to" row: what this feature is aimed at, and the only control that
  *  un-aims it. Read-only text rather than an input — the value is a datum id or
  *  a picked face, neither of which can be typed. The row keeps the panel's
@@ -476,11 +515,11 @@ function toggleRow(key: string, checked: boolean, onChange: (on: boolean) => str
  *  left 58px for the text, and "Picked face" needs 68.5px — measured, the
  *  button wrapped onto a second line under the name and the row rendered 38px
  *  tall against its neighbours' 29px. */
-function targetRow(value: string, onClear: () => void, locked: boolean): HTMLElement {
+function targetRow(value: string, onClear: () => void, locked: boolean, keys: TargetRowKeys = UP_TO_ROW): HTMLElement {
   const row = document.createElement("div");
   row.className = "param-row param-row-target";
   const lab = document.createElement("label");
-  setText(lab, "inspector.upTo.label");
+  setText(lab, keys.label);
   const cell = document.createElement("span");
   cell.className = "param-target";
   const name = document.createElement("span");
@@ -489,9 +528,9 @@ function targetRow(value: string, onClear: () => void, locked: boolean): HTMLEle
   const clear = document.createElement("button");
   clear.type = "button";
   clear.className = "params-del";
-  setTitle(clear, "inspector.upTo.clearTitle");
+  setTitle(clear, keys.clearTitle);
   // icon-only control: the accessible name has to come from the button itself
-  clear.setAttribute("aria-label", t("inspector.upTo.clearAria"));
+  clear.setAttribute("aria-label", t(keys.clearAria));
   clear.innerHTML = icon("close");
   clear.disabled = locked;
   clear.addEventListener("click", onClear);

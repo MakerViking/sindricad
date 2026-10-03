@@ -1151,10 +1151,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
 
   function startExtrude() {
     if (busy()) return;
-    // A SELECTED FACE wins: extrude-a-face = Press/Pull it (drag out to join, in to
-    // cut). This takes priority over region extrude so a visible sketch never hijacks
-    // "extrude this face" (was: a shown sketch forced region-extrude, so face cut did
-    // nothing).
+    // A SELECTED FACE wins over a plain region extrude, so a visible sketch never
+    // hijacks "extrude this face" (was: a shown sketch forced region-extrude, so
+    // face cut did nothing).
     const sel = viewport.selectedFacesForPressPull();
     if (sel) {
       // …EXCEPT when the selected face sits ON or BEHIND a visible sketch's
@@ -1167,6 +1166,22 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
         return wr.plane.plane.distanceToPoint(sel.anchor) <= 0.01; // face on/behind the sketch plane
       });
       if (!underSketch) {
+        // One flat face with a visible profile parallel to it to extrude: the
+        // extrude STARTS from that face (GH #41 a), the lid on top of the box,
+        // in the Extrude panel. Anything else (several faces, a curved one, no
+        // visible profile it could start, which is the usual state once a
+        // sketch has been extruded and hides) pushes the face itself, as
+        // before. That is Press/Pull, with no start offset, so it is NOT the
+        // start offset field 637278a9 asked for while extruding a face itself.
+        const flat = sel.bodyId ? viewport.selectedFaceSketchPlane() : null;
+        const startable = flat && overlay.regions.some((wr) => Math.abs(wr.plane.n.dot(sel.normal)) > 1 - 1e-4);
+        if (flat && startable && sel.bodyId) {
+          extrude.start(created, {
+            fromFace: { selector: flat.face, bodyId: sel.bodyId, normal: sel.normal.clone(), anchor: sel.anchor.clone() },
+          });
+          clearSelectionForCreate();
+          return;
+        }
         pressPull.start(created);
         clearSelectionForCreate();
         return;

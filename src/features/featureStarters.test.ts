@@ -78,6 +78,7 @@ vi.mock("../ui/prompt", () => ({
   removeEventListener() {},
 };
 
+import * as THREE from "three";
 import { createFeatureStarters } from "./featureStarters";
 import type { PlaneDef } from "../types";
 
@@ -554,5 +555,42 @@ describe("Clean Up", () => {
     createFeatureStarters(h.deps as never).startCleanUp();
     expect(added).toHaveLength(1);
     expect(added[0]).toMatchObject({ type: "cleanUp", fit: 2 });
+  });
+});
+
+// Extrude on a selected face (GH #41 a). With a visible profile parallel to the
+// face, Extrude STARTS from the face, in the Extrude panel. Anything with
+// nothing to start (no such profile, a curved face) pushes the face itself with
+// Press/Pull, as before.
+describe("Extrude on a selected face", () => {
+  function faceWorld(over: { normal: [number, number, number]; flat?: boolean }) {
+    const h = harness({ busy: false, bodies: [{ id: "body1", name: "Body1" }], features: [{ id: "s1", type: "sketch" }], regions: 0 });
+    const deps = h.deps as unknown as Record<string, Record<string, unknown>>;
+    const started: { tool: string; opts: unknown }[] = [];
+    for (const name of ["extrude", "pressPull"]) {
+      deps[name] = { start: (_done: unknown, opts?: unknown) => started.push({ tool: name, opts }) };
+    }
+    // a profile on XY, under nothing: the face is 15 above it
+    const n = new THREE.Vector3(0, 0, 1);
+    deps.overlay!.regions = [{ sketchId: "s1", plane: { n, plane: new THREE.Plane(n, 0) } }];
+    const face = { kind: "face", by: "nearest", point: [0, 0, 15], body: "body1" };
+    deps.viewport!.selectedFacesForPressPull = () => ({
+      selectors: [face], faceIds: [3], normal: new THREE.Vector3(...over.normal), anchor: new THREE.Vector3(0, 0, 15), bodyId: "body1",
+    });
+    deps.viewport!.selectedFaceSketchPlane = () =>
+      over.flat === false ? null : { plane: { origin: [0, 0, 15], normal: over.normal, xdir: [1, 0, 0] }, face };
+    createFeatureStarters(deps as never).startExtrude();
+    return { started, face };
+  }
+
+  it("starts the extrude FROM a flat face parallel to a profile", () => {
+    const { started, face } = faceWorld({ normal: [0, 0, 1] });
+    expect(started.map((s) => s.tool)).toEqual(["extrude"]);
+    expect((started[0]!.opts as { fromFace: { selector: unknown; bodyId: string } }).fromFace).toMatchObject({ selector: face, bodyId: "body1" });
+  });
+
+  it("pushes the face as before when no profile is parallel to it, or it is curved", () => {
+    expect(faceWorld({ normal: [1, 0, 0] }).started.map((s) => s.tool)).toEqual(["pressPull"]);
+    expect(faceWorld({ normal: [0, 0, 1], flat: false }).started.map((s) => s.tool)).toEqual(["pressPull"]);
   });
 });

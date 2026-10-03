@@ -13,25 +13,31 @@
 //
 // The docked Extrude panel (GH #41) holds everything else an extrude has, typed
 // BEFORE it exists rather than in the inspector afterwards: where it starts
-// (the profile plane or an offset), one side or symmetric, a distance or up to
-// a face or plane (with a target offset), a taper, and the operation. A taper
-// or a target cannot be drawn by the instant ghost, so those preview through
-// the real build (store.setPreview). Enter, OK or a click commits; with a
-// target set, a click on another face or plane aims there instead.
+// (the profile plane, an offset, or an OBJECT: a face, a plane, a point or a
+// line), one side or symmetric, a distance or up to a target (a face, a plane,
+// a corner, a sketch point or a line, with a target offset), a taper, and the
+// operation. A taper, a target or a start object cannot be drawn by the
+// instant ghost, so those preview through the real build (store.setPreview).
+// Enter, OK or a click commits; with a target set, a click on another target
+// aims there instead.
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import { drawOnTop } from "../viewport/gizmos";
 import { selectionOutline, type RegionRef, type SketchOverlay, type WorldRegion } from "../sketch/overlay";
 import type { DocumentStore } from "../document/store";
-import type { Feature, Num, Selector } from "../types";
+import type { EdgeFingerprint, ExtrudeRef, ExtrudeStart, FaceFingerprint, Feature, Num, Plane3, Selector } from "../types";
+import type { EdgeRef } from "../viewport/render";
+import { edgeSelectorFrom } from "../viewport/edgeMatch";
+import { dimRefPoints } from "../sketch/entityDims";
+import type { ResolvedEntity } from "../sketch/snap";
 import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { axisDragDistance, pixelDistanceToSegment } from "./manipulator";
 import { t } from "../i18n";
 import { ToolPanel } from "../ui/toolPanel";
-import { planeLabel } from "../ui/featureMeta";
+import { planeLabel, refLabel } from "../ui/featureMeta";
 import { featureErrorMessages } from "../geometry/featureErrorText";
 // One number for "the depth a fresh extrude starts at", shared with the store:
 // clearing an up-to target has to restore a depth, and two constants would
@@ -41,11 +47,65 @@ import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
 import { isImeComposing } from "../ui/focus";
 
 type Phase = "pick" | "drag";
+/** A selected face Extrude was started on: its pick, as the viewport hands
+ *  it over (selectedFaceSketchPlane, so already known to be flat and on a
+ *  known body). */
+export interface FromFace {
+  selector: Selector;
+  bodyId: string;
+  normal: THREE.Vector3;
+  anchor: THREE.Vector3;
+}
+
+/** An up-to target, one of the three exclusive kinds (see setUpTo). */
+type Target = { face: Selector } | { plane: string } | { ref: ExtrudeRef };
 type Op = "new" | "join" | "cut" | "intersect";
 /** The values the panel types that the INSPECTOR can also set on a committed
  *  extrude, so an edit has to know which of them the user changed here. */
 type PanelValue = "startOffset" | "taper" | "upToOffset";
 const PANEL_VALUES: readonly PanelValue[] = ["startOffset", "taper", "upToOffset"];
+
+/** How close, in screen pixels, a click must land to a point (a sketch point,
+ *  a body corner) to name it as a start or end object rather than whatever is
+ *  behind it. A little under the depth arrow's grab: a point is a smaller
+ *  target than a shaft, and what is behind it is usually also a valid pick. */
+const POINT_PX = 8;
+
+/** How far a click must land to a straight sketch curve to name it. The
+ *  Project tool's sketch-curve pick radius, which is the one other place the
+ *  app picks a sketch curve in the model. */
+const CURVE_PX = 9;
+
+/** How far off parallel to the sketch a start or end object may be, as the
+ *  sine of the angle: the sidecar's _REF_PARALLEL_TOL, checked here too so a
+ *  tilted pick is refused on the click rather than after a build. */
+const PARALLEL_TOL = 1e-4;
+
+/** How close, in mm, a plane must be to the profile to count as level with
+ *  it (and so be skipped as a start or end), and how close behind an origin
+ *  plane a construction plane may be and still win the click. */
+const LEVEL_TOL = 1e-4;
+
+/** The origin planes' normals, as SketchPlane builds them (n = u x v). Only
+ *  the direction matters here: each passes through the world origin. */
+const BASE_NORMAL: Record<Plane3, THREE.Vector3> = {
+  XY: new THREE.Vector3(0, 0, 1),
+  XZ: new THREE.Vector3(0, -1, 0),
+  YZ: new THREE.Vector3(1, 0, 0),
+};
+
+/** What a click in the model names as a start or end object (GH #41), before
+ *  it is checked against the profile and turned into a stored reference. */
+type Picked =
+  // `flat` is asked only when a face is to be a START (refusal): it walks the
+  // face's triangles, which a hover over a large face should not pay for
+  | { kind: "face"; selector: Selector; bodyId: string | null; normal: THREE.Vector3; anchor: THREE.Vector3; flat: () => boolean }
+  | { kind: "plane"; id: string; normal: THREE.Vector3; origin: THREE.Vector3 }
+  | { kind: "sketchPoint"; sketch: string; entity: string; point: number; world: THREE.Vector3 }
+  | { kind: "sketchLine"; sketch: string; entity: string; a: THREE.Vector3; b: THREE.Vector3 }
+  | { kind: "edge"; edge: EdgeRef; selector: Selector }
+  | { kind: "vertex"; point: THREE.Vector3; edge: EdgeRef }
+  | { kind: "refused"; why: string };
 
 /** How close the cursor must be to the depth arrow, in SCREEN pixels, to take
  *  hold of it. Wide enough to catch a shaft a couple of pixels across with a
@@ -80,6 +140,11 @@ const DRAG_START_PX = 4;
  *  precisely field 6e2bcadd. One constant, so the two cannot drift. */
 const ARROW_MIN_MM = 1;
 
+/** Whether there is a body, and whether each selected area meets material a
+ *  hair along (+) and against (-) its normal from where the extrude starts,
+ *  with what it was read at (ExtrudeTool.readingKey). */
+type SolidReading = { key: string; solid: boolean; plus: boolean[]; minus: boolean[] };
+
 /** One area of the feature being edited, in the document's own shape.
  *
  *  This IS `RegionRef` with nothing optional: `point` and `holeEntityIds` are
@@ -92,6 +157,45 @@ type CarriedRegion = RegionRef & {
   point: [number, number, number];
   holeEntityIds: string[][];
 };
+
+/** The two ends of a straight sketch entity (a line, or a projected line), in
+ *  its sketch's 2-D frame; null for every other kind. dimRefPoints' 0 and 1,
+ *  the numbering the sidecar reads a line by too. */
+function straightEnds(e: ResolvedEntity): [THREE.Vector2, THREE.Vector2] | null {
+  const straight = e.type === "line" || (e.type === "projected" && e.curve.kind === "line");
+  if (!straight) return null;
+  const pts = dimRefPoints(e);
+  const a = pts.find((q) => q.p === 0)?.pos;
+  const b = pts.find((q) => q.p === 1)?.pos;
+  return a && b ? [a, b] : null;
+}
+
+/** Why a sketch curve that is not a straight line cannot be a start or an
+ *  end. A rectangle's, polygon's or slot's sides are straight, but the
+ *  document cannot name one side of a shape yet (only the shape, and a
+ *  rectangle's corners), so those are said apart from a curve. */
+function notLineWhy(e: ResolvedEntity | undefined): string {
+  if (e?.type === "rectangle") return t("feature.extrude.ref.rectSide");
+  if (e?.type === "polygon" || e?.type === "slot") return t("feature.extrude.ref.shapeSide");
+  return t("feature.extrude.ref.notStraight");
+}
+
+/** Where end `end` of an edge is, read off its fingerprint the way the sidecar
+ *  picks it (_edge_end: end 1 lies further along `dir`): exactly for a line,
+ *  from its centre, radius and length for an arc, at its middle otherwise. */
+function edgeEndOf(fp: EdgeFingerprint, end: 0 | 1): THREE.Vector3 {
+  const mid = new THREE.Vector3(...fp.mid);
+  const dir = new THREE.Vector3(...fp.dir).normalize();
+  const sign = end === 1 ? 1 : -1;
+  if (fp.curve === "line" && fp.length !== undefined) return mid.addScaledVector(dir, (sign * fp.length) / 2);
+  if (fp.curve === "circle" && fp.center && fp.radius && fp.length !== undefined) {
+    const c = new THREE.Vector3(...fp.center);
+    const r = mid.clone().sub(c).normalize();
+    const half = fp.length / (2 * fp.radius);
+    return c.addScaledVector(r, fp.radius * Math.cos(half)).addScaledVector(dir, sign * fp.radius * Math.sin(half));
+  }
+  return mid;
+}
 
 /** A text field (the command palette, a Browser rename, a panel field): it
  *  keeps its own keys. Read off the tag rather than instanceof, so the stubbed
@@ -167,15 +271,42 @@ export class ExtrudeTool {
   // both a face target and a plane target rather than picking one.
   private upTo: Selector | null = null;
   private upToPlane: string | null = null;
+  /** ...or up to a point or a straight line (GH #41 b), the third kind */
+  private upToRef: ExtrudeRef | null = null;
   private pickingTarget = false; // waiting for the user to click the up-to target
+  // --- start object: "start the extrude from that face / plane / point / line"
+  /** What Start = Object starts from; null until one is picked. */
+  private startRef: ExtrudeStart | null = null;
+  /** The face Extrude was started on (start's `fromFace`), held until the
+   *  first profile is picked, when it becomes the start object. */
+  private fromFace: FromFace | null = null;
+  /** How far the start object sits from the sketch, along the profile normal,
+   *  as far as this tool can tell without a build: exact at the pick, and read
+   *  from the document or the reference's own fingerprint on an edit (which
+   *  can lag a body edited upstream; the built preview shows the truth). It
+   *  places the depth arrow and steers the operation guess. */
+  private startRefDist = 0;
+  private pickingStart = false; // waiting for the user to click the start object
+  /** The Start choice to go back to when a start pick is abandoned with
+   *  nothing picked, so Escape does not leave an empty Object box behind. */
+  private startModeBefore: "profile" | "offset" = "profile";
+  /** A picked edge, corner or face whose reference the sidecar is authoring
+   *  right now (a by:"match" fingerprint, store.queryReferences). `token`
+   *  drops a reply that a newer pick, a cancel or a close made stale. */
+  private pending: { role: "start" | "end"; token: number } | null = null;
+  private pendingSeq = 0;
+  /** Why the last start or end pick was refused, shown in the panel until the
+   *  next pick; null = nothing refused. */
+  private pickNote: string | null = null;
   /** while editing, this sketch is forced visible so its regions exist
    *  (consumed sketches hide by default) — main.ts's isSketchVisible honors it. */
   forcedSketchId: string | null = null;
 
   // --- the docked panel (GH #41) ---------------------------------------------
   private panel = new ToolPanel("extrude-panel");
-  /** Start: on the profile plane, or `startOffset` away from it */
-  private startMode: "profile" | "offset" = "profile";
+  /** Start: on the profile plane, `startOffset` away from it, or from an
+   *  object (`startRef`, plus the start offset measured from it) */
+  private startMode: "profile" | "offset" | "object" = "profile";
   private startOffset = 0; // mm, along the profile normal
   /** Direction: half the distance each side of the start (the persisted flag) */
   private symmetric = false;
@@ -220,7 +351,10 @@ export class ExtrudeTool {
     this.boundKey = (e) => this.onKey(e);
   }
 
-  start(onDone: (id: string | null) => void) {
+  /** `fromFace`: Extrude was started on a selected FLAT face, so it starts
+   *  from that face (GH #41 a) once a profile is picked. The face is checked
+   *  against the profile then, like a face clicked into the Start box. */
+  start(onDone: (id: string | null) => void, opts: { fromFace?: FromFace } = {}) {
     if (this.active) return;
     this.active = true;
     this.phase = "pick";
@@ -231,6 +365,7 @@ export class ExtrudeTool {
     // edit, the same class as the carried areas this tool already protects.
     this.upTo = null;
     this.upToPlane = null;
+    this.upToRef = null;
     // A FRESH extrude must not inherit the last edited feature's inspector
     // values. Cleared here rather than in beginDrag for the same reason as the
     // end condition above: startEdit calls beginDrag too.
@@ -241,6 +376,7 @@ export class ExtrudeTool {
     this.pickingTarget = false;
     // ...nor the last session's panel values: the tool instance is reused
     this.resetPanelValues();
+    this.fromFace = opts.fromFace ?? null;
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
@@ -255,7 +391,7 @@ export class ExtrudeTool {
     if (this.selected.length) {
       this.beginDrag();
     } else {
-      setPrompt(t("feature.extrude.pickPrompt"));
+      setPrompt(t(this.fromFace ? "feature.extrude.fromFacePrompt" : "feature.extrude.pickPrompt"));
     }
   }
 
@@ -285,6 +421,7 @@ export class ExtrudeTool {
     // startEdit does not load, commit deletes.
     this.upTo = f.upTo ?? null;
     this.upToPlane = f.upToPlane ?? null;
+    this.upToRef = f.upToRef ?? null;
     // The values the panel shows, loaded for the same reason. They ride along
     // untouched unless the user changes them here.
     this.editStartOffset = f.startOffset;
@@ -449,9 +586,10 @@ export class ExtrudeTool {
       this.viewport.domElement.style.cursor = r ? "pointer" : "default";
       return;
     }
-    // T mode ("extrude up to"): show what the click would bind (hoverTarget).
-    if (this.pickingTarget) {
-      this.hoverTarget(e.clientX, e.clientY);
+    // T mode ("extrude up to"), or picking where it starts: show what the
+    // click would bind (hoverObject).
+    if (this.pickingTarget || this.pickingStart) {
+      this.hoverObject(e.clientX, e.clientY);
       return;
     }
     if (!this.selected.length) return;
@@ -492,7 +630,7 @@ export class ExtrudeTool {
       // 10 mm to a large negative and then a large positive value; the exact
       // figures depend on where the cursor was and are not worth recording,
       // because the sign is the part that bites. The sign crossing zero flips
-      // `entersSolid`'s reading
+      // `operationFrom`'s reading
       // and with it Cut vs Join, so hovering over the sketch plane silently
       // retargeted the operation.
       //
@@ -504,10 +642,10 @@ export class ExtrudeTool {
     this.positionDim(anchor);
     this.updatePreview();
     if (this.grab) return;
-    // With a target set there is no arrow, and a click on a face or plane aims
-    // there instead (onDown), so that is what the hover shows.
+    // With a target set there is no arrow, and a click on a face, plane, point
+    // or line aims there instead (onDown), so that is what the hover shows.
     if (this.hasTarget()) {
-      this.hoverTarget(e.clientX, e.clientY);
+      this.hoverObject(e.clientX, e.clientY);
       return;
     }
     // After updatePreview, so the affordance is measured against the arrow as
@@ -517,26 +655,127 @@ export class ExtrudeTool {
     this.viewport.domElement.style.cursor = this.overArrow(e.clientX, e.clientY) ? "ns-resize" : "default";
   }
 
-  /** Light the face or plane a click here would aim the extrude at, with the
-   *  same BODY-FIRST precedence `targetAt` uses. Without it aiming is invisible:
-   *  the cursor sweeps a face or an offset plane and nothing on screen says it
-   *  is aimed at anything (field report c0cfee48, reported against press/pull;
-   *  this tool had the gap verbatim). */
-  private hoverTarget(cx: number, cy: number) {
-    const faceId = this.viewport.hoverFaceAt(cx, cy);
-    const datumId = faceId == null ? this.viewport.pickDatumAt(cx, cy) : null;
-    this.viewport.hoverDatum(datumId);
-    this.viewport.domElement.style.cursor = faceId != null || datumId ? "pointer" : "default";
+  /** Light what a click here would name as the start or the target, with the
+   *  same precedence `objectAt` uses. Without it aiming is invisible: the
+   *  cursor sweeps a face or an offset plane and nothing on screen says it is
+   *  aimed at anything (field report c0cfee48, reported against press/pull;
+   *  this tool had the gap verbatim). A point shows the snap ring; a sketch line
+   *  shows the pointer only, there being no highlight for one outside a sketch. */
+  private hoverObject(cx: number, cy: number) {
+    const picked = this.objectAt(cx, cy);
+    this.clearPickHover();
+    if (picked?.kind === "sketchPoint" || picked?.kind === "vertex") {
+      const at = picked.kind === "vertex" ? picked.point : picked.world;
+      this.overlay.setSnap(at, "endpoint", this.viewport.camera);
+      this.overlay.setSnapScale(this.viewport.pixelWorldSize(at) * 6);
+      this.pointLit = true;
+    } else if (picked?.kind === "edge") {
+      this.viewport.hoverEdge(picked.edge);
+    } else if (picked?.kind === "face") {
+      this.viewport.hoverFaceAt(cx, cy);
+    } else if (picked?.kind === "plane") {
+      if (picked.id in BASE_NORMAL) this.viewport.hoverPlane(picked.id as Plane3);
+      else this.viewport.hoverDatum(picked.id);
+    }
+    this.viewport.domElement.style.cursor = picked && picked.kind !== "refused" ? "pointer" : "default";
   }
 
-  /** The face or datum plane under the cursor, as an up-to target. A datum
-   *  plane (field report ffab4ece) only on a body MISS: the same BODY-FIRST
-   *  precedence viewport.handleClick uses, so a plane's 80x80 quad floating in
-   *  front of the solid can never steal a face pick. */
-  private targetAt(cx: number, cy: number): Selector | string | null {
-    const hit = this.viewport.pickFaceForPressPull(cx, cy);
-    if (hit) return hit.selector;
-    return this.viewport.pickDatumAt(cx, cy);
+  /** What a click here names as a start or end object, smallest thing first:
+   *  a point (a sketch point or a body corner, whichever is nearer the cursor),
+   *  then a sketch line, then the body (an edge when the cursor is on it, else
+   *  a face), then a construction plane or an origin plane, whichever is in
+   *  front. A plane only on a body MISS: the same BODY-FIRST precedence
+   *  viewport.handleClick uses, so a plane's quad floating in front of the
+   *  solid can never steal a face pick (field report ffab4ece).
+   *
+   *  Sketch points and curves hidden behind a body at this pixel are not
+   *  candidates, as a corner behind the surface is not: they rank ahead of the
+   *  body, so a sketch behind it would otherwise take a click aimed at its
+   *  face. A sketch curve that cannot be a line (an arc, a circle, a side of a
+   *  rectangle) gives way to the body behind it, and is refused only on a click
+   *  that has no body behind it: a rectangle drawn on a face must not stop the
+   *  face being picked, and a plane behind the curve is not what was aimed at.
+   *
+   *  The profile's OWN sketch, and any plane level with the profile, are left
+   *  out: they are neither a start nor an end, and skipping them lets a click
+   *  reach what is behind them (an origin plane under the profile's own
+   *  construction plane). */
+  private objectAt(cx: number, cy: number): Picked | null {
+    const own = this.selected[0]?.sketchId ?? this.forcedSketchId ?? undefined;
+    const project = (w: THREE.Vector3) => this.viewport.projectToScreen(w);
+    const px = (w: THREE.Vector3) => {
+      const s = project(w);
+      return Math.hypot(s.x - cx, s.y - cy);
+    };
+    const hidden = this.viewport.behindSurfaceAt(cx, cy);
+    const sp = this.overlay.committedPointAt(cx, cy, project, POINT_PX, own, hidden);
+    const vx = this.viewport.pickVertexAt(cx, cy, POINT_PX, hidden);
+    if (sp && (!vx || px(sp.world) <= px(vx.point))) {
+      return { kind: "sketchPoint", sketch: sp.sketchId, entity: sp.entityId, point: sp.point, world: sp.world };
+    }
+    const corner = vx?.edges[0];
+    if (vx && corner) return { kind: "vertex", point: vx.point, edge: corner };
+    let notLine: string | null = null;
+    const curve = this.overlay.committedCurveAt(cx, cy, project, CURVE_PX, own, hidden);
+    if (curve) {
+      const found = this.overlay.sketchEntity(this.store.document, curve.sketchId, curve.entityId);
+      const ends = found ? straightEnds(found.entity) : null;
+      if (found && ends) {
+        return {
+          kind: "sketchLine", sketch: curve.sketchId, entity: curve.entityId,
+          a: found.plane.to3D(ends[0].x, ends[0].y), b: found.plane.to3D(ends[1].x, ends[1].y),
+        };
+      }
+      notLine = notLineWhy(found?.entity);
+    }
+    const hit = this.viewport.pickEntity(cx, cy);
+    if (hit?.kind === "edge") return { kind: "edge", edge: hit.edge, selector: hit.selector };
+    if (hit) {
+      const face = this.viewport.pickFaceForPressPull(cx, cy);
+      if (face) {
+        // flat AND on a known body: the two things a start face needs
+        // (faceAnchor's own two refusals)
+        const flat = () => {
+          const plane = this.viewport.pickFacePlane(cx, cy);
+          return plane !== null && this.viewport.faceAnchor(cx, cy, plane) !== null;
+        };
+        return { kind: "face", selector: face.selector, bodyId: face.bodyId, normal: face.normal, anchor: face.anchor, flat };
+      }
+    }
+    if (notLine) return { kind: "refused", why: notLine };
+    return this.planeAt(cx, cy);
+  }
+
+  /** The plane a click here names: the nearest construction plane or (while
+   *  they are drawn) origin plane that is not level with the profile. A
+   *  construction plane wins a tie with an origin plane it lies on: it is the
+   *  one the user made, and it may move later. */
+  private planeAt(cx: number, cy: number): Picked | null {
+    const hits = this.viewport.planeHitsAt(cx, cy, this.showingOrigin);
+    const usable = hits.flatMap((h) => {
+      const q = this.planeDef(h.id);
+      return q && !this.levelWithProfile(q) ? [{ ...h, ...q }] : [];
+    });
+    const first = usable[0];
+    if (!first) return null;
+    const tie = usable.find((h) => h.datum && h.distance <= first.distance + LEVEL_TOL);
+    const p = tie ?? first;
+    return { kind: "plane", id: p.id, normal: p.normal, origin: p.origin };
+  }
+
+  /** An origin plane's or a construction plane's normal and a point on it. */
+  private planeDef(id: string): { normal: THREE.Vector3; origin: THREE.Vector3 } | null {
+    if (id in BASE_NORMAL) return { normal: BASE_NORMAL[id as Plane3].clone(), origin: new THREE.Vector3() };
+    const q = this.viewport.datumPlaneOf(id);
+    return q ? { normal: new THREE.Vector3(...q.normal), origin: new THREE.Vector3(...q.origin) } : null;
+  }
+
+  /** A plane the profile lies in: neither a start nor an end. */
+  private levelWithProfile(q: { normal: THREE.Vector3; origin: THREE.Vector3 }): boolean {
+    const p = this.selected[0]?.plane;
+    if (!p || q.normal.lengthSq() === 0) return false;
+    const square = q.normal.clone().normalize().cross(p.n).length() <= PARALLEL_TOL;
+    return square && Math.abs(p.plane.distanceToPoint(q.origin)) <= LEVEL_TOL;
   }
 
   /** Turn a pending press into a handle drag once the pointer has actually
@@ -657,12 +896,11 @@ export class ExtrudeTool {
       // The click FILLS the panel's Up-to box and the extrude waits: a target
       // offset can only be typed once there is a target to offset from, and a
       // click that also committed left no moment to type it (GH #41). Enter, OK
-      // or a click off any face or plane commits (below).
-      if (this.pickingTarget) {
+      // or a click off any target commits (below). Picking where it STARTS is
+      // the same gesture into the Start box.
+      if (this.pickingTarget || this.pickingStart) {
         e.stopImmediatePropagation();
-        const target = this.targetAt(e.clientX, e.clientY);
-        if (target) this.setTarget(target);
-        else setPrompt(t("feature.upTo.pickPrompt"));
+        this.pickObject(this.pickingStart ? "start" : "end", this.objectAt(e.clientX, e.clientY));
         return;
       }
       // A modifier-held click means "change the area set", not "commit". Edit mode
@@ -710,15 +948,15 @@ export class ExtrudeTool {
         if (dropped) setPrompt(t("feature.extrude.edit.droppedPickAgain", { count: dropped }));
         return;
       }
-      // With a target set, a click on another face or plane aims there
-      // instead. Committing to the FIRST target was what a click on the right
-      // face did after a mis-pick, which is the natural way to correct one.
-      // Anywhere else a click still commits, on the release, below.
+      // With a target set, a click on another target aims there instead.
+      // Committing to the FIRST target was what a click on the right face did
+      // after a mis-pick, which is the natural way to correct one. Anywhere
+      // else a click still commits, on the release, below.
       if (this.hasTarget()) {
-        const target = this.targetAt(e.clientX, e.clientY);
-        if (target) {
+        const picked = this.objectAt(e.clientX, e.clientY);
+        if (picked) {
           e.stopImmediatePropagation();
-          this.setTarget(target);
+          this.pickObject("end", picked);
           return;
         }
       }
@@ -795,17 +1033,14 @@ export class ExtrudeTool {
     void this.commit();
   }
 
-  /** `upTo` (a face) and `upToPlane` (a datum id) are mutually exclusive by
-   *  contract — the sidecar REFUSES a feature carrying both rather than picking
-   *  one — so every target set goes through here and clears the other. */
-  private setUpTo(target: Selector | string) {
-    if (typeof target === "string") {
-      this.upToPlane = target;
-      this.upTo = null;
-    } else {
-      this.upTo = target;
-      this.upToPlane = null;
-    }
+  /** `upTo` (a face), `upToPlane` (a plane id) and `upToRef` (a point or a
+   *  line) are mutually exclusive by contract — the sidecar REFUSES a feature
+   *  carrying two rather than picking one — so every target set goes through
+   *  here and clears the others. */
+  private setUpTo(target: Target) {
+    this.upTo = "face" in target ? target.face : null;
+    this.upToPlane = "plane" in target ? target.plane : null;
+    this.upToRef = "ref" in target ? target.ref : null;
   }
 
   private onKey(e: KeyboardEvent) {
@@ -892,32 +1127,37 @@ export class ExtrudeTool {
    *  the whole extrude — the same two-level Escape press/pull has. */
   private onEscape() {
     if (this.pickingTarget) this.leaveTargetPick();
+    else if (this.pickingStart) this.leaveStartPick();
     else this.cancel();
   }
 
   private hasTarget(): boolean {
-    return this.upTo !== null || this.upToPlane !== null;
+    return this.upTo !== null || this.upToPlane !== null || this.upToRef !== null;
   }
 
-  /** T, or the panel's Up-to choice or box: the next click names the face or
-   *  plane to extrude up to. */
+  /** T, or the panel's Up-to choice or box: the next click names what to
+   *  extrude up to. */
   private armTargetPick() {
     if (this.phase !== "drag") return;
+    if (this.pickingStart) this.leaveStartPick();
     this.pickingTarget = true;
+    this.pickNote = null;
     this.dim.hide(); // Enter must not commit a plain distance while picking
-    setPrompt(t("feature.upTo.clickPrompt"));
+    this.showOriginPlanes(true);
+    setPrompt(t("feature.extrude.targetPrompt"));
     this.updatePreview();
     this.syncPanel();
   }
 
-  /** A face or plane was clicked: it fills the panel, and the extrude waits
-   *  for Enter or OK so a target offset can be typed first. */
-  private setTarget(target: Selector | string) {
+  /** A target was clicked: it fills the panel, and the extrude waits for
+   *  Enter or OK so a target offset can be typed first. */
+  private setTarget(target: Target) {
     this.setUpTo(target);
     this.pickingTarget = false;
+    this.pickNote = null;
     // the pick's highlights go with it, or the face just clicked stays lit
-    this.viewport.clearHover();
-    this.viewport.hoverDatum(null);
+    this.clearPickHover();
+    this.showOriginPlanes(false);
     setPrompt(t("feature.extrude.targetSet"));
     this.updatePreview();
     this.syncPanel();
@@ -925,10 +1165,12 @@ export class ExtrudeTool {
 
   private leaveTargetPick() {
     this.pickingTarget = false;
+    this.pickNote = null;
     // leaving T mode takes its highlights with it, or the last face and plane
     // the cursor passed stay lit over a tool that no longer aims there
-    this.viewport.clearHover();
-    this.viewport.hoverDatum(null);
+    this.clearPickHover();
+    this.showOriginPlanes(false);
+    if (this.pending?.role === "end") this.pending = null;
     if (this.hasTarget()) {
       setPrompt(t("feature.extrude.targetSet"));
     } else {
@@ -948,18 +1190,311 @@ export class ExtrudeTool {
     const had = this.hasTarget();
     this.upTo = null;
     this.upToPlane = null;
+    this.upToRef = null;
     this.pickingTarget = false;
-    this.viewport.clearHover();
-    this.viewport.hoverDatum(null);
+    this.pickNote = null;
+    if (this.pending?.role === "end") this.pending = null;
+    this.clearPickHover();
+    this.showOriginPlanes(false);
     // An up-to extrude never read its distance, so it can legitimately be 0 —
     // and a plain extrude of 0 is refused by the sidecar. Same substitution
     // the inspector's clear makes (store.clearUpToTarget).
     if (this.distance === 0) this.distance = DEFAULT_EXTRUDE_DISTANCE;
-    this.showDim();
+    if (!this.pickingStart) this.showDim();
     this.panel.setNumber("distance", this.distance);
     setPrompt(t(had ? "feature.extrude.targetCleared" : "feature.extrude.dragPromptAfterTarget"));
     this.updatePreview();
     this.syncPanel();
+  }
+
+  // --- the start object (GH #41 a) -------------------------------------------
+
+  /** Start = Object, or a click on its box: the next click names the face,
+   *  plane, point or line the extrude starts from. */
+  private armStartPick() {
+    if (this.phase !== "drag") return;
+    if (this.pickingTarget) this.leaveTargetPick();
+    if (this.startMode !== "object") this.startModeBefore = this.startMode;
+    this.startMode = "object";
+    this.pickingStart = true;
+    this.pickNote = null;
+    this.dim.hide(); // Enter must not commit while the box waits for its click
+    this.showOriginPlanes(true);
+    setPrompt(t("feature.extrude.startPrompt"));
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** Out of the start pick (Escape, or another Start choice). With nothing
+   *  picked, Start goes back to what it was, so no empty Object box is left
+   *  for OK to trip over. */
+  private leaveStartPick() {
+    this.endStartPick();
+    if (this.startRef === null && this.pending?.role !== "start") this.startMode = this.startModeBefore;
+    this.afterStartChange();
+  }
+
+  private endStartPick() {
+    this.pickingStart = false;
+    this.pickNote = null;
+    this.clearPickHover();
+    this.showOriginPlanes(false);
+  }
+
+  /** The Start box's clear button: start on the sketch again. A start offset
+   *  that was typed stays, measured from the sketch, as Offset. */
+  private clearStart() {
+    this.endStartPick();
+    if (this.pending?.role === "start") this.pending = null;
+    this.startRef = null;
+    this.startRefDist = 0;
+    this.startMode = this.startOffset !== 0 || this.readOnly.startOffset !== undefined ? "offset" : "profile";
+    this.afterStartChange();
+  }
+
+  /** A start object was picked (and, for a body's edge, corner or face, its
+   *  reference authored): it fills the Start box. */
+  private setStart(ref: ExtrudeStart, dist: number) {
+    this.endStartPick();
+    this.startRef = ref;
+    this.startRefDist = dist;
+    this.startMode = "object";
+    // Read before the built preview can put material on screen: whether the
+    // extrude goes into a body is measured from where it now starts.
+    this.refreshGuess();
+    this.afterStartChange();
+  }
+
+  private afterStartChange() {
+    if (!this.hasTarget() && !this.pickingTarget) this.showDim();
+    if (this.hasTarget()) setPrompt(t("feature.extrude.targetSet"));
+    else setPrompt(t(this.editId ? "feature.extrude.edit.dragPrompt" : "feature.extrude.dragPrompt"));
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** Clear every pick highlight: a face, a plane, an origin plane, a point.
+   *  An origin plane can only be lit while they are drawn, and the ring only
+   *  after hoverObject put it on a point. */
+  private clearPickHover() {
+    this.viewport.clearHover();
+    this.viewport.hoverDatum(null);
+    if (this.showingOrigin) this.viewport.hoverPlane(null);
+    if (this.pointLit) this.overlay.setSnap(null);
+    this.pointLit = false;
+  }
+  /** hoverObject has the snap ring on a point */
+  private pointLit = false;
+
+  /** The three origin planes are drawn while a start or a target is picked,
+   *  so they can be clicked (Split does the same while its Tool box is
+   *  active); otherwise they would only hide the preview. */
+  private showingOrigin = false;
+  private showOriginPlanes(on: boolean) {
+    if (on === this.showingOrigin) return;
+    this.showingOrigin = on;
+    this.viewport.showAllPlanes(on);
+    if (!on) this.viewport.hoverPlane(null);
+  }
+
+  /** A click named `picked` as the start (`role` "start") or the target: check
+   *  it against the profile, then fill the box, or say why not and wait for
+   *  another click. A body's edge, corner or start face is first turned into a
+   *  stored reference by the sidecar (authorRef), never kept as a point. */
+  private pickObject(role: "start" | "end", picked: Picked | null) {
+    if (!picked) {
+      setPrompt(t(role === "start" ? "feature.extrude.startPrompt" : "feature.extrude.targetPrompt"));
+      return;
+    }
+    // A newer pick for this box: a reference still being read for an older one
+    // must not land over it when its reply comes (authorRef's token).
+    if (this.pending?.role === role) this.pending = null;
+    const why = this.refusal(role, picked);
+    if (why) {
+      this.refusePick(role, why);
+      return;
+    }
+    const n = this.selected[0]?.plane;
+    const height = (p: THREE.Vector3) => (n ? n.plane.distanceToPoint(p) : 0);
+    switch (picked.kind) {
+      case "plane":
+        if (role === "end") this.setTarget({ plane: picked.id });
+        else this.setStart({ kind: "plane", plane: picked.id }, height(picked.origin));
+        return;
+      case "face":
+        if (role === "end") {
+          this.setTarget({ face: picked.selector });
+          return;
+        }
+        this.authorRef(role, { kind: "face", body: picked.bodyId!, sel: picked.selector }, height(picked.anchor), (sel) => ({
+          kind: "face", face: sel,
+        }));
+        return;
+      case "sketchPoint": {
+        const ref: ExtrudeRef = { kind: "sketchPoint", sketch: picked.sketch, entity: picked.entity, pointIndex: picked.point };
+        if (role === "end") this.setTarget({ ref });
+        else this.setStart(ref, height(picked.world));
+        return;
+      }
+      case "sketchLine": {
+        const ref: ExtrudeRef = { kind: "sketchLine", sketch: picked.sketch, entity: picked.entity };
+        if (role === "end") this.setTarget({ ref });
+        else this.setStart(ref, height(picked.a));
+        return;
+      }
+      case "edge": {
+        const first = picked.edge.points[0];
+        const at = first ? new THREE.Vector3(...first) : new THREE.Vector3();
+        this.authorRef(role, { kind: "edge", body: picked.edge.body!, sel: picked.selector }, height(at), (sel) =>
+          (sel as { fp?: EdgeFingerprint }).fp?.curve === "line" ? { kind: "edge", edge: sel } : t("feature.extrude.ref.edgeNotStraight"),
+        );
+        return;
+      }
+      case "vertex": {
+        const sel = edgeSelectorFrom({ points: picked.edge.points, body: picked.edge.body })!;
+        const at = picked.point;
+        this.authorRef(role, { kind: "edge", body: picked.edge.body!, sel }, height(at), (stored) => {
+          const fp = (stored as { fp?: EdgeFingerprint }).fp;
+          if (!fp) return t("feature.extrude.ref.noReply");
+          // which END of the edge the corner is, by the fingerprint's own
+          // direction: the convention the sidecar resolves it by (_edge_end)
+          const along = at.clone().sub(new THREE.Vector3(...fp.mid)).dot(new THREE.Vector3(...fp.dir));
+          return { kind: "vertex", edge: stored, end: along > 0 ? 1 : 0 };
+        });
+        return;
+      }
+    }
+  }
+
+  /** Why `picked` cannot be the start or the target, or null when it can. The
+   *  sidecar refuses the same things on every build; saying so on the click
+   *  saves a round trip and keeps the pick open for the right one. */
+  private refusal(role: "start" | "end", picked: Picked): string | null {
+    if (picked.kind === "refused") return picked.why;
+    // A face or a plane can be a TARGET whatever its angle (it is trimmed on,
+    // _prism_to_plane), and a point always: only the rest is measured against
+    // the profile.
+    if (role === "end" && (picked.kind === "face" || picked.kind === "plane" || picked.kind === "sketchPoint")) return null;
+    const n = this.selected[0]?.plane.n;
+    if (!n) return t("feature.extrude.ref.noProfile");
+    const parallel = (dir: THREE.Vector3) => dir.lengthSq() > 0 && Math.abs(dir.clone().normalize().dot(n)) <= PARALLEL_TOL;
+    const square = (normal: THREE.Vector3) => normal.lengthSq() > 0 && normal.clone().normalize().cross(n).length() <= PARALLEL_TOL;
+    switch (picked.kind) {
+      case "plane":
+        return square(picked.normal) ? null : t("feature.extrude.ref.planeTilted");
+      case "face":
+        if (!picked.bodyId || !picked.flat()) return t("feature.extrude.ref.faceCurved");
+        return square(picked.normal) ? null : t("feature.extrude.ref.faceTilted");
+      case "sketchLine":
+        return parallel(picked.b.clone().sub(picked.a)) ? null : t("feature.extrude.ref.lineNotParallel");
+      case "edge": {
+        if (!picked.edge.body) return t("feature.extrude.ref.noBody");
+        const pts = picked.edge.points;
+        if (pts.length !== 2) return t("feature.extrude.ref.edgeNotStraight");
+        const d = new THREE.Vector3(...pts[1]!).sub(new THREE.Vector3(...pts[0]!));
+        return parallel(d) ? null : t("feature.extrude.ref.lineNotParallel");
+      }
+      case "vertex":
+        return picked.edge.body ? null : t("feature.extrude.ref.noBody");
+      case "sketchPoint":
+        return null;
+    }
+  }
+
+  /** A pick that cannot be used: say why in the panel and the prompt, and keep
+   *  the box waiting for the right click. */
+  private refusePick(role: "start" | "end", why: string) {
+    if (role === "start" && !this.pickingStart) this.armStartPick();
+    else if (role === "end" && !this.pickingTarget && !this.hasTarget()) this.armTargetPick();
+    this.pickNote = why;
+    setPrompt(why);
+    this.syncPanel();
+  }
+
+  /** Have the sidecar turn a picked body edge, corner or face into a STORED
+   *  reference: the by:"match" fingerprint of what the pick resolves to on its
+   *  body (store.queryReferences). A point would re-bind to the wrong edge in
+   *  silence, which is why a point is never what is kept. The box says
+   *  "Reading" until the reply, OK waits for it, and a reply that a newer
+   *  pick, a clear or a close overtook is dropped (`token`). */
+  private authorRef(
+    role: "start" | "end",
+    item: { kind: "edge" | "face"; body: string; sel: Selector },
+    dist: number,
+    make: (stored: Selector) => ExtrudeRef | ExtrudeStart | string,
+  ) {
+    const ask = this.store.queryReferences([item], this.editId);
+    if (!ask) {
+      this.refusePick(role, t("feature.extrude.ref.unsupported"));
+      return;
+    }
+    const token = ++this.pendingSeq;
+    this.pending = { role, token };
+    this.pickNote = null;
+    if (role === "start") this.endStartPick();
+    else {
+      this.pickingTarget = false;
+      this.clearPickHover();
+      this.showOriginPlanes(false);
+    }
+    setPrompt(t("feature.extrude.panel.reading"));
+    this.syncPanel();
+    void ask.then((res) => {
+      if (!this.active || this.pending?.token !== token) return;
+      this.pending = null;
+      const r = res[0];
+      const ent = r?.ok ? r.entities[0] : undefined;
+      if (!ent) {
+        this.refusePick(role, r?.error ? t("feature.extrude.ref.failed", { why: r.error }) : t("feature.extrude.ref.noReply"));
+        return;
+      }
+      const made = make({ ...ent.sel, body: ent.body });
+      if (typeof made === "string") {
+        this.refusePick(role, made);
+        return;
+      }
+      if (role === "start") this.setStart(made as ExtrudeStart, dist);
+      else this.setTarget({ ref: made as ExtrudeRef });
+    });
+  }
+
+  /** Where a SAVED start object sits from the sketch, along the profile
+   *  normal, without a build: from the document for a sketch point, line or
+   *  plane, and from the reference's own fingerprint for a body's face, edge or
+   *  corner. That fingerprint is where the object was when it was picked, so
+   *  after an upstream edit this can lag; it only places the arrow, and the
+   *  built preview shows where the extrude really starts. */
+  private estimateStart(ref: ExtrudeStart): number {
+    const plane = this.selected[0]?.plane;
+    if (!plane) return 0;
+    const at = (p: THREE.Vector3 | null) => (p ? plane.plane.distanceToPoint(p) : 0);
+    switch (ref.kind) {
+      case "plane": {
+        if (ref.plane in BASE_NORMAL) return at(new THREE.Vector3());
+        const q = this.viewport.datumPlaneOf(ref.plane);
+        return at(q ? new THREE.Vector3(...q.origin) : null);
+      }
+      case "face": {
+        const fp = (ref.face as { fp?: FaceFingerprint }).fp;
+        return at(fp ? new THREE.Vector3(...fp.centroid) : null);
+      }
+      case "sketchPoint":
+      case "sketchLine": {
+        const found = this.overlay.sketchEntity(this.store.document, ref.sketch, ref.entity);
+        if (!found) return 0;
+        const pts = dimRefPoints(found.entity);
+        const p = ref.kind === "sketchPoint" ? pts.find((q) => q.p === ref.pointIndex)?.pos : pts[0]?.pos;
+        return at(p ? found.plane.to3D(p.x, p.y) : null);
+      }
+      case "edge": {
+        const fp = (ref.edge as { fp?: EdgeFingerprint }).fp;
+        return at(fp ? new THREE.Vector3(...fp.mid) : null);
+      }
+      case "vertex": {
+        const fp = (ref.edge as { fp?: EdgeFingerprint }).fp;
+        return at(fp ? edgeEndOf(fp, ref.end) : null);
+      }
+    }
   }
 
   private setSymmetric(on: boolean) {
@@ -997,6 +1532,12 @@ export class ExtrudeTool {
 
   private resetPanelValues() {
     this.startMode = "profile";
+    this.startModeBefore = "profile";
+    this.startRef = null;
+    this.startRefDist = 0;
+    this.pickingStart = false;
+    this.pending = null;
+    this.pickNote = null;
     this.startOffset = 0;
     this.symmetric = false;
     this.taper = 0;
@@ -1007,6 +1548,7 @@ export class ExtrudeTool {
     this.opPinned = false;
     this.previewError = null;
     this.awaitingBuild = false;
+    this.solidReading = null;
   }
 
   /** An edit opens the panel on the feature as saved. A value bound to a
@@ -1024,6 +1566,13 @@ export class ExtrudeTool {
     }
     if (f.startOffset !== undefined && (this.readOnly.startOffset !== undefined || this.startOffset !== 0)) {
       this.startMode = "offset";
+    }
+    if (f.startFrom) {
+      this.startMode = "object";
+      this.startRef = f.startFrom;
+      // Measured once the areas are known (beginDrag): it needs the profile's
+      // plane, and startEdit only resolves the areas after this.
+      this.startRefDist = 0;
     }
     this.symmetric = f.symmetric === true;
     this.op = f.operation;
@@ -1053,7 +1602,12 @@ export class ExtrudeTool {
           options: [
             opt("profile", "feature.extrude.panel.startProfile", "feature.extrude.panel.startProfileTitle"),
             opt("offset", "feature.extrude.panel.startOffset", "feature.extrude.panel.startOffsetTitle"),
+            opt("object", "feature.extrude.panel.startObject", "feature.extrude.panel.startObjectTitle"),
           ],
+        },
+        {
+          kind: "pick", id: "startObject", label: t("feature.extrude.panel.startFrom"),
+          clearTitle: t("feature.extrude.panel.startClearTitle"),
         },
         { kind: "number", id: "startOffset", label: t("inspector.field.startOffset") },
         {
@@ -1087,8 +1641,8 @@ export class ExtrudeTool {
       {
         onNumber: (id, v, raw) => this.onPanelNumber(id, v, raw),
         onChoice: (id, v) => this.onPanelChoice(id, v),
-        onPick: () => this.armTargetPick(),
-        onClear: () => this.clearTarget(),
+        onPick: (id) => (id === "startObject" ? this.armStartPick() : this.armTargetPick()),
+        onClear: (id) => (id === "startObject" ? this.clearStart() : this.clearTarget()),
         onOk: () => void this.commit(),
         onCancel: () => this.cancel(),
       },
@@ -1122,7 +1676,19 @@ export class ExtrudeTool {
         this.panel.setWarning(t("feature.extrude.panel.startBound"));
         return;
       }
+      if (v === "object") {
+        // like Up to: choosing it makes the box active, so the next click in
+        // the model names the object
+        this.armStartPick();
+        return;
+      }
+      if (this.pickingStart) this.endStartPick();
+      // a start still being read would land after the user chose otherwise
+      if (this.pending?.role === "start") this.pending = null;
       this.startMode = v === "offset" ? "offset" : "profile";
+      // and the depth box the pick hid comes back
+      this.afterStartChange();
+      return;
     } else if (id === "direction") {
       this.setSymmetric(v === "symmetric");
       return;
@@ -1148,7 +1714,13 @@ export class ExtrudeTool {
     const target = this.hasTarget();
     const aiming = target || this.pickingTarget;
     p.setChoice("start", this.startMode);
-    p.setVisible("startOffset", this.startMode === "offset");
+    p.setVisible("startObject", this.startMode === "object");
+    p.setPick("startObject", this.startText(), {
+      empty: this.startRef === null && this.pending?.role !== "start",
+      active: this.pickingStart,
+    });
+    // measured from the object, so it applies there too (sidecar: start_at)
+    p.setVisible("startOffset", this.startMode !== "profile");
     p.setChoice("direction", this.symmetric ? "symmetric" : "one");
     p.setVisible("direction", !aiming);
     p.setChoice("extent", aiming ? "upTo" : "distance");
@@ -1163,9 +1735,17 @@ export class ExtrudeTool {
   }
 
   private targetText(): string {
+    if (this.pending?.role === "end") return t("feature.extrude.panel.reading");
     if (this.upToPlane !== null) return planeLabel(this.store.document.features, this.upToPlane);
     if (this.upTo !== null) return t("inspector.upTo.pickedFace");
+    if (this.upToRef !== null) return refLabel(this.upToRef, this.store.document.features);
     return t("feature.extrude.panel.targetPick");
+  }
+
+  private startText(): string {
+    if (this.pending?.role === "start") return t("feature.extrude.panel.reading");
+    if (this.startRef !== null) return refLabel(this.startRef, this.store.document.features);
+    return t("feature.extrude.panel.startPick");
   }
 
   /** The build's own refusal of the previewed feature, read off the last build;
@@ -1175,9 +1755,17 @@ export class ExtrudeTool {
   private into = false;
   /** a build is on its way that will change what is on screen (refreshGuess) */
   private awaitingBuild = false;
+  /** The model as last read off a screen WITHOUT this tool's built preview
+   *  (readSolid), keyed by the start and the areas it was read at. While that
+   *  preview is up the screen cannot be read, so the guess is decided again
+   *  from this: a start object or a taper puts the preview up, and froze the
+   *  operation at the sign it had then (a seal recess typed as -2 from a lid's
+   *  start face stayed Join, and built nothing). */
+  private solidReading: SolidReading | null = null;
 
   /** Something that will go wrong on OK, said before OK is pressed. */
   private panelWarning(): string | null {
+    if (this.pickNote) return this.pickNote;
     if (this.previewError) return this.previewError;
     if (this.hasTarget() || this.pickingTarget) return null;
     // the sidecar refuses it, and OK used to do nothing and say nothing
@@ -1197,15 +1785,18 @@ export class ExtrudeTool {
       return this[k] !== 0 ? this[k] : undefined;
     };
     return {
-      startOffset: this.startMode === "offset" ? value("startOffset") : undefined,
+      startOffset: this.startMode !== "profile" ? value("startOffset") : undefined,
       taper: value("taper"),
       upToOffset: value("upToOffset"),
     };
   }
 
-  /** Where the extrude starts, in mm along the profile normal. */
+  /** Where the extrude starts, in mm along the profile normal: the start
+   *  offset, measured from the start object when there is one. */
   private effectiveStart(): number {
-    return this.startMode === "offset" ? this.startOffset : 0;
+    if (this.startMode === "offset") return this.startOffset;
+    if (this.startMode === "object") return (this.startRef ? this.startRefDist : 0) + this.startOffset;
+    return 0;
   }
 
   /** Where the depth arrow starts and how long it is drawn: from the start
@@ -1219,10 +1810,15 @@ export class ExtrudeTool {
     return { from, length: Math.max(reach, ARROW_MIN_MM) };
   }
 
-  /** A taper or a target cannot be drawn by the instant ghost (it is a straight
-   *  prism of the profile), so those preview through the real build instead. */
+  /** A taper, a target or a start object cannot be drawn by the instant ghost
+   *  (it is a straight prism of the profile, and an object's position is only
+   *  known for sure by the build), so those preview through the real build
+   *  instead. Never while a start or a target is being PICKED: the click has
+   *  to land on the model as it is without this extrude, which is also the
+   *  model the picked reference is authored against (store.queryReferences). */
   private wantsBuiltPreview(): boolean {
-    return this.hasTarget() || this.taper !== 0;
+    if (this.pickingTarget || this.pickingStart || this.pending) return false;
+    return this.hasTarget() || this.taper !== 0 || (this.startMode === "object" && this.startRef !== null);
   }
 
   /** Hand the feature being made to the store's live preview, or take it back.
@@ -1239,11 +1835,9 @@ export class ExtrudeTool {
     else this.store.setPreview(f);
   }
 
-  /** The guessed operation, re-read only while the screen shows the model
-   *  WITHOUT this tool's built preview: that preview's material would read as
-   *  "the extrude goes into a body" and flip the guess to Cut. */
-  private refreshAutoOp() {
-    const seen = this.currentOperation();
+  /** The guessed operation, from what the model says the extrude would do
+   *  (`seen`, refreshGuess). */
+  private refreshAutoOp(seen: Op) {
     this.into = seen === "cut";
     if (this.opPinned) return;
     if (!this.hasSolid) {
@@ -1271,6 +1865,9 @@ export class ExtrudeTool {
     const plane = this.selected[0]?.plane;
     if (plane) this.viewport.tiltOffAxis(plane.n);
     if (!this.editId) this.distance = DEFAULT_EXTRUDE_DISTANCE; // a fresh extrude starts there
+    // A saved start object is measured now that there is a profile to measure
+    // from (loadPanelValues runs before the areas are resolved).
+    if (this.startRef) this.startRefDist = this.estimateStart(this.startRef);
     // Read before this tool's own preview can put material on screen: with no
     // body there is nothing to join, cut or intersect, and the panel offers
     // no Operation. An edit always offers it, opened on the saved one.
@@ -1314,6 +1911,16 @@ export class ExtrudeTool {
     this.offBuild ??= this.store.onBuild?.((b) => this.onBuild(b)) ?? null;
     this.updatePreview();
     this.syncPanel();
+    // Started on a selected face: that face is where it starts, checked now
+    // that there is a profile to check it against. Once only: a later re-pick
+    // of the areas must not put back a start the user has since changed.
+    const face = this.fromFace;
+    this.fromFace = null;
+    if (face) {
+      this.startModeBefore = this.startMode === "object" ? "profile" : this.startMode;
+      this.startMode = "object";
+      this.pickObject("start", { kind: "face", ...face, flat: () => true });
+    }
   }
 
   /** A build finished: if it was building this tool's preview, put its
@@ -1331,15 +1938,22 @@ export class ExtrudeTool {
     this.syncPanel();
   }
 
-  /** Re-read the guessed operation and whether the extrude goes into a body,
-   *  unless the screen may be showing something other than the model the
-   *  extrude will meet: this tool's own built preview, or a build still on its
-   *  way (an edit's rollback, a preview just taken back). The preview's
-   *  material would read as "the extrude goes into a body". */
+  /** Re-read the guessed operation and whether the extrude goes into a body.
+   *  The screen is read only while it shows the model the extrude will meet:
+   *  not under this tool's own built preview, whose material would read as
+   *  "the extrude goes into a body", nor while a build is on its way (an
+   *  edit's rollback, a preview just taken back). */
   private refreshGuess() {
-    if (this.sentPreview || this.awaitingBuild || !this.selected.length) return;
+    if (!this.selected.length) return;
+    // Read the screen when it shows the model as the extrude will meet it;
+    // otherwise decide again from the last reading, if it was taken at this
+    // start and these areas (solidReading).
+    const fresh = !this.sentPreview && !this.awaitingBuild;
+    const reading = fresh ? this.readSolid() : this.solidReading;
+    if (!reading || reading.key !== this.readingKey()) return;
+    this.solidReading = reading;
     const was = `${this.op}:${this.into}`;
-    this.refreshAutoOp();
+    this.refreshAutoOp(this.operationFrom(reading));
     if (`${this.op}:${this.into}` !== was) this.syncPanel();
   }
 
@@ -1372,8 +1986,10 @@ export class ExtrudeTool {
   private updatePreview() {
     if (!this.selected.length) return;
     const built = this.wantsBuiltPreview();
-    // The guess first, while the screen may still show no preview of ours.
-    if (!built) this.refreshGuess();
+    // The guess first, while the screen may still show no preview of ours (and
+    // from the last reading once one is up: the sign or Symmetric may have
+    // changed since).
+    this.refreshGuess();
     this.pushBuiltPreview(built);
     const sign = this.distance >= 0 ? 1 : -1;
     const depth = Math.abs(this.distance);
@@ -1453,7 +2069,28 @@ export class ExtrudeTool {
       this.arrow.setDirection(dir);
       this.arrow.setLength(length, 6, 3);
     }
-    this.arrow.visible = !this.hasTarget() && !this.pickingTarget;
+    this.arrow.visible = !this.hasTarget() && !this.pickingTarget && !this.pickingStart;
+  }
+
+  /** What the reading is keyed on: where the extrude starts, and the areas. */
+  private readingKey(): string {
+    return `${this.effectiveStart()}|${this.selected.map((s) => s.interior3D.toArray().join(",")).join(";")}`;
+  }
+
+  /** Read the model on screen: is there a body, and does each selected area
+   *  meet material a hair either side of where the extrude starts? The start
+   *  plane, not the sketch: an extrude from a start object or an offset goes
+   *  into whatever is there. */
+  private readSolid(): SolidReading {
+    const start = this.effectiveStart();
+    const at = (wr: WorldRegion, step: number) =>
+      this.viewport.pointInSolid(wr.interior3D.clone().addScaledVector(wr.plane.n, start + step));
+    return {
+      key: this.readingKey(),
+      solid: (this.store.buildState.result?.mesh.positions.length ?? 0) > 0,
+      plus: this.selected.map((wr) => at(wr, 0.05)),
+      minus: this.selected.map((wr) => at(wr, -0.05)),
+    };
   }
 
   // Default operation: New Body when the doc has no solid yet, else Cut/Join by
@@ -1461,29 +2098,17 @@ export class ExtrudeTool {
   // (a face pushed inward reads as Cut, pulled outward as Join — MCAD parity).
   // This replaced a pure drag-SIGN guess, which defaulted "push a face through the
   // model" to Join and silently no-op'd (the union was already inside the body).
-  private entersSolid(): boolean {
-    if (!this.selected.length) return false;
-    const sign = this.distance >= 0 ? 1 : -1;
-    // From the start plane, not the sketch. Symmetric goes both ways from it,
-    // so material on EITHER side counts: a symmetric extrude from a face of a
-    // body is half inside it, which is the cut the feature was asked for.
-    const start = this.effectiveStart();
-    const steps = this.symmetric ? [0.05, -0.05] : [sign * 0.05];
-    let inside = 0;
-    for (const wr of this.selected) {
-      // step the area's interior a hair along the extrude direction, off its face
-      const into = steps.some((step) =>
-        this.viewport.pointInSolid(wr.interior3D.clone().addScaledVector(wr.plane.n, start + step)),
-      );
-      if (into) inside++;
-    }
-    return inside * 2 > this.selected.length; // majority of selected areas
-  }
-
-  private currentOperation(): Op {
-    const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
-    if (!hasSolid) return "new";
-    return this.entersSolid() ? "cut" : "join";
+  // Symmetric goes both ways from the start, so material on EITHER side counts:
+  // a symmetric extrude from a face of a body is half inside it, which is the
+  // cut the feature was asked for. A majority of the selected areas decides.
+  private operationFrom(r: SolidReading): Op {
+    if (!r.solid) return "new";
+    const forward = this.distance >= 0;
+    const inside = r.plus.filter((plus, i) => {
+      const minus = r.minus[i] === true;
+      return this.symmetric ? plus || minus : forward ? plus : minus;
+    }).length;
+    return inside * 2 > r.plus.length ? "cut" : "join";
   }
 
   private async commit() {
@@ -1504,11 +2129,24 @@ export class ExtrudeTool {
       && this.editCarried.length > 0
       && this.forcedSketchId !== null;
     if (!this.selected.length && !carriedOnly) return this.cancel();
+    // A picked edge, corner or face whose reference is still being read: the
+    // feature cannot name it yet.
+    if (this.pending) {
+      this.panel.setWarning(t("feature.extrude.panel.stillReading"));
+      return;
+    }
     // Enter or OK while the Up-to box waits for its click: nothing yet says
     // how far to go.
     if (this.pickingTarget && !this.hasTarget()) {
       this.panel.setWarning(t("feature.extrude.panel.needsTarget"));
-      setPrompt(t("feature.upTo.clickPrompt"));
+      setPrompt(t("feature.extrude.targetPrompt"));
+      return;
+    }
+    // ...or while Start = Object has nothing in its box: nothing says where
+    // it starts.
+    if (this.startMode === "object" && this.startRef === null) {
+      if (!this.pickingStart) this.armStartPick();
+      this.panel.setWarning(t("feature.extrude.panel.needsStart"));
       return;
     }
     // A panel field holding text the app cannot read is refused, never
@@ -1516,7 +2154,7 @@ export class ExtrudeTool {
     // the panel has hidden is not read.
     const target = this.hasTarget();
     const read = [
-      ...(this.startMode === "offset" ? ["startOffset"] : []),
+      ...(this.startMode !== "profile" ? ["startOffset"] : []),
       ...(target ? ["upToOffset"] : ["distance", "taper"]),
     ];
     if (read.some((k) => this.panel.numberUnreadable(k))) {
@@ -1629,6 +2267,11 @@ export class ExtrudeTool {
       // rather than dropping them at 0.
       ...(this.upTo ? { upTo: this.upTo } : {}),
       ...(this.upToPlane ? { upToPlane: this.upToPlane } : {}),
+      // A point or a line (GH #41 b), and the object it starts from (GH #41 a):
+      // written only when set, so an extrude without them keeps its exact
+      // bytes, and an older document never grows either key.
+      ...(this.upToRef ? { upToRef: this.upToRef } : {}),
+      ...(this.startMode === "object" && this.startRef ? { startFrom: this.startRef } : {}),
       // The panel's values: typed here, or on an edit carried from the
       // document as it is now (see panelValues). Before the panel these were
       // inspector-only, and an edit that did not load them deleted them — a
@@ -1639,12 +2282,12 @@ export class ExtrudeTool {
       // past a cleared target would turn an edit into a rebuild error.
       ...(kept.startOffset !== undefined ? { startOffset: kept.startOffset } : {}),
       ...(kept.taper !== undefined ? { taper: kept.taper } : {}),
-      ...(kept.upToOffset !== undefined && (this.upTo || this.upToPlane)
+      ...(kept.upToOffset !== undefined && this.hasTarget()
         ? { upToOffset: kept.upToOffset }
         : {}),
       // Written only when on, so an ordinary extrude's feature object is
       // unchanged, and never with a target, which the sidecar refuses with it.
-      ...(this.symmetric && !this.upTo && !this.upToPlane ? { symmetric: true } : {}),
+      ...(this.symmetric && !this.hasTarget() ? { symmetric: true } : {}),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
@@ -1724,8 +2367,11 @@ export class ExtrudeTool {
       this.arrow = null;
     }
     this.overlay.setHoverRegion(null);
-    this.viewport.clearHover();
-    this.viewport.hoverDatum(null);
+    this.clearPickHover();
+    this.showOriginPlanes(false);
+    this.pickingStart = false;
+    this.pickingTarget = false;
+    this.pending = null; // a reference still being read lands on nothing
     this.viewport.suspendPicking = false;
     this.active = false;
     this.selected = [];

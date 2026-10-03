@@ -49,6 +49,10 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
     selectedRegions: () => [],
     setHoverRegion: () => {},
     regions: [],
+    // no sketch point or line under the cursor: these cases aim at faces and planes
+    committedPointAt: () => null,
+    committedCurveAt: () => null,
+    setSnap() {},
   };
   /** What is currently LIT on screen, as the real hover calls would leave it. */
   const lit: { face: number | null; datum: string | null } = { face: null, datum: null };
@@ -61,7 +65,19 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
     },
     pickFaceForPressPull: () => (opts.face ? { selector: opts.face, faceId: 7, bodyId: "b1" } : null),
-    pickDatumAt: () => opts.datum ?? null,
+    // the general pick a target click goes through first: the same body, as a
+    // face (no edge or corner under these cursors)
+    pickEntity: () => (opts.face ? { kind: "face", faceId: 7, selector: opts.face } : null),
+    pickVertexAt: () => null,
+    pickFacePlane: () => null,
+    faceAnchor: () => null,
+    // the datum under the cursor, if any, 20 above the sketch; the origin
+    // planes are drawn while a target is picked, but none is under these cursors
+    planeHitsAt: () => (opts.datum ? [{ id: opts.datum, datum: true, distance: 30 }] : []),
+    datumPlaneOf: (id: string) => ({ id, origin: [0, 0, 20], normal: [0, 0, 1] }),
+    showAllPlanes() {},
+    hoverPlane() {},
+    behindSurfaceAt: () => () => false,
     projectToScreen: () => ({ x: 0, y: 0 }),
     // raycasts the same body meshes pickFaceForPressPull does, hence one `face`
     hoverFaceAt() {
@@ -94,7 +110,7 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
     onDown: (e: PointerEvent) => void;
     onKey: (e: KeyboardEvent) => void;
     beginDrag: () => void;
-    setUpTo: (target: Sel | string) => void;
+    setUpTo: (target: { face: Sel } | { plane: string }) => void;
     commit: () => Promise<void>;
     updatePreview: () => void;
     regionUnder: () => unknown;
@@ -183,24 +199,24 @@ const FACE: Sel = { kind: "face", by: "nearest", point: [0, 0, 10] };
 describe("ExtrudeTool up-to target", () => {
   it("setUpTo is a one-way door: a plane target clears a face target", () => {
     const { t } = harness();
-    t.setUpTo(FACE);
+    t.setUpTo({ face: FACE });
     expect(t.upTo).toEqual(FACE);
     expect(t.upToPlane).toBeNull();
 
-    t.setUpTo("d1");
+    t.setUpTo({ plane: "d1" });
     expect(t.upToPlane).toBe("d1");
     // The sidecar REFUSES a feature carrying both rather than picking one, so
     // this is not tidiness — a stale upTo here is a feature that cannot build.
     expect(t.upTo).toBeNull();
 
-    t.setUpTo(FACE);
+    t.setUpTo({ face: FACE });
     expect(t.upToPlane).toBeNull();
   });
 
   it("beginDrag KEEPS the target — startEdit routes through it", () => {
     const { t } = harness();
     t.editId = "ex1";
-    t.setUpTo("d1");
+    t.setUpTo({ plane: "d1" });
 
     t.beginDrag();
 
@@ -210,7 +226,7 @@ describe("ExtrudeTool up-to target", () => {
   it("beginDrag keeps a face target through an area re-state too", () => {
     const { t } = harness();
     t.editId = "ex1";
-    t.setUpTo(FACE);
+    t.setUpTo({ face: FACE });
 
     t.beginDrag();
 
@@ -297,7 +313,7 @@ describe("ExtrudeTool up-to target", () => {
   // inspector's row is the primary control; this is the tool's parity gesture.
   it("Shift-T clears a face target without cancelling the tool", () => {
     const { t } = harness();
-    t.setUpTo(FACE);
+    t.setUpTo({ face: FACE });
 
     t.onKey(shiftKey("T"));
 
@@ -309,7 +325,7 @@ describe("ExtrudeTool up-to target", () => {
 
   it("Shift-T clears a datum-plane target too", () => {
     const { t } = harness();
-    t.setUpTo("d1");
+    t.setUpTo({ plane: "d1" });
 
     t.onKey(shiftKey("T"));
 
@@ -322,7 +338,7 @@ describe("ExtrudeTool up-to target", () => {
     // — and a plain extrude of 0 is refused by the sidecar. Clearing the target
     // has to leave a depth that builds, not a red timeline chip.
     const { t } = harness();
-    t.setUpTo("d1");
+    t.setUpTo({ plane: "d1" });
     t.distance = 0;
 
     t.onKey(shiftKey("T"));
@@ -375,7 +391,7 @@ describe("ExtrudeTool hotkeys while the depth box has focus", () => {
 
   it("Shift-T clears the target from inside the box too", () => {
     const { t } = harness();
-    t.setUpTo(FACE);
+    t.setUpTo({ face: FACE });
     focusBox(t);
     const { e, prevented } = fieldKey("T", { shift: true });
 

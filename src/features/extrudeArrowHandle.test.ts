@@ -12,7 +12,7 @@
 //   enough to swing the depth from the seeded 10 mm to a large negative and then
 //   a large positive value — the figures depend on unrecorded cursor positions,
 //   so the tests below assert the PROPERTY (a bare move changes nothing) rather
-//   than any number. The sign is the part that bites: `entersSolid` reads
+//   than any number. The sign is the part that bites: `operationFrom` reads
 //   `distance >= 0`, so hovering across the
 //   sketch plane silently retargeted the operation between Cut and Join.
 //
@@ -128,7 +128,7 @@ function square(cx = 0): Wr {
   };
 }
 
-/** `hasSolid` puts a body in the model so currentOperation answers cut/join
+/** `hasSolid` puts a body in the model so the operation guess answers cut/join
  *  instead of the unconditional "new" — the hover-flips-the-operation assertion
  *  needs that. The solid sits BELOW the sketch plane (pointInSolid: z < 0), so a
  *  positive depth reads Join and a negative one reads Cut.
@@ -240,7 +240,8 @@ function harness(
     phase: string;
     distance: number;
     commit: () => Promise<void>;
-    currentOperation: () => string;
+    /** the operation the tool would commit (the guess, until one is chosen) */
+    op: string;
     overArrow: (cx: number, cy: number) => boolean;
     dim: { getValue: (n: string) => number | null; isUserDriven: (n: string) => boolean };
   };
@@ -287,16 +288,16 @@ describe("ExtrudeTool create path, pre-selected profile (field 3998d6ea)", () =>
   });
 
   it("hovering across the sketch plane does not flip Cut/Join", () => {
-    // The silent half of the report. entersSolid steps the profile a hair along
+    // The silent half of the report. The guess steps the profile a hair along
     // `sign * n` and asks the model, and `sign` is `distance >= 0` — so a hover
     // that carries the depth negative retargets the whole operation.
     const h = harness({ hasSolid: true });
     h.tool.start(() => {});
-    expect(h.t.currentOperation()).toBe("join"); // +10 mm, away from the solid
+    expect(h.t.op).toBe("join"); // +10 mm, away from the solid
 
     h.el.dispatch("pointermove", move(400, 546)); // would read -24.6 mm
 
-    expect(h.t.currentOperation(), "a hover retargeted the operation").toBe("join");
+    expect(h.t.op, "a hover retargeted the operation").toBe("join");
   });
 
   it("the depth box shows the starting depth instead of staying blank", () => {
