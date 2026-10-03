@@ -81,6 +81,8 @@ SEPARATE_DROPPED_FACES = "separateDroppedFaces"  # `count` loose faces of the su
 # Insert > Part from File (the other document, not the open one):
 INSERT_NOTHING_BUILT = "insertNothingBuilt"  # none of the other document's bodies built
 INSERT_NO_BODIES = "insertNoBodies"         # the other document has no visible bodies
+# Boolean warnings (diagnostics on an extrude/revolve/loft/sweep/thicken):
+CUT_ONLY_HIDDEN = "cutOnlyHidden"           # a Cut removed nothing because the only bodies it reaches ({body}, `count` in all) were hidden when it was made
 
 ALL = frozenset({
     AMBIGUOUS_REFERENCE, REFERENCE_NOT_FOUND, CANCELLED, TIMED_OUT, STALLED,
@@ -93,7 +95,7 @@ ALL = frozenset({
     SPLIT_BODIES_GONE, SPLIT_LEGACY_VOLUME, SPLIT_DAMAGED_ALL_MORE, SPLIT_FACE_GONE,
     MERGE_NOTHING, MERGE_NOTHING_APART, MERGE_NO_SOLID, MERGE_ALL_DAMAGED, MERGE_FAILED, MERGE_NO_BODY,
     MERGE_DROPPED_SURFACES, MERGE_DAMAGED_LEFT_OUT, MERGE_SEPARATE_PIECES,
-    SEPARATE_DROPPED_SURFACES, SEPARATE_DROPPED_FACES,
+    SEPARATE_DROPPED_SURFACES, SEPARATE_DROPPED_FACES, CUT_ONLY_HIDDEN,
     INSERT_NOTHING_BUILT, INSERT_NO_BODIES,
 })
 

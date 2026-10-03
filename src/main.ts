@@ -1203,8 +1203,9 @@ store.onBuild((s) => {
     if (!store.hasPreview) {
       const errs = s.result.featureErrors ?? [];
       const ids = new Set(errs.map((e) => e.feature_id).filter(Boolean) as string[]);
-      // A split, merge or separate that BUILT but has something to say
-      // (splitWarnings.ts has the rule): one toast per feature, said once, not
+      // A split, merge or separate that BUILT but has something to say, or a
+      // cut that only reached hidden bodies (splitWarnings.ts has the rule):
+      // one toast per feature, said once, not
       // again on every rebuild that repeats it. BEFORE the errors: the stack
       // keeps 3 and drops the oldest, so a warning toasted after an error would
       // be what pushes it out.

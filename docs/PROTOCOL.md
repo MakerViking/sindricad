@@ -99,6 +99,8 @@ and on `ResolveDiag` entries.
 | `insertNoBodies` | `insertDocument`: the other document has no visible bodies to insert |
 | `insertNothingBuilt` | `insertDocument`: nothing in the other document built |
 
+| `cutOnlyHidden` | warning (`ResolveDiag` with a `reason`): a Cut (extrude, revolve, loft or sweep) removed nothing because the only material it reaches is in bodies that were hidden when it was made; `{body}` is the first of them and `count` how many. Not an error: the feature did what it was told |
+
 **Treat an unrecognised code as unclassified, never as an error.** The set only grows, and
 a newer sidecar may emit one this client has not heard of. Codes are added freely; renaming
 or removing one is a breaking change.

@@ -2695,6 +2695,109 @@ def test_cut_skips_hidden_body():
     print(f"  cut skips hidden OK: body1 {v['body1']:.0f} cut, hidden body2 {v['body2']:.0f} intact")
 
 
+def test_revolve_sweep_loft_thicken_capture_visibility():
+    """Field report 05f53ee7: an old revolve CUT failed with "Cut removed nothing
+    — the extrude doesn't reach any body. Drag the other way" only after a
+    reopen, because revolve, loft, sweep and thicken read the LIVE eye states
+    while nothing that decides when to rebuild knew they did. Hiding the shroud
+    rebuilt nothing, and the next full rebuild cut it or not depending on cache
+    history.
+
+    Now they take their participants from `hiddenBodies`, captured when made,
+    like an extrude. One saved without the field leaves no body alone, as when
+    it was made, whatever the live map says. A Cut whose only material is in
+    hidden bodies is a warning naming the body, and every message names the
+    feature the user made."""
+    b1 = {"id": "b1", "type": "box", "length": 40, "width": 40, "height": 10}  # z -5..5
+    b2 = {"id": "b2", "type": "box", "length": 40, "width": 40, "height": 10}
+    mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 20,
+          "rx": 0, "ry": 0, "rz": 0, "bodies": ["body2"]}  # body2 -> z 15..25
+    at_z = lambda z: {"origin": [0, 0, z], "normal": [0, 0, 1], "xdir": [1, 0, 0]}  # noqa: E731
+    circle = {"id": "c", "type": "circle", "x": 0, "y": 0, "radius": 5}
+    # each tool is an r=5 rod along Z from z=-10 to 30, through both boxes
+    tools = {
+        "revolve": [
+            {"id": "rs", "type": "sketch", "plane": "XZ", "entities": [
+                {"id": "r", "type": "rectangle", "x": 2.5, "y": 10, "width": 5, "height": 40}]},
+            {"id": "t", "type": "revolve", "sketch": "rs", "axis": "Z", "angle": 360,
+             "operation": "cut"}],
+        "sweep": [
+            {"id": "pr", "type": "sketch", "plane": at_z(-10), "entities": [circle]},
+            {"id": "pa", "type": "sketch", "plane": "XZ", "entities": [
+                {"id": "l", "type": "line", "x1": 0, "y1": -10, "x2": 0, "y2": 30}]},
+            {"id": "t", "type": "sweep", "profile": "pr", "path": "pa", "operation": "cut"}],
+        "loft": [
+            {"id": "lo", "type": "sketch", "plane": at_z(-10), "entities": [circle]},
+            {"id": "hi", "type": "sketch", "plane": at_z(30), "entities": [circle]},
+            {"id": "t", "type": "loft", "operation": "cut", "profiles": [
+                {"sketch": "lo", "region": [0, 0, -10]}, {"sketch": "hi", "region": [0, 0, 30]}]}],
+    }
+    rod = math.pi * 25 * 10  # what the rod takes out of each 10 mm box
+
+    def build(feats, hidden_live=(), diag=None):
+        doc = {"parameters": {}, "features": [b1, b2, mv] + feats}
+        if hidden_live:
+            doc["bodyVisibility"] = {b: False for b in hidden_live}
+        _p, err, bodies = rebuild(doc, diagnostics=diag)
+        return err, {b["id"]: b["shape"].volume for b in bodies if b.get("shape")}
+
+    def stamped(feats, hidden):
+        return feats[:-1] + [dict(feats[-1], hiddenBodies=list(hidden))]
+
+    for kind, feats in tools.items():
+        # saved without the field: cuts BOTH, whatever the live map hides
+        for live in ((), ("body2",)):
+            err, v = build(feats, live)
+            assert not err, f"{kind} legacy, live-hidden {live}: {err}"
+            for b in ("body1", "body2"):
+                assert abs(v[b] - (16000 - rod)) < 1, \
+                    f"{kind} legacy, live-hidden {live}: {b} must be cut, got {v[b]:.1f}"
+        # captured: body2 hidden when made stays whole even with every eye open
+        err, v = build(stamped(feats, ["body2"]))
+        assert not err, f"{kind} captured: {err}"
+        assert abs(v["body1"] - (16000 - rod)) < 1 and abs(v["body2"] - 16000) < 1, \
+            f"{kind} captured hidden body2 must be whole, body1 cut: {v}"
+
+    # thicken (always a join): the top of body1 thickened 15 reaches body2
+    th = {"id": "t", "type": "thicken", "body": "body1", "thickness": 15, "operation": "join",
+          "faces": {"kind": "face", "by": "normal", "dir": [0, 0, 1]}}
+    err, v = build([th], ("body2",))
+    assert not err and len(v) == 1, f"legacy thicken joins body2 whatever the eyes say: {err}, {v}"
+    err, v = build([dict(th, hiddenBodies=["body2"])])
+    assert not err and len(v) == 2 and abs(v["body2"] - 16000) < 1, \
+        f"captured thicken leaves hidden body2 apart: {err}, {v}"
+
+    # the cache cannot tell the two eye states apart for these features, and no
+    # longer needs to: a legacy revolve's signature ignores the eyes
+    import builder
+    doc = {"parameters": {}, "features": [b1, b2, mv] + tools["revolve"]}
+    assert builder._global_sig(doc) == builder._global_sig({**doc, "bodyVisibility": {"body2": False}})
+
+    # a Cut whose only material is in a body hidden when it was made: a warning
+    diag = []
+    rev2 = [{"id": "rs", "type": "sketch", "plane": "XZ", "entities": [
+        {"id": "r", "type": "rectangle", "x": 2.5, "y": 20, "width": 5, "height": 8}]},
+        {"id": "t", "type": "revolve", "sketch": "rs", "axis": "Z", "angle": 360,
+         "operation": "cut", "hiddenBodies": ["body2"]}]
+    err, v = build(rev2, diag=diag)
+    assert not err, f"a cut that only reaches a hidden body is not an error: {err}"
+    assert abs(v["body2"] - 16000) < 1 and abs(v["body1"] - 16000) < 1, v
+    warn = [d for d in diag if d.get("code") == "cutOnlyHidden"]
+    assert len(warn) == 1 and warn[0]["feature_id"] == "t" and warn[0]["body_id"] == "body2" \
+        and warn[0]["count"] == 1 and "{body}" in warn[0]["reason"], diag
+
+    # ... and one that reaches nothing at all is still an error, in its own words
+    rev0 = [rev2[0], dict(rev2[1], hiddenBodies=[])]
+    rev0[0] = {**rev0[0], "entities": [dict(rev0[0]["entities"][0], y=100)]}
+    err, _v = build(rev0)
+    assert err and err[0]["feature_id"] == "t", err
+    msg = err[0]["message"]
+    assert "removed nothing" in msg and "revolve" in msg and "extrude" not in msg \
+        and "Drag" not in msg, msg
+    print("  revolve/sweep/loft/thicken capture visibility OK: legacy cuts as made, "
+          "captured set wins over live eyes, hidden-only cut warns, messages name the feature")
+
+
 def test_incremental_cache():
     """rebuild_cached (incremental, worker-local snapshot cache) is geometrically
     IDENTICAL to a full rebuild across an edit sequence: cold cache, no-op re-emit,
@@ -5367,6 +5470,7 @@ if __name__ == "__main__":
     test_sketch_crossing_split()
     test_extrude_cut_disjoint()
     test_cut_skips_hidden_body()
+    test_revolve_sweep_loft_thicken_capture_visibility()
     test_visibility_captured()
     test_incremental_cache()
     test_face_provenance()

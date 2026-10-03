@@ -45,6 +45,12 @@ import type { FeatureType, ResolveDiag } from "../types";
  *  feature removed or left out. */
 const TOASTED: ReadonlySet<string> = new Set<FeatureType>(["split", "mergeSolids", "separate"]);
 
+/** Warnings toasted whatever feature raised them. A cut that removed nothing
+ *  because the only material it reaches was hidden when it was made is
+ *  material the feature left out, and it was a red error before it was a
+ *  warning: on the chip alone it reads as "I cut and nothing happened". */
+const TOASTED_CODES: ReadonlySet<string> = new Set(["cutOnlyHidden"]);
+
 export function toastsWarnings(type: string | undefined): boolean {
   return type !== undefined && TOASTED.has(type);
 }
@@ -91,7 +97,8 @@ export function diagBodyName(d: ResolveDiag, bodies: readonly NamedBody[] | unde
 
 export function splitWarningsToShow(
   diagnostics: readonly ResolveDiag[] | undefined,
-  /** the features whose warnings are toasted (toastsWarnings on its type) */
+  /** the features whose warnings are toasted (toastsWarnings on its type);
+   *  a TOASTED_CODES warning is toasted from any feature */
   toasts: (featureId: string) => boolean,
   /** features that FAILED this build: their red toast says it all */
   failed: ReadonlySet<string>,
@@ -101,7 +108,9 @@ export function splitWarningsToShow(
   name: (d: ResolveDiag) => string,
 ): SplitWarning[] {
   const out: SplitWarning[] = [];
-  for (const [featureId, list] of reasonedByFeature(diagnostics, (fid) => !failed.has(fid) && toasts(fid))) {
+  const toasted = (diagnostics ?? []).filter((d) =>
+    d.feature_id !== undefined && (toasts(d.feature_id) || TOASTED_CODES.has(d.code ?? "")));
+  for (const [featureId, list] of reasonedByFeature(toasted, (fid) => !failed.has(fid))) {
     const said = splitNoteLines(list, text, name, TOAST_NAMES).join(" ");
     const key = [featureId, ...list.map((d) => `${d.code ?? d.kind}:${d.body_id ?? ""}:${d.count ?? ""}`)].join("\u0000");
     if (said) out.push({ featureId, text: said, key });

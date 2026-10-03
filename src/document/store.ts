@@ -107,6 +107,10 @@ const clone = (d: CadDocument): CadDocument => structuredClone(d);
 
 export const EMPTY_DOCUMENT: CadDocument = { parameters: {}, features: [] };
 
+/** Feature types besides extrude whose join/cut participants are captured
+ *  when they are made (`hiddenBodies`, see types.ts). */
+const CAPTURES_HIDDEN: ReadonlySet<Feature["type"]> = new Set<Feature["type"]>(["revolve", "loft", "sweep", "thicken"]);
+
 /** The features a sketch at a given timeline position may reference: everything
  *  up to the rollback marker, minus suppressed features — and, when EDITING an
  *  existing sketch, strictly before that sketch (a source created after it
@@ -147,10 +151,16 @@ export function savedPalette(parsed: CadDocument): { name: string; color: string
  *  without `hiddenBodies` is gated by the LIVE eye states on every rebuild
  *  (display retroactively rewriting geometry — the recurring red-features
  *  trap). Stamping "nothing hidden" locks in the all-visible behavior every
- *  saved document was verified against, and makes the file eye-proof. */
+ *  saved document was verified against, and makes the file eye-proof.
+ *
+ *  Revolve, loft, sweep and thicken get the same stamp. They used to read the
+ *  live eye states too, but nothing that decides when to rebuild knew, so an
+ *  old cut removed material or not depending on cache history (field report
+ *  05f53ee7). "Nothing hidden" is how each was made in every document that
+ *  predates the field, and the sidecar reads an absent field the same way. */
 function stampCapturedVisibility(features: Feature[]) {
   for (const f of features) {
-    if (f.type === "extrude" && !("hiddenBodies" in f)) {
+    if ((f.type === "extrude" || CAPTURES_HIDDEN.has(f.type)) && !("hiddenBodies" in f)) {
       (f as { hiddenBodies?: string[] }).hiddenBodies = [];
     }
   }
@@ -1210,8 +1220,9 @@ export class DocumentStore {
     // new features land at the rollback marker (mainstream MCAD), which then advances past it
     const at = atIndex ?? this.rollbackIndex;
     if (this.rollback !== null && at <= this.rollback) this.rollback += 1;
+    const made = this.withCapturedHidden(feature);
     this.mutate((d) => {
-      d.features.splice(at, 0, feature);
+      d.features.splice(at, 0, made);
       this.applyBindings(d, bindings);
     }, true);
   }
@@ -1365,8 +1376,20 @@ export class DocumentStore {
    *  immediately and coalesces in-flight requests so a drag stays live (no
    *  debounce wait) without flooding OCCT. */
   setPreview(feature: Feature | null) {
-    this.preview = feature;
+    // stamped like the commit will be, or a loft's or thicken's preview would
+    // join a hidden body the committed feature then leaves alone
+    this.preview = feature && this.withCapturedHidden(feature);
     this.scheduleRebuild(true);
+  }
+
+  /** `feature` with the bodies hidden right now stamped on it, when it is a
+   *  revolve, loft, sweep or thicken without them: those leave alone the bodies
+   *  hidden when they are made, like an extrude (whose tool stamps its own,
+   *  edits included). Stamped in the store, which every tool's preview and
+   *  commit reach, so no tool can forget it; a set already there is kept. */
+  private withCapturedHidden(feature: Feature): Feature {
+    if (!CAPTURES_HIDDEN.has(feature.type) || "hiddenBodies" in feature) return feature;
+    return { ...feature, hiddenBodies: this.hiddenBodyIds() } as Feature;
   }
   /** true while an un-committed live-preview feature is appended to rebuilds
    *  (its transient failures must not toast). */

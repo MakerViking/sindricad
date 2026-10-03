@@ -551,12 +551,19 @@ export type Feature =
   // in the builder (old behavior was a silent overwrite of the active body's
   // shape — this is the data-loss bug the field fixes, so old docs now get a
   // separate body instead, not a resurrected overwrite).
-  | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num; operation?: "new" | "join" | "cut" | "intersect" }
+  //
+  // `hiddenBodies` on revolve, loft, sweep and thicken: the bodies hidden when
+  // the feature was made, left out of its join/cut, exactly as on an extrude.
+  // Unlike an extrude's, an ABSENT field means no body is left out (the sidecar's
+  // _captured_hidden): these four used to read the live eye states, which made
+  // what an old cut removed depend on cache history (field report 05f53ee7). The
+  // store stamps the field when one is made, and stamps [] on load.
+  | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num; operation?: "new" | "join" | "cut" | "intersect"; hiddenBodies?: string[] }
   // Loft blends through 2+ profiles in order. `profiles` (Fusion flow) lofts the
   // SELECTED profile regions across sketches — each carries its sketch id + a 3D
   // interior anchor (a ring keeps its hole → a tube). `sketches` is the legacy
   // whole-un-consumed-sketch fallback (ribbon). One of the two is present.
-  | { id: string; type: "loft"; profiles?: { sketch: string; region: [number, number, number] }[]; sketches?: string[]; operation?: "new" | "join" | "cut" | "intersect" }
+  | { id: string; type: "loft"; profiles?: { sketch: string; region: [number, number, number] }[]; sketches?: string[]; operation?: "new" | "join" | "cut" | "intersect"; hiddenBodies?: string[] }
   // Sweep a closed profile sketch along an open path sketch (a line/arc/spline).
   // `path` names a sketch whose curve the profile follows. `pathEdges` names
   // BODY EDGES instead (#16: "select an edge of a solid to define the path…
@@ -587,6 +594,7 @@ export type Feature =
       leftHand?: boolean;
       flip?: boolean;
       operation: "new" | "join" | "cut";
+      hiddenBodies?: string[];
     }
   // A persistent construction/datum plane in the timeline. Carries no geometry;
   // sketches and splits reference it by id (resolved to its PlaneSpec on rebuild).
@@ -690,7 +698,7 @@ export type Feature =
   // Thicken: give surface geometry a wall. `faces` absent = the whole body,
   // which is how a non-watertight mesh import (a surface body, `solid: false`)
   // becomes real material. `symmetric` grows it both ways about the surface.
-  | { id: string; type: "thicken"; faces?: Selector | Selector[]; thickness: Num; symmetric?: boolean; operation?: "join" | "new"; body?: string }
+  | { id: string; type: "thicken"; faces?: Selector | Selector[]; thickness: Num; symmetric?: boolean; operation?: "join" | "new"; body?: string; hiddenBodies?: string[] }
   // Taper the selected faces by an angle about a neutral plane (pull axis).
   | { id: string; type: "draft"; faces: Selector | Selector[]; angle: Num; axis: Axis3 }
   // Text embossed (raised) or engraved (cut) directly on a solid face — the
@@ -975,11 +983,15 @@ export interface ResolveDiag {
   // = a Separate of a surface body dropped `count` loose faces that belong to
   // none of its surfaces. All five are warnings with a `reason`, toasted like
   // a split's (splitWarnings.toastsWarnings); kind and code are the same string.
+  // "cutOnlyHidden" = a Cut (extrude, revolve, loft, sweep) removed nothing
+  // because the only material it reaches is in bodies hidden when it was made:
+  // the first is `body_id`, `count` how many. A warning with a `reason`, on the
+  // amber chip and toasted once whatever the feature (splitWarnings.TOASTED_CODES).
   kind:
     | "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted"
     | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume"
     | "mergeDroppedSurfaces" | "mergeDamagedLeftOut" | "mergeSeparatePieces"
-    | "separateDroppedSurfaces" | "separateDroppedFaces";
+    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)

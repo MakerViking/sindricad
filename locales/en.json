@@ -242,6 +242,10 @@
       "budgetExhausted": "this operation ran out of its time budget",
       "cancelled": "cancelled",
       "connectionLost": "geometry engine connection lost",
+      "cutOnlyHidden": {
+        "one": "This cut removed nothing: the only body it reaches is {body}, which was hidden when you made the cut, so I left it alone. To cut it, delete this cut, show {body} and make the cut again.",
+        "other": "This cut removed nothing: the only bodies it reaches, {body} and others ({count} in all), were hidden when you made the cut, so I left them alone. To cut them, delete this cut, show them and make the cut again."
+      },
       "engineUnavailable": "the geometry engine is not running; restart SindriCAD",
       "exportCancelled": "export cancelled",
       "importCancelled": "import cancelled",

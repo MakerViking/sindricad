@@ -42,10 +42,12 @@ def effective_doc(parsed):
     saved feature list instead would rebuild features the app never builds."""
     feats = parsed.get("features") or []
     for f in feats:
-        # store.ts stamps hiddenBodies=[] onto any extrude that predates
-        # captured-visibility, so booleans aren't retroactively rewritten by eye
-        # state. Match it so our build equals the app's.
-        if f.get("type") == "extrude" and "hiddenBodies" not in f:
+        # store.ts stamps hiddenBodies=[] onto any extrude, revolve, loft, sweep
+        # or thicken that predates captured-visibility, so booleans aren't
+        # retroactively rewritten by eye state. Match it so our build equals the
+        # app's. (The sidecar reads an absent set on the last four as [] anyway.)
+        if f.get("type") in ("extrude", "revolve", "loft", "sweep", "thicken") \
+                and "hiddenBodies" not in f:
             f["hiddenBodies"] = []
     rollback = parsed.get("rollback")
     if rollback is not None:

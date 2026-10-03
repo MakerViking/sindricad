@@ -6319,7 +6319,28 @@ def _handle_revolve(f, ctx):
             f"(it may touch the axis, but not cross it). [{type(ex).__name__}]"
         )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
-                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
+                         _captured_hidden(f), diag=ctx.diagnostics, feature_id=f.get("id"),
+                         kind="revolve")
+
+
+def _captured_hidden(f):
+    """The bodies a revolve, loft, sweep or thicken leaves alone: the ones that
+    were hidden when it was made, which the app stamps on it as `hiddenBodies`,
+    exactly like an extrude's (see _handle_extrude). Later eye toggles are pure
+    display.
+
+    These four used to read the LIVE visibility map instead, and nothing that
+    decides when to rebuild knew it: hiding a body neither rebuilt nor
+    invalidated the cache, so the same document cut a hidden body or did not
+    depending on cache history, and the next full rebuild silently changed what
+    an old revolve cut (field report 05f53ee7: "Cut removed nothing" on a
+    revolve, appearing only after a reopen with the shroud hidden).
+
+    Absent = a feature saved before the field existed, which leaves NO body
+    alone, as when it was made (the decision for these four; an extrude
+    without the field keeps its live-map fallback). The app stamps the same
+    empty set on load, so the file says so too."""
+    return frozenset(f.get("hiddenBodies") or ())
 
 
 def _handle_loft(f, ctx):
@@ -6356,7 +6377,8 @@ def _handle_loft(f, ctx):
             f"identical, or too dissimilar to connect. [{type(ex).__name__}]"
         )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
-                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
+                         _captured_hidden(f), diag=ctx.diagnostics, feature_id=f.get("id"),
+                         kind="loft")
 
 
 # Which BRepOffsetAPI_MakePipeShell transition mode to sweep with, in the order
@@ -6685,8 +6707,8 @@ def _handle_sweep(f, ctx):
     # inline `act["shape"] + solid` / `- solid` against only the active body —
     # unguarded, and a Cut with no active body silently created a new body.)
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
-                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"),
-                         cut_noop_msg=cut_noop_msg)
+                         _captured_hidden(f), diag=ctx.diagnostics, feature_id=f.get("id"),
+                         kind="sweep", cut_noop_msg=cut_noop_msg)
 
 
 def _blob_top_children(shape):
@@ -7032,8 +7054,8 @@ def _handle_thicken(f, ctx):
     # Default "new": a thickened surface body is its own body. "join" merges it
     # into the solids it touches (thickening a face of an existing part).
     _boolean_into_bodies(
-        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, ctx.hidden_bodies,
-        diag=ctx.diagnostics, feature_id=f.get("id"),
+        ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, _captured_hidden(f),
+        diag=ctx.diagnostics, feature_id=f.get("id"), kind="thicken",
     )
 
 
@@ -10651,12 +10673,23 @@ def _imprint(solid, tools):
 
 
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False,
-                         diag=None, feature_id=None, cut_noop_msg=None):
+                         diag=None, feature_id=None, kind="extrude", cut_noop_msg=None):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
     adds a new body. HIDDEN bodies are never touched (a hidden body is intentionally
     protected from edits), so they're excluded from the overlap set.
+
+    `kind` is the feature type making `solid` (extrude, revolve, loft, sweep,
+    thicken), so the messages below name what the user actually made: a
+    revolve's failed cut used to say "the extrude doesn't reach any body. Drag
+    the other way" (field report 05f53ee7).
+
+    A Cut that reaches material only in hidden bodies is a WARNING, not an
+    error: it removed nothing because it was told to leave those bodies alone,
+    which is the rule working, and saying the extrude "doesn't reach any body"
+    sent the user looking for a geometry problem that was not there. The
+    `cutOnlyHidden` diagnostic names the first such body.
 
     Guards no-op / destructive booleans: a Join whose prism is already inside the
     body, or a Cut/Intersect that meets no material, used to return the model
@@ -10666,7 +10699,7 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     flags the feature red, instead of silently doing nothing. Volume-read failures
     fall through to the old behavior (never raise a misleading no-op error).
     `cut_noop_msg` replaces the Cut no-op's text for a feature with no drag to
-    reverse (a helix sweep); every other caller keeps the extrude wording.
+    reverse (a helix sweep); every other caller gets the wording for its `kind`.
 
     A Cut that SEALS a void (a solid gains a second shell) is the one wrong-looking result
     that isn't wrong enough to refuse — a deliberate hollow is legal — so it pushes
@@ -10737,6 +10770,9 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         merged_vol, hit_vol = _try_vol(merged), _sum_hit_vol(hits)
         if merged_vol is not None and hit_vol is not None \
                 and merged_vol <= hit_vol + eps(prism_vol):
+            if kind == "thicken":
+                raise ValueError("Join added no material: the thickened face is already "
+                                 "inside the body.")
             raise ValueError(
                 "Join added no material — the profile is already inside the body. "
                 "Did you mean Cut?"
@@ -10776,12 +10812,18 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
                 voids_after = _void_count(newshape)
                 if voids_after is not None and voids_after > voids_before:
                     sealed = True
+        if not hits and _cut_only_hidden(bodies, solid, hidden, eps(prism_vol), diag, feature_id):
+            return
         if not hits or (measured and removed < eps(prism_vol)):
-            raise ValueError(
-                cut_noop_msg
-                or "Cut removed nothing — the extrude doesn't reach any body. "
-                "Drag the other way, or use Join."
-            )
+            if cut_noop_msg:
+                raise ValueError(cut_noop_msg)
+            if kind == "extrude":
+                raise ValueError(
+                    "Cut removed nothing — the extrude doesn't reach any body. "
+                    "Drag the other way, or use Join."
+                )
+            raise ValueError(f"Cut removed nothing: the {_BOOLEAN_NOUN.get(kind, kind)} "
+                             "doesn't reach any body.")
         for b, newshape in results:
             b["shape"] = newshape
         # One entry per FEATURE, not per body: a cut that bridges two bodies and
@@ -10810,6 +10852,42 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
             b["shape"] = newshape
     else:
         raise ValueError(f"unknown extrude operation: {op}")
+
+
+# What a boolean's own messages call the solid it made, by feature type (an
+# extrude keeps its original sentences).
+_BOOLEAN_NOUN = {"revolve": "revolve", "loft": "loft", "sweep": "sweep",
+                 "thicken": "thickened face"}
+
+
+def _cut_only_hidden(bodies, solid, hidden, eps, diag, feature_id):
+    """True, with a `cutOnlyHidden` warning on `diag`, when a Cut that reaches
+    no visible body WOULD remove material from a hidden one. Measured by doing
+    the cut on a copy, so a hidden body whose box merely overlaps is not blamed
+    for a cut that misses it too (that stays the plain "removed nothing"
+    error). Only reached on that failure path, so a cut that works pays
+    nothing for it."""
+    reached = []
+    for b in bodies:
+        progress_tick()
+        if (b.get("shape") is None or b.get("id") not in hidden
+                or not _bbox_overlap(b["shape"], solid)):
+            continue
+        before = _try_vol(b["shape"])
+        after = _try_vol(_serial_bool(_as_compound(b["shape"]), solid, "cut"))
+        if before is not None and after is not None and before - after >= eps:
+            reached.append(b)
+    if not reached:
+        return False
+    n = len(reached)
+    _split_diag(diag, feature_id, errors_mod.CUT_ONLY_HIDDEN, reached[0], count=n, reason=(
+        f"This cut removed nothing: the only body it reaches is {BODY_SLOT}, which was "
+        "hidden when you made the cut, so I left it alone. To cut it, delete this cut, "
+        f"show {BODY_SLOT} and make the cut again." if n == 1 else
+        f"This cut removed nothing: the only bodies it reaches, {BODY_SLOT} and others "
+        f"({n} in all), were hidden when you made the cut, so I left them alone. To cut "
+        "them, delete this cut, show them and make the cut again."))
+    return True
 
 
 def _sum_hit_vol(hits):

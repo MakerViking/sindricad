@@ -339,6 +339,15 @@ This file starts on 2026-08-03. For anything before that, see the
   If I cannot find a solution on the same side, I keep the sketch where it was
   and say so, instead of moving it to the wrong side.
 
+- **An old revolve, loft, sweep or thicken cuts what it cut when you made it.**
+  These used to go by which bodies were hidden right now, so hiding a body
+  could make an old revolve fail with "Cut removed nothing" the next time the
+  document opened, with a message about an extrude. Like an extrude, each one
+  now leaves alone only the bodies that were hidden when you made it, and one
+  made in an older version leaves none alone. A cut that only reaches hidden
+  bodies is now a warning that names the body and says how to cut it, instead
+  of an error, and a cut that reaches nothing names the feature you made.
+
 - **A projected straight edge no longer turns into a circle.** When a body
   changed under a sketch, a projected edge could come back as the rim of a
   cylinder next to it, and every dimension to that edge quietly stopped
