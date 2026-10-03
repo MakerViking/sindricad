@@ -1076,10 +1076,10 @@ store.onReplace(() => {
   for (const dismiss of failureToasts.values()) dismiss();
   failureToasts.clear();
 });
-// The split, merge and separate warnings already toasted (toastsWarnings in
-// splitWarnings.ts), by what they are about (feature, and per note its code,
-// body and count; SplitWarning.key), so each is said once rather than on every
-// rebuild that repeats it, a rename of the body included.
+// The split, merge and separate warnings, and a join's pieces left out, already
+// toasted (toastsWarnings in splitWarnings.ts), by what they are about (feature,
+// and per note its code, body and count; SplitWarning.key), so each is said once
+// rather than on every rebuild that repeats it, a rename of the body included.
 let prevSplitWarnings = new Set<string>();
 // Failed fillet/chamfer edges (midpoints per feature id) — survives sidecar
 // cache-hit rebuilds that re-emit the error without its diagnostics.
@@ -1204,8 +1204,8 @@ store.onBuild((s) => {
       const errs = s.result.featureErrors ?? [];
       const ids = new Set(errs.map((e) => e.feature_id).filter(Boolean) as string[]);
       // A split, merge or separate that BUILT but has something to say, or a
-      // cut that only reached hidden bodies (splitWarnings.ts has the rule):
-      // one toast per feature, said once, not
+      // cut that only reached hidden bodies, or a join that left pieces out
+      // (splitWarnings.ts has the rule): one toast per feature, said once, not
       // again on every rebuild that repeats it. BEFORE the errors: the stack
       // keeps 3 and drops the oldest, so a warning toasted after an error would
       // be what pushes it out.

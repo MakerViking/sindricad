@@ -987,11 +987,19 @@ export interface ResolveDiag {
   // because the only material it reaches is in bodies hidden when it was made:
   // the first is `body_id`, `count` how many. A warning with a `reason`, on the
   // amber chip and toasted once whatever the feature (splitWarnings.TOASTED_CODES).
+  // "joinPiecesLeftOut" = a join (a Combine join, or a Join-mode extrude,
+  // revolve, sweep, loft or thicken) built but left `count` of the pieces being
+  // joined out of the body, because they do not touch it and the debris rule
+  // drops a floating piece under 0.1% of the biggest (field report 9728490b).
+  // A warning with a `reason` on the amber chip, toasted by its code whatever
+  // the feature (splitWarnings.ts TOASTED_CODES). Its sentence says "the joined
+  // body", never a name: the result can go by the name of the piece that went.
+  // Kind and code are the same string.
   kind:
     | "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted"
     | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume"
     | "mergeDroppedSurfaces" | "mergeDamagedLeftOut" | "mergeSeparatePieces"
-    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden";
+    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden" | "joinPiecesLeftOut";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
@@ -1008,7 +1016,7 @@ export interface ResolveDiag {
    *  mergeDroppedSurfaces / separateDroppedSurfaces: loose surfaces dropped;
    *  separateDroppedFaces: loose faces dropped;
    *  mergeDamagedLeftOut: damaged solids left out; mergeSeparatePieces: the
-   *  pieces the merged body is now */
+   *  pieces the merged body is now; joinPiecesLeftOut: pieces left out of a join */
   count?: number;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
   // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the

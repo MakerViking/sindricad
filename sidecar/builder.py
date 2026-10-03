@@ -3360,11 +3360,12 @@ class _DebrisMemo:
     place. The answer holds only while `src.IsEqual(shape.wrapped)` (same
     TShape, location and orientation)."""
 
-    __slots__ = ("src", "out")
+    __slots__ = ("src", "out", "gone")
 
-    def __init__(self, wrapped, out):
+    def __init__(self, wrapped, out, gone):
         self.src = wrapped.Located(wrapped.Location())
         self.out = out
+        self.gone = gone
 
     def holds_for(self, shape):
         return self.src.IsEqual(shape.wrapped)
@@ -3376,13 +3377,17 @@ class _DebrisMemo:
         return None
 
 
-def _drop_debris(shape, debug=False):
+def _drop_debris(shape, debug=False, dropped=None):
     """Drop floating boolean debris from a body shape: a solid that is
     sub-epsilon (<0.1%) of the biggest piece AND has clear distance from it
     is residue of the cuts that carved the body, not user geometry (DDR: a
     1.5 mm³ chip floating 0.6 mm off the 17200 mm³ body). Anything touching —
     even zero-measure vertex/edge contact — is kept, as are all pieces of a
-    genuinely multi-piece body. Best-effort: any doubt → shape unchanged."""
+    genuinely multi-piece body. Best-effort: any doubt → shape unchanged.
+
+    `dropped`, when a list, receives the solids this call removed, so a join
+    can say which of the user's pieces went (`_join_left_out_diag`). It only
+    reports; what is kept and dropped does not depend on it."""
     from OCP.BRepExtrema import BRepExtrema_DistShapeShape
 
     try:
@@ -3392,6 +3397,8 @@ def _drop_debris(shape, debug=False):
             # same input object => same output OBJECT (identity matters: the
             # server's mesh cache is keyed by shape identity, and rebuilding a
             # fresh Compound here every rebuild would defeat it)
+            if dropped is not None:
+                dropped.extend(cached.gone)
             return cached.out
         parts = shape.solids()
         # Count FIRST. Sorting by volume computes one per solid, and a body with
@@ -3401,24 +3408,33 @@ def _drop_debris(shape, debug=False):
         if len(parts) < 2:
             return shape
         parts = sorted(parts, key=lambda s: -abs(s.volume))
-        main, kept = parts[0], [parts[0]]
+        main, kept, gone = parts[0], [parts[0]], []
         for s in parts[1:]:
             tiny = abs(s.volume) < 1e-3 * abs(main.volume)
+            if tiny:
+                # Each distance is about 1.1 s against a detailed body, and a
+                # Combine of many small tools runs one per piece: 66 of them
+                # went 93 s without a heartbeat and the watchdog recycled the
+                # worker on every retry (field report 9728490b).
+                progress_tick(keep_index=True)
             if tiny and BRepExtrema_DistShapeShape(
                 s.wrapped, main.wrapped
             ).Value() > 1e-7:
                 if debug:
                     print(f"drop_debris: dropping floating solid "
                           f"vol {s.volume:.3f}")
+                gone.append(s)
                 continue
             kept.append(s)
         if len(kept) == len(parts):
             return shape
         out = kept[0] if len(kept) == 1 else Compound(kept)
         try:
-            shape._sindri_drop = _DebrisMemo(shape.wrapped, out)
+            shape._sindri_drop = _DebrisMemo(shape.wrapped, out, tuple(gone))
         except Exception:
             pass
+        if dropped is not None:
+            dropped.extend(gone)
         return out
     except Exception:
         if debug:
@@ -3426,7 +3442,7 @@ def _drop_debris(shape, debug=False):
         return shape
 
 
-def _unify_body(shape, debug=False):
+def _unify_body(shape, debug=False, dropped=None):
     """Fuse a body's glued/overlapping constituent solids into unified material.
 
     Boolean joins of ragged facet-import bodies GLUE solids together instead of
@@ -3442,7 +3458,11 @@ def _unify_body(shape, debug=False):
     stay separate solids — fuse never merges non-touching or zero-measure
     (vertex/edge) contact, so grouped split bodies and separate physical
     pieces keep their identity. Best-effort, hard-validated: any doubt → the
-    original shape, unchanged."""
+    original shape, unchanged.
+
+    `dropped`, when a list, receives the floating solids the debris pass took
+    out of the fused result, and only when that result is the one returned:
+    when the original comes back, nothing was taken out here."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp
@@ -3503,7 +3523,8 @@ def _unify_body(shape, debug=False):
 
         # Debris dropped here is ≤0.1% of the max constituent per chunk,
         # well inside tol_v below, so the bracket gate needs no adjustment.
-        cleaned = _drop_debris(cleaned, debug=debug)
+        gone = []
+        cleaned = _drop_debris(cleaned, debug=debug, dropped=gone)
 
         # The union is at least the biggest constituent and at most their sum
         # (an inside-out duplicate contributes nothing; interpenetration is
@@ -3527,6 +3548,8 @@ def _unify_body(shape, debug=False):
             and lo - tol_v <= v_after <= hi + tol_v
             and v_after > 0
         )
+        if ok and dropped is not None:
+            dropped.extend(gone)
         return cleaned if ok else shape
     except Exception:
         if debug:
@@ -10816,7 +10839,13 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         # walls, coincident skins, visible seams at every contact); unify right
         # here so a join yields ONE true solid. Fast no-op on clean results
         # (single right-side-out solid), hard-gated otherwise.
-        new_body(_unify_body(merged), name)
+        left_out = []
+        joined = new_body(_unify_body(merged, dropped=left_out), name)
+        # The prism is new geometry, so every solid of it is the user's. A hit
+        # body can go whole: its box overlapping the prism's is enough to be
+        # fused in, touching it is not.
+        pieces = [(solid, True)] + [(b["shape"], bool(b.get("_intact"))) for b in hits]
+        _join_left_out_diag(diag, feature_id, joined, pieces, left_out)
     elif op == "cut":
         # compute every cut first, measure how much came off, and only commit when
         # the extrude actually removed material from some body.
@@ -10932,6 +10961,106 @@ def _sum_hit_vol(hits):
             return None
         total += v
     return total
+
+
+def _join_left_out_diag(diag, feature_id, body, pieces, dropped):
+    """Warn that a join left some of the user's pieces out of `body`.
+
+    A solid that touches nothing it is joined to comes out of the fuse as a
+    floating piece, and when it is under 0.1% of the biggest piece the debris
+    pass in `_unify_body` deletes it (`_drop_debris`'s rule, unchanged here).
+    Field report 9728490b: 66 of the ribs joined onto a knob floated 0.1 to 14
+    microns off it and went with no word said. This says so, as a warning on
+    the feature; the geometry is exactly what it was.
+
+    `dropped` is what that debris pass removed, so only pieces that rule
+    deletes are counted. A floating piece of at least 0.1% stays in the body as
+    a solid of its own, so it was not left out. What is counted is the pieces
+    going in, not dropped solids: a piece was left out when a point strictly
+    inside it lies inside one of the dropped solids. So floating pieces that
+    touch each other but not the body count one each.
+
+    `pieces` is every shape going into the join, the target's and the tools'
+    alike (a small target can be the one that goes, and so can a whole body a
+    Join extrude fused in for its box), as `(shape, whole)` pairs. Only what the
+    user could see is counted: a shape is first put through the debris pass the
+    final pass runs on a body, so a chip an earlier cut left floating in it,
+    which the user never saw and the join's pass drops, is not counted. `whole`
+    skips that for a shape every solid of which is the user's: a fresh prism,
+    or a body imported whole (`_intact`), which the final pass leaves alone.
+
+    Not seen here: when `_unify_body` refuses its fused result it returns the
+    glued original with any floating pieces still in it, and the final pass
+    drops them later. Revisit if a report shows a join losing pieces with no
+    warning.
+
+    Costs nothing when nothing was dropped, which is every ordinary join."""
+    if diag is None or body is None or not dropped:
+        return
+    try:
+        seen = [shape if whole else _drop_debris(shape) for shape, whole in pieces]
+        n = _pieces_in(seen, dropped)
+    except Exception:
+        # Telling the pieces apart failed, but material did go: say how many
+        # solids the debris pass took rather than fail the feature or go quiet.
+        n = len(dropped)
+    if not n:
+        return
+    # Says "the joined body", never its name: the result goes by the name of
+    # the target (or a Join's first hit), which can be the very piece that went,
+    # and a piece of the target itself can be the one left out.
+    one = n == 1
+    _split_diag(diag, feature_id, errors_mod.JOIN_PIECES_LEFT_OUT, body, count=n, reason=(
+        f"I left {n} {'piece' if one else 'pieces'} out of the join because "
+        f"{'it is' if one else 'each is'} under a thousandth of the joined body's "
+        f"size and does not touch it. Any gap counts, however small: make "
+        f"{'it' if one else 'them'} overlap the body to keep {'it' if one else 'them'}."))
+
+
+def _pieces_in(shapes, dropped):
+    """How many solids of `shapes` lie inside one of the `dropped` solids, read
+    by a point strictly inside each solid (`_interior_point`). A solid that
+    offers no such point counts when its box lies inside a dropped solid's box,
+    so a piece that went is never left uncounted for want of a point. Bounding
+    boxes first: only a solid near a dropped one pays for a point and a
+    classification."""
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.Bnd import Bnd_Box
+    from OCP.TopAbs import TopAbs_IN
+
+    def box_of(topods):
+        box = Bnd_Box()
+        BRepBndLib.Add_s(topods, box)
+        return box
+
+    gone = [(box_of(d.wrapped), BRepClass3d_SolidClassifier(d.wrapped)) for d in dropped]
+    count = 0
+    solids = (s for shape in shapes for s in _as_compound(shape).solids())
+    for k, piece in enumerate(solids):
+        if k % 16 == 0:
+            progress_tick(keep_index=True)
+        tbox = box_of(piece.wrapped)
+        near = [(box, clf) for box, clf in gone if not box.IsOut(tbox)]
+        if not near:
+            continue
+        try:
+            p = _interior_point(piece.wrapped)
+        except Exception:
+            p = None  # one odd solid falls back to its box, not the whole count
+        for box, clf in near:
+            if p is None:
+                if not box.IsOut(tbox.CornerMin()) and not box.IsOut(tbox.CornerMax()):
+                    count += 1
+                    break
+                continue
+            if box.IsOut(p):
+                continue
+            clf.Perform(p, 1e-7)
+            if clf.State() == TopAbs_IN:
+                count += 1
+                break
+    return count
 
 
 def _vertex_components(solids):
@@ -12100,7 +12229,10 @@ def _do_combine(f, bodies, find_body, diag=None):
     # AT THE SOURCE so a Combine yields one true solid. _unify_body is a fast
     # no-op on clean results and hard-validated (any doubt → unchanged), and
     # replayed history heals existing combines on the next rebuild.
-    target["shape"] = _unify_body(shape) if op == "join" else shape
+    pieces = [(b["shape"], bool(b.get("_intact"))) for b in (target, *tools)]
+    left_out = []
+    target["shape"] = _unify_body(shape, dropped=left_out) if op == "join" else shape
+    _join_left_out_diag(diag, f.get("id"), target, pieces, left_out)
 
     if not f.get("keepTools"):
         consumed = {t["id"] for t in tools}

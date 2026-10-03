@@ -98,8 +98,8 @@ and on `ResolveDiag` entries.
 | `separateDroppedFaces` | warning (`ResolveDiag` with a `reason`): `{body}` has no solids, so Separate made its pieces from its surfaces (shells), and `count` loose faces that belong to none of them were left out; where one was the only thing forming a wall, that part is gone |
 | `insertNoBodies` | `insertDocument`: the other document has no visible bodies to insert |
 | `insertNothingBuilt` | `insertDocument`: nothing in the other document built |
-
 | `cutOnlyHidden` | warning (`ResolveDiag` with a `reason`): a Cut (extrude, revolve, loft or sweep) removed nothing because the only material it reaches is in bodies that were hidden when it was made; `{body}` is the first of them and `count` how many. Not an error: the feature did what it was told |
+| `joinPiecesLeftOut` | warning (`ResolveDiag` with a `reason`): a join (Combine join, or a Join-mode extrude, revolve, sweep, loft or thicken) left `count` of the pieces going into it out of `{body}`: they do not touch it, and the debris rule drops a floating solid under 0.1% of the biggest. Counts the solids of the target, the tools, the prism and every body a Join-mode feature fused in (a whole body can go), as the user saw them: a chip an earlier cut left floating in a body, which its own final pass already hid, is not counted; every solid of a body imported whole (`_intact`) is. Not reported: when the join's clean-up (`_unify_body`) refuses its result, the glued original keeps its floating pieces and the final pass drops them later with no warning. The geometry is unchanged; only the word is new. The `reason` says "the joined body" and never names it: the result goes by the target's (or a Join's first hit's) name, which can be the piece that went |
 
 **Treat an unrecognised code as unclassified, never as an error.** The set only grows, and
 a newer sidecar may emit one this client has not heard of. Codes are added freely; renaming

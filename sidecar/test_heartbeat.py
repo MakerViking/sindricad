@@ -1624,6 +1624,76 @@ def test_a_slow_blend_probe_keeps_publishing_liveness():
     print(f"{PASS} a slow probe ticks {t.n}x and leaves the feature named")
 
 
+# --- the debris sweep a Combine runs ----------------------------------------
+#
+# Field report 9728490b (0.1.229): "Geometry engine stopped" at a Combine that
+# joined 135 small ribs onto a knob. Replayed, the join itself took seconds; the
+# 93 s silence was `_drop_debris` measuring each of 66 floating pieces against a
+# 730-face body, about 1.1 s per BRepExtrema_DistShapeShape and not one tick
+# between them, so the stall watchdog recycled the worker every retry.
+
+
+def test_the_debris_sweep_ticks_before_every_distance():
+    """A Combine whose tools float just off the target: the heartbeat must move
+    before EVERY distance the debris sweep measures.
+
+    Driven through a real rebuild and the REAL worker hook, so this observes the
+    counter the watchdog reads. The oracle is the counter at each distance call,
+    not a wall clock: on a small fixture each call takes milliseconds and a time
+    bar would pass with the loop completely silent."""
+    import OCP.BRepExtrema as brep_extrema
+
+    import server
+
+    n = 30
+    # 0.5 mm square pins standing 0.01 mm above a 40x40x10 box: each pin is far
+    # under 0.1% of the box and clear of it, so the sweep measures every one
+    ribs = [{"type": "rectangle", "width": 0.5, "height": 0.5,
+             "x": -15 + 6 * (i % 6), "y": -15 + 6 * (i // 6)} for i in range(n)]
+    doc = {"parameters": {}, "features": [
+        {"id": "s0", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 40, "height": 40}]},
+        {"id": "e0", "type": "extrude", "sketch": "s0", "distance": 10, "operation": "new"},
+        {"id": "s1", "type": "sketch",
+         "plane": {"origin": [0, 0, 10.01], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+         "entities": ribs},
+        {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 0.5, "operation": "new"},
+        {"id": "j", "type": "combine", "operation": "join", "target": "body1",
+         "tools": ["body2"]},
+    ]}
+
+    hb, hb_idx = _StubValue(0), _StubValue(-1)
+    at_distance = []
+    real = brep_extrema.BRepExtrema_DistShapeShape
+
+    def _spy(*args):
+        at_distance.append(hb.value)
+        return real(*args)
+
+    prev = builder.on_feature_tick
+    builder.on_feature_tick = server._heartbeat_hook(hb, hb_idx)
+    brep_extrema.BRepExtrema_DistShapeShape = _spy
+    try:
+        _part, err, _bodies = builder.rebuild(doc)
+    finally:
+        brep_extrema.BRepExtrema_DistShapeShape = real
+        builder.on_feature_tick = prev
+    assert not err, err
+
+    # Precondition: the sweep really measured every pin. Fewer calls would mean
+    # the fixture stopped exercising the loop, and the check below would pass
+    # over a loop that never ran.
+    assert len(at_distance) >= n, (
+        f"the debris sweep measured {len(at_distance)} pieces, want at least {n}")
+    silent = sum(1 for a, b in zip(at_distance, at_distance[1:]) if b == a)
+    assert silent == 0, (
+        f"{silent} of {len(at_distance) - 1} consecutive distance calls ran with no "
+        f"heartbeat between them; at ~1 s each against a detailed body, the "
+        f"watchdog reaps the worker mid-Combine")
+    print(f"{PASS} the debris sweep ticks before each of its "
+          f"{len(at_distance)} distance calls")
+
+
 if __name__ == "__main__":
     print("heartbeat ticks (stall watchdog)")
     test_export_mesh_ticks_on_every_tier()
@@ -1660,4 +1730,5 @@ if __name__ == "__main__":
     test_a_job_starts_from_nothing_in_progress()
     test_a_blend_probe_costs_one_fork_for_every_size_under_it()
     test_a_slow_blend_probe_keeps_publishing_liveness()
+    test_the_debris_sweep_ticks_before_every_distance()
     print("all heartbeat tests passed")

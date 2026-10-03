@@ -373,6 +373,21 @@ This file starts on 2026-08-03. For anything before that, see the
   a long way moves the geometry dimensioned to it along with it, instead of to
   the far side.
 
+- **A Combine of many small pieces no longer makes the engine look stopped.**
+  Checking each piece against the body could run for a minute and a half without
+  a sign of life, so the engine was restarted as if it had hung, on every retry.
+  It now reports progress through that check. As before, a piece under a
+  thousandth of the joined body's size that does not touch it, even by a few
+  microns, is left out of the result, but no longer silently: I say how many
+  pieces I left out and why, in a message after the build and on the feature's
+  amber timeline chip. A Join extrude, revolve, sweep, loft or thicken says the
+  same, and that includes a small body nearby that it took in and left out,
+  which used to vanish from the Browser without a word. A document you already
+  have can show this on a join that has always left pieces out; its shape is
+  unchanged. One case is still silent: when I cannot tidy a joined body into
+  clean solids, tiny floating pieces in it are dropped at the end of the
+  rebuild with no warning.
+
 - **A moved body is drawn where you moved it.** If an earlier cut had left a
   tiny hidden chip in a body, moving that body could draw it at its old place
   until the document was next rebuilt from scratch.

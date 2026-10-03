@@ -252,6 +252,10 @@
       "importFailed": "import failed",
       "insertNoBodies": "That document has no visible bodies to insert. Bodies hidden there are left out.",
       "insertNothingBuilt": "Nothing in that document built, so there is nothing to insert. Open it to see what failed.",
+      "joinPiecesLeftOut": {
+        "one": "I left {count} piece out of the join because it is under a thousandth of the joined body's size and does not touch it. Any gap counts, however small: make it overlap the body to keep it.",
+        "other": "I left {count} pieces out of the join because each is under a thousandth of the joined body's size and does not touch it. Any gap counts, however small: make them overlap the body to keep them."
+      },
       "kernelCrashed": "the geometry kernel crashed on this operation",
       "mergeAllDamaged": {
         "one": "Merge changed nothing: the only solid part of {body} is damaged, and I leave damaged parts out rather than repair them.",

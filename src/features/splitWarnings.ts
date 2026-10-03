@@ -33,6 +33,11 @@
 // that stayed apart) is news of the same weight as a split that only separated.
 // They are one-body features, so their notes always keep their own sentences.
 //
+// A join that left some of the user's pieces out toasts too, from whichever
+// feature did the join, picked by its code (TOASTED_CODES) rather than by
+// feature type. It is material left out, and on the chip alone it was an amber
+// outline on one icon among dozens, its reason only on hover.
+//
 // Pure, so it is tested without main.ts, which cannot be imported in a test.
 
 import { hasKey, localeTag, t } from "../i18n";
@@ -45,11 +50,15 @@ import type { FeatureType, ResolveDiag } from "../types";
  *  feature removed or left out. */
 const TOASTED: ReadonlySet<string> = new Set<FeatureType>(["split", "mergeSolids", "separate"]);
 
-/** Warnings toasted whatever feature raised them. A cut that removed nothing
- *  because the only material it reaches was hidden when it was made is
- *  material the feature left out, and it was a red error before it was a
- *  warning: on the chip alone it reads as "I cut and nothing happened". */
-const TOASTED_CODES: ReadonlySet<string> = new Set(["cutOnlyHidden"]);
+/** Warnings toasted whichever feature raised them, by code: material a feature
+ *  left out, from feature types whose other notes stay on the chip. A join that
+ *  left the user's pieces out can come from a Combine or a Join-mode extrude,
+ *  revolve, sweep, loft or thicken; toasting those TYPES would toast their
+ *  reference notes too. A cut that removed nothing because the only material it
+ *  reaches was hidden when it was made is material the feature left out too, and
+ *  it was a red error before it was a warning: on the chip alone it reads as "I
+ *  cut and nothing happened". */
+const TOASTED_CODES: ReadonlySet<string> = new Set(["cutOnlyHidden", "joinPiecesLeftOut"]);
 
 export function toastsWarnings(type: string | undefined): boolean {
   return type !== undefined && TOASTED.has(type);
@@ -97,8 +106,8 @@ export function diagBodyName(d: ResolveDiag, bodies: readonly NamedBody[] | unde
 
 export function splitWarningsToShow(
   diagnostics: readonly ResolveDiag[] | undefined,
-  /** the features whose warnings are toasted (toastsWarnings on its type);
-   *  a TOASTED_CODES warning is toasted from any feature */
+  /** the features whose warnings are toasted (toastsWarnings on its type); any
+   *  other feature toasts only its warnings whose code TOASTED_CODES names */
   toasts: (featureId: string) => boolean,
   /** features that FAILED this build: their red toast says it all */
   failed: ReadonlySet<string>,
@@ -108,9 +117,9 @@ export function splitWarningsToShow(
   name: (d: ResolveDiag) => string,
 ): SplitWarning[] {
   const out: SplitWarning[] = [];
-  const toasted = (diagnostics ?? []).filter((d) =>
-    d.feature_id !== undefined && (toasts(d.feature_id) || TOASTED_CODES.has(d.code ?? "")));
-  for (const [featureId, list] of reasonedByFeature(toasted, (fid) => !failed.has(fid))) {
+  for (const [featureId, all] of reasonedByFeature(diagnostics, (fid) => !failed.has(fid))) {
+    const list = toasts(featureId) ? all : all.filter((d) => d.code !== undefined && TOASTED_CODES.has(d.code));
+    if (!list.length) continue;
     const said = splitNoteLines(list, text, name, TOAST_NAMES).join(" ");
     const key = [featureId, ...list.map((d) => `${d.code ?? d.kind}:${d.body_id ?? ""}:${d.count ?? ""}`)].join("\u0000");
     if (said) out.push({ featureId, text: said, key });
