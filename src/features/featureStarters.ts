@@ -608,8 +608,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     store.addFeature({ id: store.nextId(), type: "scale", factor: 1 } as Feature);
   }
 
-  // Move: translate / rotate the active body. Defaults to no-op — set the offsets
-  // and angles in the inspector.
+  // Move: translate / rotate the selected bodies (or the active one), typed in
+  // the Move panel or dragged on the arrows.
   function startMove() {
     if (busy()) return;
     if (needsBody(t("tool.move"))) return;

@@ -799,6 +799,21 @@ This file starts on 2026-08-03. For anything before that, see the
   With a taper, both ends narrow (or widen) alike. Symmetric cannot be combined
   with an up-to target.
 
+- **A Move panel, so a move and a rotation can be typed while you make it.**
+  Move now opens a panel on the right with Move X, Y and Z, Rotate X, Y and Z,
+  and what the rotation turns about: Centre, the middle of what you are moving,
+  where the arrows sit, or Origin. Before, only a distance along the arrow you
+  had dragged could be typed while moving, and a rotation could only be typed
+  in the inspector afterwards, where it always turned the body about the
+  origin, so a body away from the origin swung round it instead of turning in
+  place. The arrows still drag, and the box beside them still takes a distance
+  for the arrow you dragged last. The bodies show where they will land as you
+  type, and a move that only rotates can now be made. Double-clicking a move
+  reopens the panel on its saved values. Centre is saved with the move as a
+  point, so if an earlier step later moves the body, the move still turns about
+  that point; reopening the move then says so, and picking Centre puts it back
+  on the middle. Moves made before this keep turning about the origin.
+
 - **Arithmetic in the value boxes.** Type `31.53+2*1.62` and get 34.77 in the
   box beside the cursor, while drawing or in a modeling tool, and in the Extrude
   panel. In those boxes and in sketch dimensions, plain arithmetic is read in

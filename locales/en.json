@@ -530,9 +530,19 @@
       "promptSecond": "Measure: click a second face or edge for the distance · Esc to exit"
     },
     "move": {
-      "nothingToCommit": "Nothing moved yet: drag an axis arrow, or type a distance and click an arrow · Esc to cancel",
+      "editPrompt": "Editing the move: drag an axis arrow, or change a distance or an angle in the panel · Enter or OK to apply · Esc to cancel (later features are hidden while editing)",
+      "nothingToCommit": "Nothing moved yet: drag an axis arrow, or type a distance or an angle in the panel · Esc to cancel",
+      "panel": {
+        "nothingMoved": "Nothing moves yet. Drag an arrow, or type a distance or an angle.",
+        "pivot": "Rotate about",
+        "pivotCentre": "Centre",
+        "pivotCentreTitle": "Turn about the middle of what moves, where the arrows are. The point is saved with the move, so it stays put if an earlier step moves the body.",
+        "pivotOrigin": "Origin",
+        "pivotOriginTitle": "Turn about the origin (0, 0, 0)",
+        "savedPivot": "This move turns about the point it was saved with (X {x}, Y {y}, Z {z}), which is no longer the middle of what moves. Pick Centre to turn about the middle as it is now."
+      },
       "pickAxis": "Click an axis arrow to choose the direction for that distance, then press Enter · Esc to cancel",
-      "prompt": "Drag an axis arrow to move the selected bodies · type a value · Enter to commit · Esc to cancel"
+      "prompt": "Drag an axis arrow, or type a distance or an angle in the panel · Enter or OK to commit · Esc to cancel"
     },
     "nothingToCommit": "Nothing to commit — drag the arrow or type a distance first",
     "op": {

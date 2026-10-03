@@ -1537,6 +1537,12 @@ function editFeature(id: string) {
     case "datumPlane":
       if (!planeOffset.startEdit(id, done)) toInspector();
       break;
+    // Re-opens the Move panel on the move's values, on the model as it stood
+    // before the move. Before the panel a move had no arm, and its rotation
+    // could only be typed into the inspector.
+    case "move":
+      if (!moveTool.startEdit(id, done)) toInspector();
+      break;
     default:
       // The remaining 24 types have no interactive tool at all; a cylinder
       // reached this arm as a bare `break;` and gave no sign whatsoever, which

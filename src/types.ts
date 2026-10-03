@@ -845,8 +845,17 @@ export type Feature =
   // Scale the active body uniformly about the origin (factor; 1 = unchanged).
   | { id: string; type: "scale"; factor: Num }
   // Move the active body — or the bodies listed in `bodies` (multi-select) —:
-  // translate (dx,dy,dz mm) + rotate (rx,ry,rz degrees, about origin).
-  | { id: string; type: "move"; dx: Num; dy: Num; dz: Num; rx: Num; ry: Num; rz: Num; bodies?: string[] }
+  // translate (dx,dy,dz mm) + rotate (rx,ry,rz degrees, three.js Euler "XYZ" =
+  // build123d Rot). The rotation turns about `pivot` [x,y,z] mm when it is set:
+  // the Move panel's Centre, the middle of what moved, frozen where it was when
+  // the move was made, so the move stays the same rigid motion after upstream
+  // edits, as dx does. Absent on every move saved before it existed, which turn
+  // about the world origin and so rebuild exactly as they did; a beta from
+  // before it ignores it and turns about the origin.
+  | {
+      id: string; type: "move"; dx: Num; dy: Num; dz: Num; rx: Num; ry: Num; rz: Num; bodies?: string[];
+      pivot?: [number, number, number];
+    }
   // Repair boolean rot on a body — or all bodies when `body` is omitted: unify
   // glued/overlapping solids left by joins of ragged imports, then collapse
   // facet debris (slivers, near-coplanar staircases). Parametric because

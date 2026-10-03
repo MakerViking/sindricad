@@ -2437,6 +2437,93 @@ def test_scale_and_move():
     print(f"  scale+move OK: scale×2 vol 8000, move +25X → x_min {bbox(p)['min'][0]:.0f}")
 
 
+# The Move panel's live ghost (src/features/moveTool.ts moveMatrix) composes
+# T(d) * T(pivot) * R * T(-pivot) with three.js Euler "XYZ", in degrees. These
+# are that matrix's rows for d=(1,2,3), r=(30,45,60), pivot=(10,-5,7), as
+# build123d computes Pos(1,2,3) * Pos(10,-5,7) * Rot(30,45,60) * Pos(-10,5,-7).
+# moveTool.test.ts pins the SAME twelve numbers against moveMatrix, so if either
+# side changes its rotation order or pivot rule the two stop agreeing and the
+# ghost stops being the body the move builds.
+MOVE_PINNED = [
+    [0.353553390593, -0.612372435696, 0.707106781187, -0.547143552718],
+    [0.926776695297, 0.126826484044, -0.353553390593, -9.158760798592],
+    [0.126826484044, 0.78033008589, 0.612372435696, 8.346778539136],
+]
+
+
+def test_move_rotates_about_its_pivot():
+    """A move with a `pivot` rotates about that point; one without rotates about
+    the world origin exactly as every move saved before the field existed.
+
+    The face-owner transform has to carry the pivot too: it re-keys the moved
+    faces' fingerprints, and a transform that left the pivot out sends them ~70 mm
+    from where the faces really are, so every face of the box would be blamed on
+    the move instead of the extrude that made it."""
+    from build123d import Pos, Rot
+
+    _s, base = _box(1, 10, 20, 30, x=50)  # x 45..55, y -10..10, z 0..30, centre (50,0,15)
+
+    def moved(**kw):
+        mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 0, "rx": 0, "ry": 0, "rz": 0,
+              "bodies": ["body1"], **kw}
+        _p, err, bodies = rebuild({"parameters": {}, "features": base + [mv]})
+        assert not err, f"{kw}: {err}"
+        return bodies[0]
+
+    def centre(body):
+        c = body["shape"].center()
+        return (c.X, c.Y, c.Z)
+
+    # About its own centre the box turns in place: same centre, footprint swapped.
+    b = moved(rz=90, pivot=[50, 0, 15])
+    assert all(abs(a - e) < 1e-6 for a, e in zip(centre(b), (50, 0, 15))), centre(b)
+    bb = bbox(b["shape"])
+    assert abs(bb["min"][0] - 40) < 1e-6 and abs(bb["max"][0] - 60) < 1e-6, bb
+    assert abs(bb["min"][1] + 5) < 1e-6 and abs(bb["max"][1] - 5) < 1e-6, bb
+    assert abs(b["shape"].volume - 6000) < 1e-6, b["shape"].volume
+    assert set(b["owners"].values()) == {"e1"}, (
+        f"a pivoted move took over the box's faces: {set(b['owners'].values())}"
+    )
+
+    # No pivot: about the world origin, as before. (50,0,15) turns to (0,50,15).
+    b = moved(rz=90)
+    assert all(abs(a - e) < 1e-6 for a, e in zip(centre(b), (0, 50, 15))), centre(b)
+    assert set(b["owners"].values()) == {"e1"}, set(b["owners"].values())
+
+    # ...and bit for bit what the old code built: Rot, then Pos, nothing else.
+    b = moved(dx=1, dy=2, dz=3, rx=30, ry=45, rz=60)
+    _p, _e, plain = rebuild({"parameters": {}, "features": base})
+    old = Pos(1, 2, 3) * (Rot(30, 45, 60) * plain[0]["shape"])
+    got = sorted((v.X, v.Y, v.Z) for v in b["shape"].vertices())
+    want = sorted((v.X, v.Y, v.Z) for v in old.vertices())
+    assert got == want, "a move without a pivot no longer builds what it used to"
+
+    # A pivot with no rotation moves nothing: a plain translation.
+    b = moved(dx=5, pivot=[50, 0, 15])
+    assert all(abs(a - e) < 1e-6 for a, e in zip(centre(b), (55, 0, 15))), centre(b)
+
+    # The composition the ghost draws: every corner lands where MOVE_PINNED puts it.
+    b = moved(dx=1, dy=2, dz=3, rx=30, ry=45, rz=60, pivot=[10, -5, 7])
+    landed = [(v.X, v.Y, v.Z) for v in b["shape"].vertices()]
+    for v in plain[0]["shape"].vertices():
+        p = (v.X, v.Y, v.Z)
+        q = [sum(row[i] * p[i] for i in range(3)) + row[3] for row in MOVE_PINNED]
+        assert any(all(abs(a - e) < 1e-6 for a, e in zip(q, w)) for w in landed), (
+            f"corner {p} should land at {q}, nothing did"
+        )
+    assert set(b["owners"].values()) == {"e1"}, set(b["owners"].values())
+
+    # Not three numbers: refused with a message, never a guess.
+    for junk in ("123", [1, 2], [1, "x", 3], [1, float("nan"), 3]):
+        mv = {"id": "mv", "type": "move", "dx": 0, "dy": 0, "dz": 0, "rx": 0, "ry": 0, "rz": 90,
+              "bodies": ["body1"], "pivot": junk}
+        _p, err, _b = rebuild({"parameters": {}, "features": base + [mv]})
+        assert err and "pivot" in err[0]["message"], f"pivot {junk!r}: {err}"
+    print("  move pivot OK: turns in place about its centre, origin without one "
+          "(bit-identical to the old build), corners match the ghost's matrix, "
+          "face owners kept, junk pivots refused")
+
+
 def test_multibody_import_and_guards():
     """A two-object file imports as TWO separate bodies; an organic mesh lands
     as read-only reference geometry instead of timing out."""
@@ -5565,6 +5652,7 @@ if __name__ == "__main__":
     test_blend_hang_guard()
     test_fillet_failure_diagnostics()
     test_scale_and_move()
+    test_move_rotates_about_its_pivot()
     test_multibody_import_and_guards()
     test_a_coloured_3mf_can_be_reopened()
     test_interference()

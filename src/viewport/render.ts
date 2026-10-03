@@ -456,9 +456,10 @@ export function bodyOfFace(view: ModelView, faceId: number): BodyMesh | undefine
  *  zebra-stripe shader material is swapped in/out by Viewport.applyZebra(),
  *  never touched here). */
 export function resetBodyAppearance(body: BodyMesh) {
-  // clear any leftover move-ghost translation: a reused (etag-unchanged) body
-  // must sit at the origin — its vertices already encode its true position.
+  // clear any leftover move-ghost transform: a reused (etag-unchanged) body
+  // must sit at identity — its vertices already encode its true position.
   body.mesh.position.set(0, 0, 0);
+  body.mesh.quaternion.identity();
   body.mesh.updateMatrixWorld();
   if (body.mesh.material instanceof THREE.MeshStandardMaterial) {
     const mat = body.mesh.material;

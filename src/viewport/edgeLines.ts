@@ -250,6 +250,7 @@ export class BodyEdges {
   /** Restore build-time appearance on a REUSED body (see resetBodyAppearance). */
   resetAppearance() {
     this.object.position.set(0, 0, 0);
+    this.object.quaternion.identity(); // a Move ghost's rotation
     this.material.clippingPlanes = null;
     this.material.transparent = false;
     this.material.opacity = 1;

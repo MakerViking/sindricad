@@ -8082,9 +8082,35 @@ def _handle_scale(f, ctx):
     act["shape"] = scale(act["shape"], by=factor)
 
 
+def _move_rotation(f, rx, ry, rz):
+    """A move's rotation, about its `pivot` when it has one.
+
+    `pivot` [x, y, z] is optional and absent on every move saved before it
+    existed, which keep rotating about the world origin: for them this is the
+    bare Rot it always was, so they rebuild exactly as before. It is applied
+    only when there is a rotation, since a pivot moves nothing on its own.
+    The face-owner transform (_update_owners) composes this same Location, or
+    a pivoted move's faces would lose their owners."""
+    rot = Rot(rx, ry, rz)
+    p = f.get("pivot")
+    if p is None or not (rx or ry or rz):
+        return rot
+    bad = "Move: the pivot must be three numbers (x, y, z)"
+    if not isinstance(p, (list, tuple)) or len(p) != 3:
+        raise ValueError(bad)
+    try:
+        px, py, pz = (float(v) for v in p)
+    except (TypeError, ValueError):
+        raise ValueError(bad) from None
+    if not all(math.isfinite(v) for v in (px, py, pz)):
+        raise ValueError(bad)
+    return Pos(px, py, pz) * rot * Pos(-px, -py, -pz)
+
+
 def _handle_move(f, ctx):
     rx, ry, rz = ctx.val(f.get("rx", 0)), ctx.val(f.get("ry", 0)), ctx.val(f.get("rz", 0))
     dx, dy, dz = ctx.val(f.get("dx", 0)), ctx.val(f.get("dy", 0)), ctx.val(f.get("dz", 0))
+    rot = _move_rotation(f, rx, ry, rz)
     ids = f.get("bodies")
     targets = [ctx.find_body(b) for b in ids] if ids else [ctx.require_active("Move")]
     for tgt in targets:
@@ -8100,7 +8126,7 @@ def _handle_move(f, ctx):
         if sh is not None and _wrapped_or_none(sh) is None:
             sh = Compound(list(sh))
         if rx or ry or rz:
-            sh = Rot(rx, ry, rz) * sh
+            sh = rot * sh
         if dx or dy or dz:
             sh = Pos(dx, dy, dz) * sh
         tgt["shape"] = sh
@@ -10749,7 +10775,7 @@ def _update_owners(f, val, bodies, pre_shape, pre_owners_by_id, pre_owners_all):
         move_ids = set(ids) if ids else {bodies[-1]["id"]}
         rx, ry, rz = val(f.get("rx", 0)), val(f.get("ry", 0)), val(f.get("rz", 0))
         dx, dy, dz = val(f.get("dx", 0)), val(f.get("dy", 0)), val(f.get("dz", 0))
-        trsf = (Pos(dx, dy, dz) * Rot(rx, ry, rz)).wrapped.Transformation()
+        trsf = (Pos(dx, dy, dz) * _move_rotation(f, rx, ry, rz)).wrapped.Transformation()
     for b in bodies:
         progress_tick()  # per body: face attribution walks every face
         sh = b.get("shape")

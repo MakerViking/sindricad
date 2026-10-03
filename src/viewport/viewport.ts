@@ -1080,30 +1080,6 @@ export class Viewport {
     return this.bodyIdAt(clientX, clientY) ? null : id;
   }
 
-  /** centroid (world) of the given bodies' vertices — the Move gizmo anchor. */
-  bodiesCentroid(ids: string[]): THREE.Vector3 {
-    const out = new THREE.Vector3();
-    if (!this.model) return out;
-    const set = new Set(ids);
-    const bodies = this.model.bodies.filter((b) => set.has(b.id));
-    if (!bodies.length) return out;
-    // each body's own buffer already holds only its own (deduped) vertices, so
-    // this can walk every vertex directly instead of scanning triangles with a
-    // seen-set — the merged-mesh version needed the seen-set to dedupe a vertex
-    // shared by multiple triangles; a per-body buffer has no such duplicates.
-    const tmp = new THREE.Vector3();
-    let n = 0;
-    for (const body of bodies) {
-      const pos = body.mesh.geometry.getAttribute("position");
-      for (let v = 0; v < pos.count; v++) {
-        out.add(tmp.fromBufferAttribute(pos, v).applyMatrix4(body.mesh.matrixWorld));
-        n++;
-      }
-    }
-    if (n) out.divideScalar(n);
-    return out;
-  }
-
   /** True if (clientX,clientY) is over the ViewCube corner — so a right-click
    *  there belongs to the cube, not the model. */
   cubeHitsRegion(clientX: number, clientY: number): boolean {
@@ -2675,15 +2651,16 @@ export class Viewport {
     this.requestRender();
   }
 
-  // --- Move ghost: translate the selected bodies' mesh + edges live during a drag,
-  // with NO sidecar rebuild (a rigid move needs no geometry recompute) — so dragging
-  // is snappy. The real `move` feature is committed on release. With per-body meshes
-  // this is a pure object-transform offset: zero vertex writes, zero GPU uploads.
-  // Raycasts (bodyIdAt, pointInSolid parity) follow matrixWorld, refreshed eagerly
-  // on every offset so picking never lags the visual. On commit (restore=false) the
-  // offset stays until the rebuilt body arrives; the moved body's etag changes, so
-  // setModel replaces its mesh (position 0) — and resetBodyAppearance() clears any
-  // lingering offset on the reuse path as a belt-and-braces guard.
+  // --- Move ghost: move the selected bodies' mesh + edges live during a drag or
+  // while a value is typed, with NO sidecar rebuild (a rigid move needs no geometry
+  // recompute) — so dragging is snappy. The real `move` feature is committed on
+  // release. With per-body meshes this is a pure object transform (a position and a
+  // rotation): zero vertex writes, zero GPU uploads. Raycasts (bodyIdAt,
+  // pointInSolid parity) follow matrixWorld, refreshed eagerly on every change so
+  // picking never lags the visual. On commit (restore=false) the transform stays
+  // until the rebuilt body arrives; the moved body's etag changes, so setModel
+  // replaces its mesh (identity) — and resetBodyAppearance() clears any lingering
+  // transform on the reuse path as a belt-and-braces guard.
   private moveGhost: {
     bodies: BodyMesh[];
     edges: BodyEdges[];
@@ -2697,13 +2674,21 @@ export class Viewport {
     const edges = bodies.map((b) => b.edges);
     this.moveGhost = { bodies, edges };
   }
-  setBodyMoveOffset(offset: THREE.Vector3) {
+  /** Place the ghost by the move's whole rigid transform (moveTool's
+   *  moveMatrix: the translation and the rotation about its pivot). The meshes
+   *  sit at identity, their vertices already in world space, so the matrix IS
+   *  the object transform. */
+  setBodyMoveTransform(m: THREE.Matrix4) {
     if (!this.moveGhost || !this.model) return;
     for (const b of this.moveGhost.bodies) {
-      b.mesh.position.copy(offset);
+      b.mesh.position.setFromMatrixPosition(m);
+      b.mesh.quaternion.setFromRotationMatrix(m);
       b.mesh.updateMatrixWorld();
     }
-    for (const e of this.moveGhost.edges) e.object.position.copy(offset);
+    for (const e of this.moveGhost.edges) {
+      e.object.position.setFromMatrixPosition(m);
+      e.object.quaternion.setFromRotationMatrix(m);
+    }
     this.requestRender();
   }
   endBodyMoveGhost(restore: boolean) {
@@ -2714,9 +2699,13 @@ export class Viewport {
     if (restore) {
       for (const b of this.moveGhost.bodies) {
         b.mesh.position.set(0, 0, 0);
+        b.mesh.quaternion.identity();
         b.mesh.updateMatrixWorld();
       }
-      for (const e of this.moveGhost.edges) e.object.position.set(0, 0, 0);
+      for (const e of this.moveGhost.edges) {
+        e.object.position.set(0, 0, 0);
+        e.object.quaternion.identity();
+      }
       this.requestRender();
     }
     this.moveGhost = null;
