@@ -334,6 +334,12 @@ This file starts on 2026-08-03. For anything before that, see the
 - **Sweeps and lofts no longer fail with "Standard_OutOfRange" when a line in
   the profile overshoots the closed shape.** I ignore the loose ends now.
 
+- **Extruding an area with a loose line end in it gives a sound solid.** A line
+  that overshoots into a closed shape left its end inside the area, and
+  extruding that area made a damaged solid with extra faces in it. I ignore
+  the loose ends for every area now, not only for sweep and loft profiles, and
+  an extrude you already made picks the same area as before.
+
 - **Sketch geometry dimensioned to projected edges follows the body when it
   changes size.** It used to jump to a mirror image on the far side of the edge.
   If I cannot find a solution on the same side, I keep the sketch where it was

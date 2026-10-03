@@ -1551,6 +1551,48 @@ def test_sweep_and_loft_ignore_loose_line_ends_in_the_profile():
           f"lofts 160")
 
 
+def test_a_region_extrude_of_a_cell_with_loose_line_ends_is_valid():
+    """The other half of field report 2a872e90. The same profile that broke the
+    sweep extruded "fine" as a region, but into an INVALID solid: 11 faces where
+    the clean cell gives 9, is_valid False, on the reporter's own sketch. Every
+    line end poking into an arrangement cell stays in it as an extra wire
+    holding one INTERNAL edge, and an extrude turns each into a sliver face.
+
+    Every cell is cleaned now, AFTER it is labelled: the entity set a stored
+    region names (`regionEntities`) is the one it always was, loose ends
+    included, so saved references keep resolving to the same cell. Measured on
+    61 documents (the golden set and every field document to hand): 9 cells in
+    8 documents change, every one of them extruded invalid before and valid
+    after at the same volume, and all 61 build exactly as before."""
+    from builder import _build_sketch
+
+    def L(i, x1, y1, x2, y2):
+        return {"id": i, "type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+    messy = [L("a", -0.3, 0, 4.3, 0), L("b", 4, -0.3, 4, 4.3), L("c", 4.3, 4, -0.3, 4),
+             L("d", 0, 4.3, 0, -0.3), L("s", 2, 4.5, 2, 3.5), L("t", 2, -0.5, 2, 0.5)]
+    entry = _build_sketch({"id": "s1", "type": "sketch", "plane": "XY", "entities": messy},
+                          lambda v: v)
+    cells = [(fc, lbl) for fc, lbl in zip(entry["faces"], entry["cellEntities"])
+             if abs(fc.area - 16) < 1e-6]
+    assert len(cells) == 1, [round(fc.area, 3) for fc in entry["faces"]]
+    cell, lbl = cells[0]
+    assert len(cell.wires()) == 1, f"the cell still carries {len(cell.wires()) - 1} loose-end wires"
+    assert lbl == frozenset("abcdst"), f"the cell's label moved: {lbl}"
+
+    _p, err, bodies = rebuild({"parameters": {}, "features": [
+        {"id": "s1", "type": "sketch", "plane": "XY", "entities": messy},
+        {"id": "ex", "type": "extrude", "sketch": "s1", "distance": 2, "operation": "new",
+         "regions": [[1, 1, 0]], "regionEntities": [sorted(lbl)], "regionHoleEntities": [[]]}]})
+    assert not err, err
+    solid = bodies[0]["shape"]
+    assert solid.is_valid and len(solid.faces()) == 6, \
+        f"region extrude: valid={solid.is_valid}, {len(solid.faces())} faces (a box has 6)"
+    assert abs(solid.volume - 32) < 1e-6, solid.volume
+    print("  region extrude OK: a cell with loose line ends extrudes to a valid 4x4x2 box, "
+          "its label unchanged")
+
+
 def test_revolve_loft_operation():
     """Revolve/Loft used to always do `act["shape"] = solid` onto the active body
     when one existed -- silently DISCARDING it, no boolean, no warning. They now
@@ -5506,6 +5548,7 @@ if __name__ == "__main__":
     test_simplify_mesh()
     test_sweep()
     test_sweep_and_loft_ignore_loose_line_ends_in_the_profile()
+    test_a_region_extrude_of_a_cell_with_loose_line_ends_is_valid()
     test_sweep_along_body_edge()
     test_sweep_edge_path_reports_disconnected_edges()
     test_sweep_along_non_planar_edge_chain()

@@ -6411,13 +6411,12 @@ def _clean_section(shape):
     as "the profile may be too large for the path's corners" (field report
     2a872e90); a loft counts the same wires as holes and refuses.
 
-    Sweep and loft sections only. A region extrude of the same cell builds,
-    but measured on that report's profile it builds an INVALID solid (11 faces
-    where the clean cell gives 9); cleaning every cell in `_subdivide_faces`
-    would fix that too and changes the cells of every sketch with a loose line
-    end, so it waits for a decision. Returns `shape` itself when there is
-    nothing to drop, and when nothing would be left (the caller's own error is
-    the better message)."""
+    Every arrangement cell goes through here too (`_subdivide_faces`): a region
+    extrude of the same cell built, but measured on that report's profile it
+    built an INVALID solid (11 faces where the clean cell gives 9). The sweep and
+    loft calls stay, for a section that does not come from a cell. Returns
+    `shape` itself when there is nothing to drop, and when nothing would be left
+    (the caller's own error is the better message)."""
     from OCP.BRep import BRep_Builder, BRep_Tool
     from OCP.BRepTools import BRepTools, BRepTools_WireExplorer
     from OCP.TopAbs import TopAbs_WIRE
@@ -17467,6 +17466,14 @@ def _subdivide_faces(edges, plane, by_ent=None):
             if not on_cover(fc):  # drop the cover's own exterior cells
                 # label BEFORE locating: `eid_of` is keyed on the unlocated pieces
                 lbl = label(fc)
+                # ... and before cleaning, so a cell keeps the label (the
+                # entity set a stored region names) it has always had. Then drop
+                # the loose line ends the cell carries as extra wires (see
+                # `_clean_section`): left in, a region extrude of the cell built
+                # an INVALID solid (field report 2a872e90: 11 faces where the
+                # clean cell gives 9, is_valid False). A cell without such a
+                # wire comes back as the same object, untouched.
+                fc = _clean_section(fc)
                 for face in (plane * fc).faces():
                     cells.append(face)
                     labels.append(lbl)
