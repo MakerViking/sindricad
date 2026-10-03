@@ -162,7 +162,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
         : []),
       { separator: true, label: "" },
       ...(owner
-        ? [{ label: t(isInspectorEditable(owner.type) ? "context.editFeature" : "context.selectFeature", { name: ownerLabel }), onClick: unlessBusy(() => editFeature(owner.id)) }]
+        ? [{ label: t(isInspectorEditable(owner.type, owner) ? "context.editFeature" : "context.selectFeature", { name: ownerLabel }), onClick: unlessBusy(() => editFeature(owner.id)) }]
         : []),
       ...(bodyId
         ? [

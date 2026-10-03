@@ -7,7 +7,7 @@
 // wheel scrolls horizontally, and dragging a chip near an edge auto-scrolls.
 
 import type { DocumentStore } from "../document/store";
-import type { ResolveDiag } from "../types";
+import type { Feature, ResolveDiag } from "../types";
 import { featureErrorMessages } from "../geometry/featureErrorText";
 import { FEATURE_META } from "./featureMeta";
 import { isInspectorEditable } from "./inspector";
@@ -409,7 +409,9 @@ export class Timeline {
     // so the three cannot drift (field report c8531ceb). Same defensive cast as
     // the meta lookup above: an unknown type is not editable here, so it gets
     // the quieter tooltip rather than a promise this build cannot keep.
-    const editable = isInspectorEditable(f.type as keyof typeof FEATURE_META);
+    // The feature rides along: a sweep has values to edit only when its path
+    // is a helix.
+    const editable = isInspectorEditable(f.type as keyof typeof FEATURE_META, f as Feature);
     node.title = featureTooltip(i, meta.label, errMsg ?? warnMsg, editable);
     // icon() returns trusted markup built from a fixed table — it must NOT go through
     // esc(), which would render the SVG source as visible text.

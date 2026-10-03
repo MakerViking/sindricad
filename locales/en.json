@@ -335,8 +335,10 @@
     "badNumber": "Can't read that number — fix the value, or Esc to cancel",
     "dim": {
       "distance": "D",
+      "pitch": "Pitch",
       "radius": "R",
-      "thickness": "T"
+      "thickness": "T",
+      "turns": "Turns"
     },
     "edge": {
       "dragPrompt": {
@@ -636,8 +638,18 @@
         "newHint": "separate"
       },
       "sweep": {
-        "needsPath": "Sweep: add a second sketch with an open curve for the path",
+        "circleLabel": "Circle {n}, Ø{d} {unit}",
+        "followPath": "Follow the curves",
+        "followPathHint": "along its lines and arcs",
+        "helix": "Helix",
+        "helixHint": "wind around its circle",
+        "helixOpTitle": "Helix operation",
+        "helixPrompt": "Helix pitch (distance per turn) and number of turns · Tab to switch · Enter to apply · Esc to cancel",
+        "helixZero": "The helix pitch and number of turns must be more than zero",
+        "needsPath": "Sweep: add a second sketch with an open curve for the path, or a circle to wind a helix around",
         "needsProfile": "Sweep: select a profile sketch region first",
+        "pathOrHelix": "How should the profile follow this sketch?",
+        "pickCircle": "Which circle should the helix wind around?",
         "pickPath": "Pick the path sketch",
         "sketchLabel": "Sketch {n}"
       },
@@ -899,12 +911,15 @@
       "distance": "Distance",
       "edgeBlend": "Edge blend",
       "factor": "Factor",
+      "flipDirection": "Flip direction",
       "height": "Height",
+      "leftHand": "Left-hand",
       "length": "Length",
       "moveX": "Move X",
       "moveY": "Move Y",
       "moveZ": "Move Z",
       "offset": "Offset",
+      "pitch": "Pitch",
       "radius": "Radius",
       "rotateX": "Rotate X",
       "rotateY": "Rotate Y",
@@ -920,6 +935,7 @@
       "textSize": "Text size",
       "thickness": "Thickness",
       "tolerance": "Tolerance",
+      "turns": "Turns",
       "up": "Up",
       "width": "Width"
     },

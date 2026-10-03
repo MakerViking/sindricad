@@ -50,6 +50,13 @@ function isBlindExtrude(f: Feature): boolean {
   return f.type === "extrude" && f.upTo === undefined && f.upToPlane === undefined;
 }
 
+/** A sweep whose path is a helix around a circle (`helixCircle`). Its pitch and
+ *  turns only exist on that kind of sweep; the inspector also draws its
+ *  Left-hand and Flip toggles from this. */
+export function isHelixSweep(f: Feature): boolean {
+  return f.type === "sweep" && f.helixCircle !== undefined;
+}
+
 /** [field, label, kind] rows per feature type. */
 export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>> = {
   // "Start offset" lifts the profile off its sketch plane before the sweep;
@@ -69,6 +76,8 @@ export const FEATURE_NUM_FIELDS: Partial<Record<Feature["type"], NumFieldRow[]>>
   // normal: positive pushes past the up-to target, negative stops short.
   "press-pull": [["distance", t("inspector.field.distance"), "length"], ["upToOffset", t("inspector.field.targetOffset"), "length", hasUpToTarget]],
   revolve: [["angle", t("inspector.field.angle"), "angle"]],
+  // Turns is a real number, not an integer: 10.5 turns is a valid thread.
+  sweep: [["pitch", t("inspector.field.pitch"), "length", isHelixSweep], ["turns", t("inspector.field.turns"), "count", isHelixSweep]],
   datumPlane: [["offset", t("inspector.field.offset"), "length"]],
   // A split's offset moves the cut along its plane's normal, the same number
   // the Split Body panel's Offset field and arrow set. Listed here so a split
@@ -134,7 +143,7 @@ export const INT_FIELDS: Record<string, number> = {
 export const NON_NUM_STRING_FIELDS = new Set([
   "id", "type", "name", "operation", "font", "style", "align", "text", "pathRef",
   "plane", "sketch", "axis", "profile", "path", "direction", "body", "imagePath", "solid",
-  "bevelStyle", "upToPlane",
+  "bevelStyle", "upToPlane", "helixCircle",
 ]);
 
 /** A parameter target resolved to the live object holding the number. */

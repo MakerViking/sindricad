@@ -1212,6 +1212,21 @@ export class DocumentStore {
     });
   }
 
+  /** Turn a feature's on/off flag (a helix sweep's `leftHand` or `flip`) on or
+   *  off. Off DELETES the key rather than writing false: these flags are
+   *  omitted when false, so a feature switched on and off again saves exactly
+   *  as it did before. */
+  setFeatureFlag(id: string, flag: "leftHand" | "flip", on: boolean) {
+    this.mutate((d) => {
+      const i = d.features.findIndex((f) => f.id === id);
+      if (i < 0) return;
+      const next = { ...d.features[i] } as Record<string, unknown>;
+      if (on) next[flag] = true;
+      else delete next[flag];
+      d.features[i] = next as unknown as Feature;
+    }, true); // a structural feature change, like clearUpToTarget — rebuild now
+  }
+
   /** Drop an extrude / press-pull's up-to target and go back to a plain
    *  distance. Nothing else in the app could delete `upTo`/`upToPlane`, so a
    *  feature committed with "up to that face" was stuck with it — and taper,

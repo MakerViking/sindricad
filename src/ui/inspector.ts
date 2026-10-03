@@ -12,7 +12,7 @@ import { getUnit, onUnitChange, round, fieldText, isPlainNumber, parseField, fmt
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities } from "../sketch/resolve";
 import { entityDims } from "../sketch/entityDims";
-import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget } from "../document/numFields";
+import { FEATURE_NUM_FIELDS as NUM_FIELDS, hasUpToTarget, isHelixSweep } from "../document/numFields";
 import type { FieldKind } from "../document/numFields";
 import { icon } from "./icons";
 import { t, setText, setTitle } from "../i18n";
@@ -21,9 +21,15 @@ import { featureErrorMessages } from "../geometry/featureErrorText";
 
 /** Whether selecting this feature type actually opens an editor (numeric fields
  *  here, or the sketch editor). The context menu labels "Edit" honestly — a
- *  type without an editor gets "Select" instead. */
-export function isInspectorEditable(type: Feature["type"]): boolean {
-  return type === "sketch" || type in NUM_FIELDS;
+ *  type without an editor gets "Select" instead.
+ *
+ *  Pass the feature itself when there is one: a sweep has values to edit only
+ *  when its path is a helix, so for a sweep the TYPE cannot answer. */
+export function isInspectorEditable(type: Feature["type"], f?: Feature): boolean {
+  if (type === "sketch") return true;
+  const fields = NUM_FIELDS[type];
+  if (!fields) return false;
+  return !f || fields.some(([, , , applies]) => !applies || applies(f));
 }
 
 /** What to say when an EDIT gesture (double-click a timeline chip, tree
@@ -36,9 +42,9 @@ export function isInspectorEditable(type: Feature["type"]): boolean {
  *  The not-editable wording stays NEUTRAL on purpose: "delete it and re-run the
  *  tool" is true for loft/sweep/combine/mirror/removeBody/deleteFace and
  *  false for `import`, which has no tool to re-run. */
-export function editHint(type: Feature["type"]): string {
+export function editHint(type: Feature["type"], f?: Feature): string {
   const label = labelOf(type);
-  return isInspectorEditable(type) ? t("inspector.editHint.editable", { label }) : t("inspector.editHint.none", { label });
+  return isInspectorEditable(type, f) ? t("inspector.editHint.editable", { label }) : t("inspector.editHint.none", { label });
 }
 
 /** Label for a feature type, tolerating a type this build does not know (a
@@ -199,10 +205,11 @@ export class Inspector {
     // A type with no numeric fields used to render NOTHING — a blank panel is
     // indistinguishable from a broken one, and the timeline still told the user
     // to double-click the row (field report c8531ceb). Name the feature and say
-    // there is nothing to edit.
+    // there is nothing to edit. The same goes for a feature whose rows all
+    // belong to some other shape of it (a sweep that is not a helix).
     box.appendChild(title(t("inspector.featureTitle", { label: labelOf(f.type), id: f.id }), true));
     box.appendChild(this.failureBlock());
-    if (!fields) {
+    if (!isInspectorEditable(f.type, f)) {
       const hint = document.createElement("div");
       hint.className = "empty-state";
       setText(hint, "inspector.noFields");
@@ -210,7 +217,7 @@ export class Inspector {
       return;
     }
 
-    for (const [field, label, kind, applies] of fields) {
+    for (const [field, label, kind, applies] of fields ?? []) {
       // a row that doesn't apply to THIS feature's shape (press/pull's target
       // offset without an up-to target) is not rendered at all — an input the
       // sidecar ignores reads as "I typed a number and nothing happened".
@@ -251,6 +258,18 @@ export class Inspector {
         row.title = `${bound.name} = ${bound.expr} = ${fmtNumber(round(bound.value))}`;
       }
       box.appendChild(row);
+    }
+
+    // A helix's two flags are not numbers either. Written through
+    // setFeatureFlag, which deletes a flag turned off rather than storing
+    // false, so a sweep toggled on and off again saves as it was.
+    if (isHelixSweep(f)) {
+      const sweep = f as { leftHand?: boolean; flip?: boolean };
+      for (const [flag, key] of [["leftHand", "inspector.field.leftHand"], ["flip", "inspector.field.flipDirection"]] as const) {
+        box.appendChild(
+          toggleRow(key, sweep[flag] === true, (on) => this.whenUnlocked(() => this.store.setFeatureFlag(f.id, flag, on)), locked),
+        );
+      }
     }
 
     // The up-to target is not a number, so it cannot live in FEATURE_NUM_FIELDS
@@ -407,6 +426,30 @@ function textRow(label: string, value: string, commit: (raw: string) => string |
   const input = validatedInput(value, commit, t("inspector.exprInputHint"));
   input.disabled = locked;
   row.append(lab, input);
+  return row;
+}
+
+/** An on/off row: the label, and a checkbox where an input would sit. `key` is
+ *  a catalogue key (setText stamps data-i18n too). A refused write unticks the
+ *  box again and says why in its tooltip. */
+function toggleRow(key: string, checked: boolean, onChange: (on: boolean) => string | null, locked: boolean): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "param-row param-row-toggle";
+  const lab = document.createElement("label");
+  setText(lab, key);
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  box.disabled = locked;
+  box.setAttribute("aria-label", t(key));
+  box.addEventListener("change", () => {
+    const err = onChange(box.checked);
+    if (err) {
+      box.checked = !box.checked;
+      box.title = err;
+    }
+  });
+  row.append(lab, box);
   return row;
 }
 

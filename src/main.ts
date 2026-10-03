@@ -1488,7 +1488,7 @@ function editFeature(id: string) {
   // caret, i.e. strictly worse affordance than a cylinder, which reached the
   // default arm below and got both (field report c8531ceb).
   const toInspector = () => {
-    setStatus(editHint(f.type), "");
+    setStatus(editHint(f.type, f), "");
     inspector.select(id, true);
   };
   switch (f.type) {

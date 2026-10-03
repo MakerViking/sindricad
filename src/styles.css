@@ -1550,6 +1550,14 @@ button.active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* An on/off row (a helix sweep's Left-hand and Flip direction): the checkbox
+   sits at the right edge of the input column instead of being stretched
+   across it by the `.param-row input` rule below. */
+.param-row-toggle input[type="checkbox"] {
+  width: auto;
+  justify-self: end;
+  accent-color: var(--accent);
+}
 .param-row input {
   background: var(--panel-2);
   border: 1px solid var(--line-strong);

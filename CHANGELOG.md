@@ -663,6 +663,28 @@ This file starts on 2026-08-03. For anything before that, see the
   to get the new surfaces. A Clean Up you add from now on also looks for them,
   on a body that is still entirely faceted.
 
+- **Sweep around a helix, for threads and coils.** Draw a circle in a sketch
+  (a construction circle works, and so does a hole's edge projected into the
+  sketch), select a profile area and press Sweep, and pick that sketch as the
+  path. Type the pitch and the number of turns, then choose Cut, Join or New
+  Body. The helix starts where the profile is drawn and winds around the
+  circle's axis for that many turns. When the profile reaches into a part, or
+  a part lies a pitch from it, Cut is offered first and the helix runs into the
+  part, so a circle drawn on a top face still cuts down into it. A coil made as
+  a New Body or a Join grows away from the part instead. Pitch, Turns,
+  Left-hand and Flip direction are in the Inspector afterwards, and a Cut that
+  misses the part says to flip it. For a thread a screw can enter cleanly, draw
+  the profile a pitch outside the part and let the turns run a pitch past the
+  far side too (12 turns for a 10 mm deep M6 hole): a thread that starts on the
+  face leaves a thin ledge where it begins. Drawn that way, an M6x1 thread cut
+  into a block removes the textbook thread volume to within ten parts in a
+  million, and a 20-turn thread took about a second and a half to build on my
+  machine. A profile taller than the pitch, whose turns would overlap, is
+  refused with a message instead of leaving a broken body. If the path sketch
+  also has lines or arcs, Sweep asks whether to follow them or wind a helix.
+  Selecting the hole's edge itself before Sweep still sweeps along that edge,
+  as before; it does not wind a helix.
+
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end
   and click. The arc goes the way you swept, so it can be longer than half a

@@ -6494,10 +6494,146 @@ def _sweep_edge_path(f, ctx):
     return wire, dropped
 
 
-def _handle_sweep(f, ctx):
-    prof = _require_sketch(ctx, f.get("profile"), "sweep")["sketch"]
-    if prof is None:
-        raise ValueError("sweep profile has no closed section")
+# A helix tail shorter than this many turns is dropped rather than built as its
+# own edge: 10.0000001 turns is ten, not ten plus a sliver OCCT has to sweep.
+_HELIX_MIN_TAIL = 1e-3
+
+# How many turns of the helix the overlap check sweeps. One full turn plus a
+# quarter holds the profile at both ends of a turn, which is where neighbouring
+# turns meet; checking the whole helix would cost more with every turn and find
+# nothing new, since every turn is the same screw motion as the first.
+_HELIX_CHECK_TURNS = 1.25
+
+
+def _helix_circle(f, ctx):
+    """The circle a helix sweep winds around, as (centre, axis, radius) in world
+    space. It is read off the `path` sketch's own entity, by id, rather than off
+    the built sketch: a construction circle is the natural thing to draw for a
+    helix and the built sketch drops construction geometry. A projected circle
+    (the edge of a bore, say) works the same way."""
+    entry = _require_sketch(ctx, f.get("path"), "sweep")
+    sketch_f = next((x for x in ctx.features or () if x.get("id") == f.get("path")), {})
+    ent = next((e for e in sketch_f.get("entities", ()) if e.get("id") == f["helixCircle"]), None)
+    curve = (ent or {}).get("curve") or {}
+    if ent is not None and ent.get("type") == "circle":
+        x, y, r = ctx.val(ent.get("x", 0)), ctx.val(ent.get("y", 0)), ctx.val(ent["radius"])
+    elif ent is not None and ent.get("type") == "projected" and curve.get("kind") == "circle":
+        x, y, r = curve["x"], curve["y"], curve["r"]
+    else:
+        raise ValueError(
+            "the circle this helix winds around is no longer in its sketch. "
+            "Delete the sweep and make it again from a circle"
+        )
+    plane = entry["plane"]
+    axis = plane.z_dir * (-1 if f.get("flip") else 1)
+    return plane.from_local_coords((x, y)), axis, r
+
+
+def _helix_path(centre, axis, radius, pitch, turns, lefthand, start):
+    """A helix about the axis through `centre`, as ONE wire of one-turn edges,
+    starting level with `start` and on its side of the axis.
+
+    Never one edge for the whole helix. MEASURED on an M6x1 thread, 14 turns:
+    swept along a single multi-turn edge the solid is valid and the right
+    volume, but cutting it from a block came back INVALID and with MORE volume
+    than the block had (1251.6 against 1250.1 uncut and 1210.4 analytic). The
+    same helix as fourteen one-turn edges cuts to 1210.4278, -1.6e-7 off the
+    analytic thread, and a 40-turn thread cuts in 1.8 s. The curve itself is
+    exact either way: each edge is a line wrapped on a cylinder.
+
+    Why it starts at `start` (the profile's centre). MakePipeShell does not
+    simply carry the profile on from where it lies. MEASURED, it sweeps the
+    whole helix from its first point, as if the profile sat where the helix
+    passes nearest to it. Started at OCCT's own angle, which follows from the
+    axis direction alone, the same profile came out up to half a pitch further
+    along on one side of a part than the other (a profile at +X on a downward
+    helix spanned Z -3.967..0.967, not -4.467..0.467). Started beside the
+    profile, the thread always runs from the profile for `turns` turns: ten
+    placements, both directions, all exact.
+
+    Each turn starts at the same angle one pitch further along the axis, so the
+    edges meet end to end; a fractional last turn is a shorter edge."""
+    centre = centre + axis * (start - centre).dot(axis)
+    whole = int(turns)
+    edges = [
+        Edge.make_helix(pitch, pitch, radius, centre + axis * (i * pitch), axis, lefthand=lefthand)
+        for i in range(whole)
+    ]
+    tail = turns - whole
+    if tail > _HELIX_MIN_TAIL or not edges:
+        edges.append(Edge.make_helix(pitch, tail * pitch, radius, centre + axis * (whole * pitch),
+                                     axis, lefthand=lefthand))
+    helix = Wire(edges)
+    # Turn it about the axis until it starts on the profile's side. A profile
+    # centred on the axis has no side; it is refused later as crossing it.
+    first = helix.start_point() - centre
+    side = start - centre
+    side = side - axis * side.dot(axis)
+    if side.length < 1e-9:
+        return helix
+    turn = math.atan2(first.cross(side).dot(axis), first.dot(side))
+    return helix.rotate(Axis(centre, axis), math.degrees(turn))
+
+
+def _sweep_helix(prof, f, ctx):
+    """Sweep `prof` around the helix a sweep's `helixCircle` asks for (Doug 30:
+    cutting internal threads into 3D-printed parts).
+
+    The thread starts where the profile is drawn and runs `turns` turns along
+    the circle's axis: along its sketch's normal, or against it with `flip`.
+    The circle gives the axis; the profile need not touch the helix.
+
+    The profile is swept in FRENET mode. On a helix the Frenet frame turns with
+    the helix and climbs with it, so the profile is carried by a pure screw
+    motion about the axis. The corrected-Frenet default that
+    `_sweep_solid` uses is WRONG here and says nothing: MEASURED +12% volume on
+    the M6 profile (+20% in the triage's), valid=True, because the profile
+    slowly rolls as it climbs. build123d's `normal=` is no fallback either: it
+    fixes the profile's orientation outright, and MEASURED 5.19 against 83.44.
+
+    Neighbouring turns that overlap, or a profile across the helix axis, sweep
+    to a solid OCCT still calls valid at the right-looking volume, and a cut
+    with it left a body of NEGATIVE volume that the Cut guard counted as
+    material removed. The self-interference check on `_HELIX_CHECK_TURNS` turns
+    is what catches both (about 0.4 s on the M6 profile)."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Check
+
+    pitch, turns = ctx.val(f["pitch"]), ctx.val(f["turns"])
+    centre, axis, radius = _helix_circle(f, ctx)
+    _require_positive("Sweep", pitch=pitch, turns=turns, **{"helix radius": radius})
+    lefthand = bool(f.get("leftHand"))
+    start = prof.center()
+
+    def swept(n):
+        try:
+            solid = sweep(sections=prof, is_frenet=True,
+                          path=_helix_path(centre, axis, radius, pitch, n, lefthand, start))
+        except Exception as ex:
+            raise ValueError(
+                "Sweep could not build the helix. Neighbouring turns may touch, which "
+                "happens when the profile is as tall as the pitch along the axis. "
+                f"[{type(ex).__name__}]"
+            ) from ex
+        if not (solid.volume > 0 and solid.is_valid):
+            raise ValueError(
+                "Sweep could not build a solid along the helix. The profile may cross "
+                "the helix axis, or neighbouring turns may overlap."
+            )
+        return solid
+
+    solid = swept(turns)
+    probe = solid if turns <= _HELIX_CHECK_TURNS else swept(_HELIX_CHECK_TURNS)
+    if not BRepAlgoAPI_Check(probe.wrapped, False, True).IsValid():
+        raise ValueError(
+            "Neighbouring turns of the helix overlap, or the profile crosses the helix "
+            "axis. Make the pitch larger than the profile is tall along the axis, or "
+            "move the profile off the axis."
+        )
+    return solid
+
+
+def _sweep_path(f, ctx):
+    """The wire a non-helix sweep follows: picked body edges or a path sketch."""
     # `pathEdges` (body edges) takes precedence over `path` (a sketch). Both are
     # resolved to the same kind of wire, so everything downstream is unchanged.
     if f.get("pathEdges"):
@@ -6521,13 +6657,36 @@ def _handle_sweep(f, ctx):
             f"{pieces_label} in {len(dropped) + 1} disconnected pieces; the "
             f"sweep followed the longest ({path.length:.3f} mm of {whole:.3f} mm)",
         )
-    solid = _sweep_solid(_clean_section(prof), path)
+    return path
+
+
+def _handle_sweep(f, ctx):
+    prof = _require_sketch(ctx, f.get("profile"), "sweep")["sketch"]
+    if prof is None:
+        raise ValueError("sweep profile has no closed section")
+    # A helix winds around a circle in the `path` sketch instead of following
+    # its curves. Its own sweep mode and its own path; every other sweep is
+    # built exactly as before.
+    cut_noop_msg = None
+    if f.get("helixCircle"):
+        solid = _sweep_helix(_clean_section(prof), f, ctx)
+        # A helix that misses is almost always one running the wrong way along
+        # its axis: out of the part's face instead of into it. There is nothing
+        # to drag; the fix is the Flip direction toggle.
+        cut_noop_msg = (
+            "Cut removed nothing: the helix does not reach any body. It may run "
+            "away from the part; tick Flip direction in the Inspector."
+        )
+    else:
+        path = _sweep_path(f, ctx)
+        solid = _sweep_solid(_clean_section(prof), path)
     # Same New/Join/Cut boolean path as extrude/revolve/loft: booleans against
     # every visible overlapping body, with the loud no-op guards. (Sweep used to
     # inline `act["shape"] + solid` / `- solid` against only the active body —
     # unguarded, and a Cut with no active body silently created a new body.)
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
-                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"))
+                         ctx.hidden_bodies, diag=ctx.diagnostics, feature_id=f.get("id"),
+                         cut_noop_msg=cut_noop_msg)
 
 
 def _blob_top_children(shape):
@@ -10492,7 +10651,7 @@ def _imprint(solid, tools):
 
 
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False,
-                         diag=None, feature_id=None):
+                         diag=None, feature_id=None, cut_noop_msg=None):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
@@ -10506,6 +10665,8 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
     body), raises ValueError — the rebuild loop records it as a feature error and
     flags the feature red, instead of silently doing nothing. Volume-read failures
     fall through to the old behavior (never raise a misleading no-op error).
+    `cut_noop_msg` replaces the Cut no-op's text for a feature with no drag to
+    reverse (a helix sweep); every other caller keeps the extrude wording.
 
     A Cut that SEALS a void (a solid gains a second shell) is the one wrong-looking result
     that isn't wrong enough to refuse — a deliberate hollow is legal — so it pushes
@@ -10617,7 +10778,8 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
                     sealed = True
         if not hits or (measured and removed < eps(prism_vol)):
             raise ValueError(
-                "Cut removed nothing — the extrude doesn't reach any body. "
+                cut_noop_msg
+                or "Cut removed nothing — the extrude doesn't reach any body. "
                 "Drag the other way, or use Join."
             )
         for b, newshape in results:

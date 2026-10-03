@@ -5,7 +5,8 @@
 // singletons/state owned by main.ts, passed in once via createFeatureStarters.
 import type { DocumentStore } from "../document/store";
 import type { Viewport } from "../viewport/viewport";
-import type { SketchOverlay } from "../sketch/overlay";
+import type * as THREE from "three";
+import type { SketchOverlay, WorldRegion } from "../sketch/overlay";
 import type { SketchMode, SketchTool } from "../sketch/sketchMode";
 import { SketchPlane } from "../sketch/plane";
 import type { ExtrudeTool } from "./extrudeTool";
@@ -26,9 +27,10 @@ import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
 import { findSelectorAt, picksByPosition, replaceSelectorAt } from "./repickReference";
 import { datumPlaneDef, planeDefOf, planeOf } from "../document/planeOf";
 import { moveSketchPlaneBlocker } from "../document/sketchPlaneEdits";
-import { resolveEntities } from "../sketch/resolve";
+import { resolveEntities, resolveNum } from "../sketch/resolve";
 import { entityPolyline } from "../sketch/region";
 import { t } from "../i18n";
+import { fieldText, getUnit } from "../ui/units";
 
 /** Said out loud whenever a plane is picked off a curved face. The plane itself
  *  is real and usable (pickFacePlane returns the tangent), but nothing anchors
@@ -700,10 +702,167 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     clearSelectionForCreate();
   }
 
+  type SketchFeature = Extract<Feature, { type: "sketch" }>;
+
+  /** The circles in a sketch a helix can wind around: drawn, construction or
+   *  projected, as long as they carry an id to be named by. */
+  function helixCircles(sk: SketchFeature): { id: string; x: number; y: number; r: number }[] {
+    const params = store.document.parameters;
+    const out: { id: string; x: number; y: number; r: number }[] = [];
+    for (const e of sk.entities) {
+      if (!e.id) continue;
+      if (e.type === "circle") {
+        out.push({ id: e.id, x: resolveNum(e.x ?? 0, params), y: resolveNum(e.y ?? 0, params), r: resolveNum(e.radius, params) });
+      } else if (e.type === "projected" && e.curve.kind === "circle") {
+        out.push({ id: e.id, x: e.curve.x, y: e.curve.y, r: e.curve.r });
+      }
+    }
+    return out;
+  }
+
+  /** Whether a sketch has a curve a plain sweep could follow. Mirrors the
+   *  sidecar's path wire: construction geometry never joins it, and a circle
+   *  or a rectangle only ever makes an area. */
+  function hasPathCurve(sk: SketchFeature): boolean {
+    return sk.entities.some((e) =>
+      !e.construction &&
+      (e.type === "line" || e.type === "arc" || e.type === "spline" || e.type === "polygon" || e.type === "slot" ||
+        (e.type === "projected" && e.curve.kind !== "circle")));
+  }
+
+  // How many points of a profile's boundary the helix guesses probe, at most.
+  // A thread profile is a handful of corners and gets every one; a circle's
+  // many tessellated points are thinned to this.
+  const PROFILE_PROBES = 16;
+
+  /** A profile area's anchor point and points around its outer boundary, in
+   *  world space. */
+  function profileProbes(wr: WorldRegion): THREE.Vector3[] {
+    const loop = wr.region.loop;
+    const step = Math.max(1, Math.ceil(loop.length / PROFILE_PROBES));
+    const out = [wr.interior3D];
+    for (let i = 0; i < loop.length; i += step) {
+      const p = loop[i]!;
+      out.push(wr.plane.to3D(p.x, p.y));
+    }
+    return out;
+  }
+
+  // A helix's pitch and turns, asked before anything is committed, like the
+  // shell thickness below: Enter straight away takes these.
+  const HELIX_PITCH_MM = 1;
+  const HELIX_TURNS = 10;
+  let helixDim: DimInput | null = null;
+
+  function askHelixSize(at: { x: number; y: number }): Promise<{ pitch: number; turns: number } | null> {
+    const dim = (helixDim ??= new DimInput());
+    // The busy flag the shell prompt holds, for the same reason: no other tool
+    // may start underneath an open box, and every exit has to clear it.
+    setPlanePick(true);
+    setPrompt(t("feature.starters.sweep.helixPrompt"));
+    return new Promise((resolve) => {
+      const close = (size: { pitch: number; turns: number } | null) => {
+        setPlanePick(false);
+        setPrompt(null);
+        dim.hide();
+        window.removeEventListener("keydown", onEsc, true);
+        resolve(size);
+      };
+      function onEsc(e: KeyboardEvent) {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        close(null);
+      }
+      window.addEventListener("keydown", onEsc, true);
+      dim.show(
+        [
+          { name: "pitch", label: t("feature.dim.pitch"), kind: "length" },
+          { name: "turns", label: t("feature.dim.turns"), kind: "count" },
+        ],
+        () => {
+          const pitch = dim.getValue("pitch");
+          const turns = dim.getValue("turns");
+          if (pitch === null || turns === null || !(pitch > 0) || !(turns > 0)) {
+            close(null);
+            setStatus(t("feature.starters.sweep.helixZero"), "");
+            return;
+          }
+          close({ pitch, turns });
+        },
+        () => close(null),
+      );
+      dim.position(at.x, at.y);
+      dim.seed("pitch", HELIX_PITCH_MM);
+      dim.seed("turns", HELIX_TURNS);
+      dim.focus();
+    });
+  }
+
+  /** Sweep a profile around a helix on one of `circles` in `pathSketch` (Doug
+   *  30: cutting internal threads into 3D-printed parts). Asks which circle
+   *  when there are several, then the pitch and turns, then the operation. */
+  async function startHelixSweep(
+    wr: WorldRegion,
+    pathSketch: SketchFeature,
+    circles: { id: string; x: number; y: number; r: number }[],
+  ) {
+    let circle = circles[0];
+    if (circles.length > 1) {
+      const picked = await choose<string>(
+        t("feature.starters.sweep.pickCircle"),
+        circles.map((c, i) => ({
+          value: c.id,
+          label: t("feature.starters.sweep.circleLabel", { n: i + 1, d: fieldText(2 * c.r), unit: getUnit() }),
+        })),
+      );
+      circle = circles.find((c) => c.id === picked);
+    }
+    if (!circle) return;
+    const plane = new SketchPlane(planeOf(pathSketch, store.buildState.result?.planes));
+    const size = await askHelixSize(viewport.projectToScreen(plane.to3D(circle.x, circle.y)));
+    if (!size) return;
+    // Guessed from the profile's own area, the way Extrude guesses: a profile
+    // with material in it, or a pitch either way along the axis, is cutting a
+    // thread; one in the open is a coil. Probed around its boundary as well as
+    // at its anchor point. A thread profile is thin and reaches into the bore,
+    // so the anchor alone can sit in the hole or the air while the tip is in
+    // the wall (one drawn ON a face straddles it, and the anchor lands on the
+    // surface, where inside and outside is a coin toss).
+    const probes = profileProbes(wr);
+    const solidAt = (shift: number) =>
+      probes.some((p) => viewport.pointInSolid(p.clone().addScaledVector(plane.n, shift)));
+    const ahead = solidAt(size.pitch);
+    const behind = solidAt(-size.pitch);
+    const guess = solidAt(0) || ahead || behind ? "cut" : "new";
+    const ops = [
+      { value: "cut" as const, label: t("feature.op.cut"), hint: t("feature.starters.solidOp.cutHint") },
+      { value: "join" as const, label: t("feature.op.join"), hint: t("feature.starters.solidOp.joinHint") },
+      { value: "new" as const, label: t("feature.op.newBody"), hint: t("feature.starters.solidOp.newHint") },
+    ];
+    ops.sort((a, b) => (a.value === guess ? -1 : b.value === guess ? 1 : 0)); // default first
+    const operation = await choose(t("feature.starters.sweep.helixOpTitle"), ops);
+    if (!operation) return;
+    // Which way the helix runs follows from what it is for, so it is decided
+    // only once the operation is known. It runs along the circle's normal
+    // unless the material says otherwise. A Cut runs INTO the material: a
+    // circle drawn on a part's top face points out of the part, and a thread
+    // cut along it would cut nothing. A Join or a New Body runs into the OPEN:
+    // a coil standing on a plate grows up off it, not down through it. Flip
+    // direction in the Inspector undoes either guess, and a Cut that misses
+    // says so.
+    const flip = operation === "cut" ? behind && !ahead : ahead && !behind;
+    store.addFeature({
+      id: store.nextId(), type: "sweep", profile: wr.sketchId, path: pathSketch.id,
+      helixCircle: circle.id, pitch: size.pitch, turns: size.turns, ...(flip ? { flip: true } : {}), operation,
+    } as Feature);
+  }
+
   // Sweep: select a closed profile region, then pick a second (open) sketch as the
   // path — or pre-select BODY EDGES in the viewport and they become the path
   // instead (#16). The profile should sit at the start of the path, roughly
-  // perpendicular.
+  // perpendicular. A path sketch with a circle in it can be a HELIX instead:
+  // the profile winds around the circle's axis (Doug 30).
   async function startSweep() {
     if (busy()) return;
     const regions = overlay.selectedRegions();
@@ -739,6 +898,20 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       const picked = await choose<string>(t("feature.starters.sweep.pickPath"), candidates.map((f) => ({ value: f.id, label: label(f.id) })));
       if (!picked) return;
       pathId = picked;
+    }
+    // A circle with nothing else to follow can only mean a helix. With both,
+    // following the curves stays first: it is what the same sketch did before.
+    const pathSketch = candidates.find((f) => f.id === pathId) as SketchFeature;
+    const circles = helixCircles(pathSketch);
+    if (circles.length) {
+      const kind = hasPathCurve(pathSketch)
+        ? await choose<"path" | "helix">(t("feature.starters.sweep.pathOrHelix"), [
+            { value: "path", label: t("feature.starters.sweep.followPath"), hint: t("feature.starters.sweep.followPathHint") },
+            { value: "helix", label: t("feature.starters.sweep.helix"), hint: t("feature.starters.sweep.helixHint") },
+          ])
+        : "helix";
+      if (!kind) return;
+      if (kind === "helix") return startHelixSweep(wr, pathSketch, circles);
     }
     store.addFeature({ id: store.nextId(), type: "sweep", profile: wr.sketchId, path: pathId, operation: "new" } as Feature);
   }

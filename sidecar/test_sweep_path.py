@@ -19,6 +19,7 @@ Run:  uv run python test_sweep_path.py
 """
 
 import math
+import time
 
 from builder import rebuild
 
@@ -195,10 +196,262 @@ def test_a_sweep_that_builds_nothing_refuses_loudly():
           f"vol {solid.volume:.3f}")
 
 
+# --- helix paths (Doug 30: internal threads for 3D printing) -----------------
+#
+# A sweep whose `helixCircle` names a circle in its path sketch winds the profile
+# around that circle's axis. Two kernel traps, both SILENT, are what these pin:
+#
+#   1. The corrected-Frenet sweep mode every other sweep uses lets the profile
+#      roll as it climbs: a valid solid, +11% volume on the bare M6 coil below.
+#   2. The helix built as ONE multi-turn edge sweeps fine, but cutting it from a
+#      block came back INVALID with more volume than the uncut block (raw OCCT),
+#      which the Cut guard here then reports as removing nothing.
+#
+# The oracle is Pappus, per turn: a profile in a plane through the axis, carried
+# by a screw motion, sweeps area * 2*pi*(centroid radius) per turn, and inside a
+# slab of height h that the thread runs right through, h/pitch turns of it.
+
+M6_PITCH = 1.0
+M6_H = math.sqrt(3) / 2 * M6_PITCH            # ISO fundamental triangle height
+M6_APEX = 3.0 + M6_H / 8                      # its apex, past the major radius
+M6_MINOR = (6.0 - 1.082532 * M6_PITCH) / 2    # internal thread minor radius, D1/2
+M6_TOOL_IN = 2.3                              # the tool reaches into the bore
+
+
+def _m6_width(r):
+    """The ISO 60 degree groove's width (along the axis) at radius r."""
+    return (M6_APEX - r) * 2 * math.tan(math.radians(30))
+
+
+def _trapezoid(r_in, r_out, z0):
+    """The thread groove between radii r_in and r_out, centred on height z0, as
+    (radius, height) corners."""
+    return [(r_in, z0 - _m6_width(r_in) / 2), (r_out, z0 - _m6_width(r_out) / 2),
+            (r_out, z0 + _m6_width(r_out) / 2), (r_in, z0 + _m6_width(r_in) / 2)]
+
+
+def _area_and_centroid_r(pts):
+    """Shoelace area and centroid radius of a (radius, height) polygon."""
+    a = cx = 0.0
+    for (x0, y0), (x1, y1) in zip(pts, pts[1:] + pts[:1]):
+        c = x0 * y1 - x1 * y0
+        a += c
+        cx += (x0 + x1) * c
+    return abs(a / 2), cx / (3 * a)
+
+
+def _thread_profile(z0, sid="thr"):
+    """The M6x1 cutting tool on XZ (local x = radius, local y = height): the ISO
+    groove from inside the bore out to the major radius, where it is truncated
+    by H/8. Narrower than the pitch everywhere, so the turns never touch."""
+    pts = _trapezoid(M6_TOOL_IN, 3.0, z0)
+    return {"id": sid, "type": "sketch", "plane": "XZ", "entities": [
+        _line(f"t{i}", pts[i], pts[(i + 1) % 4]) for i in range(4)]}
+
+
+def _helix_sketch(sid="hx", circle_id="hc", radius=3.0, construction=True):
+    entity = {"type": "circle", "id": circle_id, "radius": radius, "x": 0, "y": 0}
+    if construction:
+        entity["construction"] = True
+    return {"id": sid, "type": "sketch", "plane": "XY", "entities": [entity]}
+
+
+def _helix_sweep(turns, operation, **extra):
+    return {"id": "sw", "type": "sweep", "profile": "thr", "path": "hx",
+            "helixCircle": "hc", "pitch": M6_PITCH, "turns": turns,
+            "operation": operation, **extra}
+
+
+def _threaded_block_doc(height, turns, z0=-2.0):
+    """A 12 x 12 block `height` tall on XY, bored through at the M6 minor
+    diameter, with an M6x1 thread cut by a helix sweep that starts below the
+    block and runs out above it."""
+    return {"parameters": {}, "features": [
+        {"id": "blk", "type": "sketch", "plane": "XY", "entities": [
+            {"type": "rectangle", "id": "r", "width": 12, "height": 12}]},
+        {"id": "e1", "type": "extrude", "sketch": "blk", "distance": height, "operation": "new"},
+        {"id": "bore", "type": "sketch", "plane": "XY", "entities": [
+            {"type": "circle", "id": "b", "radius": M6_MINOR}]},
+        {"id": "e2", "type": "extrude", "sketch": "bore", "distance": height, "operation": "cut"},
+        _thread_profile(z0),
+        _helix_sketch(),
+        _helix_sweep(turns, "cut"),
+    ]}
+
+
+def _analytic_thread(height):
+    """The material an M6x1 internal thread removes from a slab `height` tall:
+    only the part of the tool outside the bore cuts anything."""
+    area, rbar = _area_and_centroid_r(_trapezoid(M6_MINOR, 3.0, 0.0))
+    return area * 2 * math.pi * rbar * height / M6_PITCH
+
+
+def _cut_thread(height, turns):
+    """Rebuild the threaded block; returns (body, removed volume, seconds)."""
+    t0 = time.perf_counter()
+    part, err, bodies = rebuild(_threaded_block_doc(height, turns))
+    seconds = time.perf_counter() - t0
+    assert not err, err
+    assert len(bodies) == 1, f"expected the one threaded block, got {len(bodies)} bodies"
+    body = bodies[0]["shape"]
+    bored = 12 * 12 * height - math.pi * M6_MINOR ** 2 * height
+    return body, bored - body.volume, seconds
+
+
+def test_a_helix_cuts_an_m6_thread_to_its_analytic_volume():
+    """The whole point of the feature: an M6x1 internal thread cut into a block
+    is a valid solid and the material it removes is the analytic thread.
+
+    RED with the helix as one 14-turn edge (trap 2): the cut is refused as
+    removing nothing. RED with the default sweep mode (trap 1): the rolling
+    profile overlaps its neighbours and is refused, and with that check gone
+    too the thread removed 69.0 mm3, +74%. The oracle is the REMOVED volume,
+    not the body's: the whole thread is 3% of the block."""
+    body, removed, seconds = _cut_thread(10.0, 14)
+    want = _analytic_thread(10.0)
+    rel = removed / want - 1
+    assert body.is_valid, "the threaded block is not a valid solid"
+    assert abs(rel) < 0.005, (
+        f"the thread removed {removed:.4f} mm3, the analytic M6x1 thread is "
+        f"{want:.4f} mm3 ({rel:+.2%})")
+    print(f"{PASS} an M6x1 thread cuts to the analytic volume: removed "
+          f"{removed:.4f} of {want:.4f} mm3 ({rel:+.1e}), valid, {seconds:.2f} s")
+
+
+def test_a_twenty_turn_thread_cuts_within_the_heartbeat():
+    """The sidecar reaps a worker whose heartbeat stalls for STALL_TIMEOUT, and
+    the heartbeat ticks once per feature, so one sweep has that long at most.
+    MEASURED 0.8 s for the sweep and the cut, plus the overlap check."""
+    from server import STALL_TIMEOUT
+
+    body, removed, seconds = _cut_thread(16.0, 20)
+    want = _analytic_thread(16.0)
+    assert body.is_valid, "the 20-turn threaded block is not a valid solid"
+    assert abs(removed / want - 1) < 0.005, (
+        f"the 20-turn thread removed {removed:.4f} mm3 of {want:.4f}")
+    assert seconds < STALL_TIMEOUT, (
+        f"a 20-turn thread took {seconds:.1f} s, past the {STALL_TIMEOUT:.0f} s "
+        "heartbeat: the worker would be reaped mid-cut")
+    print(f"{PASS} a 20-turn thread cuts in {seconds:.2f} s "
+          f"(heartbeat {STALL_TIMEOUT:.0f} s), removed {removed:.4f} of {want:.4f}")
+
+
+def _coil_doc(turns, **extra):
+    """The thread profile swept on its own into a New Body: a coil."""
+    return {"parameters": {}, "features": [
+        _thread_profile(0.0), _helix_sketch(construction=False),
+        _helix_sweep(turns, "new", **extra)]}
+
+
+def test_a_helix_carries_the_profile_without_rolling_it():
+    """Pappus on the bare coil, fractional turns, both hands: the profile turns
+    with the helix and does not roll about it (trap 1: 43.06 mm3, +11%).
+    Handedness is read off the geometry: a quarter turn in, a right-hand helix
+    has carried the profile to +Y a quarter pitch up, a left-hand one is three
+    quarters of a turn from there."""
+    from build123d import Vector
+
+    area, rbar = _area_and_centroid_r(_trapezoid(M6_TOOL_IN, 3.0, 0.0))
+    want = area * 2 * math.pi * rbar * 6.5
+    quarter = Vector(0, rbar, M6_PITCH / 4)
+    for extra, hand in (({}, "right"), ({"leftHand": True}, "left")):
+        part, err, bodies = rebuild(_coil_doc(6.5, **extra))
+        assert not err, err
+        coil = bodies[0]["shape"]
+        assert coil.is_valid, f"the {hand}-hand coil is not a valid solid"
+        assert abs(coil.volume / want - 1) < 1e-4, (
+            f"the {hand}-hand coil swept {coil.volume:.4f} mm3, Pappus says "
+            f"{want:.4f}: the profile rolled as it climbed")
+        assert coil.is_inside(quarter) == (hand == "right"), (
+            f"the {hand}-hand coil winds the wrong way")
+        print(f"{PASS} a {hand}-hand coil of 6.5 turns sweeps {coil.volume:.4f} "
+              f"of {want:.4f} mm3")
+
+
+def test_flip_runs_the_helix_the_other_way_along_its_axis():
+    """The helix climbs along the circle's sketch normal (+Z on XY), and Flip
+    sends it the other way from the same profile."""
+    half = _m6_width(M6_TOOL_IN) / 2
+    for extra, lo, hi in (({}, -half, 4 + half), ({"flip": True}, -4 - half, half)):
+        part, err, bodies = rebuild(_coil_doc(4, **extra))
+        assert not err, err
+        bb = bodies[0]["shape"].bounding_box()
+        assert abs(bb.min.Z - lo) < 0.05 and abs(bb.max.Z - hi) < 0.05, (
+            f"{extra or 'unflipped'}: the coil spans Z {bb.min.Z:.3f}..{bb.max.Z:.3f}, "
+            f"expected {lo:.3f}..{hi:.3f}")
+    print(f"{PASS} Flip runs the helix down the axis instead of up it")
+
+
+def test_a_helix_around_a_projected_circle():
+    """A circle projected from a body (the edge of a bore, say) is a helix
+    circle like a drawn one."""
+    doc = _coil_doc(3)
+    doc["features"][1]["entities"] = [{
+        "type": "projected", "id": "hc", "curve": {"kind": "circle", "x": 0, "y": 0, "r": 3},
+        "source": {"kind": "edge", "body": "body1", "sel": {"kind": "edge", "by": "nearest", "point": [3, 0, 0]}},
+        "construction": True}]
+    part, err, bodies = rebuild(doc)
+    assert not err, err
+    area, rbar = _area_and_centroid_r(_trapezoid(M6_TOOL_IN, 3.0, 0.0))
+    assert abs(bodies[0]["shape"].volume / (area * 2 * math.pi * rbar * 3) - 1) < 1e-4
+    print(f"{PASS} a projected circle drives a helix")
+
+
+def test_overlapping_turns_refuse_instead_of_cutting_garbage():
+    """A profile taller than the pitch: every turn overlaps the next. OCCT
+    sweeps that to a solid it calls VALID, at the volume of the overlapping
+    turns counted twice, and cutting it from the block left a body of NEGATIVE
+    volume that the Cut guard counted as material removed. It must refuse."""
+    doc = _threaded_block_doc(10.0, 14)
+    for f in doc["features"]:
+        if f["id"] == "sw":
+            f["pitch"] = 0.5  # the tool is 0.93 mm tall at the bore
+    part, err, bodies = rebuild(doc)
+    sweep_err = [e for e in err if e.get("feature_id") == "sw"]
+    assert sweep_err, f"a helix whose turns overlap built without an error: {err}"
+    assert "overlap" in sweep_err[0]["message"], sweep_err[0]["message"]
+    print(f"{PASS} overlapping turns refuse: {sweep_err[0]['message'][:60]}...")
+
+
+def test_a_helix_cut_that_runs_away_from_the_part_points_at_flip():
+    """The way a wrong direction guess shows up: the helix climbs out of the
+    part instead of into it and cuts nothing. The no-op guard must say so in
+    the helix's own terms. The extrude's wording ("Drag the other way") names
+    a drag a sweep does not have; the fix is the Flip direction toggle."""
+    doc = _threaded_block_doc(10.0, 3)
+    for f in doc["features"]:
+        if f["id"] == "sw":
+            f["flip"] = True  # from below the block, down and away from it
+    part, err, bodies = rebuild(doc)
+    sweep_err = [e for e in err if e.get("feature_id") == "sw"]
+    assert sweep_err, f"a helix cut that misses the part built without an error: {err}"
+    msg = sweep_err[0]["message"]
+    assert "removed nothing" in msg and "Flip direction" in msg, msg
+    assert "Drag" not in msg and "extrude" not in msg, msg
+    print(f"{PASS} a helix cut that misses points at Flip direction")
+
+
+def test_a_helix_whose_circle_is_gone_says_so():
+    """The circle was deleted from the sketch after the sweep was made."""
+    doc = _coil_doc(3)
+    doc["features"][1]["entities"][0]["id"] = "somethingElse"
+    part, err, bodies = rebuild(doc)
+    assert err and "no longer in its sketch" in err[0]["message"], err
+    print(f"{PASS} a helix whose circle is gone says so")
+
+
 if __name__ == "__main__":
     test_a_rounding_gap_does_not_cut_the_path_short()
     test_a_closed_path_sweeps_to_a_real_solid()
     test_a_corner_in_an_open_path_keeps_its_volume()
     test_a_path_in_real_pieces_says_so()
     test_a_sweep_that_builds_nothing_refuses_loudly()
+    test_a_helix_cuts_an_m6_thread_to_its_analytic_volume()
+    test_a_twenty_turn_thread_cuts_within_the_heartbeat()
+    test_a_helix_carries_the_profile_without_rolling_it()
+    test_flip_runs_the_helix_the_other_way_along_its_axis()
+    test_a_helix_around_a_projected_circle()
+    test_overlapping_turns_refuse_instead_of_cutting_garbage()
+    test_a_helix_cut_that_runs_away_from_the_part_points_at_flip()
+    test_a_helix_whose_circle_is_gone_says_so()
     print("\nall sweep-path tests passed")

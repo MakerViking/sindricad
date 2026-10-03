@@ -356,6 +356,90 @@ describe("inspector: clearing an up-to target", () => {
   });
 });
 
+// --- a sweep around a helix (Doug 30) ---------------------------------------
+//
+// Pitch and Turns exist only on a sweep whose path is a helix, and its two
+// on/off choices are checkboxes rather than numbers. Run against the REAL store,
+// so what is asserted is the document the user ends up with.
+
+const helixSweep = {
+  id: "s1",
+  type: "sweep",
+  profile: "p",
+  path: "q",
+  helixCircle: "c1",
+  pitch: 1,
+  turns: 14,
+  operation: "cut",
+} as unknown as Feature;
+
+/** A checkbox row by its label: [the row, its checkbox]. */
+function toggle(root: FakeEl, label: string): FakeEl {
+  const row = findRow(root, label);
+  expect(row, `no "${label}" row rendered`).toBeTruthy();
+  const box = row!.children.find((c) => c.tagName === "input" && c.type === "checkbox");
+  expect(box, `the "${label}" row has no checkbox`).toBeTruthy();
+  return box!;
+}
+
+describe("inspector: a sweep around a helix", () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => void vi.useRealTimers());
+
+  it("offers Pitch and Turns, and the Left-hand and Flip direction switches", () => {
+    const { root, inspector } = mountReal(helixSweep);
+    inspector.select("s1");
+    expect(rows(root).map((r) => r.label)).toEqual(["Pitch mm", "Turns"]);
+    const left = toggle(root, t("inspector.field.leftHand")) as FakeEl & { checked?: boolean };
+    const flip = toggle(root, t("inspector.field.flipDirection")) as FakeEl & { checked?: boolean };
+    expect(left.checked).toBe(false);
+    expect(flip.checked).toBe(false);
+  });
+
+  it("a plain sweep says it has nothing to edit, rather than an empty panel", () => {
+    const plain = { id: "s2", type: "sweep", profile: "p", path: "q", operation: "new" } as unknown as Feature;
+    const { root, inspector } = mountReal(plain);
+    inspector.select("s2");
+    expect(rows(root)).toEqual([]);
+    expect(findRow(root, t("inspector.field.leftHand")), "a plain sweep offers a helix switch").toBeUndefined();
+    expect(texts(root)).toContain(t("inspector.noFields"));
+  });
+
+  it("ticking Left-hand writes it, and unticking takes the key out again", () => {
+    const { root, inspector, store } = mountReal(helixSweep);
+    inspector.select("s1");
+    const box = toggle(root, t("inspector.field.leftHand")) as FakeEl & { checked?: boolean };
+    box.checked = true;
+    box.dispatch("change");
+    const f = () => store.document.features[0] as unknown as Record<string, unknown>;
+    expect(f().leftHand).toBe(true);
+    expect((toggle(root, t("inspector.field.leftHand")) as FakeEl & { checked?: boolean }).checked, "the redrawn panel lost the tick").toBe(true);
+
+    const again = toggle(root, t("inspector.field.leftHand")) as FakeEl & { checked?: boolean };
+    again.checked = false;
+    again.dispatch("change");
+    // omitted when false: a sweep switched on and off again saves as it was
+    expect("leftHand" in f(), "unticking left `leftHand: false` in the document").toBe(false);
+  });
+
+  it("Flip direction writes `flip`, and a lock refuses it and says why", () => {
+    const { root, inspector, store } = mountReal(helixSweep);
+    inspector.select("s1");
+    const box = toggle(root, t("inspector.field.flipDirection")) as FakeEl & { checked?: boolean };
+    box.checked = true;
+    box.dispatch("change");
+    expect((store.document.features[0] as unknown as Record<string, unknown>).flip).toBe(true);
+
+    inspector.lockReason = () => LOCKED;
+    const locked = toggle(root, t("inspector.field.flipDirection")) as FakeEl & { checked?: boolean };
+    locked.checked = false;
+    locked.dispatch("change");
+    expect((store.document.features[0] as unknown as Record<string, unknown>).flip, "flipped back mid-tool").toBe(true);
+    expect(locked.checked, "the refused box still shows the change that did not happen").toBe(true);
+    expect(locked.title).toBe(LOCKED);
+  });
+});
+
 // --- read-only while a modeling tool runs (field 637278a9) -------------------
 //
 // "click/select a side face, parameters panel is populated with the previous

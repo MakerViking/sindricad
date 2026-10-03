@@ -32,7 +32,7 @@ import { isInspectorEditable, editHint } from "./inspector";
 import { featureTooltip, Timeline } from "./timeline";
 import { FEATURE_META } from "./featureMeta";
 import type { DocumentStore } from "../document/store";
-import type { CadDocument, FeatureType } from "../types";
+import type { CadDocument, Feature, FeatureType } from "../types";
 // `?raw` rather than fs: tsconfig's types are ["vite/client"] with no @types/node,
 // and vite/client already declares this form.
 import mainSrc from "../main.ts?raw";
@@ -192,19 +192,36 @@ describe("editing a feature always reaches an editor or an explanation", () => {
     expect(editable.length, "no editable types — the loop below could not catch a hard-coded false").toBeGreaterThan(0);
     expect(fieldless.length, "no fieldless types — the loop below could not catch a hard-coded true").toBeGreaterThan(0);
 
-    const chips = renderChips(TYPES.map((t, i) => ({ id: `f${i}`, type: t })));
+    const features = TYPES.map((t, i) => ({ id: `f${i}`, type: t }));
+    const chips = renderChips(features);
     expect(chips.length, "the timeline rendered no chips at all — the stub or the store shim is wrong").toBe(TYPES.length);
     for (const [i, t] of TYPES.entries()) {
       const title = chips[i]!.title;
+      // judged by the FEATURE, as the chip is: a bare sweep is not a helix, so
+      // it has nothing to edit even though its type can
+      const editable = isInspectorEditable(t, features[i] as Feature);
       expect(title, `the rendered ${t} chip's tooltip does not name the feature`).toContain(FEATURE_META[t].label);
       expect(
         title.includes("double-click to edit"),
-        isInspectorEditable(t)
+        editable
           ? `the rendered ${t} chip hides the double-click affordance on a feature that HAS an editor`
           : `the rendered ${t} chip promises "double-click to edit" and there is nothing to edit — field report c8531ceb`,
-      ).toBe(isInspectorEditable(t));
+      ).toBe(editable);
       expect(title, `the rendered ${t} chip drops the right-click affordance`).toContain("right-click for more");
     }
+  });
+
+  it("a sweep promises an editor only when its path is a helix", () => {
+    // Pitch and Turns are the only values a sweep has, and only a helix sweep
+    // has them. The type alone would promise double-click on every sweep.
+    const plain = { id: "s1", type: "sweep", profile: "p", path: "q", operation: "new" };
+    const helix = { ...plain, id: "s2", helixCircle: "c", pitch: 1, turns: 10 };
+    const [plainChip, helixChip] = renderChips([plain, helix]);
+    expect(plainChip!.title, "a plain sweep promises an editor it does not have").not.toContain("double-click to edit");
+    expect(helixChip!.title, "a helix sweep hides its Pitch and Turns").toContain("double-click to edit");
+    // the double-click's status message forks the same way (same test as above)
+    expect(editHint("sweep", plain as Feature).includes("Edit "), "a plain sweep's hint promises an editor").toBe(false);
+    expect(editHint("sweep", helix as Feature).includes("Edit "), "a helix sweep's hint says there is nothing to edit").toBe(true);
   });
 
   it("a failing chip carries its build error into the hover text", () => {
@@ -248,7 +265,8 @@ describe("editing a feature always reaches an editor or an explanation", () => {
     // and that shared fallback both names the feature and puts the caret in it
     const fallback = arrowHelperBody(mainSrc, declines[0]!);
     expect(fallback, "the fallback says nothing").toContain("setStatus(");
-    expect(fallback, "the fallback does not name the feature (editHint)").toContain("editHint(f.type)");
+    // the feature rides along: whether a sweep has an editor depends on it
+    expect(fallback, "the fallback does not name the feature (editHint)").toContain("editHint(f.type, f)");
     expect(fallback, "the fallback does not put the caret in the inspector").toMatch(/inspector\.select\(id,\s*true\)/);
   });
 

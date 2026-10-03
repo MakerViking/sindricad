@@ -565,7 +565,29 @@ export type Feature =
   // that renumber topology. When `pathEdges` is present the sidecar uses it and
   // ignores `path`; `path` stays optional so an edge-path sweep needs no
   // placeholder sketch.
-  | { id: string; type: "sweep"; profile: string; path?: string; pathEdges?: Selector[]; operation: "new" | "join" | "cut" }
+  //
+  // `helixCircle` makes the path a HELIX (Doug 30, internal threads for 3D
+  // printing): it names a circle in the `path` sketch (by entity id, a drawn,
+  // construction or projected circle), and the profile winds around that
+  // circle's axis instead of following the sketch's curves. The thread starts
+  // where the profile is drawn and climbs `pitch` mm per turn for `turns` turns
+  // (the driving value; fractional is fine) along the sketch's normal, or
+  // against it with `flip`. Right-handed unless `leftHand`. Both flags are
+  // omitted when false, and every field here is absent on a sweep that is not a
+  // helix, so older sweeps rebuild exactly as they did.
+  | {
+      id: string;
+      type: "sweep";
+      profile: string;
+      path?: string;
+      pathEdges?: Selector[];
+      helixCircle?: string;
+      pitch?: Num;
+      turns?: Num;
+      leftHand?: boolean;
+      flip?: boolean;
+      operation: "new" | "join" | "cut";
+    }
   // A persistent construction/datum plane in the timeline. Carries no geometry;
   // sketches and splits reference it by id (resolved to its PlaneSpec on rebuild).
   // `plane` is the source reference and `offset` shifts along its normal (mm), so
