@@ -758,9 +758,11 @@ function isCount(n: number | undefined): n is number {
  *  say so, with both counts, and one that recognised nothing at all has to stay
  *  quiet rather than announcing a zero on the path that has not changed.
  *
- *  THE SILENCE IS DELIBERATE AND THE RELEASE NOTES SAY SO. A mesh whose curves
- *  are all cones or spheres comes back with fitted 0, no skip reason, and no
- *  toast, on a body where most faces will refuse Press/Pull. The CHANGELOG used
+ *  THE SILENCE IS DELIBERATE AND THE RELEASE NOTES SAY SO. Cones, spheres and
+ *  tori are recognised only when they share an axis with a recognised cylinder,
+ *  so a mesh whose curves are all of them on their own (a lone dome, a plain
+ *  cone) comes back with fitted 0, no skip reason, and no toast, on a body where
+ *  most faces will refuse Press/Pull. The CHANGELOG used
  *  to promise "a message after the import" flat, which was untrue for exactly
  *  that import; it now promises one only when something was recognised. If this
  *  is ever changed to speak up on fitted 0, the branch belongs AFTER the

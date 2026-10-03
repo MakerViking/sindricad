@@ -755,8 +755,10 @@ export type Feature =
   // glued/overlapping solids left by joins of ragged imports, then collapse
   // facet debris (slivers, near-coplanar staircases). Parametric because
   // downstream booleans re-manufacture debris; best-effort in the sidecar (a
-  // body it can't confidently clean passes through unchanged).
-  | { id: string; type: "cleanUp"; body?: string; tolerance?: Num }
+  // body it can't confidently clean passes through unchanged). `fit: 2` also
+  // recognises cones, spheres and tori; a Clean Up saved before that has no
+  // `fit` and keeps the cylinders-only fitter, so its body rebuilds unchanged.
+  | { id: string; type: "cleanUp"; body?: string; tolerance?: Num; fit?: 2 }
   // Remove bodies by id (mainstream MCAD "Remove"). Runs at its point in the timeline and
   // drops the listed bodies from the model — the way to delete a body from the
   // browser. Body ids are positional, so this is appended at the end.

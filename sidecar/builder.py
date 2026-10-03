@@ -964,7 +964,7 @@ def _fit_cylinder(points, axis):
     return cu * e1 + cv * e2, a, radius, resid
 
 
-def _circle_wire(wire, tol_floor):
+def _circle_wire(wire, tol_floor, start=None, about=None):
     """One closed `Geom_Circle` wire through a co-circular chord loop, or None.
 
     A fitted cylindrical face bounded by the mesh's own chord polyline is only
@@ -981,7 +981,19 @@ def _circle_wire(wire, tol_floor):
 
     The circle's axis is oriented to match the LOOP'S OWN traversal (Newell over
     the wire's vertices in order), so the circle runs the same way round as the
-    polyline it replaces and the face's inside stays its inside."""
+    polyline it replaces and the face's inside stays its inside.
+
+    `start`, a direction from the centre, is where the circle's one vertex goes
+    (by default wherever `gp_Ax2` puts its X, which turns with the noise in the
+    fitted axis). A cone, sphere or torus band passes it the direction of its
+    seam: ShapeFix splits a rim wherever the seam crosses it, and a circle cut
+    there on the band but whole on the flat beside it is a free edge (measured,
+    a countersink at print-bed coordinates). It passes its axis as `about`, a
+    (point, unit direction) pair, too, and the circle is then a parallel of
+    that axis rather than of the loop's own fit: off the origin the two differ
+    by the file's noise, the vertex at `start` then missed the band's seam by
+    that much, and ShapeFix closed the gap with a point-sized degenerated edge
+    (measured, a bore filleted on both rims at print-bed coordinates)."""
     import numpy as np
 
     from OCP.BRep import BRep_Tool
@@ -1035,6 +1047,16 @@ def _circle_wire(wire, tol_floor):
     if flat > tol or resid > tol:
         return None
     center = foot + float((centroid - foot) @ axis) * axis
+    if about is not None:
+        aq, ad = (np.asarray(x, dtype=float) for x in about)
+        center = aq + float((centroid - aq) @ ad) * ad
+        axis = ad
+        w = pts - center
+        hh = w @ ad
+        rr = np.linalg.norm(w - np.outer(hh, ad), axis=1)
+        radius = float(rr.mean())
+        if float(np.abs(hh).max()) > tol or float(np.abs(rr - radius).max()) > tol:
+            return None
 
     # Which way round does the polyline actually run? `BRepTools_WireExplorer`
     # walks the wire in ORDER (a plain explorer does not), and Newell over those
@@ -1053,7 +1075,11 @@ def _circle_wire(wire, tol_floor):
         axis = -axis
 
     try:
-        circ = Geom_Circle(gp_Ax2(gp_Pnt(*center), gp_Dir(*axis)), radius)
+        if start is None:
+            frame = gp_Ax2(gp_Pnt(*center), gp_Dir(*axis))
+        else:
+            frame = gp_Ax2(gp_Pnt(*center), gp_Dir(*axis), gp_Dir(*start))
+        circ = Geom_Circle(frame, radius)
         mke = BRepBuilderAPI_MakeEdge(circ)
         if not mke.IsDone():
             return None
@@ -1138,6 +1164,171 @@ def _matching_wire(face, wire, edmap):
     return None
 
 
+def _arc_runs(wire, region, fmap, emap, q, d, tol, blocked):
+    """The runs of `wire`'s chords that are one ARC of a parallel of the axis
+    (q, d) — every vertex at one height along it and one radius from it, to
+    `tol` — against ONE planar neighbour that nothing else is fitting, as
+    [(neighbour face index, [edges in wire order], first vertex, last vertex,
+    height, radius)]. A run that is the whole wire is left to `_circle_wire`.
+
+    Why it matters. A fillet that runs round a corner meets the flat beside it
+    TANGENTIALLY along an arc, and the mesh gives that arc as chords. At a
+    chord's midpoint the fitted torus leans 0.09 degrees off the flat (measured,
+    the cover stand-in), which is past the 0.05 degrees at which
+    `_facet_of_an_unrecognised_curve` reads the flat as a FACET of an
+    unrecognised curve, so a body that fitted perfectly still refused Press/Pull
+    on its top face. One true arc, shared by both faces, has no such lean."""
+    import numpy as np
+
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.GeomAbs import GeomAbs_CurveType, GeomAbs_SurfaceType
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+
+    steps = []
+    we = BRepTools_WireExplorer(wire)
+    while we.More():
+        e = TopoDS.Edge_s(we.Current())
+        we.Next()
+        nb = None
+        if (BRepAdaptor_Curve(e).GetType() == GeomAbs_CurveType.GeomAbs_Line
+                and emap.Contains(e)):
+            outside = [fmap.FindIndex(o) for o in _list_shapes(emap.FindFromKey(e))
+                       if fmap.FindIndex(o) not in region]
+            if (len(outside) == 1 and outside[0] and outside[0] not in blocked
+                    and BRepAdaptor_Surface(TopoDS.Face_s(fmap.FindKey(outside[0]))).GetType()
+                    == GeomAbs_SurfaceType.GeomAbs_Plane):
+                nb = outside[0]
+        va = TopExp.FirstVertex_s(e, True)
+        vb = TopExp.LastVertex_s(e, True)
+        hr = []
+        for v in (va, vb):
+            p = BRep_Tool.Pnt_s(v)
+            w = np.array((p.X(), p.Y(), p.Z())) - q
+            h = float(w @ d)
+            hr.append((h, float(np.linalg.norm(w - h * d))))
+        steps.append((e, nb, va, vb, hr))
+    n = len(steps)
+    if n < 3:
+        return []
+
+    def _joins(a, b):
+        # step b continues step a's arc
+        return (steps[a][1] is not None and steps[a][1] == steps[b][1]
+                and all(abs(steps[b][4][i][0] - steps[a][4][0][0]) <= tol
+                        and abs(steps[b][4][i][1] - steps[a][4][0][1]) <= tol for i in (0, 1)))
+
+    def _on_parallel(a):
+        (h0, r0), (h1, r1) = steps[a][4]
+        return steps[a][1] is not None and abs(h1 - h0) <= tol and abs(r1 - r0) <= tol and r0 > tol
+
+    if all(_on_parallel(i) for i in range(n)) and all(_joins(0, i) for i in range(n)):
+        return []
+    # start just after a break, so no run is cut in two by where the wire begins
+    start = next((i for i in range(n) if not (_on_parallel(i - 1) and _on_parallel(i)
+                                              and _joins(i - 1, i))), 0)
+    runs = []
+    i = 0
+    while i < n:
+        a = (start + i) % n
+        if not _on_parallel(a):
+            i += 1
+            continue
+        run = [a]
+        while i + len(run) < n:
+            b = (start + i + len(run)) % n
+            if not (_on_parallel(b) and _joins(a, b)):
+                break
+            run.append(b)
+        if len(run) >= 2:
+            runs.append((steps[a][1], [steps[k][0] for k in run], steps[run[0]][2],
+                         steps[run[-1]][3], steps[a][4][0][0], steps[a][4][0][1]))
+        i += len(run)
+    return runs
+
+
+def _arc_edge(q, d, height, radius, v_first, v_last, second):
+    """One circular arc about the axis from `v_first` to `v_last` through the
+    side `second` (a point of the run after `v_first`) lies on, or None.
+
+    The run's own end vertices are used, so the arc joins the rest of both
+    wires by identity. They sit on the true circle to the file's precision,
+    which is still past a fresh vertex's 1e-7 and makes OCCT refuse to project
+    them; their tolerance is raised just enough to cover the gap. That is a
+    write to shared topology, so it is only ever done for a region that has
+    passed every gate."""
+    import numpy as np
+
+    from OCP.BRep import BRep_Builder, BRep_Tool
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeEdge
+    from OCP.Geom import Geom_Circle
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    center = q + height * d
+    p0 = BRep_Tool.Pnt_s(v_first)
+    a = np.array((p0.X(), p0.Y(), p0.Z())) - center
+    b = np.asarray(second, dtype=float) - center
+    axis = d if float(np.cross(a, b) @ d) > 0.0 else -d
+    try:
+        circ = Geom_Circle(gp_Ax2(gp_Pnt(*center), gp_Dir(*axis)), radius)
+        bb = BRep_Builder()
+        for v in (v_first, v_last):
+            pv = BRep_Tool.Pnt_s(v)
+            w = np.array((pv.X(), pv.Y(), pv.Z())) - center
+            h = float(w @ d)
+            gap = math.hypot(h, float(np.linalg.norm(w - h * d)) - radius)
+            if gap * 2.0 > BRep_Tool.Tolerance_s(v):
+                bb.UpdateVertex(v, gap * 2.0)
+        mke = BRepBuilderAPI_MakeEdge(circ, v_first, v_last)
+        if not mke.IsDone():
+            return None
+        return mke.Edge()
+    except Exception:
+        return None
+
+
+def _wire_with_arcs(wire, swaps):
+    """`wire` rebuilt with each run of edges in `swaps` ([(edges, arc)])
+    replaced by its arc, or None. Edges are matched by identity."""
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeWire
+    from OCP.BRepTools import BRepTools_WireExplorer
+    from OCP.TopoDS import TopoDS
+
+    order = []
+    we = BRepTools_WireExplorer(wire)
+    while we.More():
+        order.append(TopoDS.Edge_s(we.Current()))
+        we.Next()
+
+    def _run_of(e):
+        for k, (edges, _arc) in enumerate(swaps):
+            if any(e.IsSame(x) for x in edges):
+                return k
+        return None
+
+    # start on an edge outside every run, so no run is split across the start
+    start = next((i for i, e in enumerate(order) if _run_of(e) is None), None)
+    if start is None:
+        return None
+    mkw = BRepBuilderAPI_MakeWire()
+    done = set()
+    for i in range(len(order)):
+        e = order[(start + i) % len(order)]
+        k = _run_of(e)
+        if k is None:
+            mkw.Add(e)
+        elif k not in done:
+            done.add(k)
+            mkw.Add(swaps[k][1])
+        if not mkw.IsDone():
+            return None
+    if len(done) != len(swaps):
+        return None
+    return mkw.Wire()
+
+
 def _rebuild_planar_face(face, swaps):
     """`face` rebuilt on the same surface with each old wire replaced by a new
     one, keeping its orientation. None if it cannot be built.
@@ -1189,10 +1380,932 @@ def _rebuild_planar_face(face, swaps):
     return out
 
 
-def _fit_surfaces(shape, debug=False, report=None):
+# --- cones, spheres and tori about a recognised axis (GH #49) ----------------
+#
+# A cylinder seed cannot tell a torus from a sphere from a cylinder at the scale
+# of two facets: on a doubly-curved blend every small patch passes the cylinder
+# gates, which is how a rim fillet came back as 93 fabricated cylinders. What
+# CAN tell them apart is a known axis. Every facet vertex of a tessellated
+# surface of revolution maps to ONE curve in the (radius, height) plane of its
+# axis — a line for a cone, a circle for a sphere or a torus — and it lies on
+# that curve to the file's own numeric precision, because a tessellator puts
+# mesh vertices ON the surface. Measured on the rim blend: 2,000 facets within
+# 1e-6 of the true torus. So the axis comes from a cylinder seed whose fit is
+# EXACT (only a true cylinder, or a band of a revolution surface that is one,
+# fits two facets to float precision), and the meridian is fitted at that same
+# exactness, which leaves nothing to tune between a torus and its neighbours.
+# "Coaxial first" (round2 decision B1): a cone, sphere or torus that shares no
+# axis with a recognised cylinder, like a lone dome, stays faceted.
+
+# How far a vertex may sit off a cone, sphere, torus or an axis-naming
+# cylinder, relative to the body's largest coordinate. A tessellated vertex is
+# ON the surface, so the only error is the file's own precision: STL stores
+# float32, and so does every slicer 3MF measured (Bambu writes nine
+# significant digits). Measured: the reporter's corner tori and spheres sit
+# within 2.6e-6 mm of the truth at a largest coordinate of 55 (4.7e-8 of it),
+# the rim-blend fixture's torus within 2.6e-7 at 20. 5e-7 is ten times the
+# worst of those, and it is what tells a true axis from a false one (see
+# `_exact_axes`): the body's `tol_floor` is 2.6e-4 on the reporter's file, and
+# at THAT tolerance a column of mirror-image facets on a torus tube fits a
+# cylinder about the tube's tangent — 320 axes on the rim blend instead of one.
+FIT_REV_TOL_REL = 5e-7
+
+# How far a facet's own normal may turn from the fitted surface's normal at its
+# centre. Half the seed window: a facet spans at most FIT_SHARP_DEG of the curve
+# it approximates, so its normal is at most half of that off the true normal at
+# its centre, and a facet on the FAR side of the same surface (normal reversed
+# in the meridian plane) is excluded by the meridian test long before this.
+FIT_REV_NORMAL_DEG = FIT_SHARP_DEG / 2.0
+
+# How much deeper than its region's median facet one facet may sag off the
+# fitted surface. A tessellator places a curve's facets at one chordal
+# deflection, so they sag about equally; one that sags far more is a flat face
+# the fit swallowed. Measured on the reporter's file: a flat side wall plus the
+# first strip of each fillet beside it fitted a radius-78.6 "cylinder" that
+# bowed the wall out 0.5 mm and moved the body's volume +1.26%, at a spread of
+# 647. Every true region measured on it and on the fixtures stays under 2.5,
+# and the worst of the narrow cylinders the v1 grow makes there under 6.
+FIT_DEPTH_SPREAD = 8.0
+
+# How much deeper a cone, sphere or torus may say its facets sag than the mesh
+# itself does (see `_evidence` in `_revolution_regions`). Measured: every true
+# region on the reporter's file and the fixtures reads 0.93 or under, the two
+# false tori on the reporter's file 6.25 and 9.39.
+FIT_REV_SAG_EVIDENCE = 2.0
+
+# A meridian line steeper than this off the axis is a cone; flatter, it is left
+# to the cylinder fitter. Exactness alone cannot tell: on a 0.1 mm nozzle
+# orifice (a real hotend mesh) float32 noise spreads the vertices' radii past
+# the tolerance, and the bore came back as two "cones" of 0.003 degrees. A
+# tenth of a degree is under any draft a part is designed with, and over
+# 10 mm it moves the radius 0.017 mm, inside the cylinder fitter's sagitta.
+FIT_REV_MIN_CONE_DEG = 0.1
+
+# The surface types `_fit_surfaces` builds, in the order a tie is broken: the
+# simpler surface wins.
+FIT_KIND_RANK = {"cylinder": 0, "cone": 1, "sphere": 2, "torus": 3}
+
+# How many places for a cone's, sphere's or torus' seam are tried before the
+# region is given up (see `_revolution_seams`). Each costs up to eight face
+# builds, and the case that needed a second (a boss's top fillet) found one
+# within two vertices of the first.
+FIT_REV_SEAM_TRIES = 4
+
+
+def _analytic_kinds():
+    from OCP.GeomAbs import GeomAbs_SurfaceType as _ST
+
+    return {
+        _ST.GeomAbs_Cylinder: "cylinder",
+        _ST.GeomAbs_Cone: "cone",
+        _ST.GeomAbs_Sphere: "sphere",
+        _ST.GeomAbs_Torus: "torus",
+    }
+
+
+# BRepAdaptor_Surface type -> the kind name `_fit_surfaces` builds it as.
+_ANALYTIC_KIND = _analytic_kinds()
+
+
+def _axis_of_normals(normals, fallback):
+    """The direction perpendicular to every one of `normals`, or `fallback`
+    when they do not pin one down.
+
+    A facet of a cylinder spans two of its generators, so its normal is
+    perpendicular to the axis EXACTLY, and the smallest singular vector of a
+    region's normals is the axis. That beats the cross product of two facet
+    normals a seed starts from, which is off by about the vertex error over
+    the facet width (5e-6 rad on the reporter's file, 1.5e-5 mm at a radius of
+    3, already more than the precision the revolution pass works at), and it
+    is linear algebra on a few hundred rows where a five-parameter least-squares
+    fit was 2.7 ms a time and thousands of times on a 11,512-face hotend. A
+    narrow strip's normals are nearly parallel and leave the direction along
+    the strip unpinned (the two smallest singular values close together); the
+    seed's direction is kept for those."""
+    import numpy as np
+
+    nm = np.asarray(normals, dtype=float)
+    fb = np.asarray(fallback, dtype=float)
+    if len(nm) < 3:
+        return fb
+    try:
+        _u, sv, vt = np.linalg.svd(nm, full_matrices=False)
+    except Exception:
+        return fb
+    if not (sv[2] < 0.1 * sv[1]):
+        return fb
+    axis = vt[2]
+    return axis if float(axis @ fb) >= 0.0 else -axis
+
+
+def _circle_fit_2d(pts):
+    """(centre, radius, max residual) of the circle through 2D `pts`, or None.
+
+    Kasa's linear fit as the start (exact on exact data, see `_fit_cylinder`),
+    then Gauss-Newton on the GEOMETRIC distance: Kasa alone is biased on a short
+    arc, and a fillet's meridian is a quarter circle or less."""
+    import numpy as np
+
+    x, y = pts[:, 0], pts[:, 1]
+    try:
+        sol, *_ = np.linalg.lstsq(
+            np.column_stack((2.0 * x, 2.0 * y, np.ones(len(x)))), x * x + y * y,
+            rcond=None)
+    except Exception:
+        return None
+    cx, cy = float(sol[0]), float(sol[1])
+    disc = float(sol[2]) + cx * cx + cy * cy
+    if not np.isfinite(disc) or disc <= 0.0:
+        return None
+    rad = math.sqrt(disc)
+    for _ in range(8):
+        dx, dy = x - cx, y - cy
+        dist = np.hypot(dx, dy)
+        if not np.all(dist > 1e-12):
+            return None
+        jac = np.column_stack((-dx / dist, -dy / dist, -np.ones(len(x))))
+        try:
+            step, *_ = np.linalg.lstsq(jac, rad - dist, rcond=None)
+        except Exception:
+            return None
+        cx, cy, rad = cx + float(step[0]), cy + float(step[1]), rad + float(step[2])
+        if float(np.abs(step).max()) < 1e-12 * (1.0 + abs(rad)):
+            break
+    if not (np.isfinite(rad) and rad > 0.0):
+        return None
+    resid = float(np.abs(np.hypot(x - cx, y - cy) - rad).max())
+    return np.array((cx, cy)), rad, resid
+
+
+def _meridian_fit(rz, tol):
+    """The simplest meridian curve through the (radius, height) points `rz` to
+    within `tol`, as (kind, params), or None.
+
+    "cylinder" (constant radius, or a line within FIT_REV_MIN_CONE_DEG of the
+    axis) and "plane" (constant height) are reported so the caller can step
+    aside: the cylinder fitter and UnifySameDomain already own those. A sloped line is a "cone" (params: a point and a unit direction),
+    a circle is a "circle" (params: centre and radius); which surface a circle
+    is depends on where its centre sits, and that is `_meridian_kind`'s call.
+    Line before circle, because a line is a circle of infinite radius and a
+    circle fit on collinear points is ill-conditioned rather than wrong."""
+    import numpy as np
+
+    r, z = rz[:, 0], rz[:, 1]
+    if float(np.ptp(r)) <= 2.0 * tol:
+        return "cylinder", None
+    if float(np.ptp(z)) <= 2.0 * tol:
+        return "plane", None
+    mid = rz.mean(axis=0)
+    try:
+        _u, _s, vt = np.linalg.svd(rz - mid, full_matrices=False)
+    except Exception:
+        return None
+    if float(np.abs((rz - mid) @ vt[1]).max()) <= tol:
+        if abs(float(vt[0][0])) <= math.sin(math.radians(FIT_REV_MIN_CONE_DEG)):
+            return "cylinder", None
+        return "cone", (mid, vt[0])
+    if len(rz) < 4:
+        return None
+    circ = _circle_fit_2d(rz)
+    if circ is None or circ[2] > tol:
+        return None
+    return "circle", (circ[0], circ[1])
+
+
+def _meridian_dist(model, rz):
+    """Distance of each (radius, height) point from a meridian model."""
+    import numpy as np
+
+    kind, p = model
+    if kind == "cone":
+        mid, u = p
+        d = rz - mid
+        return np.abs(d[:, 0] * u[1] - d[:, 1] * u[0])
+    c, rho = p
+    return np.abs(np.hypot(rz[:, 0] - c[0], rz[:, 1] - c[1]) - rho)
+
+
+def _meridian_normal(model, rz):
+    """Unit (radial, axial) normal of the meridian model at each point, sign
+    arbitrary: the callers only ever compare it up to sign."""
+    import numpy as np
+
+    kind, p = model
+    if kind == "cone":
+        u = p[1]
+        return np.tile((u[1], -u[0]), (len(rz), 1))
+    d = rz - p[0]
+    nd = np.linalg.norm(d, axis=1)
+    nd[nd < 1e-12] = 1.0
+    return d / nd[:, None]
+
+
+def _meridian_kind(model, tol, diag):
+    """Which surface a meridian model is, or None for one this does not build.
+
+    A circle centred ON the axis is a sphere (refitted with the centre held on
+    the axis, so the sphere is exactly coaxial). Off the axis it is a torus, and
+    only a RING torus (tube radius under the major radius): a spindle or horn
+    torus passes through its own axis, which no fillet does and which OCCT
+    cannot bound as one valid face. A cone's apex is the caller's to refuse,
+    because only the region knows whether it reaches it."""
+    kind, p = model
+    if kind == "cone":
+        return "cone"
+    c, rho = p
+    if rho > 2.0 * diag or abs(c[0]) > 2.0 * diag:
+        return None
+    if abs(c[0]) <= 10.0 * tol:
+        return "sphere"
+    if c[0] > 0.0 and rho < c[0] * (1.0 - 1e-3):
+        return "torus"
+    return None
+
+
+def _sphere_on_axis(rz):
+    """(centre height, radius, max residual) of the sphere centred on the axis
+    through the (radius, height) points: r^2 + (z - zc)^2 = R^2 is linear in
+    (zc, R^2 - zc^2)."""
+    import numpy as np
+
+    r, z = rz[:, 0], rz[:, 1]
+    try:
+        sol, *_ = np.linalg.lstsq(np.column_stack((2.0 * z, np.ones(len(z)))),
+                                  r * r + z * z, rcond=None)
+    except Exception:
+        return None
+    zc = float(sol[0])
+    disc = float(sol[1]) + zc * zc
+    if not np.isfinite(disc) or disc <= 0.0:
+        return None
+    rad = math.sqrt(disc)
+    return zc, rad, float(np.abs(np.hypot(r, z - zc) - rad).max())
+
+
+def _parallels(heights, tol):
+    """The PARALLELS among points at `heights` along an axis: the (lowest,
+    highest) height of every run of three or more of them that sit together,
+    to `tol`.
+
+    That is how a CAD tessellator leaves a cylinder face: its rims are circles
+    across the axis (a bore ends at a flat, a fillet strip at the next blend),
+    and every vertex is on one. A slice of a torus or a sphere between two of
+    its meridians is not, and it is the only other thing that can fit a
+    cylinder EXACTLY: by symmetry it is one up to an error that shrinks with
+    the square of the facet size, so once the file's precision is coarse
+    enough it passes every exactness test. Measured on the rim blend moved to
+    print-bed coordinates (128, 128): float32 resolution there is 1.5e-5, the
+    tolerance grows with it, and the body named 105 axes where it has one, whose
+    cones, spheres and tori then passed every gate. On none of the false ones
+    did most points share a height with two others; the bore's sat at two."""
+    import numpy as np
+
+    hh = np.sort(np.asarray(heights, dtype=float))
+    if len(hh) == 0:
+        return []
+    cuts = np.nonzero(np.diff(hh) > 2.0 * tol)[0] + 1
+    return [(float(g[0]), float(g[-1])) for g in np.split(hh, cuts) if len(g) >= 3]
+
+
+def _on_parallels(heights, levels, tol):
+    """Whether every one of `heights` lies on one of `levels` (`_parallels`)."""
+    return all(any(lo - tol <= float(h) <= hi + tol for lo, hi in levels) for h in heights)
+
+
+def _exact_axes(seeds, fverts, fnorm, fcent, nbrs, tol, seed_tol, _tick_every, debug=False):
+    """The axes of the cylinders a body holds EXACTLY, as (foot, unit direction)
+    pairs, one per line, in a run-stable order.
+
+    An exact SEED is not yet an exact axis. Two adjacent facets that are mirror
+    images of each other (a structured tessellation is full of them, on a torus
+    tube, a sphere, a cone) project along their own normals' cross product onto
+    THREE points, and three points are always on a circle: on the rim blend,
+    taking every close seed at its word gave 320 "axes" about the tube's
+    tangents instead of the one bore. So each seed is grown at `seed_tol`, the
+    region's axis is re-read from its facet normals (`_axis_of_normals`) and
+    the cylinder refitted about it, facets off that cylinder by more than `tol`
+    (the file's own precision) are dropped and it is fitted again, and the
+    cylinder must then:
+
+      * hold most of its region at `tol` — the mirror-image column fails here,
+        its points lie on an ellipse, not a circle;
+      * only REFINE the seed: same direction to a milliradian, same radius to
+        0.1% — a refit that wanders further has found some other surface (an
+        earlier version with a free five-parameter fit ran a column of torus
+        facets off to an exact radius of 95.8 about an axis 95 mm away);
+      * agree with every facet's normal, the way the cylinder grow does — three
+        strips of a radius-3 fillet also lie on a radius-219.6 cylinder to 1e-6
+        (measured on the cover stand-in), but their normals do not;
+      * run through at least SIX distinct points round the axis (the true bore
+        has 63; a stray three-facet patch that fitted a radius-92.8 cylinder
+        exactly had 4);
+      * end on parallels (`_parallels`): a facet that does not is dropped
+        with the ones off the cylinder, which is what still tells the
+        mirror-image column apart once the file's precision is too coarse for
+        the first test to.
+
+    An axis and its reverse are one axis, the first to appear wins, and seeds
+    arrive in face-map order. A rejected region marks nothing: only an
+    accepted axis's facets stop later seeds, so one bad grow over a corner
+    cannot hide that corner's true cylinder from the next seed."""
+    import numpy as np
+
+    same_dir = math.cos(1e-3)
+    cos_rev = math.cos(math.radians(FIT_REV_NORMAL_DEG))
+
+    # The facets as padded arrays by face-map index (row 0 unused), so a grow
+    # judges a whole ring of neighbours in one call. One call per neighbour was
+    # 18,064 calls and 1.0 s on the heartbeat fixture's four fine bores; one
+    # call over the whole body per seed was 54 s on a 11,512-face hotend, where
+    # thousands of seeds each grow two or three facets. A facet of a curve has
+    # at most a handful of corners; anything with more is a merged flat and is
+    # never part of a cylinder region here.
+    n_f = max(fverts) + 1
+    pad = np.full((n_f, 8, 3), np.nan)
+    for k, v in fverts.items():
+        if len(v) <= 8:
+            pad[k, :len(v)] = v
+    cent = np.zeros((n_f, 3))
+    norm = np.zeros((n_f, 3))
+    for k in fverts:
+        cent[k] = fcent[k]
+        norm[k] = fnorm[k]
+
+    def _off(keys, a_pt, a_dir, a_r):
+        # each facet's worst vertex distance off the cylinder; a facet with too
+        # many corners to pad reads as infinitely far
+        w = pad[keys] - a_pt
+        rr = np.linalg.norm(w - (w @ a_dir)[..., None] * a_dir, axis=2)
+        dist = np.abs(rr - a_r)
+        dist[np.isnan(dist[:, 0])] = np.inf
+        return np.nanmax(dist, axis=1)
+
+    def _aligned(keys, a_pt, a_dir):
+        # each facet's normal along the cylinder's own normal at its centre
+        cc = cent[keys] - a_pt
+        cr = cc - np.outer(cc @ a_dir, a_dir)
+        ncr = np.linalg.norm(cr, axis=1)
+        ok = ncr > 1e-9
+        cosn = np.zeros(len(ncr))
+        cosn[ok] = np.abs(np.einsum("ij,ij->i", cr[ok], norm[keys][ok])) / ncr[ok]
+        return ok & (cosn >= cos_rev)
+
+
+    def _distinct_round(pts, a_dir):
+        flat = pts - np.outer(pts @ a_dir, a_dir)
+        return len(np.unique(np.round(flat / tol), axis=0))
+
+    axes = []
+    held = set()
+    judged = set()
+    for ei, (i0, j0, a_pt, a_dir, a_r) in enumerate(seeds):
+        _tick_every(ei, 16)
+        if i0 in held and j0 in held:
+            continue
+        a_dir = np.asarray(a_dir, dtype=float)
+        seed_dir, seed_r = a_dir, a_r
+        region = {i0, j0}
+        ring = [i0, j0]
+        while ring:
+            cand = sorted({j for k in ring for j in nbrs(k)} - region)
+            if not cand:
+                break
+            ok = (_off(cand, a_pt, a_dir, a_r) <= seed_tol) & _aligned(cand, a_pt, a_dir)
+            ring = [j for j, good in zip(cand, ok) if good]
+            region.update(ring)
+        key = frozenset(region)
+        if key in judged or len(region) < FIT_MIN_REGION_FACES:
+            continue
+        judged.add(key)
+        keep = sorted(region)
+        pts = np.unique(np.round(np.vstack([fverts[k] for k in keep]), 9), axis=0)
+        if _distinct_round(pts, a_dir) < 6:
+            continue
+        # Cheap before costly: about the seed's own axis, most of a true
+        # cylinder's facets already sit within a few tolerances (its direction
+        # is off by a few microradians), where a column of mirror images sits
+        # off by its ellipse. The median, so a true bore that swallowed a
+        # fillet's first band still reaches the trimming fit below.
+        if float(np.median(_off(keep, a_pt, a_dir, a_r))) > 50.0 * tol:
+            continue
+        refit = None
+        for _ in range(4):
+            refit = _fit_cylinder(pts, _axis_of_normals(norm[keep], seed_dir))
+            if refit is None:
+                break
+            a_pt, a_dir, a_r, worst = refit
+            # A facet stays if it is on the cylinder to `tol` AND on its
+            # parallels (`_parallels`). The second also trims a neighbour's
+            # sliver that happens to touch the cylinder to `tol`: at print-bed
+            # coordinates two facets of each corner sphere of the cover
+            # stand-in did, pulled a radius-3 fillet's fit to 2.99995 and were
+            # then counted as the fillet's, so the sphere came back without
+            # them and two flat facets beside it.
+            levels = _parallels(pts @ a_dir, tol)
+            off = _off(keep, a_pt, a_dir, a_r)
+            good = [k for k, o in zip(keep, off)
+                    if o <= tol and _on_parallels(fverts[k] @ a_dir, levels, tol)]
+            if len(good) == len(keep):
+                break
+            keep = good
+            if 2 * len(keep) < len(region) or len(keep) < FIT_MIN_REGION_FACES:
+                refit = None
+                break
+            pts = np.unique(np.round(np.vstack([fverts[k] for k in keep]), 9), axis=0)
+        else:
+            refit = None
+        if refit is None or refit[3] > tol:
+            continue
+        if abs(float(a_dir @ seed_dir)) < same_dir or abs(a_r - seed_r) > 1e-3 * seed_r:
+            continue
+        if not _aligned(keep, a_pt, a_dir).all():
+            continue
+        n_round = _distinct_round(pts, a_dir)
+        if n_round < 6:
+            continue
+        if a_dir[int(np.argmax(np.abs(a_dir)))] < 0.0:
+            a_dir = -a_dir
+        foot = a_pt - float(a_pt @ a_dir) * a_dir
+        held |= set(keep)
+        if any(abs(float(a_dir @ b)) > same_dir
+               and float(np.linalg.norm(foot - fb)) <= 10.0 * tol for fb, b in axes):
+            continue
+        axes.append((foot, a_dir))
+        if debug:
+            print(f"fit: axis {len(axes) - 1} from seed ({i0}, {j0}) R {seed_r:.6f} -> "
+                  f"{a_r:.6f}, {len(region)} facets grown, {len(keep)} kept, {n_round} "
+                  f"distinct round it, worst {refit[3]:.2e}, through "
+                  f"{np.round(foot, 3)} along {np.round(a_dir, 4)}")
+    return axes
+
+
+def _sag_evidence(region, fverts, fnorm, farea, nbrs):
+    """How deep `region`'s facets sag by the MESH's own account, with no fitted
+    surface in it: the largest, over the region's shared edges, of the dihedral
+    across the edge times the two facets' mean width across it, over four (a
+    chord of a circle spanning angle theta over width w sags w * theta / 4)."""
+    import numpy as np
+
+    best = 0.0
+    for k in sorted(region):
+        vk = fverts[k]
+        for j in nbrs(k):
+            if j <= k or j not in region:
+                continue
+            vj = fverts[j]
+            dist = np.linalg.norm(vk[:, None, :] - vj[None, :, :], axis=2)
+            shared = vk[(dist < 1e-9).any(axis=1)]
+            if len(shared) != 2:
+                continue
+            el = float(np.linalg.norm(shared[1] - shared[0]))
+            if el < 1e-12:
+                continue
+            th = math.acos(float(np.clip(fnorm[k] @ fnorm[j], -1.0, 1.0)))
+            w = (farea[k] * (2.0 if len(vk) == 3 else 1.0)
+                 + farea[j] * (2.0 if len(vj) == 3 else 1.0)) / (2.0 * el)
+            best = max(best, th * w / 4.0)
+    return best
+
+
+def _revolution_regions(axes, n, fverts, fnorm, farea, nbrs, tol, seed_tol, diag, _tick_every):
+    """Facet regions that are ONE cone, sphere or torus about one of `axes`.
+
+    `axes` are (point, unit direction) pairs of exactly-fitted cylinders (see
+    `_exact_axes`). Per axis, a SEED is a facet whose
+    circumcentre normal line meets the axis to within `seed_tol` — true of
+    every facet of a surface of revolution tessellated along its parallels, as
+    CAD tessellators do, and cheap to test for every facet at once — and its
+    model is the meridian curve through the seed's and its seed neighbours'
+    vertices. The region grows over the face graph to every facet whose
+    vertices all lie on that curve to within `tol` and whose normal agrees with
+    the surface's there, and is refitted and regrown until it stops changing:
+    a curve through five points near one end of a quarter circle is not exact
+    enough at the far end. Each grow is against a FROZEN model, so each region
+    is the connected component of facets passing a fixed test, whatever order
+    the BFS visits them in.
+
+    Returns [(kind, frozenset(region), axis_point, axis_dir, model)], each
+    region at least FIT_MIN_REGION_FACES facets, the model refitted on the
+    whole region and still within `tol` of every vertex. Duplicates are dropped
+    (a sphere is a surface of revolution about every axis through its centre,
+    so a box corner's sphere is found once from each of its three cylinders).
+    Never raises: a candidate it cannot judge is simply not offered."""
+    import numpy as np
+
+    out = []
+    seen = set()
+    ids = range(1, n + 1)
+    # Per facet, ONCE: its circumcentre (least squares in its own plane, exact
+    # for a triangle and for the concyclic quad a structured tessellation
+    # merges two of them into).
+    cc = np.zeros((n + 1, 3))
+    small = np.zeros(n + 1, dtype=bool)
+    for k in ids:
+        _tick_every(k, 256)
+        v = fverts[k]
+        if len(v) < 3 or len(v) > 8:
+            continue
+        c0 = v.mean(axis=0)
+        e1 = v[0] - c0
+        ne1 = float(np.linalg.norm(e1))
+        if ne1 < 1e-12:
+            continue
+        e1 = e1 / ne1
+        e2 = np.cross(fnorm[k], e1)
+        a, b = (v - c0) @ e1, (v - c0) @ e2
+        try:
+            sol, *_ = np.linalg.lstsq(np.column_stack((2.0 * a, 2.0 * b, np.ones(len(a)))),
+                                      a * a + b * b, rcond=None)
+        except Exception:
+            continue
+        cc[k] = c0 + float(sol[0]) * e1 + float(sol[1]) * e2
+        small[k] = True
+    normals = np.zeros((n + 1, 3))
+    for k in ids:
+        normals[k] = fnorm[k]
+    cos_ang = math.cos(math.radians(FIT_REV_NORMAL_DEG))
+    sin_par = math.sin(math.radians(1.0))
+
+    for ai, (q, d) in enumerate(axes):
+        _tick_every(ai, 4)
+        rz_cache = {}
+
+        def _rz(k):
+            got = rz_cache.get(k)
+            if got is None:
+                w = fverts[k] - q
+                h = w @ d
+                got = np.column_stack((np.linalg.norm(w - np.outer(h, d), axis=1), h))
+                rz_cache[k] = got
+            return got
+
+        def _agrees(model, k):
+            # every vertex on the curve, and the facet's normal along the
+            # surface's own normal at its centre
+            rz = _rz(k)
+            if float(_meridian_dist(model, rz).max()) > tol:
+                return False
+            # A facet with a vertex ON the axis is in the fan round a pole (or
+            # a cone's apex), and is often a sliver whose own normal says
+            # little. Left out, the fan became a hole in the sphere with the
+            # pole on its rim, where the sphere's u means nothing, and the
+            # seam cut it (measured, a dome at print-bed coordinates).
+            if float(rz[:, 0].min()) <= 10.0 * tol:
+                return True
+            c = fverts[k].mean(axis=0) - q
+            h = float(c @ d)
+            rad = c - h * d
+            nr = float(np.linalg.norm(rad))
+            if nr < 1e-12:
+                return False
+            m = _meridian_normal(model, np.array(((nr, h),)))[0]
+            n3 = m[0] * (rad / nr) + m[1] * d
+            return abs(float(n3 @ fnorm[k])) >= cos_ang
+
+        w = np.cross(normals, d)
+        sw = np.linalg.norm(w, axis=1)
+        miss = np.full(n + 1, np.inf)
+        ok = small & (sw > sin_par)
+        miss[ok] = np.abs(np.einsum("ij,ij->i", cc[ok] - q, w[ok])) / sw[ok]
+        seeds = [int(k) for k in np.nonzero(miss <= seed_tol)[0]]
+        seedset = set(seeds)
+        covered = set()
+
+        def _grow(model, start):
+            region = {start}
+            queue = [start]
+            while queue:
+                cur = queue.pop()
+                for j in nbrs(cur):
+                    if j not in region and _agrees(model, j):
+                        region.add(j)
+                        queue.append(j)
+            return region
+
+        for si, k in enumerate(seeds):
+            _tick_every(si, 16)
+            if k in covered:
+                continue
+            ring = [k] + [j for j in nbrs(k) if j in seedset]
+            ringrz = np.vstack([_rz(j) for j in ring])
+            distinct = len(np.unique(np.round(ringrz / tol), axis=0))
+            if distinct < 4:
+                # A tessellated surface of revolution puts each facet's
+                # vertices on two parallels, so a seed and its neighbours span
+                # three, and three points are always on a circle: a seed like
+                # that offers no check of its own model. The next ring out
+                # adds the fourth. Measured at print-bed coordinates on the
+                # cover stand-in: 465 of one corner's torus seeds spanned
+                # three, and the torus was found at the origin only because
+                # rounding noise split a parallel in two.
+                ring += sorted({j for i in ring[1:] for j in nbrs(i) if j in seedset}
+                               - set(ring))
+                ringrz = np.vstack([_rz(j) for j in ring])
+                distinct = len(np.unique(np.round(ringrz / tol), axis=0))
+            if distinct < 3:
+                continue
+            model = _meridian_fit(ringrz, tol)
+            if model is None or model[0] not in ("cone", "circle"):
+                continue
+            if model[0] == "circle" and distinct < 4:
+                continue
+            region = _grow(model, k)
+            for _ in range(4):
+                refit = _meridian_fit(np.vstack([_rz(j) for j in sorted(region)]), tol)
+                if refit is None or refit[0] != model[0]:
+                    break
+                model = refit
+                again = _grow(model, k)
+                if again == region:
+                    break
+                region = again
+            covered |= region
+            if len(region) < FIT_MIN_REGION_FACES:
+                continue
+            key = frozenset(region)
+            if key in seen:
+                continue
+            # Refit on the whole region and judge THAT, never the seed's model.
+            allrz = np.vstack([_rz(j) for j in sorted(region)])
+            refit = _meridian_fit(allrz, tol)
+            if refit is None or refit[0] != model[0]:
+                continue
+            kind = _meridian_kind(refit, tol, diag)
+            if kind is None:
+                continue
+            if kind == "sphere":
+                sph = _sphere_on_axis(allrz)
+                if sph is None or sph[2] > tol:
+                    continue
+                refit = ("circle", (np.array((0.0, sph[0])), sph[1]))
+            elif kind == "cone":
+                # A cone region that reaches its apex has no valid face: the
+                # surface is singular there. A countersink or a chamfer never
+                # does; a drill point that is all cone does, and stays faceted.
+                if float(allrz[:, 0].min()) <= 10.0 * tol:
+                    continue
+            if not all(_agrees(refit, j) for j in sorted(region)):
+                continue
+            # The surface may not curve where the mesh does not. Its vertices
+            # can all sit on it exactly while its facets do not: three 26.7 mm
+            # strips of a straight fillet on the reporter's file, vertices only
+            # at their two ends, "fitted" a radius-232 torus to 2e-6 and sagged
+            # 0.35 mm off it in the middle. The mesh's own account of how deep
+            # its facets sag (`_sag_evidence`) said 0.038.
+            cs = np.vstack([fverts[j].mean(axis=0) for j in sorted(region)]) - q
+            hh = cs @ d
+            sag = float(_meridian_dist(refit, np.column_stack(
+                (np.linalg.norm(cs - np.outer(hh, d), axis=1), hh))).max())
+            if sag > FIT_REV_SAG_EVIDENCE * max(
+                    _sag_evidence(region, fverts, fnorm, farea, nbrs), tol):
+                continue
+            seen.add(key)
+            out.append((kind, key, q, d, refit))
+    return out
+
+
+def _revolution_seams(q, d, region, fverts, fcent, farea, tol, loops, limit):
+    """Where a revolution candidate's u seam can go, best first, as a list of
+    (unit radial direction about the axis, whether the region wraps all the way
+    round it), at most `limit` of them; empty when no seam can go anywhere
+    safe.
+
+    That placement is not cosmetic. ShapeFix_Face adds the seam of a periodic
+    surface, and where the seam crosses one of the region's boundary chords it
+    SPLITS that chord in two — on the new face only. The neighbour across it
+    still holds the whole chord, so the sew leaves three free edges and the
+    body gate throws away every fit in the body (measured: the chamfered boss,
+    whose cone's seam fell mid-chord on the rim it shares with the boss).
+
+    A patch that does not go all the way round gets its seam on the far side
+    of the axis, where nothing of it is. A band that does go round must be
+    crossed somewhere, so the seam goes through a vertex of one of its rims
+    (the boundary `loops` that run round the axis), EXACTLY along that
+    vertex's own radial direction, at an angle where every other rim has a
+    vertex too. Measured, a capsule at print-bed coordinates: a seam laid
+    along an interior mesh edge crossed the rim the hemisphere shares with the
+    cylinder between two vertices, and the sew left six free edges. And a seam
+    that passed a rim vertex at the file's noise rather than through it made
+    ShapeFix close the gap with a point-sized degenerated edge, valid by
+    BRepCheck and still an edge with one face (a hole filleted on its bottom
+    rim). Where no angle has a vertex on every rim, the band is not offered.
+
+    More than one place, because a safe place is not always a buildable one,
+    and the caller tries them in order: the rims take turns to supply the
+    vertex, so a band whose one rim is about to become a circle (exact at any
+    angle) is not left trying only that rim's vertices."""
+    import numpy as np
+
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepTools import BRepTools_WireExplorer
+
+    e1 = np.cross(d, (1.0, 0.0, 0.0))
+    if np.linalg.norm(e1) < 0.1:
+        e1 = np.cross(d, (0.0, 1.0, 0.0))
+    e1 = e1 / np.linalg.norm(e1)
+    e2 = np.cross(d, e1)
+
+    def _radial(p):
+        w = p - q
+        return w - float(w @ d) * d
+
+    pts = np.vstack([fverts[k] for k in sorted(region)])
+    w = pts - q
+    # A point ON the axis has no angle round it (a sphere corner touches the
+    # axis of the fillet beside it at one vertex), and reading one off rounding
+    # noise made a 90-degree patch look like a full band.
+    w = w[np.linalg.norm(w - np.outer(w @ d, d), axis=1) > tol]
+    if len(w) == 0:
+        return []
+    ang = np.sort(np.arctan2(w @ e2, w @ e1))
+    gaps = np.diff(np.concatenate((ang, [ang[0] + 2.0 * math.pi])))
+    if float(gaps.max()) > math.pi:
+        # a patch: the seam goes opposite its area-weighted centre
+        centroid = np.average(np.vstack([fcent[k] for k in sorted(region)]), axis=0,
+                              weights=[farea[k] for k in sorted(region)])
+        rad = _radial(centroid)
+        nr = float(np.linalg.norm(rad))
+        return [(-rad / nr, False)] if nr > 1e-12 else []
+
+    # every rim's vertices as (angle, radius) round the axis; a loop that does
+    # not go round (a hole, or the fan round a pole) is kept apart
+    rims, holes = [], []
+    for loop in loops:
+        got = []
+        we = BRepTools_WireExplorer(loop)
+        while we.More():
+            p = BRep_Tool.Pnt_s(we.CurrentVertex())
+            we.Next()
+            r = _radial(np.array((p.X(), p.Y(), p.Z())))
+            nr = float(np.linalg.norm(r))
+            if nr > tol:
+                got.append((math.atan2(float(r @ e2), float(r @ e1)), nr))
+        if not got:
+            continue
+        a = np.sort([g[0] for g in got])
+        gaps = np.diff(np.concatenate((a, [a[0] + 2.0 * math.pi])))
+        if float(gaps.max()) < math.pi:
+            rims.append(got)
+        else:
+            # its widest gap, as (start angle, width): the only angles the seam
+            # can leave it by without crossing it
+            g = int(np.argmax(gaps))
+            holes.append((got, float(a[g]), float(gaps[g])))
+
+    def _at_vertex(at, got):
+        return any(abs(math.remainder(at - a, 2.0 * math.pi)) * nr <= 2.0 * tol
+                   for a, nr in got)
+
+    def _on_every_rim(r):
+        # a vertex of every rim within 2 tol, along its circle, of this angle,
+        # and every hole either missed or met at a vertex too. Measured on a
+        # dome at print-bed coordinates: the fan round the pole was left out
+        # of the sphere, and a seam through it cut its edge 0.015 mm from the
+        # pole.
+        at = math.atan2(float(r @ e2), float(r @ e1))
+        if not all(_at_vertex(at, got) for got in rims):
+            return False
+        for got, start, width in holes:
+            if not (_at_vertex(at, got)
+                    or 0.0 < (at - start) % (2.0 * math.pi) < width):
+                return False
+        return True
+
+    if not rims:
+        # every rim becomes one circle, which starts at the seam: any angle
+        # clear of the holes will do
+        return [(r, True) for r in (e1, e2, -e1, -e2) if _on_every_rim(r)][:limit]
+
+    def _mismatch(at):
+        # how far, along its circle, the farthest rim's nearest vertex is
+        return max(min(abs(math.remainder(at - a, 2.0 * math.pi)) * nr for a, nr in got)
+                   for got in rims)
+
+    # Every rim vertex is a candidate, exactly along its own radial direction;
+    # the ones the other rims meet most closely come first (a band between two
+    # rims that stay chords cannot be met exactly at both), the rims taking
+    # turns on a tie.
+    cands = []
+    for i in range(max(len(got) for got in rims)):
+        for ri, got in enumerate(rims):
+            if i < len(got):
+                at = got[i][0]
+                r = math.cos(at) * e1 + math.sin(at) * e2
+                if _on_every_rim(r):
+                    cands.append((_mismatch(at), i, ri, r))
+    cands.sort(key=lambda c: (c[0], c[1], c[2]))
+    out = []
+    for _m, _i, _ri, r in cands:
+        if len(out) >= limit:
+            break
+        if not any(abs(float(np.cross(r, o) @ d)) < 1e-9 and float(r @ o) > 0.0
+                   for o, _w in out):
+            out.append((r, True))
+    return out
+
+
+def _degenerated_edges(face):
+    """How many degenerated (point-sized) edges a face has."""
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    n = 0
+    ex = TopExp_Explorer(face, TopAbs_EDGE)
+    while ex.More():
+        if BRep_Tool.Degenerated_s(TopoDS.Edge_s(ex.Current())):
+            n += 1
+        ex.Next()
+    return n
+
+
+def _revolution_surface(kind, q, d, model, x_dir, wraps, centroid):
+    """The Geom surface of a revolution candidate, its u seam along `x_dir`
+    (see `_revolution_seam`, which also says whether the region `wraps` the
+    axis).
+
+    A sphere is the exception, because every frame through its centre is the
+    same sphere: a patch gets its CENTRE at u=pi, v=0, so the seam and both
+    poles sit a quarter turn or more away. A region that wraps the axis is
+    framed like a torus instead, poles ON the axis: framed as a patch, a
+    hemisphere (a capsule's end) put both poles on its own rim, and the face
+    came back cut there. Measured on the reporter's file: at
+    the default frame a box corner's patch boundary lay on the u=0 seam and next
+    to a pole, and the sewn body came back with 3 free edges, invalid, 0
+    solids; with the patch centre placed, both bodies sewed valid. A cone and a
+    torus must keep the axis as their Z, and a torus' v seam is its outer
+    equator, which cannot move at all."""
+    import numpy as np
+
+    from OCP.Geom import Geom_ConicalSurface, Geom_SphericalSurface, Geom_ToroidalSurface
+    from OCP.gp import gp_Ax3, gp_Dir, gp_Pnt
+
+    if kind == "cone":
+        mid, u = model[1]
+        slope = float(u[0] / u[1])
+        z_dir = d if slope > 0.0 else -d
+        origin = q + float(mid[1]) * d
+        ax = gp_Ax3(gp_Pnt(*origin), gp_Dir(*z_dir), gp_Dir(*x_dir))
+        return Geom_ConicalSurface(ax, math.atan(abs(slope)), float(mid[0]))
+    c, rho = model[1]
+    center = q + float(c[1]) * d
+    if kind == "sphere":
+        w = centroid - center
+        nw = float(np.linalg.norm(w))
+        if wraps or nw < 1e-6 * rho:
+            # a band round the axis: frame it like a torus
+            return Geom_SphericalSurface(
+                gp_Ax3(gp_Pnt(*center), gp_Dir(*d), gp_Dir(*x_dir)), rho)
+        dc = w / nw
+        z_dir = np.cross(dc, (1.0, 0.0, 0.0))
+        if np.linalg.norm(z_dir) < 0.1:
+            z_dir = np.cross(dc, (0.0, 1.0, 0.0))
+        z_dir = z_dir / np.linalg.norm(z_dir)
+        return Geom_SphericalSurface(
+            gp_Ax3(gp_Pnt(*center), gp_Dir(*z_dir), gp_Dir(*(-dc))), rho)
+    return Geom_ToroidalSurface(
+        gp_Ax3(gp_Pnt(*center), gp_Dir(*d), gp_Dir(*x_dir)), float(c[0]), rho)
+
+
+def _revolution_normal(kind, q, d, model, p):
+    """The SURFACE's own normal at `p` — the direction OCCT's parametrisation
+    gives it in a right-handed frame — for the outward check. Away from the
+    axis (tilted along it) for a cone, from the centre for a sphere, from the
+    tube's centre circle for a torus."""
+    import numpy as np
+
+    w = p - q
+    h = float(w @ d)
+    rad = w - h * d
+    nr = float(np.linalg.norm(rad))
+    e_r = rad / nr if nr > 1e-12 else rad
+    if kind == "cone":
+        u = model[1][1]
+        slope = float(u[0] / u[1])
+        z_dir = d if slope > 0.0 else -d
+        alpha = math.atan(abs(slope))
+        return math.cos(alpha) * e_r - math.sin(alpha) * z_dir
+    c, _rho = model[1]
+    tube = q + float(c[1]) * d + float(c[0]) * e_r
+    v = p - tube
+    nv = float(np.linalg.norm(v))
+    return v / nv if nv > 1e-12 else v
+
+
+def _fit_surfaces(shape, debug=False, report=None, revolutions=True):
     """Recognise curved surfaces in a freshly-sewn mesh import and rebuild them
-    as ANALYTIC faces. Cylinders only in v1 (bores, bosses, fillet strips along
-    straight edges); planes already come out of UnifySameDomain.
+    as ANALYTIC faces: cylinders (bores, bosses, fillet strips along straight
+    edges), and with `revolutions` also the cones, spheres and tori that share
+    an axis with a recognised cylinder (countersinks, chamfers, a fillet round
+    a rim, a rounded box corner — see `_revolution_regions`). Planes already
+    come out of UnifySameDomain.
+
+    `revolutions=False` is the v1 fitter, cylinders only, byte for byte. A
+    Clean Up saved before cones, spheres and tori were recognised asks for it,
+    so a document that already rebuilt with fabricated cylinders keeps
+    rebuilding with them: re-facing a body moves every face a later feature
+    names.
 
     Why this exists (GH #49): a mesh import used to end in a body whose every
     face was a Plane, so a 3 mm bore was 63 flat strips. Nothing downstream can
@@ -1220,16 +2333,8 @@ def _fit_surfaces(shape, debug=False, report=None):
     that is the one refusal this function can tell apart from "there was nothing
     curved here", and a body with no curves in it must produce SILENCE rather
     than a reason. Returning the input object is not by itself news."""
-    import numpy as np
-
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.GeomAbs import GeomAbs_SurfaceType
-
-    def _skipped(why):
-        # First reason wins: with several solids in one file, the news is that a
-        # fit was built and dropped, not which body dropped it last.
-        if report is not None:
-            report.setdefault("skipped", why)
 
     # Refusal screens FIRST and on integer counts only, so what gets fitted is
     # decided before any floating-point work (determinism, plan item 11).
@@ -1262,13 +2367,47 @@ def _fit_surfaces(shape, debug=False, report=None):
             # stall watchdog. `keep_index=True`: this is liveness, not a phase
             # change.
             progress_tick(keep_index=True)
-            fitted_parts.append(_fit_surfaces(p, debug=debug, report=report))
+            fitted_parts.append(_fit_surfaces(p, debug=debug, report=report,
+                                              revolutions=revolutions))
         if all(a is b for a, b in zip(fitted_parts, parts)):
             return shape
         return Compound(fitted_parts)
 
+    if not revolutions:
+        return _fit_one_body(shape, comp, debug, report, revolutions=False)
+    # A body the new pass cannot fit is given to the v1 fitter, never left
+    # faceted: one cone, sphere or torus that breaks the sew or the body gate
+    # would otherwise cost the body every cylinder v1 finds, and a body that
+    # v1 brings under MAX_IMPORT_FACES would land read-only. Measured on fixtures
+    # moved to print-bed coordinates, before the faults behind them were fixed:
+    # a countersink lost its 13 cylinders, a capsule and a bore filleted on both
+    # rims went from editable to reference geometry. This costs a second fit
+    # only on a refusal.
+    tried = {}
+    fitted = _fit_one_body(shape, comp, debug, tried, revolutions=True)
+    if fitted is shape and tried.get("skipped"):
+        if debug:
+            print("fit: refused with cones, spheres and tori; fitting cylinders only")
+        return _fit_one_body(shape, comp, debug, report, revolutions=False)
+    return fitted
+
+
+def _fit_one_body(shape, comp, debug, report, revolutions):
+    """`_fit_surfaces` for ONE solid that has passed its screens (`comp` is
+    `shape` as a compound). Same contract: any doubt returns `shape` itself,
+    and `report` only ever learns "checks"."""
+    import numpy as np
+
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+
+    def _skipped(why):
+        # First reason wins: with several solids in one file, the news is that a
+        # fit was built and dropped, not which body dropped it last.
+        if report is not None:
+            report.setdefault("skipped", why)
+
     try:
-        from collections import defaultdict
+        from collections import Counter, defaultdict
 
         from OCP.BRep import BRep_Tool
         from OCP.BRepBuilderAPI import (
@@ -1283,7 +2422,13 @@ def _fit_surfaces(shape, debug=False, report=None):
         from OCP.GProp import GProp_GProps
         from OCP.ShapeAnalysis import ShapeAnalysis_FreeBounds
         from OCP.ShapeFix import ShapeFix_Face, ShapeFix_Shape, ShapeFix_Solid
-        from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_SHELL
+        from OCP.TopAbs import (
+            TopAbs_EDGE,
+            TopAbs_FACE,
+            TopAbs_REVERSED,
+            TopAbs_SHELL,
+            TopAbs_WIRE,
+        )
         from OCP.TopExp import TopExp, TopExp_Explorer
         from OCP.TopoDS import TopoDS
         from OCP.TopTools import (
@@ -1373,6 +2518,13 @@ def _fit_surfaces(shape, debug=False, report=None):
         # --- seeds: edge-adjacent facet PAIRS at a tessellation dihedral -----
         sharp = math.radians(FIT_SHARP_DEG)
         seeds = []
+        # The meridian tolerance of the revolution pass, and the axes it works
+        # about: a seed pair that fits a cylinder to THIS precision is a true
+        # cylinder (or a band of a revolution surface that is one), never a
+        # slice of a torus, whose seeds sit off any cylinder by a sagitta.
+        rev_tol = FIT_REV_TOL_REL * max_coord
+        seed_tol = 4.0 * tol_floor
+        exact_axes = []
         for scanned in range(1, n + 1):
             _tick_every(scanned, 256)
             for j in _nbrs(scanned):
@@ -1399,6 +2551,8 @@ def _fit_surfaces(shape, debug=False, report=None):
                 )
                 if resid > pos_tol:
                     continue
+                if revolutions and resid <= seed_tol:
+                    exact_axes.append((scanned, j, ctr, unit_ax, radius))
                 seeds.append(
                     (scanned, j, ctr, unit_ax, radius, pos_tol,
                      max(theta / 2.0, math.radians(2.0)), theta)
@@ -1467,6 +2621,19 @@ def _fit_surfaces(shape, debug=False, report=None):
         if not grown:
             return shape
 
+        # --- cones, spheres and tori about the exact axes --------------------
+        rev = []
+        if revolutions and exact_axes:
+            axes = _exact_axes(exact_axes, fverts, fnorm, fcent, _nbrs, rev_tol,
+                               seed_tol, _tick_every, debug)
+            if debug:
+                print(f"fit: {len(exact_axes)} exact seeds -> {len(axes)} axes")
+            rev = _revolution_regions(axes, n, fverts, fnorm, farea, _nbrs,
+                                      rev_tol, seed_tol, diag, _tick_every)
+        rev_faces = set()
+        for _kind, reg, _q, _d, _m in rev:
+            rev_faces |= reg
+
         # --- greedy claiming in a TOTAL order --------------------------------
         order = sorted(
             range(len(grown)),
@@ -1476,36 +2643,92 @@ def _fit_surfaces(shape, debug=False, report=None):
                 min(grown[g][0]),
             ),
         )
+        # The revolution candidates claim FIRST, largest first. They are held to
+        # the file's own precision and a grown cylinder only to a sagitta, so
+        # where the two disagree over a facet the cone, sphere or torus is the
+        # one that is right about it: a torus beats the fabricated slices of
+        # itself that the cylinder grow makes, whatever their sizes.
+        claims = [("rev", ri) for ri in sorted(
+            range(len(rev)),
+            key=lambda r: (-sum(farea[k] for k in rev[r][1]), -len(rev[r][1]),
+                           FIT_KIND_RANK[rev[r][0]], min(rev[r][1])),
+        )] + [("cyl", gi) for gi in order]
 
         def _area_of(topods):
             props = GProp_GProps()
             BRepGProp.SurfaceProperties_s(topods, props)
             return props.Mass()
 
+        def _largest_part(faces_in):
+            # The biggest connected piece of a face set; ties go to the piece
+            # holding the smallest face index, so the choice is deterministic.
+            left = set(faces_in)
+            best = None
+            for start in sorted(faces_in):
+                if start not in left:
+                    continue
+                piece = {start}
+                left.discard(start)
+                stack = [start]
+                while stack:
+                    k = stack.pop()
+                    for j in _nbrs(k):
+                        if j in left:
+                            left.discard(j)
+                            piece.add(j)
+                            stack.append(j)
+                if best is None or len(piece) > len(best):
+                    best = piece
+            return best
+
         used = set()
+        rev_used = set()
         new_faces = []
+        new_kinds = Counter()
         curved_area = 0.0
+        rev_area_slack = 0.0
+        dv_budget = 0.0
         pending_swaps = defaultdict(list)
+        pending_arcs = defaultdict(list)
         max_sagitta = 0.0
         max_theta = 0.0
-        for rank, gi in enumerate(order):
+        for rank, (src, ci) in enumerate(claims):
             _tick_every(rank, 16)
-            region, ctr, unit_ax, radius, pos_tol, ang_tol, theta = grown[gi]
-            # A partially-claimed region's free remainder need not be connected,
-            # and an unconnected remainder has no single boundary — so an
-            # overlap drops the LATER region entirely and it stays faceted.
-            if any(k in used for k in region):
-                continue
+            if src == "rev":
+                kind, region, rev_q, rev_d, rev_model = rev[ci]
+                if any(k in used for k in region):
+                    continue
+            else:
+                kind = "cylinder"
+                region, ctr, unit_ax, radius, pos_tol, ang_tol, theta = grown[ci]
+                # A grown cylinder runs a sagitta past its own surface, so the
+                # true bore beside a fillet has usually swallowed the fillet's
+                # first band of facets. When a torus or a sphere has claimed
+                # those, the bore keeps the rest of itself — as long as that is
+                # one piece and most of what it was. Overlap with another
+                # CYLINDER is still the old rule below.
+                if rev_used and not (region & (used - rev_used)) and region & rev_used:
+                    rest = _largest_part(region - rev_used)
+                    if (rest is None or len(rest) < FIT_MIN_REGION_FACES
+                            or 2 * len(rest) < len(region)):
+                        continue
+                    region = frozenset(rest)
+                # A partially-claimed region's free remainder need not be
+                # connected, and an unconnected remainder has no single boundary
+                # — so an overlap drops the LATER region entirely and it stays
+                # faceted.
+                if any(k in used for k in region):
+                    continue
 
-            pts = np.unique(
-                np.round(np.vstack([fverts[k] for k in sorted(region)]), 9), axis=0
-            )
-            refit = _fit_cylinder(pts, unit_ax)
-            if refit is None:
-                continue
-            ctr, unit_ax, radius, resid = refit
-            if resid > pos_tol or not (radius > 0.0) or radius > 2.0 * diag:
-                continue
+                pts = np.unique(
+                    np.round(np.vstack([fverts[k] for k in sorted(region)]), 9), axis=0
+                )
+                refit = _fit_cylinder(pts, unit_ax)
+                if refit is None:
+                    continue
+                ctr, unit_ax, radius, resid = refit
+                if resid > pos_tol or not (radius > 0.0) or radius > 2.0 * diag:
+                    continue
             mesh_area = sum(farea[k] for k in region)
             if not (mesh_area > 0.0):
                 continue
@@ -1563,31 +2786,75 @@ def _fit_surfaces(shape, debug=False, report=None):
             # of it — the case a rim actually is, and nothing else. A chamfered
             # rim (many neighbour faces) keeps its chords, which is the right
             # answer rather than a missed one.
-            real_wires = []
-            wire_swaps = []           # (neighbour face index, its wire, circle)
-            for wire, wire_len, _idx in wires:
-                made = _circle_wire(wire, tol_floor)
-                nb_face_idx = None
-                if made is not None:
-                    nb_face_idx = _circle_loop_neighbour(
-                        wire, region, fmap, emap, by_face, used)
-                target = None
-                if nb_face_idx is not None:
-                    target = _matching_wire(fmap.FindKey(nb_face_idx), wire, edmap)
-                if target is None:
-                    real_wires.append(wire)
-                    continue
-                circ_wire, circ_r = made
-                real_wires.append(circ_wire)
-                wire_swaps.append((nb_face_idx, target, circ_wire))
-                if debug:
-                    print(f"fit: region {gi} rim -> one circle R={circ_r:.6f} "
-                          f"(was {wire_len:.4f} mm of chords), neighbour face "
-                          f"{nb_face_idx}")
+            # Where the seam goes (`_revolution_seams`), best first: a cone,
+            # sphere or torus is built at each until one comes out a valid face.
+            def _becomes_circle(wire):
+                # the test `_rim_wires` puts a loop to, without the start
+                made = (_circle_wire(wire, tol_floor) if kind == "cylinder"
+                        else _circle_wire(wire, tol_floor, about=(rev_q, rev_d)))
+                if made is None:
+                    return False
+                nb_idx = _circle_loop_neighbour(wire, region, fmap, emap, by_face,
+                                                (used | rev_faces) if rev_faces else used)
+                return (nb_idx is not None
+                        and _matching_wire(fmap.FindKey(nb_idx), wire, edmap) is not None)
 
-            surf = Geom_CylindricalSurface(
-                gp_Ax3(gp_Pnt(*ctr), gp_Dir(*unit_ax)), radius
-            )
+            if kind != "cylinder":
+                # A rim that becomes one circle starts wherever the seam is, so
+                # only the rims that stay chords constrain it.
+                seams = _revolution_seams(rev_q, rev_d, region, fverts, fcent, farea,
+                                          rev_tol, [w for w, _l, _i in wires
+                                                    if not _becomes_circle(w)],
+                                          FIT_REV_SEAM_TRIES)
+                if not seams:
+                    if debug:
+                        print(f"fit: {kind} region {ci} wraps its axis with no "
+                              f"place for the seam")
+                    continue
+            elif revolutions:
+                # A cylinder's seam has the same hazard, and the v1 fitter only
+                # ever dodged it by luck: `gp_Ax3`'s default X is a model axis,
+                # so is the angle a CAD tessellator starts a circle at, and at
+                # the origin a fitted axis is exact. Measured, a hole with a
+                # 0.5 mm chamfer: the bore's seam cut a chord of the rim it
+                # shares with the cone, and the body was refused by both
+                # passes. Where no place is safe, the v1 frame it always had.
+                seams = _revolution_seams(ctr, unit_ax, region, fverts, fcent, farea,
+                                          rev_tol, [w for w, _l, _i in wires
+                                                    if not _becomes_circle(w)], 1)
+                seams = seams or [(None, None)]
+            else:
+                seams = [(None, None)]
+
+            def _rim_wires(start):
+                # the boundary wires, each co-circular rim loop that can be
+                # handed to its neighbour as ONE circle starting at `start`
+                rims_out, swaps_out = [], []   # swaps: (neighbour index, its wire, circle)
+                for wire, wire_len, _idx in wires:
+                    if kind == "cylinder":
+                        made = _circle_wire(wire, tol_floor, start=start)
+                    else:
+                        made = _circle_wire(wire, tol_floor, start=start,
+                                            about=(rev_q, rev_d))
+                    nb_face_idx = None
+                    if made is not None:
+                        nb_face_idx = _circle_loop_neighbour(
+                            wire, region, fmap, emap, by_face,
+                            (used | rev_faces) if rev_faces else used)
+                    target = None
+                    if nb_face_idx is not None:
+                        target = _matching_wire(fmap.FindKey(nb_face_idx), wire, edmap)
+                    if target is None:
+                        rims_out.append(wire)
+                        continue
+                    circ_wire, circ_r = made
+                    rims_out.append(circ_wire)
+                    swaps_out.append((nb_face_idx, target, circ_wire))
+                    if debug:
+                        print(f"fit: {kind} region {ci} rim -> one circle R={circ_r:.6f} "
+                              f"(was {wire_len:.4f} mm of chords), neighbour face "
+                              f"{nb_face_idx}")
+                return rims_out, swaps_out
 
             def _build(wire_list, flip):
                 mkf = BRepBuilderAPI_MakeFace(
@@ -1601,6 +2868,10 @@ def _fit_surfaces(shape, debug=False, report=None):
                     return None
                 fixer = ShapeFix_Face(mkf.Face())
                 fixer.Perform()
+                # Seam repair can SPLIT a band into several faces, and `Face()`
+                # would then hand back one of them as if it were the region.
+                if kind != "cylinder" and fixer.Result().ShapeType() != TopAbs_FACE:
+                    return None
                 return fixer.Face()
 
             # Try it on COPIES of the boundary wires first. `ShapeFix_Face`
@@ -1609,38 +2880,109 @@ def _fit_surfaces(shape, debug=False, report=None):
             # REJECTED would still leave its tolerance behind on faces that keep
             # their old geometry. Only a region that passes every gate below
             # gets rebuilt on the body's own edges.
-            trial_wires = []
-            for w in real_wires:
-                cw = BRepBuilderAPI_Copy(w)
-                if not cw.IsDone():
-                    trial_wires = None
-                    break
-                trial_wires.append(TopoDS.Wire_s(cw.Shape()))
-            if not trial_wires:
-                continue
+            def _copies():
+                out = []
+                for w in real_wires:
+                    cw = BRepBuilderAPI_Copy(w)
+                    if not cw.IsDone():
+                        return None
+                    out.append(TopoDS.Wire_s(cw.Shape()))
+                return out
 
-            flip = False
-            built = _build(trial_wires, False)
+            built = None
+            for seam, wraps in seams:
+                real_wires, wire_swaps = _rim_wires(seam)
+                if kind == "cylinder" and seam is None:
+                    surf = Geom_CylindricalSurface(
+                        gp_Ax3(gp_Pnt(*ctr), gp_Dir(*unit_ax)), radius
+                    )
+                elif kind == "cylinder":
+                    surf = Geom_CylindricalSurface(
+                        gp_Ax3(gp_Pnt(*ctr), gp_Dir(*unit_ax), gp_Dir(*seam)), radius
+                    )
+                else:
+                    centroid = np.average(
+                        np.vstack([fcent[k] for k in sorted(region)]), axis=0,
+                        weights=[farea[k] for k in sorted(region)])
+                    surf = _revolution_surface(kind, rev_q, rev_d, rev_model, seam, wraps,
+                                               centroid)
+
+                trial_wires = _copies()
+                if not trial_wires:
+                    break
+
+                if kind == "cylinder":
+                    flip = False
+                    built = _build(trial_wires, False)
+                    # A convex fillet quadrant comes back with the wire running
+                    # the wrong way in UV and a NEGATIVE area (judge 2 measured
+                    # -47.1239 against a +47.1050 mesh region). `Reversed()` on
+                    # the FACE does not fix that — measured, the sign is
+                    # unchanged — reversing the WIRES does. A through bore never
+                    # shows this: its two rim loops make the choice for you,
+                    # which is why the four quadrants of a filleted box are the
+                    # test that matters.
+                    if built is not None and _area_of(built) < 0.0:
+                        flipped = _build(trial_wires, True)
+                        if flipped is not None:
+                            built, flip = flipped, True
+                    break
+
+                # A positive area is not yet the right one. On a torus or a
+                # sphere both sides of a boundary are finite: the rim blend's
+                # ring came back at 3.76x its mesh area, the 270 degrees of tube
+                # it is not. So both ways round are built, and the valid one
+                # nearest the mesh wins, the first on a tie.
+                # Area alone cannot choose between the two halves of a sphere
+                # cut at its equator (a dome, a capsule's end): they are the
+                # same size, and the wrong one turned a dome inside out. The
+                # face's centroid can, so it is the second term.
+                mesh_centroid = np.average(
+                    np.vstack([fcent[j] for j in sorted(region)]), axis=0,
+                    weights=[farea[j] for j in sorted(region)])
+                best = None
+                for flip_try in (False, True):
+                    progress_tick(keep_index=True)
+                    # Fresh copies every time: a build leaves its pcurves on the
+                    # edges it was given, and the next build then reuses them
+                    # instead of placing its own. Measured on the rim blend
+                    # upside down: on shared copies the reversed wires came back
+                    # at the right area, and then gave the 270 degrees again on
+                    # the body's own (fresh) edges.
+                    fresh = _copies()
+                    if fresh is None:
+                        break
+                    got = _build(fresh, flip_try)
+                    if got is None or not BRepCheck_Analyzer(got).IsValid():
+                        continue
+                    if kind != "sphere" and _degenerated_edges(got):
+                        continue
+                    props = GProp_GProps()
+                    BRepGProp.SurfaceProperties_s(got, props)
+                    got_area = props.Mass()
+                    if got_area <= 0.0:
+                        continue
+                    cm = props.CentreOfMass()
+                    err = (abs(math.log(got_area / mesh_area))
+                           + float(np.linalg.norm(np.array((cm.X(), cm.Y(), cm.Z()))
+                                                  - mesh_centroid)) / math.sqrt(mesh_area))
+                    if best is None or err < best[0]:
+                        best = (err, got, flip_try)
+                if best is not None:
+                    _err, built, flip = best
+                    break
             if built is None:
+                if debug and kind != "cylinder":
+                    print(f"fit: {kind} region {ci} built no valid face at "
+                          f"{len(seams)} seam(s)")
                 continue
-            # A convex fillet quadrant comes back with the wire running the
-            # wrong way in UV and a NEGATIVE area (judge 2 measured -47.1239
-            # against a +47.1050 mesh region). `Reversed()` on the FACE does not
-            # fix that — measured, the sign is unchanged — reversing the WIRES
-            # does. A through bore never shows this: its two rim loops make the
-            # choice for you, which is why the four quadrants of a filleted box
-            # are the test that matters.
-            if _area_of(built) < 0.0:
-                flipped = _build(trial_wires, True)
-                if flipped is not None:
-                    built, flip = flipped, True
             built_area = _area_of(built)
             if built_area <= 0.0:
                 continue
             ratio = built_area / mesh_area
             if not (FIT_AREA_BAND[0] <= ratio <= FIT_AREA_BAND[1]):
                 if debug:
-                    print(f"fit: region {gi} area ratio {ratio:.4f} out of band")
+                    print(f"fit: {kind} region {ci} area ratio {ratio:.4f} out of band")
                 continue
 
             # PER-REGION tolerance gate, and it has to be per region rather than
@@ -1652,7 +2994,41 @@ def _fit_surfaces(shape, debug=False, report=None):
             # were area-plausible, and a handful of those dragged the body's max
             # edge tolerance to 5.70 mm. Dropping those keeps the other 311;
             # gating only on the finished body threw away all 332.
-            sagitta = radius * (1.0 - math.cos(theta / 2.0))
+            if kind == "cylinder":
+                sagitta = radius * (1.0 - math.cos(theta / 2.0))
+            else:
+                # No single facet angle to derive it from, so MEASURED: how far
+                # the region's facet centres and boundary chord midpoints sit off
+                # the fitted surface. The chords are what the built face's edge
+                # tolerance has to absorb, the facet centres what its volume
+                # moves by.
+                probe = [fcent[k] for k in sorted(region)]
+                for bi in range(1, bseq.Length() + 1):
+                    be = TopoDS.Edge_s(bseq.Value(bi))
+                    pa = BRep_Tool.Pnt_s(TopExp.FirstVertex_s(be))
+                    pb = BRep_Tool.Pnt_s(TopExp.LastVertex_s(be))
+                    probe.append(np.array(((pa.X() + pb.X()) / 2.0, (pa.Y() + pb.Y()) / 2.0,
+                                           (pa.Z() + pb.Z()) / 2.0)))
+                w = np.vstack(probe) - rev_q
+                h = w @ rev_d
+                rz = np.column_stack((np.linalg.norm(w - np.outer(h, rev_d), axis=1), h))
+                sagitta = max(float(_meridian_dist(rev_model, rz).max()), tol_floor)
+            if revolutions:
+                if kind == "cylinder":
+                    cs = np.vstack([fcent[k] for k in sorted(region)]) - ctr
+                    depth = np.abs(np.linalg.norm(
+                        cs - np.outer(cs @ unit_ax, unit_ax), axis=1) - radius)
+                else:
+                    cs = np.vstack([fcent[k] for k in sorted(region)]) - rev_q
+                    hh = cs @ rev_d
+                    depth = _meridian_dist(rev_model, np.column_stack(
+                        (np.linalg.norm(cs - np.outer(hh, rev_d), axis=1), hh)))
+                spread = float(depth.max()) / max(float(np.median(depth)), tol_floor)
+                if spread > FIT_DEPTH_SPREAD:
+                    if debug:
+                        print(f"fit: {kind} region {ci} facet depth spread {spread:.1f} "
+                              f"(max {float(depth.max()):.3e})")
+                    continue
             ftol = 0.0
             texp = TopExp_Explorer(built, TopAbs_EDGE)
             while texp.More():
@@ -1660,14 +3036,44 @@ def _fit_surfaces(shape, debug=False, report=None):
                 texp.Next()
             if ftol > 3.0 * sagitta:
                 if debug:
-                    print(f"fit: region {gi} edge tol {ftol:.3e} over "
+                    print(f"fit: {kind} region {ci} edge tol {ftol:.3e} over "
                           f"3 * sagitta {3.0 * sagitta:.3e}")
                 continue
 
             # Accepted — now rebuild it on the body's OWN edges, so the sew has
             # nothing to bridge and the neighbours share the boundary by
             # identity. Same wires, same flip, so this is the trial's twin.
-            built = _build(real_wires, flip)
+            # A cone, sphere or torus also swaps its arc runs against a flat
+            # for true arcs here (`_arc_runs`); if that build fails or comes
+            # out a different size, the chords stay.
+            arc_swaps = []
+            if kind != "cylinder":
+                arc_wires = []
+                for w in real_wires:
+                    pairs = []
+                    for nb_idx, edges, v0, v1, hh, rr in _arc_runs(
+                            w, region, fmap, emap, rev_q, rev_d, rev_tol,
+                            used | rev_faces | set(by_face)):
+                        pa = BRep_Tool.Pnt_s(TopExp.LastVertex_s(edges[0], True))
+                        arc = _arc_edge(rev_q, rev_d, hh, rr, v0, v1,
+                                        (pa.X(), pa.Y(), pa.Z()))
+                        if arc is not None:
+                            pairs.append((nb_idx, edges, arc))
+                    nw = _wire_with_arcs(w, [(e, a) for _n, e, a in pairs]) if pairs else w
+                    if nw is None:
+                        arc_wires = None
+                        break
+                    arc_wires.append(nw)
+                    arc_swaps += pairs
+                with_arcs = _build(arc_wires, flip) if arc_wires and arc_swaps else None
+                if with_arcs is not None and abs(
+                        math.log(max(_area_of(with_arcs), 1e-300) / built_area)) < 0.01:
+                    built = with_arcs
+                else:
+                    arc_swaps = []
+                    built = _build(real_wires, flip)
+            else:
+                built = _build(real_wires, flip)
             if built is None:
                 continue
 
@@ -1675,23 +3081,40 @@ def _fit_surfaces(shape, debug=False, report=None):
             # facet as the reference: a bore's wall normal points at the axis, a
             # boss's away from it, and the built face knows neither.
             ref = max(sorted(region), key=lambda k: farea[k])
-            rc = fcent[ref] - ctr
-            rr = rc - (rc @ unit_ax) * unit_ax
-            nrr = float(np.linalg.norm(rr))
-            if nrr < 1e-9:
-                continue
-            outward = rr / nrr  # the cylindrical surface's own normal there
+            if kind == "cylinder":
+                rc = fcent[ref] - ctr
+                rr = rc - (rc @ unit_ax) * unit_ax
+                nrr = float(np.linalg.norm(rr))
+                if nrr < 1e-9:
+                    continue
+                outward = rr / nrr  # the cylindrical surface's own normal there
+            else:
+                outward = _revolution_normal(kind, rev_q, rev_d, rev_model, fcent[ref])
+                if float(np.linalg.norm(outward)) < 1e-9:
+                    continue
             sign = -1.0 if built.Orientation() == TopAbs_REVERSED else 1.0
             if sign * float(outward @ fnorm[ref]) < 0.0:
                 built = TopoDS.Face_s(built.Reversed())
 
             new_faces.append(built)
+            new_kinds[kind] += 1
             used |= set(region)
             for nb_idx, nb_wire, circ_wire in wire_swaps:
                 pending_swaps[nb_idx].append((nb_wire, circ_wire))
-            curved_area += mesh_area
-            max_sagitta = max(max_sagitta, radius * (1.0 - math.cos(theta / 2.0)))
-            max_theta = max(max_theta, theta)
+            for nb_idx, edges, arc in arc_swaps:
+                pending_arcs[nb_idx].append((edges, arc))
+            if kind == "cylinder":
+                curved_area += mesh_area
+                max_theta = max(max_theta, theta)
+            else:
+                rev_used |= set(region)
+                rev_area_slack += 3.0 * abs(built_area - mesh_area)
+            max_sagitta = max(max_sagitta, sagitta)
+            dv_budget += 1.5 * mesh_area * sagitta
+            if debug:
+                print(f"fit: {kind} over {len(region)} facets, "
+                      f"{rev_model if kind != 'cylinder' else ('R', radius)}, "
+                      f"area ratio {ratio:.4f}, sagitta {sagitta:.3e}, edge tol {ftol:.3e}")
         if not new_faces:
             return shape
 
@@ -1703,10 +3126,29 @@ def _fit_surfaces(shape, debug=False, report=None):
         # free edges — so the body gate below turns it into a plain refusal
         # rather than into a broken solid.
         replaced = {}
-        for swapped, nb_idx in enumerate(sorted(pending_swaps)):
+        for swapped, nb_idx in enumerate(sorted(set(pending_swaps) | set(pending_arcs))):
             _tick_every(swapped, 16)
-            rebuilt = _rebuild_planar_face(TopoDS.Face_s(fmap.FindKey(nb_idx)),
-                                           pending_swaps[nb_idx])
+            nb_face = TopoDS.Face_s(fmap.FindKey(nb_idx))
+            swaps = list(pending_swaps.get(nb_idx, ()))
+            if nb_idx in pending_arcs:
+                # every arc this flat shares, wire by wire: the cover's top face
+                # carries four, one from each corner's torus
+                arcs = pending_arcs[nb_idx]
+                wex = TopExp_Explorer(nb_face, TopAbs_WIRE)
+                while wex.More():
+                    w = TopoDS.Wire_s(wex.Current())
+                    wex.Next()
+                    wedges = []
+                    eex = TopExp_Explorer(w, TopAbs_EDGE)
+                    while eex.More():
+                        wedges.append(eex.Current())
+                        eex.Next()
+                    mine = [(e, a) for e, a in arcs if any(e[0].IsSame(x) for x in wedges)]
+                    if mine:
+                        nw = _wire_with_arcs(w, mine)
+                        if nw is not None:
+                            swaps.append((w, nw))
+            rebuilt = _rebuild_planar_face(nb_face, swaps)
             if rebuilt is None:
                 if debug:
                     print(f"fit: could not rebuild neighbour face {nb_idx} on "
@@ -1756,22 +3198,32 @@ def _fit_surfaces(shape, debug=False, report=None):
         # flat 0.5% band rejects a correct fit on a big plate with a small bore,
         # and a flat 1% waves through a wrong one on a small part.
         dv_allow = 1.5 * curved_area * max_sagitta + max(1.0, 5e-4 * base_vol)
+        if revolutions:
+            # PER REGION, summed. The pooled form above prices every region at
+            # the coarsest region's sagitta, so one coarse blend inflated the
+            # allowance to 1,219.9 mm3 on the reporter's second body and a +1.3%
+            # volume move then passed every check (measured, GH #49 triage). A
+            # sum can only be tighter than the pooled product.
+            dv_allow = dv_budget + max(1.0, 5e-4 * base_vol)
         chord_share = (
             1.0 - math.sin(max_theta / 2.0) / (max_theta / 2.0) if max_theta > 0 else 0.0
         )
-        da_allow = 3.0 * curved_area * chord_share + 1e-3 * base_area
+        # A cone, sphere or torus region has no single facet angle, so its share
+        # is the area change its own trial face measured, three times over like
+        # the cylinders' prediction.
+        da_allow = 3.0 * curved_area * chord_share + rev_area_slack + 1e-3 * base_area
         etol = 0.0
         eexp = TopExp_Explorer(fitted.wrapped, TopAbs_EDGE)
         while eexp.More():
             etol = max(etol, BRep_Tool.Tolerance_s(TopoDS.Edge_s(eexp.Current())))
             eexp.Next()
         n_fit = len(fitted.faces())
-        cyl_faces = sum(
-            1
+        made = Counter(
+            _ANALYTIC_KIND.get(BRepAdaptor_Surface(f.wrapped).GetType())
             for f in fitted.faces()
-            if BRepAdaptor_Surface(f.wrapped).GetType()
-            == GeomAbs_SurfaceType.GeomAbs_Cylinder
         )
+        made.pop(None, None)
+        cyl_faces = made["cylinder"]
         checks = {
             "solids": len(fitted.solids()) == len(shape.solids()),
             "one_shell": len(fitted.shells()) == 1,
@@ -1781,12 +3233,26 @@ def _fit_surfaces(shape, debug=False, report=None):
             "volume": abs(fit_vol - base_vol) <= dv_allow,
             "area": abs(fit_area - base_area) <= da_allow,
             "edge_tol": etol <= 3.0 * max_sagitta,
-            "cylinders": cyl_faces == len(new_faces),
+            # every curved face is one this built, of the kind it built: a
+            # ShapeFix that split a face, or one that came back as some other
+            # surface, is not the region that passed the gates above
+            "cylinders": (made == new_kinds if revolutions
+                          else cyl_faces == len(new_faces)),
         }
+        if revolutions:
+            # A degenerated edge belongs at a sphere's pole and nowhere else.
+            # ShapeFix also uses one to close a gap it found in a face's
+            # boundary, and that face is valid by BRepCheck and still has an
+            # edge with one face, which no closed solid has (measured: a bore
+            # filleted on both rims at print-bed coordinates, a point-sized
+            # edge on a torus where its seam met the rim circle).
+            checks["no_stray_poles"] = not any(
+                _degenerated_edges(f.wrapped) for f in fitted.faces()
+                if _ANALYTIC_KIND.get(BRepAdaptor_Surface(f.wrapped).GetType()) != "sphere")
         if debug:
             print(
-                f"fit: {n} -> {n_fit} faces, {len(new_faces)} regions, "
-                f"{cyl_faces} cylinders, vol {base_vol:.4f} -> {fit_vol:.4f} "
+                f"fit: {n} -> {n_fit} faces, {len(new_faces)} regions "
+                f"{dict(new_kinds)}, made {dict(made)}, vol {base_vol:.4f} -> {fit_vol:.4f} "
                 f"(allow {dv_allow:.4f}), area {base_area:.4f} -> {fit_area:.4f} "
                 f"(allow {da_allow:.4f}), edge_tol {etol:.3e} "
                 f"(allow {3.0 * max_sagitta:.3e}), checks {checks}"
@@ -1810,7 +3276,7 @@ def _fit_surfaces(shape, debug=False, report=None):
         return shape
 
 
-def _fit_or_refacet_one(part, tol, report):
+def _fit_or_refacet_one(part, tol, report, revolutions=True):
     """The fit-vs-refacet choice for ONE body. Returns `part` unchanged when
     neither pass has anything to offer.
 
@@ -1836,7 +3302,7 @@ def _fit_or_refacet_one(part, tol, report):
     keeps refacet in play for a body the fit reduced sharply and still left over
     the limit, where its extra reduction is the difference between an import and
     a refusal."""
-    fitted = _fit_surfaces(part, report=report)
+    fitted = _fit_surfaces(part, report=report, revolutions=revolutions)
     if fitted is part:
         # nothing recognised — the pre-fit path, unchanged
         return _refacet_clean(part, tol=tol)
@@ -1847,7 +3313,7 @@ def _fit_or_refacet_one(part, tol, report):
     return fitted if n_fit <= len(cleaned.faces()) else cleaned
 
 
-def _fit_or_refacet(shape, tol=0.12, report=None):
+def _fit_or_refacet(shape, tol=0.12, report=None, revolutions=True):
     """Recognise curved surfaces, or failing that collapse facet debris — PER
     BODY, and returning the INPUT OBJECT when no body changed.
 
@@ -1871,11 +3337,11 @@ def _fit_or_refacet(shape, tol=0.12, report=None):
     that is the case Clean Up hits on a body it cannot improve."""
     parts = _explode_solids(shape)
     if len(parts) > 1:
-        picked = [_fit_or_refacet_one(p, tol, report) for p in parts]
+        picked = [_fit_or_refacet_one(p, tol, report, revolutions) for p in parts]
         if all(a is b for a, b in zip(picked, parts)):
             return shape
         return Compound(picked)
-    return _fit_or_refacet_one(shape, tol, report)
+    return _fit_or_refacet_one(shape, tol, report, revolutions)
 
 
 def _drop_debris(shape, debug=False):
@@ -3432,7 +4898,9 @@ def _fit_census(shape):
 
     Two different questions, so two different readings. `fitted` is the
     surface-type census `_fit_surfaces` is judged by: a face whose
-    `BRepAdaptor_Surface` reports Cylinder. Read through the ADAPTOR, for
+    `BRepAdaptor_Surface` reports a cylinder, cone, sphere or torus (only a
+    mesh import reaches here, and those are the surfaces it builds; a STEP
+    import never asks). Read through the ADAPTOR, for
     symmetry with the body gate's own `cylinders` check, and never off
     `Face.radius` — `ShapeFix_Face` wraps a fitted through bore in a
     `Geom_RectangularTrimmedSurface`, and `Face.radius` short-circuits to None
@@ -3455,7 +4923,6 @@ def _fit_census(shape):
     Both are zero on a body with nothing curved in it, which is what keeps the
     toast quiet on the path that has not changed. Fails open (0, 0)."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.GeomAbs import GeomAbs_SurfaceType
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
     from OCP.TopoDS import TopoDS
@@ -3468,8 +4935,7 @@ def _fit_census(shape):
         fitted = sum(
             1
             for f in shape.faces()
-            if BRepAdaptor_Surface(f.wrapped).GetType()
-            == GeomAbs_SurfaceType.GeomAbs_Cylinder
+            if BRepAdaptor_Surface(f.wrapped).GetType() in _ANALYTIC_KIND
         )
         flat = math.radians(_FACET_TANGENT_DEG)
         sharp = math.radians(FIT_SHARP_DEG)
@@ -4805,14 +6271,21 @@ def _handle_clean_up(f, ctx):
     # rebuilds the body dict from scratch, so a flag set at import
     # does not survive one. So it SAYS SO instead —
     # `_clean_up_fit_diag` below.
+    #
+    # `fit: 2` (written by every Clean Up made since cones, spheres and tori
+    # were recognised) runs that pass too. A Clean Up saved before it has no
+    # `fit` and keeps the cylinders-only fitter, byte for byte: re-facing a
+    # body moves every face a later feature names, so a document that rebuilt
+    # with fabricated cylinders must keep rebuilding with them.
     targets = (
         [ctx.find_body(f["body"])] if f.get("body") else list(ctx.bodies)
     )
     tol = ctx.val(f.get("tolerance", 0.12))
+    revolutions = f.get("fit") == 2
     for tb in targets:
         if tb is not None and tb.get("shape") is not None:
             src = tb["shape"]
-            tb["shape"] = _unify_body(_fit_or_refacet(src, tol=tol))
+            tb["shape"] = _unify_body(_fit_or_refacet(src, tol=tol, revolutions=revolutions))
             _clean_up_fit_diag(ctx.diagnostics, f.get("id"), src, tb["shape"])
         elif f.get("body"):
             # named body no longer exists (upstream removal/split
@@ -8827,8 +10300,9 @@ def _sealed_void_diag(diag, feature_id, solid):
     diag.append(entry)
 
 
-def _cylinder_face_count(shape):
-    """How many of `shape`'s faces are cylinders, read through the ADAPTOR.
+def _curved_face_counts(shape):
+    """(cylinders, all curved faces the fitter builds — cylinders, cones,
+    spheres, tori) on `shape`, read through the ADAPTOR.
 
     Never off `Face.radius`: `ShapeFix_Face` wraps a fitted through bore in a
     `Geom_RectangularTrimmedSurface` and `Face.radius` short-circuits to None on
@@ -8836,24 +10310,20 @@ def _cylinder_face_count(shape):
     separately because that one also pays for the far more expensive facet
     census and this is called on a path that has no use for it.
 
-    Fails open at 0. It feeds an advisory, and a count that could not be taken
-    has to produce SILENCE rather than a number nobody measured."""
+    Fails open at (0, 0). It feeds an advisory, and a count that could not be
+    taken has to produce SILENCE rather than a number nobody measured."""
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.GeomAbs import GeomAbs_SurfaceType
 
     try:
-        return sum(
-            1
-            for f in shape.faces()
-            if BRepAdaptor_Surface(f.wrapped).GetType()
-            == GeomAbs_SurfaceType.GeomAbs_Cylinder
-        )
+        kinds = [_ANALYTIC_KIND.get(BRepAdaptor_Surface(f.wrapped).GetType())
+                 for f in shape.faces()]
     except Exception:
-        return 0
+        return 0, 0
+    return kinds.count("cylinder"), sum(1 for k in kinds if k is not None)
 
 
 def _clean_up_fit_diag(diag, feature_id, before, after):
-    """Record that Clean Up's fit-first pass read flat faces as cylinders.
+    """Record that Clean Up's fit-first pass read flat faces as curved ones.
 
     Clean Up is the only route to surface fitting for a document imported before
     #49 shipped, and that is what it is for. But its screen is "every face is a
@@ -8880,9 +10350,14 @@ def _clean_up_fit_diag(diag, feature_id, before, after):
     round" is."""
     if diag is None or after is before:
         return
-    n = _cylinder_face_count(after) - _cylinder_face_count(before)
+    cyl_after, n_after = _curved_face_counts(after)
+    cyl_before, n_before = _curved_face_counts(before)
+    n = n_after - n_before
     if n <= 0:
         return
+    # A Clean Up saved before cones, spheres and tori only ever makes
+    # cylinders, and keeps the sentence it always said.
+    what = "cylindrical" if n == cyl_after - cyl_before else "curved"
     try:
         c = _as_compound(after).center()
         at = [round(float(c.X), 6), round(float(c.Y), 6), round(float(c.Z), 6)]
@@ -8895,7 +10370,7 @@ def _clean_up_fit_diag(diag, feature_id, before, after):
         "confidence": 0.0,
         "lossy": False,
         "reason": (
-            f"Clean Up recognised {n} cylindrical "
+            f"Clean Up recognised {n} {what} "
             f"{'face' if n == 1 else 'faces'} on this body. If they were meant "
             f"to stay flat, delete this Clean Up."
         ),

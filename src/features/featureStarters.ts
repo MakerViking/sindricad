@@ -593,7 +593,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
   function startCleanUp() {
     if (busy()) return;
     if (needsBody(t("tool.cleanUp"))) return;
-    store.addFeature({ id: store.nextId(), type: "cleanUp" } as Feature);
+    store.addFeature({ id: store.nextId(), type: "cleanUp", fit: 2 } as Feature);
     setStatus(t("feature.starters.cleanUpAdded"), "");
   }
 

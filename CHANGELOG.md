@@ -620,6 +620,49 @@ This file starts on 2026-08-03. For anything before that, see the
   Offset in the Inspector, or a parameter, moves it again. When other features
   share the sketch's plane, the sketch gets a plane of its own and I say so.
 
+- **Importing a mesh now recognises cones, spheres and blends that wrap around
+  a corner.** Asked for in [#49](https://github.com/MakerViking/sindricad/issues/49).
+  A countersink or a chamfer round a hole or a boss comes back as one cone, the
+  fillet round the rim of a hole or round the top of a boss as one torus (the
+  ring-shaped surface a fillet makes when it turns a corner), and a rounded box
+  corner, the round end of a pin or the bottom of a ball-end pocket as one
+  sphere. Until now these came back as a run of narrow cylinders with made-up
+  radii, or stayed flat facets. It works wherever the part sits in the file,
+  including out on a print bed where a slicer puts it, and whichever way up it
+  is. Where a corner fillet meets a flat face, the edge between them is now one
+  true arc, so that flat face can be pushed and pulled.
+
+  On the cover from #49, every corner now comes back as the shapes it was
+  designed with: the 1.3 mm top fillet turning the corner as one torus, a
+  radius-3 sphere underneath and the corner's radius-3 cylinder between them.
+  The two bodies go from 782 and 700 faces to 558 and 476, and the import takes
+  about as long as before. A box I rounded on every edge comes back as exactly
+  its 26 faces. On that cover the bottom face, which meets the corner spheres
+  along true arcs, can now be pushed and pulled; the long side walls still
+  refuse Press/Pull, as they did before.
+
+  The limits: I only recognise these where they share an axis with a round
+  hole, boss or fillet that was recognised, so a dome or a cone on its own
+  still comes back as before (a dome on the end of a round pin is recognised),
+  and so does a cone that ends in a point, like the tip of a drilled hole.
+  Where fillets of different sizes meet in one corner, the patch that joins
+  them comes back as before: flat facets and narrow cylinders whose radii are
+  approximate, so do not dimension those. Two sizes are enough for that when
+  the fillet along the edge is more than half the corner's radius, because the
+  patch is then a torus that passes through its own axis, which I do not
+  build. The chamfer at the top of a counterbore also still comes back as
+  narrow cylinders, and on a very finely tessellated mesh a hole can stay flat
+  strips beside a rim fillet that was recognised. If a body does not come out
+  clean with these shapes, it gets the cylinders the import found before
+  rather than nothing. Press/Pull still only moves flat and cylindrical faces,
+  and on a cone, sphere or torus it now says that.
+
+  Only new imports get this. A document you already have keeps the faces it was
+  saved with, and so does a Clean Up already in it, because changing them would
+  move every face your later features point at. Import the original mesh again
+  to get the new surfaces. A Clean Up you add from now on also looks for them,
+  on a body that is still entirely faceted.
+
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end
   and click. The arc goes the way you swept, so it can be longer than half a

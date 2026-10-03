@@ -42,7 +42,7 @@ BUDGET_EXHAUSTED = "budgetExhausted"        # a query ran out of its time budget
 MATCH_IMPLAUSIBLE = "matchImplausible"      # a by:"match" resolved to something it cannot be
 PLANE_TILTED = "planeTilted"                # a face-anchored plane's face is no longer parallel
 SEALED_VOID = "sealedVoid"                  # a cut closed a cavity inside the body
-CLEAN_UP_FITTED = "cleanUpFitted"           # Clean Up recognised cylinders on a body (advisory)
+CLEAN_UP_FITTED = "cleanUpFitted"           # Clean Up recognised curved surfaces on a body (advisory)
 FONT_MISSING_GLYPHS = "fontMissingGlyphs"   # the chosen font cannot draw some of the text
 FONT_UNUSABLE = "fontUnusable"              # the chosen font has no outlines to emboss at all
 # Split. Errors (the feature changed nothing, so it is red):

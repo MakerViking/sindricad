@@ -3,10 +3,10 @@
 GH #49. A mesh import used to end in a body whose every face was a Plane, so a
 3 mm bore was 63 flat strips: unpickable as a hole, unqueryable by radius, and
 denting rather than moving when pressed. `builder._fit_surfaces` recognises
-cylinders (planes already come out of UnifySameDomain) and rebuilds each
-recognised region as one analytic face bounded by the region's OWN existing
-edges, so the sew has nothing to bridge and every unrecognised face survives
-verbatim.
+cylinders, and the cones, spheres and tori that share an axis with one (planes
+already come out of UnifySameDomain), and rebuilds each recognised region as one
+analytic face bounded by the region's OWN existing edges, so the sew has nothing
+to bridge and every unrecognised face survives verbatim.
 
 WHY VOLUME IS NOT THE ORACLE HERE. Today's faceted import is already valid,
 watertight, one solid, and its volume is within 0.02% of the source. Every one
@@ -89,6 +89,36 @@ def _cyl_axis(face):
     return (loc.X(), loc.Y(), loc.Z()), (dr.X(), dr.Y(), dr.Z())
 
 
+def _surface(face):
+    """(type name, parameters) of a face's surface, read through the ADAPTOR:
+    radius for a cylinder or sphere, (semi-angle in degrees, reference radius)
+    for a cone, (major, minor) for a torus, plus the axis or centre."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType as ST
+
+    ad = BRepAdaptor_Surface(face.wrapped)
+    t = ad.GetType()
+
+    def _xyz(p):
+        return (p.X(), p.Y(), p.Z())
+
+    if t == ST.GeomAbs_Cylinder:
+        c = ad.Cylinder()
+        return "Cylinder", (c.Radius(), _xyz(c.Axis().Location()), _xyz(c.Axis().Direction()))
+    if t == ST.GeomAbs_Cone:
+        c = ad.Cone()
+        return "Cone", (math.degrees(c.SemiAngle()), c.RefRadius(),
+                        _xyz(c.Axis().Location()), _xyz(c.Axis().Direction()))
+    if t == ST.GeomAbs_Sphere:
+        c = ad.Sphere()
+        return "Sphere", (c.Radius(), _xyz(c.Location()))
+    if t == ST.GeomAbs_Torus:
+        c = ad.Torus()
+        return "Torus", (c.MajorRadius(), c.MinorRadius(), _xyz(c.Axis().Location()),
+                         _xyz(c.Axis().Direction()))
+    return str(t).split("_")[-1], ()
+
+
 def _signed_area(face):
     """The SIGNED surface integral. `Face.area` is this number and it CAN be
     negative — that is the whole failure mode A13 exists to catch."""
@@ -103,15 +133,34 @@ def _signed_area(face):
 def _free_edge_count(shape):
     """Edges with exactly one adjacent face. A closed solid has none; this is
     what "watertight" means topologically, and unlike `.volume` it cannot be
-    faked by a shell that merely looks closed."""
+    faked by a shell that merely looks closed.
+
+    The one exception is the point-sized edge at the pole of a sphere face that
+    contains its pole (a dome, a capsule's end): that is how OCCT bounds such a
+    face, and it has nothing on its other side because there is no other side.
+    Anywhere else a degenerated edge is counted, because there it is a gap a
+    repair closed."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType as ST
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
     from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
     emap = TopTools_IndexedDataMapOfShapeListOfShape()
     TopExp.MapShapesAndAncestors_s(shape.wrapped, TopAbs_EDGE, TopAbs_FACE, emap)
-    return sum(1 for i in range(1, emap.Extent() + 1)
-               if emap.FindFromIndex(i).Extent() < 2)
+    n = 0
+    for i in range(1, emap.Extent() + 1):
+        faces = emap.FindFromIndex(i)
+        if faces.Extent() >= 2:
+            continue
+        if (BRep_Tool.Degenerated_s(TopoDS.Edge_s(emap.FindKey(i))) and faces.Extent() == 1
+                and BRepAdaptor_Surface(TopoDS.Face_s(faces.First())).GetType()
+                == ST.GeomAbs_Sphere):
+            continue
+        n += 1
+    return n
 
 
 def _max_edge_tolerance(shape):
@@ -187,7 +236,7 @@ def _import_with_fit_disabled(path, fmt="stl"):
     the identity is exactly the pre-#49 pipeline, because the call site branches
     on `fitted is shape`."""
     keep = builder._fit_surfaces
-    builder._fit_surfaces = lambda shape, debug=False, report=None: shape
+    builder._fit_surfaces = lambda shape, debug=False, report=None, **_kw: shape
     try:
         return _import_body(path, fmt)
     finally:
@@ -998,116 +1047,494 @@ def test_a14_two_bores_of_different_radii():
 
 
 # --------------------------------------------------------------------------
-# CHARACTERISATION: what a doubly-curved blend comes back as
+# Cones, spheres and tori about a recognised axis
 # --------------------------------------------------------------------------
 
-def test_a_blend_around_a_corner_comes_back_as_a_run_of_cylinders():
-    """CHARACTERISATION, AND NOT THE BEHAVIOUR ANYONE WANTS. A fillet that wraps
-    around a corner is a TORUS, and v1 has no torus screen, so it is recognised
-    as a long run of narrow cylinders with graded radii and tilted axes. Every
-    gate passes, because those faces genuinely hug the mesh.
+def _rim_blend_stl(d):
+    """The A15 plate (40x40x10, a 3 mm bore) with an r=1 fillet on the top rim of
+    the bore: a ring torus of major radius 4 and minor radius 1 round the bore's
+    axis, at z=4."""
+    from build123d import Box, Cylinder, GeomType, fillet
 
-    THE DAY A TORUS OR VARYING-CURVATURE SCREEN LANDS, THIS TEST SHOULD BE
-    TURNED AROUND — one bore cylinder plus a faceted (or toroidal) blend — not
-    deleted. It exists so that change is visible rather than silent.
+    src = Box(40, 40, 10) - Cylinder(BORE_R, 20)
+    top_rim = max(src.edges().filter_by(GeomType.CIRCLE), key=lambda e: e.center().Z)
+    blended = fillet(top_rim, 1.0)
+    return _stl_of(blended, d, "rim_blend"), blended
 
-    Measured on the A15 plate (40x40x10, a 3 mm bore) with an r=1 fillet on the
-    top rim of the bore, exported at tolerance 0.05 / angular 0.2:
 
-      * 615 faces, of which 94 are cylinders. ONE of those is the true bore
-        (R = 3.0001, axis parallel to Z); the other 93 are slices of the torus,
-        radii running 3.0033 up to 78.6673 and axes tilted every which way. The
-        radii of the 93 are ARBITRARY, which is why the CHANGELOG tells users
-        not to dimension them.
-      * Volume 15712.7677 against the exact 15712.9103 (9.1e-6 relative) and
-        against the pre-fit sewn mesh's 15713.3594 (3.8e-5 relative), i.e. deep
-        inside the body gate's own derived band. Nothing here is WRONG in the
-        volume sense; the shape is right and the model of it is not.
-      * PRESS/PULL ACCEPTS NONE OF THEM: 0 of 5 accept, 5 of 5 raise
-        (Standard_ConstructionError out of BRepOffset, about 3.3 s each). The
-        true bore raises too, on this body, so the blend does not merely fail to
-        help, it costs the bore its one usable op. That is the sharpest measure
-        of what "recognised as a series of narrow cylinders" is worth.
+def test_a_blend_around_a_rim_comes_back_as_one_torus():
+    """A fillet that wraps around a rim is a TORUS, and it now comes back as one.
 
-    The counts are asserted as BANDS, not as 94 exactly: the tessellation is
-    deterministic for a given OCCT, but a kernel bump may move it and the
-    finding here is "many, not one".
+    This test used to pin the opposite, as a characterisation the docstring
+    asked to be turned around the day a torus screen landed: the same fixture
+    came back as 615 faces with 94 cylinders, ONE the true bore and 93 slices of
+    the torus with radii from 3.0033 up to 78.6673 and tilted axes, and Press/Pull
+    raised on all of them (and on the true bore beside them).
 
-    The faceted control is not `_import_with_fit_disabled` here, deliberately.
-    That path lands this fixture as read-only REFERENCE geometry (2,069 faces
-    against a limit of 2,000), which is its own small finding: fitting is what
-    makes this file editable at all. So the volume is compared against the
-    pre-fit sewn shape, which is what the body gate itself compares against."""
-    from build123d import Box, Cylinder, GeomType, export_stl, fillet
+    What makes it one face now: the bore's axis is recognised EXACTLY (its
+    facets fit a cylinder to the file's float32 precision), every vertex of the
+    blend maps onto one circle in that axis's (radius, height) plane, and that
+    circle is centred off the axis, so it is a torus. Measured: 2,000 facets ->
+    one torus R 4.0000004 r 1.0000004, and the body is the source's 8 faces.
+
+    The volume is the oracle the old version could not have: the faceted import
+    sits 0.449 mm3 off the exact 15712.9103 and the 94-cylinder fit 0.143 off;
+    the fitted torus lands within 0.001. Press/Pull on the torus now refuses with
+    the plain "flat and cylindrical faces only" sentence instead of a facet
+    refusal or a sandbox crash."""
+    d = tempfile.mkdtemp()
+    path, blended = _rim_blend_stl(d)
+    part, _bodies, payload = _import_body(path)
+    surfaces = [_surface(f) for f in part.faces()]
+    tori = [p for t, p in surfaces if t == "Torus"]
+    bores = [p for t, p in surfaces if t == "Cylinder"]
+    print(f"  rim blend: {len(part.faces())} faces {_census(part)}, tori {tori}, "
+          f"vol {part.volume:.4f} (exact {blended.volume:.4f})")
+    assert _census(part) == {"Plane": 6, "Cylinder": 1, "Torus": 1}, (
+        f"the rim blend should come back as its source's 8 faces, got {_census(part)}")
+    major, minor, loc, axis = tori[0]
+    assert abs(major - 4.0) < 1e-3 and abs(minor - 1.0) < 1e-3, (
+        f"the torus should be R 4 r 1, got R {major} r {minor}")
+    assert abs(abs(axis[2]) - 1.0) < 1e-6 and math.hypot(loc[0], loc[1]) < 1e-3, (
+        f"the torus must share the bore's axis, got {loc} {axis}")
+    assert abs(loc[2] - 4.0) < 1e-3, f"the torus centre should sit at z=4, got {loc}"
+    assert abs(bores[0][0] - BORE_R) < 1e-3
+    assert _is_valid(part) and len(part.solids()) == 1 and _free_edge_count(part) == 0
+    assert abs(part.volume - blended.volume) < 0.01, (
+        f"the fitted blend is {part.volume - blended.volume:+.4f} mm3 off the exact "
+        f"volume; the faceted import is 0.449 off")
+    assert payload["fitted"] == 2 and payload["faceted"] == 0, (
+        f"the reply should count the bore AND the torus, and no facets: "
+        f"{payload.get('fitted')}, {payload.get('faceted')}")
+
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "stl", "name": "m",
+         "geom": payload["geom"]},
+        {"id": "pp", "type": "press-pull",
+         "face": {"kind": "face", "by": "nearest", "point": [-3.2929, 0.0, 4.7071]},
+         "distance": -0.1}]}
+    _part, errors, _b = rebuild(doc)
+    print(f"  press/pull on the torus: {errors}")
+    assert errors and "flat and cylindrical faces only" in errors[0]["message"], (
+        f"press/pull on a torus should refuse in plain words, got {errors}")
+    print("  OK: one bore, one torus, the source's volume")
+
+
+def test_a_countersink_and_a_chamfer_come_back_as_cones():
+    """A countersink and a chamfered boss are CONES sharing the bore's or the
+    boss's axis, and come back as one cone each.
+
+    The mesh2step comparison (2026-09-23) put the countersink at 95 faces with
+    14 cylinders and 81 planes, and the cone is the shape the prismatic-recognition
+    measurement found most often in field files (cone was the first word of
+    50.5% of its refusals). Measured now: the countersink comes back as the
+    source's 8 faces (one 45-degree cone, one R3 bore), the chamfered boss as
+    its 9."""
+    from build123d import Box, Cone, Cylinder, GeomType, Pos, chamfer
 
     d = tempfile.mkdtemp()
-    src = Box(40, 40, 10) - Cylinder(BORE_R, 20)
-    top_rim = max(src.edges().filter_by(GeomType.CIRCLE),
-                  key=lambda e: e.center().Z)
-    blended = fillet(top_rim, 1.0)
-    path = os.path.join(d, "rim_blend.stl")
-    export_stl(blended, path, tolerance=0.05, angular_tolerance=0.2)
+    plate = Box(40, 40, 10)
+    sink = plate - Cylinder(BORE_R, 20) - Pos(0, 0, 2) * Cone(3, 6, 3, align=None)
+    boss = Box(40, 40, 10) + Pos(0, 0, 10) * Cylinder(6, 10)
+    boss = chamfer(max(boss.edges().filter_by(GeomType.CIRCLE),
+                       key=lambda e: e.center().Z), 1.0)
+    for name, src, want, radius in (
+            ("countersink", sink, {"Plane": 6, "Cylinder": 1, "Cone": 1}, 3.0),
+            ("chamfered boss", boss, {"Plane": 7, "Cylinder": 1, "Cone": 1}, 6.0)):
+        path = _stl_of(src, d, name.replace(" ", "_"))
+        part, _bodies, payload = _import_body(path)
+        faceted = _unified(path).volume
+        surfaces = [_surface(f) for f in part.faces()]
+        cones = [p for t, p in surfaces if t == "Cone"]
+        print(f"  {name}: {len(part.faces())} faces {_census(part)}, cone "
+              f"{[(round(c[0], 6), round(c[1], 6)) for c in cones]}, vol "
+              f"{part.volume:.4f} (exact {src.volume:.4f}, faceted {faceted:.4f})")
+        assert _census(part) == want, f"{name}: want {want}, got {_census(part)}"
+        assert abs(cones[0][0] - 45.0) < 1e-3, f"{name}: the cone is 45 degrees, got {cones[0][0]}"
+        assert abs(abs(cones[0][3][2]) - 1.0) < 1e-6, f"{name}: the cone must share the axis"
+        cyl = [p for t, p in surfaces if t == "Cylinder"][0]
+        assert abs(cyl[0] - radius) < 1e-3
+        assert _is_valid(part) and len(part.solids()) == 1 and _free_edge_count(part) == 0
+        # Comparative, not a fixed band: where the boss meets its chamfer both
+        # faces are fitted and the edge between them is still the mesh's chords,
+        # which costs the boss 0.259 mm3 (the countersink 0.020). The faceted
+        # import is 2.007 and 1.200 off.
+        assert abs(part.volume - src.volume) < 0.2 * abs(faceted - src.volume), (
+            f"{name}: {part.volume - src.volume:+.4f} mm3 off the exact volume, "
+            f"the faceted import {faceted - src.volume:+.4f}")
+        assert payload["fitted"] == 2 and payload["faceted"] == 0
+    print("  OK: both come back as their source's faces")
 
-    faceted = _unified(path)          # the body as it reaches `_fit_surfaces`
-    part, _bodies, payload = _import_body(path)
-    cyl = _cylinder_faces(part)
-    radii = sorted(round(_cyl_radius(f), 4) for f in cyl)
-    on_axis = [f for f in cyl if abs(abs(_cyl_axis(f)[1][2]) - 1.0) < 1e-6]
-    print(f"  blend: {len(part.faces())} faces {_census(part)}; {len(cyl)} "
-          f"cylinders, {len(on_axis)} of them axis-parallel to Z")
-    print(f"    radii {radii[:6]} ... {radii[-3:]} (the true bore is {BORE_R})")
-    print(f"    vol exact {blended.volume:.4f} fitted {part.volume:.4f} "
-          f"pre-fit mesh {faceted.volume:.4f} ({len(faceted.faces())} faces)")
 
-    assert len(cyl) > 20, (
-        f"the fixture no longer reproduces the finding: only {len(cyl)} "
-        f"cylinders, was 94. If a torus screen landed, turn this test around")
-    assert len(cyl) < 250, (
-        f"{len(cyl)} cylinders is far past the 94 measured — something else "
-        f"changed in the fitter")
-    assert len(on_axis) == 1, (
-        f"exactly one cylinder should be the true bore, got {len(on_axis)} "
-        f"axis-parallel faces")
-    assert abs(_cyl_radius(on_axis[0]) - BORE_R) < 0.01, (
-        f"the true bore's radius drifted: {_cyl_radius(on_axis[0]):.4f}")
-    assert max(radii) > 10.0, (
-        f"the blend slices used to report radii up to 78.7, wildly unlike the "
-        f"3.0 they sit on; max is now {max(radii)} — if the radii became "
-        f"meaningful, the CHANGELOG's 'do not dimension those' is stale")
+def test_rounded_box_corners_come_back_as_spheres():
+    """Where three equal fillets meet at a box corner the blend is a SPHERE
+    octant, and every corner comes back as one: the box's 26 source faces, 12
+    cylinders and 8 spheres, each centred on its corner.
 
-    # The volume band is the body gate's own: the absolute floor term of
-    # dV_allow = 1.5*A_curved*s_max + max(1 mm3, 5e-4*V), taken alone, which is
-    # the conservative half and needs nothing measured off the regions.
-    band = max(1.0, 5e-4 * faceted.volume)
-    dv = abs(part.volume - faceted.volume)
-    print(f"    |V_fit - V_faceted| = {dv:.4f} against a derived band of {band:.4f}")
-    assert dv <= band, (
-        f"the fit moved the volume by {dv:.4f}, past the derived {band:.4f}")
-    assert _is_valid(part) and len(part.solids()) == 1
-    assert _free_edge_count(part) == 0
+    A sphere is a surface of revolution about every axis through its centre, so
+    each corner is found once from each of its three edge cylinders and kept
+    once. Its frame is placed so the patch's centre sits at u=pi, v=0; at the
+    default frame the corner's boundary lay on the seam and next to a pole and
+    the sewn body came back invalid (measured on the reporter's file)."""
+    from build123d import Box, fillet
 
-    # ...and what the ops make of them. Five, in a deterministic order, skipping
-    # the true bore. Recorded, not endorsed: see the docstring.
-    ordered = sorted(
-        (f for f in cyl if f not in on_axis),
-        key=lambda f: (round(_cyl_radius(f), 6), round(f.center().X, 6),
-                       round(f.center().Y, 6), round(f.center().Z, 6)))
-    accepted, raised = 0, 0
-    for f in ordered[:5]:
-        try:
-            builder._press_pull(part, f, -0.1)
-            accepted += 1
-        except Exception as exc:
-            raised += 1
-            print(f"    press/pull R={_cyl_radius(f):.4f} raises "
-                  f"{type(exc).__name__}")
-    print(f"  blend cylinders under press/pull: {accepted} accept, {raised} raise")
-    assert accepted == 0, (
-        f"press/pull now ACCEPTS {accepted} of 5 blend slices where it used to "
-        f"refuse all 5. That is a behaviour change this characterisation exists "
-        f"to catch: re-read the docstring before re-blessing the number")
-    print("  blend OK (pinned, not endorsed): one true bore plus a run of "
-          "meaningless cylinders")
+    d = tempfile.mkdtemp()
+    src = fillet(Box(30, 20, 10).edges(), 2.0)
+    part, _bodies, payload = _import_body(_stl_of(src, d, "rounded_box"))
+    spheres = sorted((round(p[1][0], 3), round(p[1][1], 3), round(p[1][2], 3), round(p[0], 6))
+                     for t, p in map(_surface, part.faces()) if t == "Sphere")
+    print(f"  rounded box: {len(part.faces())} faces {_census(part)}, spheres {spheres}, "
+          f"vol {part.volume:.4f} (exact {src.volume:.4f})")
+    assert _census(part) == {"Plane": 6, "Cylinder": 12, "Sphere": 8}, _census(part)
+    want = sorted((x * 13.0, y * 8.0, z * 3.0) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1))
+    assert all(abs(s[3] - 2.0) < 1e-3 for s in spheres), spheres
+    assert all(max(abs(a - b) for a, b in zip(s[:3], w)) < 1e-3
+               for s, w in zip(spheres, want)), f"sphere centres {spheres} want {want}"
+    assert _is_valid(part) and len(part.solids()) == 1 and _free_edge_count(part) == 0
+    assert abs(part.volume - src.volume) < 0.01
+    assert payload["fitted"] == 20 and payload["faceted"] == 0
+    print("  OK: eight corners, eight spheres")
+
+
+def _cover_stand_in():
+    """The committable stand-in for the reporter's cover (GH #49): a box whose
+    vertical edges are filleted 3, its bottom edges 3 and its top edges 1.3, so
+    every corner is a vertical R3 cylinder between a bottom SPHERE (R3) and a top
+    TORUS (R 1.7, r 1.3) — what the reporter's file holds at each of its eight
+    corners, measured. 26 source faces: 6 planes, 12 cylinders, 4 tori, 4
+    spheres."""
+    from build123d import Axis, Box, Pos, fillet
+
+    b = Pos(0, 0, 0.85) * Box(110.1, 59.1, 25.7)
+    b = fillet(b.edges().filter_by(Axis.Z), 3.0)
+    zmin = b.bounding_box().min.Z
+    b = fillet([e for e in b.edges() if abs(e.center().Z - zmin) < 1e-6], 3.0)
+    zmax = b.bounding_box().max.Z
+    return fillet([e for e in b.edges() if abs(e.center().Z - zmax) < 1e-6], 1.3)
+
+
+def test_the_reporters_corners_come_back_as_their_design():
+    """GH #49's file, in a form that can be committed: every corner comes back
+    as one torus, one sphere and its vertical cylinder, and the body is the
+    source's 26 faces.
+
+    Before this the stand-in came back as 1,290 faces with 180 cylinders, and
+    the reporter's own file as 1,482 faces with 300, of which most at the
+    corners were slices with radii 2.96-5.72 on tilted axes.
+
+    THE TOP FACE IS THE LEG THAT MATTERS TO A USER. A corner torus meets the top
+    face tangentially along a quarter circle, and the mesh gives that arc as
+    chords. Left as chords, the torus leans 0.09 degrees off the top face at
+    each chord's midpoint, which is past the 0.05 degrees at which the facet
+    refusal reads the top face as one facet of an unrecognised curve, and
+    Press/Pull refused the top face of a body that had fitted perfectly. The
+    arc is now one true circular edge both faces share, and pressing the top
+    face down 1 mm removes exactly its analytic area: (110.1 - 2.6) x
+    (59.1 - 2.6) - (4 - pi) x 1.7^2 = 6071.2692 mm3."""
+    from build123d import GeomType
+
+    d = tempfile.mkdtemp()
+    src = _cover_stand_in()
+    part, _bodies, payload = _import_body(_stl_of(src, d, "cover"))
+    surfaces = [_surface(f) for f in part.faces()]
+    tori = [p for t, p in surfaces if t == "Torus"]
+    spheres = [p for t, p in surfaces if t == "Sphere"]
+    radii = sorted(round(p[0], 4) for t, p in surfaces if t == "Cylinder")
+    print(f"  cover: {len(part.faces())} faces {_census(part)}; tori "
+          f"{sorted((round(t[0], 6), round(t[1], 6)) for t in tori)}; spheres "
+          f"{sorted(round(s[0], 6) for s in spheres)}; cylinders {radii}; vol "
+          f"{part.volume:.4f} (exact {src.volume:.4f})")
+    assert _census(part) == {"Plane": 6, "Cylinder": 12, "Torus": 4, "Sphere": 4}, _census(part)
+    assert all(abs(t[0] - 1.7) < 1e-3 and abs(t[1] - 1.3) < 1e-3 for t in tori), tori
+    assert all(abs(abs(t[3][2]) - 1.0) < 1e-6 for t in tori), "every torus is about a vertical axis"
+    assert all(abs(s[0] - 3.0) < 1e-3 for s in spheres), spheres
+    assert radii == [1.3] * 4 + [3.0] * 8, f"no fabricated cylinders: {radii}"
+    assert _is_valid(part) and len(part.solids()) == 1 and _free_edge_count(part) == 0
+    assert abs(part.volume - src.volume) < 0.05
+    assert payload["fitted"] == 20 and payload["faceted"] == 0, (
+        f"nothing on this body is a facet any more: {payload.get('fitted')}, "
+        f"{payload.get('faceted')}")
+
+    top = max((f for f in part.faces() if f.geom_type == GeomType.PLANE),
+              key=lambda f: f.center().Z)
+    arcs = sum(1 for e in top.edges() if e.geom_type == GeomType.CIRCLE)
+    assert arcs == 4, f"the top face should carry one true arc per corner, got {arcs}"
+    assert builder._facet_of_an_unrecognised_curve(part, [top]) is None, (
+        "the top face still reads as a facet of an unrecognised curve")
+    doc = {"parameters": {}, "features": [
+        {"id": "im", "type": "import", "format": "stl", "name": "m",
+         "geom": payload["geom"]},
+        {"id": "pp", "type": "press-pull",
+         "face": {"kind": "face", "by": "nearest", "point": [0.0, 0.0, top.center().Z]},
+         "distance": -1.0}]}
+    pressed, errors, _b = rebuild(doc)
+    print(f"  press/pull the top face -1: {errors or 'ok'}, dV "
+          f"{pressed.volume - part.volume:+.4f}")
+    assert not errors, errors
+    assert abs((part.volume - pressed.volume) - 6071.2692) < 0.01, (
+        f"pressing the top face down 1 mm removed {part.volume - pressed.volume:.4f} mm3, "
+        f"want its analytic area 6071.2692")
+    print("  OK: four tori, four spheres, true arcs, and the top face presses")
+
+
+def test_cones_spheres_and_tori_need_a_recognised_axis():
+    """CHARACTERISATION of the scope round2 decision B1 set: coaxial cases
+    first. A cone, sphere or torus is only recognised about the axis of a
+    cylinder the body holds exactly, so these stay as they were:
+
+      * a plain cone (no cylinder at all) keeps its v1 result, a run of
+        fabricated cylinders, and no cone;
+      * a drill point's cone shares the bore's axis but reaches its own APEX,
+        where the surface is singular and no valid face can be bounded, so it
+        stays faceted while the bore beside it is recognised;
+      * a lone dome on a block has no cylinder to take an axis from.
+
+    Turn this around, not delete it, when a standalone pass lands."""
+    from build123d import Box, Cone, Cylinder, Pos, Sphere
+
+    d = tempfile.mkdtemp()
+    hole = Pos(0, 0, 2) * Cylinder(3, 6) + Pos(0, 0, -1 - 1.8025) * Cone(0, 3, 1.8025, align=None)
+    cases = (("plain cone", Cone(8, 0, 20)),
+             ("drill point", Box(40, 40, 10) - hole),
+             ("dome", Box(20, 20, 10) + Pos(0, 0, 5) * Sphere(8)))
+    for name, src in cases:
+        part, _bodies, _p = _import_body(_stl_of(src, d, name.replace(" ", "_")))
+        c = _census(part)
+        print(f"  {name}: {len(part.faces())} faces {c}")
+        assert not c.get("Cone") and not c.get("Sphere") and not c.get("Torus"), (
+            f"{name}: recognised without a coaxial cylinder: {c}")
+        assert _is_valid(part) and len(part.solids()) == 1
+    bore = [p for t, p in map(_surface, _import_body(
+        _stl_of(cases[1][1], d, "drill_point"))[0].faces()) if t == "Cylinder"]
+    assert any(abs(p[0] - 3.0) < 1e-3 for p in bore), "the drill point's bore is still recognised"
+    print("  OK (scope, pinned): no axis, no cone, sphere or torus")
+
+
+def test_anywhere_on_the_bed_and_either_way_up():
+    """The same parts placed where a slicer puts them, and turned over, come
+    back as exactly their source's faces: no surface the source does not have,
+    none it has missing.
+
+    Every fixture above sits at the origin, and so does the reporter's file
+    (largest coordinate 55). Away from it the file's float32 precision is
+    coarser (1.5e-5 at x = 128), the exactness tolerance grows with it, and a
+    review run found the pass making up cones, spheres and tori there: the rim
+    blend moved to (128, 128) came back as a sphere and four 16.86-degree cones
+    on tilted axes (the body named 105 axes where it has one). And the rim
+    blend turned upside down came back as main imports it, 94 fabricated
+    cylinders, because only ONE of its torus band's two rims ran the wrong way
+    and both were only ever reversed together. Each case below failed one of
+    those ways, or by refusing the body, or with a point-sized degenerated edge
+    on a torus (valid by BRepCheck, and an edge with one face), before the
+    fixes it names:
+
+      * rim blend upside down / on its side: both ways round tried on fresh
+        copies of the edges (a build leaves its pcurves on the edges it is
+        given, and the next one reused them);
+      * bore filleted on both rims, at the bed: an axis must end on parallels,
+        and a band's rim circles go exactly round the band's own axis;
+      * hole filleted on its bottom rim: a band's seam goes exactly through a
+        vertex of a rim that stays chords;
+      * countersink at the bed: a rim made one circle starts at the seam;
+      * capsule and dome pin at the bed: a band round the axis is framed with
+        its poles on the axis, the fan round a pole joins the sphere, and a
+        hemisphere is told from its mirror image by its centroid;
+      * cover at the bed: a seed whose ring spans three parallels looks one
+        ring further out, and an axis' fit drops a neighbour's sliver that is
+        off its parallels;
+      * boss with a filleted top edge: the rim circle round the torus' own
+        axis (round the loop's own fit, ShapeFix left the torus invalid)."""
+    from build123d import Box, Cone, Cylinder, GeomType, Pos, Rot, Sphere, fillet
+
+    d = tempfile.mkdtemp()
+    rim_blend = _rim_blend_stl(d)[1]
+    plate = Box(40, 40, 10) - Cylinder(BORE_R, 20)
+    two_rims = fillet(plate.edges().filter_by(GeomType.CIRCLE), 1.0)
+    sink = Box(40, 40, 10) - Cylinder(BORE_R, 20) - Pos(0, 0, 2) * Cone(3, 6, 3, align=None)
+    capsule = Cylinder(5, 20) + Pos(0, 0, 10) * Sphere(5) + Pos(0, 0, -10) * Sphere(5)
+    dome_pin = (Box(20, 20, 5) + Pos(0, 0, 7.5) * Cylinder(3, 10)
+                + Pos(0, 0, 12.5) * Sphere(3))
+    boss = Box(40, 40, 10) + Pos(0, 0, 10) * Cylinder(6, 10)
+    boss = fillet(max(boss.edges().filter_by(GeomType.CIRCLE),
+                      key=lambda e: e.center().Z), 2.0)
+    bottom_rim = fillet(min(plate.edges().filter_by(GeomType.CIRCLE),
+                            key=lambda e: e.center().Z), 1.0)
+    bed = Pos(128, 128, 0)
+    cases = (
+        ("rim blend upside down", Rot(180, 0, 0) * rim_blend),
+        ("rim blend on its side", Rot(90, 0, 0) * rim_blend),
+        ("bore filleted on both rims, at the bed", bed * two_rims),
+        ("hole filleted on its bottom rim", bottom_rim),
+        ("countersink at the bed", bed * sink),
+        ("capsule at the bed", bed * capsule),
+        ("dome pin at the bed", bed * dome_pin),
+        ("cover at the bed", bed * _cover_stand_in()),
+        ("boss with a filleted top edge", boss),
+    )
+    for i, (name, src) in enumerate(cases):
+        part, _bodies, payload = _import_body(_stl_of(src, d, f"placed_{i}"))
+        want = _census(src)
+        print(f"  {name}: {len(part.faces())} faces {_census(part)} (source "
+              f"{len(src.faces())} {want}), vol {part.volume:.4f} (exact {src.volume:.4f})")
+        assert _census(part) == want, f"{name}: want the source's {want}, got {_census(part)}"
+        assert len(part.faces()) == len(src.faces()), name
+        assert _is_valid(part) and len(part.solids()) == 1 and _free_edge_count(part) == 0, name
+        assert abs(part.volume - src.volume) < 0.05, (
+            f"{name}: {part.volume - src.volume:+.4f} mm3 off the exact volume")
+        assert payload["faceted"] == 0 and not payload.get("fitSkipped"), (name, payload)
+    print("  OK: every placement comes back as its source")
+
+
+def test_a_refused_body_still_gets_its_cylinders():
+    """When the body built with cones, spheres and tori is refused, the body
+    gets the cylinders-only fit, never stays faceted.
+
+    Before this, one face that broke the sew threw away every cylinder in the
+    body too, and a body the cylinders-only fit brings under MAX_IMPORT_FACES
+    landed read-only. Measured in review, at print-bed coordinates: a
+    countersink went from 13 cylinders to 323 flat faces, a capsule and a bore
+    filleted on both rims from editable to reference geometry.
+
+    The refusal is made here the way those were: every place offered for a
+    cone's seam is turned half a degree, so it cuts the rim it should meet at a
+    vertex and the sew leaves free edges, with the rims as circles and as
+    chords alike."""
+    from build123d import Box, Cone, Cylinder, Pos
+
+    d = tempfile.mkdtemp()
+    sink = Box(40, 40, 10) - Cylinder(BORE_R, 20) - Pos(0, 0, 2) * Cone(3, 6, 3, align=None)
+    path = _stl_of(sink, d, "countersink")
+
+    keep_fit = builder._fit_surfaces
+    builder._fit_surfaces = (lambda shape, debug=False, report=None, **_kw:
+                             keep_fit(shape, debug=debug, report=report, revolutions=False))
+    try:
+        v1, _b, v1_payload = _import_body(path)
+    finally:
+        builder._fit_surfaces = keep_fit
+
+    keep_seams = builder._revolution_seams
+
+    def _off_by_half_a_degree(q, d_, *args):
+        import numpy as np
+
+        turn = math.radians(0.5)
+        return [(math.cos(turn) * r + math.sin(turn) * np.cross(d_, r), wraps)
+                for r, wraps in keep_seams(q, d_, *args)]
+
+    builder._revolution_seams = _off_by_half_a_degree
+    try:
+        part, _b, payload = _import_body(path)
+    finally:
+        builder._revolution_seams = keep_seams
+    print(f"  cylinders only: {len(v1.faces())} faces {_census(v1)}; refused new pass: "
+          f"{len(part.faces())} faces {_census(part)}, reply {payload.get('fitSkipped')}")
+    assert _census(v1).get("Cylinder"), "precondition: the cylinders-only fit finds the bore"
+    assert _census(part) == _census(v1) and len(part.faces()) == len(v1.faces()), (
+        f"a refused body should get the cylinders-only fit {_census(v1)}, got {_census(part)}")
+    assert payload["fitted"] == v1_payload["fitted"] and not payload.get("fitSkipped"), payload
+    print("  OK: refused, and the bore is still a cylinder")
+
+
+def test_an_old_clean_up_keeps_rebuilding_the_way_it_did():
+    """A Clean Up saved before cones, spheres and tori were recognised has no
+    `fit`, and rebuilds with the cylinders-only fitter it was saved with; one
+    made now carries `fit: 2` (src/features/featureStarters.ts) and gets the
+    new pass.
+
+    Why the old one must not change: Clean Up runs at REBUILD time, so without
+    the field every saved document with a Clean Up on a faceted body would
+    re-face that body on its next open, and every fillet, press/pull and sketch
+    that names one of its faces would be re-pointed or broken (round2 decision
+    B1: Clean Up does not upgrade fitted bodies; re-import instead).
+
+    The old document here is a countersink imported with BOTH passes stubbed,
+    i.e. one whose stored body is the raw sewn mesh (a refacet that declined
+    leaves exactly that). Measured, branch against main, byte for byte: the
+    cylinders-only path is identical on the plate, the rim blend, the cover,
+    the countersink, the plain cone and the reporter's file."""
+    d = tempfile.mkdtemp()
+    from build123d import Box, Cone, Cylinder, Pos
+
+    sink = Box(40, 40, 10) - Cylinder(BORE_R, 20) - Pos(0, 0, 2) * Cone(3, 6, 3, align=None)
+    path = _stl_of(sink, d, "countersink")
+    keep_fit, keep_rf = builder._fit_surfaces, builder._refacet_clean
+    builder._fit_surfaces = lambda shape, debug=False, report=None, **_kw: shape
+    builder._refacet_clean = lambda shape, tol=0.12, debug=False: shape
+    try:
+        payload = import_geometry(path, "stl")
+    finally:
+        builder._fit_surfaces, builder._refacet_clean = keep_fit, keep_rf
+    imported = {"id": "im", "type": "import", "format": "stl", "name": "m",
+                "geom": payload["geom"]}
+
+    stored, e0, sb = rebuild({"parameters": {}, "features": [imported]})
+    old_diags, new_diags = [], []
+    old, e1, ob = rebuild({"parameters": {}, "features": [
+        imported, {"id": "cu", "type": "cleanUp"}]}, diagnostics=old_diags)
+    new, e2, nb = rebuild({"parameters": {}, "features": [
+        imported, {"id": "cu", "type": "cleanUp", "fit": 2}]}, diagnostics=new_diags)
+    assert not e0 and not e1 and not e2, (e0, e1, e2)
+    v1 = builder._unify_body(builder._fit_or_refacet(sb[0]["shape"], revolutions=False))
+    print(f"  stored {len(stored.faces())} faces {_census(stored)} | old Clean Up "
+          f"{len(old.faces())} {_census(old)} | v1 fitter {len(v1.faces())} "
+          f"{_census(v1)} | new Clean Up {len(new.faces())} {_census(new)}")
+    assert _census(stored) == {"Plane": len(stored.faces())}, "precondition: a faceted body"
+    assert not _census(old).get("Cone"), (
+        f"an old Clean Up re-faced its body with the new fitter: {_census(old)}")
+    assert _fit_signature(old) == _fit_signature(v1) and len(old.faces()) == len(v1.faces()), (
+        "an old Clean Up no longer matches the cylinders-only fitter it was saved with")
+    assert _census(new) == {"Plane": 6, "Cylinder": 1, "Cone": 1}, (
+        f"a new Clean Up should recognise the countersink: {_census(new)}")
+    old_note = [x["reason"] for x in old_diags if x.get("code") == "cleanUpFitted"]
+    new_note = [x["reason"] for x in new_diags if x.get("code") == "cleanUpFitted"]
+    print(f"    notes: old {old_note} | new {new_note}")
+    assert old_note and "cylindrical" in old_note[0], old_note
+    assert new_note and "2 curved faces" in new_note[0], new_note
+    print("  OK: old Clean Ups rebuild as they did, new ones see cones")
+
+
+def test_the_reporters_file_when_it_is_here():
+    """GH #49's own file, run only where it is on disk: it is the reporter's
+    work and is never committed. Point SINDRI_GH49_FILE at the attachment
+    (QMX++Front-Rear+Covers.3mf) to run it.
+
+    The self-consistency oracle from the triage, per body: four spheres R 3, four
+    tori R 1.7 r 1.3 (R + r = 3, the vertical corner radius), valid, one solid,
+    no free edges, fewer than the 782 / 700 faces the cylinders-only fitter
+    leaves, and the volume within 0.15% of the sewn mesh.
+
+    The last two legs are what the two gates no committable fixture reaches are
+    measured against. Without the facet-depth spread gate, body 1 ships a flat
+    side wall bowed out 0.5 mm into a radius-78.6 "cylinder" and its volume moves
+    +1.34%; without the sag-evidence gate each body ships a fifth, false torus
+    and an edge tolerance of 0.35 mm."""
+    path = os.environ.get("SINDRI_GH49_FILE")
+    if not path or not os.path.exists(path):
+        print("  SKIP: SINDRI_GH49_FILE is not set")
+        return
+    from build123d import Mesher
+
+    shapes = Mesher().read(path)
+    raw = shapes[0] if len(shapes) == 1 else builder.Compound(list(shapes))
+    sewn = builder._explode_solids(builder._unify_if_valid(raw))
+    fitted = builder._explode_solids(builder._sew_mesh_file(path))
+    assert len(fitted) == 2 == len(sewn)
+    for i, (pre, body) in enumerate(zip(sewn, fitted)):
+        surfaces = [_surface(f) for f in body.faces()]
+        tori = [p for t, p in surfaces if t == "Torus"]
+        spheres = [p for t, p in surfaces if t == "Sphere"]
+        dv = (abs(body.volume) - abs(pre.volume)) / abs(pre.volume)
+        print(f"  body {i}: {len(body.faces())} faces {_census(body)}, dV {100 * dv:+.4f}%, "
+              f"max edge tol {_max_edge_tolerance(body):.3e}")
+        assert len(tori) == 4 and all(abs(t[0] - 1.7) < 1e-3 and abs(t[1] - 1.3) < 1e-3
+                                      for t in tori), tori
+        assert len(spheres) == 4 and all(abs(s[0] - 3.0) < 1e-3 for s in spheres), spheres
+        assert _is_valid(body) and len(body.solids()) == 1 and _free_edge_count(body) == 0
+        assert len(body.faces()) < (782, 700)[i]
+        assert abs(dv) < 1.5e-3, f"body {i}: volume moved {100 * dv:+.3f}%"
+        assert _max_edge_tolerance(body) < 0.05
+    print("  OK: the reporter's file, both bodies")
 
 
 # --------------------------------------------------------------------------
@@ -1132,7 +1559,7 @@ def _faceted_plate_doc(path, *extra):
     that state. `import_geometry` has to run INSIDE the stub: the fitting
     happens there, in `_sew_mesh_file`, not in `rebuild`."""
     keep = builder._fit_surfaces
-    builder._fit_surfaces = lambda shape, debug=False, report=None: shape
+    builder._fit_surfaces = lambda shape, debug=False, report=None, **_kw: shape
     try:
         payload = import_geometry(path, "stl")
         doc = {"parameters": {}, "features": [
@@ -1213,7 +1640,7 @@ def test_a18_a_facet_of_an_unrecognised_curve_refuses():
             "import occt_smp; occt_smp.configure()\n"
             "import builder\n"
             "from builder import import_geometry, rebuild\n"
-            "builder._fit_surfaces = lambda s, debug=False, report=None: s\n"
+            "builder._fit_surfaces = lambda s, debug=False, report=None, **_kw: s\n"
             f"doc = json.loads({json.dumps(json.dumps(doc))})\n"
             f"doc['features'][0]['geom'] = import_geometry({path!r}, 'stl')['geom']\n"
             "part, err, _b = rebuild(doc)\n"
@@ -1341,7 +1768,7 @@ def test_clean_up_refits_an_old_import():
     d = tempfile.mkdtemp()
     path, _src = _plate_stl(d, 0.2)
     keep = builder._fit_surfaces
-    builder._fit_surfaces = lambda shape, debug=False, report=None: shape
+    builder._fit_surfaces = lambda shape, debug=False, report=None, **_kw: shape
     try:
         payload = import_geometry(path, "stl")   # the old, faceted document
     finally:
@@ -1404,7 +1831,7 @@ def test_clean_up_says_when_it_recognised_a_cylinder():
     d = tempfile.mkdtemp()
     path, _src = _plate_stl(d, 0.2)
     keep = builder._fit_surfaces
-    builder._fit_surfaces = lambda shape, debug=False, report=None: shape
+    builder._fit_surfaces = lambda shape, debug=False, report=None, **_kw: shape
     try:
         payload = import_geometry(path, "stl")   # the old, faceted document
     finally:
@@ -1523,7 +1950,7 @@ def test_clean_up_cannot_re_fit_a_body_that_already_carries_a_cylinder():
 
 def _fit_signature(shape):
     """A canonical, ORDER-FREE description of what the fitter accepted: one
-    tuple per fitted region, sorted.
+    tuple per fitted region (cylinder, cone, sphere or torus), sorted.
 
     Every number is read through the adaptor and rounded to 9 decimals, which is
     three orders finer than the tightest tolerance anything in the fitter uses,
@@ -1532,13 +1959,20 @@ def _fit_signature(shape):
     came out, not whether the sewer happened to lay them down the same way; the
     blob digest beside it is the stricter, order-sensitive half."""
     out = []
-    for f in _cylinder_faces(shape):
-        (cx, cy, cz), (dx, dy, dz) = _cyl_axis(f)
-        out.append((
-            round(_cyl_radius(f), 9),
-            round(_signed_area(f), 9),
-            tuple(round(v, 9) for v in (cx, cy, cz, dx, dy, dz)),
-        ))
+    for f in shape.faces():
+        kind, params = _surface(f)
+        if kind == "Plane":
+            continue
+
+        def _flat(p):
+            for v in p:
+                if isinstance(v, tuple):
+                    yield from _flat(v)
+                else:
+                    yield v
+
+        out.append((kind, round(_signed_area(f), 9),
+                    tuple(round(v, 9) for v in _flat(params))))
     return tuple(sorted(out))
 
 
@@ -1565,7 +1999,9 @@ def test_a17_the_same_mesh_always_fits_the_same_way():
     THE FILLETED BOX IS THE FIXTURE THAT MATTERS. Its four quadrants have
     EXACTLY equal area, so the greedy claimer's primary key ties on all four and
     the integer tiebreak is the only thing deciding the order. A run keyed off
-    dict or set iteration order would still pass on a body with one bore.
+    dict or set iteration order would still pass on a body with one bore. The
+    ROUNDED box does the same for the cones/spheres/tori pass: eight spheres of
+    exactly equal area, each found once from each of three axes.
 
     The digest holds across processes (measured, both fixtures, six runs in two
     interpreters), so it is asserted rather than the tuples alone."""
@@ -1580,6 +2016,8 @@ def test_a17_the_same_mesh_always_fits_the_same_way():
         - Pos(10, 0, 0) * Cylinder(5, 20), d, "two_bores")
     fillets = _stl_of(
         b_fillet(Box(40, 40, 10).edges().filter_by(Axis.Z), radius=1), d, "fillets")
+    rounded = _stl_of(b_fillet(Box(30, 20, 10).edges(), radius=2), d, "rounded")
+    cases = (("two bores", two_bores), ("filleted box", fillets), ("rounded box", rounded))
 
     here = os.path.dirname(os.path.abspath(builder.__file__))
     runner = os.path.join(d, "fit_twice.py")
@@ -1595,7 +2033,7 @@ def test_a17_the_same_mesh_always_fits_the_same_way():
             "print('OUT', json.dumps([T._fit_run(p) for p in sys.argv[1:]]))\n"
         )
 
-    for name, path in (("two bores", two_bores), ("filleted box", fillets)):
+    for name, path in cases:
         a = _fit_run(path)
         b = _fit_run(path)
         print(f"  A17 {name}: run 1 digest {a[0][:16]}... {len(a[1])} regions | "
@@ -1605,13 +2043,12 @@ def test_a17_the_same_mesh_always_fits_the_same_way():
             f"{name} fitted differently on the second run in the SAME process:\n"
             f"  {a}\n  {b}")
 
-    r = subprocess.run([sys.executable, runner, two_bores, fillets],
+    r = subprocess.run([sys.executable, runner] + [p for _n, p in cases],
                        capture_output=True, text=True)
     assert r.returncode == 0, f"the subprocess exited {r.returncode}: {r.stderr[-500:]}"
     line = next(ln for ln in r.stdout.splitlines() if ln.startswith("OUT "))
     fresh = json.loads(line[4:])
-    for (name, path), got in zip((("two bores", two_bores),
-                                  ("filleted box", fillets)), fresh):
+    for (name, path), got in zip(cases, fresh):
         mine = _fit_run(path)
         # json has no tuples: compare the round trip so the shapes match.
         assert got[0] == mine[0], (
@@ -1743,7 +2180,13 @@ if __name__ == "__main__":
     test_clean_up_leaves_a_sealed_void_alone()
     test_a13_fillet_strips()
     test_a14_two_bores_of_different_radii()
-    test_a_blend_around_a_corner_comes_back_as_a_run_of_cylinders()
+    test_a_blend_around_a_rim_comes_back_as_one_torus()
+    test_a_countersink_and_a_chamfer_come_back_as_cones()
+    test_rounded_box_corners_come_back_as_spheres()
+    test_the_reporters_corners_come_back_as_their_design()
+    test_cones_spheres_and_tori_need_a_recognised_axis()
+    test_anywhere_on_the_bed_and_either_way_up()
+    test_a_refused_body_still_gets_its_cylinders()
     test_a18_a_facet_of_an_unrecognised_curve_refuses()
     test_the_facet_refusal_fires_on_native_geometry_and_says_so_honestly()
     test_a17_the_same_mesh_always_fits_the_same_way()
@@ -1751,4 +2194,6 @@ if __name__ == "__main__":
     test_clean_up_refits_an_old_import()
     test_clean_up_says_when_it_recognised_a_cylinder()
     test_clean_up_cannot_re_fit_a_body_that_already_carries_a_cylinder()
+    test_an_old_clean_up_keeps_rebuilding_the_way_it_did()
+    test_the_reporters_file_when_it_is_here()
     print("ALL PASS")

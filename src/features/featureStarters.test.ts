@@ -540,3 +540,19 @@ describe("a create tool takes the last feature out of the inspector", () => {
     expect(w.events).toEqual(["select(f9)"]);
   });
 });
+
+describe("Clean Up", () => {
+  // A Clean Up saved before cones, spheres and tori were recognised has no
+  // `fit`, and the sidecar keeps rebuilding it with the cylinders-only fitter
+  // so a saved document does not re-face under the features that name its
+  // faces. That only works if every Clean Up made FROM NOW ON says it wants the
+  // new pass: without the field, a fresh Clean Up would be read as an old one.
+  it("asks for the fitter that also recognises cones, spheres and tori", () => {
+    const h = harness({ busy: false, bodies: [{ id: "b1", name: "Body1" }], features: [], regions: 0 });
+    const added: { type: string }[] = [];
+    h.deps.store.addFeature = (f: { type: string }) => added.push(f);
+    createFeatureStarters(h.deps as never).startCleanUp();
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({ type: "cleanUp", fit: 2 });
+  });
+});
