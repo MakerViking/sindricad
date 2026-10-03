@@ -1693,26 +1693,26 @@ def test_the_facet_refusal_fires_on_native_geometry_and_says_so_honestly():
     refuses on bodies that were never imported, and the copy has to be true for
     those users too.
 
-    `_facet_of_an_unrecognised_curve` asks one question — is this face a plane
-    with a neighbour at a dihedral in (0.05, FIT_SHARP_DEG)? A regular prism's
-    side walls meet at the exterior angle 360/n, so every polygon of 15 or more
-    sides is inside that window on every wall, and the sketch tool's side count
-    is a plain dimension field. A shallow ridge and a face beside a shallow
-    lead-in chamfer land there too. None of them imported anything, and with the
-    screen removed press/pull on those walls does exactly the right thing.
+    `_facet_of_an_unrecognised_curve` asks whether a face is a plane in a STRIP
+    of shallow neighbours: one at a dihedral in (0.05, FIT_SHARP_DEG), and at
+    least two distinct neighbours under 45 degrees. A regular prism's side
+    walls meet at the exterior angle 360/n, so every wall of a polygon of 15 or
+    more sides is flanked by two such walls, exactly like a facet, and the
+    sketch tool's side count is a plain dimension field. Nothing imported, and
+    with the screen removed press/pull on those walls does exactly the right
+    thing. This test pins that the class is reachable and that the sentence
+    does not blame an import or promise a Clean Up that will not help.
 
-    WHETHER THE SCREEN SHOULD FIRE ON THEM AT ALL IS OPEN, and deliberately not
-    decided here: run length does not separate the two populations (a
-    tessellated bore IS an n-gon prism, and at angular tolerance 0.8 a real one
-    is a run of 16), narrowing the angle window does not either (native false
-    positives measured at 11.4 and 20.4 degrees sit between true positives at
-    2.0 and 22.9), and putting the old small-facet area heuristic in front of it
-    brings back the BRepOffset SIGSEGV A18 exists to catch. So this test pins
-    the two things that are settled: the class is reachable, and the sentence
-    the user gets does not blame an import they never did or promise a Clean Up
-    that will not help them."""
+    WHAT IS DECIDED (field report 4875dacc): a face with ONE shallow neighbour
+    and walls on its other sides, beside a draft, a lead-in chamfer or a
+    shallow ridge, is a design face and presses; see
+    test_a_drafted_body_presses_after_its_side_was_pressed. What stays open:
+    run length does not separate the n-gon from a tessellated bore (a bore IS
+    an n-gon prism, and at angular tolerance 0.8 a real one is a run of 16),
+    and narrowing the angle window does not either (native walls at 11.4 and
+    20.4 degrees sit between true positives at 2.0 and 22.9)."""
     docs = []
-    for n in (12, 16):
+    for n in (12, 16, 24):
         docs.append((f"{n}-gon prism", [
             {"id": "sk", "type": "sketch", "plane": "XY",
              "entities": [{"type": "polygon", "sides": n, "x": 0, "y": 0,
@@ -1731,10 +1731,10 @@ def test_the_facet_refusal_fires_on_native_geometry_and_says_so_honestly():
     assert seen["12-gon prism"] is False, (
         "a 12-gon's 30-degree walls are outside the window; if this changed, "
         "the false-positive class just got much wider")
-    assert seen["16-gon prism"] is True, (
-        "a 16-gon's 22.5-degree walls are inside the window — if this stopped "
-        "firing, the screen was narrowed and this test should record the new "
-        "boundary rather than be deleted")
+    assert seen["16-gon prism"] is True and seen["24-gon prism"] is True, (
+        "a 16-gon's 22.5-degree walls are inside the window and flanked on "
+        "both sides — if this stopped firing, the screen was narrowed and this "
+        "test should record the new boundary rather than be deleted")
 
     msg = builder._FACETED_CURVE_REFUSAL
     assert "re-import" not in msg, (
@@ -1745,6 +1745,94 @@ def test_the_facet_refusal_fires_on_native_geometry_and_says_so_honestly():
     assert "—" not in msg and "--" not in msg, f"house style: no em-dashes: {msg}"
     print("  OK: the screen fires on native geometry and the copy does not "
           "blame an import for it")
+
+
+def test_a_drafted_body_presses_after_its_side_was_pressed():
+    """Field report 4875dacc, a fully native document: a rectangle extruded 40
+    with a 5 degree taper, one drafted side press/pulled out 20, then five
+    attempts to press/pull a top. Every one refused as "a tessellation facet".
+    The prism meets the drafted walls at 0.44 degrees and the old top at 5, so
+    under the old one-neighbour screen 8 of the body's 10 faces refused (the
+    drafted box alone: 0 of 6).
+
+    A real facet sits in a strip of shallow neighbours; each of these faces has
+    one, and walls on its other sides. Both tops now press, onto the exact
+    answer: the face's own area times the distance, one valid solid.
+
+    And the offset family, which shares the screen: every one of these faces
+    cores BRepOffset at +1 or -1 mm, in-process (exit -11), on a small all-planar
+    body the offset ladder used to run unprobed. A shallow neighbour now sends
+    it through the sandbox, so Offset Face refuses in words and the worker
+    lives. The subprocess asserts on the RETURN CODE, as A18 does: an
+    in-process refusal would pass a message check while the product's worker
+    died."""
+    t5 = math.tan(math.radians(5))
+    feats = [
+        {"id": "f1", "type": "sketch", "plane": "XY", "entities": [
+            {"id": "r", "type": "rectangle", "width": 36, "height": 24, "x": 0, "y": 0}]},
+        {"id": "f2", "type": "extrude", "sketch": "f1", "distance": 40, "taper": 5,
+         "operation": "new", "hiddenBodies": []},
+        {"id": "f3", "type": "press-pull", "body": "body1", "distance": 20,
+         "operation": "join",
+         "face": {"kind": "face", "by": "nearest", "point": [-18 + 9.2 * t5, 0, 9.2]}},
+    ]
+    _p, errors, bodies = rebuild({"parameters": {}, "features": feats})
+    assert not errors, errors
+    before = bodies[0]["shape"]
+    assert len(before.faces()) == 10, f"precondition: {len(before.faces())} faces"
+    refused = [f for f in before.faces()
+               if builder._facet_of_an_unrecognised_curve(before, [f]) is not None]
+    assert not refused, f"{len(refused)} of 10 native faces still read as facets"
+
+    old_top = next(f for f in before.faces()
+                   if f.normal_at().Z > 1 - 1e-9 and abs(f.center().Z - 40) < 1e-6)
+    prism_top = max((f for f in before.faces() if f.center().X < -20),
+                    key=lambda f: f.center().Z)
+    for label, face in (("original top", old_top), ("prism top", prism_top)):
+        c = face.center()
+        pp = {"id": "f4", "type": "press-pull", "body": "body1", "distance": 30,
+              "operation": "join",
+              "face": {"kind": "face", "by": "nearest", "point": [c.X, c.Y, c.Z]}}
+        _p, errors, bodies = rebuild({"parameters": {}, "features": feats + [pp]})
+        after = bodies[0]["shape"]
+        want = before.volume + 30 * face.area
+        print(f"  4875dacc press/pull the {label} +30 -> errors {errors}, "
+              f"vol {after.volume:.3f} (want {want:.3f})")
+        assert not errors, f"the {label} of a native drafted body must press: {errors}"
+        assert after.is_valid and len(after.solids()) == 1, f"{label}: one valid solid"
+        assert abs(after.volume - want) < 1e-3, f"{label}: {after.volume:.3f} vs {want:.3f}"
+
+    import json
+    import subprocess
+
+    here = os.path.dirname(os.path.abspath(builder.__file__))
+    c = old_top.center()
+    doc = {"parameters": {}, "features": feats + [
+        {"id": "of", "type": "offsetFace", "body": "body1", "distance": 1.0,
+         "faces": {"kind": "face", "by": "nearest", "point": [c.X, c.Y, c.Z]}}]}
+    d = tempfile.mkdtemp()
+    runner = os.path.join(d, "offset_a_drafted_top.py")
+    with open(runner, "w") as fh:
+        fh.write(
+            "import json, os, sys\n"
+            f"sys.path.insert(0, {here!r})\n"
+            "os.environ['SINDRI_DISK_CACHE'] = '0'\n"
+            "import occt_smp; occt_smp.configure()\n"
+            "from builder import rebuild\n"
+            f"part, err, _b = rebuild(json.loads({json.dumps(json.dumps(doc))}))\n"
+            "print('MSG', err[0]['message'] if err else None)\n"
+        )
+    r = subprocess.run([sys.executable, runner], capture_output=True, text=True)
+    said = next((ln for ln in r.stdout.splitlines() if ln.startswith("MSG")), None)
+    print(f"  4875dacc offsetFace the drafted top +1 in a subprocess -> exit "
+          f"{r.returncode}, {said!r}")
+    assert r.returncode == 0, (
+        f"Offset Face on a face beside a shallow neighbour must go through the "
+        f"sandbox; the worker exited {r.returncode} (-11 = SIGSEGV in "
+        f"BRepOffset). stderr tail: {r.stderr[-400:]}")
+    assert said is not None, f"the rebuild must report, got {r.stdout[-400:]!r}"
+    print("  OK: a native drafted body presses, and Offset Face on it refuses "
+          "instead of taking the worker down")
 
 
 def test_clean_up_refits_an_old_import():
@@ -2189,6 +2277,7 @@ if __name__ == "__main__":
     test_a_refused_body_still_gets_its_cylinders()
     test_a18_a_facet_of_an_unrecognised_curve_refuses()
     test_the_facet_refusal_fires_on_native_geometry_and_says_so_honestly()
+    test_a_drafted_body_presses_after_its_side_was_pressed()
     test_a17_the_same_mesh_always_fits_the_same_way()
     test_the_import_reply_says_what_was_recognised()
     test_clean_up_refits_an_old_import()

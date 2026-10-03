@@ -12248,11 +12248,12 @@ _PP_MIN_SQUARENESS = 0.095
 # face, not of which tool they reached for.
 #
 # IT SAYS "SHALLOW ANGLE", NOT "ON IMPORT", because the screen is geometric and
-# has no provenance to read. It fires on native geometry too: two design planes
-# meeting under FIT_SHARP_DEG is a regular prism of 15 or more sides, a shallow
-# ridge, or a face beside a shallow lead-in chamfer, none of which the user
-# imported. Telling that user their mesh needs re-importing describes a file
-# they never had.
+# has no provenance to read. It still fires on native geometry: each wall of a
+# regular prism of 15 or more sides is flanked by two walls under
+# FIT_SHARP_DEG, which is exactly what a facet looks like. Telling that user
+# their mesh needs re-importing describes a file they never had. (A face with
+# ONE shallow neighbour, beside a lead-in chamfer, a shallow ridge or a draft,
+# no longer refuses: see _facet_of_an_unrecognised_curve.)
 #
 # AND IT DOES NOT PROMISE CLEAN UP FLATLY. Clean Up re-runs the fitter, but
 # `_fit_surfaces` screens out any shape carrying a single non-planar face
@@ -12280,6 +12281,13 @@ _FACETED_CURVE_REFUSAL = (
 # measured is anywhere near it. Without a floor the tangent cap above refuses,
 # because 0.000012 is not 0.
 _FACET_TANGENT_DEG = 0.05
+
+# A facet is one strip of a run: it has at least this many distinct neighbours
+# meeting it under _FACET_STRIP_DEG (see _facet_of_an_unrecognised_curve). 45
+# degrees is wide of every tessellation step measured (the largest, 28.57, is a
+# coarse bore) and narrow of the 85 to 90 degree walls a design face meets.
+_FACET_STRIP_DEG = 45.0
+_FACET_STRIP_MIN = 2
 
 
 def _facet_of_an_unrecognised_curve(part, faces):
@@ -12313,40 +12321,85 @@ def _facet_of_an_unrecognised_curve(part, faces):
     the wrong label either way. The dihedral is the actual hazard, so it is what
     gets measured.
 
+    A FACET SITS IN A STRIP; A DESIGN FACE SITS BESIDE ONE SHALLOW NEIGHBOUR.
+    One shallow dihedral is not enough on its own: a native drafted box whose
+    side face was press/pulled has its prism meeting the drafted walls at 0.44
+    degrees and the old top at 5, and 8 of its 10 faces refused (field report
+    4875dacc, "a native body called a tessellation facet"). So a face refuses
+    only when it has a neighbour in the window AND at least _FACET_STRIP_MIN
+    distinct neighbours under _FACET_STRIP_DEG, counting the near-zero ones: a
+    facet is flanked by the strip on both sides, while a design face's other
+    neighbours are walls at 85 to 90 degrees. Near-zero neighbours count
+    because tessellation leaves coplanar triangle twins beside a facet; without
+    them the rule frees 56 of a faceted cone's 114 leftover facets. Measured
+    against the one-neighbour rule it replaced: identical on every mesh fixture
+    (the A18 plate 17/17 at angular tolerance 0.2 and 26/26 at 0.5, a cone
+    114/114 imported and 375/375 unfitted, a sphere 298/298, a box with vertical
+    fillets 24/24), the drafted body 8 -> 0, and the native 16-gon and 24-gon
+    still refuse. The one mesh face class it frees: a flat wall beside a
+    faceted fillet the fitter did not recognise (4 walls of a box with
+    unrecognised top fillets), which presses like any wall.
+
     Fails open (returns None on any error): this is a screen in front of OCCT,
     not a correctness gate, and the facet-area check behind it is still there.
     """
-    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
-    from OCP.TopExp import TopExp, TopExp_Explorer
-    from OCP.TopoDS import TopoDS
-    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
-
     try:
         planar = [f for f in faces if f.geom_type == GeomType.PLANE]
         if not planar:
             return None
         flat = math.radians(_FACET_TANGENT_DEG)
         sharp = math.radians(FIT_SHARP_DEG)
-        emap = TopTools_IndexedDataMapOfShapeListOfShape()
-        TopExp.MapShapesAndAncestors_s(part.wrapped, TopAbs_EDGE, TopAbs_FACE, emap)
+        strip = math.radians(_FACET_STRIP_DEG)
+        emap = _edge_face_map(part)
         for f in planar:
-            exp = TopExp_Explorer(f.wrapped, TopAbs_EDGE)
-            while exp.More():
-                e = exp.Current()
-                if emap.Contains(e):
-                    mid = Edge(TopoDS.Edge_s(e)).position_at(0.5)
-                    n0 = f.normal_at(mid)
-                    for other in _list_shapes(emap.FindFromKey(e)):
-                        if other.IsSame(f.wrapped):
-                            continue
-                        n1 = Face(TopoDS.Face_s(other)).normal_at(mid)
-                        cosd = max(-1.0, min(1.0, n0.X * n1.X + n0.Y * n1.Y + n0.Z * n1.Z))
-                        if flat < math.acos(cosd) < sharp:
-                            return f
-                exp.Next()
+            in_window = False
+            near = []  # distinct neighbours under _FACET_STRIP_DEG
+            for other, angle in _neighbour_dihedrals(f, emap):
+                in_window = in_window or flat < angle < sharp
+                if angle < strip and not any(other.IsSame(o) for o in near):
+                    near.append(other)
+            if in_window and len(near) >= _FACET_STRIP_MIN:
+                return f
         return None
     except Exception:
         return None
+
+
+def _edge_face_map(part):
+    """Every edge of `part` mapped to the faces that share it."""
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE
+    from OCP.TopExp import TopExp
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+
+    emap = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(part.wrapped, TopAbs_EDGE, TopAbs_FACE, emap)
+    return emap
+
+
+def _neighbour_dihedrals(f, emap):
+    """(neighbour TopoDS_Face, dihedral in radians) across every edge of face
+    `f`, both normals read at the MIDPOINT OF THE SHARED EDGE (see
+    _facet_of_an_unrecognised_curve for why there). `emap` is _edge_face_map of
+    the body `f` belongs to."""
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    out = []
+    exp = TopExp_Explorer(f.wrapped, TopAbs_EDGE)
+    while exp.More():
+        e = exp.Current()
+        if emap.Contains(e):
+            mid = Edge(TopoDS.Edge_s(e)).position_at(0.5)
+            n0 = f.normal_at(mid)
+            for other in _list_shapes(emap.FindFromKey(e)):
+                if other.IsSame(f.wrapped):
+                    continue
+                n1 = Face(TopoDS.Face_s(other)).normal_at(mid)
+                cosd = max(-1.0, min(1.0, n0.X * n1.X + n0.Y * n1.Y + n0.Z * n1.Z))
+                out.append((other, math.acos(cosd)))
+        exp.Next()
+    return out
 
 
 def _press_pull(part, face, d, clamp=True, trim=None):
@@ -14936,7 +14989,8 @@ _OFFSET_PROBE_REFUSAL = (
     "can't offset this face — tried in a sandbox first, it crashed the geometry "
     "kernel or was still running after {t:g}s, so it was never run on your "
     "model. What puts a face in that class is the surfaces AROUND it: a rim "
-    "chamfer or fillet, or a wall of an imported solid. A plain straight bore "
+    "chamfer or fillet, a neighbour at a shallow angle such as a draft, or a "
+    "wall of an imported solid. A plain straight bore "
     "or boss offsets fine; otherwise move the wall with a sketched cut or join "
     "instead."
 )
@@ -15176,14 +15230,26 @@ def _offset_needs_probing(part, pairs):
     all-planar body that segfaults BRepOffset would go unprobed and take the
     worker down exactly as it did before this existed. Nothing measured has done
     that — the crash class is curved faces on imports. `server.py`'s
-    out-of-process worker remains the backstop underneath."""
+    out-of-process worker remains the backstop underneath.
+
+    One planar class IS measured to core, and probes: a plane meeting a
+    neighbour at a shallow dihedral (inside the facet window of
+    _facet_of_an_unrecognised_curve). A native drafted box with a side face
+    press/pulled cores BRepOffset on every one of its 8 such faces at +1 or -1
+    mm, and so do the flat walls beside an unrecognised faceted
+    fillet (4 of 4). The facet screen used to refuse every one of them first;
+    since it refuses only a face in a strip of them (field report 4875dacc),
+    they reach here, and the fork is what keeps the worker alive."""
     try:
         if len(part.faces()) > _OFFSET_PROBE_MAX_FACES:
             return True
         for f, _d in pairs:
             if f.geom_type != GeomType.PLANE:
                 return True
-        return False
+        flat = math.radians(_FACET_TANGENT_DEG)
+        sharp = math.radians(FIT_SHARP_DEG)
+        emap = _edge_face_map(part)
+        return any(flat < a < sharp for f, _d in pairs for _o, a in _neighbour_dihedrals(f, emap))
     except Exception:
         return True  # cannot tell => probe, the safe direction
 

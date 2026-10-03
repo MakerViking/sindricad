@@ -339,6 +339,13 @@ This file starts on 2026-08-03. For anything before that, see the
   If I cannot find a solution on the same side, I keep the sketch where it was
   and say so, instead of moving it to the wrong side.
 
+- **Press/Pull works on a drafted body after you have pressed one of its
+  sides.** A face that meets one neighbour at a shallow angle, like a draft or
+  a lead-in chamfer, was refused as one facet of a curved surface. I now refuse
+  only a face in a run of shallow angles, the way the facets of a curve I did
+  not recognise sit. Offset Face on such a face is tried in a sandbox first and
+  says so if it would have crashed the geometry engine.
+
 - **An old revolve, loft, sweep or thicken cuts what it cut when you made it.**
   These used to go by which bodies were hidden right now, so hiding a body
   could make an old revolve fail with "Cut removed nothing" the next time the
