@@ -2,6 +2,7 @@
 // gets its own small panel: a multi-line string, a system-font picker (fonts come
 // from the sidecar's listFonts op), size, bold/italic, alignment and rotation. On
 // every edit it fires onChange for a live preview; Add/Enter commits, Cancel/Esc dismisses.
+// setStatus() says, under the text, why the preview cannot be drawn.
 
 import { t } from "../i18n";
 import { isImeComposing } from "../ui/focus";
@@ -37,6 +38,8 @@ export class TextPanel {
   private numFields: HTMLInputElement[] = [];
   /** The one field whose value must be > 0 — see the commit guard. */
   private sizeField: HTMLInputElement | null = null;
+  /** Why the text cannot be drawn, under the text box. Rebuilt by every show(). */
+  private statusEl: HTMLDivElement | null = null;
   private escHandler = (e: KeyboardEvent) => {
     // NOT while an IME is composing: Escape is how a Japanese, Chinese or
     // Korean IME CANCELS A CONVERSION, and this panel is the likeliest place in
@@ -92,6 +95,13 @@ export class TextPanel {
     ta.placeholder = t("sketch.text.placeholder");
     Object.assign(ta.style, { width: "100%", resize: "vertical" });
     this.root.appendChild(ta);
+    // Right under the text, because what it says is usually about the text: a
+    // character the font has no glyph for, and a font that has it.
+    const status = document.createElement("div");
+    status.className = "tool-panel-warn";
+    status.style.display = "none";
+    this.root.appendChild(status);
+    this.statusEl = status;
     this.root.appendChild(Object.assign(document.createElement("div"), { style: "height:6px" }));
 
     const font = document.createElement("select");
@@ -166,6 +176,25 @@ export class TextPanel {
     ta.focus();
   }
 
+  /** Say why the text cannot be drawn, or clear it with null. The preview draws
+   *  only an empty frame in that case, and nothing else on screen would say why. */
+  setStatus(message: string | null) {
+    if (!this.statusEl) return;
+    this.statusEl.textContent = message ?? "";
+    this.statusEl.style.display = message ? "block" : "none";
+    if (message) this.keepOnScreen();
+  }
+
+  /** Move the panel up if its bottom is off screen. show() places it at the click
+   *  and allows for a panel 240 px tall; a font refusal under the text is several
+   *  lines more, and for a text placed low in the window it pushed Add and Cancel
+   *  out of reach (measured: Add at y 958 in a window 913 px tall). */
+  private keepOnScreen() {
+    const h = this.root.offsetHeight;
+    const top = parseFloat(this.root.style.top) || 0;
+    if (top + h > window.innerHeight - 8) this.root.style.top = `${Math.max(8, window.innerHeight - h - 8)}px`;
+  }
+
   private commit() {
     if (!this.active || !this.read) return;
     // A field the app cannot read must not commit as its default: a size typed
@@ -196,6 +225,7 @@ export class TextPanel {
     this.root.style.display = "none";
     this.onCommit = this.onCancel = this.onChange = this.read = null;
     this.numFields = [];
+    this.statusEl = null;
     document.removeEventListener("keydown", this.escHandler, true);
   }
 }

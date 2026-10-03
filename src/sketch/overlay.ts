@@ -27,7 +27,7 @@ import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { isOriginId, isOriginGeometry } from "./origin";
 import { distToSeg, paramOnSeg } from "./geom2d";
-import { getCachedText, warmText } from "./textCache";
+import { getCachedText, textPlaceholder, warmText } from "./textCache";
 import type { TextFace } from "../geometry/client";
 import type { SnapKind } from "./snap";
 import type { ResolvedEntity } from "./snap";
@@ -843,7 +843,15 @@ export function curveObjects(
     }
     if (e.type === "text") {
       const faces = getCachedText(e);
-      if (faces && faces.length) add(textObjects(faces, plane, color, !!e.construction && !highlight));
+      if (faces && faces.length) {
+        add(textObjects(faces, plane, color, !!e.construction && !highlight));
+      } else {
+        // A text that draws nothing still gets a dashed frame in its place, the
+        // one sketchMode's textEntityAt hit-tests: something to see, select,
+        // drag and double-click to fix (see textPlaceholder).
+        const frame = textPlaceholder(e);
+        if (frame) add(dashedPolyline(frame.map((q) => plane.to3D(q.x, q.y)), color));
+      }
       continue;
     }
     if (endpointR > 0 && !highlight) {

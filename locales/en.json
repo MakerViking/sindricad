@@ -1842,6 +1842,8 @@
       "defaultFont": "Default font",
       "italic": "I",
       "noBox": "0 = no box",
+      "notDrawn": "I could not draw this text: {reason}. Edit it or pick another font to try again.",
+      "notDrawnRetry": "I could not draw this text: {reason}. I will try again when the geometry engine is back.",
       "placeholder": "Text…"
     },
     "transform": {

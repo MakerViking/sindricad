@@ -314,6 +314,25 @@ This file starts on 2026-08-03. For anything before that, see the
   axis too. For the rest of the session, anything put on that axis or made
   collinear with it followed an axis that no longer ran through the origin.
 
+- **Longer text in a sketch shows while you type it.** A card-length text typed
+  at a normal pace went blank after about 40 characters and could take more than
+  a minute to appear after Add, and Finish Sketch waited behind it. While a text
+  is being drawn I now skip the keystrokes in between instead of queueing every
+  one, and keep the last outline on screen until the new one is ready. A long
+  text also stays on screen while you drag it, instead of disappearing until you
+  let go. Two identical texts in one sketch now each show in their own place
+  instead of one on top of the other.
+
+- **A text the font cannot draw says why, and you can still get to it.** One
+  character the font has no glyph for, such as 🎉, means the whole text cannot be
+  built. It used to vanish with nothing said until Finish Sketch, and once added
+  there was nothing to click, so it could not be fixed. The text panel now names
+  the characters the font cannot draw, and a font that can when one is installed,
+  and a text already in the sketch says it in a message. The text shows as a
+  dashed frame where it would be, which you can select, drag, delete or
+  double-click to edit. Changing the text or the font tries again, and so does a
+  text that failed because the geometry engine could not be reached.
+
 - **Break keeps the constraints of the curve it splits.** A Coincident at either
   end, and Horizontal or Vertical, now carry over to the two halves instead of
   disappearing. Length and Equal no longer apply to a half, so those are removed,

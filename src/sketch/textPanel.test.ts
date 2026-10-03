@@ -235,3 +235,22 @@ describe("TextPanel — Escape belongs to the IME while a conversion is open", (
     expect(p.committed()?.text).toBe("にほんご");
   });
 });
+
+describe("TextPanel — a font refusal does not push Add off the screen", () => {
+  it("moves the panel up when the status makes it reach past the bottom", () => {
+    installPanelDom();
+    const panel = new TextPanel();
+    panel.show({ x: 100, y: 800 }, ["DejaVu Sans"], {}, { onCommit() {}, onCancel() {}, onChange() {} });
+    const root = (globalThis.document as unknown as { body: FakeEl }).body.children.at(-1)!;
+    // show() allows for 240 px: a click at y 800 in a 900 px window puts the top at 660
+    expect(root.style.top).toBe("660px");
+    // A refusal several lines long makes the panel taller than that. Measured in
+    // the app: Add ended up at y 958 in a 913 px window, out of reach.
+    root.offsetHeight = 330;
+    panel.setStatus("Text: the font 'Arial' has no glyph for ⛄. Pick a font that covers them.");
+    expect(root.style.top).toBe(`${900 - 330 - 8}px`);
+    // and it stays put when the status clears, rather than jumping back down
+    panel.setStatus(null);
+    expect(root.style.top).toBe(`${900 - 330 - 8}px`);
+  });
+});

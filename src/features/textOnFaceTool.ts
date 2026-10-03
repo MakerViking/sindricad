@@ -465,7 +465,7 @@ export class TextOnFaceTool {
     const gen = ++this.outlineGen;
     let faces;
     try {
-      faces = await this.geometry.tessellateText(this.textEntity(v));
+      faces = (await this.geometry.tessellateText(this.textEntity(v))).faces;
     } catch {
       return; // a failed outline must never disturb what is already on screen
     }

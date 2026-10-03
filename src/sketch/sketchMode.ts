@@ -12,7 +12,7 @@ import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, poly
 import { DimInput, type DimFieldDef } from "./dimInput";
 import { TextPanel } from "./textPanel";
 import type { TextValues } from "./textPanel";
-import { fetchFonts } from "./textCache";
+import { aboutTheText, fetchFonts, forgetText, textFailure, textFailureText, textPlaceholder } from "./textCache";
 import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
@@ -41,7 +41,7 @@ import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
-import { detectRegions, entityPolyline, EPS, resolveRegionRef, sameRegionIds, twinRegion, type Region } from "./region";
+import { detectRegions, entityPolyline, EPS, pointInLoop, resolveRegionRef, sameRegionIds, twinRegion, type Region } from "./region";
 import { worldPointInRegion } from "./regionSelect";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
@@ -221,6 +221,15 @@ function fpClose(a: EdgeFingerprint, b: EdgeFingerprint): boolean {
 // active entity list (so it repaints through the normal render path) but is never
 // committed — filtered out at serialization and dropped on tool switch/cancel.
 const TEXT_PREVIEW_ID = "__textpreview__";
+
+/** Text failures already announced in a toast, by entity id and message, so a
+ *  repaint does not repeat one, and neither does dragging the text (every frame
+ *  of a drag is a new request, and each one is refused again). */
+const announcedTextFailures = new Set<string>();
+/** The toast each text's failure is showing, by entity id, so reopening the text
+ *  can take it down: the panel says the same thing, and the toast sits where the
+ *  panel's Add button often lands (both near the bottom middle of the window). */
+const textFailureToasts = new Map<string, () => void>();
 
 /** Did the user actually draw anything in this snapshot? Reads the SERIALISED
  *  feature, where the synthetic origin geometry has already been stripped —
@@ -883,10 +892,32 @@ export class SketchMode {
     if (this.dimsVisible) this.dims.show(this.entities, this.plane, this.constraintDimExtras());
     else this.dims.hide();
     this.redrawGlyphs();
+    this.sayTextFailures();
     // On-demand renderer: a keyboard-driven repaint (e.g. async text glyphs landing
     // via redraw()) fires no pointer event, so force a frame or it won't draw until
     // the next mouse move.
     this.viewport.requestRender();
+  }
+
+  /** A text the font cannot draw shows only an empty frame, so say why. The text being typed
+   *  says it in its panel, live; a text already in the sketch says it once in a
+   *  toast. Runs on every refresh, which is also how an outline or a refusal that
+   *  arrives later gets here (textCache's re-render calls redraw()). A lost engine
+   *  is not toasted per text: the app already says that once, and every text in
+   *  the sketch would otherwise repeat it. */
+  private sayTextFailures() {
+    for (const e of this.entities) {
+      if (e.type !== "text") continue;
+      const failure = textFailure(e);
+      if (e.id === TEXT_PREVIEW_ID) {
+        if (this.textPanel.isActive) this.textPanel.setStatus(failure ? textFailureText(failure) : null);
+      } else if (failure && aboutTheText(failure)) {
+        const said = `${e.id}\n${failure.message}`;
+        if (announcedTextFailures.has(said)) continue;
+        announcedTextFailures.add(said);
+        textFailureToasts.set(e.id, toast(textFailureText(failure), { kind: "error" }));
+      }
+    }
   }
 
   /** Lightweight per-frame refresh for dragging: the curves are rebuilt, and the
@@ -2542,9 +2573,18 @@ export class SketchMode {
 
   private textEntityAt(p: THREE.Vector2): Extract<ResolvedEntity, { type: "text" }> | null {
     const id = this.overlay.activeTextIdAt(p);
-    if (!id) return null;
-    const te = this.entities.find((x) => x.id === id);
-    return te && te.type === "text" ? te : null;
+    const te = id ? this.entities.find((x) => x.id === id) : undefined;
+    if (te?.type === "text") return te;
+    // A text that draws nothing (a font with no glyph for one of its characters)
+    // has no glyphs to hit, so it is found by the frame drawn in its place.
+    // Without this it could not be selected, dragged or reopened, and reopening
+    // it is exactly what its message tells the user to do.
+    for (const e of this.entities) {
+      if (e.type !== "text") continue;
+      const frame = textPlaceholder(e);
+      if (frame && pointInLoop(p, frame)) return e;
+    }
+    return null;
   }
 
   /** Re-open the text panel to edit an existing text, anchored near the pointer. */
@@ -2580,6 +2620,9 @@ export class SketchMode {
         ? { x: box.x, y: box.y }
         : { x: clickPoint.x, y: clickPoint.y };
     const id = editEntity ? editEntity.id : newEntityId();
+    // Every text placed shares the preview id: start this one from nothing, not
+    // from the outline of the text placed (or cancelled) before it.
+    forgetText(TEXT_PREVIEW_ID);
     const construction = editEntity ? !!editEntity.construction : this.constructionMode;
     const build = (v: TextValues): ResolvedEntity => ({
       type: "text", id, text: v.text,
@@ -2630,6 +2673,15 @@ export class SketchMode {
         this.refreshActive();
       },
     });
+    // Reopening a text the font cannot draw: say why before the first keystroke,
+    // since that is usually what the user came back to fix. The panel says it
+    // now, so its toast goes.
+    const failure = editEntity ? textFailure(editEntity) : undefined;
+    if (failure) this.textPanel.setStatus(textFailureText(failure));
+    if (editEntity) {
+      textFailureToasts.get(editEntity.id)?.();
+      textFailureToasts.delete(editEntity.id);
+    }
   }
 
   // --- patterns: click to place, drag to size, type counts, click to commit. Each

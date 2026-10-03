@@ -35,6 +35,17 @@ type StatusListener = (connected: boolean) => void;
  *  counters in o/a/e), each a closed 2D polyline in final sketch coordinates. */
 export type TextFace = { outer: [number, number][]; holes: [number, number][][] };
 
+/** What `tessellateText` hands back: the outlines, or why there are none. An
+ *  error reply used to come back as an empty list, which a caller cannot tell
+ *  apart from "nothing to draw" — so a font that has no glyph for an emoji left
+ *  the whole text invisible with nothing said. `error` is the sidecar's own
+ *  message and code (`fontMissingGlyphs` names the characters and a font that
+ *  has them); a caller that gets one must show it. */
+export interface TextOutlines {
+  faces: TextFace[];
+  error?: { message: string; code?: GeomErrorCode };
+}
+
 /** Per-source outcome of a projectGeometry call. `curves` carries one entry per
  *  resolved edge (a face boundary yields several); `fp` is the sidecar-authored
  *  edge fingerprint for body-edge sources — the caller wraps it into a
@@ -76,7 +87,7 @@ export interface GeometryBackend {
   rebuild(doc: CadDocument, tolerance?: number): Promise<RebuildReply>;
   /** Per-glyph 2D outlines for a sketch text entity (the sidecar owns fonts, so
    *  preview outlines come from it and match the extruded solid exactly). */
-  tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]>;
+  tessellateText(entity: object, pathEntity?: object): Promise<TextOutlines>;
   /** Project 3D sources (body edges / face boundaries / cross-sketch curves)
    *  onto a sketch plane. `doc` is the timeline PREFIX for that sketch (the
    *  caller truncates). Sources are the persisted ProjectedSource shapes:
@@ -1195,12 +1206,14 @@ export class Geometry implements GeometryBackend {
     return msg.ok ? { ok: true, result: msg.result } : { ok: false, message: msg.error?.message };
   }
 
-  async tessellateText(entity: object, pathEntity?: object): Promise<TextFace[]> {
+  async tessellateText(entity: object, pathEntity?: object): Promise<TextOutlines> {
     const msg = await this.call<{ faces: TextFace[] }>("tessellateText", {
       entity,
       ...(pathEntity ? { pathEntity } : {}),
     });
-    return msg.ok ? (msg.result.faces ?? []) : [];
+    if (msg.ok) return { faces: msg.result.faces ?? [] };
+    const code = msg.error?.code;
+    return { faces: [], error: { message: msg.error?.message ?? "", ...(code ? { code } : {}) } };
   }
 
   async projectGeometry(doc: CadDocument, plane: PlaneSpec, sources: ProjectedSource[]): Promise<ProjectionResult[]> {
