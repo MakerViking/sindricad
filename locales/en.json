@@ -181,6 +181,7 @@
   "context": {
     "color": "Color",
     "combineWith": "Combine with…",
+    "copySketchToPlane": "Copy sketch to plane…",
     "deleteFaceHeal": "Delete face (heal)",
     "deletePlane": "Delete plane",
     "editFeature": "Edit {name}",
@@ -199,6 +200,7 @@
     "mergeSolidsEach": {
       "other": "Merge each of the {count} bodies into one solid of its own"
     },
+    "moveSketchPlane": "Move sketch plane…",
     "offsetPlane": "Offset plane",
     "offsetPlaneFromFace": "Offset plane from face",
     "pressPullFace": "Press/Pull face",
@@ -479,7 +481,8 @@
     },
     "planeOffset": {
       "dragPrompt": "Drag the arrow to set the offset · type a value · Enter to sketch on the plane · Esc to cancel",
-      "editPrompt": "Drag the arrow to move this plane · type a value · Enter to apply · Esc to cancel"
+      "editPrompt": "Drag the arrow to move this plane · type a value · Enter to apply · Esc to cancel",
+      "moveSketchPrompt": "Drag the arrow to move the sketch's plane · type a value · Enter to apply · Esc to cancel"
     },
     "pressPull": {
       "dragPrompt": "Drag the arrow · type a value (negative = cut) · click ANOTHER face = extrude up to it · T = up to a face or plane · click empty space to commit · Esc to cancel",
@@ -598,6 +601,7 @@
         "rectHint": "grid",
         "title": "Pattern type"
       },
+      "pickCopyTarget": "Select a plane, a construction plane or a planar face of a body to copy the sketch onto",
       "pickDatumSource": "Select a plane or face for the datum plane",
       "pickOffsetSource": "Select a plane or face to offset from",
       "pickSketchPlane": "Select a plane or a planar face of a body to sketch on",
@@ -622,6 +626,10 @@
         "thicknessPrompt": "Wall thickness · Enter to apply · Esc to cancel",
         "thicknessZero": "Wall thickness must be more than zero"
       },
+      "sketchGone": "That sketch no longer exists",
+      "sketchPlaneByParam": "The plane under this sketch is set by the parameter {name}. Change {name} to move it.",
+      "sketchPlaneDetached": "Other features use this sketch's plane too, so the sketch now has a plane of its own and no longer follows the old one.",
+      "sketchPlaneMovedPicks": "Check the fillets, chamfers and other picks after this sketch. They find their edges and faces by position, so after a move one can land on a different edge or face without an error.",
       "solidOp": {
         "cutHint": "remove",
         "joinHint": "merge",
@@ -1200,7 +1208,8 @@
       "datumPlane": "Creates the plane only — no sketch.",
       "import": "Brings in a STEP, STL, 3MF, OBJ or GLB file as a body.",
       "insertPart": "Copies the visible bodies of another SindriCAD document into this one. Later changes to that file do not follow.",
-      "offsetPlane": "Creates the plane AND starts a sketch on it."
+      "offsetPlane": "Creates the plane AND starts a sketch on it.",
+      "project": "Brings edges of bodies and other sketches into this sketch, linked so they follow their source."
     },
     "moreFamilyTools": "More {name} tools",
     "moreTools": "More tools",
@@ -1429,6 +1438,7 @@
         "other": "Made {count} entities normal geometry: they show solid once deselected"
       }
     },
+    "copyName": "{name} (copy)",
     "dimConflict": {
       "addConflicts": "I could not add this {what}: the new value conflicts with the constraints already on this sketch.",
       "addHeld": "I could not add this {what}: {reasons}, so it cannot take the new value.",

@@ -177,7 +177,10 @@ export const SKETCH: Group[] = [
       { action: "spline", label: t("tool.spline"), iconName: "spline" },
       { action: "point", label: t("tool.point"), iconName: "point" },
       { action: "text", label: t("tool.text"), iconName: "text", key: "T" },
-      { action: "project", label: t("tool.project"), iconName: "project", key: "P" },
+      // Keeps the name other CAD tools use (Doug 22a). The bare word did not
+      // say what it does, and the model ribbon has a Print project of its own.
+      { action: "project", label: t("tool.project"), iconName: "project", key: "P",
+        hint: t("ribbon.hint.project") },
     ],
   },
   {

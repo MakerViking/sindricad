@@ -125,12 +125,15 @@ const ARGS: Record<string, unknown[]> = {
   startBodyPattern: ["rect"],
   startExtrude: [],
   repickReference: ["f1", [0, 0, 0]],
+  // a sketch's right-click entries name the sketch; f1 is the sketch in WORLDS
+  copySketchToPlane: ["f1"],
+  moveSketchPlane: ["f1"],
 };
 
 interface World {
   busy: boolean;
   bodies: { id: string; name: string }[];
-  features: { id: string; type: string }[];
+  features: { id: string; type: string; plane?: string; entities?: unknown[] }[];
   regions: number;
 }
 
@@ -156,6 +159,8 @@ function harness(world: World) {
       updateFeature: (id: string) => act(`updateFeature(${id})`),
       document: { features: world.features },
       buildState: { result: { bodies: world.bodies } },
+      rollbackIndex: world.features.length,
+      isSuppressed: () => false,
       isBodyVisible: () => true,
       bodyName: () => null,
     },
@@ -231,13 +236,13 @@ const WORLDS: Record<string, World> = {
   "a body and a sketch region": {
     busy: false,
     bodies: [{ id: "b1", name: "Body1" }, { id: "b2", name: "Body2" }],
-    features: [{ id: "f1", type: "sketch" }],
+    features: [{ id: "f1", type: "sketch", plane: "XY", entities: [] }],
     regions: 1,
   },
   "another tool already running": {
     busy: true,
     bodies: [{ id: "b1", name: "Body1" }],
-    features: [{ id: "f1", type: "sketch" }],
+    features: [{ id: "f1", type: "sketch", plane: "XY", entities: [] }],
     regions: 1,
   },
 };
@@ -469,7 +474,7 @@ describe("a create tool takes the last feature out of the inspector", () => {
     const h = harness({
       busy: false,
       bodies: [{ id: "b1", name: "Body1" }],
-      features: [{ id: "f1", type: "sketch" }, { id: "f2", type: "extrude" }],
+      features: [{ id: "f1", type: "sketch", plane: "XY", entities: [] }, { id: "f2", type: "extrude" }],
       regions: over.regions ?? 0,
     });
     const events: string[] = [];

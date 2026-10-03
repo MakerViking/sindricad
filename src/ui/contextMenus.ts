@@ -43,6 +43,8 @@ export interface ContextMenusDeps {
   setLastAction: (action: string) => void;
   startSplit: (seed?: SplitSeed) => void;
   offsetPlaneFromFace: (face: PlaneDef, anchor?: Selector) => void;
+  copySketchToPlane: (sketchId: string) => void;
+  moveSketchPlane: (sketchId: string) => void;
 }
 
 export function createContextMenus(deps: ContextMenusDeps) {
@@ -67,6 +69,8 @@ export function createContextMenus(deps: ContextMenusDeps) {
     setLastAction,
     startSplit,
     offsetPlaneFromFace,
+    copySketchToPlane,
+    moveSketchPlane,
   } = deps;
 
   /** Wrap a menu item that starts a tool or mutates the DOCUMENT: the click runs
@@ -255,6 +259,22 @@ export function createContextMenus(deps: ContextMenusDeps) {
     ];
   }
 
+  /** What a sketch's right-click adds, in the Browser and on its Timeline
+   *  chip alike: copy it onto another plane, or move the plane it sits on. */
+  function sketchActions(sketchId: string): CtxItem[] {
+    return [
+      { label: t("context.copySketchToPlane"), onClick: unlessBusy(() => copySketchToPlane(sketchId)) },
+      { label: t("context.moveSketchPlane"), onClick: unlessBusy(() => moveSketchPlane(sketchId)) },
+    ];
+  }
+
+  /** What a Timeline chip's right-click adds for its feature: a sketch's
+   *  actions, nothing for anything else. */
+  function featureActions(featureId: string): CtxItem[] {
+    const f = store.document.features.find((x) => x.id === featureId);
+    return f?.type === "sketch" ? sketchActions(featureId) : [];
+  }
+
   function openBodyMenu(x: number, y: number, bodyId: string) {
     if (!viewport.getSelectedBodies().includes(bodyId)) viewport.setSelectedBodies([bodyId]);
     contextMenu(x, y, [
@@ -341,7 +361,7 @@ export function createContextMenus(deps: ContextMenusDeps) {
     openEmptyMenu(x, y);
   }
 
-  return { openDatumMenu, openEdgeMenu, openFaceMenu, openBodyMenu, openEmptyMenu, openCanvasMenu, bodyActions };
+  return { openDatumMenu, openEdgeMenu, openFaceMenu, openBodyMenu, openEmptyMenu, openCanvasMenu, bodyActions, sketchActions, featureActions };
 }
 
 export type ContextMenus = ReturnType<typeof createContextMenus>;

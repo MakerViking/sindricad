@@ -23,7 +23,11 @@ import { setPrompt } from "../ui/prompt";
 import { toast } from "../ui/toast";
 import { DimInput } from "../sketch/dimInput";
 import type { Feature, PlaneDef, PlaneSpec, Selector } from "../types";
-import { findSelectorAt, replaceSelectorAt } from "./repickReference";
+import { findSelectorAt, picksByPosition, replaceSelectorAt } from "./repickReference";
+import { datumPlaneDef, planeDefOf, planeOf } from "../document/planeOf";
+import { moveSketchPlaneBlocker } from "../document/sketchPlaneEdits";
+import { resolveEntities } from "../sketch/resolve";
+import { entityPolyline } from "../sketch/region";
 import { t } from "../i18n";
 
 /** Said out loud whenever a plane is picked off a curved face. The plane itself
@@ -224,34 +228,57 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
    *  GH #52 ("sketch on a face does not follow the face"). The selector is what
    *  lets the sidecar re-derive the plane every rebuild. Absent for the base
    *  planes (nothing to follow) and for curved faces (nothing to follow it
-   *  BY — see viewport.faceAnchor), and the curved case says so out loud. */
+   *  BY — see viewport.faceAnchor), and the curved case says so out loud.
+   *
+   *  `datums` also offers the construction planes, for the one flow that wants
+   *  them (Copy sketch to plane); `onPick` then gets the datum's id as the
+   *  link to keep. The other pickers stay as they were: offering a datum to
+   *  Sketch or Datum Plane would change what those buttons make. A body face
+   *  still wins over a datum quad in front of it, the rule every pick that
+   *  reads construction planes follows (viewport.pickDatumAt). Between a datum
+   *  and a base plane the NEARER one wins: a datum's quad is sized to the
+   *  model and floored at 80 mm, so "datum first" covered the 60 mm base
+   *  planes from most views and left them unpickable. */
   function pickPlaneInteractive(
     promptText: string,
-    onPick: (spec: PlaneSpec, face?: Selector) => void,
+    onPick: (spec: PlaneSpec, face?: Selector, planeId?: string) => void,
     unanchoredNote: string | null = CURVED_FACE_NOTE,
+    { datums = false }: { datums?: boolean } = {},
   ) {
     if (busy()) return;
     setPlanePick(true);
     viewport.showAllPlanes(true);
     viewport.suspendPicking = true;
     setPrompt(promptText);
+    const datumAt = (x: number, y: number): string | null => {
+      const hit = datums ? viewport.datumHitAt(x, y) : null;
+      if (!hit) return null;
+      const base = viewport.basePlaneHitAt(x, y);
+      return base && base.distance < hit.distance ? null : hit.id;
+    };
     const onMove = (e: PointerEvent) => {
       // a face of the body takes priority over the base-plane quads behind it;
       // highlight whichever the click would select so the target is obvious.
       const face = viewport.pickFacePlane(e.clientX, e.clientY);
+      const datumId = face ? null : datumAt(e.clientX, e.clientY);
+      if (datums) viewport.hoverDatum(datumId);
       if (face) {
         viewport.hoverFaceAt(e.clientX, e.clientY); // highlight a selectable body face
         viewport.hoverPlane(null);
       } else {
         viewport.clearHover();
-        viewport.hoverPlane(viewport.pickPlane(e.clientX, e.clientY));
+        viewport.hoverPlane(datumId ? null : viewport.pickPlane(e.clientX, e.clientY));
       }
     };
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
       // a face of the body takes priority over the base-plane quads behind it
       const facePlane = viewport.pickFacePlane(e.clientX, e.clientY);
-      const spec = facePlane ?? viewport.pickPlane(e.clientX, e.clientY);
+      const datumId = facePlane ? null : datumAt(e.clientX, e.clientY);
+      const datum = datumId
+        ? store.document.features.find((f): f is Extract<Feature, { type: "datumPlane" }> => f.id === datumId && f.type === "datumPlane")
+        : undefined;
+      const spec = facePlane ?? (datum ? datumPlaneDef(datum, store.buildState.result?.planes) : viewport.pickPlane(e.clientX, e.clientY));
       if (!spec) return;
       const anchor = facePlane ? viewport.faceAnchor(e.clientX, e.clientY, facePlane) : null;
       if (facePlane && !anchor && unanchoredNote) toast(unanchoredNote, { kind: "warning" });
@@ -260,7 +287,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       e.preventDefault();
       e.stopImmediatePropagation();
       cleanup();
-      requestAnimationFrame(() => onPick(spec, anchor ?? undefined));
+      requestAnimationFrame(() => onPick(spec, anchor ?? undefined, datum?.id));
     };
     const onEsc = (e: KeyboardEvent) => {
       if (e.key === "Escape") cleanup();
@@ -271,6 +298,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       viewport.showAllPlanes(false);
       viewport.suspendPicking = false;
       viewport.clearHover();
+      if (datums) viewport.hoverDatum(null);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("keydown", onEsc, true);
@@ -363,6 +391,92 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       selectFeature(id);
     });
     clearSelectionForCreate();
+  }
+
+  /** Sketch `id`, or null after saying it no longer exists: an entry point
+   *  that refuses has to say why (see busy() above). */
+  function sketchById(id: string): Extract<Feature, { type: "sketch" }> | null {
+    const f = store.document.features.find((x) => x.id === id);
+    if (f?.type === "sketch") return f;
+    setStatus(t("feature.starters.sketchGone"), "");
+    return null;
+  }
+
+  // Copy sketch to plane (right-click a sketch, Doug 27): pick a base plane, a
+  // construction plane or a flat face, and a copy of the sketch lands on it with
+  // its constraints, dimensions and parameter expressions. Projected geometry
+  // comes across as plain curves (sketchPlaneEdits.copySketch).
+  function copySketchToPlane(sketchId: string) {
+    if (busy()) return;
+    if (!sketchById(sketchId)) return;
+    pickPlaneInteractive(t("feature.starters.pickCopyTarget"), (spec, face, planeId) => {
+      const id = store.copySketchToPlane(sketchId, { plane: spec, ...(planeId ? { planeId } : {}), ...(face ? { face } : {}) });
+      if (!id) { setStatus(t("feature.starters.sketchGone"), ""); return; }
+      created(id);
+    }, CURVED_FACE_NOTE, { datums: true });
+  }
+
+  // Move sketch plane (right-click a sketch, Doug L3): the Offset Plane arrow,
+  // seated on the plane the sketch sits on now. Committing parks the sketch on
+  // a datum plane (sketchPlaneEdits.moveSketchPlane) and selects it, so the
+  // inspector shows the Offset that moves it from then on.
+  function moveSketchPlane(sketchId: string) {
+    if (busy()) return;
+    const s = sketchById(sketchId);
+    if (!s) return;
+    // the same two refusals as opening the sketch to edit it (main.ts editFeature)
+    if (store.isSuppressed(sketchId)) { setStatus(t("status.unsuppressToEdit"), ""); return; }
+    if (store.document.features.indexOf(s) >= store.rollbackIndex) { setStatus(t("status.rollForwardToEdit"), ""); return; }
+    const blocked = moveSketchPlaneBlocker(store.document, sketchId);
+    if (blocked) { setStatus(blocked, ""); return; }
+    // Where the sketch IS, not its cached `plane`: a face-anchored sketch has
+    // moved with its face, and a datum's Offset may have been edited, since the
+    // cache was written (planeOf).
+    const from = planeDefOf(planeOf(s, store.buildState.result?.planes, store.document.features));
+    const src = new SketchPlane(onSketchCurves(s, from));
+    planeOffset.start(src, (def) => {
+      const delta = def ? offsetAlong(def, src) : 0;
+      // nothing moved: no datum to add and no undo step to leave behind
+      if (!delta) { refreshInspector(); return; }
+      const moved = store.moveSketchPlane(sketchId, delta, from);
+      if (!moved) { setStatus(t("feature.starters.sketchGone"), ""); refreshInspector(); return; }
+      if (moved.leftShared) toast(t("feature.starters.sketchPlaneDetached"));
+      if (picksAfter(sketchId)) toast(t("feature.starters.sketchPlaneMovedPicks"), { kind: "warning" });
+      created(moved.datumId);
+    }, t("feature.planeOffset.moveSketchPrompt"));
+    clearSelectionForCreate();
+  }
+
+  /** `plane` with its origin slid, within the plane, to the middle of sketch
+   *  `s`'s curves: where Move sketch plane's arrow and Offset box stand. On a
+   *  face the plane's own origin is the WORLD origin projected onto the face,
+   *  which on a part away from the origin is off screen. The offset is
+   *  measured along the normal, so this changes where the arrow is drawn and
+   *  nothing about the value. A sketch with no curves (empty, or text only)
+   *  keeps the plane's origin. */
+  function onSketchCurves(s: Extract<Feature, { type: "sketch" }>, plane: PlaneDef): PlaneDef {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of resolveEntities(s, store.document.parameters).flatMap(entityPolyline)) {
+      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+    }
+    if (![minX, minY, maxX, maxY].every(Number.isFinite)) return plane;
+    const c = new SketchPlane(plane).to3D((minX + maxX) / 2, (minY + maxY) / 2);
+    return { ...plane, origin: [c.x, c.y, c.z] };
+  }
+
+  /** True when a feature after sketch `sketchId` finds its edges or faces by
+   *  position (a fillet, chamfer, press/pull...). Moving the sketch moves its
+   *  bodies, and such a pick can then land on a different edge or face with no
+   *  error. A sketch, datum plane or split on a face is left out: the builder
+   *  re-finds that face along its own normal (_face_anchored_plane), so it
+   *  follows. Shifting the picks along with the body needs to know which
+   *  bodies the sketch built, which nothing records yet. */
+  function picksAfter(sketchId: string): boolean {
+    const feats = store.document.features;
+    return feats
+      .slice(feats.findIndex((f) => f.id === sketchId) + 1)
+      .some((f) => f.type !== "sketch" && f.type !== "datumPlane" && f.type !== "split" && picksByPosition(f));
   }
 
   // signed distance of an offset-tool result from its source plane, along the
@@ -896,6 +1010,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     offsetPlane,
     createDatumPlane,
     offsetPlaneFromFace,
+    copySketchToPlane,
+    moveSketchPlane,
     startSplit,
     startCombine,
     startSimplifyMesh,

@@ -74,6 +74,24 @@ export function replaceSelectorAt(
   return { [site.field]: arr } as Partial<Feature>;
 }
 
+// The selector forms that find an edge or face by WHERE it was: a stored point,
+// or a fingerprint that carries one. "axis", "normal" and "all" say nothing
+// about position.
+const POSITIONAL = new Set(["nearest", "match", "tangentChain", "ofFace"]);
+
+/** True when `feature` finds an edge or face by position. Move such a body
+ *  and the selector can bind the edge or face that now sits where the picked
+ *  one was, with no error (Move sketch plane warns on it). Reads the sweep's
+ *  `pathEdges` too, which no re-pick handles. */
+export function picksByPosition(feature: Feature): boolean {
+  const rec = feature as unknown as Record<string, unknown>;
+  return [...SELECTOR_FIELDS, "pathEdges"].some((field) => {
+    const val = rec[field];
+    const sels: unknown[] = Array.isArray(val) ? val : val ? [val] : [];
+    return sels.some((s) => POSITIONAL.has((s as { by?: string } | null)?.by ?? ""));
+  });
+}
+
 // The diagnostic codes a face pick can actually clear.
 //
 // `planeTilted` is deliberately NOT here, and that is a real limitation, not an

@@ -245,6 +245,9 @@ export class BrowserTree {
   /** Extra actions on a body row's menu (Export ▸, Isolate, Show all), supplied
    *  by the viewport's context menus so both places offer the same entries. */
   bodyMenu: ((id: string) => CtxItem[]) | null = null;
+  /** Items a sketch row's right-click menu adds ahead of Edit / Rename /
+   *  Delete (Copy sketch to plane, Move sketch plane). */
+  sketchMenu: ((id: string) => CtxItem[]) | null = null;
 
   constructor(container: HTMLElement, private store: DocumentStore) {
     this.el = container;
@@ -470,6 +473,7 @@ export class BrowserTree {
         onClick: () => this.onSelect?.(f.id),
         onEdit: () => this.onEditSketch?.(f.id),
         onToggleVis: this.onToggleSketch ? () => this.onToggleSketch!(f.id) : undefined,
+        extraMenu: this.sketchMenu?.(f.id) ?? [],
         rename: this.onRenameSketch ? (name: string) => this.onRenameSketch!(f.id, name) : undefined,
         onDelete: this.onDeleteSketch ? () => this.onDeleteSketch!(f.id) : undefined,
         title: t("browser.sketchTitle"),

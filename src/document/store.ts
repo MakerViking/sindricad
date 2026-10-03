@@ -3,7 +3,7 @@
 // client so any mutation re-runs the tree; results + errors are pushed to
 // listeners (viewport, timeline, tree).
 
-import type { CadDocument, DimField, Feature, ParamTarget, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
+import type { CadDocument, DimField, Feature, ParamTarget, PlaneDef, PlaneSpec, ProjectedSource, ProjectionUpdate, RebuildReply, RebuildResult, SketchConstraint, ViewCubeSide, ViewOverride } from "../types";
 import type { GeometryBackend, ProjectionResult } from "../geometry/client";
 import { featureErrorText } from "../geometry/featureErrorText";
 import { FORMAT_VERSION, migrateDocument } from "./migrate";
@@ -15,6 +15,7 @@ import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
 import { p2lSideFlipped, refreshStep, refreshSteps } from "./projectionWalk";
+import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
 
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
@@ -1169,6 +1170,35 @@ export class DocumentStore {
       d.features.splice(at, 0, feature);
       this.applyBindings(d, bindings);
     }, true);
+  }
+
+  /** Copy sketch `srcId` onto `target` as a new sketch (right-click a sketch >
+   *  Copy sketch to plane…). It lands where every new feature lands, at the
+   *  rollback marker, which is also where the picked face exists. One undo
+   *  step. Returns the new sketch's id, or null when there is no such sketch. */
+  copySketchToPlane(srcId: string, target: SketchTarget): string | null {
+    if (!this.doc.features.some((f) => f.id === srcId && f.type === "sketch")) return null;
+    const id = this.nextId();
+    const at = this.rollbackIndex;
+    if (this.rollback !== null && at <= this.rollback) this.rollback += 1;
+    this.mutate((d) => void copySketch(d, srcId, id, target, at), true);
+    return id;
+  }
+
+  /** Move sketch `sketchId` `delta` mm along the normal of `from`, the plane it
+   *  sits on now (right-click a sketch > Move sketch plane…). One undo step;
+   *  see sketchPlaneEdits.moveSketchPlane for what it writes. The caller checks
+   *  moveSketchPlaneBlocker first. */
+  moveSketchPlane(sketchId: string, delta: number, from: PlaneDef): SketchPlaneMove | null {
+    const at = this.doc.features.findIndex((f) => f.id === sketchId && f.type === "sketch");
+    if (at < 0) return null;
+    const datumId = this.nextId();
+    // Decided before the edit, like addFeature: the rebuild the mutate starts
+    // reads the marker, and a datum spliced in below it shifts the sketch up one.
+    if (!ownDatumOf(this.doc.features, sketchId) && this.rollback !== null && at < this.rollback) this.rollback += 1;
+    let out: SketchPlaneMove | null = null;
+    this.mutate((d) => { out = moveSketchPlane(d, sketchId, delta, from, datumId); }, true);
+    return out;
   }
 
   /** NOTE: a numeric field bound to a parameter is re-asserted by the recompute

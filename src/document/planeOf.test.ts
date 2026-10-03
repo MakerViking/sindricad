@@ -41,6 +41,19 @@ describe("planeOf", () => {
       .toBe(RESOLVED);
   });
 
+  it("follows a datum WITHOUT a face, which the rebuild sends nothing for, through the document", () => {
+    // A datum offset from XY has no entry in `planes` (only face-anchored
+    // features do). Its Offset row, or Move sketch plane, changes it, and the
+    // sketch's cache still says where it was when the sketch was last closed.
+    const datum = { id: "dp", type: "datumPlane", plane: "XY", offset: 25 } as const;
+    expect(planeOf({ id: "s1", plane: CACHED, planeId: "dp" }, undefined, [datum]))
+      .toEqual({ origin: [0, 0, 25], normal: [0, 0, 1], xdir: [1, 0, 0] });
+    // a face-anchored datum's resolved entry still wins over its document copy
+    expect(planeOf({ id: "s1", plane: CACHED, planeId: "dp" }, { dp: RESOLVED }, [datum])).toBe(RESOLVED);
+    // and without the features, the old behaviour exactly
+    expect(planeOf({ id: "s1", plane: CACHED, planeId: "dp" }, undefined)).toBe(CACHED);
+  });
+
   it("prefers the sketch's own resolved plane over its datum's", () => {
     const own: PlaneDef = { origin: [0, 0, 20], normal: [0, 0, 1], xdir: [1, 0, 0] };
     expect(planeOf({ id: "s1", plane: CACHED, planeId: "dp" }, { s1: own, dp: RESOLVED }))

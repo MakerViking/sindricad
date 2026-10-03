@@ -23,6 +23,10 @@ This file starts on 2026-08-03. For anything before that, see the
 - **Import Mesh is now just Import.** It has always taken STEP files as well as
   meshes, and the old name hid that. Its tooltip lists the formats it reads.
 
+- **Project says what it does.** The Project button in the sketch ribbon keeps
+  its name and now explains itself in its tooltip: it brings edges of bodies
+  and other sketches into the sketch, linked so they follow their source.
+
 - **Section remembers where you left it.** While the document stays open,
   Section keeps the last axis, the cut's position and which side was flipped,
   and offers that axis first, so one Enter puts the cut back where it was. A new
@@ -290,6 +294,11 @@ This file starts on 2026-08-03. For anything before that, see the
   before opening another document?" only when you pick a SindriCAD document,
   the one thing Open replaces. Before, answering Discard also threw away the
   recovery copy of a document that was never closed.
+
+- **A sketch on a construction plane is drawn where the plane is.** Changing
+  the Offset of the construction plane a sketch sits on moved what the sketch
+  made, but the sketch's own lines stayed drawn at the old height, and opening
+  the sketch to edit it put you on the old plane. Both follow the plane now.
 
 - **Break keeps the constraints of the curve it splits.** A Coincident at either
   end, and Horizontal or Vertical, now carry over to the two halves instead of
@@ -590,6 +599,26 @@ This file starts on 2026-08-03. For anything before that, see the
   there: the half the cut took away can no longer be hovered or clicked
   through it. An open mesh, which I can't fill cleanly, keeps the hollow look,
   and so does the model while you sketch, when it turns see-through.
+
+- **Copy a sketch onto another plane.** Right-click a sketch in the Browser or
+  on the timeline and choose Copy sketch to plane…, then click a base plane, a
+  construction plane or a flat face. The copy keeps its constraints and
+  dimensions, and a dimension set by an expression keeps that expression. A
+  dimension you named, like `width`, drives the copy's matching dimension too,
+  and a dimension that refers to another one in the same sketch refers to the
+  copy's own. Projected geometry comes across as ordinary curves. A copy on a
+  construction plane or a face follows it when it moves.
+
+- **Move a sketch's plane after the fact.** Right-click a sketch and choose
+  Move sketch plane…, then drag the arrow or type a distance. The sketch moves
+  along its own normal, and extrudes and lofts made from it follow. Fillets,
+  chamfers and press/pulls further down the timeline find their edges and
+  faces by position, so after a move one can land on a different edge: when
+  there are any, I say so, so you can check them. I put the sketch on a
+  construction plane just before it in the timeline, or move the one it
+  already sits on when nothing else uses it, so from then on that plane's
+  Offset in the Inspector, or a parameter, moves it again. When other features
+  share the sketch's plane, the sketch gets a plane of its own and I say so.
 
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end

@@ -300,7 +300,7 @@ export class SketchOverlay {
       if (f.type !== "sketch") continue;
       if (f.id === hiddenSketchId) continue; // active sketch drawn by the editor
       if (!this.sketchVisible(f.id)) continue; // hidden (e.g. consumed by a feature)
-      const plane = this.planeFor(planeOf(f, resolved));
+      const plane = this.planeFor(planeOf(f, resolved, doc.features));
       const ents = resolveEntities(f, doc.parameters);
 
       for (const obj of curveObjects(ents, plane, CURVE_COLOR)) {

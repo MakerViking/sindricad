@@ -809,6 +809,8 @@ const menus = createContextMenus({
   setLastAction: (a) => { lastAction = a; },
   startSplit: starters.startSplit,
   offsetPlaneFromFace: starters.offsetPlaneFromFace,
+  copySketchToPlane: starters.copySketchToPlane,
+  moveSketchPlane: starters.moveSketchPlane,
 });
 
 // ---------------------------------------------------------------------------
@@ -822,6 +824,8 @@ const menus = createContextMenus({
 viewport.shouldOpenContextMenu = () => !toolBusy();
 viewport.onContextClick = (x, y) => menus.openCanvasMenu(x, y);
 tree.bodyMenu = (id) => menus.bodyActions(id);
+tree.sketchMenu = (id) => menus.sketchActions(id);
+timeline.featureMenu = (id) => menus.featureActions(id);
 
 // A context menu holds targets captured at open time (faceId, edge line, body
 // id) — a completed rebuild renumbers topology and replaces the mesh, and any
@@ -1493,7 +1497,7 @@ function editFeature(id: string) {
       // the plane the last rebuild resolved, because snapshotFeature bakes
       // whatever we open with straight back into `plane` on close. Opening at
       // the stale cache and closing unchanged silently undoes the follow.
-      sketch.enter(planeOf(f, store.buildState.result?.planes), store, id);
+      sketch.enter(planeOf(f, store.buildState.result?.planes, store.document.features), store, id);
       break;
     case "fillet":
     case "chamfer":

@@ -35,6 +35,12 @@ export function defsOf(doc: CadDocument): Record<string, ParamDef> {
   return (doc.paramDefs ??= {});
 }
 
+/** True for an auto model-parameter name (d1, d2, …): one the app minted for a
+ *  field, as opposed to a name the user typed. Users cannot pick these. */
+export function isAutoName(name: string): boolean {
+  return /^d\d+$/.test(name);
+}
+
 /** Next free auto model-parameter name (d1, d2, …). */
 export function nextDName(defs: Record<string, ParamDef>): string {
   let n = 1;
@@ -240,7 +246,7 @@ export function validateName(defs: Record<string, ParamDef>, name: string): stri
   if (!isIdentName(name)) return t("params.name.invalid");
   if (isReservedName(name)) return t("params.name.reserved", { name });
   if (name in defs) return t("params.name.exists", { name });
-  if (/^d\d+$/.test(name)) return t("params.name.dnReserved");
+  if (isAutoName(name)) return t("params.name.dnReserved");
   return null;
 }
 

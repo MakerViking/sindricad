@@ -90,12 +90,14 @@ export class PlaneOffsetTool {
     this.updateGhost();
   }
 
-  start(src: SketchPlane, onDone: (def: PlaneDef | null) => void) {
+  /** `prompt` names what Enter does when the caller does something other
+   *  than sketch on the result (Move sketch plane moves an existing sketch). */
+  start(src: SketchPlane, onDone: (def: PlaneDef | null) => void, prompt = t("feature.planeOffset.dragPrompt")) {
     if (this.active) return;
     this.onDone = onDone;
     this.begin(src, 0);
     this.dim.updateFromCursor({ offset: 0 });
-    setPrompt(t("feature.planeOffset.dragPrompt"));
+    setPrompt(prompt);
   }
 
   /** Re-open a committed offset plane so it can be MOVED.

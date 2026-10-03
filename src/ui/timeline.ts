@@ -12,7 +12,7 @@ import { featureErrorMessages } from "../geometry/featureErrorText";
 import { FEATURE_META } from "./featureMeta";
 import { isInspectorEditable } from "./inspector";
 import { icon, type IconName } from "./icons";
-import { contextMenu } from "./menu";
+import { contextMenu, type CtxItem } from "./menu";
 import { esc } from "./escape";
 import { t, setText, setTitle } from "../i18n";
 import { FIND_FLASH_MS } from "./browserTree";
@@ -117,6 +117,9 @@ export class Timeline {
    *  reference the user can repair by picking a face — see repairableDiagFor) */
   canRepick: ((id: string) => boolean) | null = null;
   onRepick: ((id: string) => void) | null = null;
+  /** Items a feature's right-click adds after Re-pick (a sketch's Copy sketch
+   *  to plane and Move sketch plane); [] for a feature with none. */
+  featureMenu: ((id: string) => CtxItem[]) | null = null;
   private selectedId: string | null = null;
   private dragId: string | null = null; // node being reordered
   private lastCount = -1; // feature count at last render (append → follow)
@@ -494,6 +497,7 @@ export class Timeline {
       : [];
     contextMenu(e.clientX, e.clientY, [
       ...repick,
+      ...(this.featureMenu?.(id) ?? []),
       // Same fork as the tooltip and as the viewport's face menu
       // (contextMenus.ts): a loft has nothing to edit, so offering "Edit" here
       // just moves the broken promise one gesture over.

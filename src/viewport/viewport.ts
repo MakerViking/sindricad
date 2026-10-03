@@ -1886,12 +1886,17 @@ export class Viewport {
    * `intersectObjects` returns hits sorted nearest-first, so hits[0] is it.
    */
   pickPlane(clientX: number, clientY: number): Plane3 | null {
+    return this.basePlaneHitAt(clientX, clientY)?.plane ?? null;
+  }
+
+  /** pickPlane with the ray distance to the hit: the companion to datumHitAt
+   *  for a pick that offers both kinds and must take the nearer one. */
+  basePlaneHitAt(clientX: number, clientY: number): { plane: Plane3; distance: number } | null {
     this.rayFrom(clientX, clientY);
     const meshes = (["XY", "XZ", "YZ"] as Plane3[]).map((k) => this.scene.planes[k]);
-    const hits = this.sharedRaycaster.intersectObjects(meshes, false);
-    const hit = hits[0];
-    if (!hit) return null;
-    return (hit.object.userData.plane as Plane3) ?? null;
+    const hit = this.sharedRaycaster.intersectObjects(meshes, false)[0];
+    const plane = hit?.object.userData.plane as Plane3 | undefined;
+    return hit && plane ? { plane, distance: hit.distance } : null;
   }
 
   /**

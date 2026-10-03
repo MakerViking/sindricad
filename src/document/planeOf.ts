@@ -19,6 +19,7 @@ type DatumFeature = Extract<Feature, { type: "datumPlane" }>;
 export function planeOf(
   f: { id: string; plane: PlaneSpec; planeId?: string },
   planes: Record<string, PlaneDef> | undefined,
+  features?: readonly Feature[],
 ): PlaneSpec {
   // `planeId` second: a sketch made by "Offset plane" carries no `face` of its
   // own (the anchor rides on the DATUM — featureStarters.offsetPlane), so the
@@ -27,7 +28,19 @@ export function planeOf(
   // so without this the geometry follows and only the drawing stays behind — the
   // same split, one indirection further out. The datum's entry is already the
   // final placement (offset applied), which is exactly what the sketch sits on.
-  return planes?.[f.id] ?? (f.planeId ? planes?.[f.planeId] : undefined) ?? f.plane;
+  //
+  // `planes` only carries FACE-anchored features, so a datum without a face
+  // (offset from XY, say) has no entry at all, and its offset can change: the
+  // Inspector's Offset row, or Move sketch plane. Pass the document's features
+  // and the datum is resolved from them, the way the sidecar resolves it;
+  // without them the cache written when the sketch was last closed is drawn.
+  const own = planes?.[f.id];
+  if (own) return own;
+  const datum = f.planeId
+    ? features?.find((d): d is DatumFeature => d.id === f.planeId && d.type === "datumPlane")
+    : undefined;
+  if (datum) return datumPlaneDef(datum, planes);
+  return (f.planeId ? planes?.[f.planeId] : undefined) ?? f.plane;
 }
 
 /** A datum plane's world placement (source spec + offset along its normal) as a
@@ -43,10 +56,15 @@ export function datumPlaneDef(
   // draw and bake the pre-edit position while the geometry sits at the new one.
   const resolved = resolvedPlanes?.[f.id];
   if (resolved) return resolved;
-  const sp = new SketchPlane(f.plane);
-  const off = f.offset ?? 0;
+  return planeDefOf(f.plane, f.offset ?? 0);
+}
+
+/** Any plane spec as an explicit PlaneDef (a base plane id becomes its origin
+ *  and axes), moved `offset` mm along its own normal. */
+export function planeDefOf(spec: PlaneSpec, offset = 0): PlaneDef {
+  const sp = new SketchPlane(spec);
   return {
-    origin: [sp.origin.x + sp.n.x * off, sp.origin.y + sp.n.y * off, sp.origin.z + sp.n.z * off],
+    origin: [sp.origin.x + sp.n.x * offset, sp.origin.y + sp.n.y * offset, sp.origin.z + sp.n.z * offset],
     normal: [sp.n.x, sp.n.y, sp.n.z],
     xdir: [sp.u.x, sp.u.y, sp.u.z],
   };
