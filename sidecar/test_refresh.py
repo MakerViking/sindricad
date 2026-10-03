@@ -218,6 +218,92 @@ def test_chain_projection_of_projected_curve():
     print(PASS, "chain projection: projected curve re-projects and refreshes")
 
 
+def test_plate_edge_follows_a_shrink_past_a_joined_cylinder():
+    """Field report 66d7eb71: a hole dimensioned 10 mm off a plate's projected
+    left edge stayed put when the plate shrank, because the refresh rebound
+    that LINE to the rim of the cylinder joined on top of the plate. The rim
+    had about the edge's length and a midpoint nearer the stale one than the
+    moved edge's, and the old match let a line fingerprint pick a circle.
+
+    Same shape here: a 60x50 plate, an r=8 cylinder (circumference 50.3) on
+    top of it, the plate's left edge projected, then the plate shrunk to 30
+    about its centre so the cylinder overhangs the new edge. The edge must come
+    back as the moved line at x=-15, not as the rim."""
+    face = {"origin": [0, 0, 1], "normal": [0, 0, 1], "xdir": [1, 0, 0]}
+
+    def plate(w):
+        return [
+            {"id": "f1", "type": "sketch", "plane": "XY", "entities": [
+                {"id": "r", "type": "rectangle", "width": w, "height": 50, "x": 0, "y": 0}]},
+            {"id": "f2", "type": "extrude", "sketch": "f1", "distance": 1, "operation": "new"},
+            {"id": "f3", "type": "sketch", "plane": face, "entities": [
+                {"id": "c", "type": "circle", "x": -12, "y": 0, "radius": 8}]},
+            {"id": "f4", "type": "extrude", "sketch": "f3", "distance": 10, "operation": "join"},
+        ]
+
+    _p, err, bodies = rebuild({"parameters": {}, "features": plate(60)})
+    assert not err and len(bodies) == 1, err
+    body = bodies[0]["id"]
+    r = project_geometry({"parameters": {}, "features": plate(60)}, face, [
+        {"kind": "edge", "body": body,
+         "sel": {"kind": "edge", "by": "nearest", "point": [-30, 0, 1]}}])["results"][0]
+    assert r["ok"], r
+    fp, curve = r["curves"][0]["fp"], r["curves"][0]["curve"]
+    assert fp["curve"] == "line" and curve["kind"] == "line", (fp, curve)
+    src = {"kind": "faceBoundary", "body": body, "group": "p",
+           "sel": {"kind": "edge", "by": "match", "fp": fp}}
+    doc = {"parameters": {}, "features": plate(30) + [
+        {"id": "f5", "type": "sketch", "plane": face, "entities": [
+            {"id": "p", "type": "projected", "source": src, "curve": curve}]}]}
+    p = []
+    _part, err, _bodies = rebuild(doc, projections=p)
+    assert not err, err
+    assert len(p) == 1 and p[0]["stale"] is False, p
+    c = p[0]["curve"]
+    assert c["kind"] == "line", f"the plate edge came back as {c}"
+    assert abs(c["x1"] + 15) < 1e-6 and abs(c["x2"] + 15) < 1e-6, c
+    assert abs(abs(c["y2"] - c["y1"]) - 50) < 1e-6, c
+    print(PASS, f"a plate edge follows the shrink as a line: {c}")
+
+
+def test_refresh_never_turns_a_line_round():
+    """The backstop under the match rule: whatever the source resolves to, a
+    projected line never comes back as a circle or an arc, nor a circle or arc
+    as a line. That is a different curve, and every dimension on the entity
+    would silently drop out of the solve; stale (keep the last shape, warn) is
+    the truth. A circle that comes back as an arc is the same rim cut part-way
+    and still follows."""
+    line = {"kind": "line", "x1": 0.0, "y1": 0.0, "x2": 10.0, "y2": 0.0}
+    circle = {"kind": "circle", "x": 0.0, "y": 0.0, "r": 5.0}
+    src_ents = [
+        {"id": "round", "type": "circle", "x": 0, "y": 0, "radius": 5},
+        {"id": "straight", "type": "line", "x1": 0, "y1": 0, "x2": 10, "y2": 0},
+        {"id": "part", "type": "arc", "x1": 5, "y1": 0, "mx": 0, "my": 5, "x2": -5, "y2": 0},
+    ]
+
+    def proj(eid, entity, cached):
+        return {"id": eid, "type": "projected", "curve": dict(cached),
+                "source": {"kind": "sketchCurve", "sketch": "f1", "entity": entity}}
+
+    doc = {"parameters": {}, "features": [
+        {"id": "f1", "type": "sketch", "plane": "XY", "entities": src_ents},
+        {"id": "f3", "type": "sketch", "plane": "XY", "entities": [
+            proj("was_line", "round", line),
+            proj("was_circle", "straight", circle),
+            proj("rim", "part", circle),
+        ]},
+    ]}
+    p = []
+    _part, err, _bodies = rebuild(doc, projections=p)
+    assert not err, err
+    got = {u["entity"]: u for u in p}
+    assert set(got) == {"was_line", "was_circle", "rim"}, p
+    assert got["was_line"] == {"sketch": "f3", "entity": "was_line", "stale": True}, got
+    assert got["was_circle"] == {"sketch": "f3", "entity": "was_circle", "stale": True}, got
+    assert got["rim"]["stale"] is False and got["rim"]["curve"]["kind"] == "arc", got
+    print(PASS, "a refresh never turns a projected line round (or back); circle -> arc follows")
+
+
 def test_resume_cap_ram_tier():
     """Warm rebuild_cached, then edit a feature DOWNSTREAM of the projected
     sketch. Without the cap the resume would start past the sketch and swallow
@@ -347,6 +433,8 @@ def main():
     test_sketch_curve_multi_edge_without_index_goes_stale()
     test_sketch_curve_index_survives_deletion()
     test_chain_projection_of_projected_curve()
+    test_plate_edge_follows_a_shrink_past_a_joined_cylinder()
+    test_refresh_never_turns_a_line_round()
     test_resume_cap_ram_tier()
     test_resume_cap_disk_tier()
     test_quiet_proof_deep_resume()

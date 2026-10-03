@@ -22,12 +22,18 @@
 // walk is not rigid (a turning edge shrinks part-way), so the store falls back
 // to the single solve when a step cannot be solved.
 //
-// Pure: the store owns the solves and decides what lands.
+// A parameter edit is the same jump from the other end: the curves stay and
+// the dimension values move. A rectangle's width parameter going from 60 to 30
+// moves its edge 30 mm in one solve, past a hole held 10 mm from it, so the
+// same walk runs over the changed dimension VALUES (paramSteps / paramStep).
+//
+// Pure: the store and the open sketch own the solves and decide what lands.
 
 import type { Feature, Params, ProjectedCurve, ProjectionUpdate, SketchConstraint } from "../types";
 import { applyProjectionUpdate, isDriven } from "../types";
 import { resolveRealEntities } from "../sketch/resolve";
-import { lineOperand, refPoint } from "../sketch/entityDims";
+import { dimRefPoints, lineOperand, refPoint } from "../sketch/entityDims";
+import { isDimConstraint } from "../sketch/id";
 
 type SketchFeature = Extract<Feature, { type: "sketch" }>;
 type LineCurve = Extract<ProjectedCurve, { kind: "line" }>;
@@ -117,6 +123,76 @@ export function refreshStep(
   return { ...cur, entities };
 }
 
+/** Each NAMED dimension's value, by constraint id: what a parameter writes. */
+function dimValues(f: SketchFeature): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const c of f.constraints ?? []) {
+    if (isDimConstraint(c) && c.id !== undefined && Number.isFinite(c.value)) out.set(c.id, c.value);
+  }
+  return out;
+}
+
+/** The diagonal of the box round every point a dimension can name in `f`: how
+ *  far a turn of the whole sketch can carry a point, per radian. */
+function sketchSpan(f: SketchFeature, params: Params): number {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const e of resolveRealEntities(f, params)) {
+    for (const { pos } of dimRefPoints(e)) {
+      x0 = Math.min(x0, pos.x); y0 = Math.min(y0, pos.y);
+      x1 = Math.max(x1, pos.x); y1 = Math.max(y1, pos.y);
+    }
+  }
+  return Number.isFinite(x0) ? Math.hypot(x1 - x0, y1 - y0) : 0;
+}
+
+/** How many solves a parameter edit of `pre` into `post` takes (the same
+ *  sketch, its dimension values changed): enough that no changed dimension
+ *  carries geometry more than half the smallest unsigned distance in the sketch
+ *  per step. A length moves its geometry by its own change; an angle by its
+ *  change in radians times the sketch's span, which is generous on purpose. 1
+ *  when there is no unsigned distance to land on the far side of. */
+export function paramSteps(pre: SketchFeature, post: SketchFeature, params: Params): number {
+  const before = dimValues(pre);
+  let dim = Infinity;
+  let travel = 0;
+  let span: number | null = null;
+  for (const c of post.constraints ?? []) {
+    const old = isDimConstraint(c) && c.id !== undefined ? before.get(c.id) : undefined;
+    const d = isDriven(c) ? null : unsignedDistance(c);
+    if (d) {
+      const v = Math.min(Math.abs(d.value), Math.abs(old ?? d.value));
+      if (v > 1e-9) dim = Math.min(dim, v);
+    }
+    if (!isDimConstraint(c) || old === undefined || old === c.value) continue;
+    if (c.type === "angle") {
+      span ??= sketchSpan(pre, params);
+      travel = Math.max(travel, (Math.abs(c.value - old) * Math.PI / 180) * span);
+    } else {
+      travel = Math.max(travel, Math.abs(c.value - old));
+    }
+  }
+  if (!Number.isFinite(dim)) return 1;
+  return Math.min(MAX_STEPS, Math.max(1, Math.ceil(travel / (0.5 * dim))));
+}
+
+/** `post` at fraction `t` of a parameter edit from `pre`: every changed
+ *  dimension value part-way from its old value to its new one, the geometry
+ *  `cur`'s (the last step's solve). At t = 1 it is `post`'s own constraints.
+ *  Anything else the edit changed (a polygon's side count, a slot's width, a
+ *  pattern) is already in `post` and lands whole on the first step, as it did
+ *  in the single solve. */
+export function paramStep(cur: SketchFeature, pre: SketchFeature, post: SketchFeature, t: number): SketchFeature {
+  if (t >= 1) return { ...post, entities: cur.entities };
+  const before = dimValues(pre);
+  const constraints = (post.constraints ?? []).map((c) => {
+    if (!isDimConstraint(c) || c.id === undefined) return c;
+    const old = before.get(c.id);
+    if (old === undefined || old === c.value) return c;
+    return { ...c, value: old + (c.value - old) * t };
+  });
+  return { ...post, entities: cur.entities, constraints };
+}
+
 /** For each constraint: the side of its line a driving p2lDistance's point sits
  *  on (+1/-1) and the line's direction, or null where there is no side to keep
  *  (another constraint, a point ON its line, an operand that is gone). */
@@ -140,17 +216,35 @@ function p2lSides(f: SketchFeature, params: Params): ({ side: number; dx: number
  *  line in `before` sits on the other side (or on the line) in `after`: the
  *  number still reads "satisfied" and the geometry is the mirror image. Judged
  *  against the PRE-refresh sketch, because by the time the solver sees the new
- *  curves the old coordinates can already be on the far side of them. A line
- *  that came back end for end is judged in its old direction, so a reversed
- *  refresh is not mistaken for a flip. */
-export function p2lSideFlipped(before: SketchFeature, after: SketchFeature, params: Params): boolean {
+ *  curves the old coordinates can already be on the far side of them. The two
+ *  sketches must list the same constraints in the same order (judge a
+ *  parameter edit's old geometry under its new constraint list).
+ *
+ *  `turned` is what a line whose direction swung past a right angle means.
+ *  "reversed": it came back end for end (the sidecar hands refreshed lines back
+ *  either way round), so it is judged in its old direction. "unknown": a
+ *  parameter edit, where an angle can genuinely turn a line that far and a
+ *  signed dimension can reverse one, and a single solve cannot tell those from
+ *  a mirror image, so that line is not judged; a walk judges it step by step
+ *  instead, where no step turns a line that far. */
+export function p2lSideFlipped(
+  before: SketchFeature,
+  after: SketchFeature,
+  params: Params,
+  turned: "reversed" | "unknown" = "reversed",
+): boolean {
   const a = p2lSides(before, params);
   const b = p2lSides(after, params);
+  const cs = after.constraints ?? [];
   return a.some((s, i) => {
     if (!s) return false;
+    // a parameter that took the distance to zero put the point ON the line
+    const c = cs[i];
+    if (c?.type === "p2lDistance" && Math.abs(c.value) < 1e-9) return false;
     const n = b[i];
     if (!n) return true;
     const sameWay = s.dx * n.dx + s.dy * n.dy >= 0;
+    if (!sameWay && turned === "unknown") return false;
     return (sameWay ? n.side : -n.side) !== s.side;
   });
 }

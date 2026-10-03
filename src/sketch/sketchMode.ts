@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
 import type { DocumentStore } from "../document/store";
-import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchPattern } from "../types";
+import type { EdgeFingerprint, Feature, ParamTarget, PlaceOffset, PlaneSpec, ProjectedSource, ProjectionUpdate, Selector, SketchConstraint, SketchEntity, SketchPattern } from "../types";
 import { applyProjectionUpdate, dimPlaceOf, isBadgeEntity, isDriven, isPlacedDim } from "../types";
 import { SketchPlane } from "./plane";
 import { SketchOverlay, curveObjects, dimensionLineObjects, pointHighlight, polyline, dashedPolyline, CURVE_COLOR, PREVIEW_COLOR, SELECT_COLOR } from "./overlay";
@@ -32,6 +32,7 @@ import type { SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
 import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
+import { p2lSideFlipped, refreshStep, refreshSteps } from "../document/projectionWalk";
 import { resolveRealEntities, toSketchEntity } from "./resolve";
 import { applyDrivingDimsDirect, governingDimAt, lockDimFor, measuredLocks, planDimEdit } from "./directDims";
 import { dimConflictMsg, withdrawTrial, type SketchTrial } from "./dimConflict";
@@ -338,6 +339,9 @@ export class SketchMode {
   private solverDeadToast = false;
   private directDimToast = false; // said once: dims are being written straight to geometry
   private solveDirty = false; // a constraint/dimension solve is pending
+  /** Projection refresh entries waiting to be walked in (see
+   *  syncProjectedCurves); later entries for the same entity replace earlier. */
+  private pendingRefresh: Map<string, ProjectionUpdate> | null = null;
   private entityVersion = 0; // bumped on every entity change; guards stale solves
   private conflict = false; // last solve reported conflicting (over-)constraints
   private lastCursor = new THREE.Vector2();
@@ -711,6 +715,7 @@ export class SketchMode {
     this.dragSnapshot = null;
     this.pendingDrag = null;
     this.pendingPinIdxs = null;
+    this.pendingRefresh = null; // the store re-sends it against the committed sketch
     this.dragRelease = null;
     this.moveDrag = null;
     this.dim.hide();
@@ -1612,23 +1617,74 @@ export class SketchMode {
    *  store.onProjectionsApplied — the mirror of syncParamValues): patch the
    *  session copies of the updated projected entities, then re-solve so
    *  constrained geometry follows and the overlay repaints. The doc copy is
-   *  NOT written while the sketch is open; finish() persists the session. */
+   *  NOT written while the sketch is open; finish() persists the session.
+   *
+   *  A constrained sketch is WALKED to the new curves in the solve pump
+   *  (walkRefresh), the way the store walks a closed one: one solve from the
+   *  old coordinates against curves that moved further than a dimension lands
+   *  the geometry on its mirror side (field reports 6124e4a7, 66d7eb71). */
   syncProjectedCurves(updates: ProjectionUpdate[]) {
     if (!this.active) return;
-    let touched = false;
+    const live = new Map<string, ProjectionUpdate>();
     for (const u of updates) {
-      const i = this.entities.findIndex((x) => x.type === "projected" && x.id === u.entity);
-      const e = this.entities[i];
+      const e = this.entities.find((x) => x.type === "projected" && x.id === u.entity);
       if (!e || e.type !== "projected") continue;
       if (u.stale && e.stale) continue; // already flagged — nothing changes
-      this.entities[i] = applyProjectionUpdate(e, u);
-      touched = true;
+      live.set(u.entity, u);
     }
-    if (touched) {
-      this.armPreEdit(); // projection refresh is DERIVED — never an undo step
-      this.requestSolve();
-      this.refreshActive();
+    if (!live.size) return;
+    if (this.constraints.length > 0 && !this.solverDead) {
+      // the walk never reaches requestSolve, and the pump re-arms the baseline
+      // once it settles: the refresh is DERIVED, never an undo step
+      this.pendingRefresh = new Map([...(this.pendingRefresh ?? []), ...live]);
+      void this.pump();
+      return;
     }
+    this.entities = this.entities.map((e) =>
+      e.type === "projected" && live.has(e.id) ? applyProjectionUpdate(e, live.get(e.id)!) : e);
+    this.armPreEdit(); // projection refresh is DERIVED — never an undo step
+    this.requestSolve();
+    this.refreshActive();
+  }
+
+  /** The session as a sketch feature, for the pure projection-walk helpers.
+   *  Its entities are already numbers, which those helpers resolve as-is. */
+  private sessionSketch(entities: ResolvedEntity[]): Extract<Feature, { type: "sketch" }> {
+    return { id: this.editingId ?? "", type: "sketch", plane: "XY", entities: entities as unknown as SketchEntity[], constraints: this.constraints };
+  }
+
+  /** Land `updates` in the open sketch, walking the projected lines there in
+   *  steps (projectionWalk.ts) so the constrained geometry follows them instead
+   *  of jumping to a mirror image. A walk that a draw interrupts, that a step
+   *  cannot solve, or that still ends on the far side of a line hands over to
+   *  the single solve straight onto the new curves, as before. Runs inside
+   *  pump(), so no other solve is in flight. */
+  private async walkRefresh(updates: Map<string, ProjectionUpdate>) {
+    const ver = this.entityVersion;
+    const pre = this.sessionSketch(this.entities);
+    const steps = refreshSteps(pre, updates);
+    let cur: Extract<Feature, { type: "sketch" }> | null = pre;
+    try {
+      for (let k = 1; k <= steps && steps > 1 && cur; k++) {
+        const next: Extract<Feature, { type: "sketch" }> = refreshStep(cur, pre, updates, k / steps);
+        const r = await compileAndSolve(next.entities as unknown as ResolvedEntity[], [...this.constraints]);
+        if (!this.active) return;
+        cur = this.entityVersion === ver && r.ok && r.conflicts.length === 0
+          ? { ...next, entities: r.entities as unknown as SketchEntity[] } : null;
+      }
+    } catch (err) {
+      // the solver died mid-walk: hand the entries back for pump() to land
+      // unsolved, under any that arrived since
+      this.pendingRefresh = new Map([...updates, ...(this.pendingRefresh ?? [])]);
+      throw err;
+    }
+    const walked = steps > 1 && cur && !p2lSideFlipped(pre, cur, {}) ? cur : null;
+    // the fallback lands the curves on whatever the session holds NOW: a draw
+    // may have added an entity while the walk was solving
+    const landed = walked ?? refreshStep(this.sessionSketch(this.entities), pre, updates, 1);
+    this.entities = landed.entities as unknown as ResolvedEntity[];
+    this.solveDirty = true; // settle: conflict state and DOF colour, or the single solve
+    this.refreshActive();
   }
 
   /** The entities a badge's click may be handed to: everything the user DREW,
@@ -5029,7 +5085,7 @@ export class SketchMode {
     if (this.solveBusy || this.solverDead) return;
     this.solveBusy = true;
     try {
-      while (this.active && (this.pendingDrag || this.pendingPinIdxs !== null || this.solveDirty)) {
+      while (this.active && (this.pendingDrag || this.pendingPinIdxs !== null || this.pendingRefresh || this.solveDirty)) {
         if (this.pendingDrag || this.pendingPinIdxs !== null) {
           // no entityVersion guard here: a drag never adds/removes entities, so
           // the entity list can't change underneath this solve (unlike a draw).
@@ -5086,6 +5142,10 @@ export class SketchMode {
             this.dragFrom.set(d.toX, d.toY); // track grabbed pt
           }
           this.refreshDragGeometry(); // curves, badges, glyphs; candidates rebuilt on endDrag
+        } else if (this.pendingRefresh) {
+          const updates = this.pendingRefresh;
+          this.pendingRefresh = null;
+          await this.walkRefresh(updates);
         } else {
           this.solveDirty = false;
           // Consume the "what you picked moves" bias here and nowhere else. A
@@ -5167,6 +5227,14 @@ export class SketchMode {
       this.solverDead = true;
       this.lastDof = -1;
       this.conflict = false;
+      // a projection refresh still lands, unsolved, the way it lands in a
+      // sketch with nothing to solve
+      const refresh = this.pendingRefresh;
+      this.pendingRefresh = null;
+      if (refresh) {
+        this.entities = this.entities.map((e) =>
+          e.type === "projected" && refresh.has(e.id) ? applyProjectionUpdate(e, refresh.get(e.id)!) : e);
+      }
       if (!this.solverDeadToast) {
         this.solverDeadToast = true;
         toast(

@@ -339,6 +339,18 @@ This file starts on 2026-08-03. For anything before that, see the
   If I cannot find a solution on the same side, I keep the sketch where it was
   and say so, instead of moving it to the wrong side.
 
+- **A projected straight edge no longer turns into a circle.** When a body
+  changed under a sketch, a projected edge could come back as the rim of a
+  cylinder next to it, and every dimension to that edge quietly stopped
+  working: a hole placed 10 mm from a plate's edge stayed put when the plate got
+  narrower. A projected line now only follows straight edges. When all I can
+  find for it is round, or it already turned into a circle in a sketch you
+  saved, I mark it as lost and say so instead of swapping it; project the edge
+  again and dimension to it. Geometry dimensioned to projected edges now also
+  follows them in the sketch you have open, and a parameter that moves an edge
+  a long way moves the geometry dimensioned to it along with it, instead of to
+  the far side.
+
 - **Cancel stops an import.** Cancelling while an imported file is still being
   built now takes the import back out, and a cancelled rebuild is no longer
   shown as an error.

@@ -17736,10 +17736,34 @@ def _recompute_projections(f, ctx):
 def _fresh_projection(e, plane, prefix, curve_fresh, ctx):
     """The freshly-projected curve for one projected entity, or None when its
     source no longer resolves against the prefix state (missing body / sketch /
-    entity, ambiguous match). `curve_fresh` memoizes the projected edge list
-    per sketchCurve source across one sketch's entities. Silhouette entities
-    never reach here — their group-level correspondence runs in
-    _recompute_projections."""
+    entity, ambiguous match, or a curve that would change between straight and
+    round). `curve_fresh` memoizes the projected edge list per sketchCurve
+    source across one sketch's entities. Silhouette entities never reach here —
+    their group-level correspondence runs in _recompute_projections."""
+    fresh = _fresh_curve(e, plane, prefix, curve_fresh, ctx)
+    # LENIENT stops at the curve's kind. A projected line that comes back as a
+    # circle or an arc (or the other way) is a different edge, not the same one
+    # moved: field report 66d7eb71's plate edge came back as the rim of the
+    # cylinder joined on top, and the hole dimensioned off it silently lost its
+    # reference. Going stale keeps the last shape and warns, which is the truth.
+    # A circle that comes back as an arc is the same rim cut part-way and still
+    # follows.
+    if fresh is not None and _straight_vs_round(e.get("curve") or {}, fresh):
+        return None
+    return fresh
+
+
+_ROUND_KINDS = ("circle", "arc")
+
+
+def _straight_vs_round(cached, fresh):
+    """True when one ProjectedCurve is a line and the other a circle or arc."""
+    a, b = cached.get("kind"), fresh.get("kind")
+    return (a == "line" and b in _ROUND_KINDS) or (a in _ROUND_KINDS and b == "line")
+
+
+def _fresh_curve(e, plane, prefix, curve_fresh, ctx):
+    """_fresh_projection's resolution, before the kind check."""
     src = e.get("source") or {}
     kind = src.get("kind")
     if kind in ("edge", "faceBoundary"):

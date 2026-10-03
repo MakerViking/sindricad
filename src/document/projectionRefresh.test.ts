@@ -3,7 +3,7 @@
 // chained on the param queue, guarded against preview timelines, with a
 // stale-transition warning and a 5-strike oscillation valve. Driven against a
 // scripted stub backend (the sidecar side is covered by sidecar/test_refresh.py).
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 declare const process: { cwd(): string };
 // the wasm `?url` import resolves root-relative under vitest (see
@@ -413,5 +413,186 @@ describe("projection refresh: dimensioned geometry follows a far move", () => {
     expect(h.x).toBe(-20); // left where it was, not written on the wrong side
     expect(h.y).toBe(-10);
     expect(issues).toEqual(["s1"]);
+  });
+});
+
+// --- a parameter edit that moves geometry FAR (66d7eb71, 6124e4a7) -----------
+//
+// The same unsigned jump from the other end: the curves stay where they are and
+// a dimension VALUE moves. A plate edge driven 60 mm from a fixed reference by
+// a parameter goes to 30, carrying the edge 30 mm, three times the 10 mm a
+// hole is held off it. Entered the way the parameter table enters it
+// (setParamExpr -> the cascade), with the real planegcs solve.
+
+describe("parameter edit: dimensioned geometry follows a far move", () => {
+  let calls: CadDocument[];
+  let issues: string[];
+  beforeEach(() => {
+    calls = [];
+    issues = [];
+    // the cascade's mutate schedules its debounced rebuild off `window`
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const plateDoc = (): CadDocument => ({
+    parameters: { d1: 60 },
+    paramDefs: { d1: { expr: "60", value: 60, unit: "mm", target: { kind: "constraint", sketch: "s1", constraint: "w" } } },
+    features: [{
+      id: "s1", type: "sketch", plane: "XY", name: "Sketch1",
+      entities: [
+        // references clear of the edge's ends: the solver merges points that
+        // share a position, and a fixed one would pin the edge
+        proj("right", 30, -50, 30, 50), proj("bottom", -50, -40, 50, -40),
+        { id: "edge", type: "line", x1: -30, y1: -25, x2: -30, y2: 25 },
+        { id: "hole", type: "circle", x: -20, y: -15, radius: 5 },
+      ],
+      constraints: [
+        { type: "vertical", line: "edge" },
+        { type: "p2lDistance", id: "w", e: "edge", p: 0, line: "right", value: 60 },
+        { type: "p2lDistance", e: "hole", p: 0, line: "edge", value: 10 },
+        { type: "p2lDistance", e: "hole", p: 0, line: "bottom", value: 25 },
+        { type: "diameter", circle: "hole", value: 10 },
+      ],
+    }] as Feature[],
+  });
+
+  function plate() {
+    const store = new DocumentStore(scriptedBackend(() => undefined, calls), plateDoc());
+    store.headlessSolve = solveSketchFeature;
+    store.onParamSolveIssue = (id) => void issues.push(id);
+    return store;
+  }
+  /** the cascade's single mutate landed (it is the only rebuild) */
+  const applied = () => vi.waitFor(() => expect(calls.length).toBe(1), { timeout: 5000 });
+
+  it("keeps a hole 10 mm inside a plate edge that a parameter moves 30 mm past it", async () => {
+    const store = plate();
+    expect(store.setParamExpr("d1", "30")).toBeNull();
+    await applied();
+    const edge = entityIn(store, "edge") as unknown as { x1: number; x2: number };
+    expect(edge.x1).toBeCloseTo(0, 6);
+    expect(edge.x2).toBeCloseTo(0, 6);
+    const h = entityIn(store, "hole");
+    // 10 mm in from the moved edge; one solve straight to 30 put it at -10
+    expect(h.x).toBeCloseTo(10, 6);
+    expect(h.y).toBeCloseTo(-15, 6);
+    expect(issues).toEqual([]);
+  });
+
+  it("refuses a solve that still lands on the far side: the value lands, coordinates stay, the sketch is reported", async () => {
+    const store = plate();
+    // every step solves, and the last one comes back mirrored: exactly what
+    // the single unsigned solve did
+    store.headlessSolve = async (sk, p) => {
+      const out = await solveSketchFeature(sk, p);
+      const w = sk.constraints?.find((c) => c.type === "p2lDistance" && c.id === "w");
+      if (!out || w?.type !== "p2lDistance" || w.value !== 30) return out;
+      return { entities: out.entities.map((e) => (e.id === "hole" ? { ...e, x: -10 } : e)) };
+    };
+    expect(store.setParamExpr("d1", "30")).toBeNull();
+    await applied();
+    const w = sketchIn(store).constraints?.find((c) => c.type === "p2lDistance" && c.id === "w");
+    expect(w?.type === "p2lDistance" && w.value).toBe(30);
+    const h = entityIn(store, "hole");
+    expect(h.x).toBe(-20); // left where it was, not written on the wrong side
+    expect(issues).toEqual(["s1"]);
+  });
+
+  // An angle parameter turns a line, and a hole held off it turns with it. Past
+  // a right angle the line points the other way from where it started, which
+  // the refresh's end-for-end correction would read as the hole changing sides.
+  const deg = Math.PI / 180;
+  const armDoc = (a0: number): CadDocument => {
+    const [cx, cy] = [Math.cos(a0 * deg), Math.sin(a0 * deg)];
+    return {
+      parameters: { d1: a0 },
+      paramDefs: { d1: { expr: String(a0), value: a0, unit: "deg", target: { kind: "constraint", sketch: "s1", constraint: "a" } } },
+      features: [{
+        id: "s1", type: "sketch", plane: "XY", name: "Sketch1",
+        entities: [
+          { id: "ref", type: "line", x1: 0, y1: 0, x2: 50, y2: 0 },
+          { id: "arm", type: "line", x1: 0, y1: 0, x2: 30 * cx, y2: 30 * cy },
+          // 15 mm along the arm, 5 mm to its left
+          { id: "hole", type: "circle", x: 15 * cx - 5 * cy, y: 15 * cy + 5 * cx, radius: 2 },
+        ],
+        constraints: [
+          { type: "fix", e: "ref", p: 0 }, { type: "fix", e: "ref", p: 1 },
+          { type: "coincident", e1: "arm", p1: 0, e2: "ref", p2: 0 },
+          { type: "angle", id: "a", l1: "ref", l2: "arm", value: a0 },
+          { type: "p2pDistance", e1: "arm", p1: 0, e2: "arm", p2: 1, value: 30 },
+          { type: "p2lDistance", e: "hole", p: 0, line: "arm", value: 5 },
+          { type: "p2pDistance", e1: "hole", p1: 0, e2: "arm", p2: 0, value: Math.hypot(15, 5) },
+          { type: "diameter", circle: "hole", value: 4 },
+        ],
+      }] as Feature[],
+    };
+  };
+  for (const [a0, a1] of [[30, 150], [20, 170]] as const) {
+    it(`turns a line ${a0} -> ${a1} degrees with a hole held off it, on the same side`, async () => {
+      const store = new DocumentStore(scriptedBackend(() => undefined, calls), armDoc(a0));
+      store.headlessSolve = solveSketchFeature;
+      store.onParamSolveIssue = (id) => void issues.push(id);
+      expect(store.setParamExpr("d1", String(a1))).toBeNull();
+      await applied();
+      const arm = entityIn(store, "arm") as unknown as { x1: number; y1: number; x2: number; y2: number };
+      const dx = arm.x2 - arm.x1, dy = arm.y2 - arm.y1;
+      expect(Math.atan2(dy, dx) / deg).toBeCloseTo(a1, 4);
+      const h = entityIn(store, "hole");
+      // still 5 mm to the arm's LEFT: the turn carried it round, no mirror
+      expect(((h.x - arm.x1) * dy - (h.y - arm.y1) * dx) / Math.hypot(dx, dy)).toBeCloseTo(-5, 4);
+      expect(issues).toEqual([]);
+    });
+  }
+
+  // A SIGNED dimension crossing zero reverses its line end for end; a point held
+  // off the line stays where it was, which in the line's own frame is the other
+  // side. Not a mirror: the edit lands, as it did before the walk existed.
+  it("lets a signed dimension reverse a line with a point held off it", async () => {
+    const doc: CadDocument = {
+      parameters: { d1: 20 },
+      paramDefs: { d1: { expr: "20", value: 20, unit: "mm", target: { kind: "constraint", sketch: "s1", constraint: "w" } } },
+      features: [{
+        id: "s1", type: "sketch", plane: "XY", name: "Sketch1",
+        entities: [
+          { id: "edge", type: "line", x1: 0, y1: 0, x2: 20, y2: 0 },
+          { id: "pt", type: "point", x: 10, y: 5 },
+        ],
+        constraints: [
+          { type: "fix", e: "edge", p: 0 },
+          { type: "horizontal", line: "edge" },
+          { type: "p2pDistanceX", id: "w", e1: "edge", p1: 0, e2: "edge", p2: 1, value: 20 },
+          { type: "p2lDistance", e: "pt", p: 0, line: "edge", value: 5 },
+          { type: "p2pDistanceX", e1: "edge", p1: 0, e2: "pt", p2: 0, value: 10 },
+        ],
+      }] as Feature[],
+    };
+    const store = new DocumentStore(scriptedBackend(() => undefined, calls), doc);
+    store.headlessSolve = solveSketchFeature;
+    store.onParamSolveIssue = (id) => void issues.push(id);
+    expect(store.setParamExpr("d1", "-20")).toBeNull();
+    await applied();
+    const edge = entityIn(store, "edge") as unknown as { x2: number };
+    expect(edge.x2).toBeCloseTo(-20, 6);
+    expect(entityIn(store, "pt").y).toBeCloseTo(5, 6);
+    expect(issues).toEqual([]);
+  });
+
+  it("lets a parameter put a point ON its line: a distance of zero is not a flip", async () => {
+    const doc = plateDoc();
+    doc.paramDefs = { d2: { expr: "10", value: 10, unit: "mm", target: { kind: "constraint", sketch: "s1", constraint: "h" } } };
+    doc.parameters = { d2: 10 };
+    const sk = doc.features[0] as SketchF;
+    sk.constraints = sk.constraints!.map((c) =>
+      c.type === "p2lDistance" && c.e === "hole" && c.line === "edge" ? { ...c, id: "h" } : c);
+    const store = new DocumentStore(scriptedBackend(() => undefined, calls), doc);
+    store.headlessSolve = solveSketchFeature;
+    store.onParamSolveIssue = (id) => void issues.push(id);
+    expect(store.setParamExpr("d2", "0")).toBeNull();
+    await applied();
+    expect(entityIn(store, "hole").x).toBeCloseTo(-30, 6);
+    expect(issues).toEqual([]);
   });
 });

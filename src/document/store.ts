@@ -14,7 +14,7 @@ import { resolveRealEntities, toSketchEntity } from "../sketch/resolve";
 import * as params from "../params/engine";
 import type { FieldKind } from "./numFields";
 import { DEFAULT_EXTRUDE_DISTANCE, writeTarget } from "./numFields";
-import { p2lSideFlipped, refreshStep, refreshSteps } from "./projectionWalk";
+import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from "./projectionWalk";
 import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
 
@@ -675,15 +675,18 @@ export class DocumentStore {
       });
   }
   private async commitWithCascade(fn: (d: CadDocument) => void): Promise<void> {
+    const isSketch = (x: Feature): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch";
+    // every sketch as it was before the edit, taken before the first await
+    const preOf = new Map(this.doc.features.filter(isSketch).map((x) => [x.id, x]));
     const draft = clone(this.doc);
     fn(draft);
     const r = params.recompute(draft);
     const open = this.openSketchId?.() ?? null;
     for (const sid of r.affectedSketches) {
       if (sid === open) continue;
-      const f = draft.features.find((x): x is Extract<Feature, { type: "sketch" }> => x.type === "sketch" && x.id === sid);
+      const f = draft.features.find((x): x is Extract<Feature, { type: "sketch" }> => isSketch(x) && x.id === sid);
       if (!f) continue;
-      const solved = await this.solveConstrainedSketch(f, draft.parameters);
+      const solved = await this.solveParamEdit(preOf.get(sid) ?? f, f, draft.parameters);
       if (solved) f.entities = solved;
     }
     this.mutate((d) => {
@@ -840,7 +843,7 @@ export class DocumentStore {
   ): Promise<Extract<Feature, { type: "sketch" }>> {
     const steps = refreshSteps(f, updates);
     if (steps > 1) {
-      const walked = await this.walkRefresh(f, updates, parameters, steps);
+      const walked = await this.walkSolve(f, (cur, t) => refreshStep(cur, f, updates, t), parameters, steps);
       if (walked && !p2lSideFlipped(f, walked, parameters)) return walked;
     }
     const unsolved = refreshStep(f, f, updates, 1);
@@ -855,22 +858,63 @@ export class DocumentStore {
     return once;
   }
 
-  /** `f` re-solved at each of `steps` fractions of the refresh in turn, each
+  /** The closed sketch `post` after a parameter edit of `pre` (its dimension
+   *  values changed), solved the way solveRefreshedSketch solves a refresh and
+   *  for the same reason: the dimension values walk from old to new
+   *  (projectionWalk.paramSteps), because one solve straight to a far value can
+   *  land a point dimensioned off the moving geometry on its mirror side, every
+   *  number reading "satisfied". The walk is judged step by step, so an angle
+   *  that turns a line past a right angle is told from a mirror image. A walk
+   *  that cannot finish on the right side hands over to the single solve,
+   *  judged against `pre`'s geometry wherever a line kept its direction.
+   *  Returns the entities to write, or null to keep the coordinates (nothing
+   *  to solve, unsolvable, or still on the far side; the last two are reported
+   *  through onParamSolveIssue). */
+  private async solveParamEdit(
+    pre: Extract<Feature, { type: "sketch" }>,
+    post: Extract<Feature, { type: "sketch" }>,
+    parameters: CadDocument["parameters"],
+  ): Promise<Extract<Feature, { type: "sketch" }>["entities"] | null> {
+    // the old geometry under the new constraint list, which is what the side
+    // check compares index by index
+    const before = { ...pre, constraints: post.constraints ?? [] };
+    const steps = paramSteps(pre, post, parameters);
+    if (steps > 1) {
+      const keepsSide = (a: Extract<Feature, { type: "sketch" }>, b: Extract<Feature, { type: "sketch" }>) =>
+        !p2lSideFlipped(a, b, parameters);
+      const walked = await this.walkSolve(post, (cur, t) => paramStep(cur, pre, post, t), parameters, steps, keepsSide);
+      if (walked) return walked.entities;
+    }
+    const solved = await this.solveConstrainedSketch(post, parameters);
+    if (!solved) return null;
+    if (p2lSideFlipped(before, { ...post, entities: solved }, parameters, "unknown")) {
+      this.onParamSolveIssue?.(post.id);
+      return null;
+    }
+    return solved;
+  }
+
+  /** `start` re-solved at each of `steps` fractions of a change in turn (`at`
+   *  sets the sketch up for fraction t from the last solve's result), each
    *  solve starting from the last one's coordinates; null as soon as a step
-   *  cannot be solved. Silent: a step the walk cannot take is not yet a failure
-   *  to report, because the single solve still gets its turn. */
-  private async walkRefresh(
-    f: Extract<Feature, { type: "sketch" }>,
-    updates: Map<string, ProjectionUpdate>,
+   *  cannot be solved, or `keeps` (when given) rejects a step against the one
+   *  before. Silent: a step the walk cannot take is not yet a failure to
+   *  report, because the single solve still gets its turn. */
+  private async walkSolve(
+    start: Extract<Feature, { type: "sketch" }>,
+    at: (cur: Extract<Feature, { type: "sketch" }>, t: number) => Extract<Feature, { type: "sketch" }>,
     parameters: CadDocument["parameters"],
     steps: number,
+    keeps?: (prev: Extract<Feature, { type: "sketch" }>, next: Extract<Feature, { type: "sketch" }>) => boolean,
   ): Promise<Extract<Feature, { type: "sketch" }> | null> {
-    let cur = f;
+    let cur = start;
     for (let k = 1; k <= steps; k++) {
-      const next = refreshStep(cur, f, updates, k / steps);
+      const next = at(cur, k / steps);
       const r = await this.solveSketchOutcome(next, parameters);
       if (r.status !== "solved") return null;
-      cur = { ...next, entities: r.entities };
+      const solved = { ...next, entities: r.entities };
+      if (keeps && !keeps(cur, solved)) return null;
+      cur = solved;
     }
     return cur;
   }

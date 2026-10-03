@@ -890,10 +890,16 @@ def resolve_edges(part, sel, diag=None, feature_id=None):
         # collapse onto a straight body edge just because its absolute position drifted
         # (e.g. a mirror-twin hole that translated under an upstream edit). Removing only
         # non-circles is monotonic — it never reorders the circle candidates.
-        if fp.get("curve") == "circle":
-            circles = [e for e in edges if _edge_curve(e) == "circle"]
-            if circles:
-                edges = circles
+        #
+        # A line reference resolves to a line the same way. A plate's projected left
+        # edge, after the plate shrank about its centre under a joined cylinder, scored
+        # the cylinder's rim (its length and stale midpoint both close) below the moved
+        # edge, and the sketch dimensioned off it lost its reference (field report
+        # 66d7eb71).
+        if fp.get("curve") in ("circle", "line"):
+            same = [e for e in edges if _edge_curve(e) == fp["curve"]]
+            if same:
+                edges = same
         tol_pos = POS_DRIFT + REL_DRIFT * _bbox_diag(part)
         rank_of = _circle_center_groups(edges, tol_pos)
         best, conf, lossy, reason = _resolve_one(
