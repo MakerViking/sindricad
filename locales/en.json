@@ -394,14 +394,14 @@
       }
     },
     "extrude": {
-      "dragPrompt": "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · negative = cut · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel",
-      "dragPromptAfterTarget": "Drag the arrow or type a value + Enter · T = extrude up to a face or plane · click to commit · Esc to cancel",
+      "dragPrompt": "Drag the arrow to set depth · Ctrl-click areas to add/remove · type a value + Enter · negative = cut · T = up to a face or plane, Shift-T clears it · click or OK to extrude · Esc to cancel",
+      "dragPromptAfterTarget": "Drag the arrow or type a value + Enter · T = extrude up to a face or plane · click or OK to extrude · Esc to cancel",
       "edit": {
         "cannotShow": {
           "one": "Editing extrude: its area cannot be shown · it is kept as saved · what you pick replaces it · select a profile · Esc to cancel",
           "other": "Editing extrude: its {count} areas cannot be shown · they are kept as saved · what you pick replaces them · select a profile · Esc to cancel"
         },
-        "dragPrompt": "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to add/remove · T = up to a face or plane, Shift-T clears it · click to commit · Esc to cancel (later features are hidden while editing)",
+        "dragPrompt": "Editing extrude: drag the arrow or type a value + Enter · Ctrl-click areas to add/remove · T = up to a face or plane, Shift-T clears it · click or OK to extrude · Esc to cancel (later features are hidden while editing)",
         "droppedNewSet": {
           "one": "Editing extrude: {count} area that could not be shown is no longer kept · what you pick is the new set",
           "other": "Editing extrude: {count} areas that could not be shown are no longer kept · what you pick is the new set"
@@ -425,19 +425,41 @@
         }
       },
       "needsProfile": "Extrude: select a face, or create a sketch with a closed profile first",
-      "notCommitted": "Extrude not committed — Enter/✓ to choose an operation · Esc to cancel",
       "op": {
         "cutHint": "remove",
-        "cutNothing": "⚠ nothing to cut here",
         "intersectHint": "keep overlap",
         "joinHint": "merge",
-        "joinNoEffect": "⚠ likely no effect (profile is inside)",
         "newHint": "separate",
-        "newTextHint": "separate — assign its own print color",
-        "title": "Extrude — operation"
+        "newTextHint": "separate — assign its own print color"
+      },
+      "panel": {
+        "boundTitle": "Set by a parameter. Change it in Parameters.",
+        "cutNothing": "Cut will likely remove nothing: there is no body where the extrude goes. Join or New Body adds material instead.",
+        "direction": "Direction",
+        "distance": "Distance",
+        "distanceTitle": "Extrude by a distance",
+        "extent": "Extent",
+        "joinNoEffect": "Join will likely change nothing: the extrude goes into the body. Cut removes material instead.",
+        "needsTarget": "Click a face or a plane to extrude up to, or choose Distance.",
+        "oneSide": "One side",
+        "oneSideTitle": "The whole distance in one direction",
+        "operation": "Operation",
+        "start": "Start",
+        "startBound": "The start offset is set by a parameter, so it stays. Change it in Parameters.",
+        "startOffset": "Offset",
+        "startOffsetTitle": "Start the extrude a distance away from the sketch",
+        "startProfile": "Profile plane",
+        "startProfileTitle": "Start the extrude on the sketch",
+        "symmetric": "Symmetric",
+        "symmetricTitle": "Half the distance each side of the start (S)",
+        "targetPick": "Click a face or a plane",
+        "upTo": "Up to",
+        "upToTitle": "Stop at a face or a plane (T)",
+        "zeroDistance": "The distance can't be 0. Type a distance, or extrude up to a face or a plane."
       },
       "pickPrompt": "Select a profile to extrude · Ctrl-click adds areas · Enter to confirm",
-      "targetCleared": "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · T = up to a face or plane · click to commit · Esc to cancel"
+      "targetCleared": "Up-to target cleared, extruding by distance again · drag the arrow or type a value + Enter · T = up to a face or plane · click or OK to extrude · Esc to cancel",
+      "targetSet": "Extruding up to the target · click another face or plane to aim there instead · type a target offset in the panel if you want one · Enter or OK to extrude · Shift-T goes back to a distance · Esc to cancel"
     },
     "faceOffset": {
       "drag": {

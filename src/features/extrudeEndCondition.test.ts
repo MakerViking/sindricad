@@ -23,8 +23,10 @@ import { DEFAULT_EXTRUDE_DISTANCE } from "../document/numFields";
 (globalThis as unknown as { document: unknown }).document ??= {
   createElement: () => ({
     style: {},
+    value: "",
     appendChild() {},
     addEventListener() {},
+    setAttribute() {},
     remove() {},
     classList: { add() {}, remove() {}, toggle() {} },
     querySelector: () => null,
@@ -74,7 +76,8 @@ function harness(opts: { face?: Sel | null; datum?: string | null } = {}) {
     },
     requestRender() {},
   };
-  const store = {};
+  // the panel names a plane target by looking it up in the document
+  const store = { document: { features: [], parameters: {} } };
 
   const tool = new ExtrudeTool(viewport as never, overlay as never, store as never);
   const t = tool as unknown as {
@@ -117,7 +120,8 @@ const click = () =>
     stopImmediatePropagation() {},
   }) as unknown as PointerEvent;
 
-const key = (k: string) => ({ key: k, target: null }) as unknown as KeyboardEvent;
+const key = (k: string) =>
+  ({ key: k, target: null, preventDefault() {}, stopPropagation() {} }) as unknown as KeyboardEvent;
 /** Shift held: what the keyboard actually delivers for Shift-T is key "T". */
 const shiftKey = (k: string) => ({ key: k, target: null, shiftKey: true }) as unknown as KeyboardEvent;
 
@@ -236,13 +240,20 @@ describe("ExtrudeTool up-to target", () => {
     expect(t.active).toBe(true); // still editing — Escape was consumed by the pick
   });
 
-  it("a T-mode click on a FACE sets the target and commits", async () => {
+  // GH #41 asked for a target offset typed during creation. While the click on
+  // the target also COMMITTED, there was no moment to type one: the click now
+  // fills the panel's Up-to box, and Enter (or OK) commits.
+  it("a T-mode click on a FACE sets the target and waits for Enter", async () => {
     const { t, commit } = harness({ face: FACE });
     t.onKey(key("t"));
 
     t.onDown(click());
 
     expect(t.upTo).toEqual(FACE);
+    expect(t.pickingTarget, "the pick did not end on the click").toBe(false);
+    expect(commit, "the target click committed, so no target offset could be typed first").not.toHaveBeenCalled();
+
+    t.onKey(key("Enter"));
     expect(commit).toHaveBeenCalled();
   });
 
@@ -253,7 +264,7 @@ describe("ExtrudeTool up-to target", () => {
     t.onDown(click());
 
     expect(t.upToPlane).toBe("d1");
-    expect(commit).toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it("a body hit WINS over a datum under the same cursor", () => {

@@ -9,7 +9,15 @@
 // ring (annulus) area previews/extrudes as a tube; selecting several areas
 // unions them. Operation auto-selects: New Body when nothing exists, otherwise
 // Cut when the profile pushes into an existing body and Join when it pulls away
-// (both overridable in the commit dialog).
+// (both overridable in the panel).
+//
+// The docked Extrude panel (GH #41) holds everything else an extrude has, typed
+// BEFORE it exists rather than in the inspector afterwards: where it starts
+// (the profile plane or an offset), one side or symmetric, a distance or up to
+// a face or plane (with a target offset), a taper, and the operation. A taper
+// or a target cannot be drawn by the instant ghost, so those preview through
+// the real build (store.setPreview). Enter, OK or a click commits; with a
+// target set, a click on another face or plane aims there instead.
 
 import * as THREE from "three";
 import type { Viewport } from "../viewport/viewport";
@@ -21,8 +29,10 @@ import { pointInRegion } from "../sketch/region";
 import { DimInput } from "../sketch/dimInput";
 import { setPrompt } from "../ui/prompt";
 import { axisDragDistance, pixelDistanceToSegment } from "./manipulator";
-import { choose } from "../ui/choice";
 import { t } from "../i18n";
+import { ToolPanel } from "../ui/toolPanel";
+import { planeLabel } from "../ui/featureMeta";
+import { featureErrorMessages } from "../geometry/featureErrorText";
 // One number for "the depth a fresh extrude starts at", shared with the store:
 // clearing an up-to target has to restore a depth, and two constants would
 // drift. It lives in the document layer because the store cannot import this
@@ -32,6 +42,10 @@ import { isImeComposing } from "../ui/focus";
 
 type Phase = "pick" | "drag";
 type Op = "new" | "join" | "cut" | "intersect";
+/** The values the panel types that the INSPECTOR can also set on a committed
+ *  extrude, so an edit has to know which of them the user changed here. */
+type PanelValue = "startOffset" | "taper" | "upToOffset";
+const PANEL_VALUES: readonly PanelValue[] = ["startOffset", "taper", "upToOffset"];
 
 /** How close the cursor must be to the depth arrow, in SCREEN pixels, to take
  *  hold of it. Wide enough to catch a shaft a couple of pixels across with a
@@ -79,6 +93,15 @@ type CarriedRegion = RegionRef & {
   holeEntityIds: string[][];
 };
 
+/** A text field (the command palette, a Browser rename, a panel field): it
+ *  keeps its own keys. Read off the tag rather than instanceof, so the stubbed
+ *  key events the tests send pass straight through. */
+function isTextField(target: EventTarget | null): boolean {
+  const el = target as { tagName?: unknown; isContentEditable?: unknown } | null;
+  if (!el) return false;
+  return (typeof el.tagName === "string" && /^(input|textarea|select)$/i.test(el.tagName)) || el.isContentEditable === true;
+}
+
 export class ExtrudeTool {
   active = false;
   private phase: Phase = "pick";
@@ -119,15 +142,15 @@ export class ExtrudeTool {
 
   // --- edit mode (re-opening a committed extrude) ---
   private editId: string | null = null; // committed feature id being edited
-  private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
   private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
   private editSeparateBodies: boolean | undefined; // ditto: an edit must not change body COUNT
   private editJoinTouchingOnly: boolean | undefined; // ditto: nor which bodies a join takes in
-  /** Values that only the inspector can set, carried through an edit unchanged.
-   *  The tool offers no field for any of them, so if `startEdit` does not load
-   *  them `commit` deletes them — and a bare depth nudge would throw away
-   *  numbers the user typed (GH #41). Same contract as the end condition above
-   *  it: what startEdit does not load, commit destroys. */
+  /** The saved start offset, taper and target offset of the feature being
+   *  edited. Before the panel only the inspector could set them, and an edit
+   *  that did not load them deleted them on commit — a bare depth nudge threw
+   *  away numbers the user typed (GH #41). Same contract as the end condition
+   *  above: what startEdit does not load, commit destroys. A value the panel
+   *  did not change is still written back from the document (panelValues). */
   private editStartOffset: Num | undefined;
   private editTaper: Num | undefined;
   private editUpToOffset: Num | undefined;
@@ -148,6 +171,36 @@ export class ExtrudeTool {
   /** while editing, this sketch is forced visible so its regions exist
    *  (consumed sketches hide by default) — main.ts's isSketchVisible honors it. */
   forcedSketchId: string | null = null;
+
+  // --- the docked panel (GH #41) ---------------------------------------------
+  private panel = new ToolPanel("extrude-panel");
+  /** Start: on the profile plane, or `startOffset` away from it */
+  private startMode: "profile" | "offset" = "profile";
+  private startOffset = 0; // mm, along the profile normal
+  /** Direction: half the distance each side of the start (the persisted flag) */
+  private symmetric = false;
+  private taper = 0; // degrees
+  private upToOffset = 0; // mm, along the extrude direction
+  /** Which panel values the user changed. On an EDIT the others are written
+   *  back from the document as it is at commit, never from a snapshot (field
+   *  637278a9), and a parameter binding rides along as the binding it is. */
+  private edited = new Set<PanelValue>();
+  /** Panel values the user may not type over, with the reason: a value bound
+   *  to a parameter changes in Parameters, or the binding would put it back. */
+  private readOnly: Partial<Record<PanelValue, string>> = {};
+  /** The operation, guessed from where the extrude goes until the user picks
+   *  one (`opPinned`). An edit opens pinned on the saved operation. */
+  private op: Op = "new";
+  private opPinned = false;
+  /** Is there a body to join, cut or intersect? Read when the depth step
+   *  starts, before this tool's own preview can put one on screen. */
+  private hasSolid = false;
+  /** Id of the feature being made: the live preview and the commit share it,
+   *  so a preview failure can be read back off the build by id. */
+  private previewId = "";
+  /** The feature last handed to the store's live preview, as JSON; "" = none. */
+  private sentPreview = "";
+  private offBuild: (() => void) | null = null;
 
   private boundMove: (e: PointerEvent) => void;
   private boundDown: (e: PointerEvent) => void;
@@ -186,6 +239,8 @@ export class ExtrudeTool {
     this.editUpToOffset = undefined;
     this.editDistance = null;
     this.pickingTarget = false;
+    // ...nor the last session's panel values: the tool instance is reused
+    this.resetPanelValues();
     this.viewport.suspendPicking = true;
     const el = this.viewport.domElement;
     el.addEventListener("pointermove", this.boundMove);
@@ -221,7 +276,6 @@ export class ExtrudeTool {
     this.phase = "pick";
     this.onDone = onDone;
     this.editId = featureId;
-    this.editOp = f.operation;
     this.editHiddenBodies = f.hiddenBodies;
     this.editSeparateBodies = f.separateBodies;
     this.editJoinTouchingOnly = f.joinTouchingOnly;
@@ -231,11 +285,13 @@ export class ExtrudeTool {
     // startEdit does not load, commit deletes.
     this.upTo = f.upTo ?? null;
     this.upToPlane = f.upToPlane ?? null;
-    // Inspector-only values ride along untouched, for the same reason.
+    // The values the panel shows, loaded for the same reason. They ride along
+    // untouched unless the user changes them here.
     this.editStartOffset = f.startOffset;
     this.editTaper = f.taper;
     this.editUpToOffset = f.upToOffset;
     this.pickingTarget = false;
+    this.loadPanelValues(f);
     this.distance = f.distance;
     this.editDistance = f.distance;
     this.forcedSketchId = f.sketch;
@@ -252,6 +308,8 @@ export class ExtrudeTool {
     // see (exactly what the tool saw at creation), then rebuild the overlay so
     // the now-forced-visible sketch contributes regions to select from.
     this.store.beginEditPreview(featureId);
+    // until the rollback lands, the screen still shows this feature's own solid
+    this.awaitingBuild = true;
     this.overlay.update(this.store.document);
     const saved: [number, number, number][] = (
       f.regions ?? (f.region ? [f.region] : [])
@@ -391,22 +449,15 @@ export class ExtrudeTool {
       this.viewport.domElement.style.cursor = r ? "pointer" : "default";
       return;
     }
-    // T mode ("extrude up to"): show what the click would bind, with the same
-    // BODY-FIRST precedence the T-mode click uses below. Without it the mode is
-    // invisible — the cursor sweeps a face or an offset plane and nothing on
-    // screen says it is aimed at anything (field report c0cfee48, reported
-    // against press/pull; this tool had the gap verbatim).
+    // T mode ("extrude up to"): show what the click would bind (hoverTarget).
     if (this.pickingTarget) {
-      const faceId = this.viewport.hoverFaceAt(e.clientX, e.clientY);
-      const datumId = faceId == null ? this.viewport.pickDatumAt(e.clientX, e.clientY) : null;
-      this.viewport.hoverDatum(datumId);
-      this.viewport.domElement.style.cursor = faceId != null || datumId ? "pointer" : "default";
+      this.hoverTarget(e.clientX, e.clientY);
       return;
     }
     if (!this.selected.length) return;
     const first = this.selected[0];
     if (!first) return;
-    const anchor = this.anchor();
+    const anchor = this.arrowSpan().from;
     // A press that is no longer held cannot be a drag. `pointerup` is heard on
     // window, but a release the browser never delivers at all — dragging out of
     // the window, a pointercancel, an alt-tab mid-gesture — would otherwise
@@ -423,11 +474,15 @@ export class ExtrudeTool {
       // the arrow exactly at its tip, which on a 33 mm arrow means a jump of
       // tens of millimetres for taking hold of the middle of the shaft.
       const axis = axisDragDistance(this.viewport, e.clientX, e.clientY, anchor, first.plane.n);
-      this.distance = this.grab.distance + (axis - this.grab.axis);
+      // Symmetric, the arrow's tip is one END of the extrude, half the distance
+      // from the midplane, so the distance moves twice as far as the tip does
+      // and the tip stays under the cursor.
+      this.distance = this.grab.distance + (axis - this.grab.axis) * (this.symmetric ? 2 : 1);
       // A drag owns the field (armDragIfMoved unlocked it), so this lands. The
       // box shows the magnitude and `distance` carries the sign — the split
-      // commit() reads.
+      // commit() reads. The panel shows the signed number, as typed.
       this.dim.updateFromCursor({ distance: Math.abs(this.distance) });
+      this.panel.setNumber("distance", this.distance);
     } else {
       // NOT dragging, so the depth is not the pointer's to change. It used to
       // be: a pre-selected profile puts this tool straight into "drag" phase
@@ -448,13 +503,40 @@ export class ExtrudeTool {
     }
     this.positionDim(anchor);
     this.updatePreview();
-    if (!this.grab) {
-      // After updatePreview, so the affordance is measured against the arrow as
-      // just drawn. A handle that gives no sign of being grabbable is half of
-      // field 6e2bcadd — the reporter could SEE the arrow and concluded it was
-      // decoration.
-      this.viewport.domElement.style.cursor = this.overArrow(e.clientX, e.clientY) ? "ns-resize" : "default";
+    if (this.grab) return;
+    // With a target set there is no arrow, and a click on a face or plane aims
+    // there instead (onDown), so that is what the hover shows.
+    if (this.hasTarget()) {
+      this.hoverTarget(e.clientX, e.clientY);
+      return;
     }
+    // After updatePreview, so the affordance is measured against the arrow as
+    // just drawn. A handle that gives no sign of being grabbable is half of
+    // field 6e2bcadd — the reporter could SEE the arrow and concluded it was
+    // decoration.
+    this.viewport.domElement.style.cursor = this.overArrow(e.clientX, e.clientY) ? "ns-resize" : "default";
+  }
+
+  /** Light the face or plane a click here would aim the extrude at, with the
+   *  same BODY-FIRST precedence `targetAt` uses. Without it aiming is invisible:
+   *  the cursor sweeps a face or an offset plane and nothing on screen says it
+   *  is aimed at anything (field report c0cfee48, reported against press/pull;
+   *  this tool had the gap verbatim). */
+  private hoverTarget(cx: number, cy: number) {
+    const faceId = this.viewport.hoverFaceAt(cx, cy);
+    const datumId = faceId == null ? this.viewport.pickDatumAt(cx, cy) : null;
+    this.viewport.hoverDatum(datumId);
+    this.viewport.domElement.style.cursor = faceId != null || datumId ? "pointer" : "default";
+  }
+
+  /** The face or datum plane under the cursor, as an up-to target. A datum
+   *  plane (field report ffab4ece) only on a body MISS: the same BODY-FIRST
+   *  precedence viewport.handleClick uses, so a plane's 80x80 quad floating in
+   *  front of the solid can never steal a face pick. */
+  private targetAt(cx: number, cy: number): Selector | string | null {
+    const hit = this.viewport.pickFaceForPressPull(cx, cy);
+    if (hit) return hit.selector;
+    return this.viewport.pickDatumAt(cx, cy);
   }
 
   /** Turn a pending press into a handle drag once the pointer has actually
@@ -512,12 +594,10 @@ export class ExtrudeTool {
    *  still commits, so widening the grab steals no gesture. */
   private overArrow(cx: number, cy: number): boolean {
     const first = this.selected[0];
-    if (!this.arrow || !first) return false;
-    const anchor = this.anchor();
+    if (!this.arrow || !first || this.hasTarget()) return false;
+    const { from: anchor, length } = this.arrowSpan();
     const sign = this.distance >= 0 ? 1 : -1;
-    const tip = anchor
-      .clone()
-      .addScaledVector(first.plane.n, sign * Math.max(Math.abs(this.distance), ARROW_MIN_MM));
+    const tip = anchor.clone().addScaledVector(first.plane.n, sign * length);
     const a = this.viewport.projectToScreen(anchor);
     const b = this.viewport.projectToScreen(tip);
     if (pixelDistanceToSegment(cx, cy, a, b) <= GRAB_PX) return true;
@@ -533,7 +613,7 @@ export class ExtrudeTool {
    *  selection center (which doesn't move while you drag depth), offset off the
    *  geometry and clamped inside the viewport. Following the cursor made the box
    *  (and its buttons) impossible to click. */
-  private positionDim(anchor: THREE.Vector3 = this.anchor()) {
+  private positionDim(anchor: THREE.Vector3 = this.arrowSpan().from) {
     const s = this.viewport.projectToScreen(anchor);
     const rect = this.viewport.domElement.getBoundingClientRect();
     const boxW = 160, boxH = 46, m = 12;
@@ -573,25 +653,16 @@ export class ExtrudeTool {
       // click here — a miss must never fall through to the clean-click-commits
       // path below and fire a stray plain commit (the same audit finding that
       // shaped press/pull's version of this branch).
+      //
+      // The click FILLS the panel's Up-to box and the extrude waits: a target
+      // offset can only be typed once there is a target to offset from, and a
+      // click that also committed left no moment to type it (GH #41). Enter, OK
+      // or a click off any face or plane commits (below).
       if (this.pickingTarget) {
         e.stopImmediatePropagation();
-        const hit = this.viewport.pickFaceForPressPull(e.clientX, e.clientY);
-        if (hit) {
-          this.setUpTo(hit.selector);
-          void this.commit();
-          return;
-        }
-        // A datum plane is a legitimate target too (field report ffab4ece), but
-        // only on a body MISS — the same BODY-FIRST precedence
-        // viewport.handleClick uses, so a plane's 80x80 quad floating in front
-        // of the solid can never steal a face pick.
-        const datumId = this.viewport.pickDatumAt(e.clientX, e.clientY);
-        if (datumId) {
-          this.setUpTo(datumId);
-          void this.commit();
-          return;
-        }
-        setPrompt(t("feature.upTo.pickPrompt"));
+        const target = this.targetAt(e.clientX, e.clientY);
+        if (target) this.setTarget(target);
+        else setPrompt(t("feature.upTo.pickPrompt"));
         return;
       }
       // A modifier-held click means "change the area set", not "commit". Edit mode
@@ -616,13 +687,18 @@ export class ExtrudeTool {
           this.phase = "pick";
           this.disposePreviewGeom();
           this.previewKey = "";
+          this.pushBuiltPreview(false);
           // Hide the depth box too. Leaving it up was a trap: its Enter/✓
           // callback still points at commit(), whose first guard bails to
           // cancel() on an empty selection — so typing Enter after removing the
           // last area silently threw the whole extrude away, while the prompt
           // said "select a profile". onKey defers to the input while it has
-          // focus, so nothing else intercepted it. (GitHub issue #14.)
+          // focus, so nothing else intercepted it. (GitHub issue #14.) The
+          // panel goes for the same reason: its OK and its fields' Enter call
+          // commit() too. Its values are the tool's, so they come back with it
+          // when a profile is picked (beginDrag).
           this.dim.hide();
+          this.panel.hide();
           setPrompt(
             dropped
               ? t("feature.extrude.edit.droppedThenPick", { count: dropped })
@@ -633,6 +709,18 @@ export class ExtrudeTool {
         this.updatePreview();
         if (dropped) setPrompt(t("feature.extrude.edit.droppedPickAgain", { count: dropped }));
         return;
+      }
+      // With a target set, a click on another face or plane aims there
+      // instead. Committing to the FIRST target was what a click on the right
+      // face did after a mis-pick, which is the natural way to correct one.
+      // Anywhere else a click still commits, on the release, below.
+      if (this.hasTarget()) {
+        const target = this.targetAt(e.clientX, e.clientY);
+        if (target) {
+          e.stopImmediatePropagation();
+          this.setTarget(target);
+          return;
+        }
       }
       // Neither gesture the drag phase offers is decided here. Both start with a
       // left press, often in the SAME place — the arrow is anchored at the
@@ -721,70 +809,454 @@ export class ExtrudeTool {
   }
 
   private onKey(e: KeyboardEvent) {
-    if (this.dim.isActive && e.target instanceof HTMLInputElement) {
-      if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
-      if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
-    if (e.key === "Escape") { this.cancel(); return; }
-      // Everything else aimed at the depth box is the FIELD's — Enter commits,
-      // Tab locks and advances — except this tool's own letter hotkey on a box
-      // nobody has typed into yet. Without that exception T and Shift-T below
-      // were unreachable for the whole time the tool was open, because
-      // beginDrag focuses the box: pressing T to aim the extrude at a plane
-      // typed a "t" over the seeded depth (field report 88c9bdf0).
-      if (e.key.toLowerCase() !== "t" || !this.dim.claimToolHotkey(e)) return;
-    }
-    if (e.key === "Escape") {
-      // Esc out of target-picking goes back to the depth gesture rather than
-      // cancelling the whole extrude — the same two-level Escape press/pull has.
-      if (this.pickingTarget) {
-        this.pickingTarget = false;
-        // leaving T mode takes its highlights with it, or the last face and
-        // plane the cursor passed stay lit over a tool that no longer aims there
-        this.viewport.clearHover();
-        this.viewport.hoverDatum(null);
-        // restore the field T-mode hid: leaving it hidden would strand the user
-        // with no way to type a depth, and leaving it ACTIVE during the pick let
-        // Enter commit a plain distance mid-target-pick.
-        this.dim.show([{ name: "distance", label: t("feature.dim.distance") }], () => void this.commit(), () => this.cancel());
-        this.dim.seed("distance", this.distance);
-        setPrompt(t("feature.extrude.dragPromptAfterTarget"));
+    if (isImeComposing(e)) return; // Escape cancels an IME conversion, not the tool
+    // The panel's own fields and buttons. Enter is OK wherever focus is in it,
+    // except on a focused Cancel (whose own Enter means cancel); Escape is the
+    // tool's. Every other key in a FIELD is the field's, letters included: a
+    // field takes a parameter name (`wall*2`), so S and T are text there. On a
+    // chip just clicked they are still the tool's hotkeys, below.
+    if (this.panel.owns(e.target)) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onEscape();
         return;
       }
-      this.cancel();
+      if (e.key === "Enter") {
+        if (e.target === this.panel.cancelButton) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void this.commit();
+        return;
+      }
+      if (isTextField(e.target)) return;
+    }
+    if (this.dim.isActive && e.target instanceof HTMLInputElement) {
+      if (e.key === "Escape") {
+        this.cancel();
+        return;
+      }
+      // Everything else aimed at the depth box is the FIELD's — Enter commits,
+      // Tab locks and advances — except T on a box nobody has typed into yet.
+      // Without that exception T and Shift-T below were unreachable for the
+      // whole time the tool was open, because beginDrag focuses the box:
+      // pressing T to aim the extrude at a plane typed a "t" over the seeded
+      // depth (field report 88c9bdf0).
+      //
+      // S is NOT claimed here. The box reads parameter names and functions
+      // (`size*2`, `sqrt(2)`), so in it S is the first letter of a value, and
+      // claiming it toggled Symmetric and left `ize*2` behind. The Direction
+      // chips are the control; S toggles only where the key is free.
+      if (e.key.toLowerCase() !== "t" || !this.dim.claimToolHotkey(e)) return;
+    } else if (isTextField(e.target) && !this.panel.owns(e.target)) {
+      // Another editor (the command palette, a Browser rename) keeps its keys.
+      return;
+    }
+    if (e.key === "Escape") {
+      this.onEscape();
       return;
     }
     if (e.key === "Enter" && this.phase === "pick" && this.selected.length) this.beginDrag();
-    else if (
+    else if (e.key === "Enter" && this.phase === "drag") {
+      // With the depth box up its own Enter commits; this is the Enter of an
+      // extrude aimed at a target, where there is no depth box to type into.
+      e.preventDefault();
+      void this.commit();
+    } else if (
       (e.key === "T" || e.key === "t") &&
       e.shiftKey &&
       this.phase === "drag" &&
       !this.pickingTarget &&
-      (this.upTo || this.upToPlane)
+      this.hasTarget()
     ) {
       // Shift-T is the tool's half of GH #41: `setUpTo` could only ever SET a
       // target, so an extrude aimed at a face could not be turned back into a
-      // plain-depth one from here — and taper, which the inspector hides while a
-      // target exists, stayed out of reach with it. Tested BEFORE the plain-T
-      // branch below, which would otherwise swallow the same key press. The
-      // inspector's "Up to" row is the discoverable control; this is parity for
-      // someone already in the tool.
-      this.upTo = null;
-      this.upToPlane = null;
-      // An up-to extrude never read its distance, so it can legitimately be 0 —
-      // and a plain extrude of 0 is refused by the sidecar. Same substitution
-      // the inspector's clear makes (store.clearUpToTarget), and the field is
-      // re-seeded so the user sees the depth they are about to commit.
-      if (this.distance === 0) {
-        this.distance = DEFAULT_EXTRUDE_DISTANCE;
-        this.dim.seed("distance", this.distance);
-        this.updatePreview();
-      }
-      setPrompt(t("feature.extrude.targetCleared"));
+      // plain-depth one from here — and taper, which is hidden while a target
+      // exists, stayed out of reach with it. Tested BEFORE the plain-T branch
+      // below, which would otherwise swallow the same key press. The panel's
+      // Extent row is the discoverable control; this is parity for the keyboard.
+      this.clearTarget();
     } else if ((e.key === "t" || e.key === "T") && !e.shiftKey && this.phase === "drag" && !this.pickingTarget) {
-      this.pickingTarget = true;
-      this.dim.hide(); // Enter must not commit a plain distance while picking
-      setPrompt(t("feature.upTo.clickPrompt"));
+      this.armTargetPick();
+    } else if ((e.key === "s" || e.key === "S") && !e.ctrlKey && !e.metaKey && this.phase === "drag" && !this.pickingTarget && !this.hasTarget()) {
+      // Toggle symmetric while the depth is live, so the ghost shows what it
+      // means. Stopped here so the model-context S (start a sketch) never sees
+      // it. Ignored with a target, where half each way means nothing.
+      e.preventDefault();
+      e.stopPropagation();
+      this.setSymmetric(!this.symmetric);
     }
+  }
+
+  /** Escape: out of target picking back to where the extrude was, else cancel
+   *  the whole extrude — the same two-level Escape press/pull has. */
+  private onEscape() {
+    if (this.pickingTarget) this.leaveTargetPick();
+    else this.cancel();
+  }
+
+  private hasTarget(): boolean {
+    return this.upTo !== null || this.upToPlane !== null;
+  }
+
+  /** T, or the panel's Up-to choice or box: the next click names the face or
+   *  plane to extrude up to. */
+  private armTargetPick() {
+    if (this.phase !== "drag") return;
+    this.pickingTarget = true;
+    this.dim.hide(); // Enter must not commit a plain distance while picking
+    setPrompt(t("feature.upTo.clickPrompt"));
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** A face or plane was clicked: it fills the panel, and the extrude waits
+   *  for Enter or OK so a target offset can be typed first. */
+  private setTarget(target: Selector | string) {
+    this.setUpTo(target);
+    this.pickingTarget = false;
+    // the pick's highlights go with it, or the face just clicked stays lit
+    this.viewport.clearHover();
+    this.viewport.hoverDatum(null);
+    setPrompt(t("feature.extrude.targetSet"));
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  private leaveTargetPick() {
+    this.pickingTarget = false;
+    // leaving T mode takes its highlights with it, or the last face and plane
+    // the cursor passed stay lit over a tool that no longer aims there
+    this.viewport.clearHover();
+    this.viewport.hoverDatum(null);
+    if (this.hasTarget()) {
+      setPrompt(t("feature.extrude.targetSet"));
+    } else {
+      // restore the field T-mode hid: leaving it hidden would strand the user
+      // with no way to type a depth, and leaving it ACTIVE during the pick let
+      // Enter commit a plain distance mid-target-pick.
+      this.showDim();
+      setPrompt(t("feature.extrude.dragPromptAfterTarget"));
+    }
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** Back to extruding by a distance: Shift-T, the panel's Distance choice or
+   *  the Up-to box's clear button. */
+  private clearTarget() {
+    const had = this.hasTarget();
+    this.upTo = null;
+    this.upToPlane = null;
+    this.pickingTarget = false;
+    this.viewport.clearHover();
+    this.viewport.hoverDatum(null);
+    // An up-to extrude never read its distance, so it can legitimately be 0 —
+    // and a plain extrude of 0 is refused by the sidecar. Same substitution
+    // the inspector's clear makes (store.clearUpToTarget).
+    if (this.distance === 0) this.distance = DEFAULT_EXTRUDE_DISTANCE;
+    this.showDim();
+    this.panel.setNumber("distance", this.distance);
+    setPrompt(t(had ? "feature.extrude.targetCleared" : "feature.extrude.dragPromptAfterTarget"));
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  private setSymmetric(on: boolean) {
+    this.symmetric = on;
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** The depth box, open on the current distance and locked to it. */
+  private showDim() {
+    this.dim.show(
+      [{ name: "distance", label: t("feature.dim.distance") }],
+      () => void this.commit(),
+      () => this.cancel(),
+      () => this.onDimInput(),
+    );
+    this.dim.seed("distance", this.distance);
+    if (this.selected.length) this.positionDim();
+  }
+
+  /** A keystroke in the depth box: the panel and the ghost follow it now, not
+   *  on the next pointer move. Text the box cannot read turns it red, as a
+   *  panel field does; commit refuses it. */
+  private onDimInput() {
+    const v = this.dim.getValue("distance");
+    this.dim.markInvalid("distance", v === null && this.dim.getRaw("distance").trim() !== "");
+    if (v == null || !this.dim.isUserDriven("distance")) return;
+    this.distance = v;
+    this.panel.setNumber("distance", v);
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  // --- the panel ------------------------------------------------------------
+
+  private resetPanelValues() {
+    this.startMode = "profile";
+    this.startOffset = 0;
+    this.symmetric = false;
+    this.taper = 0;
+    this.upToOffset = 0;
+    this.edited.clear();
+    this.readOnly = {};
+    this.op = "new";
+    this.opPinned = false;
+    this.previewError = null;
+    this.awaitingBuild = false;
+  }
+
+  /** An edit opens the panel on the feature as saved. A value bound to a
+   *  parameter (or a legacy bare parameter name) shows its formula and is not
+   *  typed over here: the binding would put the old value back on the next
+   *  parameter change. */
+  private loadPanelValues(f: Extract<Feature, { type: "extrude" }>) {
+    this.resetPanelValues();
+    for (const k of PANEL_VALUES) {
+      const raw = f[k];
+      if (raw === undefined) continue;
+      const bound = typeof raw !== "number" || this.store.isParamBound({ kind: "feature", feature: f.id, field: k });
+      if (bound) this.readOnly[k] = t("feature.extrude.panel.boundTitle");
+      this[k] = typeof raw === "number" ? raw : (this.store.document.parameters[raw] ?? 0);
+    }
+    if (f.startOffset !== undefined && (this.readOnly.startOffset !== undefined || this.startOffset !== 0)) {
+      this.startMode = "offset";
+    }
+    this.symmetric = f.symmetric === true;
+    this.op = f.operation;
+    this.opPinned = true;
+  }
+
+  /** The text a read-only panel value shows: its formula. */
+  private boundText(k: PanelValue): string {
+    const live = this.editId ? this.store.document.features.find((f) => f.id === this.editId) : undefined;
+    const raw = live?.type === "extrude" ? live[k] : undefined;
+    const bound = this.editId ? this.store.boundExpr?.({ kind: "feature", feature: this.editId, field: k }) : null;
+    return bound?.expr ?? String(raw ?? "");
+  }
+
+  private showPanel() {
+    if (this.panel.isActive) return;
+    const opt = (value: string, label: string, title?: string) => ({
+      value,
+      label: t(label),
+      ...(title ? { title: t(title) } : {}),
+    });
+    this.panel.show(
+      t("tool.extrude"),
+      [
+        {
+          kind: "choice", id: "start", label: t("feature.extrude.panel.start"),
+          options: [
+            opt("profile", "feature.extrude.panel.startProfile", "feature.extrude.panel.startProfileTitle"),
+            opt("offset", "feature.extrude.panel.startOffset", "feature.extrude.panel.startOffsetTitle"),
+          ],
+        },
+        { kind: "number", id: "startOffset", label: t("inspector.field.startOffset") },
+        {
+          kind: "choice", id: "direction", label: t("feature.extrude.panel.direction"),
+          options: [
+            opt("one", "feature.extrude.panel.oneSide", "feature.extrude.panel.oneSideTitle"),
+            opt("symmetric", "feature.extrude.panel.symmetric", "feature.extrude.panel.symmetricTitle"),
+          ],
+        },
+        {
+          kind: "choice", id: "extent", label: t("feature.extrude.panel.extent"),
+          options: [
+            opt("distance", "feature.extrude.panel.distance", "feature.extrude.panel.distanceTitle"),
+            opt("upTo", "feature.extrude.panel.upTo", "feature.extrude.panel.upToTitle"),
+          ],
+        },
+        { kind: "number", id: "distance", label: t("inspector.field.distance") },
+        { kind: "pick", id: "target", label: t("inspector.upTo.label"), clearTitle: t("inspector.upTo.clearTitle") },
+        { kind: "number", id: "upToOffset", label: t("inspector.field.targetOffset") },
+        { kind: "number", id: "taper", label: t("inspector.field.taper"), field: "angle" },
+        {
+          kind: "choice", id: "op", label: t("feature.extrude.panel.operation"),
+          options: [
+            opt("join", "feature.op.join", "feature.extrude.op.joinHint"),
+            opt("cut", "feature.op.cut", "feature.extrude.op.cutHint"),
+            opt("new", "feature.op.newBody", "feature.extrude.op.newHint"),
+            opt("intersect", "feature.op.intersect", "feature.extrude.op.intersectHint"),
+          ],
+        },
+      ],
+      {
+        onNumber: (id, v, raw) => this.onPanelNumber(id, v, raw),
+        onChoice: (id, v) => this.onPanelChoice(id, v),
+        onPick: () => this.armTargetPick(),
+        onClear: () => this.clearTarget(),
+        onOk: () => void this.commit(),
+        onCancel: () => this.cancel(),
+      },
+    );
+    for (const k of PANEL_VALUES) {
+      const reason = this.readOnly[k];
+      this.panel.setNumber(k, reason !== undefined ? this.boundText(k) : this[k]);
+      this.panel.setReadOnly(k, reason ?? null);
+    }
+  }
+
+  private onPanelNumber(id: string, v: number | null, raw: string) {
+    if (id === "distance") {
+      if (v === null) return; // the field shows red, and OK refuses it
+      this.distance = v;
+      // the depth box follows, locked to the typed number the way a seed is
+      this.dim.seed("distance", v);
+    } else if ((PANEL_VALUES as readonly string[]).includes(id)) {
+      if (v === null && raw !== "") return;
+      const k = id as PanelValue;
+      this[k] = v ?? 0; // a cleared field is "none"
+      this.edited.add(k);
+    }
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  private onPanelChoice(id: string, v: string) {
+    if (id === "start") {
+      if (v === "profile" && this.readOnly.startOffset !== undefined) {
+        this.panel.setWarning(t("feature.extrude.panel.startBound"));
+        return;
+      }
+      this.startMode = v === "offset" ? "offset" : "profile";
+    } else if (id === "direction") {
+      this.setSymmetric(v === "symmetric");
+      return;
+    } else if (id === "extent") {
+      if (v === "upTo") this.armTargetPick();
+      else this.clearTarget();
+      return;
+    } else if (id === "op") {
+      this.op = v as Op;
+      this.opPinned = true;
+    }
+    this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** Show which rows apply and what each holds. Rows that do not apply are
+   *  hidden: a target makes Direction, Distance and Taper meaningless (the
+   *  sidecar ignores a taper under a target and refuses symmetric with one),
+   *  and Target offset means nothing without one. */
+  private syncPanel() {
+    const p = this.panel;
+    if (!p.isActive) return;
+    const target = this.hasTarget();
+    const aiming = target || this.pickingTarget;
+    p.setChoice("start", this.startMode);
+    p.setVisible("startOffset", this.startMode === "offset");
+    p.setChoice("direction", this.symmetric ? "symmetric" : "one");
+    p.setVisible("direction", !aiming);
+    p.setChoice("extent", aiming ? "upTo" : "distance");
+    p.setVisible("distance", !aiming);
+    p.setVisible("target", aiming);
+    p.setPick("target", this.targetText(), { empty: !target, active: this.pickingTarget });
+    p.setVisible("upToOffset", target);
+    p.setVisible("taper", !aiming);
+    p.setChoice("op", this.op);
+    p.setVisible("op", this.hasSolid);
+    p.setWarning(this.panelWarning());
+  }
+
+  private targetText(): string {
+    if (this.upToPlane !== null) return planeLabel(this.store.document.features, this.upToPlane);
+    if (this.upTo !== null) return t("inspector.upTo.pickedFace");
+    return t("feature.extrude.panel.targetPick");
+  }
+
+  /** The build's own refusal of the previewed feature, read off the last build;
+   *  null while there is none or no built preview is up. */
+  private previewError: string | null = null;
+  /** whether the extrude goes into a body, as last measured (see refreshAutoOp) */
+  private into = false;
+  /** a build is on its way that will change what is on screen (refreshGuess) */
+  private awaitingBuild = false;
+
+  /** Something that will go wrong on OK, said before OK is pressed. */
+  private panelWarning(): string | null {
+    if (this.previewError) return this.previewError;
+    if (this.hasTarget() || this.pickingTarget) return null;
+    // the sidecar refuses it, and OK used to do nothing and say nothing
+    if (Math.abs(this.distance) < 1e-3) return t("feature.extrude.panel.zeroDistance");
+    if (!this.hasSolid) return null;
+    if (this.op === "join" && this.into) return t("feature.extrude.panel.joinNoEffect");
+    if (this.op === "cut" && !this.into) return t("feature.extrude.panel.cutNothing");
+    return null;
+  }
+
+  /** The panel values as the feature will hold them: what the user typed or
+   *  chose here, else (on an edit) what the document holds NOW. */
+  private panelValues(): Record<PanelValue, Num | undefined> {
+    const live = this.inspectorOnlyValues();
+    const value = (k: PanelValue): Num | undefined => {
+      if (!this.edited.has(k)) return live[k];
+      return this[k] !== 0 ? this[k] : undefined;
+    };
+    return {
+      startOffset: this.startMode === "offset" ? value("startOffset") : undefined,
+      taper: value("taper"),
+      upToOffset: value("upToOffset"),
+    };
+  }
+
+  /** Where the extrude starts, in mm along the profile normal. */
+  private effectiveStart(): number {
+    return this.startMode === "offset" ? this.startOffset : 0;
+  }
+
+  /** Where the depth arrow starts and how long it is drawn: from the start
+   *  plane, the whole distance; symmetric, from the midplane to one end. The
+   *  shortest arrow drawn is ARROW_MIN_MM, and overArrow measures the same one. */
+  private arrowSpan(): { from: THREE.Vector3; length: number } {
+    const n = this.selected[0]?.plane.n;
+    const from = this.anchor();
+    if (n) from.addScaledVector(n, this.effectiveStart());
+    const reach = this.symmetric ? Math.abs(this.distance) / 2 : Math.abs(this.distance);
+    return { from, length: Math.max(reach, ARROW_MIN_MM) };
+  }
+
+  /** A taper or a target cannot be drawn by the instant ghost (it is a straight
+   *  prism of the profile), so those preview through the real build instead. */
+  private wantsBuiltPreview(): boolean {
+    return this.hasTarget() || this.taper !== 0;
+  }
+
+  /** Hand the feature being made to the store's live preview, or take it back.
+   *  Only when it changed: every hand-over is a rebuild. */
+  private pushBuiltPreview(on: boolean) {
+    if (on) this.previewId = this.editId ?? this.store.nextId();
+    const f = on ? this.buildFeature(this.previewId) : null;
+    const key = f ? JSON.stringify(f) : "";
+    if (key === this.sentPreview) return;
+    if (!key) this.awaitingBuild = true; // taken back: the screen catches up on the next build
+    this.sentPreview = key;
+    this.previewError = null;
+    if (this.editId) this.store.setEditPreview(f);
+    else this.store.setPreview(f);
+  }
+
+  /** The guessed operation, re-read only while the screen shows the model
+   *  WITHOUT this tool's built preview: that preview's material would read as
+   *  "the extrude goes into a body" and flip the guess to Cut. */
+  private refreshAutoOp() {
+    const seen = this.currentOperation();
+    this.into = seen === "cut";
+    if (this.opPinned) return;
+    if (!this.hasSolid) {
+      this.op = "new";
+      return;
+    }
+    let guess: Op = seen;
+    // All-glyph profile (sketch text): a flush emboss on a body direction-
+    // guesses "join", but joined text can never print in its own color — bias
+    // the default to New Body. Cut (engraving) guesses stay untouched.
+    const isTextProfile = this.selected.every((wr) => wr.entityId !== undefined);
+    if (isTextProfile && guess === "join") guess = "new";
+    this.op = guess;
   }
 
   private beginDrag() {
@@ -799,8 +1271,11 @@ export class ExtrudeTool {
     const plane = this.selected[0]?.plane;
     if (plane) this.viewport.tiltOffAxis(plane.n);
     if (!this.editId) this.distance = DEFAULT_EXTRUDE_DISTANCE; // a fresh extrude starts there
-    this.dim.show([{ name: "distance", label: t("feature.dim.distance") }], () => void this.commit(), () => this.cancel());
-    // Seed on BOTH paths, and lock the field either way.
+    // Read before this tool's own preview can put material on screen: with no
+    // body there is nothing to join, cut or intersect, and the panel offers
+    // no Operation. An edit always offers it, opened on the saved one.
+    this.hasSolid = this.editId !== null || (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
+    // Seed on BOTH paths, and lock the field either way (showDim).
     //
     // The edit path always did (the SIGNED saved distance — seeding the absolute
     // value would silently drop a cut's sign the moment getValue is read back,
@@ -814,7 +1289,11 @@ export class ExtrudeTool {
     // The lock costs nothing now: hovering no longer writes to the field, and
     // grabbing the arrow releases it (onDown). What it buys is that the two
     // paths are the same tool from here on.
-    this.dim.seed("distance", this.distance);
+    //
+    // An edit of an "up to" extrude has no depth box at all: the target decides
+    // how far, and the panel holds the target and its offset.
+    if (this.hasTarget()) this.dim.hide();
+    else this.showDim();
     // The create prompt advertises the area toggle too. The pick-phase prompt
     // says "Ctrl-click adds areas", but a plain click jumps straight to drag, so
     // a user who picked one of several profiles landed here and was told only
@@ -826,9 +1305,42 @@ export class ExtrudeTool {
     // advertises a gesture the tool does not have is how issue #14 happened;
     // one that describes a gesture the tool no longer has is the same fault in
     // reverse.
-    setPrompt(t(this.editId ? "feature.extrude.edit.dragPrompt" : "feature.extrude.dragPrompt"));
+    if (this.hasTarget()) setPrompt(t("feature.extrude.targetSet"));
+    else setPrompt(t(this.editId ? "feature.extrude.edit.dragPrompt" : "feature.extrude.dragPrompt"));
     this.positionDim();
+    this.showPanel();
+    this.panel.setNumber("distance", this.distance);
+    // A build error on the previewed feature is said in the panel, before OK.
+    this.offBuild ??= this.store.onBuild?.((b) => this.onBuild(b)) ?? null;
     this.updatePreview();
+    this.syncPanel();
+  }
+
+  /** A build finished: if it was building this tool's preview, put its
+   *  refusal (a taper the profile cannot carry, a target it cannot reach) in
+   *  the panel, where it is read before OK rather than after. */
+  private onBuild(b: DocumentStore["buildState"]) {
+    if (b.building) return;
+    // The model on screen is now the one asked for (an edit's rollback, or
+    // the model with a taken-back preview gone): the guess can be read again.
+    this.awaitingBuild = false;
+    if (!this.sentPreview) this.refreshGuess();
+    const msg = this.sentPreview ? (featureErrorMessages(b, undefined).get(this.previewId) ?? null) : null;
+    if (msg === this.previewError) return;
+    this.previewError = msg;
+    this.syncPanel();
+  }
+
+  /** Re-read the guessed operation and whether the extrude goes into a body,
+   *  unless the screen may be showing something other than the model the
+   *  extrude will meet: this tool's own built preview, or a build still on its
+   *  way (an edit's rollback, a preview just taken back). The preview's
+   *  material would read as "the extrude goes into a body". */
+  private refreshGuess() {
+    if (this.sentPreview || this.awaitingBuild || !this.selected.length) return;
+    const was = `${this.op}:${this.into}`;
+    this.refreshAutoOp();
+    if (`${this.op}:${this.into}` !== was) this.syncPanel();
   }
 
   // --- geometry helpers ---
@@ -859,14 +1371,21 @@ export class ExtrudeTool {
 
   private updatePreview() {
     if (!this.selected.length) return;
+    const built = this.wantsBuiltPreview();
+    // The guess first, while the screen may still show no preview of ours.
+    if (!built) this.refreshGuess();
+    this.pushBuiltPreview(built);
     const sign = this.distance >= 0 ? 1 : -1;
     const depth = Math.abs(this.distance);
     const cut = sign < 0;
+    // Where the prism starts along the profile normal: the start offset, and
+    // symmetric, half the depth back from it so the start is its midplane.
+    const base = this.effectiveStart() - (this.symmetric ? (sign * depth) / 2 : 0);
 
     const ids = this.selected
       .map((s) => `${s.sketchId}:${s.interior3D.x.toFixed(2)},${s.interior3D.y.toFixed(2)}`)
       .join("|");
-    const key = `${depth.toFixed(3)}:${sign}:${ids}`;
+    const key = `${depth.toFixed(3)}:${sign}:${base}:${built}:${ids}`;
     if (key !== this.previewKey) {
       this.previewKey = key;
       this.disposePreviewGeom();
@@ -889,13 +1408,18 @@ export class ExtrudeTool {
       }
       this.previewEdgeMat ??= new THREE.LineBasicMaterial({ transparent: true, opacity: 0.8, depthWrite: false });
       this.preview = new THREE.Group();
-      for (const wr of this.selected) {
+      // With a built preview up, the real feature is on screen and a straight
+      // ghost over it would contradict the taper or the target: only the
+      // selection outline stays.
+      for (const wr of built ? [] : this.selected) {
         const shape = new THREE.Shape(wr.region.loop.map((p) => p.clone()));
         for (const h of wr.region.holes) {
           shape.holes.push(new THREE.Path(h.map((p) => p.clone())));
         }
         const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, steps: 1 });
         geo.applyMatrix4(wr.plane.basisMatrix(sign)); // local +Z -> plane normal (flipped on cut)
+        const n = wr.plane.n;
+        if (base) geo.translate(n.x * base, n.y * base, n.z * base);
         this.preview.add(new THREE.Mesh(geo, this.previewMat));
         // 40°: a tessellated circle's facets meet at a few degrees, and a line
         // down every one of them would hatch a cylinder instead of outlining it
@@ -912,21 +1436,24 @@ export class ExtrudeTool {
     this.previewMat?.color.set(ghostColor);
     this.previewEdgeMat?.color.set(ghostColor);
 
-    // arrow manipulator along the (shared) normal, anchored at the selection center
+    // arrow manipulator along the (shared) normal, anchored at the selection
+    // center on the start plane. Hidden while aiming at a target: there is no
+    // distance to drag.
     const first = this.selected[0];
     if (!first) return;
     const plane = first.plane;
-    const anchor = this.anchor();
+    const { from: anchor, length } = this.arrowSpan();
     const dir = plane.n.clone().multiplyScalar(sign);
     if (!this.arrow) {
-      this.arrow = new THREE.ArrowHelper(dir, anchor, Math.max(depth, ARROW_MIN_MM), 0xffd24a, 6, 3);
+      this.arrow = new THREE.ArrowHelper(dir, anchor, length, 0xffd24a, 6, 3);
       drawOnTop(this.arrow);
       this.viewport.addToScene(this.arrow);
     } else {
       this.arrow.position.copy(anchor);
       this.arrow.setDirection(dir);
-      this.arrow.setLength(Math.max(depth, ARROW_MIN_MM), 6, 3);
+      this.arrow.setLength(length, 6, 3);
     }
+    this.arrow.visible = !this.hasTarget() && !this.pickingTarget;
   }
 
   // Default operation: New Body when the doc has no solid yet, else Cut/Join by
@@ -937,11 +1464,18 @@ export class ExtrudeTool {
   private entersSolid(): boolean {
     if (!this.selected.length) return false;
     const sign = this.distance >= 0 ? 1 : -1;
+    // From the start plane, not the sketch. Symmetric goes both ways from it,
+    // so material on EITHER side counts: a symmetric extrude from a face of a
+    // body is half inside it, which is the cut the feature was asked for.
+    const start = this.effectiveStart();
+    const steps = this.symmetric ? [0.05, -0.05] : [sign * 0.05];
     let inside = 0;
     for (const wr of this.selected) {
       // step the area's interior a hair along the extrude direction, off its face
-      const p = wr.interior3D.clone().addScaledVector(wr.plane.n, sign * 0.05);
-      if (this.viewport.pointInSolid(p)) inside++;
+      const into = steps.some((step) =>
+        this.viewport.pointInSolid(wr.interior3D.clone().addScaledVector(wr.plane.n, start + step)),
+      );
+      if (into) inside++;
     }
     return inside * 2 > this.selected.length; // majority of selected areas
   }
@@ -952,9 +1486,7 @@ export class ExtrudeTool {
     return this.entersSolid() ? "cut" : "join";
   }
 
-  private committing = false;
   private async commit() {
-    if (this.committing) return;
     // An edit whose areas could NONE of them be drawn is still a real edit. The
     // areas are held in `editCarried`, the sketch is known from the feature
     // being edited, and the only thing missing is a selected region to read that
@@ -972,60 +1504,74 @@ export class ExtrudeTool {
       && this.editCarried.length > 0
       && this.forcedSketchId !== null;
     if (!this.selected.length && !carriedOnly) return this.cancel();
+    // Enter or OK while the Up-to box waits for its click: nothing yet says
+    // how far to go.
+    if (this.pickingTarget && !this.hasTarget()) {
+      this.panel.setWarning(t("feature.extrude.panel.needsTarget"));
+      setPrompt(t("feature.upTo.clickPrompt"));
+      return;
+    }
+    // A panel field holding text the app cannot read is refused, never
+    // replaced by the last value it could. Only the fields that apply: a row
+    // the panel has hidden is not read.
+    const target = this.hasTarget();
+    const read = [
+      ...(this.startMode === "offset" ? ["startOffset"] : []),
+      ...(target ? ["upToOffset"] : ["distance", "taper"]),
+    ];
+    if (read.some((k) => this.panel.numberUnreadable(k))) {
+      this.panel.setWarning(t("feature.badNumber"));
+      return;
+    }
     const v = this.dim.getValue("distance");
+    // The depth box beside the cursor is held to the same rule. It reads
+    // names and arithmetic, so a typo (`wal*2` for `wall*2`) is an ordinary
+    // way to land here, and falling back to the last depth it could read
+    // committed the seeded 10 mm with the typo still on screen.
+    if (!target && this.dim.isActive && this.dim.isEdited("distance") && v === null) {
+      this.dim.markInvalid("distance", true);
+      this.panel.setWarning(t("feature.badNumber"));
+      setPrompt(t("feature.badNumber"));
+      return;
+    }
     // GATE on isUserDriven: while dragging, the field displays |distance| —
     // reading it back unconditionally strips the drag's sign and sends the
     // extrude the wrong way ("Cut removed nothing" on cut-toward-body).
     // Typed values (userDriven) carry their own sign and win.
     if (v != null && this.dim.isUserDriven("distance")) this.distance = v;
-    if (Math.abs(this.distance) < 1e-3) return; // ignore zero
-    let op = this.currentOperation();
-    // when a body already exists, let the user state the operation (MCAD-style):
-    // New Body avoids any boolean (and the kernel crash on hard geometry).
-    const hasSolid = (this.store.buildState.result?.mesh.positions.length ?? 0) > 0;
-    if (hasSolid) {
-      this.committing = true;
-      // in edit mode the SAVED operation is the presumptive choice; otherwise
-      // the direction-derived guess is.
-      let guess = this.editId ? (this.editOp ?? op) : op;
-      // All-glyph profile (sketch text): a flush emboss on a body direction-
-      // guesses "join", but joined text can never print in its own color — bias
-      // the default to New Body so the two-tone path is one Enter away. Cut
-      // (engraving) guesses stay untouched.
-      const isTextProfile = this.selected.every((wr) => wr.entityId !== undefined);
-      if (!this.editId && isTextProfile && guess === "join") guess = "new";
-      // op === "cut" ⇔ the extrude direction enters solid (currentOperation).
-      // Flag whichever op would then do nothing, so the choice is informed.
-      const into = op === "cut";
-      const opts: { value: Op; label: string; hint: string }[] = [
-        { value: "join", label: t("feature.op.join"), hint: t(into ? "feature.extrude.op.joinNoEffect" : "feature.extrude.op.joinHint") },
-        { value: "cut", label: t("feature.op.cut"), hint: t(into ? "feature.extrude.op.cutHint" : "feature.extrude.op.cutNothing") },
-        { value: "new", label: t("feature.op.newBody"), hint: t(isTextProfile ? "feature.extrude.op.newTextHint" : "feature.extrude.op.newHint") },
-        { value: "intersect", label: t("feature.op.intersect"), hint: t("feature.extrude.op.intersectHint") },
-      ];
-      opts.sort((a, b) => (a.value === guess ? -1 : b.value === guess ? 1 : 0)); // default first
-      const chosen = await choose<Op>(t("feature.extrude.op.title"), opts);
-      this.committing = false;
-      if (!chosen) {
-        // modal dismissed — the tool is STILL ALIVE; say so instead of leaving
-        // the user staring at an unchanged screen ("nothing happened")
-        setPrompt(t("feature.extrude.notCommitted"));
-        return;
-      }
-      op = chosen;
-    } else if (this.editId && this.editOp) {
-      // rolled-back model has no solid (this WAS the first solid) — keep the
-      // saved operation rather than silently rewriting it to "new".
-      op = this.editOp;
+    // A zero distance is refused, out loud in the panel (panelWarning); with a
+    // target the distance is not read at all
+    if (!target && Math.abs(this.distance) < 1e-3) {
+      this.syncPanel();
+      return;
     }
+    const feature = this.buildFeature(this.editId ?? this.store.nextId());
+    if (!feature) return;
+    const id = feature.id;
+    if (this.editId) {
+      this.store.endEditPreview(false); // replaceFeature triggers the rebuild
+      this.store.replaceFeature(this.editId, feature);
+    } else {
+      if (this.sentPreview) this.store.setPreview(null);
+      this.store.addFeature(feature);
+    }
+    this.sentPreview = ""; // handed over above; cleanup must not take it back again
+    this.overlay.clearRegionSelection();
+    this.cleanup();
+    this.onDone?.(id);
+  }
+
+  /** The feature as the tool and the panel describe it right now: what commit
+   *  writes, and what the live preview builds. Null without a sketch to name. */
+  private buildFeature(id: string): Feature | null {
     const first = this.selected[0];
     // `forcedSketchId` is the same field the selection fence uses, set from the
     // feature at startEdit, so a carried-only commit writes the sketch the
     // feature already named rather than inferring one from nothing.
     const sketchId = first ? first.sketchId : this.forcedSketchId;
-    if (!sketchId) return;
+    if (!sketchId) return null;
     const hiddenBodies = this.editId ? this.editHiddenBodies : this.store.hiddenBodyIds();
-    const kept = this.inspectorOnlyValues();
+    const kept = this.panelValues();
     const areas: CarriedRegion[] = [
       ...this.selected.map((wr) => ({
         point: [wr.interior3D.x, wr.interior3D.y, wr.interior3D.z] as [number, number, number],
@@ -1034,8 +1580,8 @@ export class ExtrudeTool {
       })),
       ...this.editCarried,
     ];
-    const feature: Feature = {
-      id: this.editId ?? this.store.nextId(),
+    return {
+      id,
       type: "extrude",
       // `first` is safe to read the sketch off ONLY because the selection is
       // fenced to one sketch: `selectRegionsByEntities` resolves within the
@@ -1049,7 +1595,9 @@ export class ExtrudeTool {
       // depth alone keeps the saved number: a 1/32" (0.79375 mm) extrude
       // re-opened and accepted came back 0.794.
       distance: this.distance === this.editDistance ? this.distance : Math.round(this.distance * 1000) / 1000,
-      operation: op,
+      // The panel's: guessed from the direction until the user picks one, the
+      // saved one on an edit, New Body while there is nothing to combine with.
+      operation: this.hasSolid ? this.op : "new",
       // The entities that bound each area, recorded so the reference survives the
       // user moving the geometry it was picked on. `regions` alone is a world
       // point, and a point does not move with the circle it was inside — it ends
@@ -1081,9 +1629,10 @@ export class ExtrudeTool {
       // rather than dropping them at 0.
       ...(this.upTo ? { upTo: this.upTo } : {}),
       ...(this.upToPlane ? { upToPlane: this.upToPlane } : {}),
-      // Inspector-only values, carried through an edit. The tool has no field
-      // for any of them, so before this they were deleted by any edit — a plain
-      // depth nudge threw away a typed start offset or taper (GH #41).
+      // The panel's values: typed here, or on an edit carried from the
+      // document as it is now (see panelValues). Before the panel these were
+      // inspector-only, and an edit that did not load them deleted them — a
+      // plain depth nudge threw away a typed start offset or taper (GH #41).
       //
       // `upToOffset` is written ONLY while a target survives the edit: the
       // sidecar refuses an offset with nothing to offset FROM, so carrying it
@@ -1093,6 +1642,9 @@ export class ExtrudeTool {
       ...(kept.upToOffset !== undefined && (this.upTo || this.upToPlane)
         ? { upToOffset: kept.upToOffset }
         : {}),
+      // Written only when on, so an ordinary extrude's feature object is
+      // unchanged, and never with a target, which the sidecar refuses with it.
+      ...(this.symmetric && !this.upTo && !this.upToPlane ? { symmetric: true } : {}),
       // capture the participants NOW: bodies hidden at creation stay excluded
       // from this boolean forever; later eye toggles are pure display. When
       // EDITING, the ORIGINAL capture is kept — re-capturing here would let
@@ -1114,20 +1666,11 @@ export class ExtrudeTool {
           : {}
         : { joinTouchingOnly: true }),
     };
-    const id = feature.id;
-    if (this.editId) {
-      this.store.endEditPreview(false); // replaceFeature triggers the rebuild
-      this.store.replaceFeature(this.editId, feature);
-    } else {
-      this.store.addFeature(feature);
-    }
-    this.overlay.clearRegionSelection();
-    this.cleanup();
-    this.onDone?.(id);
   }
 
-  /** The inspector-only values an edit writes back: the document's CURRENT
-   *  ones, not the startEdit snapshot, whenever the feature is still there.
+  /** The start offset, taper and target offset an edit writes back where the
+   *  panel did not change them: the document's CURRENT ones, not the startEdit
+   *  snapshot, whenever the feature is still there.
    *  Writing the snapshot put back whatever had been typed into the inspector
    *  while the tool was open (found triaging field 637278a9: a Start offset of
    *  10 typed mid-edit was committed as the 3 the edit had opened on). The
@@ -1162,6 +1705,13 @@ export class ExtrudeTool {
     this.grab = null; // a tool torn down mid-drag must not resume one on reopen
     this.press = null; // nor commit on a release that arrives after teardown
     this.dim.hide();
+    this.panel.hide();
+    this.offBuild?.();
+    this.offBuild = null;
+    // A built preview still up is taken back. An edit's is the store's edit
+    // preview, which cancel/commit already ended.
+    if (this.sentPreview && !this.editId) this.store.setPreview(null);
+    this.sentPreview = "";
     this.disposePreviewGeom();
     this.previewMat?.dispose();
     this.previewMat = null;
@@ -1182,7 +1732,6 @@ export class ExtrudeTool {
     this.editCarried = [];
     if (this.editId !== null || this.forcedSketchId !== null) {
       this.editId = null;
-      this.editOp = null;
       this.editHiddenBodies = undefined;
       this.forcedSketchId = null;
       this.overlay.update(this.store.document); // re-hide the consumed sketch

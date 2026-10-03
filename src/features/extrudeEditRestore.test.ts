@@ -44,6 +44,9 @@ const promptEl = {
     style: {},
     appendChild() {},
     addEventListener() {},
+    setAttribute() {},
+    focus() {},
+    select() {},
     remove() {},
     classList: { add() {}, remove() {}, toggle() {} },
     querySelector: () => null,
@@ -56,6 +59,8 @@ const promptEl = {
   addEventListener() {},
   removeEventListener() {},
 };
+// clearing a target re-opens the depth box, which re-asserts its focus next frame
+(globalThis as unknown as { requestAnimationFrame: unknown }).requestAnimationFrame ??= () => 0;
 
 /** A 100x100 outer / 80x80 inner shell cross-section, offset by (dx,dy).
  *  At dx=dy=0 the wall's material covers x in [40,50] at y=0. */

@@ -245,6 +245,7 @@ export class DimInput {
       if (!f.userDriven && v != null) {
         f.input.value = fieldText(v, f.def.kind);
         f.wrote = { text: f.input.value, mm: v };
+        f.input.classList.remove("invalid");
         // Keep the live value SELECTED while it tracks the cursor (Fusion-style), so
         // typing a number at any moment replaces it instead of appending.
         if (document.activeElement === f.input) f.input.select();
@@ -267,6 +268,7 @@ export class DimInput {
       f.input.value = fieldText(value, f.def.kind);
       f.wrote = { text: f.input.value, mm: value };
     }
+    f.input.classList.remove("invalid");
     f.userDriven = true;
   }
 
@@ -311,6 +313,12 @@ export class DimInput {
   isEdited(name: string): boolean {
     const f = this.fields.find((x) => x.def.name === name);
     return !!f && (!f.wrote || f.input.value !== f.wrote.text);
+  }
+
+  /** Show a field as holding text the tool cannot read (red), or not. A
+   *  value the app writes into it (`seed`, cursor tracking) clears it. */
+  markInvalid(name: string, on: boolean) {
+    this.fields.find((x) => x.def.name === name)?.input.classList.toggle("invalid", on);
   }
 
   /** the field's RAW text, untouched — for callers that route input through the

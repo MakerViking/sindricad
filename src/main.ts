@@ -1031,6 +1031,12 @@ store.onReplace((how) => {
   // replace passes through: the menubar, Ctrl+N/O/W, the ribbon, the palette,
   // the recent list and Recover (f36c1c7a).
   section.documentReplaced();
+  // So does an open modeling tool. Its uncommitted feature rides on every
+  // rebuild (store.setPreview / setEditPreview) and nothing on a replacement
+  // clears it, so Ctrl+N or Ctrl+O mid-extrude built the old document's taper
+  // or up-to preview into the new one. Cancelled here, after the user agreed
+  // to the replacement, rather than before the question.
+  cancelModelingTool();
 });
 
 // resolve each body's assigned palette slot to a hex color for the viewport.

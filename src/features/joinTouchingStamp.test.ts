@@ -72,7 +72,24 @@ function field(): FakeEl {
 
 /** Type a value and press Enter in the tool's value box. */
 async function enter(value: string) {
-  const box = field();
+  await enterIn(field(), value);
+}
+
+/** The same in an extrude's depth box beside the cursor. The Extrude panel's
+ *  fields come after it on the page, so "the last input" is not this one. */
+async function enterDepth(value: string) {
+  const root = body.children.find((c) => c.className === "dim-input");
+  if (!root) throw new Error("the depth box is not on the page");
+  const inputs: FakeEl[] = [];
+  const walk = (el: FakeEl) => {
+    if (el.tagName === "input") inputs.push(el);
+    for (const c of el.children) walk(c);
+  };
+  walk(root);
+  await enterIn(inputs[0]!, value);
+}
+
+async function enterIn(box: FakeEl, value: string) {
   box.value = value;
   box.dispatch("input");
   box.dispatch("keydown", key("Enter"));
@@ -113,8 +130,12 @@ describe("the extrude tool", () => {
     const store = {
       document: document_,
       isParamBound: () => false,
+      boundExpr: () => null,
       beginEditPreview() {},
       endEditPreview() {},
+      setPreview() {},
+      setEditPreview() {},
+      onBuild: () => () => {},
       buildState: {}, // no solid: commit skips the operation modal
       hiddenBodyIds: () => [],
       nextId: () => "new1",
@@ -132,7 +153,7 @@ describe("the extrude tool", () => {
     h.overlay.selectRegionsByPoints([[0, 0, 0]]);
     expect(h.overlay.selectedRegions(), "precondition: the square is picked").toHaveLength(1);
     h.tool.start(() => {});
-    await enter("5");
+    await enterDepth("5");
     expect(h.written).toHaveLength(1);
     expect(h.written[0]).toMatchObject({
       type: "extrude", sketch: "s1", distance: 5, regionEntities: [["r"]], separateBodies: true, joinTouchingOnly: true,
@@ -145,7 +166,7 @@ describe("the extrude tool", () => {
       { id: "ex1", type: "extrude", sketch: "s1", distance: 3, operation: "join", regions: [[0, 0, 0]], regionEntities: [["r"]] },
     ]);
     expect(h.tool.startEdit("ex1", () => {}), "precondition: the edit opened").toBe(true);
-    await enter("4");
+    await enterDepth("4");
     expect(h.written).toHaveLength(1);
     expect(h.written[0]).toMatchObject({ id: "ex1", distance: 4 });
     expect("joinTouchingOnly" in h.written[0]!).toBe(false);
@@ -160,7 +181,7 @@ describe("the extrude tool", () => {
       },
     ]);
     h.tool.startEdit("ex1", () => {});
-    await enter("4");
+    await enterDepth("4");
     expect(h.written[0]).toMatchObject({ id: "ex1", distance: 4, joinTouchingOnly: true });
   });
 });

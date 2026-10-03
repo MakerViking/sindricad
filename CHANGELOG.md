@@ -756,6 +756,42 @@ This file starts on 2026-08-03. For anything before that, see the
   Selecting the hole's edge itself before Sweep still sweeps along that edge,
   as before; it does not wind a helix.
 
+- **An Extrude panel, so every extrude value can be typed while you make it.**
+  Extrude now opens a panel on the right with Start (on the sketch, or an offset
+  away from it), Direction (one side or symmetric), Extent (a distance, or up to
+  a face or plane), Target offset, Taper and Operation. Before, only the distance
+  could be typed while extruding and the rest had to be set in the inspector
+  afterwards. The arrow and the box beside it still set the distance. Clicking
+  the face or plane to extrude up to now fills the panel instead of finishing
+  the extrude, so you can type a target offset first, and clicking another face
+  or plane aims there instead; Enter or OK finishes it. The operation is chosen
+  in the panel, so there is no question after the click any more. A taper or an
+  up-to target previews as the real result, and if it cannot be built, or the
+  distance is 0, the panel says why before you press OK. Double-clicking an
+  extrude reopens the panel on its saved values. Asked for in
+  [#41](https://github.com/MakerViking/sindricad/issues/41).
+
+- **Symmetric extrude.** Choose Symmetric in the Extrude panel and the sketch
+  sits in the middle: 25 mm symmetric is 12.5 mm each side. It stays symmetric
+  when you change the distance later, and the inspector shows it, with a switch
+  to turn it on or off. With a start offset, the offset plane is the middle.
+  With a taper, both ends narrow (or widen) alike. Symmetric cannot be combined
+  with an up-to target.
+
+- **Arithmetic in the value boxes.** Type `31.53+2*1.62` and get 34.77 in the
+  box beside the cursor, while drawing or in a modeling tool, and in the Extrude
+  panel. In those boxes and in sketch dimensions, plain arithmetic is read in
+  your display unit, so `1/16` in inches is a sixteenth of an inch, and a unit
+  at the end applies to the whole thing, so `1/16 in` is a sixteenth of an inch
+  in any unit. An expression that names a parameter (`wall*2`) is read the way
+  the Parameters table reads it. In the box beside the cursor and the Extrude
+  panel it is worked out once, when you press Enter, and does not follow the
+  parameter afterwards; a sketch dimension keeps the link. Text that is not a
+  number is never cut short to the number it starts with, and the Extrude
+  panel and the box beside an extrude refuse it and turn red. The inspector is
+  unchanged for now: an expression typed there is kept as a formula and read in
+  millimetres, as the Parameters table reads it.
+
 - **Projected geometry can be construction geometry.** With Construction turned
   on in the sketch, what you project with Project comes in as construction lines,
   for reference only, instead of joining the profile. It draws dashed in the

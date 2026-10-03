@@ -1321,6 +1321,24 @@ export class DocumentStore {
     }, true); // a structural feature change, like replaceFeature — rebuild now
   }
 
+  /** Turn an extrude's Symmetric on or off. Off REMOVES the key rather than
+   *  writing false, so an extrude that was never symmetric keeps its exact
+   *  bytes (types.ts). Refused on an extrude with an up-to target, which the
+   *  sidecar refuses alongside it. */
+  setExtrudeSymmetric(id: string, on: boolean) {
+    const f = this.doc.features.find((x) => x.id === id);
+    if (f?.type !== "extrude" || f.upTo !== undefined || f.upToPlane !== undefined) return;
+    if ((f.symmetric === true) === on) return;
+    this.mutate((d) => {
+      const i = d.features.findIndex((x) => x.id === id);
+      if (i < 0) return;
+      const next = { ...d.features[i] } as Extract<Feature, { type: "extrude" }>;
+      if (on) next.symmetric = true;
+      else delete next.symmetric;
+      d.features[i] = next;
+    }, true);
+  }
+
   replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[]) {
     this.mutate((d) => {
       const i = d.features.findIndex((f) => f.id === id);

@@ -47,14 +47,15 @@ const key = (k: string) => ({
   preventDefault() {}, stopPropagation() {},
 });
 
-/** The value box's field, as the user sees it: the last input on the page. */
+/** The value box's field, as the user sees it: the last input in the box on
+ *  the canvas (the Extrude panel has inputs of its own). */
 function field(): FakeEl {
   const out: FakeEl[] = [];
   const walk = (el: FakeEl) => {
     if (el.tagName === "input") out.push(el);
     for (const c of el.children) walk(c);
   };
-  walk(body);
+  for (const c of body.children) if (c.className === "dim-input") walk(c);
   return out.at(-1)!;
 }
 

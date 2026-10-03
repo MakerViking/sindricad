@@ -440,6 +440,62 @@ describe("inspector: a sweep around a helix", () => {
   });
 });
 
+// --- an extrude's Symmetric --------------------------------------------------
+//
+// Symmetric is a flag, not a number, so it had no row: a symmetric extrude
+// showed Distance 3 with nothing saying it is split half each side, and a user
+// editing that Distance could not know. Real store, so what is asserted is the
+// document the switch leaves behind.
+
+describe("inspector: an extrude's Symmetric", () => {
+  beforeEach(() => void vi.useFakeTimers());
+  afterEach(() => void vi.useRealTimers());
+
+  /** the Symmetric row's switch, if the panel offers one */
+  const symmetricSwitch = (root: FakeEl): FakeEl | undefined =>
+    findRow(root, "Symmetric")?.children.find((c) => c.tagName === "input");
+
+  it("shows it, and switching it writes the flag, and off removes the key", () => {
+    const plain = { id: "e2", type: "extrude", sketch: "s1", distance: 6, operation: "new" } as unknown as Feature;
+    const { root, inspector, store } = mountReal(plain);
+    inspector.select("e2");
+    const sw = symmetricSwitch(root);
+    expect(sw, "the inspector does not say whether an extrude is symmetric").toBeDefined();
+    expect((sw as unknown as { checked: boolean }).checked).toBe(false);
+
+    (sw as unknown as { checked: boolean }).checked = true;
+    sw!.dispatch("change");
+    const f = () => store.document.features[0] as unknown as Record<string, unknown>;
+    expect(f().symmetric).toBe(true);
+    expect((symmetricSwitch(root) as unknown as { checked: boolean }).checked, "the panel did not follow").toBe(true);
+
+    const again = symmetricSwitch(root)!;
+    (again as unknown as { checked: boolean }).checked = false;
+    again.dispatch("change");
+    // absent, not false: an extrude that is not symmetric keeps its exact bytes
+    expect("symmetric" in f(), "switching it off wrote symmetric: false").toBe(false);
+  });
+
+  it("is not offered beside an up-to target, which the build refuses with it", () => {
+    const { root, inspector } = mountReal(savedExtrude);
+    inspector.select("e1");
+    expect(symmetricSwitch(root)).toBeUndefined();
+  });
+
+  it("is read-only while a tool runs", () => {
+    const plain = { id: "f2", type: "extrude", sketch: "f1", distance: 20, operation: "new" } as unknown as Feature;
+    const { root, inspector, store } = mountReal(plain);
+    inspector.select("f2");
+    inspector.lockReason = () => t("inspector.lockedDuringTool");
+    inspector.refresh();
+    const sw = symmetricSwitch(root)!;
+    expect(sw.disabled).toBe(true);
+    (sw as unknown as { checked: boolean }).checked = true;
+    sw.dispatch("change");
+    expect("symmetric" in (store.document.features[0] as object), "the switch wrote through the lock").toBe(false);
+  });
+});
+
 // --- read-only while a modeling tool runs (field 637278a9) -------------------
 //
 // "click/select a side face, parameters panel is populated with the previous

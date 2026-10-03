@@ -7,7 +7,7 @@
 
 import type { DocumentStore } from "../document/store";
 import type { Feature, Num, ParamTarget } from "../types";
-import { FEATURE_META } from "./featureMeta";
+import { FEATURE_META, planeLabel } from "./featureMeta";
 import { getUnit, onUnitChange, round, fieldText, isPlainNumber, parseField, fmtNumber, canonicalDecimal } from "./units";
 import { validatedInput, keystrokeGuard } from "./liveInputs";
 import { resolveEntities } from "../sketch/resolve";
@@ -272,6 +272,18 @@ export class Inspector {
       }
     }
 
+    // Symmetric is a yes/no, so it is not a FEATURE_NUM_FIELDS row either.
+    // Without it a symmetric extrude showed a Distance with nothing saying it
+    // is split half each side. Not offered with an up-to target, which the
+    // sidecar refuses alongside it.
+    if (f.type === "extrude" && !hasUpToTarget(f)) {
+      box.appendChild(
+        switchRow(t("feature.extrude.panel.symmetric"), f.symmetric === true, (on) => {
+          this.whenUnlocked(() => this.store.setExtrudeSymmetric(f.id, on));
+          this.render(); // a refused write puts the switch back, and the lock says why
+        }, locked),
+      );
+    }
     // The up-to target is not a number, so it cannot live in FEATURE_NUM_FIELDS
     // with the rows above — and until this row existed nothing in the app could
     // delete one. An extrude or press/pull committed with "up to that face" was
@@ -361,16 +373,19 @@ export class Inspector {
   }
 }
 
-/** The name the browser tree shows for an up-to plane: "XY plane" for an origin
- *  plane, a datum's own name (a rename wins) or "PlaneN" by its position among
- *  the datums, and the raw id only if nothing in the document matches — a
- *  deleted datum must never make the inspector throw mid-render. */
-function planeLabel(features: readonly Feature[], id: string): string {
-  if (id === "XY" || id === "XZ" || id === "YZ") return t("inspector.upTo.originPlane", { id });
-  const datums = features.filter((f) => f.type === "datumPlane");
-  const i = datums.findIndex((f) => f.id === id);
-  if (i < 0) return id;
-  return (datums[i] as { name?: string }).name || t("common.planeName", { n: i + 1 });
+/** A yes/no row: the label, and a switch where the inputs above end. */
+function switchRow(label: string, on: boolean, onChange: (on: boolean) => void, locked: boolean): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "param-row param-row-switch";
+  const lab = document.createElement("label");
+  lab.textContent = label;
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = on;
+  input.disabled = locked;
+  input.addEventListener("change", () => onChange(input.checked));
+  row.append(lab, input);
+  return row;
 }
 
 function title(text: string, spaced = false): HTMLElement {

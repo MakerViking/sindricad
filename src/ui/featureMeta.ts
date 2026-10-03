@@ -2,7 +2,7 @@
 // `label` is read by the timeline, inspector, params dialog, context menus and the
 // rebuild-failure toasts; `iconName` is drawn by the timeline. Both resolve through
 // the shared icon set in ./icons, so a feature looks the same everywhere it appears.
-import type { FeatureType } from "../types";
+import type { Feature, FeatureType } from "../types";
 import type { IconName } from "./icons";
 import { t } from "../i18n";
 
@@ -40,3 +40,16 @@ export const FEATURE_META: Record<FeatureType, { iconName: IconName; label: stri
   texture: { iconName: "texture", label: t("tool.texture") },
   textOnFace: { iconName: "textOnFace", label: t("tool.textOnFace") },
 };
+
+/** What to call a plane an extrude is aimed at: an origin plane by its axes, a
+ *  construction plane by its name (a rename wins) or its place among the
+ *  planes, and the raw id only if nothing in the document matches, since a
+ *  deleted datum must never make a render throw. Shared by the inspector's
+ *  Up-to row and the Extrude panel, so the two name it alike. */
+export function planeLabel(features: readonly Feature[], id: string): string {
+  if (id === "XY" || id === "XZ" || id === "YZ") return t("inspector.upTo.originPlane", { id });
+  const datums = features.filter((f) => f.type === "datumPlane");
+  const i = datums.findIndex((f) => f.id === id);
+  if (i < 0) return id;
+  return (datums[i] as { name?: string }).name || t("common.planeName", { n: i + 1 });
+}

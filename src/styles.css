@@ -1580,6 +1580,16 @@ button.active {
   background: var(--bg);
   box-shadow: 0 0 0 3px var(--accent-tint);
 }
+/* A yes/no row (an extrude's Symmetric): a switch, not a text box, so it does
+   not take the input track's box styling. Right-aligned with the inputs. */
+.param-row-switch input {
+  justify-self: end;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 /* rejected expression (kept in the field so the user can fix it) */
 .param-row input.input-error {
   border-color: var(--error);
@@ -3204,8 +3214,56 @@ button.finish:hover {
 .tool-panel-note { color: var(--text-dim); font-style: italic; margin: 8px 0; }
 /* something that will stop OK, said before OK is pressed */
 .tool-panel-warn { color: var(--warn); margin: 6px 0; }
-/* a typed number the app cannot read ("3.14.15"): OK refuses it */
-.tool-panel input.invalid { border-color: var(--error); }
+/* a typed number the app cannot read ("3.14.15"): OK refuses it. The depth box
+   beside the cursor is held to the same rule. */
+.tool-panel input.invalid,
+.dim-field input.invalid { border-color: var(--error); }
+
+/* Generic tool panel rows (src/ui/toolPanel.ts). The Split Body panel's
+   .split-* rules below are the same shapes, kept until that panel moves onto
+   ToolPanel. A number row is a label column and a field; the label column has
+   a fixed share so the fields of consecutive rows line up. A choice row puts
+   its label ABOVE the chips, as Split's Keep row does: four chips and a label
+   on one line overflowed the panel (Extrude's Operation, in the headless
+   drive), and translations only grow. Chips wrap rather than clip. */
+.tool-panel-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.tool-panel-label { flex: 0 0 78px; color: var(--text-dim); }
+.tool-panel-number { width: 90px; }
+.tool-panel-number:disabled { opacity: 0.6; }
+.tool-panel-choice { margin-bottom: 6px; }
+.tool-panel-choice .tool-panel-label { display: block; font-size: 11px; margin-bottom: 2px; }
+.tool-panel-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.tool-panel-chips .tool-chip { flex: 1 1 auto; white-space: nowrap; }
+.tool-panel-pick {
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.tool-panel-pick:hover { border-color: var(--line-hover); }
+.tool-panel-pick.active { border-color: var(--accent); background: var(--accent-tint); }
+.tool-panel-pick-label { color: var(--text-dim); font-size: 11px; }
+.tool-panel-pick-line { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.tool-panel-pick-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-panel-pick-value.empty { color: var(--text-mute); font-style: italic; }
+.tool-panel-pick-clear {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.tool-panel-pick-clear:hover { color: var(--text); }
+.tool-panel-pick-clear svg { width: 12px; height: 12px; display: block; }
+.tool-panel-buttons { display: flex; gap: 6px; justify-content: flex-end; }
 
 /* Split Body panel (src/features/splitPanel.ts). A selection field is a box
    the user makes ACTIVE; the active one takes the next click in the model or
