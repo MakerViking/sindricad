@@ -219,6 +219,107 @@ def test_plain_extrude_is_unchanged():
     )
 
 
+# --- symmetric (midplane) ------------------------------------------------------
+#
+# From a user with years of CAD behind them: "Extrude a circle 25 mm. Extrude
+# symmetrical would result in 12.5 mm above and 12.5 mm below the sketch. In the
+# case of the extrude being a Boolean subtraction this would save a couple steps."
+
+
+def _sym(**kw):
+    return {"id": "e1", "type": "extrude", "sketch": "s1", "operation": "new",
+            "symmetric": True, **kw}
+
+
+def _span(part, axis):
+    bb = bbox(part)
+    return bb["min"][axis], bb["max"][axis]
+
+
+def test_symmetric_straddles_its_sketch():
+    """Half each side, the SAME volume as the one-sided extrude (a midplane moves
+    material, it neither adds nor removes any), and along the PROFILE's normal,
+    so a sketch on XZ or YZ straddles its own plane, not world Z."""
+    plain, errors, _ = _build([_sq(), {"id": "e1", "type": "extrude", "sketch": "s1",
+                                       "distance": 25, "operation": "new"}])
+    assert not errors, errors
+    part, errors, _ = _build([_sq(), _sym(distance=25)])
+    assert not errors, f"unexpected errors: {errors}"
+    lo, hi = _span(part, 2)
+    assert abs(lo + 12.5) < 1e-4 and abs(hi - 12.5) < 1e-4, f"did not straddle: {lo}..{hi}"
+    assert abs(part.volume - plain.volume) < 1e-6, f"volume changed: {part.volume} vs {plain.volume}"
+    for plane, axis in (("XZ", 1), ("YZ", 0)):
+        part, errors, _ = _build([_sq(plane=plane), _sym(distance=25)])
+        assert not errors, f"{plane}: {errors}"
+        lo, hi = _span(part, axis)
+        assert abs(lo + 12.5) < 1e-4 and abs(hi - 12.5) < 1e-4, f"{plane} straddled the wrong axis: {lo}..{hi}"
+    # a negative distance still straddles: the sign must not double-apply
+    part, errors, _ = _build([_sq(), _sym(distance=-25)])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo + 12.5) < 1e-4 and abs(hi - 12.5) < 1e-4, f"negative symmetric: {lo}..{hi}"
+
+
+def test_symmetric_straddles_the_start_offset():
+    """With a start offset the MIDPLANE is the offset plane: 10 symmetric from a
+    start of 4 spans -1..9. The branch this came from predated start offsets and
+    built -5..5 there, throwing the offset away."""
+    part, errors, _ = _build([_sq(), _sym(distance=10, startOffset=4)])
+    assert not errors, f"unexpected errors: {errors}"
+    lo, hi = _span(part, 2)
+    assert abs(lo + 1.0) < 1e-4 and abs(hi - 9.0) < 1e-4, f"span: {lo}..{hi}"
+    assert abs(part.volume - 20 * 20 * 10) < 1e-3, f"volume: {part.volume}"
+
+
+def test_symmetric_with_a_target_is_refused():
+    """Half each way means nothing when a target decides where it stops. Refused
+    by name rather than one of the two silently ignored."""
+    _expect_error(
+        [_sq(),
+         {"id": "d1", "type": "datumPlane", "plane": "XY", "offset": 10},
+         _sym(distance=5, upToPlane="d1")],
+        "symmetric can't be combined",
+        "symmetric + upToPlane",
+    )
+
+
+def test_symmetric_taper_is_mirrored_about_the_midplane():
+    """A tapered symmetric extrude narrows AWAY from the sketch in BOTH
+    directions. The tempting implementation (shift the profile back, taper the
+    one sweep) builds a one-way frustum with the sketch halfway up a sloped
+    wall. Checked against the analytic frustum, twice: a volume OCCT cannot fake.
+    And the widest section must be AT the sketch plane, which only the mirrored
+    shape has."""
+    part, errors, _ = _build([_sq(), _sym(distance=20, taper=10)])
+    assert not errors, f"unexpected errors: {errors}"
+    lo, hi = _span(part, 2)
+    assert abs(lo + 10) < 1e-4 and abs(hi - 10) < 1e-4, f"span: {lo}..{hi}"
+    inset = 10 * math.tan(math.radians(10))
+    a, b = 20.0 * 20.0, (20.0 - 2 * inset) ** 2
+    want = 2 * (10 / 3.0 * (a + b + math.sqrt(a * b)))
+    assert abs(part.volume - want) < 1e-3, f"got {part.volume}, two frusta say {want}"
+    assert len(part.solids()) == 1, f"the halves did not join: {len(part.solids())} solids"
+    # the widest section is at z=0: both caps are the SMALL square
+    for v in part.vertices():
+        if abs(abs(v.Z) - 10) < 1e-6:
+            assert abs(abs(v.X) - (10 - inset)) < 1e-4, f"a cap is not the narrow end: {v}"
+    # and a taper past the apex of the HALF is still refused, not truncated
+    _expect_error([_sq(), _sym(distance=20, taper=60)], "taper", "symmetric taper past the apex")
+
+
+def test_symmetric_absent_is_the_old_extrude():
+    """`symmetric: false` and no key at all build the same as before: old
+    documents must not move."""
+    old, errors, _ = _build([_sq(), {"id": "e1", "type": "extrude", "sketch": "s1",
+                                     "distance": 7, "operation": "new", "startOffset": 2}])
+    assert not errors, errors
+    off, errors, _ = _build([_sq(), {"id": "e1", "type": "extrude", "sketch": "s1",
+                                     "distance": 7, "operation": "new", "startOffset": 2,
+                                     "symmetric": False}])
+    assert not errors, errors
+    assert _span(old, 2) == _span(off, 2) and abs(old.volume - off.volume) < 1e-9
+
+
 if __name__ == "__main__":
     test_up_to_base_plane()
     test_up_to_offset_moves_the_landing()
@@ -230,4 +331,9 @@ if __name__ == "__main__":
     test_missing_datum_says_which_way_it_is_wrong()
     test_coincident_target_is_refused()
     test_plain_extrude_is_unchanged()
+    test_symmetric_straddles_its_sketch()
+    test_symmetric_straddles_the_start_offset()
+    test_symmetric_with_a_target_is_refused()
+    test_symmetric_taper_is_mirrored_about_the_midplane()
+    test_symmetric_absent_is_the_old_extrude()
     print("ALL PASS")

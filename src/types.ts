@@ -500,6 +500,16 @@ export type Feature =
       // solids (volume 0.0 with IsValid() false, and negative volumes) that only
       // BRepCheck catches. A refused taper is reported, never quietly dropped.
       taper?: Num;
+      // Midplane extrude: the profile sits in the MIDDLE of the result, half the
+      // distance each side (25 symmetric = 12.5 either way of the sketch); with
+      // a start offset, either way of the offset plane. A FLAG rather than a
+      // start offset of -distance/2, so it STAYS symmetric when the distance is
+      // edited later. With a taper the slope is mirrored about the midplane, so
+      // both ends narrow (or widen) alike. Meaningless with an up-to target,
+      // and the sidecar refuses the pair. Absent (never written as false) on an
+      // ordinary extrude, so old documents keep their exact shape; a beta from
+      // before this existed ignores it and builds one-sided.
+      symmetric?: boolean;
       // Boolean participants are decided at CREATION, MCAD-style: the bodies
       // hidden when the user made this extrude are stored here and excluded
       // from its join/cut forever after — later eye toggles are pure display

@@ -5474,6 +5474,20 @@ def _handle_extrude(f, ctx):
     # nothing consults.
     if not up_any and ctx.val(f["distance"]) == 0:
         raise ValueError("Extrude: distance must not be 0")
+    # `symmetric` (midplane): the profile sits in the MIDDLE of the result, half
+    # the distance each side. A FLAG rather than a start offset of -distance/2,
+    # so it stays symmetric when the distance is edited later. Absent on every
+    # document written before it existed, and everything below reads it as
+    # False, so those rebuild exactly as before.
+    symmetric = bool(f.get("symmetric"))
+    if symmetric and up_any:
+        # Half each way has no meaning when a target decides where it stops,
+        # and quietly ignoring one of the two would build something the user
+        # did not ask for.
+        raise ValueError(
+            "Extrude: symmetric can't be combined with an 'up to' target. A "
+            "symmetric extrude goes half the distance each way; turn one of them off."
+        )
     # `startOffset` lifts the profile off its sketch plane BEFORE the sweep, along
     # the same direction the sweep runs. That is the "start the extrude at an
     # offset" half of the Fusion start/end pair (issue #41); the end half is the
@@ -5528,16 +5542,27 @@ def _handle_extrude(f, ctx):
         # itself (unchanged behaviour); the face list is what the up-to and
         # start-offset paths need, because both are per-face constructions.
         prof_faces = list(entry["faces"] or [])
-    if start_off:
+    # A symmetric extrude is the profile moved back half the distance and swept
+    # the whole of it: ONE sweep, so one solid with no internal face down the
+    # middle for a later boolean to trip on. It moves along the profile's own
+    # normal, so a sketch on XZ or YZ straddles its own plane. With a start
+    # offset the MIDPLANE is the offset plane. A tapered symmetric extrude is
+    # the exception (see _symmetric_taper): it is built from the midplane out.
+    dist = None if up_any else ctx.val(f["distance"])
+    mid_taper = symmetric and bool(ctx.val(f.get("taper") or 0))
+    shift_by = start_off - (dist / 2.0 if symmetric and not mid_taper else 0)
+    if shift_by:
         if not prof_faces:
             raise ValueError(
                 "Extrude: a start offset needs a profile to move — this sketch built no closed area."
+                if start_off
+                else "Extrude: symmetric needs a profile to move, and this sketch built no closed area."
             )
         # Every cell of one sketch is coplanar, so one normal moves them all.
         sn = prof_faces[0].normal_at()
-        shift = Pos(sn.X * start_off, sn.Y * start_off, sn.Z * start_off)
+        shift = Pos(sn.X * shift_by, sn.Y * shift_by, sn.Z * shift_by)
         prof_faces = [shift * fc for fc in prof_faces]
-    if pts or start_off:
+    if pts or shift_by:
         target = prof_faces[0]
         for s in prof_faces[1:]:
             target = target + s
@@ -5582,8 +5607,10 @@ def _handle_extrude(f, ctx):
         solid = parts[0]
         for p in parts[1:]:
             solid = solid + p
+    elif mid_taper:
+        solid = _symmetric_taper(f, ctx, prof_faces, dist)
     else:
-        solid = _extrude_maybe_tapered(f, ctx, target, prof_faces, ctx.val(f["distance"]))
+        solid = _extrude_maybe_tapered(f, ctx, target, prof_faces, dist)
     # Captured-visibility semantics: an extrude that carries
     # `hiddenBodies` uses THAT set (participants decided at feature
     # creation, MCAD-style — later eye toggles are pure display).
@@ -5659,6 +5686,44 @@ def _extrude_maybe_tapered(f, ctx, target, prof_faces, amount):
     for s in solids[1:]:
         out = out + s
     return out
+
+
+def _symmetric_taper(f, ctx, prof_faces, amount):
+    """A symmetric extrude WITH a taper: the taper mirrored about the midplane.
+
+    Shifting the profile back half way and tapering the one sweep (what the
+    untapered symmetric path does) would give a one-way frustum whose sketch
+    sits in the middle of a sloped wall, which is not symmetric at all. So the
+    half on the normal side is built from the midplane exactly as a one-sided
+    tapered extrude of half the distance is, with every check that path makes,
+    and the other half is its MIRROR across the profile's plane. A mirror is an
+    exact transform, and the two halves meet on the profile face itself. The
+    union is refused rather than returned if it is not one valid solid of
+    exactly twice the half's volume.
+    """
+    from OCP.BRepCheck import BRepCheck_Analyzer
+
+    half = abs(amount) / 2.0
+    # refuses an empty profile, and a taper the half cannot carry, itself
+    up = _extrude_maybe_tapered(f, ctx, None, prof_faces, half)
+    fc = prof_faces[0]
+    midplane = Plane(origin=fc.center(), z_dir=fc.normal_at())
+    whole = up + mirror(up, about=midplane)
+    try:
+        ok = (
+            abs(whole.volume - 2 * up.volume) <= max(1e-6, up.volume * 1e-6)
+            and len(whole.solids()) == len(up.solids())
+            and BRepCheck_Analyzer(whole.wrapped).IsValid()
+        )
+    except Exception:
+        ok = False
+    if not ok:
+        raise ValueError(
+            "Extrude: this profile can't be tapered symmetrically, because the "
+            "two mirrored halves don't join into one clean solid. Try it without "
+            "Symmetric, or without the taper."
+        )
+    return whole
 
 
 def _taper_refusal(taper, n_bad, n_total):
