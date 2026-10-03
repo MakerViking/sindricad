@@ -4836,7 +4836,17 @@ export class SketchMode {
               // re-matches the sibling curves (see _recompute_projections)
               { kind: "silhouette", body: source.body, ...group }
             : { kind: source.kind, body: source.body, sel: fp ? { kind: "edge", by: "match", fp } : source.sel, ...group };
-      this.entities.push({ type: "projected", id: ids[i]!, source: src, curve });
+      // Construction mode applies here as it does at every other creation
+      // site. This was the one that ignored it, so a projected edge always
+      // joined the profile and could never be pure reference, which is what a
+      // user asked for: "select an edge of an existing solid or from an earlier
+      // sketch and use it for construction geometry in a new sketch". The flag
+      // is left off entirely when the mode is off, so an ordinary projection
+      // serialises exactly as before.
+      this.entities.push({
+        type: "projected", id: ids[i]!, source: src, curve,
+        ...(this.constructionMode ? { construction: true as const } : {}),
+      });
     });
     this.refreshActive();
     this.requestSolve();

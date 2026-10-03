@@ -45,6 +45,25 @@ describe("curveObjects — projected link colors", () => {
     const objs = curveObjects([native], plane, 0xffffff);
     expect(matColor(objs[0]!)).toBe(0xffffff);
   });
+
+  // Projected with Construction on, it kept the link colour and drew SOLID,
+  // so nothing on screen said the mode had taken: for one open edge it looked
+  // exactly like an ordinary projection. Dashed in the link colour shows both.
+  it("a projection made as construction is dashed in the link colour", () => {
+    const dashedOf = (o: THREE.Object3D) => !!((o as THREE.Line).material as unknown as { dashed?: boolean }).dashed;
+    const [plain, constr, staleConstr] = curveObjects(
+      [fresh, { ...fresh, id: "p3", construction: true }, { ...stale, id: "p4", construction: true }],
+      plane,
+      0xffffff,
+    );
+    expect(dashedOf(plain!), "an ordinary projection went dashed").toBe(false);
+    expect(dashedOf(constr!), "a construction projection looks like an ordinary one").toBe(true);
+    expect(matColor(constr!), "construction lost the link colour").toBe(PROJECTED_COLOR);
+    expect(matColor(staleConstr!)).toBe(PROJECTED_STALE_COLOR);
+    // selected, it is a selection like any other construction curve
+    const sel = curveObjects([{ ...fresh, construction: true }], plane, SELECT_COLOR, true)[0]!;
+    expect(matColor(sel)).toBe(SELECT_COLOR);
+  });
 });
 
 // What you can CLICK must be what you can SEE. pickEndpoint gained rectangle

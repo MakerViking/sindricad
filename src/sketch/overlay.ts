@@ -810,7 +810,9 @@ export function curveObjects(
     }
     const pts = entityPolyline(e).map((p) => plane.to3D(p.x, p.y));
     // projected geometry keeps its link color (purple; amber when stale) even
-    // as construction — the link state is the more important signal. Emphasis
+    // as construction — the link state is the more important signal — and as
+    // construction it is DASHED in that colour, so both read: drawn solid, a
+    // projection made with Construction on showed no sign of it. Emphasis
     // passes (selection, modify hover) set `highlight` so their color wins:
     // Delete works on projected entities, so selection must be visible.
     const projected = e.type === "projected" ? e : null;
@@ -834,8 +836,10 @@ export function curveObjects(
     // the change you can see.
     const curve = isOriginGeometry(e.id)
       ? polyline(pts, highlight ? drawColor : ORIGIN_COLOR)
-      : !projected && e.construction && !highlight
-        ? constructionLine(pts)
+      : e.construction && !highlight
+        ? projected
+          ? dashedPolyline(pts, drawColor)
+          : constructionLine(pts)
         : polyline(pts, drawColor);
     // Circles/arcs (native or projected) get a visible center "+": the center is
     // a snap target and the dimension tool's position handle — invisible, nobody

@@ -752,6 +752,11 @@ This file starts on 2026-08-03. For anything before that, see the
   Selecting the hole's edge itself before Sweep still sweeps along that edge,
   as before; it does not wind a helix.
 
+- **Projected geometry can be construction geometry.** With Construction turned
+  on in the sketch, what you project with Project comes in as construction lines,
+  for reference only, instead of joining the profile. It draws dashed in the
+  projected colour, so you can tell it apart.
+
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end
   and click. The arc goes the way you swept, so it can be longer than half a

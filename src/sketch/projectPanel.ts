@@ -7,7 +7,10 @@ import { setText } from "../i18n";
 
 export type ProjectFilter = "edges" | "sketchCurves" | "silhouette";
 
-const CHIPS: { key: ProjectFilter; label: string }[] = [
+/** The filters the tool offers (labels are i18n keys), exported so a test can
+ *  assert the Project tool still reaches solid edges and an earlier sketch's
+ *  curves. */
+export const PROJECT_FILTERS: { key: ProjectFilter; label: string }[] = [
   { key: "edges", label: "sketch.project.edges" },
   { key: "sketchCurves", label: "sketch.project.sketchCurves" },
   { key: "silhouette", label: "sketch.project.silhouette" },
@@ -25,7 +28,7 @@ export class ProjectPanel {
     Object.assign(this.root.style, {
       zIndex: "40", display: "none", gap: "6px", padding: "6px 8px",
     } as CSSStyleDeclaration);
-    for (const c of CHIPS) {
+    for (const c of PROJECT_FILTERS) {
       const b = document.createElement("button");
       setText(b, c.label);
       b.className = "tool-chip tool-chip-pill";
