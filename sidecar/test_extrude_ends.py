@@ -320,6 +320,311 @@ def test_symmetric_absent_is_the_old_extrude():
     assert _span(old, 2) == _span(off, 2) and abs(old.volume - off.volume) < 1e-9
 
 
+
+# --- start and end OBJECTS (GH #41 a and b) -------------------------------------
+#
+# An extrude can start from, or run up to, a point or a straight line, and start
+# from a construction plane or a flat face. Each counts only as the plane
+# PARALLEL TO THE SKETCH through it. Every reference names live geometry, so
+# the tests that matter here are the ones that MOVE that geometry and check the
+# extrude went with it: a reference that froze a coordinate passes every other
+# assertion in this section.
+
+from builder import _edge_end  # noqa: E402
+from build123d import Edge  # noqa: E402
+from geom_select import edge_fingerprint, face_fingerprint  # noqa: E402
+
+
+def _ext(**kw):
+    return {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 5,
+            "operation": "new", **kw}
+
+
+def _ref_sketch(entities, plane="XZ", sid="s2"):
+    """A second sketch holding nothing but reference geometry."""
+    return {"id": sid, "type": "sketch", "plane": plane, "entities": entities}
+
+
+def _body(bodies, bid):
+    return next(b for b in bodies if b["id"] == bid)
+
+
+def _box(height=15.0):
+    """A 10 x 10 box at x=50, `height` tall: the geometry the body references
+    below are taken off, as `body1`. Built from its own sketch, so the profile
+    sketch `s1` is free to sit at the origin."""
+    return [
+        {"id": "s0", "type": "sketch", "plane": "XY",
+         "entities": [{"type": "rectangle", "width": 10, "height": 10, "x": 50, "y": 0}]},
+        {"id": "e0", "type": "extrude", "sketch": "s0", "distance": height, "operation": "new"},
+    ]
+
+
+def _fp_edge(features, pred, body="body1"):
+    """A by:"match" edge reference AUTHORED THE WAY THE APP AUTHORS IT: off the
+    real kernel edge, by the same edge_fingerprint the query op returns."""
+    _p, errors, bodies = _build(features)
+    assert not errors, errors
+    b = _body(bodies, body)
+    hits = [e for e in b["shape"].edges() if pred(e)]
+    assert len(hits) == 1, f"the test meant one edge, found {len(hits)}"
+    return {"kind": "edge", "by": "match", "fp": edge_fingerprint(hits[0], b["shape"]), "body": body}
+
+
+def _fp_face(features, pred, body="body1"):
+    _p, errors, bodies = _build(features)
+    assert not errors, errors
+    b = _body(bodies, body)
+    hits = [fc for fc in b["shape"].faces() if pred(fc)]
+    assert len(hits) == 1, f"the test meant one face, found {len(hits)}"
+    return {"kind": "face", "by": "match", "fp": face_fingerprint(hits[0], b["shape"]), "body": body}
+
+
+def _zspan(bodies, bid):
+    b = _body(bodies, bid)
+    bb = b["shape"].bounding_box()
+    return round(bb.min.Z, 6), round(bb.max.Z, 6)
+
+
+def test_up_to_an_origin_plane():
+    """XY / XZ / YZ were always accepted by id. The app never offered them as a
+    target; it does now, so pin what they build."""
+    s1 = {"id": "s1", "type": "sketch",
+          "plane": {"origin": [0, 0, 10], "normal": [0, 0, 1], "xdir": [1, 0, 0]},
+          "entities": [{"type": "rectangle", "width": 20, "height": 20, "x": 0, "y": 0}]}
+    part, errors, _ = _build([s1, _ext(upToPlane="XY")])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo) < 1e-4 and abs(hi - 10) < 1e-4, f"span {lo}..{hi}"
+
+
+def test_up_to_a_sketch_point_follows_the_point():
+    """The plane through the point, parallel to the sketch. Move the point and
+    the extrude goes with it: the reference is the entity, not a coordinate."""
+    ref = {"kind": "sketchPoint", "sketch": "s2", "entity": "p1", "pointIndex": 0}
+    for z in (12.0, 20.0):
+        # on XZ, sketch y is world z
+        pt = _ref_sketch([{"id": "p1", "type": "point", "x": 5, "y": z}])
+        part, errors, _ = _build([_sq(), pt, _ext(upToRef=ref)])
+        assert not errors, errors
+        lo, hi = _span(part, 2)
+        assert abs(lo) < 1e-4 and abs(hi - z) < 1e-4, f"point at z={z}: span {lo}..{hi}"
+
+
+def test_sketch_point_indices_match_the_app():
+    """Point indices are dimRefPoints' (src/sketch/entityDims.ts): a wrong index
+    still builds, at the wrong point, so each kind is pinned by height."""
+    ents = [
+        {"id": "l1", "type": "line", "x1": -5, "y1": 3, "x2": 5, "y2": 7},
+        # three-point arc through (0, 14): its centre is at (0, 9), radius 5
+        {"id": "a1", "type": "arc", "x1": -5, "y1": 9, "x2": 5, "y2": 9, "mx": 0, "my": 14},
+        {"id": "r1", "type": "rectangle", "x": 30, "y": 20, "width": 4, "height": 6},
+        {"id": "c1", "type": "circle", "x": 0, "y": 30, "radius": 2},
+    ]
+    for entity, point, z in (("l1", 0, 3), ("l1", 1, 7), ("a1", 2, 9), ("a1", 1, 9),
+                             ("r1", 0, 17), ("r1", 2, 23), ("c1", 0, 30)):
+        ref = {"kind": "sketchPoint", "sketch": "s2", "entity": entity, "pointIndex": point}
+        part, errors, _ = _build([_sq(), _ref_sketch(ents), _ext(upToRef=ref)])
+        assert not errors, f"{entity}[{point}]: {errors}"
+        lo, hi = _span(part, 2)
+        assert abs(hi - z) < 1e-4, f"{entity}[{point}] should stop at z={z}, stopped at {hi}"
+
+
+def test_up_to_a_line_parallel_to_the_sketch():
+    """A line parallel to the sketch names one height. A tilted one does not, and
+    is refused rather than read at one of its ends."""
+    flat = _ref_sketch([{"id": "l1", "type": "line", "x1": -5, "y1": 15, "x2": 5, "y2": 15}])
+    part, errors, _ = _build([_sq(), flat,
+                              _ext(upToRef={"kind": "sketchLine", "sketch": "s2", "entity": "l1"})])
+    assert not errors, errors
+    assert abs(_span(part, 2)[1] - 15) < 1e-4
+    tilted = _ref_sketch([{"id": "l1", "type": "line", "x1": -5, "y1": 10, "x2": 5, "y2": 20}])
+    _expect_error([_sq(), tilted, _ext(upToRef={"kind": "sketchLine", "sketch": "s2", "entity": "l1"})],
+                  "isn't parallel to the sketch", "tilted sketch line")
+    arc = _ref_sketch([{"id": "a1", "type": "arc", "x1": -5, "y1": 9, "x2": 5, "y2": 9, "mx": 0, "my": 14}])
+    _expect_error([_sq(), arc, _ext(upToRef={"kind": "sketchLine", "sketch": "s2", "entity": "a1"})],
+                  "isn't a straight line", "an arc as a line")
+
+
+def test_up_to_a_body_edge_follows_the_body():
+    """A straight body edge parallel to the sketch, by:"match": the box grows
+    and the extrude still stops on its top edge, not where the edge used to be."""
+    feats = _box(15)
+    sel = _fp_edge(feats, lambda e: e.geom_type.name == "LINE"
+                   and abs(e.center().Z - 15) < 1e-6 and abs(e.center().Y + 5) < 1e-6)
+    ref = {"kind": "edge", "edge": sel}
+    for h in (15.0, 25.0):
+        _p, errors, bodies = _build(_box(h) + [_sq(), _ext(upToRef=ref)])
+        assert not errors, f"box {h}: {errors}"
+        assert _zspan(bodies, "body2") == (0.0, h), f"box {h}: {_zspan(bodies, 'body2')}"
+    # a vertical edge is not parallel to an XY sketch
+    vert = _fp_edge(feats, lambda e: e.geom_type.name == "LINE"
+                    and abs(e.center().X - 55) < 1e-6 and abs(e.center().Y - 5) < 1e-6)
+    _expect_error(_box(15) + [_sq(), _ext(upToRef={"kind": "edge", "edge": vert})],
+                  "isn't parallel to the sketch", "vertical edge")
+
+
+def test_up_to_a_body_corner():
+    """A corner is one END of a by:"match" edge. End 1 is the end further along
+    the fingerprint's direction, so on a vertical edge it is the top."""
+    feats = _box(15)
+    vert = _fp_edge(feats, lambda e: e.geom_type.name == "LINE"
+                    and abs(e.center().X - 55) < 1e-6 and abs(e.center().Y - 5) < 1e-6)
+    assert vert["fp"]["dir"][2] > 0, "a vertical edge's fingerprint points up"
+    for h in (15.0, 22.0):
+        _p, errors, bodies = _build(_box(h) + [_sq(), _ext(upToRef={"kind": "vertex", "edge": vert, "end": 1})])
+        assert not errors, errors
+        assert _zspan(bodies, "body2") == (0.0, h), _zspan(bodies, "body2")
+    # end 0 is the bottom corner, level with the sketch
+    _expect_error(_box(15) + [_sq(), _ext(upToRef={"kind": "vertex", "edge": vert, "end": 0})],
+                  "already level", "bottom corner")
+
+
+def test_edge_end_ignores_the_kernels_orientation():
+    """The same corner whichever way round the kernel built the edge."""
+    up = Edge.make_line((0, 0, 0), (0, 0, 10))
+    down = Edge.make_line((0, 0, 10), (0, 0, 0))
+    for e in (up, down):
+        assert abs(_edge_end(e, 1).Z - 10) < 1e-9 and abs(_edge_end(e, 0).Z) < 1e-9
+
+
+def test_start_from_a_face_follows_the_face():
+    """THE BOX AND LID. The lid profile sits in the box's sketch plane; it starts
+    from the box's TOP FACE, and when the box gets taller the lid rides up with
+    it. A start offset is measured from the face."""
+    top = _fp_face(_box(15), lambda fc: abs(fc.center().Z - 15) < 1e-6)
+    start = {"kind": "face", "face": top}
+    for h in (15.0, 30.0):
+        _p, errors, bodies = _build(_box(h) + [_sq(), _ext(distance=2, startFrom=start)])
+        assert not errors, f"box {h}: {errors}"
+        assert _zspan(bodies, "body2") == (h, h + 2), f"box {h}: {_zspan(bodies, 'body2')}"
+    _p, errors, bodies = _build(_box(15) + [_sq(), _ext(distance=2, startFrom=start, startOffset=3)])
+    assert not errors, errors
+    assert _zspan(bodies, "body2") == (18.0, 20.0), _zspan(bodies, "body2")
+
+
+def test_start_from_a_tilted_or_curved_face_is_refused():
+    """Phase 1: only a face parallel to the sketch. Refused by name, never moved
+    by the distance at one arbitrary point of the face."""
+    side = _fp_face(_box(15), lambda fc: abs(fc.center().X - 55) < 1e-6)
+    _expect_error(_box(15) + [_sq(), _ext(startFrom={"kind": "face", "face": side})],
+                  "tilted to the sketch", "side face")
+    cyl = [{"id": "s0", "type": "sketch", "plane": "XY",
+            "entities": [{"type": "circle", "x": 50, "y": 0, "radius": 5}]},
+           {"id": "e0", "type": "extrude", "sketch": "s0", "distance": 15, "operation": "new"}]
+    barrel = _fp_face(cyl, lambda fc: fc.geom_type.name == "CYLINDER")
+    _expect_error(cyl + [_sq(), _ext(startFrom={"kind": "face", "face": barrel})],
+                  "is curved", "cylinder wall")
+
+
+def test_start_from_a_plane():
+    """A construction plane parallel to the sketch: the profile moves onto it.
+    One tilted to the sketch, an origin plane included, is refused."""
+    part, errors, _ = _build([_sq(), {"id": "d1", "type": "datumPlane", "plane": "XY", "offset": 7},
+                              _ext(startFrom={"kind": "plane", "plane": "d1"})])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo - 7) < 1e-4 and abs(hi - 12) < 1e-4, f"span {lo}..{hi}"
+    _expect_error([_sq(), _ext(startFrom={"kind": "plane", "plane": "XZ"})],
+                  "tilted to the sketch", "XZ start for an XY sketch")
+    _expect_error([_sq(), _ext(startFrom={"kind": "plane", "plane": "gone"})],
+                  "starts from was deleted", "a deleted start plane")
+
+
+def test_start_from_a_point_and_up_to_a_line_compose():
+    """Both ends objects: it spans start..end, the start offset rides on the
+    start, and symmetric straddles the start plane."""
+    ref = _ref_sketch([{"id": "p1", "type": "point", "x": 0, "y": 4},
+                       {"id": "l1", "type": "line", "x1": -5, "y1": 15, "x2": 5, "y2": 15}])
+    start = {"kind": "sketchPoint", "sketch": "s2", "entity": "p1", "pointIndex": 0}
+    end = {"kind": "sketchLine", "sketch": "s2", "entity": "l1"}
+    part, errors, _ = _build([_sq(), ref, _ext(startFrom=start, upToRef=end)])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo - 4) < 1e-4 and abs(hi - 15) < 1e-4, f"span {lo}..{hi}"
+    part, errors, _ = _build([_sq(), ref, _ext(startFrom=start, startOffset=1, upToRef=end, upToOffset=-2)])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo - 5) < 1e-4 and abs(hi - 13) < 1e-4, f"span {lo}..{hi}"
+    part, errors, _ = _build([_sq(), ref, _sym(distance=10, startFrom=start)])
+    assert not errors, errors
+    lo, hi = _span(part, 2)
+    assert abs(lo + 1) < 1e-4 and abs(hi - 9) < 1e-4, f"symmetric about z=4: {lo}..{hi}"
+
+
+def test_start_and_end_references_that_are_gone():
+    """Each way a reference can break says which way, and names Extrude."""
+    pt = {"kind": "sketchPoint", "sketch": "s2", "entity": "p1", "pointIndex": 0}
+    _expect_error([_sq(), _ext(upToRef=pt)], "was deleted", "no such sketch")
+    _expect_error([_sq(), _ref_sketch([]), _ext(upToRef=pt)], "deleted from its sketch", "no such point")
+    _expect_error([_sq(), _ext(upToRef=pt), _ref_sketch([{"id": "p1", "type": "point", "x": 0, "y": 9}])],
+                  "comes after this extrude", "a sketch later in the timeline")
+    sel = _fp_edge(_box(15), lambda e: e.geom_type.name == "LINE"
+                   and abs(e.center().Z - 15) < 1e-6 and abs(e.center().Y + 5) < 1e-6)
+    _expect_error([_sq(), _ext(upToRef={"kind": "edge", "edge": sel})],
+                  "no longer exists", "an edge on a body that is not there")
+
+
+def test_one_target_at_a_time():
+    """A point or line target is exclusive with a face or plane target, and
+    Press/Pull refuses one rather than ignore it."""
+    end = {"kind": "sketchLine", "sketch": "s2", "entity": "l1"}
+    line = _ref_sketch([{"id": "l1", "type": "line", "x1": -5, "y1": 15, "x2": 5, "y2": 15}])
+    _expect_error([_sq(), line, {"id": "d1", "type": "datumPlane", "plane": "XY", "offset": 10},
+                   _ext(upToRef=end, upToPlane="d1")], "not two", "upToRef + upToPlane")
+    _expect_error([_sq(), line, _sym(distance=5, upToRef=end)], "symmetric can't be combined",
+                  "symmetric + upToRef")
+    _expect_error(
+        [_sq(), {"id": "e1", "type": "extrude", "sketch": "s1", "distance": 5, "operation": "new"},
+         line,
+         {"id": "pp", "type": "press-pull", "face": {"kind": "face", "by": "nearest", "point": [0, 0, 5]},
+          "distance": 2, "operation": "join", "upToRef": end}],
+        "an Extrude option", "press/pull with upToRef")
+
+
+
+def test_the_app_authored_references_build_and_follow():
+    """End to end in sidecar terms, the way the app makes these: a CLICK gives a
+    by:"nearest" point on an edge or face, the `query` op turns it into the
+    by:"match" reference that is stored (store.queryReferences), and the corner
+    END is read off the returned fingerprint the way extrudeTool does it
+    ((corner - mid) . dir > 0 is end 1). Then the box grows, and both the start
+    face and the corner target must go with it."""
+    import os
+    os.environ.setdefault("SINDRI_DISK_CACHE", "0")
+    from builder import query_geometry
+
+    box = {"parameters": {}, "features": _box(15)}
+    corner = (55.0, 5.0, 15.0)
+    # the vertical edge at x=55, y=5: the viewport's selector is its polyline's
+    # arc-length middle, with the body it belongs to
+    edge = query_geometry(box, [{"kind": "edge", "body": "body1",
+                                 "sel": {"kind": "edge", "by": "nearest", "point": [55, 5, 7.5], "body": "body1"}}],
+                          prefix=True)["results"][0]
+    assert edge["ok"], edge
+    sel = {**edge["entities"][0]["sel"], "body": edge["entities"][0]["body"]}
+    assert sel["by"] == "match", "a click must never be stored as a point"
+    fp = sel["fp"]
+    along = sum((corner[i] - fp["mid"][i]) * fp["dir"][i] for i in range(3))
+    end = 1 if along > 0 else 0
+    face = query_geometry(box, [{"kind": "face", "body": "body1",
+                                 "sel": {"kind": "face", "by": "nearest", "point": [51, 2, 15], "body": "body1"}}],
+                          prefix=True)["results"][0]
+    assert face["ok"], face
+    top = {**face["entities"][0]["sel"], "body": face["entities"][0]["body"]}
+    # one extrude from the sketch up to the corner, one starting from the face
+    for h in (15.0, 27.0):
+        _p, errors, bodies = _build(_box(h) + [
+            _sq(),
+            _ext(upToRef={"kind": "vertex", "edge": sel, "end": end}),
+            {"id": "e2", "type": "extrude", "sketch": "s1", "distance": 3, "operation": "new",
+             "startFrom": {"kind": "face", "face": top}},
+        ])
+        assert not errors, f"box {h}: {errors}"
+        assert _zspan(bodies, "body2") == (0.0, h), f"corner target, box {h}: {_zspan(bodies, 'body2')}"
+        assert _zspan(bodies, "body3") == (h, h + 3), f"face start, box {h}: {_zspan(bodies, 'body3')}"
+
+
 if __name__ == "__main__":
     test_up_to_base_plane()
     test_up_to_offset_moves_the_landing()
@@ -336,4 +641,18 @@ if __name__ == "__main__":
     test_symmetric_with_a_target_is_refused()
     test_symmetric_taper_is_mirrored_about_the_midplane()
     test_symmetric_absent_is_the_old_extrude()
+    test_up_to_an_origin_plane()
+    test_up_to_a_sketch_point_follows_the_point()
+    test_sketch_point_indices_match_the_app()
+    test_up_to_a_line_parallel_to_the_sketch()
+    test_up_to_a_body_edge_follows_the_body()
+    test_up_to_a_body_corner()
+    test_edge_end_ignores_the_kernels_orientation()
+    test_start_from_a_face_follows_the_face()
+    test_start_from_a_tilted_or_curved_face_is_refused()
+    test_start_from_a_plane()
+    test_start_from_a_point_and_up_to_a_line_compose()
+    test_start_and_end_references_that_are_gone()
+    test_one_target_at_a_time()
+    test_the_app_authored_references_build_and_follow()
     print("ALL PASS")

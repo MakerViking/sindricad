@@ -104,6 +104,7 @@ from geom_select import (
     _edge_cost,
     _edge_dedup_key,
     _face_normal,
+    _is_planar,
     _unit,
     _bbox_diag,
     POS_DRIFT,
@@ -5466,7 +5467,7 @@ def _handle_extrude(f, ctx):
     # of its own to resolve a face selector against: the tool emits a
     # by:"nearest" point pick, which _up_to_target resolves globally across every
     # body (aiming at another part is the whole point of "up to").
-    tgt_pt, tgt_n, up_any, up_off = _up_to_target(f, ctx, None, "Extrude")
+    tgt_pt, tgt_n, up_any, up_off = _up_to_target(f, ctx, None, "Extrude", ref_ok=True)
     # A zero-distance extrude sweeps nothing; OCCT reports it as
     # Standard_ConstructionError. Negative IS meaningful (extrude the other way).
     # With an 'up to' target `distance` is not read at all — the target decides how
@@ -5550,7 +5551,19 @@ def _handle_extrude(f, ctx):
     # the exception (see _symmetric_taper): it is built from the midplane out.
     dist = None if up_any else ctx.val(f["distance"])
     mid_taper = symmetric and bool(ctx.val(f.get("taper") or 0))
-    shift_by = start_off - (dist / 2.0 if symmetric and not mid_taper else 0)
+    # `startFrom` (GH #41): the plane the extrude starts from, when it is not
+    # the sketch's. The start offset is then measured from THAT plane, so the
+    # two add. Absent on every document written before it existed, which keeps
+    # `start_at` exactly the start offset it always was.
+    start_at = start_off
+    if f.get("startFrom"):
+        if not prof_faces:
+            raise ValueError(
+                "Extrude: a start object needs a profile to move, and this sketch "
+                "built no closed area."
+            )
+        start_at += _extrude_start_distance(f, ctx, prof_faces[0])
+    shift_by = start_at - (dist / 2.0 if symmetric and not mid_taper else 0)
     if shift_by:
         if not prof_faces:
             raise ValueError(
@@ -5574,6 +5587,11 @@ def _handle_extrude(f, ctx):
                 "Extrude: an 'up to' target needs a profile to measure from — this "
                 "sketch built no closed area."
             )
+        if tgt_pt is None:
+            # A point or a line (`upToRef`): it stops on the plane parallel to
+            # the sketch through it, which only the profile's normal can name.
+            sn = prof_faces[0].normal_at()
+            tgt_pt, tgt_n = _extrude_ref_point(f["upToRef"], f, ctx, sn, "Extrude", "end"), sn
         # Per profile face, and via _prism_to_plane rather than a single scalar
         # sweep, for the reason that helper documents: the distance is measured at
         # the face CENTRE, so a target that is not parallel to the sketch would
@@ -6204,9 +6222,15 @@ def _bad_up_to_plane(up_plane, f, ctx, label="Press/Pull"):
     return GeomError(msg, subject=up_plane)
 
 
-def _up_to_target(f, ctx, sel_shape, label="Press/Pull"):
+def _up_to_target(f, ctx, sel_shape, label="Press/Pull", ref_ok=False):
     """Resolve a feature's `upTo` / `upToPlane` / `upToOffset` into
     `(target_point, target_normal, has_target, offset)`.
+
+    `upToRef` (a point or a line, extrude only: `ref_ok`) is the third target
+    kind. It is counted here, so the exclusivity and the offset rules below
+    cover it, but it comes back as `(None, None, True, offset)`: its plane is
+    the one PARALLEL TO THE SKETCH through it, and only the caller knows the
+    sketch's normal (see `_extrude_ref_point`).
 
     ONE implementation, two callers (press/pull and extrude), because every rule
     below is a refusal that has already been argued out once and the two
@@ -6226,9 +6250,21 @@ def _up_to_target(f, ctx, sel_shape, label="Press/Pull"):
     """
     up = f.get("upTo")
     up_plane = f.get("upToPlane")
+    up_ref = f.get("upToRef")
     if up and up_plane:
         raise ValueError(
             f"{label}: set an 'up to' face or an 'up to' plane, not both — clear one first."
+        )
+    if up_ref and (up or up_plane):
+        raise ValueError(
+            f"{label}: set one 'up to' target, not two. Clear one first."
+        )
+    if up_ref and not ref_ok:
+        # Only Extrude reads it. Accepted and ignored, the feature would build
+        # a plain distance while saying it went up to something.
+        raise ValueError(
+            f"{label}: 'up to' a point or a line is an Extrude option. Clear it, "
+            "or pick a face or a plane."
         )
     tgt_pt = tgt_n = None
     if up_plane:
@@ -6267,7 +6303,7 @@ def _up_to_target(f, ctx, sel_shape, label="Press/Pull"):
         if not tf:
             raise ValueError(f"{label}: the 'up to' target surface wasn't found")
         tgt_pt, tgt_n = tf[0].center(), tf[0].normal_at()
-    up_any = bool(up or up_plane)
+    up_any = bool(up or up_plane or up_ref)
     # `upToOffset` moves the landing along the extrude direction — positive past
     # the target, negative short of it — for a face target and a plane target alike.
     up_off = ctx.val(f.get("upToOffset") or 0)
@@ -6284,6 +6320,289 @@ def _up_to_target(f, ctx, sel_shape, label="Press/Pull"):
             "pick a face or a plane to extrude up to, or clear the offset."
         )
     return tgt_pt, tgt_n, up_any, up_off
+
+
+# --- extrude start and end objects (GH #41) ------------------------------------
+#
+# An extrude can start from, or run up to, a point or a straight line, and start
+# from a construction plane or a flat face. Every one of them contributes only
+# a PLANE PARALLEL TO THE SKETCH: through the point, through the line, or the
+# plane or face itself. So each is reduced to one point, and the existing
+# machinery takes it from there: a start becomes the same profile shift a start
+# offset is, and an end becomes a target plane for _prism_to_plane, which for a
+# parallel target is an exact prism.
+#
+# Every reference names live geometry and follows it: sketch entities by their
+# stable ids, body edges and faces by a by:"match" fingerprint plus their body.
+# A reference that is not parallel to the sketch is REFUSED, never read at one
+# arbitrary point of it (a tilted line has no single height to stop at).
+
+# How far off parallel a start or end object may sit and still be read as
+# parallel to the sketch: the sine of the angle between them. Geometry built
+# from sketches, datums and moves is parallel to ~1e-12, so this only has to
+# beat float noise. 1e-4 is 0.006 degrees, 0.01 mm of rise over 100 mm.
+_REF_PARALLEL_TOL = 1e-4
+
+
+def _ref_words(role):
+    """How a start or end object is named in a sentence."""
+    return "it starts from" if role == "start" else "it runs up to"
+
+
+def _ref_sketch(ref, f, ctx, label, role):
+    """The sketch feature a sketch point or line names, and its built entry.
+    Refused, saying which way it is wrong, when that sketch is gone, comes later
+    in the timeline, or did not build. The id is document text: it rides in
+    `subject`, never in the sentence."""
+    sid = ref.get("sketch")
+    feats = list(ctx.features or ())
+    ids = [g.get("id") for g in feats]
+    here = ids.index(f.get("id")) if f.get("id") in ids else len(feats)
+    at = next((i for i, gid in enumerate(ids) if gid == sid), None)
+    what = _ref_words(role)
+    if at is None or feats[at].get("type") != "sketch":
+        raise GeomError(f"{label}: the sketch {what} was deleted. Pick again.",
+                        errors_mod.REFERENCE_NOT_FOUND, subject=sid)
+    if at > here:
+        raise GeomError(f"{label}: the sketch {what} comes after this extrude in "
+                        "the timeline. Move that sketch before it.",
+                        errors_mod.REFERENCE_NOT_FOUND, subject=sid)
+    entry = ctx.sketches.get(sid)
+    if entry is None:
+        raise GeomError(f"{label}: the sketch {what} didn't build. Fix that sketch first.",
+                        errors_mod.REFERENCE_NOT_FOUND, subject=sid)
+    return feats[at], entry
+
+
+def _ref_entity(sk, eid, val):
+    """A sketch's entity by id, pattern copies included (`<pattern>#<n>`)."""
+    entities = list(sk.get("entities", []))
+    if sk.get("patterns"):
+        by_id = {e["id"]: e for e in entities if e.get("id")}
+        for pat in sk["patterns"]:
+            entities.extend(_expand_pattern(pat, by_id, val))
+    return next((e for e in entities if e.get("id") == eid), None)
+
+
+def _circumcenter(a, b, c):
+    """Centre of the circle through three 2-D points; None when they are in a
+    line. The same formula as src/sketch/arc.ts, so an arc's centre is the
+    point the app showed when it was picked."""
+    d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
+    if abs(d) < 1e-9:
+        return None
+    a2, b2, c2 = a[0] ** 2 + a[1] ** 2, b[0] ** 2 + b[1] ** 2, c[0] ** 2 + c[1] ** 2
+    return ((a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
+            (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d)
+
+
+def _sketch_ref_xy(e, p, val):
+    """Point `p` of a sketch entity, in the sketch's own 2-D frame, or None.
+
+    THE SAME NUMBERING as dimRefPoints in src/sketch/entityDims.ts, which is
+    what the app picks with: 0/1 the ends of a line, arc or spline, 2 an arc's
+    centre, 0..3 a rectangle's corners (rectCorners order: -,- then +,- then
+    +,+ then -,+), 0 a circle's centre or a sketch point. A wrong index here
+    would still give a point, just the wrong one, so keep the two in step."""
+    if not isinstance(p, int) or isinstance(p, bool):
+        return None  # document text: 1.0 or "1" would index a list and throw
+    t = e.get("type")
+    if t in ("line", "arc"):
+        ends = [(val(e["x1"]), val(e["y1"])), (val(e["x2"]), val(e["y2"]))]
+        if p in (0, 1):
+            return ends[p]
+        if t == "arc" and p == 2:
+            return _circumcenter(ends[0], ends[1], (val(e["mx"]), val(e["my"])))
+        return None
+    if t in ("circle", "point"):
+        return (val(e.get("x", 0)), val(e.get("y", 0))) if p == 0 else None
+    if t == "rectangle":
+        x, y = val(e.get("x", 0)), val(e.get("y", 0))
+        hw, hh = val(e["width"]) / 2, val(e["height"]) / 2
+        corners = [(x - hw, y - hh), (x + hw, y - hh), (x + hw, y + hh), (x - hw, y + hh)]
+        return corners[p] if p in (0, 1, 2, 3) else None
+    if t == "spline":
+        pts = e.get("points") or []
+        if p == 0 and pts:
+            return (val(pts[0]["x"]), val(pts[0]["y"]))
+        if p == 1 and len(pts) > 1:
+            return (val(pts[-1]["x"]), val(pts[-1]["y"]))
+        return None
+    if t == "projected":
+        cv = e.get("curve") or {}
+        ck = cv.get("kind")
+        if ck in ("line", "arc"):
+            ends = [(cv["x1"], cv["y1"]), (cv["x2"], cv["y2"])]
+            if p in (0, 1):
+                return ends[p]
+            if ck == "arc" and p == 2:
+                return _circumcenter(ends[0], ends[1], (cv["mx"], cv["my"]))
+            return None
+        if ck == "circle":
+            return (cv["x"], cv["y"]) if p == 0 else None
+        if ck == "poly":
+            pts = cv.get("pts") or []
+            if not pts:
+                return None
+            first, last = tuple(pts[0]), tuple(pts[-1])
+            ends = [first] if first == last else [first, last]  # projEndSamples
+            return ends[p] if p in range(len(ends)) else None
+    return None
+
+
+def _sketch_ref_line(e, val):
+    """The two ends of a straight sketch entity, 2-D; None for any other kind."""
+    if e.get("type") == "line":
+        return (val(e["x1"]), val(e["y1"])), (val(e["x2"]), val(e["y2"]))
+    cv = e.get("curve") or {}
+    if e.get("type") == "projected" and cv.get("kind") == "line":
+        return (cv["x1"], cv["y1"]), (cv["x2"], cv["y2"])
+    return None
+
+
+def _ref_edge(sel, f, ctx, label, role):
+    """The body edge an edge or corner reference names, resolved on its own
+    body the way every other edge selector is (`_group_sels_by_body`, which
+    refuses a body that is gone)."""
+    if not isinstance(sel, dict):
+        raise GeomError(f"{label}: the edge {_ref_words(role)} isn't a valid reference. Pick again.",
+                        errors_mod.REFERENCE_NOT_FOUND)
+    (body, sels), = _group_sels_by_body(sel, ctx, label)
+    found = resolve_edges(body["shape"], sels[0], diag=ctx.diagnostics, feature_id=f.get("id"))
+    if not found:
+        raise GeomError(f"{label}: the edge {_ref_words(role)} wasn't found. Pick again.",
+                        errors_mod.REFERENCE_NOT_FOUND, body_id=body["id"])
+    return found[0]
+
+
+def _edge_end(e, end):
+    """End `end` of an edge: end 1 lies further along the edge's sign-normalised
+    direction at its middle (`_edge_dir`, the `dir` of its fingerprint), end 0
+    nearer. Read off the direction rather than the kernel's own start and end,
+    so the index names the same corner however the rebuilt edge is oriented."""
+    mid, d = _edge_mid(e), _edge_dir(e)
+    a, b = e.position_at(0), e.position_at(1)
+    lo, hi = (a, b) if (a - mid).dot(d) <= (b - mid).dot(d) else (b, a)
+    return hi if end == 1 else lo
+
+
+def _ref_through(p0, p1, sn, label, role, what):
+    """The point a straight line contributes, once it is known to be parallel to
+    the sketch: then every point of it is at the same height, and `p0` is one."""
+    d = p1 - p0
+    if d.length < 1e-9:
+        raise ValueError(f"{label}: the {what} {_ref_words(role)} has no length. Pick a point instead.")
+    if abs(_unit(d).dot(sn)) > _REF_PARALLEL_TOL:
+        stop = "start" if role == "start" else "stop"
+        raise ValueError(
+            f"{label}: the {what} {_ref_words(role)} isn't parallel to the sketch, so "
+            f"it doesn't say where to {stop}. Pick a line parallel to the sketch, a "
+            "point, or a face."
+        )
+    return p0
+
+
+def _extrude_ref_point(ref, f, ctx, sn, label, role):
+    """A point on the plane, parallel to the sketch (normal `sn`), that a point
+    or line reference stands for. `role` is "start" or "end", for the words."""
+    kind = ref.get("kind") if isinstance(ref, dict) else None
+    what = _ref_words(role)
+    if kind in ("sketchPoint", "sketchLine"):
+        sk, entry = _ref_sketch(ref, f, ctx, label, role)
+        e = _ref_entity(sk, ref.get("entity"), ctx.val)
+        noun = "point" if kind == "sketchPoint" else "line"
+        if e is None:
+            raise GeomError(f"{label}: the sketch {noun} {what} was deleted from its sketch. Pick again.",
+                            errors_mod.REFERENCE_NOT_FOUND, subject=ref.get("sketch"))
+        plane = entry["plane"]
+        if kind == "sketchPoint":
+            xy = _sketch_ref_xy(e, ref.get("pointIndex"), ctx.val)
+            if xy is None:
+                raise GeomError(f"{label}: the sketch point {what} isn't on its curve any more. Pick again.",
+                                errors_mod.REFERENCE_NOT_FOUND, subject=ref.get("sketch"))
+            return plane.from_local_coords(xy)
+        ends = _sketch_ref_line(e, ctx.val)
+        if ends is None:
+            raise ValueError(f"{label}: the sketch curve {what} isn't a straight line. "
+                             "Pick a straight line or a point.")
+        return _ref_through(plane.from_local_coords(ends[0]), plane.from_local_coords(ends[1]),
+                            sn, label, role, "line")
+    if kind == "edge":
+        e = _ref_edge(ref.get("edge"), f, ctx, label, role)
+        if _edge_curve(e) != "line":
+            raise ValueError(f"{label}: the edge {what} isn't straight. Pick a straight "
+                             "edge, a corner or a face.")
+        return _ref_through(e.position_at(0), e.position_at(1), sn, label, role, "edge")
+    if kind == "vertex":
+        if ref.get("end") not in (0, 1):
+            raise GeomError(f"{label}: the corner {what} isn't a valid reference. Pick again.",
+                            errors_mod.REFERENCE_NOT_FOUND)
+        return _edge_end(_ref_edge(ref.get("edge"), f, ctx, label, role), ref["end"])
+    raise GeomError(f"{label}: the object {what} isn't a point or a line this version can read.",
+                    errors_mod.BAD_REQUEST)
+
+
+def _bad_start_plane(plane_id, f, ctx, label):
+    """`_bad_up_to_plane`'s four-way diagnosis, worded for the plane an extrude
+    STARTS from."""
+    feats = list(ctx.features or ())
+    ids = [g.get("id") for g in feats]
+    here = ids.index(f.get("id")) if f.get("id") in ids else len(feats)
+    at = next((i for i, gid in enumerate(ids) if gid == plane_id), None)
+    if at is None:
+        msg = f"{label}: the plane it starts from was deleted. Pick a new start."
+    elif feats[at].get("type") != "datumPlane":
+        msg = f"{label}: the plane it starts from isn't a construction plane. Pick a new start."
+    elif at > here:
+        msg = (f"{label}: the plane it starts from comes after this extrude in the "
+               "timeline. Move the plane before it.")
+    else:
+        msg = f"{label}: the plane it starts from didn't build. Fix that plane first."
+    return GeomError(msg, errors_mod.REFERENCE_NOT_FOUND, subject=plane_id)
+
+
+def _extrude_start_distance(f, ctx, face0, label="Extrude"):
+    """How far, along the profile's normal, the plane an extrude starts from
+    (`startFrom`) sits from its sketch. `face0` is a profile face: its normal is
+    the direction everything here is measured along, and it lies in the sketch.
+
+    Phase 1 refuses a start that is not parallel to the sketch, by name: a
+    tilted plane or face, or a curved face, has no one distance to move the
+    profile by, and moving it by the distance at one point of it would build
+    something nobody asked for."""
+    ref = f["startFrom"]
+    sn = face0.normal_at()
+    origin = face0.center()
+    kind = ref.get("kind") if isinstance(ref, dict) else None
+    if kind == "plane":
+        pid = ref.get("plane")
+        if not isinstance(pid, str) or (pid not in ctx.datums and pid not in PLANES):
+            raise _bad_start_plane(pid, f, ctx, label)
+        pl = _plane_of(pid, ctx.datums)
+        if pl.z_dir.cross(sn).length > _REF_PARALLEL_TOL:
+            raise ValueError(f"{label}: the plane it starts from is tilted to the sketch. "
+                             "An extrude can only start from a plane parallel to its sketch.")
+        return sn.dot(pl.origin - origin)
+    if kind == "face":
+        sel = ref.get("face")
+        if not isinstance(sel, dict):
+            raise GeomError(f"{label}: the face it starts from isn't a valid reference. Pick again.",
+                            errors_mod.REFERENCE_NOT_FOUND)
+        (body, sels), = _group_sels_by_body(sel, ctx, label)
+        found = resolve_faces(body["shape"], sels[0], diag=ctx.diagnostics, feature_id=f.get("id"))
+        if not found:
+            raise GeomError(f"{label}: the face it starts from wasn't found. Pick again.",
+                            errors_mod.REFERENCE_NOT_FOUND, body_id=body["id"])
+        face = found[0]
+        if not _is_planar(face):
+            raise ValueError(f"{label}: the face it starts from is curved. An extrude can "
+                             "only start from a flat face parallel to its sketch.")
+        if _face_normal(face).cross(sn).length > _REF_PARALLEL_TOL:
+            raise ValueError(f"{label}: the face it starts from is tilted to the sketch. "
+                             "An extrude can only start from a face parallel to its sketch. "
+                             "Pick a parallel face, or a point on this one.")
+        return sn.dot(face.center() - origin)
+    return sn.dot(_extrude_ref_point(ref, f, ctx, sn, label, "start") - origin)
 
 
 def _handle_press_pull(f, ctx):
