@@ -40,10 +40,14 @@ import { circumcenter } from "./arc";
 import type { ResolvedEntity } from "./snap";
 import type { SketchPattern } from "../types";
 
+/** a corner tool's pick: an entity, and the side it took on a shape (none here) */
+type Pick = { idx: number; side: string | null };
+const A: Pick = { idx: 0, side: null }, B: Pick = { idx: 1, side: null };
+
 /** the private commit seams under test, plus the state they act on */
 interface Priv {
-  applyFillet(iA: number, iB: number): void;
-  applyChamfer(iA: number, iB: number): void;
+  applyFillet(a: Pick, b: Pick): void;
+  applyChamfer(a: Pick, b: Pick): void;
   commitFromCursor(cursor: THREE.Vector2): void;
   multiClickAt(p: THREE.Vector2): void;
   rotateClick(p: THREE.Vector2): void;
@@ -86,7 +90,7 @@ function makeMode(dim: ReturnType<typeof fakeDim>, over: Record<string, unknown>
     { type: "line", id: "b", x1: 0, y1: 0, x2: 0, y2: 40 },
   ];
   Object.assign(s, {
-    entities, constraints: [], trial: null, filletFirst: 0, dim,
+    entities, constraints: [], patterns: [], trial: null, filletFirst: 0, dim,
     tool: "select", clickPts: [], base: null, constructionMode: false,
     polygonSides: 6, selected: new Set<string>(), chainStart: null,
     basePinned: false, lastSnapKind: "free",
@@ -128,7 +132,7 @@ describe("Fillet refuses a radius it cannot read", () => {
   it("does not build the 2 mm default when the typed radius is unreadable", () => {
     const dim = fakeDim({ radius: { typed: true, value: null } }); // the box holds "5mm"
     const { s, calls, live } = makeMode(dim);
-    s.applyFillet(0, 1);
+    s.applyFillet(A, B);
     // the whole defect: a 2 mm arc used to appear here, under a typed 5
     expect(arcs(live())).toHaveLength(0);
     expect(live()).toHaveLength(2);
@@ -142,7 +146,7 @@ describe("Fillet refuses a radius it cannot read", () => {
   it("builds the radius that WAS readable", () => {
     const dim = fakeDim({ radius: { typed: true, value: 5 } });
     const { s, live } = makeMode(dim);
-    s.applyFillet(0, 1);
+    s.applyFillet(A, B);
     expect(arcs(live())).toHaveLength(1);
     expect(arcRadius(live())).toBeCloseTo(5, 6);
     expect(legCut(live())).toBeCloseTo(-5, 6); // the leg is trimmed to the tangent point
@@ -154,7 +158,7 @@ describe("Fillet refuses a radius it cannot read", () => {
     // refusal test rules out is genuinely reachable from this same setup
     const dim = fakeDim({ radius: { typed: false, value: null } });
     const { s, live } = makeMode(dim);
-    s.applyFillet(0, 1);
+    s.applyFillet(A, B);
     expect(arcs(live())).toHaveLength(1);
     expect(arcRadius(live())).toBeCloseTo(2, 6);
   });
@@ -165,7 +169,7 @@ describe("Chamfer refuses a distance it cannot read", () => {
     const dim = fakeDim({ distance: { typed: true, value: null } });
     const { s, calls, live, seed } = makeMode(dim);
     const before = seed.map((e) => JSON.stringify(e));
-    s.applyChamfer(0, 1);
+    s.applyChamfer(A, B);
     expect(live().map((e) => JSON.stringify(e))).toEqual(before);
     expect(calls.afterModify).toBe(0);
     expect(prompts).toContain(BAD);
@@ -173,12 +177,12 @@ describe("Chamfer refuses a distance it cannot read", () => {
 
   it("builds the distance that WAS readable, and the default when untyped", () => {
     const typed = makeMode(fakeDim({ distance: { typed: true, value: 8 } }));
-    typed.s.applyChamfer(0, 1);
+    typed.s.applyChamfer(A, B);
     // the chamfer cuts `distance` back along each line from the corner at 0,0
     expect(legCut(typed.live())).toBeCloseTo(-8, 6);
 
     const untouched = makeMode(fakeDim({ distance: { typed: false, value: null } }));
-    untouched.s.applyChamfer(0, 1);
+    untouched.s.applyChamfer(A, B);
     expect(legCut(untouched.live())).toBeCloseTo(-2, 6);
   });
 });
@@ -373,7 +377,7 @@ describe("Fillet refuses a radius that is not a radius", () => {
       const dim = fakeDim({ radius: { typed: true, value: bad } });
       const { s, calls, live, seed } = makeMode(dim);
       const before = seed.map((e) => JSON.stringify(e));
-      s.applyFillet(0, 1);
+      s.applyFillet(A, B);
       expect(arcs(live())).toHaveLength(0);
       // -3 used to EXTEND leg "a" from x2 = 0 out to x2 = +3
       expect(live().map((e) => JSON.stringify(e))).toEqual(before);
@@ -391,7 +395,7 @@ describe("Chamfer refuses a distance that is not a distance", () => {
       const dim = fakeDim({ distance: { typed: true, value: bad } });
       const { s, calls, live, seed } = makeMode(dim);
       const before = seed.map((e) => JSON.stringify(e));
-      s.applyChamfer(0, 1);
+      s.applyChamfer(A, B);
       expect(live().map((e) => JSON.stringify(e))).toEqual(before);
       expect(calls.afterModify).toBe(0);
       expect(prompts).toContain(BAD);

@@ -445,6 +445,39 @@ export function regionsByEntities(
   return narrow(exact.length ? exact : covered);
 }
 
+/** The cell a stored region reference builds, resolved the way the sidecar
+ *  does it (`_region_face_from_entities`): by the ids, with the stored point
+ *  breaking a tie among the cells they name, or standing in for ids that name
+ *  none. Null when neither places it on one cell. `holds` says whether a cell
+ *  holds the reference's stored point (regionSelect.worldPointInRegion), null
+ *  when it has none. */
+export function resolveRegionRef(
+  regions: readonly Region[],
+  eids: readonly string[],
+  holeEids: readonly string[][] | undefined,
+  holds: ((r: Region) => boolean) | null,
+): Region | null {
+  const named = regionsByEntities(regions, eids, holeEids);
+  if (named.length === 1) return named[0]!;
+  if (!holds) return null;
+  const hits = (named.length ? named : regions).filter(holds);
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/** Are two cells bounded by the same entities, outer loop and holes? */
+export function sameRegionIds(a: Region, b: Region): boolean {
+  return sameIds(a.entityIds, b.entityIds) && sameHoleIds(a.holeEntityIds, b.holeEntityIds);
+}
+
+/** The cell in `after` that IS `r`, across an edit that renamed the curves
+ *  around it but moved none of them, or only rounded a corner off it (an
+ *  explode, a sketch fillet): the one that holds r's interior point and whose
+ *  own interior point r holds. Null unless exactly one does. */
+export function twinRegion(r: Region, after: readonly Region[]): Region | null {
+  const hits = after.filter((a) => pointInRegion(r.interior, a) && pointInRegion(a.interior, r));
+  return hits.length === 1 ? hits[0]! : null;
+}
+
 /** absolute area of a closed polygon (shoelace) */
 function loopAbsArea(loop: THREE.Vector2[]): number {
   let a = 0;

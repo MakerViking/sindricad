@@ -490,12 +490,40 @@ This file starts on 2026-08-03. For anything before that, see the
   Coincident between two ends at the same spot showed as if the sketch had too
   many constraints.
 
-- **Fillet and Chamfer say why they can't use a rectangle, polygon or slot.**
-  These shapes are one piece, not separate lines, so the tools lit the whole
-  outline red and then ignored the click. Now they light only lines, and a click
-  on one of these shapes says what to do instead: draw the sides with the Line
-  tool. A click right next to a corner now also takes the line that is
-  highlighted, instead of doing nothing.
+- **Fillet and Chamfer no longer ignore a click on a rectangle, polygon or
+  slot.** These shapes are one piece, not separate lines, so the tools lit the
+  whole outline red and then ignored the click. Now they light only the side
+  under the pointer, and a rectangle's or polygon's corner can be rounded or
+  bevelled (see Added). A slot says it has no corner to work on. A click right
+  next to a corner now also takes the line that is highlighted, instead of doing
+  nothing.
+
+- **Rotate keeps a rectangle's constraints.** A rotated rectangle became four
+  loose lines, and every dimension and constraint on it was deleted, so a corner
+  drag afterwards bent it out of square. Its lines now stay square to each
+  other, and its locked sizes, a corner on the origin and anything else on it
+  carry over to the lines. A note says the rectangle is lines now. A rectangle
+  held by a constraint to something you did not select, such as a corner on the
+  origin when you turn it about its middle, is not rotated at all, and I say
+  what to do: the constraint would have pulled it back part of the way, to an
+  angle you did not type.
+
+- **Fillet and Chamfer keep a corner that was held to a point.** A corner joined
+  to the origin, or to the end of another line, came loose without a word when
+  it was rounded off. Now both lines are held through that point, so the shape
+  stays where it was. If a dimension measured to that corner, a note says it now
+  measures to where the fillet or chamfer starts, and that the shape may move.
+
+- **Fillet and Chamfer say when they do not fit.** Two parallel lines, or a size
+  too big for the lines, used to do nothing at all after you typed the size.
+
+- **A pattern of lines copies a fillet or chamfer made on them.** Each copy was
+  left with a gap at the corner, so it no longer closed and its area dropped out
+  of the sketch.
+
+- **An offset between two lines that are both Horizontal, or both Vertical, no
+  longer shows amber.** The offset also told them to be parallel, which they
+  already were.
 
 - **A polygon's side count shows in the preview as you type it**, before you
   click the tick. Typed radius, width and diameter values redraw straight away
@@ -837,6 +865,27 @@ This file starts on 2026-08-03. For anything before that, see the
   on in the sketch, what you project with Project comes in as construction lines,
   for reference only, instead of joining the profile. It draws dashed in the
   projected colour, so you can tell it apart.
+
+- **Round or bevel a rectangle's or polygon's corner.** Pick two sides that meet
+  with Fillet or Chamfer and type the size. The shape turns into separate lines
+  first and a note says so. It keeps its shape: a rectangle stays square, a
+  polygon stays regular, and a locked width or height still holds, measured
+  between the opposite sides so the rounded corner does not change it. Its
+  constraints and dimensions move to the lines, and a pattern of it rounds every
+  copy. An extrude made from it keeps the area it had when you finish the
+  sketch, also where a line crosses the shape or another shape shares a side
+  with it. Two sides that do not meet are refused at the second click. A polygon
+  or slot whose size comes from a parameter stays a shape, and I say why.
+
+- **Explode to lines.** Right-click a rectangle, polygon or slot and choose
+  Explode to lines to turn it into the lines (and a slot's arcs) it is drawn
+  with, held in the same shape by constraints. A polygon gets two construction
+  circles, one through its corners and one touching its sides, and a slot a
+  construction line across each end. Nothing about its size is fixed unless you
+  had locked it. An extrude made from it keeps its area. Where a later sketch
+  projects the shape, the projection of its first side follows that line, and
+  the other sides keep their last shape and say they lost their source, instead
+  of all landing on the first side.
 
 - **Put a point on a line, circle or arc.** Coincident now takes a point and a
   curve, in either order: click an end, a corner, a centre or a sketch point,

@@ -18,6 +18,44 @@ import { p2lSideFlipped, paramStep, paramSteps, refreshStep, refreshSteps } from
 import { copySketch, moveSketchPlane, ownDatumOf, type SketchPlaneMove, type SketchTarget } from "./sketchPlaneEdits";
 import { t } from "../i18n";
 
+/** Area references of the extrudes built on a sketch, re-pointed by an edit
+ *  inside it (SketchMode.carryRegionRefs): extrude id, then index into its
+ *  `regions`, then what that reference reads now. Travels with the sketch's
+ *  commit (replaceFeature) and lands in the same mutate, so one undo takes
+ *  back both. */
+export type RegionCarry = Record<string, Record<string, CarriedRegionRef>>;
+export interface CarriedRegionRef {
+  entityIds: string[];
+  holeEntityIds: string[][];
+  point: [number, number, number];
+}
+
+/** Write `carry` into the extrudes on sketch `sketchId`. A reference keeps the
+ *  shape its feature already has: hole ids only where the feature records
+ *  them (absent and `[]` read differently, see types.ts), and nothing for an
+ *  index the feature does not have. */
+export function applyRegionCarry(d: CadDocument, sketchId: string, carry: RegionCarry) {
+  for (const [id, refs] of Object.entries(carry)) {
+    const i = d.features.findIndex((f) => f.id === id);
+    const f = d.features[i];
+    if (!f || f.type !== "extrude" || f.sketch !== sketchId || !f.regionEntities) continue;
+    const next = {
+      ...f,
+      regionEntities: [...f.regionEntities],
+      ...(f.regionHoleEntities ? { regionHoleEntities: [...f.regionHoleEntities] } : {}),
+      ...(f.regions ? { regions: [...f.regions] } : {}),
+    };
+    for (const [k, ref] of Object.entries(refs)) {
+      const n = Number(k);
+      if (!Number.isInteger(n) || n < 0 || n >= next.regionEntities.length) continue;
+      next.regionEntities[n] = [...ref.entityIds];
+      if (next.regionHoleEntities) next.regionHoleEntities[n] = ref.holeEntityIds.map((g) => [...g]);
+      if (next.regions && n < next.regions.length) next.regions[n] = [...ref.point];
+    }
+    d.features[i] = next;
+  }
+}
+
 /** An expression typed on a sketch dimension while the sketch was OPEN — the
  *  dim isn't in the document until the sketch commits, so the binding travels
  *  with the commit (addFeature/replaceFeature) and lands in the same mutate. */
@@ -1356,11 +1394,14 @@ export class DocumentStore {
     }, true);
   }
 
-  replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[]) {
+  /** `regionCarry`, from a sketch edit: the area references of the extrudes
+   *  on that sketch it had to re-point (applyRegionCarry). */
+  replaceFeature(id: string, feature: Feature, bindings?: SketchBinding[], regionCarry?: RegionCarry) {
     this.mutate((d) => {
       const i = d.features.findIndex((f) => f.id === id);
       if (i >= 0) d.features[i] = feature;
       this.applyBindings(d, bindings);
+      if (regionCarry) applyRegionCarry(d, id, regionCarry);
     }, true);
   }
 

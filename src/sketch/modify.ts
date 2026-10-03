@@ -4,7 +4,8 @@
 import { t } from "../i18n";
 import * as THREE from "three";
 import type { ResolvedEntity } from "./snap";
-import type { SketchConstraint } from "../types";
+import type { PlaceOffset, SketchConstraint } from "../types";
+import { dimPlaceOf, isDriven } from "../types";
 import { entitySegments, polygonPoints, rectCorners } from "./region";
 import { asRound, dimRefPoints, lineOperand, refPoint } from "./entityDims";
 import { isOriginGeometry } from "./origin";
@@ -830,6 +831,316 @@ function remapTrimmed(
   return { constraints, dropped: dropped + lostLinks };
 }
 
+/** What Explode made of a rectangle, polygon or slot. */
+export type ExplodeResult = {
+  /** the whole entity list, with the shape replaced IN PLACE by what it became */
+  entities: ResolvedEntity[];
+  /** the whole constraint list: everything that named the shape rewritten for
+   *  what it became, then the constraints that keep it the same shape */
+  constraints: SketchConstraint[];
+  /** the line each SIDE operand became: `sides[k]` is what `<shapeId>~k` names */
+  sides: string[];
+  /** the outline it became, in order around it (a slot's two end arcs
+   *  included). The first is the shape's own id. */
+  outline: string[];
+  /** the construction geometry that holds it in shape: a polygon's two
+   *  circles, a slot's two end diameters. Not part of the outline. */
+  helpers: string[];
+  /** the constraints that hold it in shape, the last ones in `constraints`
+   *  (the same objects): the explode's own, not anything the user made */
+  holds: SketchConstraint[];
+  /** constraints that named the shape and could not be carried over */
+  dropped: number;
+};
+
+/** Explode ents[idx], a rectangle, polygon or slot, into the lines (and a
+ *  slot's arcs) it is drawn with, plus the constraints that keep it the shape
+ *  it was:
+ *
+ *    rectangle  4 lines, Horizontal and Vertical on them; or, with
+ *               `square: "perpendicular"`, Perpendicular on three corners,
+ *               which holds it square at ANY angle (Rotate wants that)
+ *    polygon    n lines, every corner ON a construction circle and every
+ *               side Tangent to a second one inside it, the two concentric,
+ *               which is what keeps it regular
+ *    slot       2 lines and 2 end arcs, a construction line across each end
+ *               holding its arc's centre and square to the sides, and the
+ *               arcs Equal in radius, which keeps every join tangent
+ *
+ *  Each leaves exactly the freedom the shape had: a rectangle its position and
+ *  two sizes (plus its angle, held square by Perpendicular), a polygon its
+ *  centre, size and angle, a slot its two centres and width. A size the user
+ *  never locked stays free; it is not turned into a dimension.
+ *
+ *  The shape's id goes to its first line, on purpose. An extrude records the
+ *  ids that bound the area it picked (types.ts, `regionEntities`) and trusts
+ *  them before its stored point, so an id that vanished would leave it on the
+ *  point alone. Kept on a side of the SAME area, it still names that area. (A
+ *  trim makes every id new for the opposite reason: there a piece can end up
+ *  bounding a different area.) Only on its first side, though, so where the
+ *  shape bounded several areas the id alone can name the wrong one: the
+ *  caller re-points the extrudes on the sketch (SketchMode.carryRegionRefs).
+ *
+ *  Every constraint that named the shape is rewritten for the lines: a side
+ *  (`R~k`, `P~k`, `S~k`) becomes its line, and a rectangle corner becomes the
+ *  start of the side leaving it. A LOCKED width or height, and a dimension
+ *  across one side's two corners, become the distance between the two
+ *  opposite sides rather than the length of one line: a later fillet or
+ *  chamfer shortens that line, and its length would then pull the shape out
+ *  by the corner it rounded. The opposite sides do not move when a corner is
+ *  rounded, so the size holds.
+ *
+ *  Null when `idx` is not one of the three shapes, or the shape has no size. */
+export function explodeCompound(
+  ents: ResolvedEntity[],
+  cons: SketchConstraint[],
+  idx: number,
+  opts: { square?: "axes" | "perpendicular" } = {},
+): ExplodeResult | null {
+  const e = ents[idx];
+  if (!e) return null;
+  const c = constr(e);
+  const line = (id: string, a: { x: number; y: number }, b: { x: number; y: number }): ResolvedEntity =>
+    ({ type: "line", id, x1: a.x, y1: a.y, x2: b.x, y2: b.y, ...c });
+  let made: ResolvedEntity[];
+  let sides: string[];
+  let outline: string[];
+  let helpers: string[] = [];
+  let keep: SketchConstraint[];
+
+  if (e.type === "rectangle") {
+    if (!(e.width > 0 && e.height > 0)) return null;
+    const corners = rectCorners(e.x, e.y, e.width, e.height); // bl, br, tr, tl
+    sides = [e.id, newEntityId(), newEntityId(), newEntityId()];
+    made = corners.map((a, k) => line(sides[k]!, a, corners[(k + 1) % 4]!));
+    outline = sides;
+    const [s0, s1, s2, s3] = sides as [string, string, string, string];
+    keep = opts.square === "perpendicular"
+      ? [
+        { type: "perpendicular", l1: s0, l2: s1 },
+        { type: "perpendicular", l1: s1, l2: s2 },
+        { type: "perpendicular", l1: s2, l2: s3 },
+      ]
+      : [
+        { type: "horizontal", line: s0 },
+        { type: "vertical", line: s1 },
+        { type: "horizontal", line: s2 },
+        { type: "vertical", line: s3 },
+      ];
+  } else if (e.type === "polygon") {
+    if (!(e.radius > 0)) return null;
+    const vs = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
+    const n = vs.length;
+    sides = vs.map((_, k) => (k === 0 ? e.id : newEntityId()));
+    made = vs.map((a, k) => line(sides[k]!, a, vs[(k + 1) % n]!));
+    outline = sides;
+    // Its corners on one circle and its sides touching a second, concentric
+    // one. Equal sides would hold it too, until a fillet or a chamfer: those
+    // shorten the two sides they work on, and Equal then pulls every side to
+    // the shorter length and the polygon out of shape (measured: a hexagon of
+    // radius 10 shrank to 9.86 and went irregular). A side's line does not
+    // move when its corner is rounded, so the inner circle keeps holding it.
+    const ring: ResolvedEntity = { type: "circle", id: newEntityId(), x: e.x, y: e.y, radius: e.radius, construction: true };
+    const inner: ResolvedEntity = { type: "circle", id: newEntityId(), x: e.x, y: e.y, radius: e.radius * Math.cos(Math.PI / n), construction: true };
+    made.push(ring, inner);
+    helpers = [ring.id, inner.id];
+    keep = [
+      { type: "concentric", c1: ring.id, c2: inner.id },
+      // corner k is where side k starts
+      ...sides.map((s): SketchConstraint => ({ type: "pointOn", e: s, p: 0, curve: ring.id })),
+      ...sides.map((s): SketchConstraint => ({ type: "tangent2", a: s, b: inner.id })),
+    ];
+  } else if (e.type === "slot") {
+    const one = new Map([[e.id, e]]);
+    const a = lineOperand(one, `${e.id}~0`), b = lineOperand(one, `${e.id}~1`);
+    if (!a || !b || !(e.width > 0)) return null;
+    // Side 0 runs (x1,y1) -> (x2,y2) on the left of the axis and side 1 back
+    // on the right (entityDims' shapeSide), so the end arcs close them up:
+    // one round (x2,y2) from side 0's end to side 1's start, one round
+    // (x1,y1) from side 1's end to side 0's start, each bulging out along the
+    // axis. A construction line across each end (its diameter) is what holds
+    // the shape, see below.
+    const r = e.width / 2;
+    const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+    const ux = (e.x2 - e.x1) / len, uy = (e.y2 - e.y1) / len;
+    const s0 = e.id, s1 = newEntityId(), endB = newEntityId(), endA = newEntityId();
+    const acrossB = newEntityId(), acrossA = newEntityId();
+    const P0 = { x: a.x1, y: a.y1 }, P1 = { x: a.x2, y: a.y2 }, P2 = { x: b.x1, y: b.y1 }, P3 = { x: b.x2, y: b.y2 };
+    made = [
+      line(s0, P0, P1),
+      { type: "arc", id: endB, x1: P1.x, y1: P1.y, x2: P2.x, y2: P2.y, mx: e.x2 + ux * r, my: e.y2 + uy * r, ...c },
+      line(s1, P2, P3),
+      { type: "arc", id: endA, x1: P3.x, y1: P3.y, x2: P0.x, y2: P0.y, mx: e.x1 - ux * r, my: e.y1 - uy * r, ...c },
+      { ...line(acrossB, P1, P2), construction: true },
+      { ...line(acrossA, P3, P0), construction: true },
+    ];
+    sides = [s0, s1];
+    outline = [s0, endB, s1, endA];
+    helpers = [acrossB, acrossA];
+    // NOT Tangent: a line tangent to an arc it shares an end with is a
+    // degenerate equation (the touch is a maximum of the distance it
+    // measures), so the solver reports all four as redundant and a drag of
+    // the result conflicts. Each end's centre on its diameter, both diameters
+    // square to side 0 and equal radii give the same shape, tangent by
+    // construction, with the slot's five freedoms: two centres and a width.
+    keep = [
+      { type: "pointOn", e: endB, p: 2, curve: acrossB },
+      { type: "pointOn", e: endA, p: 2, curve: acrossA },
+      { type: "perpendicular", l1: s0, l2: acrossB },
+      { type: "perpendicular", l1: s0, l2: acrossA },
+      { type: "equalRadius", a: endA, b: endB },
+    ];
+  } else {
+    return null;
+  }
+
+  const shape = e.id;
+  const names = (id: string) => id === shape || id.startsWith(`${shape}~`);
+  /** a LINE operand: a side becomes its line; the bare shape id was never one */
+  const side = (id: string): string | null => {
+    if (!names(id)) return id;
+    const k = Number(id.slice(shape.length + 1));
+    return id !== shape && Number.isInteger(k) && k >= 0 ? sides[k] ?? null : null;
+  };
+  /** which rectangle corner a point operand names, in either spelling: the
+   *  rectangle and a corner index, or an edge and its end (edge k runs from
+   *  corner k to corner k+1, as sketchSolve registers it) */
+  const cornerOf = (id: string, p: number): number | null => {
+    if (e.type !== "rectangle") return null; // a polygon or slot offers no point yet
+    if (id === shape) return Number.isInteger(p) && p >= 0 && p <= 3 ? p : null;
+    const k = Number(id.slice(shape.length + 1));
+    return Number.isInteger(k) && k >= 0 && k <= 3 ? (k + (p === 1 ? 1 : 0)) % 4 : null;
+  };
+  /** a POINT operand: a corner becomes the start of the side leaving it */
+  const point = (id: string, p: number): { e: string; p: number } | null => {
+    if (!names(id)) return { e: id, p };
+    const k = cornerOf(id, p);
+    return k === null ? null : { e: sides[k]!, p: 0 };
+  };
+  /** corner k as an end of the side through it that runs ACROSS `field`'s
+   *  measure: the width runs between the two vertical sides (odd k), the
+   *  height between the two horizontal ones */
+  const across = (k: number, field: "width" | "height") =>
+    k % 2 === (field === "width" ? 1 : 0) ? { e: sides[k]!, p: 0 } : { e: sides[(k + 3) % 4]!, p: 1 };
+  /** the rectangle's width or height, held from corner `from` to the opposite
+   *  side through corner `to` (see the header: not the length of one line) */
+  const size = (
+    field: "width" | "height", from: number, to: number,
+    c: { id?: string; value: number; driven?: boolean; place?: PlaceOffset },
+  ): SketchConstraint => ({
+    type: "p2lDistance",
+    ...(c.id !== undefined ? { id: c.id } : {}),
+    e: across(from, field).e, p: across(from, field).p, line: across(to, field).e,
+    value: Math.abs(c.value),
+    ...(c.driven ? { driven: true } : {}),
+    ...(c.place ? { place: c.place } : {}),
+  });
+  /** the size a point-to-point dimension across two corners of one side spans,
+   *  if it does: {0,1} and {2,3} the width, {1,2} and {3,0} the height. X can
+   *  only hold a width and Y only a height (a Y across the bottom is 0). */
+  const spans = (c: Extract<SketchConstraint, { type: "p2pDistance" | "p2pDistanceX" | "p2pDistanceY" }>) => {
+    if (e.type !== "rectangle") return null;
+    const a = cornerOf(c.e1, c.p1), b = cornerOf(c.e2, c.p2);
+    if (!names(c.e1) || !names(c.e2) || a === null || b === null) return null;
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    const field = (lo === 0 && hi === 1) || (lo === 2 && hi === 3) ? "width"
+      : (lo === 1 && hi === 2) || (lo === 0 && hi === 3) ? "height" : null;
+    if (!field || (c.type === "p2pDistanceX" && field !== "width") || (c.type === "p2pDistanceY" && field !== "height")) return null;
+    return { field, from: a, to: b } as const;
+  };
+
+  const remap = (k: SketchConstraint): SketchConstraint | null => {
+    switch (k.type) {
+      case "horizontal": case "vertical": { const l = side(k.line); return l ? { ...k, line: l } : null; }
+      case "distance": {
+        if (e.type === "rectangle" && names(k.line)) {
+          // a locked width (edge 0 or 2) or height (edge 1 or 3), from Lock
+          const edge = Number(k.line.slice(shape.length + 1));
+          if (k.line === shape || !Number.isInteger(edge) || edge < 0 || edge > 3) return null;
+          // A lock has no label placement of its own: its label was the
+          // rectangle's badge, so the badge's placement carries over. It lands
+          // where the badge was: a dimension's label sits on the left of the
+          // way it measures, which is below the bottom side for br -> bl and
+          // left of the left side for bl -> tl.
+          const field = edge % 2 === 0 ? "width" : "height";
+          const place = dimPlaceOf(e)?.[field];
+          return field === "width"
+            ? size(field, 1, 0, { ...k, ...(place ? { place } : {}) })
+            : size(field, 0, 3, { ...k, ...(place ? { place } : {}) });
+        }
+        const l = side(k.line);
+        return l ? { ...k, line: l } : null;
+      }
+      case "parallel": case "perpendicular": case "equal": case "collinear": case "angle": {
+        const l1 = side(k.l1), l2 = side(k.l2);
+        return l1 && l2 ? { ...k, l1, l2 } : null;
+      }
+      case "tangent": { const l = side(k.line); return l && !names(k.circle) ? { ...k, line: l } : null; }
+      case "tangent2": { const a = side(k.a), b = side(k.b); return a && b ? { ...k, a, b } : null; }
+      case "coincident": {
+        const a = point(k.e1, k.p1), b = point(k.e2, k.p2);
+        return a && b ? { ...k, e1: a.e, p1: a.p, e2: b.e, p2: b.p } : null;
+      }
+      case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
+        const s = spans(k);
+        if (s) return size(s.field, s.from, s.to, k);
+        const a = point(k.e1, k.p1), b = point(k.e2, k.p2);
+        return a && b ? { ...k, e1: a.e, p1: a.p, e2: b.e, p2: b.p } : null;
+      }
+      case "symmetric": {
+        const a = point(k.e1, k.p1), b = point(k.e2, k.p2), l = side(k.line);
+        return a && b && l ? { ...k, e1: a.e, p1: a.p, e2: b.e, p2: b.p, line: l } : null;
+      }
+      case "midpoint": case "p2lDistance": {
+        const q = point(k.e, k.p), l = side(k.line);
+        return q && l ? { ...k, e: q.e, p: q.p, line: l } : null;
+      }
+      case "pointOn": {
+        const q = point(k.e, k.p), l = side(k.curve);
+        return q && l ? { ...k, e: q.e, p: q.p, curve: l } : null;
+      }
+      case "fix": case "p2cDistance": {
+        const q = point(k.e, k.p);
+        return q ? { ...k, e: q.e, p: q.p } : null;
+      }
+      case "c2lDistance": { const l = side(k.line); return l && !names(k.circle) ? { ...k, line: l } : null; }
+      case "offset": {
+        const pairs = k.pairs.map((pr) => ({ src: side(pr.src), cpy: side(pr.cpy) }));
+        return pairs.every((pr) => pr.src && pr.cpy) ? { ...k, pairs: pairs as { src: string; cpy: string }[] } : null;
+      }
+      // operands that are always rounds, and a rectangle, polygon or slot is
+      // never one: these can only name the shape in a broken document
+      case "concentric": case "equalRadius": case "diameter": case "radius":
+      case "radialGap": case "c2cDistance":
+        return null;
+      default: return k satisfies never;
+    }
+  };
+  const mentions = (k: SketchConstraint) =>
+    k.type === "offset"
+      ? k.pairs.some((pr) => names(pr.src) || names(pr.cpy))
+      : Object.entries(k).some(([f, val]) => f !== "type" && f !== "id" && typeof val === "string" && names(val));
+
+  const constraints: SketchConstraint[] = [];
+  let dropped = 0;
+  for (const k of cons) {
+    if (!mentions(k)) { constraints.push(k); continue; }
+    const next = remap(k);
+    if (next) constraints.push(next);
+    else dropped++;
+  }
+  constraints.push(...keep);
+  return {
+    entities: ents.flatMap((o, i) => (i === idx ? made : [o])),
+    constraints,
+    sides,
+    outline,
+    helpers,
+    holds: keep,
+    dropped,
+  };
+}
+
 /** `l` cut back to `to` at its corner end, the end that is not being kept.
  *  `keepStart` says which end that is.
  *
@@ -841,37 +1152,137 @@ function cutBack(l: LineE, keepStart: boolean, to: THREE.Vector2): LineE {
   return keepStart ? { ...l, x2: to.x, y2: to.y } : { ...l, x1: to.x, y1: to.y };
 }
 
-/** `constraints` without the coincidents (and point-on-curves) that name a
- *  point a corner operation (Fillet, Chamfer) moved.
+/** The constraints after a corner operation (Fillet, Chamfer) on lines `a`
+ *  and `b`, for the corner it cut away.
  *
  *  Those operations keep both line ids and move both corner ends off the
  *  corner on purpose: there is no corner afterwards. A coincident that joined
- *  either end to anything at the corner (every snapped corner has one, and so
- *  does the closing corner of every line chain) then names a point that is not
- *  there, and the next solve pulls the lines back onto it: the profile folded
- *  up, or never solved again. So the join goes with the corner, which is what
- *  happened before snaps emitted joins. Joins on the ends the operation did not
- *  move, the far corners, stay; cutBack is what keeps their indices right.
+ *  the two corner ends (every snapped corner has one, and so does the closing
+ *  corner of every line chain) then names a point that is not there, and the
+ *  next solve pulls the lines back onto it: the profile folded up, or never
+ *  solved again. So that join goes with the corner, which is what happened
+ *  before snaps emitted joins. Joins on the ends the operation did not move,
+ *  the far corners, stay; cutBack is what keeps their indices right.
  *
- *  Whether a fillet should instead carry a corner's joins onto the arc is a
- *  design question this does not answer. */
-export function dropMovedJoins(
+ *  A Coincident that held the corner to some OTHER point (the origin, another
+ *  curve's end) is kept as that point On both lines, which is exactly where
+ *  the corner was, and holds it the same two ways. Dropped with the corner, as
+ *  it used to be, a rectangle anchored on the origin by that corner came loose
+ *  without a word.
+ *
+ *  What cannot be kept is counted, for the caller to say so, except for the
+ *  constraints in `quiet` (an explode's own, which the user never made):
+ *    lost     a point held On a curve by the moved corner end itself: on the
+ *             new tangent point it would bend the fillet, so it goes (one on a
+ *             cut-back LINE stays, since the line's carrier did not move)
+ *    shifted  a dimension that measured to the corner, or the length of a line
+ *             that is now shorter, and so reads another value than it holds:
+ *             the next solve moves the shape to give it back
+ *  Whether a fillet should carry a corner's constraints onto a construction
+ *  point at the old corner instead, so a dimension keeps measuring to it, is a
+ *  design question this does not answer; it only names the dimension. */
+export function cornerJoins(
   constraints: SketchConstraint[],
   before: readonly ResolvedEntity[],
   after: readonly ResolvedEntity[],
-): SketchConstraint[] {
+  a: string,
+  b: string,
+  quiet: ReadonlySet<SketchConstraint> = new Set(),
+): { constraints: SketchConstraint[]; lost: number; shifted: number } {
+  const was = new Map(before.map((e) => [e.id, e]));
+  const now = new Map(after.map((e) => [e.id, e]));
   const moved = (id: string, p: number) => {
-    const was = before.find((e) => e.id === id), now = after.find((e) => e.id === id);
-    const a = was && refPoint(was, p), b = now && refPoint(now, p);
-    return !!a && !!b && coincKey(a.x, a.y) !== coincKey(b.x, b.y);
+    const e0 = was.get(id), e1 = now.get(id);
+    const p0 = e0 && refPoint(e0, p), p1 = e1 && refPoint(e1, p);
+    return !!p0 && !!p1 && coincKey(p0.x, p0.y) !== coincKey(p1.x, p1.y);
   };
-  // A point put ON a curve goes the same way when it was the corner end that
-  // moved: on the corner's new tangent point it would bend the fillet. One on
-  // a cut-back LINE stays, since the line's carrier did not move.
-  return constraints.filter((c) =>
-    c.type === "coincident" ? !(moved(c.e1, c.p1) || moved(c.e2, c.p2))
-    : c.type === "pointOn" ? !moved(c.e, c.p)
-    : true);
+  const out: SketchConstraint[] = [];
+  const holds = (e: string, p: number, curve: string) =>
+    [...constraints, ...out].some((k) => k.type === "pointOn" && k.e === e && k.p === p && k.curve === curve);
+  let lost = 0, shifted = 0;
+  for (const c of constraints) {
+    if (c.type === "coincident") {
+      const m1 = moved(c.e1, c.p1), m2 = moved(c.e2, c.p2);
+      if (!m1 && !m2) { out.push(c); continue; }
+      const e = m1 ? c.e2 : c.e1, p = m1 ? c.p2 : c.p1;
+      // both ends moved, or the other end is on one of the two lines: the
+      // corner's own join, gone with the corner
+      if ((m1 && m2) || e === a || e === b) continue;
+      for (const curve of [a, b]) if (!holds(e, p, curve)) out.push({ type: "pointOn", e, p, curve });
+      continue;
+    }
+    if (c.type === "pointOn" && moved(c.e, c.p)) {
+      if (!quiet.has(c)) lost++;
+      continue;
+    }
+    if (!isDriven(c)) {
+      const m0 = measureDim(c, was), m1 = measureDim(c, now);
+      if (m0 !== null && m1 !== null && Math.abs(m0 - m1) > 1e-6) shifted++;
+    }
+    out.push(c);
+  }
+  return { constraints: out, lost, shifted };
+}
+
+/** What a length dimension measures on `ents` right now, or null for one this
+ *  does not measure. Only the kinds a corner operation can change: a line's
+ *  length, and a distance with a point at one end. */
+function measureDim(c: SketchConstraint, ents: ReadonlyMap<string, ResolvedEntity>): number | null {
+  const pt = (id: string, p: number) => { const e = ents.get(id); return e ? refPoint(e, p) : null; };
+  const seg = (id: string) => lineOperand(ents as Map<string, ResolvedEntity>, id);
+  switch (c.type) {
+    case "distance": { const l = seg(c.line); return l ? Math.hypot(l.x2 - l.x1, l.y2 - l.y1) : null; }
+    case "p2pDistance": case "p2pDistanceX": case "p2pDistanceY": {
+      const p = pt(c.e1, c.p1), q = pt(c.e2, c.p2);
+      if (!p || !q) return null;
+      return c.type === "p2pDistanceX" ? q.x - p.x : c.type === "p2pDistanceY" ? q.y - p.y : p.distanceTo(q);
+    }
+    case "p2lDistance": {
+      const p = pt(c.e, c.p), l = seg(c.line);
+      if (!p || !l) return null;
+      const len = Math.hypot(l.x2 - l.x1, l.y2 - l.y1);
+      return len > 1e-12 ? Math.abs((p.x - l.x1) * (l.y2 - l.y1) - (p.y - l.y1) * (l.x2 - l.x1)) / len : null;
+    }
+    case "p2cDistance": {
+      const p = pt(c.e, c.p), r = ents.get(c.circle), cr = r && asRound(r);
+      return p && cr ? Math.abs(Math.hypot(p.x - cr.x, p.y - cr.y) - cr.r) : null;
+    }
+    default: return null;
+  }
+}
+
+/** Does `c` tie geometry in `moving` (entity ids; a rectangle side `R~k`
+ *  counts as R) to geometry outside it, in a way a rotation about `pivot`
+ *  would break? Then the settle after the rotation pulls the turned geometry
+ *  part of the way back, and the angle the user typed is not the angle they
+ *  get (decision C8: refuse, and say so).
+ *
+ *  Not a tie: a constraint wholly inside or wholly outside; a reference
+ *  dimension, which holds nothing; Equal, since a rotation keeps every
+ *  length; and a Coincident or a point On a curve whose point sits on the
+ *  pivot, which the rotation leaves where it is. */
+export function rotationTie(
+  c: SketchConstraint,
+  ents: readonly ResolvedEntity[],
+  moving: ReadonlySet<string>,
+  pivot: { x: number; y: number },
+): boolean {
+  const base = (id: string) => { const k = id.indexOf("~"); return k > 0 ? id.slice(0, k) : id; };
+  const ops = c.type === "offset"
+    ? c.pairs.flatMap((pr) => [pr.src, pr.cpy])
+    : Object.entries(c).flatMap(([f, val]) => (f !== "type" && f !== "id" && typeof val === "string" ? [val] : []));
+  const inside = ops.filter((id) => moving.has(base(id))).length;
+  if (inside === 0 || inside === ops.length) return false;
+  if (isDriven(c) || c.type === "equal") return false;
+  if (c.type === "coincident" || c.type === "pointOn") {
+    const [id, p] = c.type === "coincident" ? [c.e1, c.p1] : [c.e, c.p];
+    const byId = new Map(ents.map((e) => [e.id, e]));
+    const side = id.includes("~") ? lineOperand(byId, id) : null;
+    const e = byId.get(id);
+    const q = side ? (p === 1 ? v(side.x2, side.y2) : v(side.x1, side.y1)) : e ? refPoint(e, p) : null;
+    return !(q && Math.hypot(q.x - pivot.x, q.y - pivot.y) < 1e-6);
+  }
+  return true;
 }
 
 /**

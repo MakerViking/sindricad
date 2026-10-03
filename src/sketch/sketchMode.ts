@@ -17,19 +17,19 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, linearDim, rebindPolygonSides, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, lineOperandAt, linearDim, rebindPolygonSides, setDimPixelScale, shapeSideAt, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
   type DimOptions, type DimPlan, type DimTarget,
 } from "./dimensionTool";
-import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, dropMovedJoins, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type OffsetResult } from "./modify";
+import { pickEntity, trimSpan, trimWithConstraints, detachEndpoint, detachableEnd, filletCorner, chamferCorner, cornerJoins, explodeCompound, rotationTie, offsetEntity, offsetChain, offsetChainJunction, signedOffsetAt, breakWithConstraints, extendLine, breakLink, attachmentPoints, bodyDragBlocked, bodyDragFrame, fixPinnedIds, pickDragPoint, FIXED_POINT_MSG, PROJECTED_FIXED_MSG, type ExplodeResult, type OffsetResult } from "./modify";
 import { newEntityId, newConstraintId, isDimConstraint, notePatternId } from "./id";
 import { SketchHistory, cloneSnapshot, type SketchSnapshot } from "./history";
 import { isPlainNumber, parseField, dimValueOk, fmtLength, fieldText, canonicalDecimal, fieldExpr } from "../ui/units";
 import { splitNameValue } from "../params/engine";
 import { RIGID_ENTITY_NUM_FIELDS, coerceForField, type FieldKind } from "../document/numFields";
-import type { SketchBinding } from "../document/store";
+import type { RegionCarry, SketchBinding } from "../document/store";
 import { advanceCenterArcSweep, centerArcEntity, circumcenter } from "./arc";
 import { coincKey, compileAndSolve, constraintIndexOf, soleDimEntity, MAX_BIAS_ANCHORS } from "./sketchSolve";
 import { SolverUnavailable } from "./solver";
@@ -41,7 +41,8 @@ import { expandPattern, translated, rotated, scaled } from "./pattern";
 import { candidatesFromEntities, snap, snapCoincidences, type SnapKind, type SnapCandidate, type PointRef } from "./snap";
 import type { ResolvedEntity } from "./snap";
 import { inferHorizontalVertical, isGeometrySnap } from "./autoConstrain";
-import { detectRegions, entityPolyline, EPS } from "./region";
+import { detectRegions, entityPolyline, EPS, resolveRegionRef, sameRegionIds, twinRegion, type Region } from "./region";
+import { worldPointInRegion } from "./regionSelect";
 import { setSpaceMouseOrbitLocked } from "../input/spacemouse";
 import { stepDoublePress, type PressRecord } from "../input/doublePress";
 import { keyHint } from "../input/shortcuts";
@@ -192,6 +193,15 @@ function storedDimExpr(raw: string, kind: FieldKind): string {
   return nv ? `${nv.name}=${expr}` : expr;
 }
 
+/** One Fillet/Chamfer pick: the entity, and for a rectangle or polygon the
+ *  SIDE it took (`<id>~k`), which becomes a line when the tool runs. */
+type CornerPick = { idx: number; side: string | null };
+
+/** The shapes that are one entity but drawn as several curves, and so can be
+ *  exploded into them (modify.explodeCompound). */
+const isCompoundShape = (e: ResolvedEntity) =>
+  e.type === "rectangle" || e.type === "polygon" || e.type === "slot";
+
 // Tools that operate on the current multi-selection, so setTool must keep it.
 const KEEPS_SELECTION = new Set<SketchTool>(["mirror", "move", "copy", "rotate", "scale"]);
 
@@ -265,6 +275,9 @@ export class SketchMode {
   private arcSweep = 0;
   private polygonSides = 6; // n for the polygon tool
   private filletFirst: number | null = null; // first line picked for a sketch fillet
+  /** Which SIDE of a rectangle or polygon the first Fillet/Chamfer pick took
+   *  (`<id>~k`), or null for a plain line. Read only beside filletFirst. */
+  private filletSide: string | null = null;
   /** world position of the endpoint a constraint flow is holding, if any */
   private pendingConstraintPoint: THREE.Vector3 | null = null;
   /** What a withdrawn trial says when the tool has nothing more specific. */
@@ -395,6 +408,11 @@ export class SketchMode {
   // and reused for the clickable labels (constraintDimExtras)
   private cdims: ConstraintDim[] = [];
   private editingId: string | null = null;
+  /** Area references of the extrudes on this sketch that an edit here had to
+   *  re-point (carryRegionRefs), as they read now. finish() writes them with
+   *  the sketch, in its one undo step; they ride in the in-sketch undo
+   *  snapshot, so undoing the edit takes them back too. */
+  private regionCarry: RegionCarry = {};
   /** The datumPlane feature this sketch is placed ON, when it was created from
    *  one. Round-tripped through finish() so re-editing a sketch never silently
    *  downgrades it from a live datum link to a baked placement. */
@@ -563,6 +581,7 @@ export class SketchMode {
     this.planeId = planeId ?? null;
     this.faceAnchor = face ?? null;
     this.store = store;
+    this.regionCarry = {};
     this.history.reset(); // fresh history per session (armed once entities load)
     if (!this.fonts.length) void fetchFonts().then((f) => { this.fonts = f; });
 
@@ -702,7 +721,8 @@ export class SketchMode {
     const sketch = snap && (this.editingId || hasDrawnContent(snap)) ? snap : null;
     if (sketch) {
       if (this.editingId) {
-        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id));
+        const carry = Object.keys(this.regionCarry ?? {}).length ? this.regionCarry : undefined;
+        store.replaceFeature(this.editingId, sketch, this.drainBindings(sketch.id), carry);
       } else {
         store.addFeature(sketch, undefined, this.drainBindings(sketch.id));
       }
@@ -717,6 +737,7 @@ export class SketchMode {
   private cleanup() {
     const el = this.viewport.domElement;
     this.pendingBindings.clear();
+    this.regionCarry = {};
     el.removeEventListener("pointerdown", this.boundDown);
     el.removeEventListener("pointermove", this.boundMove);
     el.removeEventListener("pointerup", this.boundUp);
@@ -3976,15 +3997,16 @@ export class SketchMode {
     if (!p) return;
     const idx = pickEntity(this.entities, p, this.pickTol());
     const preview: THREE.Object3D[] = [];
+    const cornerTool = this.tool === "fillet" || this.tool === "chamfer";
     const first = this.filletFirst != null ? this.entities[this.filletFirst] : undefined;
     if (first) {
       // A rectangle presents four LINE OPERANDS and no operand of its own, so
       // highlighting the entity lit all four sides when the user had armed one
       // of them: the right constraint, and feedback that pointed at the wrong
       // thing. Draw the edge actually picked, when the flow is holding one.
-      // SketchMode's own fillet tool shares `filletFirst` and holds no operand,
-      // so it falls through to the whole entity exactly as before.
-      const opId = this.constraintTools.heldOperandId();
+      // SketchMode's own Fillet and Chamfer share `filletFirst` and hold the
+      // side they took in `filletSide` (null for a plain line).
+      const opId = cornerTool ? this.filletSide : this.constraintTools.heldOperandId();
       const seg = opId && opId !== first.id
         ? lineOperand(new Map(this.entities.map((e) => [e.id, e])), opId)
         : null;
@@ -4005,14 +4027,15 @@ export class SketchMode {
     // asks ConstraintTools, because its click can take ANOTHER shape's edge than
     // the nearest one, or none at all (ConstraintTools.hoverCurve).
     //
-    // Fillet and Chamfer take a LINE and nothing else (filletClick). They lit a
-    // rectangle's whole outline red, inviting a click that was then dropped
-    // without a word (reports 5650b766, be869d55), so they light only what they
-    // can take; a click on anything else says why instead (refuseShapeCorner).
-    const cornerTool = this.tool === "fillet" || this.tool === "chamfer";
-    if (hit && (!cornerTool || hit.type === "line")) {
+    // Fillet and Chamfer take a line, or ONE side of a rectangle or polygon
+    // (cornerPick). They lit a shape's whole outline red, inviting a click that
+    // was then dropped without a word (reports 5650b766, be869d55), so they
+    // light only the side the click would take, and nothing on a slot, which
+    // has no corner to take.
+    if (hit) {
       const curve = this.tool === "trim" ? this.trimPreview(idx, hit, p)
         : this.tool === "coincident" ? this.constraintTools.hoverCurve(p)
+        : cornerTool ? this.cornerSideCurve(hit, p)
         : CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p)
         : hit;
       if (curve) preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
@@ -4190,6 +4213,9 @@ export class SketchMode {
           onClick: () => { this.setSelectedConstruction(!toNormal); },
         }]
         : []),
+      ...(selEnts.some(isCompoundShape)
+        ? [{ label: t("sketch.menu.explode"), onClick: () => this.explodeSelected() }]
+        : []),
       ...(linked
         ? [{ label: linked > 1 ? t("sketch.menu.breakLinkCount", { count: linked }) : t("sketch.menu.breakLink"), onClick: () => this.breakSelectedLinks() }]
         : []),
@@ -4317,19 +4343,18 @@ export class SketchMode {
     if (dropped > 0) toast(t("sketch.modify.trimDropped", { count: dropped }));
   }
   private filletClick(p: THREE.Vector2) {
-    const idx = pickEntity(this.entities, p, this.pickTol());
-    if (this.guardProjected(idx >= 0 ? this.entities[idx] : undefined)) return;
-    if (this.refuseShapeCorner(idx >= 0 ? this.entities[idx] : undefined)) return;
-    if (idx < 0 || this.entities[idx]?.type !== "line") return;
+    const pick = this.cornerPick(p);
+    if (!pick) return;
     if (this.filletFirst == null) {
-      this.filletFirst = idx;
+      this.filletFirst = pick.idx;
+      this.filletSide = pick.side;
       return;
     }
-    if (idx === this.filletFirst) return;
-    const second = idx;
-    const first = this.filletFirst;
+    if (pick.idx === this.filletFirst && pick.side === this.filletSide) return;
+    const first = { idx: this.filletFirst, side: this.filletSide };
+    if (this.refuseFarSides(first, pick)) return;
     this.dim.show([{ name: "radius", label: t("sketch.dimension.label.radius"), kind: "length" }], () =>
-      this.applyFillet(first, second),
+      this.applyFillet(first, pick),
     );
   }
   /** Apply the fillet AND record what it means: two tangencies and the radius
@@ -4340,74 +4365,323 @@ export class SketchMode {
    *  On trial, as a set: the fillet's geometry is correct whether or not the
    *  constraints can coexist with what the sketch already carries, so a conflict
    *  withdraws the three constraints and says so — it must not withdraw, or
-   *  refuse, the fillet. */
-  private applyFillet(iA: number, iB: number) {
+   *  refuse, the fillet.
+   *
+   *  A pick on a rectangle or polygon side explodes that shape into lines first
+   *  (cornerLines), and only when the fillet then fits: two sides that do not
+   *  meet, or a radius too big for them, leave the shape a shape. */
+  private applyFillet(a: CornerPick, b: CornerPick) {
     if (this.badTypedField({ name: "radius" })) return; // before ANY mutation: the pick and the box stay live
     const r = this.dim.getValue("radius") ?? 2;
-    const res = filletCorner(this.entities, iA, iB, r);
+    const regions = this.regionsBeforeRename();
+    const plan = this.cornerLines(a, b);
+    const res = plan ? filletCorner(plan.entities, plan.iA, plan.iB, r) : null;
     this.filletFirst = null;
     this.dim.hide();
-    if (res) {
-      this.constraints = dropMovedJoins(this.constraints, this.entities, res.entities); // the corner is gone
-      this.entities = res.entities;
+    if (plan && res) {
+      this.commitExplodes(plan.exploded, "fillet");
+      this.commitCorner(plan, res.entities, "fillet"); // the corner is gone
       this.constraints.push(...res.constraints);
       this.trial = {
         cons: res.constraints,
         msg: t("sketch.constraint.filletRadiusConflict"),
       };
+      this.carryRegionRefs(regions);
+    } else {
+      toast(t("sketch.modify.cornerNoFit", { tool: t("tool.fillet") }));
     }
     this.afterModify();
   }
   private chamferClick(p: THREE.Vector2) {
-    const idx = pickEntity(this.entities, p, this.pickTol());
-    if (this.guardProjected(idx >= 0 ? this.entities[idx] : undefined)) return;
-    if (this.refuseShapeCorner(idx >= 0 ? this.entities[idx] : undefined)) return;
-    if (idx < 0 || this.entities[idx]?.type !== "line") return;
+    const pick = this.cornerPick(p);
+    if (!pick) return;
     if (this.filletFirst == null) {
-      this.filletFirst = idx;
+      this.filletFirst = pick.idx;
+      this.filletSide = pick.side;
       return;
     }
-    if (idx === this.filletFirst) return;
-    const second = idx;
-    const first = this.filletFirst;
+    if (pick.idx === this.filletFirst && pick.side === this.filletSide) return;
+    const first = { idx: this.filletFirst, side: this.filletSide };
+    if (this.refuseFarSides(first, pick)) return;
     this.dim.show([{ name: "distance", label: t("sketch.dimension.label.distance"), kind: "length" }], () =>
-      this.applyChamfer(first, second),
+      this.applyChamfer(first, pick),
     );
   }
-  private applyChamfer(iA: number, iB: number) {
+  private applyChamfer(a: CornerPick, b: CornerPick) {
     if (this.badTypedField({ name: "distance" })) return; // before ANY mutation: the pick and the box stay live
     const d = this.dim.getValue("distance") ?? 2;
-    const res = chamferCorner(this.entities, iA, iB, d);
-    if (res) {
-      this.constraints = dropMovedJoins(this.constraints, this.entities, res); // as applyFillet
-      this.entities = res;
+    const regions = this.regionsBeforeRename();
+    const plan = this.cornerLines(a, b);
+    const res = plan ? chamferCorner(plan.entities, plan.iA, plan.iB, d) : null;
+    if (plan && res) {
+      this.commitExplodes(plan.exploded, "chamfer");
+      this.commitCorner(plan, res, "chamfer"); // as applyFillet
+      this.carryRegionRefs(regions);
+    } else {
+      toast(t("sketch.modify.cornerNoFit", { tool: t("tool.chamfer") }));
     }
     this.filletFirst = null;
     this.dim.hide();
     this.afterModify();
   }
 
-  /** Fillet and Chamfer join two LINES at a corner. A rectangle, polygon or slot
-   *  is ONE entity with no line of its own to pick (types.ts), and filletCorner
-   *  only knows lines, so a click on one used to vanish: no radius box and no
-   *  word (reports 5650b766, be869d55). Say what the shape is and the way out.
-   *  The pick already armed, if any, stays armed: the user can still click a
-   *  real line second. */
-  private refuseShapeCorner(e: ResolvedEntity | undefined): boolean {
-    if (e?.type !== "rectangle" && e?.type !== "polygon" && e?.type !== "slot") return false;
-    const wayOut =
-      e.type === "rectangle" ? t("sketch.modify.shapeWayOut.rectangle")
-        : e.type === "polygon" ? t("sketch.modify.shapeWayOut.polygon")
-          : t("sketch.modify.shapeWayOut.slot");
-    toast(
-      t("sketch.modify.shapeNotLines", {
-        tool: this.tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet"),
-        shape: t(`sketch.entity.${e.type}`),
-        wayOut,
-      }),
-      { timeout: 8000 },
-    );
+  /** The curve a Fillet or Chamfer click at `p` on `e` would take, to light
+   *  it: the line itself, or the one side of a rectangle or polygon, as a
+   *  synthetic line. Null for anything the click refuses. */
+  private cornerSideCurve(e: ResolvedEntity, p: THREE.Vector2): ResolvedEntity | null {
+    if (e.type === "line") return e;
+    const side = e.type === "rectangle" ? lineOperandAt(e, p) : e.type === "polygon" ? shapeSideAt(e, p) : null;
+    const seg = side ? lineOperand(new Map([[e.id, e]]), side) : null;
+    return seg ? ({ type: "line", id: side!, ...seg } as ResolvedEntity) : null;
+  }
+
+  /** What a Fillet or Chamfer click takes: a line, or one SIDE of a rectangle
+   *  or polygon (`<id>~k`, the side the hover lit), which the tool turns into a
+   *  line when it runs (explode, round 1 decision 2). Null, after saying why
+   *  when there is something to say, for anything else.
+   *
+   *  A slot is refused: its straight sides are parallel and its ends already
+   *  round, so it has no corner for either tool. So is a shape a parameter
+   *  sizes (explodeRefusal). The pick already armed, if any, stays armed. */
+  private cornerPick(p: THREE.Vector2): CornerPick | null {
+    const idx = pickEntity(this.entities, p, this.pickTol());
+    const e = idx >= 0 ? this.entities[idx] : undefined;
+    if (!e || this.guardProjected(e)) return null;
+    if (e.type === "line") return { idx, side: null };
+    const tool = this.tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet");
+    if (e.type === "slot") {
+      toast(t("sketch.modify.slotNoCorner", { tool }), { timeout: 8000 });
+      return null;
+    }
+    const side = e.type === "rectangle" ? lineOperandAt(e, p) : e.type === "polygon" ? shapeSideAt(e, p) : null;
+    if (!side) return null;
+    const why = this.explodeRefusal(e);
+    if (why) { toast(why, { timeout: 8000 }); return null; }
+    return { idx, side };
+  }
+
+  /** The two corner picks as LINES, in a COPY of the sketch: a side of a
+   *  rectangle or polygon explodes that shape (once, when both picks are on
+   *  it) and stands for the line it became. Nothing is committed: the caller
+   *  does that, with commitExplodes, once the fillet or chamfer fits. */
+  private cornerLines(a: CornerPick, b: CornerPick): {
+    entities: ResolvedEntity[]; constraints: SketchConstraint[]; iA: number; iB: number;
+    exploded: { shape: ResolvedEntity; result: ExplodeResult }[];
+  } | null {
+    let entities = this.entities, constraints = this.constraints;
+    const exploded: { shape: ResolvedEntity; result: ExplodeResult }[] = [];
+    const ids: string[] = [];
+    for (const pk of [a, b]) {
+      const e = this.entities[pk.idx];
+      if (!e) return null;
+      if (!pk.side) { ids.push(e.id); continue; }
+      let done = exploded.find((x) => x.shape.id === e.id);
+      if (!done) {
+        const result = explodeCompound(entities, constraints, entities.findIndex((x) => x.id === e.id));
+        if (!result) return null;
+        ({ entities, constraints } = result);
+        done = { shape: e, result };
+        exploded.push(done);
+      }
+      const line = done.result.sides[Number(pk.side.slice(e.id.length + 1))];
+      if (!line) return null;
+      ids.push(line);
+    }
+    const [iA, iB] = ids.map((id) => entities.findIndex((x) => x.id === id));
+    if (iA === undefined || iB === undefined || iA < 0 || iB < 0) return null;
+    return { entities, constraints, iA, iB, exploded };
+  }
+
+  /** Why a shape must stay a shape, or null. A parameter that sets a polygon's
+   *  or slot's own numbers (RIGID_ENTITY_NUM_FIELDS) would be left setting
+   *  nothing once the shape is lines, and would say nothing about it: the
+   *  value would simply stop reaching the sketch. */
+  private explodeRefusal(e: ResolvedEntity): string | null {
+    for (const [field] of RIGID_ENTITY_NUM_FIELDS[e.type] ?? []) {
+      const key = `e:${e.id}:${field}`;
+      if (this.exprFor(key) === undefined) continue;
+      const name = this.pendingBindings.get(key)?.name ?? this.docBinding(key)?.name;
+      const shape = t(`sketch.entity.${e.type}`);
+      return name
+        ? t("sketch.modify.explodeParamBound", { shape, name })
+        : t("sketch.modify.explodeFormulaBound", { shape });
+    }
+    return null;
+  }
+
+  /** Make explodes planned on a copy (explodeCompound) the sketch's own: what
+   *  else names the shapes by id, a pattern's sources and the selection, now
+   *  names what they became, and the user is told the shape is lines now.
+   *  The caller has already taken the planned entities and constraints. */
+  private commitExplodes(done: { shape: ResolvedEntity; result: ExplodeResult }[], why: "fillet" | "chamfer" | "menu" | "rotate") {
+    for (const { shape, result } of done) {
+      // The shape's own id is still there, on its first line. A pattern of the
+      // shape copies all of it, not that one line.
+      for (const pat of this.patterns) {
+        if ("sources" in pat && pat.sources.includes(shape.id)) {
+          pat.sources = pat.sources.flatMap((id) => (id === shape.id ? result.outline : [id]));
+        }
+      }
+      // Selected, it stays selected as everything it became, helpers too: a
+      // Move that took the polygon's lines and left its circle behind would
+      // have the solve pull one back to the other.
+      if (this.selected.has(shape.id)) for (const id of [...result.outline, ...result.helpers]) this.selected.add(id);
+      const name = t(`sketch.entity.${shape.type}`);
+      if (why === "fillet" || why === "chamfer") {
+        toast(t("sketch.modify.explodedForCorner", { shape: name, tool: why === "chamfer" ? t("tool.chamfer") : t("tool.fillet") }), { timeout: 8000 });
+      }
+      if (result.dropped > 0) toast(t("sketch.modify.explodeDropped", { count: result.dropped, shape: name }));
+    }
+  }
+
+  /** Make a Fillet's or Chamfer's corner the sketch's own. `made` is what
+   *  filletCorner or chamferCorner returned on the plan's lines; the
+   *  constraints on the corner it cut away are kept where they can be
+   *  (cornerJoins, which says what could not be), and a pattern that copies
+   *  both lines copies what rounded or bevelled them too. Without that, each
+   *  copy is the two cut-back lines with a gap between them, which no longer
+   *  closes, and its area dropped out of the sketch without a word. */
+  private commitCorner(
+    plan: {
+      entities: ResolvedEntity[]; constraints: SketchConstraint[]; iA: number; iB: number;
+      exploded: { result: ExplodeResult }[];
+    },
+    made: ResolvedEntity[],
+    tool: "fillet" | "chamfer",
+  ) {
+    const a = plan.entities[plan.iA]!.id, b = plan.entities[plan.iB]!.id;
+    // An exploded polygon's corner sat on its construction circle; that one
+    // goes with the corner unannounced, as the user never made it.
+    const own = new Set(plan.exploded.flatMap((x) => x.result.holds));
+    const joins = cornerJoins(plan.constraints, plan.entities, made, a, b, own);
+    this.constraints = joins.constraints;
+    this.entities = made;
+    const had = new Set(plan.entities.map((e) => e.id));
+    const fresh = made.filter((e) => !had.has(e.id)).map((e) => e.id);
+    for (const pat of this.patterns) {
+      if ("sources" in pat && pat.sources.includes(a) && pat.sources.includes(b)) pat.sources = [...pat.sources, ...fresh];
+    }
+    const name = tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet");
+    if (joins.lost > 0) toast(t("sketch.modify.cornerLost", { count: joins.lost, tool: name }), { timeout: 8000 });
+    if (joins.shifted > 0) toast(t("sketch.modify.cornerShifted", { count: joins.shifted, tool: name }), { timeout: 8000 });
+  }
+
+  /** Two sides of ONE rectangle or polygon meet only when they are next to
+   *  each other. Any other two never meet (a rectangle's opposite sides: the
+   *  size was typed and nothing happened, without a word), or meet OUTSIDE the
+   *  shape (a hexagon's sides 0 and 2: both grew out to that point and side 1
+   *  was left inside). True, after saying so, for those; the first pick stays
+   *  armed for a side that does meet it. */
+  private refuseFarSides(a: CornerPick, b: CornerPick): boolean {
+    const e = this.entities[a.idx];
+    if (!e || a.idx !== b.idx || !a.side || !b.side) return false;
+    const n = e.type === "rectangle" ? 4 : e.type === "polygon" ? e.sides : 0;
+    if (n < 3) return false;
+    const k1 = Number(a.side.slice(e.id.length + 1)), k2 = Number(b.side.slice(e.id.length + 1));
+    const gap = (((k1 - k2) % n) + n) % n;
+    if (gap === 1 || gap === n - 1) return false;
+    toast(t("sketch.modify.sidesDoNotMeet", { tool: this.tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet") }));
     return true;
+  }
+
+  /** The area references of the extrudes built on this sketch, each as it
+   *  reads now: the document's, or this session's re-pointing of it
+   *  (`regionCarry`). Only those that record ids: a bare point is named by
+   *  nothing an edit here renames. Empty for a sketch nothing is built on. */
+  private regionRefs(): { feature: string; index: number; entityIds: string[]; holeEntityIds: string[][] | undefined; point: [number, number, number] | undefined }[] {
+    const sketch = this.editingId;
+    if (!sketch || !this.store) return [];
+    const out: ReturnType<SketchMode["regionRefs"]> = [];
+    for (const f of this.store.document.features) {
+      if (f.type !== "extrude" || f.sketch !== sketch || !f.regionEntities) continue;
+      f.regionEntities.forEach((ids, index) => {
+        const now = this.regionCarry[f.id]?.[index];
+        const entityIds = now?.entityIds ?? ids;
+        if (!entityIds.length) return;
+        out.push({
+          feature: f.id, index, entityIds,
+          holeEntityIds: now?.holeEntityIds ?? f.regionHoleEntities?.[index],
+          point: now?.point ?? f.regions?.[index],
+        });
+      });
+    }
+    return out;
+  }
+
+  /** This sketch's areas as an extrude sees them: its curves and its pattern
+   *  copies, which is what refreshActive shows. */
+  private sketchRegions(): Region[] {
+    return detectRegions(this.editingId ?? "__active__", [...this.entities, ...this.derivedEntities()]);
+  }
+
+  /** The areas before an edit that renames the curves around them (an
+   *  explode, a sketch fillet or chamfer), for carryRegionRefs. Null, at no
+   *  cost, when no extrude on this sketch names an area by its curves. */
+  private regionsBeforeRename(): Region[] | null {
+    return this.regionRefs().length ? this.sketchRegions() : null;
+  }
+
+  /** Keep every extrude on this sketch on the area it builds, across an edit
+   *  that renamed the curves around it.
+   *
+   *  An extrude names its area by the curves around it and trusts that before
+   *  its stored point (types.ts, `regionEntities`). Explode keeps a shape's id
+   *  on ONE of its lines (explodeCompound), so where the shape bounded several
+   *  areas, a line across it or a neighbour sharing a side, the id now names
+   *  only the areas beside that line, and could name the wrong one alone.
+   *  Measured: the top half of a split rectangle extruded as the bottom half,
+   *  with no warning. A pattern's copies are numbered by position
+   *  (expandPattern), so a shape that becomes four lines, or a corner that
+   *  gains an arc, renumbers every copy after the first.
+   *
+   *  So a reference to an area whose curves this edit renamed is re-pointed
+   *  at the same area (twinRegion) by its new names and its own interior
+   *  point, and finish() writes that with the sketch. Not only when the app's
+   *  own resolution (resolveRegionRef) would now go wrong: the sidecar labels
+   *  an edge two curves share with BOTH of them where the app labels it with
+   *  one, so a reference the app still resolves can bind elsewhere in the
+   *  build (measured: a rectangle stacked on an exploded one extruded as the
+   *  one below it). Named by the area's exact ids, both agree. An area whose
+   *  curves kept their names keeps its reference untouched, unless the app
+   *  would now resolve it elsewhere. */
+  private carryRegionRefs(before: Region[] | null) {
+    if (!before) return;
+    const after = this.sketchRegions();
+    for (const ref of this.regionRefs()) {
+      const p = ref.point;
+      const holds = p ? (r: Region) => worldPointInRegion(new THREE.Vector3(p[0], p[1], p[2]), this.plane, r) : null;
+      const was = resolveRegionRef(before, ref.entityIds, ref.holeEntityIds, holds);
+      const twin = was && twinRegion(was, after);
+      if (!twin) continue;
+      if (sameRegionIds(was, twin) && resolveRegionRef(after, ref.entityIds, ref.holeEntityIds, holds) === twin) continue;
+      const at = this.plane.to3D(twin.interior.x, twin.interior.y);
+      (this.regionCarry[ref.feature] ??= {})[ref.index] = {
+        entityIds: [...twin.entityIds],
+        holeEntityIds: twin.holeEntityIds.map((g) => [...g]),
+        point: [at.x, at.y, at.z],
+      };
+    }
+  }
+
+  /** Explode every selected rectangle, polygon and slot into lines (the
+   *  right-click Explode to lines). A shape a parameter sizes is left as it
+   *  is, and said. */
+  private explodeSelected() {
+    const regions = this.regionsBeforeRename();
+    const done: { shape: ResolvedEntity; result: ExplodeResult }[] = [];
+    for (const shape of this.entities.filter((e) => this.selected.has(e.id) && isCompoundShape(e))) {
+      const why = this.explodeRefusal(shape);
+      if (why) { toast(why, { timeout: 8000 }); continue; }
+      const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape));
+      if (!result) continue;
+      this.entities = result.entities;
+      this.constraints = result.constraints;
+      done.push({ shape, result });
+    }
+    if (!done.length) return;
+    this.commitExplodes(done, "menu");
+    this.carryRegionRefs(regions);
+    this.afterModify();
   }
 
   /** Projected geometry is FIXED reference geometry: every modify/transform seam
@@ -4461,8 +4735,7 @@ export class SketchMode {
     // whole, not per-entity: moving the rest of the selection around a held
     // entity tears every joint they share, which is the same reason
     // bodyDragBlocked refuses a gesture rather than dropping one mutator.
-    const pinned = fixPinnedIds(this.constraints);
-    if (pinned.size && [...this.selected].some((id) => pinned.has(id))) { toast(FIXED_POINT_MSG); return; }
+    if (this.refusePinnedSelection()) return;
     const next: ResolvedEntity[] = [];
     const sel = new Set<string>();
     // fixed reference geometry: keep it (and its selection) untouched
@@ -4486,8 +4759,64 @@ export class SketchMode {
     this.afterModify();
   }
 
+  /** True, after saying so, when a user `fix` pins anything selected: see
+   *  transformSelection. Its own function so Rotate can ask BEFORE it
+   *  explodes a rectangle, rather than explode it and then be refused. */
+  private refusePinnedSelection(): boolean {
+    const pinned = fixPinnedIds(this.constraints);
+    if (!pinned.size || ![...this.selected].some((id) => pinned.has(id))) return false;
+    toast(FIXED_POINT_MSG);
+    return true;
+  }
+
+  /** True, after saying so, when a selection with a rectangle in it is held
+   *  by a constraint to geometry that is not turning with it (rotationTie).
+   *  The rectangle's constraints now come along onto its lines, so the settle
+   *  after the rotation would pull it part of the way back: the user would get
+   *  another angle than the one typed, under a note saying it was rotated.
+   *  Measured: 18.5 degrees and a resized rectangle for 30 typed, on a
+   *  rectangle drawn from the origin and turned about its centre. Decision C8
+   *  (refuse, and say so), here for the selections this tool now explodes;
+   *  the rest of C8 (Move, and Rotate of lines alone) is still to come. */
+  private refuseTiedRectangles(cx: number, cy: number): boolean {
+    const turning = new Set(
+      this.entities
+        .filter((e) => this.selected.has(e.id) && e.type !== "projected" && !isOriginGeometry(e.id))
+        .map((e) => e.id),
+    );
+    if (!this.entities.some((e) => e.type === "rectangle" && turning.has(e.id))) return false;
+    const pivot = { x: cx, y: cy };
+    if (!this.constraints.some((c) => rotationTie(c, this.entities, turning, pivot))) return false;
+    toast(t("sketch.transform.rotateTied"), { timeout: 8000 });
+    return true;
+  }
+
+  /** A rectangle is square to the sketch axes by definition (types.ts), so it
+   *  cannot be turned. Rotate used to replace it with four plain lines, and
+   *  every constraint and dimension on it went with the rectangle's id
+   *  (a237de6b): sizes, a corner on the origin, all of it. Explode it instead,
+   *  held square by Perpendicular rather than by Horizontal and Vertical, which
+   *  the rotation would break, and its constraints move onto its lines. */
+  private explodeSelectedRectangles() {
+    const regions = this.regionsBeforeRename();
+    const done: { shape: ResolvedEntity; result: ExplodeResult }[] = [];
+    for (const shape of this.entities.filter((e) => this.selected.has(e.id) && e.type === "rectangle")) {
+      const result = explodeCompound(this.entities, this.constraints, this.entities.indexOf(shape), { square: "perpendicular" });
+      if (!result) continue;
+      this.entities = result.entities;
+      this.constraints = result.constraints;
+      done.push({ shape, result });
+    }
+    if (!done.length) return;
+    this.commitExplodes(done, "rotate");
+    this.carryRegionRefs(regions); // before the rotation moves anything
+    toast(t("sketch.transform.rectangleToLines", { count: done.length }), { timeout: 8000 });
+  }
+
   /** keep the id for a single-entity result; give an exploded result (a rotated
-   *  rectangle → 4 lines) fresh ids so nothing collides. */
+   *  rectangle → 4 lines) fresh ids so nothing collides. Rotate explodes a
+   *  rectangle itself first (explodeSelectedRectangles), so that only happens
+   *  to one it could not explode: a rectangle with no size. */
   private reid(rot: ResolvedEntity[]): ResolvedEntity[] {
     return rot.length === 1 ? rot : rot.map((r) => ({ ...r, id: newEntityId() }));
   }
@@ -4525,6 +4854,9 @@ export class SketchMode {
       if (this.badTypedField({ name: "angle", kind: "angle" })) return;
       const ang = ((this.dim.getValue("angle") ?? 0) * Math.PI) / 180;
       this.dim.hide();
+      if (this.refusePinnedSelection()) return;
+      if (this.refuseTiedRectangles(cx, cy)) return;
+      this.explodeSelectedRectangles();
       this.transformSelection((e) => this.reid(rotated(e, cx, cy, ang, e.id)));
     });
     toast(t("sketch.transform.rotatePrompt"));
@@ -5022,10 +5354,14 @@ export class SketchMode {
   // --- in-sketch undo -------------------------------------------------------
 
   private snapshot(): SketchSnapshot {
+    const carry = this.regionCarry;
     return cloneSnapshot({
       entities: this.entities,
       constraints: this.constraints,
       patterns: this.patterns,
+      // only when there is one, so every session that re-points nothing
+      // snapshots (and compares) exactly as before
+      ...(carry && Object.keys(carry).length ? { regionCarry: carry } : {}),
     });
   }
 
@@ -5034,6 +5370,7 @@ export class SketchMode {
     this.entities = c.entities;
     this.constraints = c.constraints;
     this.patterns = c.patterns;
+    this.regionCarry = c.regionCarry ?? {};
   }
 
   /** Re-arm the history baseline. Called when the state SETTLES after a solve,

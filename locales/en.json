@@ -1697,6 +1697,7 @@
       },
       "disconnect": "Disconnect",
       "editPolygon": "Edit polygon",
+      "explode": "Explode to lines",
       "lockDimensions": "Lock dimensions",
       "makeConstruction": "Make construction",
       "makeNormal": "Make normal"
@@ -1707,12 +1708,24 @@
         "other": "Break removed {count} constraints that no longer apply once the curve is split"
       },
       "breakJoined": "Split in two. The halves stay joined at the cut. To pull them apart, switch to Select and Shift-drag from the cut toward the half that should move",
-      "shapeNotLines": "{tool} works on two lines that meet at a corner, and this {shape} is one piece, not separate lines, so I can't pick its sides one at a time. {wayOut}",
-      "shapeWayOut": {
-        "polygon": "To round or bevel its corners, draw its sides with the Line tool instead.",
-        "rectangle": "To round or bevel its corners, draw its four sides with the Line tool instead.",
-        "slot": "A slot has no corners to work on: its ends are already round."
+      "cornerLost": {
+        "one": "{tool} took the corner away, so I removed the constraint that held it on a curve",
+        "other": "{tool} took the corner away, so I removed the {count} constraints that held it on curves"
       },
+      "cornerNoFit": "{tool} did not fit there: the two lines are parallel, or the size is too big for them. Nothing changed.",
+      "cornerShifted": {
+        "one": "A dimension to that corner, or along a side it cut back, now measures to where the {tool} starts, so the shape may move to keep its value. Undo puts it back.",
+        "other": "{count} dimensions to that corner, or along a side it cut back, now measure to where the {tool} starts, so the shape may move to keep their values. Undo puts it back."
+      },
+      "explodeDropped": {
+        "one": "One constraint on the {shape} could not move to its lines and was removed",
+        "other": "{count} constraints on the {shape} could not move to its lines and were removed"
+      },
+      "explodeFormulaBound": "A formula sets this {shape}, so I left it a {shape}. As separate lines, nothing would be left for the formula to set.",
+      "explodeParamBound": "Parameter {name} sets this {shape}, so I left it a {shape}. As separate lines, nothing would be left for {name} to set.",
+      "explodedForCorner": "I turned the {shape} into separate lines so {tool} could work on its corner. It keeps its shape, and its constraints are on the lines now.",
+      "sidesDoNotMeet": "{tool} works on two sides that meet at a corner, and these two do not. Click a side next to the first one.",
+      "slotNoCorner": "{tool} works on a corner where two lines meet, and a slot has none: its sides never meet and its ends are already round.",
       "trimDropped": {
         "one": "Trim removed a constraint that no longer applies to what is left",
         "other": "Trim removed {count} constraints that no longer apply to what is left"
@@ -1826,7 +1839,12 @@
     },
     "transform": {
       "clickDestination": "Click the destination point",
+      "rectangleToLines": {
+        "one": "A rectangle always sits square to the sketch axes, so I turned it into four lines kept square to each other and rotated those. Its constraints moved to the lines.",
+        "other": "A rectangle always sits square to the sketch axes, so I turned these {count} into lines kept square to each other and rotated those. Their constraints moved to the lines."
+      },
       "rotatePrompt": "Rotate: type an angle in degrees",
+      "rotateTied": "I did not rotate anything: a constraint ties what you selected to geometry that is not being rotated, and the solver would pull it back part of the way. Select that geometry too, or remove the constraint, then rotate again.",
       "scalePrompt": "Scale: type a factor (e.g. 2 or 0.5)",
       "selectFirstMove": "Select entities first, then Move/Copy",
       "selectFirstRotate": "Select entities first, then Rotate",

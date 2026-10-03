@@ -11,6 +11,7 @@
 // point or re-arms `preEdit` first so it compares equal.
 
 import type { SketchConstraint, SketchPattern } from "../types";
+import type { RegionCarry } from "../document/store";
 import type { ResolvedEntity } from "./snap";
 
 /** The editable state one undo step restores — the whole of what a sketch edit
@@ -19,6 +20,9 @@ export type SketchSnapshot = {
   entities: ResolvedEntity[];
   constraints: SketchConstraint[];
   patterns: SketchPattern[];
+  /** the extrude area references an edit re-pointed (SketchMode.regionCarry);
+   *  absent when there are none */
+  regionCarry?: RegionCarry;
 };
 
 export function cloneSnapshot(s: SketchSnapshot): SketchSnapshot {

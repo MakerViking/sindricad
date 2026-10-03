@@ -113,6 +113,9 @@ export function liveSketch(ents: ResolvedEntity[], cons: SketchConstraint[] = []
     dragRefusedToast: false,
     constructionMode: false,
     filletFirst: null,
+    filletSide: null,
+    regionCarry: {},
+    pendingBindings: new Map(),
     // what draws: inert
     dims: { clearSelection() {}, hide() {}, setInteractive() {} },
     glyphs: { setInteractive() {} },

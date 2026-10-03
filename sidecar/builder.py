@@ -18743,12 +18743,17 @@ def _fresh_curve(e, plane, prefix, curve_fresh, ctx):
         fresh = curve_fresh[key]
         if not fresh:
             return None
-        if len(fresh) == 1:
-            return fresh[0]
         idx = src.get("index")
         if isinstance(idx, int):
-            # authoritative pick-time edge index (see the docstring above)
+            # authoritative pick-time edge index (see the docstring above). Read
+            # BEFORE the one-edge case below: a source that was several edges
+            # when it was picked and is ONE now (a rectangle exploded into lines
+            # keeps its id on its first line) would otherwise hand that one edge
+            # to every sibling, and the projection would collapse onto it
+            # without a word. Index 0 still follows it; the rest go stale.
             return fresh[idx] if 0 <= idx < len(fresh) else None
+        if len(fresh) == 1:
+            return fresh[0]
         return None  # multi-edge sibling without an index: unresolvable
     return None  # unknown kind: unresolvable
 

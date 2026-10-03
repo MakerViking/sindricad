@@ -188,6 +188,41 @@ def test_sketch_curve_index_survives_deletion():
     print(PASS, "source.index keeps edge identity after a sibling deletion + move")
 
 
+def test_sketch_curve_index_on_a_source_that_became_one_edge():
+    """A rectangle exploded into lines keeps its id on its FIRST line (the
+    sketcher's explodeCompound, so an extrude's picked area keeps a foothold).
+    Its projection elsewhere is four siblings with indices 0..3, and the source
+    now yields one edge: index 0 follows that edge, the other three go stale.
+    They used to take the one edge too, all three, and the projection collapsed
+    onto the bottom side with nothing said."""
+    def sk_doc(entities, cached):
+        ents = [{"id": f"e{i + 1}", "type": "projected",
+                 "source": {"kind": "sketchCurve", "sketch": "f1", "entity": "r1",
+                            "group": "e1", "index": i},
+                 "curve": cached[i]} for i in range(4)]
+        return {"parameters": {}, "features": [
+            {"id": "f1", "type": "sketch", "plane": "XY", "entities": entities},
+            {"id": "f3", "type": "sketch", "plane": TOP, "entities": ents},
+        ]}
+
+    rect = [{"id": "r1", "type": "rectangle", "width": 20, "height": 10, "x": 0, "y": 0}]
+    p = []
+    rebuild(sk_doc(rect, [dict(WRONG)] * 4), projections=p)
+    seeded = [u["curve"] for u in sorted(p, key=lambda u: u["entity"])]
+    assert len(seeded) == 4, p
+    exploded = [
+        {"id": "r1", "type": "line", "x1": -10, "y1": -5, "x2": 10, "y2": -5},
+        {"id": "a", "type": "line", "x1": 10, "y1": -5, "x2": 10, "y2": 5},
+        {"id": "b", "type": "line", "x1": 10, "y1": 5, "x2": -10, "y2": 5},
+        {"id": "c", "type": "line", "x1": -10, "y1": 5, "x2": -10, "y2": -5},
+    ]
+    p2 = []
+    rebuild(sk_doc(exploded, seeded), projections=p2)
+    assert sorted((u["entity"], u["stale"]) for u in p2) == \
+        [("e2", True), ("e3", True), ("e4", True)], p2
+    print(PASS, "a source down to one edge: index 0 follows it, the rest go stale")
+
+
 def test_chain_projection_of_projected_curve():
     """Chain projection: a committed sketch's PROJECTED line is itself a valid
     sketchCurve source — _entity_edges builds its cached curve like any native
@@ -432,6 +467,7 @@ def main():
     test_upstream_change_moves_curve(src, true_curve)
     test_sketch_curve_multi_edge_without_index_goes_stale()
     test_sketch_curve_index_survives_deletion()
+    test_sketch_curve_index_on_a_source_that_became_one_edge()
     test_chain_projection_of_projected_curve()
     test_plate_edge_follows_a_shrink_past_a_joined_cylinder()
     test_refresh_never_turns_a_line_round()

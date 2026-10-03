@@ -10,9 +10,10 @@
 //             shapes like rectangles or polygons."
 //   ffae1a6e  "I cannot modify a polygons rotation after it has been created."
 //
-// None of this changes what a shape IS. Fillet and Chamfer now say why they
-// cannot take a shape instead of dropping the click, and stop lighting what they
-// cannot take; a typed side count previews as it is typed; a polygon's centre
+// Fillet and Chamfer take a side of a rectangle or polygon and turn that one
+// shape into lines when the corner is made (explode.test.ts has the rest), a
+// slot says it has no corner, and the hover lights only what a click takes; a
+// typed side count previews as it is typed; a polygon's centre
 // and corners and a slot's centres are snap targets, so Rotate can pivot on
 // them; and a polygon's radius, sides and rotation can be edited after the fact.
 //
@@ -145,13 +146,9 @@ const POLY: ResolvedEntity = { type: "polygon", id: "p", x: 3.3, y: 7.7, radius:
 const SLOT: ResolvedEntity = { type: "slot", id: "s", x1: -100, y1: 0, x2: -60, y2: 0, width: 10 };
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
-/** the message a refused pick must show, built from the same keys */
-const refusal = (tool: "fillet" | "chamfer", shape: "rectangle" | "polygon" | "slot") =>
-  t("sketch.modify.shapeNotLines", {
-    tool: tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet"),
-    shape: t(`sketch.entity.${shape}`),
-    wayOut: t(`sketch.modify.shapeWayOut.${shape}`),
-  });
+/** the message a refused slot pick must show, built from the same key */
+const slotRefusal = (tool: "fillet" | "chamfer") =>
+  t("sketch.modify.slotNoCorner", { tool: tool === "chamfer" ? t("tool.chamfer") : t("tool.fillet") });
 
 beforeEach(() => { prompts.length = 0; toasts.length = 0; menus.length = 0; });
 
@@ -165,43 +162,49 @@ describe("Fillet and Chamfer on a rectangle, polygon or slot", () => {
     expect(toasts).toEqual([]);
   });
 
-  it("says why a rectangle side cannot be filleted, instead of dropping the click", () => {
+  it("takes two sides of a rectangle, and turns it into lines only when the fillet is made", () => {
     const ents = [...LINES(), clone(RECT)];
-    const { s, dim, seen } = makeMode(ents, "fillet");
-    const before = JSON.stringify(ents);
+    const { s, dim, box, type, enter } = makeMode(ents, "fillet");
     s.onPointerDown(at(105, -10)); // the rectangle's bottom side
     s.onPointerDown(at(120, 2)); // its right side
-    expect(toasts).toEqual([refusal("fillet", "rectangle"), refusal("fillet", "rectangle")]);
-    expect(toasts[0]).toContain("rectangle");
-    expect(dim.isActive, "no radius box for a pick the tool cannot use").toBe(false);
-    expect(s.filletFirst).toBeNull();
-    expect(JSON.stringify(s.entities)).toBe(before);
-    expect(seen.modified).toBe(0);
+    expect(toasts).toEqual([]);
+    expect(dim.isActive, "two sides of one rectangle open the radius box").toBe(true);
+    expect(box().map((f) => f.def.name)).toEqual(["radius"]);
+    expect(s.entities.some((e) => e.type === "rectangle"), "nothing changes until the fillet is made").toBe(true);
+    type("radius", "3");
+    enter("radius");
+    expect(s.entities.some((e) => e.type === "rectangle")).toBe(false);
+    expect(s.entities.filter((e) => e.type === "line").length).toBe(2 + 4);
+    expect(s.entities.filter((e) => e.type === "arc").length).toBe(1);
+    expect(toasts).toEqual([t("sketch.modify.explodedForCorner", { shape: t("sketch.entity.rectangle"), tool: t("tool.fillet") })]);
   });
 
-  it("keeps an armed line when the second pick is a shape, so a real line can still follow", () => {
-    const { s, dim } = makeMode([...LINES(), clone(RECT)], "fillet");
-    s.onPointerDown(at(-20, 0)); // line a, armed
-    s.onPointerDown(at(105, -10)); // a rectangle side: refused
-    expect(toasts).toEqual([refusal("fillet", "rectangle")]);
-    expect(s.filletFirst).toBe(0);
-    s.onPointerDown(at(0, 20)); // line b
+  it("a line and a rectangle side that never meet leave the rectangle a rectangle, and say so", () => {
+    const ents = [...LINES(), clone(RECT)];
+    const { s, dim, type, enter } = makeMode(ents, "fillet");
+    const before = JSON.stringify(ents);
+    s.onPointerDown(at(-20, 0)); // line a, horizontal
+    s.onPointerDown(at(105, -10)); // the rectangle's bottom: parallel to it
     expect(dim.isActive).toBe(true);
+    type("radius", "3");
+    enter("radius");
+    expect(JSON.stringify(s.entities), "no fillet, so no explode").toBe(before);
+    // the size was typed, so silence would read as a broken tool
+    expect(toasts).toEqual([t("sketch.modify.cornerNoFit", { tool: t("tool.fillet") })]);
   });
 
-  it("Chamfer names a polygon, and a slot gets the slot's own way out", () => {
+  it("Chamfer takes a polygon's side, and a slot says it has no corner", () => {
     const poly = makeMode([clone(POLY)], "chamfer");
     // the middle of the polygon's first side, well away from its corners
     const a = (17 * Math.PI) / 180, b = a + Math.PI / 3;
     poly.s.onPointerDown(at(3.3 + 5 * (Math.cos(a) + Math.cos(b)), 7.7 + 5 * (Math.sin(a) + Math.sin(b))));
-    expect(toasts).toEqual([refusal("chamfer", "polygon")]);
-    expect(poly.dim.isActive).toBe(false);
+    expect(toasts).toEqual([]);
+    expect(poly.s.filletFirst, "the side is armed").toBe(0);
 
-    toasts.length = 0;
     const slot = makeMode([clone(SLOT)], "fillet");
     slot.s.onPointerDown(at(-80, 5)); // a straight side of the slot
-    expect(toasts).toEqual([refusal("fillet", "slot")]);
-    expect(toasts[0]).toContain(t("sketch.modify.shapeWayOut.slot"));
+    expect(toasts).toEqual([slotRefusal("fillet")]);
+    expect(slot.s.filletFirst).toBeNull();
   });
 
   it("takes the line the hover lit when that line ends on a shape's corner", () => {
@@ -229,9 +232,15 @@ describe("the Fillet hover lights only what Fillet can take", () => {
   const lit = (objs: unknown[]) =>
     (objs as THREE.Object3D[]).map((o) => o.userData.entityId as string);
 
-  it("does not light a rectangle's outline", () => {
+  it("lights the one rectangle side the click would take, not the outline", () => {
     const { s, lastPreview } = makeMode([...LINES(), clone(RECT)], "fillet");
     s.modifyHover(at(105, -10));
+    expect(lit(lastPreview())).toEqual(["r~0"]);
+  });
+
+  it("lights nothing on a slot, which has no corner to take", () => {
+    const { s, lastPreview } = makeMode([clone(SLOT)], "fillet");
+    s.modifyHover(at(-80, 5));
     expect(lit(lastPreview())).toEqual([]);
   });
 

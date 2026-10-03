@@ -650,7 +650,7 @@ describe("a centre-point arc is joined to what its clicks snapped onto", () => {
 });
 
 describe("a fillet and a point that was put ON a curve", () => {
-  it("drops the point-on that held the corner end, which would bend the fillet", async () => {
+  it("drops the point-on that held the corner end, which would bend the fillet, and says so", async () => {
     // a's end (30,0) is the corner, and it was put on g, the vertical line
     // x = 30 below the corner. The fillet moves that end to (27,0), off g.
     const d = drawing("select", [line("a", 0, 0, 30, 0), line("b", 30, 0, 30, 20), line("g", 30, -5, 30, -25)], { radius: 3 });
@@ -662,7 +662,8 @@ describe("a fillet and a point that was put ON a curve", () => {
     d.enter();
     await settle();
 
-    expect(toasts).toEqual([]);
+    // the user put that point there, so its going is named
+    expect(toasts).toEqual([t("sketch.modify.cornerLost", { count: 1, tool: t("tool.fillet") })]);
     expect(d.h.constraints.filter((c) => c.type === "pointOn"), "the corner's point-on outlived the corner").toEqual([]);
     const es = d.h.entities;
     expect(start(byId<Line>(es, "a"))).toEqual({ x: 0, y: 0 });

@@ -210,12 +210,15 @@ describe("Fix pins geometry against the body drag (d0b008cb)", () => {
     const tf = sketchModeSrc.indexOf("private transformSelection(");
     expect(tf).toBeGreaterThan(-1);
     const body = sketchModeSrc.slice(tf, tf + 1600);
-    expect(body).toContain("fixPinnedIds(");
-    expect(body).toContain("FIXED_POINT_MSG");
+    expect(body).toContain("if (this.refusePinnedSelection()) return;");
+    const rp = sketchModeSrc.indexOf("private refusePinnedSelection(");
+    expect(rp).toBeGreaterThan(-1);
+    const check = sketchModeSrc.slice(rp, rp + 400);
+    expect(check).toContain("fixPinnedIds(");
     // the WHOLE gesture, not just the pinned entities: transforming the rest of
     // the selection around a held entity tears every joint they share, which is
     // what bodyDragBlocked refuses a whole gesture to avoid
-    expect(body).toContain("{ toast(FIXED_POINT_MSG); return; }");
+    expect(check).toContain("toast(FIXED_POINT_MSG);");
   });
 });
 

@@ -344,6 +344,27 @@ export async function compileAndSolve(
   }
 
   const isLine = (id: string) => ends.has(id);
+  // The axis a line operand is already held square to, if any: a rectangle
+  // edge by its own rules (even edges horizontal, odd vertical), any other line
+  // by a user Horizontal or Vertical. An offset pair already held to the SAME
+  // axis is parallel without being told, and telling it anyway is what planegcs
+  // reports as redundant: an exploded rectangle's sides, Horizontal and
+  // Vertical, offset-linked to the rectangle they were offset from, drew all
+  // four of those amber (see `offset` below).
+  const heldAxis = new Map<string, "h" | "v">();
+  for (const c of constraints) {
+    if (c.type === "horizontal") heldAxis.set(c.line, "h");
+    else if (c.type === "vertical") heldAxis.set(c.line, "v");
+  }
+  const axisOf = (id: string): "h" | "v" | undefined => {
+    const cut = id.lastIndexOf("~");
+    if (cut > 0 && rectMap.has(id.slice(0, cut))) return Number(id.slice(cut + 1)) % 2 === 0 ? "h" : "v";
+    return heldAxis.get(id);
+  };
+  const sameAxis = (a: string, b: string) => {
+    const x = axisOf(a);
+    return x !== undefined && x === axisOf(b);
+  };
   // resolve an entity endpoint (0 = start, 1 = end) to its solver point id.
   // lines + arcs have two endpoints; a point entity has just one (index ignored);
   // a RECTANGLE has four corners, indexed 0..3 in rectCorners CCW order.
@@ -623,11 +644,12 @@ export async function compileAndSolve(
         // rectangle's implicit horizontal/vertical constraints, so it needs ONE
         // distance and no parallel — 4 edges × 1 equation is exactly a
         // rectangle's 4 DOF. Adding the line treatment there would triple-count.
+        // The same holds for any pair already held to one axis (sameAxis).
         const rectEdge = pr.src.includes("~") && pr.cpy.includes("~");
         if (isLine(pr.src) && isLine(pr.cpy)) {
           const e = ends.get(pr.cpy);
           if (!e) return;
-          if (rectEdge) {
+          if (rectEdge || sameAxis(pr.src, pr.cpy)) {
             cons.push({ id: `${id}a${n}`, type: "p2lDistance", p: e[0], line: pr.src, value: mag });
             return;
           }
