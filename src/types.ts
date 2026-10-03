@@ -183,7 +183,9 @@ export type SketchEntity =
 // (`constraintIndexOf` decodes any `~` id to null, which is why the implicit
 // ids can never be blamed for a conflict). Anything that validates a line
 // operand must decode the compound form; in the sketcher that is
-// entityDims.lineOperand and SketchMode.pruneConstraints.
+// entityDims.lineOperand and SketchMode.pruneConstraints. A polygon or slot
+// SIDE (`P~k`, `S~0`, `S~1`) has the same shape of id but is taken by
+// `pointOn` alone for now: those two shapes are rigid in the solver.
 //
 // LABEL PLACEMENT: a dimension's label position is user-adjustable — dragging a
 // label in the sketch persists where it went. Placement is stored in sketch MM
@@ -305,6 +307,21 @@ export type SketchConstraint =
   // midpoint: a point (`e`/`p`, same semantics as coincident) sits at the
   // midpoint of a line operand (`line` may be a rect edge)
   | { type: "midpoint"; e: string; p: number; line: string }
+  // pointOn: a point (`e`/`p`, same semantics as coincident) lies ON a curve.
+  // `curve` is a line operand (a line, a projected line, an origin axis or a
+  // rect edge `R~k`), a circle or an arc (native or projected), or a SIDE of
+  // one of the rigid shapes: `P~k` for a polygon (vertex k to vertex k+1, in
+  // polygonPoints order) and `S~0` / `S~1` for a slot's two straight sides
+  // (see entityDims.lineOperand). A line counts as INFINITE, as it does in
+  // other CAD packages, so the point may sit on its extension; a circle or an
+  // arc counts as its whole circle (planegcs point_on_line_pl /
+  // point_on_circle / point_on_arc).
+  //
+  // Added 2026-10. An older build reads it as a type it does not know: its
+  // solver compiles nothing for it, pruneConstraints keeps it (the `satisfies
+  // never` default) and no glyph draws, so the point just stops being held
+  // there. Nothing throws.
+  | { type: "pointOn"; e: string; p: number; curve: string }
   // symmetric: two points (same semantics as coincident) mirror across a line
   // operand (the symmetry axis; may be a rect edge)
   | { type: "symmetric"; e1: string; p1: number; e2: string; p2: number; line: string }

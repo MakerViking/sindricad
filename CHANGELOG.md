@@ -304,6 +304,11 @@ This file starts on 2026-08-03. For anything before that, see the
   a sixteenth of a millimetre, and `1/16 in` came out as one divided by 16
   inches.
 
+- **Move, Rotate and Scale no longer move the origin's axes.** A click at 0,0
+  in Select picks an axis, and moving a selection that included one moved the
+  axis too. For the rest of the session, anything put on that axis or made
+  collinear with it followed an axis that no longer ran through the origin.
+
 - **Break keeps the constraints of the curve it splits.** A Coincident at either
   end, and Horizontal or Vertical, now carry over to the two halves instead of
   disappearing. Length and Equal no longer apply to a half, so those are removed,
@@ -832,6 +837,25 @@ This file starts on 2026-08-03. For anything before that, see the
   on in the sketch, what you project with Project comes in as construction lines,
   for reference only, instead of joining the profile. It draws dashed in the
   projected colour, so you can tell it apart.
+
+- **Put a point on a line, circle or arc.** Coincident now takes a point and a
+  curve, in either order: click an end, a corner, a centre or a sketch point,
+  and a line, a rectangle side, a circle or an arc, and the point stays on that
+  curve while it can still slide along it. The point is what moves; when it
+  cannot, as the origin cannot, the curve moves to it instead. A line counts as
+  endless, as in other CAD programs, so the point may sit past its end, and an
+  arc counts as its whole circle. A polygon or slot side takes a point too, and
+  so do the origin's axes, and the origin itself can go on a curve. A polygon's
+  corner can't take a point yet, and Coincident says so instead of using the
+  nearest side. When a polygon's side count changes, a point on one of its
+  sides moves to the side it is nearest. Where two shapes share a corner or an
+  edge, the click takes the one that works instead of refusing. A small ∈
+  badge marks the constraint; right-click it to delete it. With a sketch point
+  and a curve selected, the right-click menu offers Coincident for the same
+  thing. Two lines clicked in their middles still become Collinear. Until now
+  Coincident asked for a second endpoint, and there was no way to do this at
+  all. A sketch that uses it still opens in an older beta, which just does not
+  hold the point there.
 
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end

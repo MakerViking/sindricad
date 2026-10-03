@@ -38,6 +38,7 @@ vi.mock("../ui/menu", () => ({
 }));
 
 import { SketchMode } from "./sketchMode";
+import { ConstraintTools } from "./constraintTools";
 import { DimInput } from "./dimInput";
 import { SketchPlane } from "./plane";
 import { candidatesFromEntities, type ResolvedEntity } from "./snap";
@@ -430,5 +431,96 @@ describe("a polygon's radius, sides and rotation stay editable after it is made"
     expect(s.entities[0]).toEqual(POLY);
     expect(dim.isActive).toBe(false);
     expect(lastPreview()).toEqual([]);
+  });
+});
+
+// A polygon or slot SIDE is something Coincident can put a point on (pointOn,
+// `p~k` / `s~0|1`): the hover lights the side the click would take and nothing
+// where the click would be refused, and a new side count re-aims a point put on
+// a side, because side k of a hexagon is not side k of an octagon.
+describe("Coincident and the sides of a polygon or slot", () => {
+  const lit = (objs: unknown[]) =>
+    (objs as THREE.Object3D[]).map((o) => o.userData.entityId as string);
+  /** the hover asks the REAL ConstraintTools, the way SketchMode's does */
+  const coincidentMode = (ents: ResolvedEntity[]) => {
+    const m = makeMode(ents, "coincident");
+    Object.assign(m.s, {
+      constraintTools: new ConstraintTools({
+        tool: () => "coincident",
+        entities: () => m.s.entities,
+        constraints: () => [],
+        pickTol: () => 0.9,
+        getFilletFirst: () => null,
+        setFilletFirst() {},
+        requestSolve() {},
+        warn() {},
+        setPendingPoints() {},
+        addConstraint() {},
+      }),
+    });
+    return m;
+  };
+  const deg = Math.PI / 180;
+  /** the point `d` mm out from POLY's centre at `angle` degrees */
+  const around = (angle: number, d: number) => ({
+    x: 3.3 + d * Math.cos(angle * deg),
+    y: 7.7 + d * Math.sin(angle * deg),
+  });
+  const SIDE0 = around(17 + 30, 10 * Math.cos(30 * deg)); // the middle of side 0
+  const CORNER1 = around(17 + 60, 10);
+
+  it("the hover lights the one side under the cursor, not the outline", () => {
+    const { s, lastPreview } = coincidentMode([clone(POLY)]);
+    s.modifyHover(at(SIDE0.x, SIDE0.y));
+    expect(lit(lastPreview())).toEqual(["p~0"]);
+  });
+
+  it("and nothing on a polygon's corner, which the click refuses", () => {
+    const { s, lastPreview } = coincidentMode([clone(POLY)]);
+    s.modifyHover(at(CORNER1.x, CORNER1.y));
+    expect(lit(lastPreview())).toEqual([]);
+  });
+
+  it("and nothing on a slot's round end, which it would refuse", () => {
+    const { s, lastPreview } = coincidentMode([clone(SLOT)]);
+    s.modifyHover(at(-80, 5)); // the middle of the straight side above the axis
+    expect(lit(lastPreview())).toEqual(["s~0"]);
+    s.modifyHover(at(-55, 0)); // the round end past (-60, 0)
+    expect(lit(lastPreview())).toEqual([]);
+  });
+
+  // P sits on the middle of side 2 (at 167 degrees), Q on the middle of side 5
+  // (at 347 degrees), each held there by a point-on
+  const editSides = (sides: string) => {
+    const mid = (k: number) => around(17 + 60 * k + 30, 10 * Math.cos(30 * deg));
+    const P = mid(2), Q = mid(5);
+    const { s, type, enter } = makeMode([
+      clone(POLY),
+      { type: "point", id: "P", x: P.x, y: P.y },
+      { type: "point", id: "Q", x: Q.x, y: Q.y },
+    ], "select");
+    const cons = [
+      { type: "pointOn", e: "P", p: 0, curve: "p~2" },
+      { type: "pointOn", e: "Q", p: 0, curve: "p~5" },
+    ];
+    (s as unknown as { constraints: unknown[] }).constraints = cons;
+    s.onContextMenu(at(SIDE0.x, SIDE0.y, 2));
+    menus[0]?.find((i) => i.label === t("sketch.menu.editPolygon"))?.onClick?.();
+    type("sides", sides);
+    enter("sides");
+    expect((s.entities[0] as { sides: number }).sides).toBe(Number(sides));
+    return (s as unknown as { constraints: { curve: string }[] }).constraints.map((c) => c.curve);
+  };
+
+  it("more sides: each point-on moves to the side its point is on now", () => {
+    // an octagon's side 3 spans 152..197 degrees and its side 7 spans 332..17;
+    // the octagon's side 2 and side 5 are somewhere else entirely, and the
+    // solve used to pull P and Q onto those sides' lines, off the polygon
+    expect(editSides("8")).toEqual(["p~3", "p~7"]);
+  });
+
+  it("fewer sides: the same, so a side that is gone does not drop the point", () => {
+    // a pentagon's side 2 spans 161..233 degrees and its side 4 spans 305..17
+    expect(editSides("5")).toEqual(["p~2", "p~4"]);
   });
 });

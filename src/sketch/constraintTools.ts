@@ -11,7 +11,8 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import { pickEntity, PROJECTED_FIXED_MSG } from "./modify";
 import { coincKey } from "./sketchSolve";
-import { curveKind, dimRefPoints, lineOperandAt, refPoint } from "./entityDims";
+import { curveKind, dimRefPoints, lineOperand, lineOperandAt, refPoint, shapeSideAt } from "./entityDims";
+import { isOriginGeometry } from "./origin";
 import type { SketchTool } from "./sketchMode";
 
 export const CONSTRAINT_TOOLS = new Set<SketchTool>([
@@ -48,6 +49,16 @@ const isRoundOp = (o: Operand) => o.kind === "circle" || o.kind === "arc";
 
 /** the ENTITY an operand id belongs to — `R~2` belongs to the rectangle `R` */
 const baseOf = (id: string) => { const t = id.indexOf("~"); return t < 0 ? id : id.slice(0, t); };
+
+/** Whether point `p` of `e` (dimRefPoints numbering) is one the solver MERGES
+ *  with whatever else sits at its position: an end, a corner, a sketch point.
+ *  A centre is not: it keeps a solver point of its own (sketchSolve.getPoint). */
+const merges = (e: ResolvedEntity | undefined, p: number): boolean => {
+  if (!e || e.type === "circle") return false;
+  if (e.type === "arc") return p !== 2;
+  if (e.type === "projected") return e.curve.kind !== "circle" && !(e.curve.kind === "arc" && p === 2);
+  return true;
+};
 
 /** The slice of SketchMode these click flows read/write — live accessors, not copies. */
 export interface ConstraintHost {
@@ -127,6 +138,9 @@ export class ConstraintTools {
   private pendingEndpoint2: { id: string; idx: number } | null = null;
   /** the first operand of a two-pick flow; valid ONLY while filletFirst is set */
   private firstOperand: Operand | null = null;
+  /** where Coincident's held curve was clicked, for resolvePointOn's second
+   *  try; read only alongside firstOperand */
+  private firstAt: THREE.Vector2 | null = null;
 
   /** whether an endpoint-based flow (coincident/symmetric/midpoint) is mid-pick */
   hasPending(): boolean {
@@ -137,6 +151,7 @@ export class ConstraintTools {
     this.pendingEndpoint = null;
     this.pendingEndpoint2 = null;
     this.firstOperand = null;
+    this.firstAt = null;
     this.host.setPendingPoints([]); // the marker must not outlive the pick
   }
 
@@ -167,8 +182,9 @@ export class ConstraintTools {
    *  all constraints together, not just the one you applied). */
   click(p: THREE.Vector2) {
     const tool = this.host.tool();
+    if (tool === "coincident") return this.coincidentClick(p);
     // point-based constraints pick the nearest endpoint, not an entity body
-    if (tool === "coincident" || tool === "symmetric" || tool === "midpoint") {
+    if (tool === "symmetric" || tool === "midpoint") {
       return this.pointConstraintClick(p);
     }
     if (tool === "fix") return this.fixClick(p);
@@ -303,6 +319,229 @@ export class ConstraintTools {
     return q ? { x: q.x, y: q.y } : null;
   }
 
+  /** The operand a Coincident click on a curve BODY takes: whatever
+   *  pickOperand takes (a line, a rectangle edge, a circle, an arc), and, for
+   *  this tool alone, a polygon or slot SIDE (entityDims.shapeSideAt says why
+   *  only here, and why a polygon's corner is no side).
+   *
+   *  `skip` leaves one entity out, for resolvePointOn's second try. The index
+   *  stays one into the LIVE list, which is what the first-pick highlight
+   *  reads. */
+  private pickCurve(p: THREE.Vector2, skip: string | null = null): Operand | null {
+    const all = this.host.entities();
+    const entities = skip == null ? all : all.filter((e) => e.id !== skip);
+    const tol = this.host.pickTol();
+    const ent = entities[pickEntity(entities, p, tol)];
+    if (!ent) return null;
+    const index = all.indexOf(ent);
+    const lineId = lineOperandAt(ent, p);
+    if (lineId) return { id: lineId, kind: "line", ent, index };
+    const k = curveKind(ent);
+    if (k === "circle" || k === "arc") return { id: ent.id, kind: k, ent, index };
+    const side = shapeSideAt(ent, p, tol);
+    return side ? { id: side, kind: "line", ent, index } : null;
+  }
+
+  /** Coincident: two points, or a point and a curve, in either order.
+   *
+   *  Two points join (`coincident`). A point and a line, circle or arc put the
+   *  point ON the curve (`pointOn`: the infinite line, the whole circle, see
+   *  types.ts). Two line BODIES still mean Collinear.
+   *
+   *  The point is what moves, whichever was clicked first: the gesture is "put
+   *  this point on that line", and the first-pick rule the other two-pick flows
+   *  follow (bug #86) would swing a line clicked first over to the point
+   *  instead. A point that cannot move (the origin, a fixed or projected point)
+   *  leaves the bias nothing to hold, so the solve moves the curve to it.
+   *
+   *  Until this existed, the point-then-line order said "click the second
+   *  ENDPOINT" and the line-then-point order dropped the held line without a
+   *  word (TA 38391076, Doug 21): there was no way at all to put a point on a
+   *  line. */
+  private coincidentClick(p: THREE.Vector2) {
+    const held = this.host.getFilletFirst() == null ? null : this.firstOperand;
+    const ep = this.pickEndpoint(p, this.pendingEndpoint);
+    if (ep) {
+      if (held) {
+        // a curve first, then the point to put on it
+        this.host.setFilletFirst(null);
+        this.firstOperand = null;
+        return this.pointOn(ep, held, this.firstAt ?? p);
+      }
+      if (!this.pendingEndpoint) {
+        this.pendingEndpoint = ep;
+        this.host.setPendingPoints(pts(this.endpointXY(ep)));
+        return;
+      }
+      const a = this.pendingEndpoint;
+      this.pendingEndpoint = null;
+      this.host.setPendingPoints([]);
+      // Two points of the SAME entity: refused, but no longer in silence. It
+      // used to fall through a bare `if (a.id !== ep.id)` — no constraint, no
+      // message, and the pending marker wiped on the way out, which is the
+      // dead-tool reading this whole pass exists to remove. Newly easy to hit
+      // now that rectangle corners are pickable: both corners of a rectangle
+      // carry the rectangle's own id, so clicking any two of them lands here.
+      //
+      // Refusing is right on the geometry as well as the affordance. Joining
+      // two corners of one rectangle annihilates it in a single solve, and
+      // joining a line's two ends collapses it — the guard would refuse the
+      // solve anyway, one step later and with less to say about why.
+      if (a.id === ep.id) {
+        this.host.warn(
+          a.idx === ep.idx
+            ? t("sketch.constraint.samePointTwice")
+            : t("sketch.constraint.sameShape"),
+        );
+        return;
+      }
+      this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx }, a.id);
+      return;
+    }
+
+    // No point under the cursor: a curve, or nothing at all. Nothing at all
+    // used to be a bare `return`: no constraint, no message, no highlight,
+    // indistinguishable from a broken tool, and the reason both a field
+    // reporter and the author concluded sketch lines were not selectable.
+    const op = this.pickCurve(p);
+    if (!op) {
+      this.host.warn(t(this.atPolygonCorner(p) ? "sketch.constraint.polygonCorner" : "sketch.constraint.coincidentMiss"));
+      return; // keep whatever is held: a stray click must not lose the first pick
+    }
+    if (this.pendingEndpoint) {
+      const a = this.pendingEndpoint;
+      this.pendingEndpoint = null;
+      this.host.setPendingPoints([]);
+      return this.pointOn(a, op, p);
+    }
+    if (!held) {
+      this.host.setFilletFirst(op.index);
+      this.firstOperand = op;
+      this.firstAt = p.clone();
+      return;
+    }
+    this.host.setFilletFirst(null);
+    this.firstOperand = null;
+    if (held.id === op.id) return;
+    // Two line BODIES: apply collinear, the way SolidWorks and Fusion do,
+    // instead of doing nothing. Not for a polygon or slot side: only a point
+    // may go on one of those (shapeSideAt), and a collinear naming one would
+    // compile to nothing.
+    const rigid = (o: Operand) => o.ent.type === "polygon" || o.ent.type === "slot";
+    if (held.kind === "line" && op.kind === "line" && !rigid(held) && !rigid(op)) {
+      this.addConstraint({ type: "collinear", l1: held.id, l2: op.id }, held.ent.id);
+      this.host.warn(t("sketch.constraint.collinearApplied"));
+      return;
+    }
+    this.host.warn(t("sketch.constraint.pointOnNeedsPoint"));
+  }
+
+  /** whether the nearest thing to `p` is a polygon CORNER, which pickCurve
+   *  refuses (shapeSideAt): its miss gets its own message */
+  private atPolygonCorner(p: THREE.Vector2): boolean {
+    const entities = this.host.entities();
+    const tol = this.host.pickTol();
+    const ent = entities[pickEntity(entities, p, tol)];
+    return ent?.type === "polygon" && shapeSideAt(ent, p, tol) === null;
+  }
+
+  /** Put a picked point on a curve operand, or say why not (resolvePointOn).
+   *  `at` is where the curve was clicked. */
+  private pointOn(pt: { id: string; idx: number }, curve: Operand, at: THREE.Vector2) {
+    const r = this.resolvePointOn(pt, curve, at);
+    if (!r) {
+      this.host.warn(t("sketch.constraint.pointOnOwnCurve"));
+      return;
+    }
+    this.addConstraint({ type: "pointOn", e: r.pt.id, p: r.pt.idx, curve: r.curve.id }, r.pt.id);
+  }
+
+  /** The `pointOn` a point and a curve picked at `at` make, or null when it has
+   *  to be refused.
+   *
+   *  Two ends or corners at one position are one point to the solver
+   *  (coincKey), so a corner two shapes share belongs to both, and an edge two
+   *  shapes share is under the cursor twice. Which shape's name a click took
+   *  came down to list order or a float's last digit, and on two stacked
+   *  rectangles that share a corner and an edge (the TA 38391076 document) most
+   *  clicks were refused as "belongs to the curve you picked", for a pair the
+   *  user never meant. So before refusing, the same position is tried under
+   *  another shape's name (nameOffCurve), and then another shape's curve under
+   *  `at`: an edge two shapes share is the other shape's edge just as much. */
+  private resolvePointOn(
+    pt: { id: string; idx: number },
+    curve: Operand,
+    at: THREE.Vector2,
+  ): { pt: { id: string; idx: number }; curve: Operand } | null {
+    const named = this.nameOffCurve(pt, curve);
+    if (named) return { pt: named, curve };
+    const other = this.pickCurve(at, curve.ent.id);
+    const otherNamed = other ? this.nameOffCurve(pt, other) : null;
+    return other && otherNamed ? { pt: otherNamed, curve: other } : null;
+  }
+
+  /** The point `pt`, or another one at its position (your own geometry before
+   *  the origin, as pickEntity prefers it), that `curve` can take
+   *  (takesPoint); null when none can. */
+  private nameOffCurve(pt: { id: string; idx: number }, curve: Operand): { id: string; idx: number } | null {
+    if (this.takesPoint(curve, pt)) return pt;
+    const pos = this.endpointXY(pt);
+    if (!pos) return null;
+    const key = coincKey(pos.x, pos.y);
+    const others = this.host.entities().filter((e) => e.id !== pt.id && e.id !== curve.ent.id);
+    others.sort((a, b) => Number(isOriginGeometry(a.id)) - Number(isOriginGeometry(b.id)));
+    for (const e of others) {
+      for (const r of dimRefPoints(e)) {
+        const q = { id: e.id, idx: r.p };
+        if (coincKey(r.pos.x, r.pos.y) === key && this.takesPoint(curve, q)) return q;
+      }
+    }
+    return null;
+  }
+
+  /** Whether `curve` can take the point `pt`, judged by SOLVER point, not by
+   *  entity id. Never a point of the curve's own entity: a line's end is on it
+   *  already, a circle's centre on its own rim collapses it, and a rectangle
+   *  corner on its own opposite side folds the rectangle flat. And the same
+   *  for another shape's point MERGED with one of those (sketchSolve.getPoint):
+   *  it may sit on the curve only as one of the curve's ENDS, which it is on
+   *  already. That one is kept, the way a Coincident of two joined points is:
+   *  the join is by position only, a Move of one shape breaks it, and this
+   *  then holds the corner on the edge. A centre keeps a solver point of its
+   *  own, so it is never one of another shape's points, however close. */
+  private takesPoint(curve: Operand, pt: { id: string; idx: number }): boolean {
+    const owner = curve.ent;
+    if (pt.id === owner.id) return false;
+    const pos = this.endpointXY(pt);
+    if (!pos || !merges(this.entityById(pt.id), pt.idx)) return true;
+    const key = coincKey(pos.x, pos.y);
+    const sameKey = (q: { x: number; y: number }) => coincKey(q.x, q.y) === key;
+    if (!dimRefPoints(owner).some((r) => merges(owner, r.p) && sameKey(r.pos))) return true;
+    const seg = curve.kind === "line" ? lineOperand(new Map([[owner.id, owner]]), curve.id) : null;
+    const ends = seg ? [{ x: seg.x1, y: seg.y1 }, { x: seg.x2, y: seg.y2 }]
+      : curve.kind === "arc" ? dimRefPoints(owner).filter((r) => r.p < 2).map((r) => r.pos)
+        : [];
+    return ends.some(sameKey);
+  }
+
+  private entityById(id: string): ResolvedEntity | undefined {
+    return this.host.entities().find((x) => x.id === id);
+  }
+
+  /** What the Coincident hover lights: the curve a click at `p` would take,
+   *  through the same pickCurve and resolvePointOn the click goes through. So
+   *  it is the other shape's edge where a held point would be refused on the
+   *  nearer one, and nothing on a polygon's corner or a slot's round end. */
+  hoverCurve(p: THREE.Vector2): ResolvedEntity | null {
+    const near = this.pickCurve(p);
+    const held = this.pendingEndpoint;
+    const op = near && held ? (this.resolvePointOn(held, near, p)?.curve ?? near) : near;
+    if (!op) return null;
+    if (op.id === op.ent.id) return op.ent;
+    const seg = lineOperand(new Map([[op.ent.id, op.ent]]), op.id);
+    return seg ? ({ type: "line", id: op.id, ...seg } as ResolvedEntity) : null;
+  }
+
   private pointConstraintClick(p: THREE.Vector2) {
     const tool = this.host.tool();
     if (tool === "midpoint") {
@@ -325,74 +564,6 @@ export class ConstraintTools {
         // the POINT was picked first, so the point is what moves (bug #86)
         this.addConstraint({ type: "midpoint", e: ep.id, p: ep.idx, line: op.id }, ep.id);
       } else this.missed();
-      return;
-    }
-    if (tool === "coincident") {
-      const ep = this.pickEndpoint(p, this.pendingEndpoint);
-      if (ep) {
-        // An endpoint pick is the primary flow and wins over any line held for
-        // the collinear fallback below.
-        this.host.setFilletFirst(null);
-        this.firstOperand = null;
-        if (!this.pendingEndpoint) {
-          this.pendingEndpoint = ep;
-          this.host.setPendingPoints(pts(this.endpointXY(ep)));
-          return;
-        }
-        const a = this.pendingEndpoint;
-        this.pendingEndpoint = null;
-        this.host.setPendingPoints([]);
-        // Two points of the SAME entity: refused, but no longer in silence. It
-        // used to fall through a bare `if (a.id !== ep.id)` — no constraint, no
-        // message, and the pending marker wiped on the way out, which is the
-        // dead-tool reading this whole pass exists to remove. Newly easy to hit
-        // now that rectangle corners are pickable: both corners of a rectangle
-        // carry the rectangle's own id, so clicking any two of them lands here.
-        //
-        // Refusing is right on the geometry as well as the affordance. Joining
-        // two corners of one rectangle annihilates it in a single solve, and
-        // joining a line's two ends collapses it — the guard would refuse the
-        // solve anyway, one step later and with less to say about why.
-        if (a.id === ep.id) {
-          this.host.warn(
-            a.idx === ep.idx
-              ? t("sketch.constraint.samePointTwice")
-              : t("sketch.constraint.sameShape"),
-          );
-          return;
-        }
-        this.addConstraint({ type: "coincident", e1: a.id, p1: a.idx, e2: ep.id, p2: ep.idx }, a.id);
-        return;
-      }
-
-      // No endpoint under the cursor. This used to be a bare `return`: no
-      // constraint, no message, no highlight — indistinguishable from a broken
-      // tool, and the reason both a field reporter and the author concluded
-      // sketch lines were not selectable at all.
-      const op = this.pickOperand(p);
-      if (!op || op.kind !== "line") {
-        this.host.warn(t("sketch.constraint.coincidentMiss"));
-        return; // keep any pending endpoint: a stray click must not lose the first pick
-      }
-      if (this.pendingEndpoint) {
-        // half-way through the endpoint pair — say so rather than silently
-        // switching them into a different constraint
-        this.host.warn(t("sketch.constraint.secondEndpoint"));
-        return;
-      }
-      // Two line BODIES: apply collinear, the way SolidWorks and Fusion do,
-      // instead of doing nothing.
-      if (this.host.getFilletFirst() == null) {
-        this.host.setFilletFirst(op.index);
-        this.firstOperand = op;
-        return;
-      }
-      const first = this.firstOperand;
-      this.host.setFilletFirst(null);
-      this.firstOperand = null;
-      if (!first || first.id === op.id) return;
-      this.addConstraint({ type: "collinear", l1: first.id, l2: op.id }, first.ent.id);
-      this.host.warn(t("sketch.constraint.collinearApplied"));
       return;
     }
     // symmetric: pick endpoint A, endpoint B, then the axis line

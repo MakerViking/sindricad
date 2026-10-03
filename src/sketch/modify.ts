@@ -688,6 +688,15 @@ function remapTrimmed(
     if (!at) return curve(id);
     return ps.reduce((a, b) => (distToEntity(b.geom, at) < distToEntity(a.geom, at) ? b : a)).geom.id;
   };
+  /** the piece of a curve operand nearest a point, when there is a choice */
+  const nearestTo = (id: string, q: { e: string; p: number }): string | null => {
+    const ps = names(id) ? cutFrom(id) : [];
+    if (ps.length < 2) return curve(id);
+    const owner = byId.get(q.e);
+    const at = owner ? refPoint(owner, q.p) : null;
+    if (!at) return curve(id);
+    return ps.reduce((a, b) => (distToEntity(b.geom, at) < distToEntity(a.geom, at) ? b : a)).geom.id;
+  };
   const mentions = (c: SketchConstraint) =>
     c.type === "offset"
       ? c.pairs.some((pr) => names(pr.src) || names(pr.cpy))
@@ -773,6 +782,14 @@ function remapTrimmed(
         const q = point(c.e, c.p), line = extent(c.line);
         return q && line ? [{ ...c, e: q.e, p: q.p, line }] : null;
       }
+      // A point on the CARRIER, so it holds for every piece; but one point on
+      // two pieces would also hold those pieces in line with each other, which
+      // the trim did not ask for. It goes to the piece nearest the point.
+      case "pointOn": {
+        const q = point(c.e, c.p);
+        const on = q ? nearestTo(c.curve, q) : null;
+        return q && on ? [{ ...c, e: q.e, p: q.p, curve: on }] : null;
+      }
       case "symmetric": {
         const a = point(c.e1, c.p1), b = point(c.e2, c.p2), line = curve(c.line);
         return a && b && line ? [{ ...c, e1: a.e, p1: a.p, e2: b.e, p2: b.p, line }] : null;
@@ -824,8 +841,8 @@ function cutBack(l: LineE, keepStart: boolean, to: THREE.Vector2): LineE {
   return keepStart ? { ...l, x2: to.x, y2: to.y } : { ...l, x1: to.x, y1: to.y };
 }
 
-/** `constraints` without the coincidents that name a point a corner operation
- *  (Fillet, Chamfer) moved.
+/** `constraints` without the coincidents (and point-on-curves) that name a
+ *  point a corner operation (Fillet, Chamfer) moved.
  *
  *  Those operations keep both line ids and move both corner ends off the
  *  corner on purpose: there is no corner afterwards. A coincident that joined
@@ -848,7 +865,13 @@ export function dropMovedJoins(
     const a = was && refPoint(was, p), b = now && refPoint(now, p);
     return !!a && !!b && coincKey(a.x, a.y) !== coincKey(b.x, b.y);
   };
-  return constraints.filter((c) => c.type !== "coincident" || !(moved(c.e1, c.p1) || moved(c.e2, c.p2)));
+  // A point put ON a curve goes the same way when it was the corner end that
+  // moved: on the corner's new tangent point it would bend the fillet. One on
+  // a cut-back LINE stays, since the line's carrier did not move.
+  return constraints.filter((c) =>
+    c.type === "coincident" ? !(moved(c.e1, c.p1) || moved(c.e2, c.p2))
+    : c.type === "pointOn" ? !moved(c.e, c.p)
+    : true);
 }
 
 /**

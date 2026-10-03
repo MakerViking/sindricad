@@ -20,6 +20,9 @@
 //
 // Point-level constraints (coincident, midpoint, symmetric, fix) are not here
 // either: the selection model holds ENTITIES, and those need a specific endpoint.
+// The one exception is a sketch POINT, which is a single point and nothing
+// else: a point and a line, circle or arc are offered Coincident, which puts
+// the point on the curve (`pointOn`), the same as the tool does.
 
 import type { ResolvedEntity } from "./snap";
 import type { SketchTool } from "./sketchMode";
@@ -36,13 +39,14 @@ for (const g of SKETCH) for (const it of g.items) for (const leaf of leavesOf(it
 export const constraintLabel = (t: SketchTool): string => LABELS.get(t) ?? t;
 
 /** The operand kind an entity contributes, or null when it is ambiguous. */
-export type OperandKind = "line" | "round";
+export type OperandKind = "line" | "round" | "point";
 
 export function soleOperand(e: ResolvedEntity): OperandKind | null {
   if (e.type === "line") return "line";
   if (e.type === "circle" || e.type === "arc") return "round";
+  if (e.type === "point") return "point"; // the origin is one too
   // rectangle / polygon / slot: several operands, none of them the entity
-  // spline / text / point / projected: not a line or round operand at all
+  // spline / text / projected: not a line or round operand at all
   return null;
 }
 
@@ -61,6 +65,9 @@ export function applicableConstraints(sel: ResolvedEntity[]): SketchTool[] {
   if (sel.length !== 2) return [];
 
   const [a, b] = kinds;
+  // a point and a curve: put the point on it (two sketch points stay with the
+  // tool: this entry is the point-on-curve one)
+  if (a === "point" || b === "point") return a !== b ? ["coincident"] : [];
   if (a === "line" && b === "line") {
     // parallel and perpendicular are the everyday pair; collinear is rarer and
     // destructive-looking, so it sits last

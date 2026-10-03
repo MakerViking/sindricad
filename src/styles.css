@@ -2174,7 +2174,7 @@ button.finish:hover {
   transform: translate(-50%, -50%);
   min-width: 16px;
   /* Paired with min-width, so the badge is square for H/V/T/= and grows for a
-     symbol the font draws taller — ⊙ ◎ ⋈ ⚓ come from whichever CJK or symbol
+     symbol the font draws taller — ⊙ ◎ ⋈ ∈ ⚓ come from whichever CJK or symbol
      face the platform falls back to, whose em box is taller than the Latin
      letters this box was measured against. */
   min-height: 16px;

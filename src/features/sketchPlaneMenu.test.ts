@@ -166,6 +166,7 @@ function richDoc(): CadDocument {
     { type: "coincident", e1: "e2", p1: 0, e2: "__origin__", p2: 0 },
     { type: "fix", e: "e4", p: 0 },
     { type: "offset", id: "c8", pairs: [{ src: "e3", cpy: "e4" }], value: -60 },
+    { type: "pointOn", e: "e3", p: 1, curve: "r1~1" },
   ];
   return {
     parameters: {},
@@ -185,7 +186,7 @@ function richDoc(): CadDocument {
 /** Every entity id a constraint names (a rect edge decoded to its rectangle). */
 function operandIds(c: SketchConstraint): string[] {
   const vals = Object.entries(c)
-    .filter(([k]) => ["line", "l1", "l2", "circle", "e1", "e2", "e", "c1", "c2", "inner", "outer", "a", "b"].includes(k))
+    .filter(([k]) => ["line", "l1", "l2", "circle", "e1", "e2", "e", "c1", "c2", "inner", "outer", "a", "b", "curve"].includes(k))
     .map(([, v]) => v as string);
   if (c.type === "offset") for (const p of c.pairs) vals.push(p.src, p.cpy);
   return vals.map((v) => v.split("~")[0]!);
@@ -215,7 +216,7 @@ describe("Copy sketch to plane", () => {
     const copyOf = new Map(srcIds.map((id, i) => [id, ids[i]!]));
 
     // every constraint, retargeted onto the copy's own entities
-    expect(copy.constraints).toHaveLength(7);
+    expect(copy.constraints).toHaveLength(8);
     for (const c of copy.constraints!) {
       for (const id of operandIds(c)) {
         expect(ids.includes(id) || id === "__origin__", `${c.type} still names ${id}`).toBe(true);
@@ -224,6 +225,9 @@ describe("Copy sketch to plane", () => {
     const p2l = copy.constraints!.find((c) => c.type === "p2lDistance") as Extract<SketchConstraint, { type: "p2lDistance" }>;
     expect(p2l.line, "a rectangle EDGE operand lost its edge index").toBe(`${copyOf.get("r1")}~0`);
     expect(p2l.place).toEqual({ ox: 1, oy: 2 });
+    const on = copy.constraints!.find((c) => c.type === "pointOn") as Extract<SketchConstraint, { type: "pointOn" }>;
+    expect(on.e, "a point-on constraint still names the source's point").toBe(copyOf.get("e3"));
+    expect(on.curve, "a point-on constraint lost its rectangle side").toBe(`${copyOf.get("r1")}~1`);
     expect(copy.constraints!.find((c) => c.type === "coincident" && (c as { e2: string }).e2 === "__origin__"),
       "the constraint to the sketch origin was lost or renamed").toBeTruthy();
 

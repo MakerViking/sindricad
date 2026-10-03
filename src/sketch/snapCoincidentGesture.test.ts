@@ -648,3 +648,40 @@ describe("a centre-point arc is joined to what its clicks snapped onto", () => {
     expect(coincidents(d.h.constraints)).toHaveLength(2);
   });
 });
+
+describe("a fillet and a point that was put ON a curve", () => {
+  it("drops the point-on that held the corner end, which would bend the fillet", async () => {
+    // a's end (30,0) is the corner, and it was put on g, the vertical line
+    // x = 30 below the corner. The fillet moves that end to (27,0), off g.
+    const d = drawing("select", [line("a", 0, 0, 30, 0), line("b", 30, 0, 30, 20), line("g", 30, -5, 30, -25)], { radius: 3 });
+    d.h.constraints.push({ type: "pointOn", e: "a", p: 1, curve: "g" });
+    const settle = solving(d.h);
+    d.h.tool = "fillet";
+    d.click(12, 0);
+    d.click(30, 12);
+    d.enter();
+    await settle();
+
+    expect(toasts).toEqual([]);
+    expect(d.h.constraints.filter((c) => c.type === "pointOn"), "the corner's point-on outlived the corner").toEqual([]);
+    const es = d.h.entities;
+    expect(start(byId<Line>(es, "a"))).toEqual({ x: 0, y: 0 });
+    expect(radiusOf(arcsOf(es)[0]!)).toBeCloseTo(3, 6);
+  });
+
+  it("keeps one that puts a point on a filleted LINE: its carrier did not move", async () => {
+    const d = drawing("select", [line("a", 0, 0, 30, 0), line("b", 30, 0, 30, 20), line("q", 10, 0, 14, 12)], { radius: 3 });
+    const keep: SketchConstraint = { type: "pointOn", e: "q", p: 0, curve: "a" };
+    d.h.constraints.push(keep);
+    const settle = solving(d.h);
+    d.h.tool = "fillet";
+    d.click(20, 0);
+    d.click(30, 12);
+    d.enter();
+    await settle();
+
+    expect(toasts).toEqual([]);
+    expect(d.h.constraints).toContainEqual(keep);
+    expect(byId<Line>(d.h.entities, "q").y1, "q's start sits on a's line").toBeCloseTo(0, 9);
+  });
+});

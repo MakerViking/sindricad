@@ -320,6 +320,29 @@ export async function compileAndSolve(
     }
   }
 
+  // The polygon and slot SIDES a `pointOn` names. Neither shape is in the
+  // solver (types.ts), so a side compiles as FIXED geometry, the way a
+  // projected line does, and only when a constraint names it: a document that
+  // names none compiles exactly as it did before this existed. Its two points
+  // are registered after every other entity's, and as points nothing merges
+  // onto, so a user endpoint drawn on a polygon corner is not pinned by a side
+  // that happens to be named, and the drag search below, which takes the FIRST
+  // of two equally near points, still finds the user's own.
+  const entById = new Map(entities.map((e) => [e.id, e]));
+  for (const c of constraints) {
+    if (c.type !== "pointOn" || ends.has(c.curve)) continue;
+    const cut = c.curve.lastIndexOf("~");
+    const shape = cut > 0 ? entById.get(c.curve.slice(0, cut)) : undefined;
+    if (shape?.type !== "polygon" && shape?.type !== "slot") continue;
+    const side = lineOperand(entById, c.curve);
+    if (!side) continue; // a side the shape no longer has (fewer sides now)
+    const p1 = getPoint(side.x1, side.y1, false), p2 = getPoint(side.x2, side.y2, false);
+    lines.push({ id: c.curve, p1, p2 });
+    ends.set(c.curve, [p1, p2]);
+    fixedPts.add(p1);
+    fixedPts.add(p2);
+  }
+
   const isLine = (id: string) => ends.has(id);
   // resolve an entity endpoint (0 = start, 1 = end) to its solver point id.
   // lines + arcs have two endpoints; a point entity has just one (index ignored);
@@ -530,6 +553,22 @@ export async function compileAndSolve(
         cons.push({ id: `${id}a`, type: "pointOnLine", p, line: c.line });
         cons.push({ id: `${id}b`, type: "pointOnPerpBisector", p, line: c.line });
       }
+    }
+    else if (c.type === "pointOn") {
+      // One planegcs constraint, by what the curve is: the INFINITE line, or
+      // the whole circle (an arc's too), as types.ts says. A point already
+      // merged onto one of the curve's own ends (by position, coincKey) is on
+      // it by construction, and compiling it anyway is what planegcs reports as
+      // redundant: left out the way a merged coincident is, and scoping the
+      // mirror guard the way that one does, for the same reason.
+      const p = endpointPoint(c.e, c.p);
+      const kind = kindOf(c.curve);
+      const arc = arcMap.get(c.curve);
+      const ownEnds = kind === "line" ? ends.get(c.curve) : arc ? [arc.ourS, arc.ourE] : undefined;
+      if (p && ownEnds?.includes(p)) noteRectScope(c);
+      else if (p && kind === "line") cons.push({ id, type: "pointOnLine", p, line: c.curve });
+      else if (p && kind === "circle") cons.push({ id, type: "pointOnCircle", p, circle: c.curve });
+      else if (p && kind === "arc") cons.push({ id, type: "pointOnArc", p, arc: c.curve });
     }
     else if (c.type === "symmetric") {
       const a = endpointPoint(c.e1, c.p1), b = endpointPoint(c.e2, c.p2);
@@ -1012,6 +1051,8 @@ export async function compileAndSolve(
           case "equalRadiusCA": return fxRound(c.circle) && fxRound(c.arc) ? Math.abs(radiusOf.get(c.circle)! - radiusOf.get(c.arc)!) : null;
           case "equalRadiusAA": return fxRound(c.a1) && fxRound(c.a2) ? Math.abs(radiusOf.get(c.a1)! - radiusOf.get(c.a2)!) : null;
           case "pointOnLine": return fx(c.p) && fxLine(c.line) ? perpDist(c.p, c.line) : null;
+          case "pointOnCircle": return fx(c.p) && fxRound(c.circle) ? Math.abs(dist(c.p, centerOf.get(c.circle)!) - roundAt(c.circle)) : null;
+          case "pointOnArc": return fx(c.p) && fxRound(c.arc) ? Math.abs(dist(c.p, centerOf.get(c.arc)!) - roundAt(c.arc)) : null;
           case "pointOnPerpBisector": { if (!fx(c.p) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; return Math.abs(dist(c.p, l.p1) - dist(c.p, l.p2)); }
           case "symmetric": { if (!fx(c.a) || !fx(c.b) || !fxLine(c.line)) return null; const l = lineEnds.get(c.line)!; const A = P(l.p1), d = lineDir(c.line), a = P(c.a), b = P(c.b); const t = (a.x - A.x) * d.x + (a.y - A.y) * d.y; const mx = 2 * (A.x + t * d.x) - a.x, my = 2 * (A.y + t * d.y) - a.y; return Math.hypot(mx - b.x, my - b.y); }
           // rim dims: the same measures entityDims defines, over the pinned params

@@ -17,7 +17,7 @@ import { isEditableTarget } from "../ui/focus";
 import { SketchDimensions, dimBadgeFields, type ExtraDim } from "./sketchDimensions";
 import { SketchGlyphs } from "./sketchGlyphs";
 import { constraintGlyphs, diagnosisOf, type ConstraintGlyph } from "./glyphs";
-import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, linearDim, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
+import { entityDims, constraintDims, dimRefPoints, curveKind, hoverOperandCurve, lineOperand, linearDim, rebindPolygonSides, setDimPixelScale, staggeredDefaults, type DimField, type ConstraintDim } from "./entityDims";
 import {
   clampPlace, isDimError, isRoundTarget, pickDimTarget, rebindTarget, resolveDim, targetIdentity,
   targetKey, unsupportedMessage,
@@ -1608,6 +1608,7 @@ export class SketchMode {
       }
     }
     for (const e of this.entities) {
+      let resided = false;
       for (const [field] of RIGID_ENTITY_NUM_FIELDS[e.type] ?? []) {
         const next = valueFor(`e:${e.id}:${field}`);
         if (next == null) continue;
@@ -1616,8 +1617,11 @@ export class SketchMode {
         if (rec[field] !== coerced) {
           rec[field] = coerced;
           touched = true;
+          resided ||= field === "sides";
         }
       }
+      // a new side count renumbers the sides a point may have been put on
+      if (resided) rebindPolygonSides(this.entities, this.constraints, e.id);
     }
     if (touched) {
       this.armPreEdit(); // parameter sync is DERIVED — never an undo step
@@ -2738,6 +2742,8 @@ export class SketchMode {
     }
     this.cancelPolygonEdit();
     if (!writes.length) return;
+    // a new side count renumbers the sides a point may have been put on (`P~k`)
+    if (writes.some((w) => w.field === "sides")) rebindPolygonSides(this.entities, this.constraints, e.id);
     this.refreshActive();
     this.requestSolve(); // banks the undo step, like every other sketch edit
     this.onState?.();
@@ -3995,7 +4001,9 @@ export class SketchMode {
     // SPAN, so it highlights exactly the piece the click would take away, from
     // the same plan the click uses (trimSpan) and the same raw cursor: lighting
     // the whole line told a reporter the whole line was about to go. Move and
-    // the rest act on the whole entity and keep the whole highlight.
+    // the rest act on the whole entity and keep the whole highlight. Coincident
+    // asks ConstraintTools, because its click can take ANOTHER shape's edge than
+    // the nearest one, or none at all (ConstraintTools.hoverCurve).
     //
     // Fillet and Chamfer take a LINE and nothing else (filletClick). They lit a
     // rectangle's whole outline red, inviting a click that was then dropped
@@ -4004,6 +4012,7 @@ export class SketchMode {
     const cornerTool = this.tool === "fillet" || this.tool === "chamfer";
     if (hit && (!cornerTool || hit.type === "line")) {
       const curve = this.tool === "trim" ? this.trimPreview(idx, hit, p)
+        : this.tool === "coincident" ? this.constraintTools.hoverCurve(p)
         : CONSTRAINT_TOOLS.has(this.tool) ? hoverOperandCurve(hit, p)
         : hit;
       if (curve) preview.push(...curveObjects([curve], this.plane, 0xff5555, true));
@@ -4085,8 +4094,7 @@ export class SketchMode {
   private applyConstraintToSelection(t: SketchTool, sel: ResolvedEntity[]) {
     const a = sel[0], b = sel[1];
     if (!a) return;
-    const moves = a.id;
-    const push = (c: SketchConstraint) => {
+    const push = (c: SketchConstraint, moves = a.id) => {
       this.constraints.push(c);
       this.trial = { cons: [c], msg: SketchMode.CONSTRAINT_CONFLICT_MSG }; // withdrawn again if this solve conflicts
       this.pendingBias = { moves: [moves] };
@@ -4101,6 +4109,14 @@ export class SketchMode {
     if (t === "collinear") return push({ type: "collinear", l1: a.id, l2: b.id });
     if (t === "concentric") return push({ type: "concentric", c1: a.id, c2: b.id });
     if (t === "equal") return push({ type: "equal", l1: a.id, l2: b.id });
+    if (t === "coincident") {
+      // a sketch point and a line, circle or arc (constraintMenu): the point
+      // goes ON the curve, and it is the point that moves, as with the tool
+      const point = a.type === "point" ? a : b;
+      const curve = point === a ? b : a;
+      if (point.type !== "point") return;
+      return push({ type: "pointOn", e: point.id, p: 0, curve: curve.id }, point.id);
+    }
     if (t === "tangent") {
       // the wire wants (line, circle) in that order whichever way round they were picked
       const line = a.type === "line" ? a : b;
@@ -4451,12 +4467,18 @@ export class SketchMode {
     const sel = new Set<string>();
     // fixed reference geometry: keep it (and its selection) untouched
     const projected = this.warnSelectedProjected();
+    // ...and the ORIGIN, with no toast. A click at 0,0 in Select picks one of
+    // its axes, so a Move of a selection that included one carried the axis
+    // along, and for the rest of the session the solver pinned it wherever it
+    // landed (the body drag's twin, 69d5231f). The origin point offers no pick
+    // of its own today; it is kept the same way all the same.
+    const kept = (id: string) => projected.has(id) || isOriginGeometry(id);
     for (const e of this.entities) {
-      if (this.selected.has(e.id) && !projected.has(e.id)) {
+      if (this.selected.has(e.id) && !kept(e.id)) {
         for (const m of map(e)) { next.push(m); sel.add(m.id); }
       } else {
         next.push(e);
-        if (projected.has(e.id)) sel.add(e.id);
+        if (this.selected.has(e.id)) sel.add(e.id);
       }
     }
     this.entities = next;
@@ -4913,6 +4935,17 @@ export class SketchMode {
     // constraint the solver honours is the silent-drop failure again, one layer
     // up.
     const hasPointOperand = (id: string) => refIds.has(id) || hasLineOperand(id);
+    // A polygon or slot SIDE (`P~k`, `S~0`, `S~1`), which only `pointOn` takes
+    // (types.ts). Resolved through lineOperand, the decoder the solver and the
+    // glyphs use, so a side the shape does not have is dropped here instead of
+    // sitting in the sketch holding nothing. (A side-count edit re-aims these
+    // first: rebindPolygonSides.)
+    const byId = new Map(this.entities.map((e) => [e.id, e]));
+    const hasShapeSide = (id: string) => {
+      const cut = id.lastIndexOf("~");
+      const shape = cut > 0 ? byId.get(id.slice(0, cut)) : undefined;
+      return (shape?.type === "polygon" || shape?.type === "slot") && lineOperand(byId, id) !== null;
+    };
     this.constraints = this.constraints.filter((c) => {
       switch (c.type) {
         case "horizontal": case "vertical": case "distance": return hasLineOperand(c.line);
@@ -4925,6 +4958,7 @@ export class SketchMode {
         case "coincident": return hasPointOperand(c.e1) && hasPointOperand(c.e2);
         case "concentric": return roundIds.has(c.c1) && roundIds.has(c.c2);
         case "midpoint": return hasPointOperand(c.e) && hasLineOperand(c.line);
+        case "pointOn": return hasPointOperand(c.e) && (hasCurveOperand(c.curve) || hasShapeSide(c.curve));
         case "symmetric": return hasPointOperand(c.e1) && hasPointOperand(c.e2) && hasLineOperand(c.line);
         case "radius": return roundIds.has(c.e);
         case "p2pDistance": return refIds.has(c.e1) && refIds.has(c.e2);

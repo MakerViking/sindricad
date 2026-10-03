@@ -5,6 +5,7 @@ import type { ResolvedEntity } from "./snap";
 import type { SketchConstraint } from "../types";
 import type { SketchTool } from "./sketchMode";
 import { t } from "../i18n";
+import { originGeometry, ORIGIN_ID, ORIGIN_X_ID, ORIGIN_Y_ID } from "./origin";
 
 // Minimal live-accessor host mirroring what SketchMode provides. pickEntity
 // (from modify.ts) is the real implementation, so clicks are aimed at geometry.
@@ -222,9 +223,11 @@ describe("coincident: the silent-miss fixes", () => {
     const ct = new ConstraintTools(h);
     ct.click(v(50, 50)); // empty space
     expect(h._cons).toEqual([]);
-    expect(h.warnings.join(" ")).toMatch(/POINTS/);
+    expect(h.warnings).toEqual([t("sketch.constraint.coincidentMiss")]);
     expect(h.warnings.join(" "), "and it names every kind of point that works")
-      .toMatch(/centre/);
+      .toMatch(/corner.*centre.*sketch point/);
+    expect(h.warnings.join(" "), "and the curves a point can go on")
+      .toMatch(/line, circle or arc/);
     expect(h.warnings.join(" ")).toMatch(/Collinear/);
   });
 
@@ -522,5 +525,282 @@ describe("a circle or arc CENTRE is a point the constraint tools can pick", () =
     expect(h._cons).toEqual([
       { type: "symmetric", e1: "K", p1: 0, e2: "T", p2: 0, line: "l1" },
     ]);
+  });
+});
+
+// TA 38391076 and Doug 21: "A point can't be coincident with a line." Before
+// pointOn existed, a point then a line body warned "click the second ENDPOINT",
+// and a line body then a point dropped the held line without a word. Every
+// case runs through the real click flow, in both orders where there are two.
+describe("Coincident puts a point ON a line, circle or arc", () => {
+  const run = (ents: ResolvedEntity[], ...clicks: THREE.Vector2[]) => {
+    const h = new MockHost();
+    h._ents = ents;
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    for (const c of clicks) ct.click(c);
+    return h;
+  };
+  // a free point P at (5,8) and a line along y = 0 from x 0 to 20
+  const pointAndLine = (): ResolvedEntity[] => [
+    { type: "line", id: "l1", x1: 0, y1: 0, x2: 20, y2: 0 },
+    { type: "point", id: "P", x: 5, y: 8 },
+  ];
+
+  it("point first, then the line's middle", () => {
+    const h = run(pointAndLine(), v(5, 8), v(12, 0));
+    expect(h._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "l1" }]);
+    expect(h.warnings, "no 'click the second endpoint' any more").toEqual([]);
+    expect(h.pending, "the held point's marker is cleared").toBeNull();
+  });
+
+  it("the line's middle first, then the point: same constraint, nothing dropped", () => {
+    const h = run(pointAndLine(), v(12, 0), v(5, 8));
+    expect(h._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "l1" }]);
+    expect(h.warnings).toEqual([]);
+  });
+
+  it("the POINT is what moves, in either order", () => {
+    expect(run(pointAndLine(), v(5, 8), v(12, 0)).moves).toEqual(["P"]);
+    expect(run(pointAndLine(), v(12, 0), v(5, 8)).moves).toEqual(["P"]);
+  });
+
+  it("a line's END goes on another line, by its end index", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "l1", x1: 0, y1: 0, x2: 20, y2: 0 },
+      { type: "line", id: "l2", x1: 10, y1: 3, x2: 14, y2: 12 },
+    ];
+    expect(run(ents, v(10, 3), v(4, 0))._cons).toEqual([{ type: "pointOn", e: "l2", p: 0, curve: "l1" }]);
+  });
+
+  it("the reporter's case: a rectangle corner onto another rectangle's side", () => {
+    // two stacked rectangles (the 38391076 document), the upper one's bottom-left
+    // corner put on the lower one's TOP edge
+    const ents: ResolvedEntity[] = [
+      { type: "rectangle", id: "R0", x: 0, y: 0, width: 60, height: 20 },
+      { type: "rectangle", id: "R1", x: 10, y: 25, width: 20, height: 10 },
+    ];
+    const h = run(ents, v(0, 20), v(-10, 10)); // R1's corner 0 (bl), then R0's top edge
+    expect(h._cons).toEqual([{ type: "pointOn", e: "R1", p: 0, curve: "R0~2" }]);
+  });
+
+  it("a point on a circle's rim, and on an arc", () => {
+    const circle: ResolvedEntity[] = [
+      { type: "circle", id: "K", x: 0, y: 0, radius: 10 },
+      { type: "point", id: "P", x: 30, y: 4 },
+    ];
+    expect(run(circle, v(30, 4), v(0, 10))._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "K" }]);
+    expect(run(circle, v(-10, 0), v(30, 4))._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "K" }]);
+    const arc: ResolvedEntity[] = [
+      // quarter arc about (0,0), r 10, ends (10,0) and (0,10)
+      { type: "arc", id: "A", x1: 10, y1: 0, x2: 0, y2: 10, mx: Math.SQRT1_2 * 10, my: Math.SQRT1_2 * 10 },
+      { type: "point", id: "P", x: 30, y: 4 },
+    ];
+    expect(run(arc, v(30, 4), v(Math.SQRT1_2 * 10, Math.SQRT1_2 * 10))._cons)
+      .toEqual([{ type: "pointOn", e: "P", p: 0, curve: "A" }]);
+  });
+
+  it("a point on a polygon side or a slot side, through their side operands", () => {
+    // hexagon about (0,0), r 10, first vertex at angle 0: side 0 runs (10,0) ->
+    // (5, 8.66), so its middle is (7.5, 4.33)
+    const hex: ResolvedEntity[] = [
+      { type: "polygon", id: "H", x: 0, y: 0, radius: 10, sides: 6, angle: 0 },
+      { type: "point", id: "P", x: 30, y: 4 },
+    ];
+    expect(run(hex, v(30, 4), v(7.5, 4.33))._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "H~0" }]);
+    expect(run(hex, v(-7.5, -4.33), v(30, 4))._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "H~3" }]);
+    // slot from (0,0) to (20,0), 6 wide: side 0 is y = +3 (left of the axis),
+    // side 1 is y = -3
+    const slot: ResolvedEntity[] = [
+      { type: "slot", id: "S", x1: 0, y1: 0, x2: 20, y2: 0, width: 6 },
+      { type: "point", id: "P", x: 30, y: 14 },
+    ];
+    expect(run(slot, v(30, 14), v(10, 3))._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "S~0" }]);
+    expect(run(slot, v(30, 14), v(10, -3))._cons).toEqual([{ type: "pointOn", e: "P", p: 0, curve: "S~1" }]);
+  });
+
+  it("a slot's round END is not a side: refused out loud, and the point stays held", () => {
+    const slot: ResolvedEntity[] = [
+      { type: "slot", id: "S", x1: 0, y1: 0, x2: 20, y2: 0, width: 6 },
+      { type: "point", id: "P", x: 30, y: 14 },
+    ];
+    const h = run(slot, v(30, 14), v(23, 0)); // the cap past the axis end
+    expect(h._cons).toEqual([]);
+    expect(h.warnings).toEqual([t("sketch.constraint.coincidentMiss")]);
+    expect(h.pending).toEqual({ x: 30, y: 14 });
+  });
+
+  it("refuses a point on its OWN curve, and says why", () => {
+    const line = run(pointAndLine(), v(0, 0), v(12, 0)); // l1's own start, then l1
+    expect(line._cons).toEqual([]);
+    expect(line.warnings).toEqual([t("sketch.constraint.pointOnOwnCurve")]);
+    const rect = run([{ type: "rectangle", id: "R", x: 0, y: 0, width: 40, height: 20 }], v(-20, -10), v(0, 10));
+    expect(rect._cons, "a corner on its own rectangle's top folds it flat").toEqual([]);
+    expect(rect.warnings).toEqual([t("sketch.constraint.pointOnOwnCurve")]);
+    const circle = run([{ type: "circle", id: "K", x: 0, y: 0, radius: 10 }], v(0, 0), v(10, 0));
+    expect(circle._cons, "a centre on its own rim collapses it").toEqual([]);
+  });
+
+  it("two curves that are not two lines: says one has to be a point", () => {
+    const ents: ResolvedEntity[] = [
+      { type: "circle", id: "K1", x: 0, y: 0, radius: 10 },
+      { type: "circle", id: "K2", x: 40, y: 0, radius: 5 },
+    ];
+    const h = run(ents, v(10, 0), v(45, 0));
+    expect(h._cons).toEqual([]);
+    expect(h.warnings).toEqual([t("sketch.constraint.pointOnNeedsPoint")]);
+  });
+
+  it("two line BODIES still mean Collinear, but not with a polygon side", () => {
+    expect(run(pointAndLine().concat([{ type: "line", id: "l2", x1: 0, y1: 5, x2: 20, y2: 9 }]), v(12, 0), v(10, 7))._cons)
+      .toEqual([{ type: "collinear", l1: "l1", l2: "l2" }]);
+    const ents: ResolvedEntity[] = [
+      { type: "polygon", id: "H", x: 0, y: 0, radius: 10, sides: 6, angle: 0 },
+      { type: "line", id: "l1", x1: 30, y1: 0, x2: 50, y2: 0 },
+    ];
+    const h = run(ents, v(7.5, 4.33), v(40, 0));
+    expect(h._cons).toEqual([]);
+    expect(h.warnings).toEqual([t("sketch.constraint.pointOnNeedsPoint")]);
+  });
+
+  it("the ORIGIN is a point it can put on a curve, and its axes are curves to put a point on", () => {
+    const ents = (): ResolvedEntity[] => [
+      ...originGeometry(),
+      { type: "line", id: "l1", x1: 5, y1: 10, x2: 25, y2: 10 },
+      { type: "point", id: "P", x: 30, y: 7 },
+    ];
+    expect(run(ents(), v(0, 0), v(15, 10))._cons, "origin, then a line")
+      .toEqual([{ type: "pointOn", e: ORIGIN_ID, p: 0, curve: "l1" }]);
+    expect(run(ents(), v(15, 10), v(0, 0))._cons, "a line, then the origin")
+      .toEqual([{ type: "pointOn", e: ORIGIN_ID, p: 0, curve: "l1" }]);
+    expect(run(ents(), v(30, 7), v(60, 0))._cons, "a point, then the X axis")
+      .toEqual([{ type: "pointOn", e: "P", p: 0, curve: ORIGIN_X_ID }]);
+    expect(run(ents(), v(0, -40), v(30, 7))._cons, "the Y axis, then a point")
+      .toEqual([{ type: "pointOn", e: "P", p: 0, curve: ORIGIN_Y_ID }]);
+  });
+});
+
+// TA 38391076's own document: e1 stacked on e0, sharing e0's top-left corner,
+// with e1's whole bottom edge along e0's top edge. The shared corner is ONE
+// point to the solver, and the shared stretch of edge is under the cursor
+// twice, so which shape's name a click took came down to a float's last digit
+// or list order, and most picks were refused as "belongs to the curve you
+// picked". The first stand-in for this case floated e1 clear of e0, which
+// never touched it.
+describe("Coincident on two shapes that share a corner and an edge (TA 38391076's document)", () => {
+  const doc = (): ResolvedEntity[] => [
+    { type: "rectangle", id: "e0", x: -2.5416998975938228, y: -1.487824330298821, width: 62.860577955125294, height: 52.19783692131706 },
+    { type: "rectangle", id: "e1", x: -7.625099692781474, y: 35.33582784459706, width: 52.69377836474999, height: 21.449467428474694 },
+  ];
+  const TOP = 24.61109413035971; // e0's top edge, and e1's bottom edge
+  const SHARED = v(-33.97198887515647, TOP); // e0's corner 3 and e1's corner 0
+  const E0_TR = v(28.888589079968824, TOP); // e0's corner 2, past e1's end
+  const E0_BOTTOM = -27.586742790957352;
+  const run = (...clicks: THREE.Vector2[]) => {
+    const h = new MockHost();
+    h._ents = doc();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    for (const c of clicks) ct.click(c);
+    return { h, ct };
+  };
+  // where the click lands on the shared corner: these take e0's name or
+  // e1's, by float noise alone (the reviewer's drive saw both)
+  const nudges = [v(0, 0), v(-0.3, 0), v(0.3, -0.3), v(0.3, 0.3)];
+
+  it("the shared corner, then e0's top edge past e1: e1's corner goes on it, whichever name the click took", () => {
+    for (const d of nudges) {
+      const { h } = run(SHARED.clone().add(d), v(25, TOP));
+      expect(h._cons, `nudged ${d.x},${d.y}`).toEqual([{ type: "pointOn", e: "e1", p: 0, curve: "e0~2" }]);
+      expect(h.warnings).toEqual([]);
+      expect(h.moves).toEqual(["e1"]);
+    }
+  });
+
+  it("and in the other order: e0's top edge, then the shared corner", () => {
+    for (const d of nudges) {
+      expect(run(v(25, TOP), SHARED.clone().add(d)).h._cons, `nudged ${d.x},${d.y}`)
+        .toEqual([{ type: "pointOn", e: "e1", p: 0, curve: "e0~2" }]);
+    }
+  });
+
+  it("e0's top-right corner onto e1's bottom edge, which lies along e0's own top edge, in either order", () => {
+    // every click on that stretch is nearest e0's top edge too (a tie the lower
+    // index wins), which is e0's own: it used to be refused, every time
+    for (const clicks of [[E0_TR, v(0, TOP)], [v(0, TOP), E0_TR]]) {
+      const { h } = run(...clicks);
+      expect(h._cons).toEqual([{ type: "pointOn", e: "e0", p: 2, curve: "e1~0" }]);
+      expect(h.warnings).toEqual([]);
+    }
+  });
+
+  it("while e0's corner is held, the hover over the shared stretch lights e1's edge, the one the click takes", () => {
+    const { ct } = run(E0_TR);
+    expect(ct.hoverCurve(v(0, TOP))?.id).toBe("e1~0");
+  });
+
+  it("the shared corner onto e0's BOTTOM edge would fold e0 flat: refused, whichever name the click took", () => {
+    for (const d of nudges) {
+      const { h } = run(SHARED.clone().add(d), v(0, E0_BOTTOM));
+      expect(h._cons, `nudged ${d.x},${d.y}`).toEqual([]);
+      expect(h.warnings).toEqual([t("sketch.constraint.pointOnOwnCurve")]);
+    }
+  });
+});
+
+describe("Coincident and points that only SIT together", () => {
+  const run = (ents: ResolvedEntity[], ...clicks: THREE.Vector2[]) => {
+    const h = new MockHost();
+    h._ents = ents;
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    for (const c of clicks) ct.click(c);
+    return h;
+  };
+
+  it("a line's end on a circle's centre goes on that circle, though the click took the centre's name", () => {
+    // A centre keeps its own solver point, so the line's end is a different
+    // point that happens to sit there. The circle comes last in the list, so a
+    // tie on the shared spot names its centre, which on its own rim is refused.
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "L", x1: 0, y1: 0, x2: 20, y2: 5 },
+      { type: "circle", id: "K", x: 0, y: 0, radius: 10 },
+    ];
+    expect(run(ents, v(0, 0), v(-10, 0))._cons).toEqual([{ type: "pointOn", e: "L", p: 0, curve: "K" }]);
+    expect(run(ents, v(-10, 0), v(0, 0))._cons).toEqual([{ type: "pointOn", e: "L", p: 0, curve: "K" }]);
+  });
+});
+
+describe("Coincident and a polygon's CORNER", () => {
+  // hexagon about (0,0), r 10, first vertex at angle 0: a vertex at (5, 8.66)
+  const hex = (): ResolvedEntity[] => [
+    { type: "polygon", id: "H", x: 0, y: 0, radius: 10, sides: 6, angle: 0 },
+    { type: "line", id: "l", x1: 20, y1: 12, x2: 30, y2: 12 },
+  ];
+  const CORNER = v(5, 10 * Math.sin(Math.PI / 3));
+  const run = (...clicks: THREE.Vector2[]) => {
+    const h = new MockHost();
+    h._ents = hex();
+    h._tool = "coincident";
+    const ct = new ConstraintTools(h);
+    for (const c of clicks) ct.click(c);
+    return { h, ct };
+  };
+
+  it("is refused out loud, not taken as the nearest side: a corner is not a point yet", () => {
+    // it used to hold the nearest side without a word, and the line's end then
+    // landed on that side's line, about 3 mm off the corner the user clicked
+    const { h } = run(CORNER, v(20, 12));
+    expect(h.warnings).toEqual([t("sketch.constraint.polygonCorner")]);
+    expect(h._cons, "no side was held for the line's end to go on").toEqual([]);
+  });
+
+  it("with a point held, the corner is refused and the point stays held; the hover lights nothing there", () => {
+    const { h, ct } = run(v(20, 12), CORNER);
+    expect(h._cons).toEqual([]);
+    expect(h.warnings).toEqual([t("sketch.constraint.polygonCorner")]);
+    expect(h.pending).toEqual({ x: 20, y: 12 });
+    expect(ct.hoverCurve(CORNER)).toBeNull();
+    expect(ct.hoverCurve(v(7.5, 4.33))?.id, "a side away from its corners still lights").toBe("H~0");
   });
 });

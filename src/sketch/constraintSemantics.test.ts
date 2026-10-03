@@ -304,10 +304,63 @@ const TOOL_CASES: Record<string, ToolCase[]> = {
   // --- points ----------------------------------------------------------------
   coincident: [{
     meaning: "the two picked points are at the same position",
+    form: "two points",
     entities: () => [L("A", 0, 0, 40, 0), L("B", 44, 6, 80, 6)],
     clicks: [[40, 0], [44, 6]],
     emits: { type: "coincident", e1: "A", p1: 1, e2: "B", p2: 0 },
     residual: (e) => dist(pt(e, "A", 1), pt(e, "B", 0)),
+  }, {
+    // The point-on-curve forms (TA 38391076, Doug 21). This first one starts
+    // the point BEYOND the segment's end, so it can only be satisfied on the
+    // line's extension: the predicate is the INFINITE line, as types.ts says.
+    meaning: "the point lies on the infinite line through the picked line",
+    form: "point, then line",
+    entities: () => [L("A", 0, 0, 40, 0), PT("P", 60, 12)],
+    clicks: [[60, 12], [20, 0]],
+    emits: { type: "pointOn", e: "P", p: 0, curve: "A" },
+    residual: (e) => perpDist(pt(e, "P", 0), seg(e, "A")),
+  }, {
+    meaning: "the point lies on the infinite line through the picked line",
+    form: "line, then point",
+    entities: () => [L("A", 0, 0, 40, 0), PT("P", 60, 12)],
+    clicks: [[20, 0], [60, 12]],
+    emits: { type: "pointOn", e: "P", p: 0, curve: "A" },
+    residual: (e) => perpDist(pt(e, "P", 0), seg(e, "A")),
+  }, {
+    meaning: "a corner of one rectangle lies on a side of another",
+    form: "rectangle corner, then rectangle edge",
+    entities: () => [RECT("R0", 0, 0, 60, 20), RECT("R1", 10, 27, 20, 10)],
+    clicks: [[0, 22], [-10, 10]], // R1's bottom-left corner, then R0's top edge
+    emits: { type: "pointOn", e: "R1", p: 0, curve: "R0~2" },
+    residual: (e) => perpDist(pt(e, "R1", 0), seg(e, "R0~2")),
+  }, {
+    meaning: "the point is one radius from the circle's centre",
+    form: "point, then circle",
+    entities: () => [C("K", 0, 0, 20), PT("P", 40, 10)],
+    clicks: [[40, 10], [20, 0]],
+    emits: { type: "pointOn", e: "P", p: 0, curve: "K" },
+    residual: (e) => { const k = round(e, "K"); return Math.abs(dist(pt(e, "P", 0), k) - k.r); },
+  }, {
+    // Started in the OPPOSITE quadrant to the arc's sweep: the arc counts as its
+    // whole circle (types.ts), so the point may land off the drawn arc.
+    meaning: "the point is one radius from the arc's centre",
+    form: "point, then arc",
+    entities: () => [ARC("A", 0, 0, 20, 0, Math.PI / 2), PT("P", -30, -10)],
+    clicks: [[-30, -10], [20 * Math.SQRT1_2, 20 * Math.SQRT1_2]],
+    emits: { type: "pointOn", e: "P", p: 0, curve: "A" },
+    residual: (e) => { const k = round(e, "A"); return Math.abs(dist(pt(e, "P", 0), k) - k.r); },
+  }, {
+    // A polygon is rigid in the solver, so its side is fixed geometry and the
+    // point is the only thing that can move.
+    meaning: "the point lies on the line through the polygon's side",
+    form: "point, then polygon side",
+    entities: () => [
+      ({ type: "polygon", id: "H", x: 0, y: 0, radius: 10, sides: 6, angle: 0 }) as unknown as ResolvedEntity,
+      PT("P", 30, 4),
+    ],
+    clicks: [[30, 4], [7.5, 4.33]], // the point, then side 0, (10,0) -> (5,8.66)
+    emits: { type: "pointOn", e: "P", p: 0, curve: "H~0" },
+    residual: (e) => perpDist(pt(e, "P", 0), seg(e, "H~0")),
   }],
   concentric: [{
     meaning: "the two rounds share a centre",

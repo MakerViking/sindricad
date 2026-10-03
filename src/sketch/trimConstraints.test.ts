@@ -297,3 +297,29 @@ describe("trim gives every piece a NEW id", () => {
     expect(after.entities.filter((e) => e.type === "arc")).toHaveLength(3);
   });
 });
+
+describe("trim keeps a point that was put ON the trimmed curve", () => {
+  it("on the piece nearest the point, and it still holds the point there", async () => {
+    // base y = 0 from x 0 to 40, crossed at x 10 and x 20; P sits on base at
+    // x 30. Trimming the middle span leaves [0,10] (the lead, which has the
+    // original start) and [20,40], which is the piece P is on.
+    const ents: ResolvedEntity[] = [
+      { type: "line", id: "base", x1: 0, y1: 0, x2: 40, y2: 0 },
+      { type: "line", id: "x1", x1: 10, y1: -5, x2: 10, y2: 5 },
+      { type: "line", id: "x2", x1: 20, y1: -5, x2: 20, y2: 5 },
+      { type: "point", id: "P", x: 30, y: 0 },
+    ];
+    const after = trimAt(ents, [{ type: "pointOn", e: "P", p: 0, curve: "base" }], v(15, 0.1));
+    const pieces = after.entities.filter((e) => e.type === "line" && !["x1", "x2"].includes(e.id)) as Line[];
+    expect(pieces).toHaveLength(2);
+    const right = pieces.find((l) => Math.max(l.x1, l.x2) === 40)!;
+    expect(after.constraints).toEqual([{ type: "pointOn", e: "P", p: 0, curve: right.id }]);
+    expect(toasts).toEqual([]);
+
+    // the effect: lift the right piece 3 mm and P must go with it
+    const lifted = after.entities.map((e) => (e.id === right.id ? { ...e, y1: 3, y2: 3 } as ResolvedEntity : e));
+    const r = await compileAndSolve(lifted, after.constraints, undefined, { moves: ["P"] });
+    const p = byId(r.entities, "P") as Extract<ResolvedEntity, { type: "point" }>;
+    expect(p.y).toBeCloseTo(3, 9);
+  });
+});

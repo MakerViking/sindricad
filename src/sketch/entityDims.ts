@@ -10,7 +10,7 @@ import type { ResolvedEntity } from "./snap";
 import type { DimField, DimPlace, PlaceOffset, SketchConstraint } from "../types";
 import { isDriven, dimPlaceOf, projEndSamples } from "../types";
 import { circumcenter, arcCenterRadius } from "./arc";
-import { rectCorners } from "./region";
+import { polygonPoints, rectCorners } from "./region";
 import { paramOnSeg, distToSeg, signedAngleDeg } from "./geom2d";
 
 export type { DimField };
@@ -331,10 +331,107 @@ export function lineOperand(
   }
   const base = byId.get(id.slice(0, t));
   const k = Number(id.slice(t + 1));
-  if (!base || base.type !== "rectangle" || !Number.isInteger(k) || k < 0 || k > 3) return null;
+  if (!base || !Number.isInteger(k) || k < 0) return null;
+  if (base.type !== "rectangle") return shapeSide(base, k);
+  if (k > 3) return null;
   const c = rectCorners(base.x, base.y, base.width, base.height);
   const a = c[k], b = c[(k + 1) % 4];
   return a && b ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null;
+}
+
+/** Side `k` of a RIGID shape, or null when the shape has no such side: a
+ *  polygon's side k runs from vertex k to vertex k+1 in polygonPoints order,
+ *  and a slot's side 0 runs along the left of its axis (x1,y1)->(x2,y2) and
+ *  side 1 back along the right, each half the width out from it.
+ *
+ *  Decoded here so the glyphs, the hover and pruneConstraints read these the
+ *  way they read a rectangle edge. Only `pointOn` names one today (types.ts):
+ *  a polygon or slot is not in the solver, so a side is FIXED geometry there,
+ *  the way a projected line is, and putting a point on it is the one
+ *  constraint that means something against fixed geometry. */
+function shapeSide(e: ResolvedEntity, k: number): { x1: number; y1: number; x2: number; y2: number } | null {
+  if (e.type === "polygon") {
+    const vs = polygonPoints(e.x, e.y, e.radius, e.sides, (e.angle * Math.PI) / 180);
+    const a = vs[k], b = vs[(k + 1) % vs.length];
+    return a && b ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y } : null;
+  }
+  if (e.type === "slot" && (k === 0 || k === 1)) {
+    const len = Math.hypot(e.x2 - e.x1, e.y2 - e.y1);
+    if (!(len > 0)) return null;
+    // the LEFT normal of the axis, half the width long
+    const nx = (-(e.y2 - e.y1) / len) * (e.width / 2), ny = ((e.x2 - e.x1) / len) * (e.width / 2);
+    return k === 0
+      ? { x1: e.x1 + nx, y1: e.y1 + ny, x2: e.x2 + nx, y2: e.y2 + ny }
+      : { x1: e.x2 - nx, y1: e.y2 - ny, x2: e.x1 - nx, y2: e.y1 - ny };
+  }
+  return null;
+}
+
+/** The side of a polygon or slot a click at `p` names (`P~k`, `S~0`, `S~1`),
+ *  or null: for any other entity, and for a click on one of a slot's round
+ *  ends, which are not sides. The encoder for shapeSide, and the polygon and
+ *  slot half of lineOperandAt, kept apart from it on purpose: lineOperandAt
+ *  feeds every line tool, and Horizontal or Parallel on a side the solver
+ *  holds fixed would only ever be redundant or refused. Coincident is the one
+ *  caller, for `pointOn`.
+ *
+ *  `cornerTol` (a click): within it of a polygon CORNER names no side either. A
+ *  corner is a point to the user, and the nearest side's line ran straight
+ *  through it, so a point put "on the corner" landed on that side's line off
+ *  the corner, with nothing said. Corners are not points yet (they are not in
+ *  the solver), so a click there is refused instead. */
+export function shapeSideAt(e: ResolvedEntity, p: { x: number; y: number }, cornerTol = 0): string | null {
+  if (e.type === "polygon") {
+    const n = Math.max(3, Math.round(e.sides));
+    let best: string | null = null;
+    let bestD = Infinity;
+    for (let k = 0; k < n; k++) {
+      const s = shapeSide(e, k);
+      if (!s) continue;
+      if (Math.hypot(s.x1 - p.x, s.y1 - p.y) < cornerTol) return null;
+      const d = distToSeg(v(s.x1, s.y1), v(s.x2, s.y2), p);
+      if (d < bestD) { bestD = d; best = `${e.id}~${k}`; }
+    }
+    return best;
+  }
+  if (e.type === "slot") {
+    const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
+    const len2 = dx * dx + dy * dy;
+    if (!(len2 > 0)) return null;
+    const along = ((p.x - e.x1) * dx + (p.y - e.y1) * dy) / len2;
+    if (along < 0 || along > 1) return null; // a round end
+    return dx * (p.y - e.y1) - dy * (p.x - e.x1) >= 0 ? `${e.id}~0` : `${e.id}~1`;
+  }
+  return null;
+}
+
+/** After polygon `polyId`'s side COUNT changed: re-aim each `pointOn` on one of
+ *  its sides at the side nearest that point now. Side k of a hexagon and side
+ *  k of an octagon are different sides, so the stored k named a side somewhere
+ *  else on the outline, and the next solve pulled the point onto that side's
+ *  line, off the polygon, without a word. `ents` must hold the polygon with its
+ *  NEW count and the points where they are BEFORE that solve. Mutates
+ *  `constraints`; true when it changed any. */
+export function rebindPolygonSides(
+  ents: ResolvedEntity[],
+  constraints: SketchConstraint[],
+  polyId: string,
+): boolean {
+  const byId = new Map(ents.map((e) => [e.id, e]));
+  const poly = byId.get(polyId);
+  if (poly?.type !== "polygon") return false;
+  let changed = false;
+  for (const c of constraints) {
+    if (c.type !== "pointOn" || c.curve.slice(0, c.curve.lastIndexOf("~")) !== polyId) continue;
+    const owner = byId.get(c.e);
+    const at = owner ? refPoint(owner, c.p) : null;
+    const side = at ? shapeSideAt(poly, at) : null;
+    if (side && side !== c.curve) {
+      c.curve = side;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 /** The ENCODER, and the inverse of lineOperand: which line operand an entity

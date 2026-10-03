@@ -6,6 +6,8 @@
 
 import type { CadDocument, Feature, ParamTarget, ParamUnit, SketchEntity, SketchPattern } from "../types";
 import { isDimConstraint } from "../sketch/id";
+import { rebindPolygonSides } from "../sketch/entityDims";
+import { resolveRealEntities } from "../sketch/resolve";
 import { t } from "../i18n";
 
 /** What kind of quantity a numeric field holds — drives display-unit conversion
@@ -254,8 +256,21 @@ export function writeTarget(doc: CadDocument, target: ParamTarget, value: number
   const v = coerceForField(rt.field, value);
   if (rt.holder[rt.field] === v) return null;
   rt.holder[rt.field] = v;
+  if (target.kind === "entity" && rt.field === "sides") rebindSketchSides(doc, target.sketch, target.entity);
   const ownerId = target.kind === "feature" ? target.feature : target.sketch;
   const i = doc.features.findIndex((f) => f.id === ownerId);
   if (i >= 0) doc.features[i] = { ...doc.features[i] } as Feature;
   return rt.sketch !== undefined ? { sketch: rt.sketch } : {};
+}
+
+/** A polygon's new side count renumbers its sides, so a point put on one
+ *  (`pointOn` on `P~k`) is re-aimed at the side nearest it
+ *  (entityDims.rebindPolygonSides). Here, because every writer passes through
+ *  writeTarget: the parameter recompute of a CLOSED sketch never reaches the
+ *  sketch editor, and its headless solve would pull the point onto the wrong
+ *  side. The open sketch re-aims its own session copy (syncParamValues). */
+function rebindSketchSides(doc: CadDocument, sketchId: string, entityId: string) {
+  const f = doc.features.find((x) => x.id === sketchId);
+  if (f?.type !== "sketch" || !f.constraints?.some((c) => c.type === "pointOn")) return;
+  rebindPolygonSides(resolveRealEntities(f, doc.parameters), f.constraints, entityId);
 }

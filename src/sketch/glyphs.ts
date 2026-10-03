@@ -110,6 +110,11 @@ export function constraintGlyphs(ents: ResolvedEntity[], constraints: SketchCons
       case "coincident": push(i, "⊙", refPos(c.e1, c.p1)); break;
       case "concentric": push(i, "◎", center(c.c1)); break;
       case "midpoint": push(i, "M", center(c.line)); break;
+      // On the POINT, like coincident's: that is the end that slides along the
+      // curve, and a badge at the curve's middle could sit nowhere near it (the
+      // line is infinite here). It also keeps the badge, and so the delete,
+      // reachable if the curve ever fails to resolve.
+      case "pointOn": push(i, "∈", refPos(c.e, c.p)); break;
       case "symmetric": push(i, "⋈", center(c.line)); break;
       case "fix": push(i, "⚓", refPos(c.e, c.p)); break;
       // distance/diameter/p2pDistance/p2lDistance/radius/angle render as dimensions
