@@ -373,6 +373,10 @@ This file starts on 2026-08-03. For anything before that, see the
   a long way moves the geometry dimensioned to it along with it, instead of to
   the far side.
 
+- **A moved body is drawn where you moved it.** If an earlier cut had left a
+  tiny hidden chip in a body, moving that body could draw it at its old place
+  until the document was next rebuilt from scratch.
+
 - **Cancel stops an import.** Cancelling while an imported file is still being
   built now takes the import back out, and a cancelled rebuild is no longer
   shown as an error.

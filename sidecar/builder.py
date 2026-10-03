@@ -3344,6 +3344,38 @@ def _fit_or_refacet(shape, tol=0.12, report=None, revolutions=True):
     return _fit_or_refacet_one(shape, tol, report, revolutions)
 
 
+class _DebrisMemo:
+    """`_drop_debris`'s answer for one placed shape, kept on that shape.
+
+    A copy must not inherit it. build123d's moved(), located(), translate(),
+    mirror() and `Pos(...) * shape` all deep-copy the Python object, __dict__
+    included, so a moved body used to carry the answer for where it WAS: after
+    a warm resume, a Move of a body whose final pass had dropped a chip drew
+    the body at its old place until a cold rebuild. So a copy gets nothing
+    (`__copy__`/`__deepcopy__` return None), which also spares every move a
+    full B-rep copy of an answer it cannot use.
+
+    `src` is a handle of its own on the shape as answered, not the shape's
+    `.wrapped` object: build123d's move() and locate() change that object in
+    place. The answer holds only while `src.IsEqual(shape.wrapped)` (same
+    TShape, location and orientation)."""
+
+    __slots__ = ("src", "out")
+
+    def __init__(self, wrapped, out):
+        self.src = wrapped.Located(wrapped.Location())
+        self.out = out
+
+    def holds_for(self, shape):
+        return self.src.IsEqual(shape.wrapped)
+
+    def __copy__(self):
+        return None
+
+    def __deepcopy__(self, memo):
+        return None
+
+
 def _drop_debris(shape, debug=False):
     """Drop floating boolean debris from a body shape: a solid that is
     sub-epsilon (<0.1%) of the biggest piece AND has clear distance from it
@@ -3356,10 +3388,11 @@ def _drop_debris(shape, debug=False):
     try:
         shape = _as_compound(shape)
         cached = getattr(shape, "_sindri_drop", None)
-        if cached is not None:
-            return cached  # same input object => same output OBJECT (identity
-            # matters: the server's mesh cache is keyed by shape identity, and
-            # rebuilding a fresh Compound here every rebuild would defeat it)
+        if cached is not None and cached.holds_for(shape):
+            # same input object => same output OBJECT (identity matters: the
+            # server's mesh cache is keyed by shape identity, and rebuilding a
+            # fresh Compound here every rebuild would defeat it)
+            return cached.out
         parts = shape.solids()
         # Count FIRST. Sorting by volume computes one per solid, and a body with
         # a single solid cannot have debris — so the old order paid for a volume
@@ -3383,7 +3416,7 @@ def _drop_debris(shape, debug=False):
             return shape
         out = kept[0] if len(kept) == 1 else Compound(kept)
         try:
-            shape._sindri_drop = out
+            shape._sindri_drop = _DebrisMemo(shape.wrapped, out)
         except Exception:
             pass
         return out

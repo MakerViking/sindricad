@@ -590,6 +590,53 @@ def test_a_ram_resume_keeps_the_mesh_keys_of_bodies_it_does_not_touch():
     print(PASS, "a RAM resume keeps the mesh keys of bodies it does not touch")
 
 
+def test_a_warm_move_of_a_body_whose_chip_was_dropped_lands_where_a_cold_one_does():
+    """The final pass's debris answer is kept on the shape (`_sindri_drop`), and
+    build123d's moved() deep-copies a shape's __dict__. So a Move appended after
+    a RAM resume, of a body whose final pass had dropped a chip, came back with
+    the answer for the UNMOVED body: drawn at x -20..20 where a cold rebuild put
+    it at 80..120."""
+    from unittest.mock import patch
+    from build123d import Box, Compound, Location, Pos
+
+    def cyl(fid, r):
+        return {"id": fid, "type": "cylinder", "radius": r, "height": 20}
+
+    # A tube cut through a box leaves a 0.5 mm pin of the box loose in the bore:
+    # a chip under 0.1% of the box, which the final pass drops.
+    base = {"parameters": {}, "features": [
+        {"id": "bx", "type": "box", "length": 40, "width": 40, "height": 10},
+        cyl("c1", 2), cyl("c2", 0.5),
+        {"id": "t", "type": "combine", "operation": "cut", "target": "body2", "tools": ["body3"]},
+        {"id": "tc", "type": "combine", "operation": "cut", "target": "body1", "tools": ["body2"]}]}
+    moved = dict(base, features=base["features"] + [
+        {"id": "m", "type": "move", "bodies": ["body1"], "dx": 100, "dy": 0, "dz": 0,
+         "rx": 0, "ry": 0, "rz": 0}])
+
+    def x_span(bodies):
+        box = builder._as_compound(bodies[0]["shape"]).bounding_box()
+        return round(box.min.X, 3), round(box.max.X, 3)
+
+    with patch.object(builder, "_CACHE", {"feature_sigs": [], "snaps": [], "global_sig": None}):
+        _p, _e, first = builder.rebuild_cached(base)
+        assert x_span(first) == (-20.0, 20.0), x_span(first)
+        _p, _e, warm = builder.rebuild_cached(moved)
+    _p, _e, cold = builder.rebuild(moved)
+    assert x_span(cold) == (80.0, 120.0), x_span(cold)
+    assert x_span(warm) == x_span(cold), f"warm move drew the body at {x_span(warm)}, cold at {x_span(cold)}"
+
+    # The same at the unit: the answer is reused for the same placed shape (the
+    # mesh cache is keyed by its identity), and never for a moved one.
+    chipped = Compound([Box(40, 40, 10), Pos(30, 0, 0) * Box(1, 1, 1)])
+    out = builder._drop_debris(chipped)
+    assert len(out.solids()) == 1 and builder._drop_debris(chipped) is out, "the answer is not reused"
+    copy_moved = Pos(100, 0, 0) * chipped
+    assert round(builder._drop_debris(copy_moved).bounding_box().min.X, 3) == 80.0, "a moved copy reused it"
+    chipped.move(Location((0, 50, 0)))  # in place: the same Python object, a new location
+    assert round(builder._drop_debris(chipped).bounding_box().min.Y, 3) == 30.0, "an in-place move reused it"
+    print(PASS, "a warm Move of a body whose chip was dropped lands where a cold one does")
+
+
 def test_body_fingerprint_carries_topology():
     fp = builder._body_fingerprint(Box(10, 10, 10))
     assert fp["f"] == 6 and fp["e"] == 12 and fp["vx"] == 8, fp
@@ -624,6 +671,7 @@ def main():
     test_textures_survive_disk_resume()
     test_deeper_disk_checkpoint_wins_without_losing_ram_fallback()
     test_a_ram_resume_keeps_the_mesh_keys_of_bodies_it_does_not_touch()
+    test_a_warm_move_of_a_body_whose_chip_was_dropped_lands_where_a_cold_one_does()
     test_a_sketch_that_newly_fails_on_replay_is_blamed_for_it()
     test_every_diagnostic_shape_is_json_safe()
     test_body_fingerprint_carries_topology()
