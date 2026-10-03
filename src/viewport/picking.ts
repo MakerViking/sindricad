@@ -29,6 +29,41 @@ export interface FaceHit {
 
 export type Hit = EdgeHit | FaceHit;
 
+/** A section cut, as a pick has to see it (Viewport.pickClip). */
+export interface PickClip {
+  /** The cut. Three keeps the side where distanceToPoint >= 0 and does not
+   *  draw the other. */
+  plane: THREE.Plane;
+  /** How far along `ray` a solid section cap stops it, or null where there is
+   *  none (SectionCaps.capAt). */
+  capAt(ray: THREE.Ray): number | null;
+}
+
+/** A hit within this fraction of its distance of the cut counts as ON it,
+ *  and so as kept: a face lying on the cut is drawn there. */
+const ON_CUT = 1e-6;
+
+/** `hits` (nearest first) less what a section cut hides: everything on the
+ *  removed half, which is not drawn, and everything behind a cap. `stop` is
+ *  how far the ray gets before a cap stops it, Infinity where none does.
+ *
+ *  Before this, a pick saw the whole model through any cut. Harmless while the
+ *  cut looked hollow; once caps made it look solid, hovering a cap lit up a
+ *  face of the removed half, and a click took it (review of 5effc008). */
+export function throughCut(
+  hits: THREE.Intersection[],
+  ray: THREE.Ray,
+  clip: PickClip | null,
+): { hits: THREE.Intersection[]; stop: number } {
+  if (!clip) return { hits, stop: Infinity };
+  const stop = clip.capAt(ray) ?? Infinity;
+  const kept = hits.filter(
+    (h) =>
+      h.distance <= stop * (1 + ON_CUT) && clip.plane.distanceToPoint(h.point) >= -ON_CUT * h.distance,
+  );
+  return { hits: kept, stop };
+}
+
 export class Picker {
   private raycaster = new THREE.Raycaster();
   private ndc = new THREE.Vector2();
@@ -85,6 +120,7 @@ export class Picker {
     rect: DOMRect,
     camera: THREE.Camera,
     view: ModelView,
+    clip: PickClip | null = null,
   ): Hit | null {
     // Body BVHs are built after the first paint, not during setModel (see
     // raycastIndex.ts). If a pick beats that, build them now: three-mesh-bvh
@@ -98,7 +134,11 @@ export class Picker {
     this.raycaster.setFromCamera(this.ndc, camera);
     // one Mesh per visible body now (not caching this list like visibleEdges —
     // body counts are small, unlike edge counts, so a per-move filter is cheap).
-    const fHits = this.raycaster.intersectObjects(visibleBodyMeshes(view), false);
+    const { hits: fHits, stop } = throughCut(
+      this.raycaster.intersectObjects(visibleBodyMeshes(view), false),
+      this.raycaster.ray,
+      clip,
+    );
     const fHit = fHits[0];
     let face: FaceHit | null = null;
     if (fHit) {
@@ -126,8 +166,12 @@ export class Picker {
     // on a thin part, where the far edge of a 2mm plate is only 2mm behind the
     // face. Two pixels' worth of world size AT THAT DEPTH is scale-free and
     // still comfortably admits an edge lying on the surface it bounds.
-    const maxDepth = fHit ? fHit.distance + 2 * worldPerPixel(camera, fHit.distance, rect.height) : undefined;
-    const edge = this.pickEdge(clientX, clientY, rect, camera, view, maxDepth);
+    //
+    // A section cap hides edges the same way, so with no face hit in front of
+    // it the cap is the surface.
+    const front = fHit ? fHit.distance : stop;
+    const maxDepth = Number.isFinite(front) ? front + 2 * worldPerPixel(camera, front, rect.height) : undefined;
+    const edge = this.pickEdge(clientX, clientY, rect, camera, view, maxDepth, clip);
 
     // edge only when on the line (or there's no face under the cursor at all).
     // The band depends on the face being competed for, so measure it — but only
@@ -145,7 +189,8 @@ export class Picker {
 
   /** Edge-only pick. Returns a precise single-edge (by:nearest) selector — used
    *  by fillet/chamfer where you want exactly the edge you clicked, not its
-   *  whole axis group. Also sets this.ndc for a follow-up face pick. */
+   *  whole axis group. Also sets this.ndc for a follow-up face pick. An edge on
+   *  the half a section cut removes is not drawn, so it is not picked. */
   pickEdge(
     clientX: number,
     clientY: number,
@@ -153,6 +198,7 @@ export class Picker {
     camera: THREE.Camera,
     view: ModelView,
     maxDepth?: number,
+    clip: PickClip | null = null,
   ): EdgeHit | null {
     this.ndc.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -181,6 +227,7 @@ export class Picker {
       // not be pickable there either (see pick())
       if (maxDepth !== undefined && h.distance > maxDepth) continue;
       const p = (h as any).pointOnLine ?? h.point;
+      if (clip && clip.plane.distanceToPoint(p) < -ON_CUT * h.distance) continue;
       this.scratch.copy(p).project(camera);
       const sx = (this.scratch.x * 0.5 + 0.5) * rect.width + rect.left;
       const sy = (-this.scratch.y * 0.5 + 0.5) * rect.height + rect.top;

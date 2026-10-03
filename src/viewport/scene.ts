@@ -15,6 +15,10 @@ export interface SceneBundle {
   modelGroup: THREE.Group; // rebuilt geometry lives here
   planes: Record<"XY" | "XZ" | "YZ", THREE.Mesh>;
   grid: AdaptiveGrid;
+  /** Whether the context really has a stencil buffer. Asked for, not promised:
+   *  the driver may refuse it, and the attribute-less fallback in createRenderer
+   *  never has one. Without it a section cut draws hollow (sectionCaps.ts). */
+  stencil: boolean;
 }
 
 /** Where the ground grid sits, given the model's lowest Z.
@@ -210,7 +214,8 @@ function probeGl(): { webgl2: boolean; anyGl: boolean; facts: string[] } {
  *  canvas again returns that existing context (getContext ignores attributes
  *  once a context of the same type exists), so this branch always recovers. The
  *  cost is the default attribute set instead of ours, which for this app means
- *  only that alpha is on, and setClearColor below writes alpha 1 regardless.
+ *  that alpha is on, which setClearColor below writes as 1 regardless, and that
+ *  there is no stencil buffer, so section cuts draw hollow (see `stencil`).
  *
  *  Worth knowing if a context-loss bug ever appears here: three registers its
  *  contextlost/restored listeners BEFORE each attempt (three.module.js:15199)
@@ -228,7 +233,8 @@ function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
     throw new NoWebGLError(anyGl ? "webgl1-only" : "no-webgl", facts);
   }
   try {
-    return new THREE.WebGLRenderer({ canvas, antialias: true });
+    // stencil: the solid caps of a section cut are drawn through it (sectionCaps.ts)
+    return new THREE.WebGLRenderer({ canvas, antialias: true, stencil: true });
   } catch {
     try {
       const plain = new THREE.WebGLRenderer({ canvas, antialias: false });
@@ -284,6 +290,8 @@ export function createScene(canvas: HTMLCanvasElement, onContextRestored?: () =>
   renderer.setClearColor(CLEAR_COLOR, 1);
   watchContextLoss(canvas, renderer, onContextRestored);
   recordGpu(renderer);
+  const stencil = renderer.getContext().getContextAttributes()?.stencil === true;
+  if (!stencil) stickyFact("[gpu] no stencil buffer, so section cuts draw hollow");
 
   const scene = new THREE.Scene();
 
@@ -317,7 +325,7 @@ export function createScene(canvas: HTMLCanvasElement, onContextRestored?: () =>
   const modelGroup = new THREE.Group();
   scene.add(modelGroup);
 
-  return { renderer, scene, modelGroup, planes, grid };
+  return { renderer, scene, modelGroup, planes, grid, stencil };
 }
 
 function makePlane(color: number, kind: "XY" | "XZ" | "YZ"): THREE.Mesh {

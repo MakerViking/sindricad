@@ -582,6 +582,15 @@ This file starts on 2026-08-03. For anything before that, see the
   or a body had a texture or coloured text, which does not come across, I say
   so. It is in the INSERT group of the ribbon and in the File menu.
 
+- **A section shows solid parts, not hollow shells.** Where Section cuts a
+  body, the cut face is filled in that body's own colour, a shade darker, so
+  two parts that meet are easy to tell apart. The fill stays when you put the
+  arrow away and work inside the cut, and it follows the cut as you drag it,
+  flip it or switch to orthographic. Pointing at the cut picks what you see
+  there: the half the cut took away can no longer be hovered or clicked
+  through it. An open mesh, which I can't fill cleanly, keeps the hollow look,
+  and so does the model while you sketch, when it turns see-through.
+
 - **Center Arc.** The Arc button in the sketch ribbon has a second arc: click
   the center, click the start (that sets the radius), then sweep to the end
   and click. The arc goes the way you swept, so it can be longer than half a

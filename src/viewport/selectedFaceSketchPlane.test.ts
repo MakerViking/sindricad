@@ -152,10 +152,12 @@ describe("pre-selecting a face and clicking it agree", () => {
       face: { a: 0, b: 1, c: 2 },
       point: new THREE.Vector3(2, 4, 16), // on the face: y + z = 20
     };
-    const self = {
+    // the real viewport underneath, so the hit takes the path every pick does
+    // (modelHitsAt, here with no section cut), with only the raycast faked
+    const self = Object.assign(Object.create(Viewport.prototype), {
       model: MODEL,
       rayFrom: () => ({ intersectObjects: () => [hit] }),
-    };
+    });
     return Viewport.prototype.pickFacePlane.call(self as never, 100, 100);
   }
 

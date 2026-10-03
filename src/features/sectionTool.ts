@@ -1,7 +1,8 @@
 // Section analysis (Inspect): a draggable clipping plane that cuts the model so
 // you can see inside. Pick an axis, drag the arrow to move the cut, F flips which
-// half is kept, Esc closes (restores the full model). Uncapped (shows the hollow
-// interior) — a filled cap is a later refinement.
+// half is kept, Esc closes (restores the full model). Capped: each cut body
+// shows a solid face in its own colour, darkened (viewport/sectionCaps.ts), on
+// the persistent cut too, since the viewport draws the caps from its plane.
 //
 // The clip is a view state rather than a feature, but it is a PERSISTENT one:
 // the viewport owns the plane and re-applies it after every rebuild, and

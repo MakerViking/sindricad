@@ -34,7 +34,7 @@ import { FpsMeter } from "./fpsMeter";
 import { ndcToRect } from "./overlayHost";
 import { sceneStats } from "../diagnostics/sceneStats";
 import { makeZebraMaterial, buildCurvatureCombs } from "./overlays";
-import { Picker, type Hit, type EdgeHit } from "./picking";
+import { Picker, throughCut, type Hit, type EdgeHit, type PickClip } from "./picking";
 import { ViewCube, FACE_VIEWS } from "./viewCube";
 import {
   loadPivotMode,
@@ -70,6 +70,7 @@ const FLUSH_SEAM_MAX_EDGES = 20_000;
 
 import { Highlighter } from "./highlight";
 import { ProgressiveModel } from "./progressive";
+import { SectionCaps } from "./sectionCaps";
 import { documentBox, framingBox, isSaneBox, wireBox } from "./modelBox";
 import { nearestEdgeByMid, midMatchTol, edgeSelectorFrom } from "./edgeMatch";
 import type { Plane3, PlaneDef, RebuildResult, Selector } from "../types";
@@ -182,6 +183,12 @@ export function datumQuadGeometry(box: THREE.Box3 | null): THREE.PlaneGeometry {
   return new THREE.PlaneGeometry(size, size);
 }
 
+/** Body i's colour under Component analysis, one hue per body. Shared by the
+ *  overlay and the section caps, so a cut body's cap matches what it shows. */
+function componentHue(i: number): THREE.Color {
+  return new THREE.Color().setHSL((i * 0.137 + 0.05) % 1, 0.45, 0.55);
+}
+
 export class Viewport {
   readonly scene: SceneBundle;
   readonly rig: CameraRig;
@@ -203,6 +210,9 @@ export class Viewport {
    *  tool's own suspension. */
   private streaming = false;
   private progressive: ProgressiveModel;
+  /** The solid faces of a section cut (see sectionCaps.ts), brought up to date
+   *  before every drawn frame by syncSectionCaps. */
+  private caps = new SectionCaps();
   // Z the ground grid sits at: the model's lowest point (so the grid is always a
   // floor under the model), or 0 (world XY) when the document is empty.
   private targetGridZ = 0;
@@ -304,6 +314,7 @@ export class Viewport {
     this.scene = createScene(canvas, () => this.onContextRestored());
     this.progressive = new ProgressiveModel(this.scene.modelGroup, disposeBody);
     this.scene.scene.add(this.datumGroup);
+    this.scene.scene.add(this.caps.root);
     const rect = canvas.getBoundingClientRect();
     this.rig = createCameraRig(canvas, rect.width / rect.height);
 
@@ -396,11 +407,10 @@ export class Viewport {
    *  the model around a centre the user cannot see or predict. */
   private surfacePointAt(clientX: number, clientY: number): THREE.Vector3 | null {
     if (!this.model) return null;
-    const hit = this.rayFrom(clientX, clientY).intersectObjects(
-      visibleBodyMeshes(this.model),
-      false,
-    )[0];
-    return hit ? hit.point.clone() : null;
+    const { hits, stop, ray } = this.modelHitsAt(clientX, clientY);
+    if (hits[0]) return hits[0].point.clone();
+    // a section cap is a surface you can see, and orbit about
+    return Number.isFinite(stop) ? ray.at(stop, new THREE.Vector3()) : null;
   }
 
   /** The GPU handed the context back (scene.ts re-applied the clear colour).
@@ -585,11 +595,9 @@ export class Viewport {
    *  cursor is over it, else a point on the cursor ray at the current orbit-target
    *  distance (so zooming over empty space still tracks the cursor direction). */
   private cursorWorldPoint(clientX: number, clientY: number): THREE.Vector3 {
+    const surface = this.surfacePointAt(clientX, clientY);
+    if (surface) return surface;
     const rc = this.rayFrom(clientX, clientY);
-    if (this.model) {
-      const hit = rc.intersectObjects(visibleBodyMeshes(this.model), false)[0];
-      if (hit) return hit.point.clone();
-    }
     const cam = this.rig.controls.getPosition(new THREE.Vector3());
     const target = this.rig.controls.getTarget(new THREE.Vector3());
     const dist = cam.distanceTo(target);
@@ -668,6 +676,7 @@ export class Viewport {
       rect,
       this.rig.active,
       this.model,
+      this.pickClip(),
     );
     // The solid wins, exactly as it does on click: a plane's quad floating in
     // front of a face must never look like the thing a click would take. `hit`
@@ -721,7 +730,7 @@ export class Viewport {
     }
 
     const hit = this.model
-      ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model)
+      ? this.picker.pick(e.clientX, e.clientY, rect, this.rig.active, this.model, this.pickClip())
       : null;
     // Sketch has PRIORITY over the body: a visible sketch's profile area under the
     // cursor is selected instead of the solid FACE behind/under it (the user asked for
@@ -803,8 +812,13 @@ export class Viewport {
    *  menu agrees with a left-click at the same pixel. */
   bodyIdAt(clientX: number, clientY: number): string | null {
     if (!this.model) return null;
-    const fh = this.rayFrom(clientX, clientY).intersectObjects(visibleBodyMeshes(this.model), false)[0];
-    return fh ? this.faceIdToBodyId(faceIdOfHit(fh)) : null;
+    const { hits, ray } = this.modelHitsAt(clientX, clientY);
+    const fh = hits[0];
+    if (fh) return this.faceIdToBodyId(faceIdOfHit(fh));
+    // A section cap belongs to the body it fills. Before caps, a click in the
+    // cut landed on that body's own inside, so this keeps selecting it.
+    const cap = this.clipPlane ? this.caps.capAt(ray) : null;
+    return cap ? (this.model.bodies.find((b) => b.mesh === cap.mesh)?.id ?? null) : null;
   }
 
   private psRay = new THREE.Raycaster();
@@ -874,9 +888,7 @@ export class Viewport {
     if (!this.highlighter || !this.model) return;
     if (this.analysis === "component") {
       const hue = new Map<string, THREE.Color>();
-      this.model.bodies.forEach((b, i) =>
-        hue.set(b.id, new THREE.Color().setHSL((i * 0.137 + 0.05) % 1, 0.45, 0.55)),
-      );
+      this.model.bodies.forEach((b, i) => hue.set(b.id, componentHue(i)));
       this.highlighter.setBase((fid) => hue.get(this.faceIdToBodyId(fid) ?? "") ?? BASE_COLOR, only);
     } else if (this.analysis === "draft") {
       const B = this.draftDir;
@@ -1032,8 +1044,9 @@ export class Viewport {
    *  space. The companion to datumHitAt. */
   surfaceHitDistance(clientX: number, clientY: number): number | null {
     if (!this.model) return null;
-    const hit = this.rayFrom(clientX, clientY).intersectObjects(visibleBodyMeshes(this.model), false)[0];
-    return hit ? hit.distance : null;
+    const { hits, stop } = this.modelHitsAt(clientX, clientY);
+    const d = hits[0]?.distance ?? stop;
+    return Number.isFinite(d) ? d : null;
   }
 
   /** World bounding box of the given bodies' meshes, or null when none of them
@@ -1903,9 +1916,7 @@ export class Viewport {
    */
   pickFacePlane(clientX: number, clientY: number): PlaneDef | null {
     if (!this.model) return null;
-    const ray = this.rayFrom(clientX, clientY);
-    const hits = ray.intersectObjects(visibleBodyMeshes(this.model), false);
-    const hit = hits[0];
+    const hit = this.modelHitsAt(clientX, clientY).hits[0];
     if (!hit || !hit.face) return null;
     const mesh = hit.object as THREE.Mesh;
     const pos = mesh.geometry.getAttribute("position");
@@ -2003,7 +2014,7 @@ export class Viewport {
   pickEdgeAt(clientX: number, clientY: number): EdgeHit | null {
     if (!this.model) return null;
     const rect = this.canvas.getBoundingClientRect();
-    return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model);
+    return this.picker.pickEdge(clientX, clientY, rect, this.rig.active, this.model, undefined, this.pickClip());
   }
 
   /** All visible edge lines of the current model — for tangent-chain expansion. */
@@ -2017,7 +2028,7 @@ export class Viewport {
   pickEntity(clientX: number, clientY: number): Hit | null {
     if (!this.model) return null;
     const rect = this.canvas.getBoundingClientRect();
-    return this.picker.pick(clientX, clientY, rect, this.rig.active, this.model);
+    return this.picker.pick(clientX, clientY, rect, this.rig.active, this.model, this.pickClip());
   }
 
   /** World-space area (mm²) of a B-rep face = Σ its triangle areas. */
@@ -2143,8 +2154,8 @@ export class Viewport {
   }
 
   /** Section/clip: clip the model (faces + edges) by a plane, or clear with null.
-   *  Lost on the next rebuild (materials are recreated) — fine for an interactive
-   *  section that you set, look at, then close. */
+   *  The cut survives rebuilds (setModel re-applies it, see below), and the
+   *  caps that make it look solid follow it on their own (syncSectionCaps). */
   setClipPlane(plane: THREE.Plane | null) {
     // Remembered, because the clip is written onto the CURRENT materials and a
     // rebuild makes new ones (render.ts and edgeLines.ts both start a fresh
@@ -2175,6 +2186,51 @@ export class Viewport {
       for (const d of edgeObjects(this.model)) d.material.clippingPlanes = planes;
     }
     this.requestRender();
+  }
+
+  /** Bring the section caps up to date for the frame about to be drawn. Runs
+   *  before EVERY render rather than when the cut changes, because the section
+   *  tool moves the plane in place and nothing tells the viewport: the same
+   *  reason updatePlane has to ask for a frame at all. It is a box test per
+   *  body, and nothing at all when there is no cut.
+   *
+   *  Without a stencil buffer (a driver that refused it) there are no caps and
+   *  the cut stays hollow, as it always was. */
+  private syncSectionCaps() {
+    const plane = this.scene.stencil ? this.clipPlane : null;
+    this.caps.sync(plane, this.model?.bodies ?? [], (i) => this.capColor(i), BASE_COLOR.getHex());
+  }
+
+  /** Body i's own colour as the viewport shows it, which its cap darkens: the
+   *  Component hue under Component analysis, else its assigned colour, else the
+   *  neutral shade. Overhang analysis colours faces, not bodies, so a cut body
+   *  there keeps its assigned colour. */
+  private capColor(i: number): THREE.ColorRepresentation {
+    if (this.analysis === "component") return componentHue(i).getHex();
+    const id = this.model?.bodies[i]?.id;
+    return (id && this.bodyPaint[id]) || BASE_COLOR.getHex();
+  }
+
+  /** The section cut as a pick has to see it, or null when there is none: the
+   *  removed half is not drawn, and a cap hides what is behind it (see
+   *  throughCut). Every pick of the model goes through this, so what the
+   *  cursor lands on is what the screen shows under it. */
+  private pickClip(): PickClip | null {
+    const plane = this.clipPlane;
+    if (!plane) return null;
+    return { plane, capAt: (ray) => this.caps.capAt(ray)?.distance ?? null };
+  }
+
+  /** The model under the cursor, nearest first, as the screen shows it (a
+   *  section cut hides some of it, see pickClip). `stop` is the distance to a
+   *  cap that stops the ray, Infinity where none does. */
+  private modelHitsAt(
+    clientX: number,
+    clientY: number,
+  ): { hits: THREE.Intersection[]; stop: number; ray: THREE.Ray } {
+    const rc = this.rayFrom(clientX, clientY);
+    const raw = this.model ? rc.intersectObjects(visibleBodyMeshes(this.model), false) : [];
+    return { ...throughCut(raw, rc.ray, this.pickClip()), ray: rc.ray };
   }
 
   /** The model's world bounding box (for placing the section plane), or null. */
@@ -2234,8 +2290,7 @@ export class Viewport {
     clientY: number,
   ): { selector: Selector; faceId: number; normal: THREE.Vector3; anchor: THREE.Vector3; bodyId: string | null } | null {
     if (!this.model) return null;
-    const ray = this.rayFrom(clientX, clientY);
-    const hit = ray.intersectObjects(visibleBodyMeshes(this.model), false)[0];
+    const hit = this.modelHitsAt(clientX, clientY).hits[0];
     if (!hit || !hit.face) return null;
     const mesh = hit.object as THREE.Mesh;
     const pos = mesh.geometry.getAttribute("position");
@@ -2278,8 +2333,7 @@ export class Viewport {
     this.highlighter?.clearHover();
     this.requestRender();
     if (!this.model) return null;
-    const ray = this.rayFrom(clientX, clientY);
-    const hit = ray.intersectObjects(visibleBodyMeshes(this.model), false)[0];
+    const hit = this.modelHitsAt(clientX, clientY).hits[0];
     if (!hit) return null;
     const faceId = faceIdOfHit(hit);
     this.highlighter?.hoverFace(faceId);
@@ -2787,6 +2841,7 @@ export class Viewport {
   }
 
   screenshotPNG(): string {
+    this.syncSectionCaps();
     this.scene.renderer.render(this.scene.scene, this.rig.active);
     const url = this.canvas.toDataURL("image/png");
     this.requestRender(); // repaint with the ViewCube overlay
@@ -2823,6 +2878,7 @@ export class Viewport {
         // expected to be cheap when nothing changed (it is keyed, like
         // AdaptiveGrid) and must never call requestRender — this IS the frame.
         this.onZoomScale?.(this.pixelWorldSize(t), t.x, t.y, t.z);
+        this.syncSectionCaps();
         this.scene.renderer.render(this.scene.scene, this.rig.active);
         this.cube.render(this.rig.active, this.viewSize); // draw the ViewCube overlay in the corner
         this.fps.frame();

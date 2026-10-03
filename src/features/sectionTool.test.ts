@@ -24,6 +24,11 @@ import { DocumentStore } from "../document/store";
 import type { GeometryBackend } from "../geometry/client";
 import type { CadDocument } from "../types";
 import mainSrc from "../main.ts?raw";
+import { Viewport } from "../viewport/viewport";
+import { SectionCaps, CAP_SHADE } from "../viewport/sectionCaps";
+import { BASE_COLOR, buildBodyMesh, type ModelView } from "../viewport/render";
+import { Picker, type Hit } from "../viewport/picking";
+import type { RebuildResult } from "../types";
 
 installFakeDocument();
 class FakeInput extends FakeEl {}
@@ -324,5 +329,276 @@ describe("the offset box stays off the section (5effc008)", () => {
   it("stays on the canvas when the model fills it", () => {
     const at = besideModel({ left: -50, top: -50, right: 1050, bottom: 750 }, 900, { width: 122, height: 40 }, CANVAS);
     expect(at).toEqual({ x: 1000 - 122, y: 700 - 40 });
+  });
+});
+
+describe("the cut is solid, not hollow (5effc008)", () => {
+  // "Section view implies all the bodies are hollow, would be good to see the
+  // solid section." Driven the way the user drives it: the real SectionTool on a
+  // real Viewport's clip and cap code, with bodies built from real geometry.
+  // `draw()` is what the render loop does before every frame it draws. The
+  // pixels themselves need WebGL, so they were checked by driving the app.
+  const box = (x: number, z: number) => {
+    const geo = new THREE.BoxGeometry(10, 10, 10).translate(x, 0, z);
+    return {
+      id: `b${x}_${z}`,
+      mesh: new THREE.Mesh(geo, new THREE.MeshStandardMaterial()),
+      edges: { material: { clippingPlanes: null, opacity: 1, transparent: false } },
+    };
+  };
+
+  function solidHarness(stencil = true) {
+    // two boxes on z = 0, one up at z = 30: the model spans z -5..35
+    const bodies = [box(0, 0), box(20, 0), box(0, 30)];
+    const vp = Object.create(Viewport.prototype) as Record<string, unknown>;
+    Object.assign(vp, {
+      canvas: { style: {}, addEventListener() {}, removeEventListener() {}, getBoundingClientRect: () => CANVAS },
+      scene: { renderer: { localClippingEnabled: false }, stencil, scene: new THREE.Scene() },
+      model: { bodies, edges: [], orphanEdges: null, box: new THREE.Box3().setFromObject(new THREE.Group().add(...bodies.map((b) => b.mesh.clone()))) },
+      caps: new SectionCaps(),
+      analysis: "none",
+      bodyPaint: {},
+      projectToScreen: (p: THREE.Vector3) => ({ x: 450 + p.x * 5, y: 375 - p.z * 5 }),
+      pixelWorldSize: () => 0.2,
+      rayFrom: () => ({ intersectObjects: () => [] }),
+    });
+    const caps = vp.caps as SectionCaps;
+    const tool = new SectionTool(vp as never);
+    const draw = () => (vp as unknown as { syncSectionCaps(): void }).syncSectionCaps();
+    /** the caps on screen after the next frame: [x, z] of each, sorted */
+    const shown = () => {
+      draw();
+      return caps.root.children
+        .filter((o) => o.visible && ((o as THREE.Mesh).material as THREE.Material).colorWrite)
+        .map((o) => [Math.round(o.position.x), Math.round(o.position.z)])
+        .sort((a, b) => a[0]! - b[0]! || a[1]! - b[1]!);
+    };
+    return { tool, vp, bodies, caps, shown };
+  }
+
+  it("a cut through two bodies shows a solid face on each, and moves with the cut", () => {
+    const { tool, shown } = solidHarness();
+    tool.start("Z"); // the model's centre, z = 15: between the boxes, cuts nothing
+    expect(shown()).toEqual([]);
+    typeOffset(-15); // z = 0, through the two lower boxes
+    expect(shown()).toEqual([[0, 0], [20, 0]]);
+    typeOffset(15); // z = 30: the arrow's drag moves the plane in place
+    expect(shown()).toEqual([[0, 30]]);
+    press("F"); // the other half kept: still cut, still capped
+    expect(shown()).toEqual([[0, 30]]);
+  });
+
+  it("the caps stay on the persistent cut after the arrow is put away, and go with it", () => {
+    const { tool, shown } = solidHarness();
+    tool.start("Z");
+    typeOffset(-15);
+    tool.stop(true); // another tool started: the arrow goes, the cut stays (#17)
+    expect(shown()).toEqual([[0, 0], [20, 0]]);
+    tool.start("Z");
+    press("Escape"); // Esc clears the cut
+    expect(shown()).toEqual([]);
+  });
+
+  it("each cap is the body's own colour, darkened", () => {
+    const { tool, vp, bodies, caps, shown } = solidHarness();
+    (vp as unknown as { setBodyPaint(m: Record<string, string>): void }).setBodyPaint({ [bodies[0]!.id]: "#ff0000" });
+    tool.start("Z");
+    typeOffset(-15);
+    shown();
+    const colours = caps.root.children
+      .filter((o) => o.visible && ((o as THREE.Mesh).material as THREE.Material).colorWrite)
+      .sort((a, b) => a.position.x - b.position.x)
+      .map((o) => ((o as THREE.Mesh).material as THREE.MeshBasicMaterial).color.getHex());
+    const dark = (c: THREE.ColorRepresentation) => new THREE.Color(c).multiplyScalar(CAP_SHADE).getHex();
+    expect(colours).toEqual([dark("#ff0000"), dark(BASE_COLOR)]);
+  });
+
+  it("a hidden body has no cap, and a model dimmed for sketching keeps the see-through look", () => {
+    const { tool, vp, bodies, shown } = solidHarness();
+    tool.start("Z");
+    typeOffset(-15);
+    bodies[1]!.mesh.visible = false;
+    expect(shown()).toEqual([[0, 0]]);
+    (vp as unknown as { setModelDimmed(on: boolean): void }).setModelDimmed(true);
+    expect(shown()).toEqual([]);
+    (vp as unknown as { setModelDimmed(on: boolean): void }).setModelDimmed(false);
+    expect(shown()).toEqual([[0, 0]]);
+  });
+
+  it("without a stencil buffer the cut stays hollow, as before", () => {
+    const { tool, shown } = solidHarness(false);
+    tool.start("Z");
+    typeOffset(-15);
+    expect(shown()).toEqual([]);
+  });
+});
+
+describe("a pick lands on what the cut shows (5effc008 review)", () => {
+  // With the cut looking solid, a pick that still saw the whole model was a
+  // trap: hovering a cap lit up a face of the half the cut removed, and a click
+  // took it. Measured in the app before the fix: the cup's floor cap lit its
+  // outer wall. Driven here through the real click and pick code, on bodies
+  // built the way the app builds them, after the real SectionTool made the cut.
+  //
+  // Three boxes: A and B on z = 0, and C, small, well below A. The cut is Z at
+  // z = 0 keeping the top half, so C is entirely in the removed half: not
+  // drawn, and nothing to pick. The camera looks UP at the cut from below,
+  // straight through C and A's cap.
+  const SIZES: { at: [number, number, number]; size: number }[] = [
+    { at: [0, 0, 0], size: 10 }, // A: body1, faces 0-5
+    { at: [20, 0, 0], size: 10 }, // B: body2, faces 6-11
+    { at: [0, 0, -20], size: 6 }, // C: body3, faces 12-17
+  ];
+  const TOP_OF_A = 4; // BoxGeometry's face order is +x -x +y -y +z -z
+  const W = 1000;
+  const H = 700;
+
+  /** Box bodies as the sidecar sends them (each face its own vertices and
+   *  B-rep face id, twelve edges each), built into a ModelView by
+   *  buildBodyMesh, so a pick resolves faces and edges as the app does. */
+  function boxesView(): ModelView {
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const faceIds: number[] = [];
+    const edges: RebuildResult["edges"] = [];
+    const metas = SIZES.map(({ at, size }, i) => {
+      const id = `body${i + 1}`;
+      const g = new THREE.BoxGeometry(size, size, size).translate(...at);
+      const base = positions.length / 3;
+      positions.push(...g.getAttribute("position").array);
+      const idx = g.getIndex()!.array;
+      for (const v of idx) indices.push(base + v);
+      for (let t = 0; t < idx.length / 3; t++) faceIds.push(i * 6 + Math.floor(t / 2));
+      const corner = (k: number) => at.map((c, a) => c + ((k >> a) & 1 ? size / 2 : -size / 2)) as [number, number, number];
+      for (let k = 0; k < 8; k++) {
+        for (const bit of [1, 2, 4]) {
+          if (!(k & bit)) edges.push({ id: `${id}e${k}_${bit}`, points: [corner(k), corner(k | bit)], body: id });
+        }
+      }
+      return { id, name: id, faceStart: i * 6, faceCount: 6 };
+    });
+    const result = { mesh: { positions, indices, faceIds }, edges, bodies: metas } as unknown as RebuildResult;
+    const bodies = metas.map((m) =>
+      buildBodyMesh(result, m, edges.filter((e) => e.body === m.id), new THREE.Vector2(W, H), undefined),
+    );
+    const box = new THREE.Box3();
+    for (const b of bodies) box.expandByObject(b.mesh);
+    return { bodies, edges: bodies.flatMap((b) => b.edges.refs), orphanEdges: null, box };
+  }
+
+  function pickHarness(stencil = true) {
+    const view = boxesView();
+    const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 10000);
+    const vp = Object.create(Viewport.prototype) as Record<string, unknown>;
+    Object.assign(vp, {
+      canvas: {
+        style: {},
+        addEventListener() {},
+        removeEventListener() {},
+        getBoundingClientRect: () => ({ ...CANVAS, right: W, bottom: H, width: W, height: H, x: 0, y: 0 }),
+      },
+      scene: { renderer: { localClippingEnabled: false }, stencil, scene: new THREE.Scene() },
+      rig: { active: camera },
+      model: view,
+      caps: new SectionCaps(),
+      picker: new Picker(),
+      sharedRaycaster: new THREE.Raycaster(),
+      ndc: new THREE.Vector2(),
+      selectionMode: "faces",
+      clipPlane: null,
+      datumQuads: [],
+      highlighter: null,
+      analysis: "none",
+      bodyPaint: {},
+      projectToScreen: () => ({ x: 500, y: 350 }),
+      pixelWorldSize: () => 0.2,
+    });
+    const tool = new SectionTool(vp as never);
+    const v = vp as unknown as {
+      syncSectionCaps(): void;
+      handleClick(e: unknown): void;
+      bodyIdAt(x: number, y: number): string | null;
+      pickEdgeAt(x: number, y: number): { edge: { id: string } } | null;
+      onHit: ((hit: Hit | null) => void) | null;
+      clipPlane: THREE.Plane | null;
+    };
+    /** Look at `target` from `eye`; the next frame is drawn (caps synced). */
+    const look = (eye: [number, number, number], target: [number, number, number]) => {
+      camera.position.set(...eye);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(...target);
+      camera.updateMatrixWorld();
+      v.syncSectionCaps();
+    };
+    const screenOf = (p: [number, number, number]) => {
+      const s = new THREE.Vector3(...p).project(camera);
+      return { x: ((s.x + 1) / 2) * W, y: ((1 - s.y) / 2) * H };
+    };
+    /** A left click in Faces mode: what it selects. */
+    const click = (x: number, y: number) => {
+      let got: Hit | null | undefined;
+      v.onHit = (hit) => (got = hit);
+      v.handleClick({ clientX: x, clientY: y, ctrlKey: false, metaKey: false, shiftKey: false });
+      return got;
+    };
+    const faceOf = (hit: Hit | null | undefined) => (hit?.kind === "face" ? hit.faceId : hit?.kind ?? null);
+    return { tool, v, vp, look, screenOf, click, faceOf };
+  }
+
+  /** The cut through A and B, at z = 0, keeping the top half. */
+  function cutAtZero(h: ReturnType<typeof pickHarness>) {
+    h.tool.start("Z"); // the model spans z -23..5, so this cuts at z = -9
+    typeOffset(9);
+    expect(h.v.clipPlane?.normal.toArray()).toEqual([0, 0, 1]);
+    expect(h.v.clipPlane?.constant).toBeCloseTo(0, 9);
+  }
+
+  it("a click on a cap selects nothing behind it, not the removed half's faces", () => {
+    const h = pickHarness();
+    cutAtZero(h);
+    h.look([0.3, 0.4, -60], [0.3, 0.4, 0]);
+    expect(h.faceOf(h.click(500, 350)), "not C, not A's removed bottom, not A's hidden top").toBeNull();
+  });
+
+  it("in Bodies mode the cap is its body's: a click selects A, not C in front of it", () => {
+    const h = pickHarness();
+    cutAtZero(h);
+    h.look([0.3, 0.4, -60], [0.3, 0.4, 0]);
+    expect(h.v.bodyIdAt(500, 350)).toBe("body1");
+    // beside the bodies there is nothing, removed or not
+    const beside = h.screenOf([10, 0, 0]);
+    expect(h.v.bodyIdAt(beside.x, beside.y)).toBeNull();
+  });
+
+  it("an edge of the removed half is not picked", () => {
+    const h = pickHarness();
+    cutAtZero(h);
+    // close under C, so its edge is tens of pixels from any other: the edge
+    // tools' pick has no occlusion test and a generous radius, by design
+    h.look([0.3, 0.4, -40], [0.3, 0.4, 0]);
+    const onC = h.screenOf([1, -3, -23]); // the middle of C's bottom front edge
+    expect(h.v.pickEdgeAt(onC.x, onC.y)).toBeNull();
+  });
+
+  it("from the kept side, the faces in front of the cut are picked as before", () => {
+    const h = pickHarness();
+    cutAtZero(h);
+    h.look([0.3, 0.4, 60], [0.3, 0.4, 0]);
+    expect(h.faceOf(h.click(500, 350))).toBe(TOP_OF_A);
+  });
+
+  it("without a stencil buffer the cut is hollow, and a click takes the inside it shows", () => {
+    const h = pickHarness(false);
+    cutAtZero(h);
+    h.look([0.3, 0.4, -60], [0.3, 0.4, 0]);
+    // looking up into hollow A: its top face, seen from inside (bodies are
+    // DoubleSide), is what the screen shows there
+    expect(h.faceOf(h.click(500, 350))).toBe(TOP_OF_A);
+  });
+
+  it("with no cut, a pick sees the whole model, as it always did", () => {
+    const h = pickHarness();
+    h.look([0.3, 0.4, -60], [0.3, 0.4, 0]);
+    expect(h.faceOf(h.click(500, 350)), "C's bottom face").toBe(12 + 5);
   });
 });
