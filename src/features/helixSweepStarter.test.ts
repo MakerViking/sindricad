@@ -133,7 +133,7 @@ describe("Sweep around a helix", () => {
     expect(asked[0]!.options[0]!.value, "a profile in the part's material should default to Cut").toBe("cut");
     expect(h.added).toEqual([{
       id: "f9", type: "sweep", profile: "thr", path: "hx", helixCircle: "c1",
-      pitch: 1, turns: 14, flip: true, operation: "cut",
+      pitch: 1, turns: 14, flip: true, operation: "cut", joinTouchingOnly: true,
     }]);
     expect(h.busy, "the busy flag the box held was never released").toEqual([true, false]);
   });
@@ -160,7 +160,7 @@ describe("Sweep around a helix", () => {
     expect(asked[0]!.options[0]!.value).toBe("new");
     expect(h.added).toEqual([{
       id: "f9", type: "sweep", profile: "thr", path: "hx", helixCircle: "c1",
-      pitch: 2.5, turns: 6.5, operation: "new",
+      pitch: 2.5, turns: 6.5, operation: "new", joinTouchingOnly: true,
     }]);
   });
 
@@ -247,7 +247,7 @@ describe("Sweep around a helix", () => {
     expect(asked[0]!.title).toBe(t("feature.starters.sweep.pathOrHelix"));
     expect(asked[0]!.options.map((o) => o.value)).toEqual(["path", "helix"]);
     expect(h.added, "the plain sweep along the line, exactly as before").toEqual([
-      { id: "f9", type: "sweep", profile: "thr", path: "hx", operation: "new" },
+      { id: "f9", type: "sweep", profile: "thr", path: "hx", operation: "new", joinTouchingOnly: true },
     ]);
   });
 

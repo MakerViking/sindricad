@@ -252,6 +252,10 @@
       "importFailed": "import failed",
       "insertNoBodies": "That document has no visible bodies to insert. Bodies hidden there are left out.",
       "insertNothingBuilt": "Nothing in that document built, so there is nothing to insert. Open it to see what failed.",
+      "joinPiecesApart": {
+        "one": "{count} piece I joined into {body} does not touch the rest of it, so after this step it is a separate piece of the body. A gap too small to see still counts. Make it overlap to fuse it in, or use Separate into bodies to give it a body of its own.",
+        "other": "{count} pieces I joined into {body} do not touch the rest of it, so after this step they are separate pieces of the body. A gap too small to see still counts. Make them overlap to fuse them in, or use Separate into bodies to give each a body of its own."
+      },
       "joinPiecesLeftOut": {
         "one": "I left {count} piece out of the join because it is under a thousandth of the joined body's size and does not touch it. Any gap counts, however small: make it overlap the body to keep it.",
         "other": "I left {count} pieces out of the join because each is under a thousandth of the joined body's size and does not touch it. Any gap counts, however small: make them overlap the body to keep them."

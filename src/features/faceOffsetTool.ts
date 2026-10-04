@@ -284,6 +284,7 @@ export class FaceOffsetTool {
         // standalone surface body has nothing to join, and the sidecar's
         // _boolean_into_bodies falls back to a new body in that case anyway
         operation: "join",
+        joinTouchingOnly: true, // ...and only into what it touches (types.ts)
         ...(this.symmetric ? { symmetric: true } : {}),
         ...body,
       };

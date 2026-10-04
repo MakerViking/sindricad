@@ -122,6 +122,7 @@ export class ExtrudeTool {
   private editOp: Op | null = null; // saved operation (pre-sorted first in the modal)
   private editHiddenBodies: string[] | undefined; // participants captured at creation — KEPT
   private editSeparateBodies: boolean | undefined; // ditto: an edit must not change body COUNT
+  private editJoinTouchingOnly: boolean | undefined; // ditto: nor which bodies a join takes in
   /** Values that only the inspector can set, carried through an edit unchanged.
    *  The tool offers no field for any of them, so if `startEdit` does not load
    *  them `commit` deletes them — and a bare depth nudge would throw away
@@ -223,6 +224,7 @@ export class ExtrudeTool {
     this.editOp = f.operation;
     this.editHiddenBodies = f.hiddenBodies;
     this.editSeparateBodies = f.separateBodies;
+    this.editJoinTouchingOnly = f.joinTouchingOnly;
     // Carry the saved end condition through the edit. Not restoring it here is
     // how a depth tweak would silently turn an "up to that face" extrude back
     // into a blind one — `commit` writes what these fields hold, so anything
@@ -1104,6 +1106,13 @@ export class ExtrudeTool {
           ? { separateBodies: this.editSeparateBodies }
           : {}
         : { separateBodies: true }),
+      // NEW extrudes join only what they touch, and keep every piece; an EDIT
+      // keeps the rule the feature was made with, the same way (types.ts).
+      ...(this.editId
+        ? this.editJoinTouchingOnly !== undefined
+          ? { joinTouchingOnly: this.editJoinTouchingOnly }
+          : {}
+        : { joinTouchingOnly: true }),
     };
     const id = feature.id;
     if (this.editId) {

@@ -567,7 +567,8 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       }
     }
     viewport.setSelectedBodies([]); // consumed tools would dangle; clear the selection
-    store.addFeature({ id: store.nextId(), type: "combine", operation: op, target, tools } as Feature);
+    // joinTouchingOnly: a new Combine keeps every piece it joins (types.ts).
+    store.addFeature({ id: store.nextId(), type: "combine", operation: op, target, tools, joinTouchingOnly: true } as Feature);
   }
 
   /** Pick one body by name from the rebuild's body list (returns its id). Labels use
@@ -690,7 +691,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     if (!axis) return;
     const operation = await chooseSolidOperation(t("feature.starters.revolve.opTitle"));
     if (!operation) return;
-    store.addFeature({ id: store.nextId(), type: "revolve", sketch: wr.sketchId, axis, angle: 360, operation } as Feature);
+    store.addFeature({
+      id: store.nextId(), type: "revolve", sketch: wr.sketchId, axis, angle: 360, operation, joinTouchingOnly: true,
+    } as Feature);
   }
 
   // Loft: interactive Fusion-style tool — click profiles in order, the loft
@@ -855,6 +858,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     store.addFeature({
       id: store.nextId(), type: "sweep", profile: wr.sketchId, path: pathSketch.id,
       helixCircle: circle.id, pitch: size.pitch, turns: size.turns, ...(flip ? { flip: true } : {}), operation,
+      joinTouchingOnly: true, // a new sweep joins only what it touches (types.ts)
     } as Feature);
   }
 
@@ -879,7 +883,7 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
     const pathEdges = viewport.selectedEdgeSelectors();
     if (pathEdges.length) {
       store.addFeature({
-        id: store.nextId(), type: "sweep", profile: wr.sketchId, pathEdges, operation: "new",
+        id: store.nextId(), type: "sweep", profile: wr.sketchId, pathEdges, operation: "new", joinTouchingOnly: true,
       } as Feature);
       viewport.clearSelection(); // consumed — leaving it lit would re-apply on the next run
       return;
@@ -913,7 +917,9 @@ export function createFeatureStarters(deps: FeatureStartersDeps) {
       if (!kind) return;
       if (kind === "helix") return startHelixSweep(wr, pathSketch, circles);
     }
-    store.addFeature({ id: store.nextId(), type: "sweep", profile: wr.sketchId, path: pathId, operation: "new" } as Feature);
+    store.addFeature({
+      id: store.nextId(), type: "sweep", profile: wr.sketchId, path: pathId, operation: "new", joinTouchingOnly: true,
+    } as Feature);
   }
 
   // Primitive: drop a Box / Cylinder / Sphere body at the origin (edit its size in

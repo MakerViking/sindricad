@@ -142,6 +142,7 @@ jobs:
           uv run python test_separate.py
           uv run python test_merge_solids.py
           uv run python test_join_left_out.py
+          uv run python test_join_touching.py
           uv run python test_split.py
           uv run python test_heartbeat.py
           uv run python test_sysmem.py

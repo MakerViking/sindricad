@@ -521,6 +521,20 @@ export type Feature =
       // an edit preserves whatever the feature already had. Same discipline as
       // `hiddenBodies` above.
       separateBodies?: boolean;
+      // A Join (or Intersect) acts only on the bodies the new solid really
+      // touches or overlaps, not on every body whose bounding box meets it, and
+      // keeps every piece it was given: one that touches nothing it joins stays
+      // in the body as a piece of its own, with a `joinPiecesApart` warning,
+      // where the old rule could delete it as debris. By box alone a lip joined
+      // under a lid took in the box it sits 0.2 mm inside and welded the lid to
+      // it (GH #41). Revolve, loft, sweep, thicken and Combine carry the same
+      // stamp; Combine's participants are picked, so for it only the second
+      // half applies.
+      //
+      // Stamped on NEW features only, and an edit keeps whatever the feature
+      // had: an old document rebuilds exactly as it was saved, because the rule
+      // changes which bodies a join takes in, and body ids are positional.
+      joinTouchingOnly?: boolean;
     }
   | { id: string; type: "fillet"; edges: Selector | Selector[]; radius: Num }
   | { id: string; type: "chamfer"; edges: Selector | Selector[]; distance: Num }
@@ -558,12 +572,12 @@ export type Feature =
   // _captured_hidden): these four used to read the live eye states, which made
   // what an old cut removed depend on cache history (field report 05f53ee7). The
   // store stamps the field when one is made, and stamps [] on load.
-  | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num; operation?: "new" | "join" | "cut" | "intersect"; hiddenBodies?: string[] }
+  | { id: string; type: "revolve"; sketch: string; axis: Axis3; angle: Num; operation?: "new" | "join" | "cut" | "intersect"; hiddenBodies?: string[]; joinTouchingOnly?: boolean }
   // Loft blends through 2+ profiles in order. `profiles` (Fusion flow) lofts the
   // SELECTED profile regions across sketches — each carries its sketch id + a 3D
   // interior anchor (a ring keeps its hole → a tube). `sketches` is the legacy
   // whole-un-consumed-sketch fallback (ribbon). One of the two is present.
-  | { id: string; type: "loft"; profiles?: { sketch: string; region: [number, number, number] }[]; sketches?: string[]; operation?: "new" | "join" | "cut" | "intersect"; hiddenBodies?: string[] }
+  | { id: string; type: "loft"; profiles?: { sketch: string; region: [number, number, number] }[]; sketches?: string[]; operation?: "new" | "join" | "cut" | "intersect"; hiddenBodies?: string[]; joinTouchingOnly?: boolean }
   // Sweep a closed profile sketch along an open path sketch (a line/arc/spline).
   // `path` names a sketch whose curve the profile follows. `pathEdges` names
   // BODY EDGES instead (#16: "select an edge of a solid to define the path…
@@ -595,6 +609,7 @@ export type Feature =
       flip?: boolean;
       operation: "new" | "join" | "cut";
       hiddenBodies?: string[];
+      joinTouchingOnly?: boolean;
     }
   // A persistent construction/datum plane in the timeline. Carries no geometry;
   // sketches and splits reference it by id (resolved to its PlaneSpec on rebuild).
@@ -681,7 +696,8 @@ export type Feature =
   | { id: string; type: "split"; plane?: PlaneSpec; planeId?: string; face?: Selector; offset?: Num; keep: "top" | "bottom" | "both"; body?: string; bodies?: string[]; allVisible?: true; groupSides?: boolean }
   // Boolean-combine bodies. The target is modified in place; tool bodies are
   // consumed unless keepTools. Omitted target/tools default to "all bodies".
-  | { id: string; type: "combine"; operation: "join" | "cut" | "intersect"; target?: string; tools?: string[]; keepTools?: boolean }
+  // `joinTouchingOnly`: see the extrude above.
+  | { id: string; type: "combine"; operation: "join" | "cut" | "intersect"; target?: string; tools?: string[]; keepTools?: boolean; joinTouchingOnly?: boolean }
   // Primitive bodies (centered at the origin). Each creates a new body; edit the
   // dimensions in the inspector. Handy as boolean tool bodies for Combine.
   | { id: string; type: "box"; length: Num; width: Num; height: Num }
@@ -698,7 +714,7 @@ export type Feature =
   // Thicken: give surface geometry a wall. `faces` absent = the whole body,
   // which is how a non-watertight mesh import (a surface body, `solid: false`)
   // becomes real material. `symmetric` grows it both ways about the surface.
-  | { id: string; type: "thicken"; faces?: Selector | Selector[]; thickness: Num; symmetric?: boolean; operation?: "join" | "new"; body?: string; hiddenBodies?: string[] }
+  | { id: string; type: "thicken"; faces?: Selector | Selector[]; thickness: Num; symmetric?: boolean; operation?: "join" | "new"; body?: string; hiddenBodies?: string[]; joinTouchingOnly?: boolean }
   // Taper the selected faces by an angle about a neutral plane (pull axis).
   | { id: string; type: "draft"; faces: Selector | Selector[]; angle: Num; axis: Axis3 }
   // Text embossed (raised) or engraved (cut) directly on a solid face — the
@@ -995,11 +1011,16 @@ export interface ResolveDiag {
   // the feature (splitWarnings.ts TOASTED_CODES). Its sentence says "the joined
   // body", never a name: the result can go by the name of the piece that went.
   // Kind and code are the same string.
+  // "joinPiecesApart" = a join stamped `joinTouchingOnly` (Feature, extrude)
+  // kept `count` pieces that do not touch the rest of the body in it, as pieces
+  // of their own. A warning with a `reason`, on the amber chip only, never
+  // toasted: nothing was lost (splitWarnings.ts). Kind and code are the same
+  // string.
   kind:
     | "edge" | "face" | "combine" | "edgeOpFailed" | "sealedVoid" | "cleanUpFitted"
     | "splitSeparated" | "splitSeparatedKept" | "splitDamagedParts" | "splitMissed" | "splitBodiesGone" | "splitLegacyVolume"
     | "mergeDroppedSurfaces" | "mergeDamagedLeftOut" | "mergeSeparatePieces"
-    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden" | "joinPiecesLeftOut";
+    | "separateDroppedSurfaces" | "separateDroppedFaces" | "cutOnlyHidden" | "joinPiecesLeftOut" | "joinPiecesApart";
   resolved: number; // how many entities matched (0 for a skipped combine)
   confidence: number; // 0..1 — margin to the runner-up candidate (1 = lone clear winner)
   lossy: boolean; // a marginal / drift-path match was taken (or a feature was skipped)
@@ -1016,7 +1037,8 @@ export interface ResolveDiag {
    *  mergeDroppedSurfaces / separateDroppedSurfaces: loose surfaces dropped;
    *  separateDroppedFaces: loose faces dropped;
    *  mergeDamagedLeftOut: damaged solids left out; mergeSeparatePieces: the
-   *  pieces the merged body is now; joinPiecesLeftOut: pieces left out of a join */
+   *  pieces the merged body is now; joinPiecesLeftOut: pieces left out of a join;
+   *  joinPiecesApart: pieces of a join that stay apart in the body */
   count?: number;
   failed?: { mid: [number, number, number] }[]; // edgeOpFailed only: failed edges' midpoints
   // Ambiguous-reference repair (reason === "ambiguous nearest pick"): `at` is the

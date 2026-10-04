@@ -376,17 +376,31 @@ This file starts on 2026-08-03. For anything before that, see the
 - **A Combine of many small pieces no longer makes the engine look stopped.**
   Checking each piece against the body could run for a minute and a half without
   a sign of life, so the engine was restarted as if it had hung, on every retry.
-  It now reports progress through that check. As before, a piece under a
-  thousandth of the joined body's size that does not touch it, even by a few
-  microns, is left out of the result, but no longer silently: I say how many
-  pieces I left out and why, in a message after the build and on the feature's
-  amber timeline chip. A Join extrude, revolve, sweep, loft or thicken says the
-  same, and that includes a small body nearby that it took in and left out,
-  which used to vanish from the Browser without a word. A document you already
-  have can show this on a join that has always left pieces out; its shape is
-  unchanged. One case is still silent: when I cannot tidy a joined body into
-  clean solids, tiny floating pieces in it are dropped at the end of the
-  rebuild with no warning.
+  It now reports progress through that check. A join made before this version
+  still leaves out a piece under a thousandth of the joined body's size that
+  does not touch it, even by a few microns, but no longer silently: I say how
+  many pieces I left out and why, in a message after the build and on the
+  feature's amber timeline chip. A Join extrude, revolve, sweep, loft or thicken
+  made before this version says the same, and that includes a small body nearby
+  that it took in and left out, which used to vanish from the Browser without a
+  word. Its shape is unchanged. One case is still silent: when I cannot tidy
+  such a joined body into clean solids, tiny floating pieces in it are dropped
+  at the end of the rebuild with no warning. A join you make now keeps every
+  piece; see the next entry.
+
+- **A join takes in only what it touches, and keeps every piece.** A Join
+  extrude used to take in every body whose bounding box it reached, so a lip
+  joined under a lid pulled in the box it sits inside and welded the lid onto
+  it, although the lip never touched the box. A Join from an extrude, revolve,
+  sweep, loft or thicken, and an Intersect, now act only on the bodies they
+  touch or overlap. A join, a Combine join included, also keeps every piece
+  you give it: a piece that does not touch the rest, even by a gap too small to
+  see, stays in the body as a separate piece instead of being dropped, and the
+  feature's amber timeline chip says how many, so you can make it overlap or use
+  Separate into bodies. Joins you made before this version build as they always
+  have, so your documents keep their shape, and editing one keeps its old rule.
+  To give an old join the new rule, delete it and make it again. Reported in
+  [#41](https://github.com/MakerViking/sindricad/issues/41).
 
 - **A moved body is drawn where you moved it.** If an earlier cut had left a
   tiny hidden chip in a body, moving that body could draw it at its old place

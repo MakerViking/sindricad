@@ -108,6 +108,7 @@ export class LoftTool {
       type: "loft",
       operation: "new",
       profiles: this.profiles.map((p) => ({ sketch: p.sketch, region: p.region })),
+      joinTouchingOnly: true, // a new loft joins only what it touches (types.ts)
     } as Feature;
   }
 

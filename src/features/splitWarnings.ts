@@ -36,7 +36,10 @@
 // A join that left some of the user's pieces out toasts too, from whichever
 // feature did the join, picked by its code (TOASTED_CODES) rather than by
 // feature type. It is material left out, and on the chip alone it was an amber
-// outline on one icon among dozens, its reason only on hover.
+// outline on one icon among dozens, its reason only on hover. A join that kept
+// pieces apart in the body (`joinPiecesApart`) does NOT toast: nothing was
+// lost, and in a run of Combines a piece apart after one step is often joined
+// by the next, so a toast for each step would be noise. It stays on the chip.
 //
 // Pure, so it is tested without main.ts, which cannot be imported in a test.
 

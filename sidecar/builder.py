@@ -3442,7 +3442,7 @@ def _drop_debris(shape, debug=False, dropped=None):
         return shape
 
 
-def _unify_body(shape, debug=False, dropped=None):
+def _unify_body(shape, debug=False, dropped=None, drop_debris=True):
     """Fuse a body's glued/overlapping constituent solids into unified material.
 
     Boolean joins of ragged facet-import bodies GLUE solids together instead of
@@ -3462,7 +3462,10 @@ def _unify_body(shape, debug=False, dropped=None):
 
     `dropped`, when a list, receives the floating solids the debris pass took
     out of the fused result, and only when that result is the one returned:
-    when the original comes back, nothing was taken out here."""
+    when the original comes back, nothing was taken out here.
+
+    `drop_debris=False` skips that pass: a join stamped `joinTouchingOnly`
+    keeps every piece it was given (`_keep_join_pieces`)."""
     from OCP.BRepAlgoAPI import BRepAlgoAPI_Fuse
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp
@@ -3524,7 +3527,8 @@ def _unify_body(shape, debug=False, dropped=None):
         # Debris dropped here is ≤0.1% of the max constituent per chunk,
         # well inside tol_v below, so the bracket gate needs no adjustment.
         gone = []
-        cleaned = _drop_debris(cleaned, debug=debug, dropped=gone)
+        if drop_debris:
+            cleaned = _drop_debris(cleaned, debug=debug, dropped=gone)
 
         # The union is at least the biggest constituent and at most their sum
         # (an inside-out duplicate contributes nothing; interpenetration is
@@ -5594,6 +5598,7 @@ def _handle_extrude(f, ctx):
         ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, hid,
         split_disjoint=bool(f.get("separateBodies")),
         diag=ctx.diagnostics, feature_id=f.get("id"),
+        touching_only=bool(f.get("joinTouchingOnly")),
     )
 
 
@@ -6376,7 +6381,7 @@ def _handle_revolve(f, ctx):
         )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
                          _captured_hidden(f), diag=ctx.diagnostics, feature_id=f.get("id"),
-                         kind="revolve")
+                         kind="revolve", touching_only=bool(f.get("joinTouchingOnly")))
 
 
 def _captured_hidden(f):
@@ -6434,7 +6439,7 @@ def _handle_loft(f, ctx):
         )
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
                          _captured_hidden(f), diag=ctx.diagnostics, feature_id=f.get("id"),
-                         kind="loft")
+                         kind="loft", touching_only=bool(f.get("joinTouchingOnly")))
 
 
 # Which BRepOffsetAPI_MakePipeShell transition mode to sweep with, in the order
@@ -6763,7 +6768,8 @@ def _handle_sweep(f, ctx):
     # unguarded, and a Cut with no active body silently created a new body.)
     _boolean_into_bodies(ctx.bodies, solid, f.get("operation", "new"), ctx.new_body,
                          _captured_hidden(f), diag=ctx.diagnostics, feature_id=f.get("id"),
-                         kind="sweep", cut_noop_msg=cut_noop_msg)
+                         kind="sweep", cut_noop_msg=cut_noop_msg,
+                         touching_only=bool(f.get("joinTouchingOnly")))
 
 
 def _blob_top_children(shape):
@@ -7111,6 +7117,7 @@ def _handle_thicken(f, ctx):
     _boolean_into_bodies(
         ctx.bodies, solid, f.get("operation", "new"), ctx.new_body, _captured_hidden(f),
         diag=ctx.diagnostics, feature_id=f.get("id"), kind="thicken",
+        touching_only=bool(f.get("joinTouchingOnly")),
     )
 
 
@@ -10728,7 +10735,8 @@ def _imprint(solid, tools):
 
 
 def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_disjoint=False,
-                         diag=None, feature_id=None, kind="extrude", cut_noop_msg=None):
+                         diag=None, feature_id=None, kind="extrude", cut_noop_msg=None,
+                         touching_only=False):
     """MCAD-style extrude operation: New Body adds a separate body; Join / Cut /
     Intersect boolean the new solid against EVERY VISIBLE body it overlaps — so an
     extrude that bridges two bodies merges both. Join with nothing to act on just
@@ -10758,7 +10766,12 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
 
     A Cut that SEALS a void (a solid gains a second shell) is the one wrong-looking result
     that isn't wrong enough to refuse — a deliberate hollow is legal — so it pushes
-    a `sealedVoid` diagnostic onto `diag` instead, keyed to `feature_id`."""
+    a `sealedVoid` diagnostic onto `diag` instead, keyed to `feature_id`.
+
+    `touching_only` is the feature's `joinTouchingOnly` stamp (types.ts has the
+    why): a Join or Intersect then acts only on the bodies the solid really
+    touches or overlaps, not on every body whose BOX meets it, and a Join keeps
+    every piece it was given (`_keep_join_pieces`)."""
     # Extruding several DISJOINT region faces (e.g. 38 selected honeycomb cells)
     # yields a build123d ShapeList, which has no .bounding_box()/boolean ops —
     # normalize to one Compound so overlap-testing and cut/join/intersect work.
@@ -10807,6 +10820,15 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
                 and b.get("id") not in hidden
                 and _bbox_overlap(b["shape"], solid)):
             hits.append(b)
+    # By box alone a lip joined under a lid took in the box it sits 0.2 mm
+    # inside, and welded the lid onto it (TA 8c510bd3, GH #41): a stamped Join
+    # or Intersect keeps only the bodies the solid touches or overlaps, each as
+    # the user sees it. An old feature keeps the box rule, so a saved document
+    # rebuilds as it was saved.
+    seen = {}
+    if touching_only and op in ("join", "intersect"):
+        seen = {id(b): _as_seen(b) for b in hits}
+        hits = [b for b in hits if _join_touches(solid, seen[id(b)])]
     # a change smaller than this counts as "nothing happened" — shared by every
     # boolean guard site (here and _do_combine) so the tolerance convention
     # can't drift between features.
@@ -10817,12 +10839,15 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         if not hits:
             new_body(solid)
             return
+        # What is fused is what the user saw: a chip an earlier cut left hidden
+        # in a body stays out, since this join keeps every piece it is given.
+        parts = [seen[id(b)] if touching_only else b["shape"] for b in hits]
         merged = solid
-        for b in hits:
-            merged = _serial_bool(merged, _as_compound(b["shape"]), "fuse")  # serial: parallel BOP is ~5x slower for many-glyph tools
+        for sh in parts:
+            merged = _serial_bool(merged, _as_compound(sh), "fuse")  # serial: parallel BOP is ~5x slower for many-glyph tools
         # No-op guard: the fused volume should exceed what was already there. If it
         # doesn't, the prism sat entirely inside the body and added no material.
-        merged_vol, hit_vol = _try_vol(merged), _sum_hit_vol(hits)
+        merged_vol, hit_vol = _try_vol(merged), _sum_hit_vol(parts)
         if merged_vol is not None and hit_vol is not None \
                 and merged_vol <= hit_vol + eps(prism_vol):
             if kind == "thicken":
@@ -10839,6 +10864,10 @@ def _boolean_into_bodies(bodies, solid, op, new_body, hidden=frozenset(), split_
         # walls, coincident skins, visible seams at every contact); unify right
         # here so a join yields ONE true solid. Fast no-op on clean results
         # (single right-side-out solid), hard-gated otherwise.
+        if touching_only:
+            joined = new_body(_unify_body(merged, drop_debris=False), name)
+            _keep_join_pieces(diag, feature_id, joined, parts, any(b.get("_intact") for b in hits))
+            return
         left_out = []
         joined = new_body(_unify_body(merged, dropped=left_out), name)
         # The prism is new geometry, so every solid of it is the user's. A hit
@@ -10951,12 +10980,12 @@ def _cut_only_hidden(bodies, solid, hidden, eps, diag, feature_id):
     return True
 
 
-def _sum_hit_vol(hits):
-    """Total |volume| of the hit bodies, or None if any can't be measured (so the
-    join no-op guard stays conservative rather than firing on a bad read)."""
+def _sum_hit_vol(shapes):
+    """Total |volume| of the hit bodies' shapes, or None if any can't be measured
+    (so the join no-op guard stays conservative rather than firing on a bad read)."""
     total = 0.0
-    for b in hits:
-        v = _try_vol(b["shape"])
+    for sh in shapes:
+        v = _try_vol(sh)
         if v is None:
             return None
         total += v
@@ -11061,6 +11090,190 @@ def _pieces_in(shapes, dropped):
                 count += 1
                 break
     return count
+
+
+# The classification tolerance for the points that say which solid holds which:
+# the debris rule's own line between touching and floating (`_drop_debris`).
+_JOIN_TOUCH_TOL = 1e-7  # mm
+
+
+def _as_seen(body):
+    """A body's shape as the user sees it: with the final pass's debris drop
+    applied, unless the body is exempt from that pass (`_intact`)."""
+    return body["shape"] if body.get("_intact") else _drop_debris(body["shape"])
+
+
+def _join_touches(tool, shape):
+    """Whether `tool` touches or overlaps `shape`: the kernel's section of the
+    two has a point in it, or a solid of one lies inside a solid of the other.
+    When the kernel cannot say, True, which is the box rule this replaces.
+
+    A section, because it is the fuse's own test of contact (the same
+    intersection, at the shapes' own tolerances), so a body this takes in is
+    one the fuse joins, and a piece it leaves floating is one this calls apart.
+    Not BRepExtrema_DistShapeShape: measured on 9728490b's knob, a Join of its
+    121 ribs took 26.3 s to measure against 1.7 s to section, which on a slower
+    machine is the 60 s watchdog again, and one rib 0.3 to 0.7 s against 0.04 s.
+    Non-destructive: a section may raise its arguments' tolerances in place,
+    and these are the bodies' own shapes."""
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Section
+    from OCP.TopAbs import TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+
+    progress_tick(keep_index=True)  # a section, ~2 s for 121 ribs on a detailed body
+    try:
+        sec = BRepAlgoAPI_Section(_as_compound(tool).wrapped, _as_compound(shape).wrapped, False)
+        sec.SetRunParallel(False)
+        sec.SetNonDestructive(True)
+        sec.Build()
+        if not sec.IsDone() or TopExp_Explorer(sec.Shape(), TopAbs_VERTEX).More():
+            return True
+        # Nothing in common on the boundaries: one is wholly inside the other or
+        # wholly outside it, and one vertex says which.
+        return _any_inside(tool, shape) or _any_inside(shape, tool)
+    except Exception:
+        return True
+
+
+def _any_inside(inner, outer):
+    """Whether a solid of `inner` lies inside a solid of `outer`, for two
+    shapes whose boundaries do not meet (`_join_touches`): the section sees
+    boundaries only, so a prism buried in a body has none in common with it.
+    A vertex of each solid of `inner`, classified against each solid of
+    `outer`. A solid with no vertex counts as inside, the box rule's answer."""
+    from OCP.BRep import BRep_Tool
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.TopAbs import TopAbs_IN, TopAbs_VERTEX
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    classifiers = [BRepClass3d_SolidClassifier(o.wrapped) for o in _as_compound(outer).solids()]
+    for s in _as_compound(inner).solids():
+        ex = TopExp_Explorer(s.wrapped, TopAbs_VERTEX)
+        if not ex.More():
+            return True
+        p = BRep_Tool.Pnt_s(TopoDS.Vertex_s(ex.Current()))
+        for clf in classifiers:
+            clf.Perform(p, _JOIN_TOUCH_TOL)
+            if clf.State() == TopAbs_IN:
+                return True
+    return False
+
+
+def _keep_join_pieces(diag, feature_id, body, participants, intact):
+    """Finish a join stamped `joinTouchingOnly`, which keeps every piece it was
+    given: one that touches nothing it joins stays in `body` as a solid of its
+    own, where the old rule could delete it as debris (field report 9728490b:
+    66 ribs a few microns off a knob, 44.1 mm3, gone).
+
+    The body is exempt from the final debris pass (`_intact`) once it holds more
+    than one solid, as Merge's result is: that pass judges a piece against the
+    biggest in the body, and a join makes the biggest bigger. A body joined from
+    one already exempt stays exempt. The cost, as for Merge: a later cut on this
+    body keeps any chip it leaves.
+
+    `participants` are the shapes the join went into, as the user saw them (the
+    Combine's target; a Join feature's bodies). A warning counts the pieces of
+    the result that hold none of their material, the ones that touch none of
+    them; a piece one of them already had is not news."""
+    solids = len(_as_compound(body["shape"]).solids())
+    if solids > 1 or intact:
+        body["_intact"] = True
+    if solids < 2 or diag is None:
+        return
+    n = _pieces_apart(body["shape"], participants)
+    if not n:
+        return
+    one = n == 1
+    _split_diag(diag, feature_id, errors_mod.JOIN_PIECES_APART, body, count=n, reason=(
+        f"{n} {'piece' if one else 'pieces'} I joined into {BODY_SLOT} "
+        f"{'does' if one else 'do'} not touch the rest of it, so after this step "
+        f"{'it is a separate piece' if one else 'they are separate pieces'} of the "
+        "body. A gap too small to see still counts. "
+        f"Make {'it' if one else 'them'} overlap to fuse {'it' if one else 'them'} "
+        f"in, or use Separate into bodies to give {'it a body' if one else 'each a body'} "
+        "of its own."))
+
+
+def _pieces_apart(shape, participants):
+    """How many pieces of the joined `shape` hold none of the material of
+    `participants`. A piece is the solids that share a vertex, which after the
+    fuse is exactly the solids in contact (shared topology, not coordinates:
+    the pieces this counts can float a tenth of a micron off). Which piece holds
+    a participant's solid is read at a point strictly inside it
+    (`_interior_point`); a solid that offers none marks every piece whose box
+    meets its own, so the count errs low, never high."""
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.Bnd import Bnd_Box
+    from OCP.TopAbs import TopAbs_IN, TopAbs_ON, TopAbs_SOLID, TopAbs_VERTEX
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    whole = _as_compound(shape).wrapped
+    smap = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(whole, TopAbs_SOLID, smap)
+    n = smap.Extent()
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    owners = TopTools_IndexedDataMapOfShapeListOfShape()
+    TopExp.MapShapesAndAncestors_s(whole, TopAbs_VERTEX, TopAbs_SOLID, owners)
+    for k in range(1, owners.Extent() + 1):
+        idx = [i - 1 for i in (smap.FindIndex(s) for s in owners.FindFromIndex(k)) if i]
+        for j in idx[1:]:
+            parent[find(idx[0])] = find(j)
+    pieces = {find(i) for i in range(n)}
+    if len(pieces) < 2:
+        return 0
+
+    solids = [TopoDS.Solid_s(smap.FindKey(i + 1)) for i in range(n)]
+    boxes = []
+    for s in solids:
+        box = Bnd_Box()
+        BRepBndLib.Add_s(s, box)
+        boxes.append(box)
+    classifiers = {}
+
+    def holds(i, p):
+        clf = classifiers.get(i)
+        if clf is None:
+            clf = classifiers[i] = BRepClass3d_SolidClassifier(solids[i])
+        clf.Perform(p, _JOIN_TOUCH_TOL)
+        return clf.State() in (TopAbs_IN, TopAbs_ON)
+
+    marked = set()
+    mine = (s for sh in participants for s in _as_compound(sh).solids())
+    for k, piece in enumerate(mine):
+        if marked == pieces:
+            break
+        if k % 16 == 0:
+            progress_tick(keep_index=True)
+        try:
+            p = _interior_point(piece.wrapped)
+        except Exception:
+            p = None
+        hit = None
+        if p is not None:
+            # Boxes first; every solid when they miss, so a box that comes out
+            # tight cannot lose the piece.
+            near = [i for i in range(n) if not boxes[i].IsOut(p)]
+            hit = next((i for i in near if holds(i, p)), None)
+            if hit is None:
+                hit = next((i for i in range(n) if i not in near and holds(i, p)), None)
+        if hit is not None:
+            marked.add(find(hit))
+            continue
+        pbox = Bnd_Box()
+        BRepBndLib.Add_s(piece.wrapped, pbox)
+        marked.update(find(i) for i in range(n) if not boxes[i].IsOut(pbox))
+    return len(pieces - marked)
 
 
 def _vertex_components(solids):
@@ -12184,13 +12397,20 @@ def _do_combine(f, bodies, find_body, diag=None):
 
     shape = target["shape"]
     before_vol = _try_vol(shape)
+    # A join stamped `joinTouchingOnly` keeps every piece it is given
+    # (`_keep_join_pieces`), so it fuses what the user saw: a chip an earlier
+    # cut left hidden in a body stays out.
+    keep = op == "join" and bool(f.get("joinTouchingOnly"))
+    if keep:
+        shape = seen = _as_seen(target)
     # _serial_bool, not build123d's +/-/&: a Combine tool is often a compound
     # of MANY disjoint solids (explode:false import, multi-region extrude) —
     # exactly the shape class where OCCT's parallel BOP is ~5x slower than
     # serial (see _serial_bool). Same UnifySameDomain clean, same result.
     kind = {"join": "fuse", "cut": "cut", "intersect": "common"}[op]
     for t in tools:
-        shape = _serial_bool(_as_compound(shape), _as_compound(t["shape"]), kind)
+        tool = _as_seen(t) if keep else t["shape"]
+        shape = _serial_bool(_as_compound(shape), _as_compound(tool), kind)
     # No-op / destructive guards, same volume-eps convention as
     # _boolean_into_bodies. Only the SILENT failure modes raise: a Cut that
     # removed nothing still consumes the tools (the user loses bodies and gains
@@ -12229,10 +12449,15 @@ def _do_combine(f, bodies, find_body, diag=None):
     # AT THE SOURCE so a Combine yields one true solid. _unify_body is a fast
     # no-op on clean results and hard-validated (any doubt → unchanged), and
     # replayed history heals existing combines on the next rebuild.
-    pieces = [(b["shape"], bool(b.get("_intact"))) for b in (target, *tools)]
-    left_out = []
-    target["shape"] = _unify_body(shape, dropped=left_out) if op == "join" else shape
-    _join_left_out_diag(diag, f.get("id"), target, pieces, left_out)
+    if keep:
+        target["shape"] = _unify_body(shape, drop_debris=False)
+        _keep_join_pieces(diag, f.get("id"), target, [seen],
+                          any(b.get("_intact") for b in (target, *tools)))
+    else:
+        pieces = [(b["shape"], bool(b.get("_intact"))) for b in (target, *tools)]
+        left_out = []
+        target["shape"] = _unify_body(shape, dropped=left_out) if op == "join" else shape
+        _join_left_out_diag(diag, f.get("id"), target, pieces, left_out)
 
     if not f.get("keepTools"):
         consumed = {t["id"] for t in tools}
